@@ -24,6 +24,17 @@ def register_autostart():
         raise SystemExit("error: register-autostart is Windows-only "
                          "(schtasks). Start the relay from your own init "
                          "system instead.")
+    # one-time cleanup of the pre-rebrand autostart (SimpleREACH.bat + task),
+    # otherwise BOTH relays would start at the next logon and fight for the port
+    legacy_bat = startup_folder() / "SimpleREACH.bat"
+    if legacy_bat.is_file():
+        try:
+            legacy_bat.unlink()
+        except OSError:
+            pass
+    subprocess.run(["schtasks", "/Delete", "/TN", "SimpleREACH", "/F"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                   **no_window_kwargs())
     port = runtime_port()
     pythonw = resolve_pythonw()
     ngrok = find_ngrok()
