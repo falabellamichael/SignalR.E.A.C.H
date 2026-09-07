@@ -294,3 +294,27 @@ body {
 }
 .send-btn:hover { background: var(--reach-accent-hover); }
 .send-btn:disabled { opacity: 0.45; cursor: default; }
+
+
+/* ---- workspace context toggle ---- */
+.ws-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 2px 7px;
+  border: 1px solid var(--vscode-input-border, #3c3c3c);
+  border-radius: 11px;
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--vscode-foreground);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+.ws-toggle:hover { opacity: 1; }
+.ws-toggle input[type="checkbox"] {
+  accent-color: var(--vscode-focusBorder, #007acc);
+  margin: 0;
+}
+.ws-label { display: inline-flex; align-items: center; gap: 2px; }

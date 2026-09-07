@@ -1,7 +1,7 @@
 {
   "name": "simplereach",
   "displayName": "SimpleREACH",
-  "description": "Chat with your SimpleREACH models (gpt-4o, claude-opus-4.6, gemini, deepseek…) directly inside VS Code. Zero config — points at your local REACH endpoint.",
+  "description": "Chat with your SimpleREACH models (gpt-4o, claude-opus-4.6, gemini, deepseek\u2026) directly inside VS Code. Zero config \u2014 points at your local REACH endpoint.",
   "version": "1.0.0",
   "publisher": "simplereach",
   "license": "MIT",
@@ -61,7 +61,7 @@
         "simplereach.accessKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Optional shared access key (set in the REACH panel → Settings → Access)."
+          "markdownDescription": "Optional shared access key (set in the REACH panel \u2192 Settings \u2192 Access)."
         },
         "simplereach.model": {
           "type": "string",
@@ -72,6 +72,16 @@
           "type": "number",
           "default": 2048,
           "markdownDescription": "Max output tokens per request."
+        },
+        "simplereach.workspaceContext": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on \u2014 toggle it in the sidebar)."
+        },
+        "simplereach.contextMaxKb": {
+          "type": "number",
+          "default": 120,
+          "markdownDescription": "Max total workspace-context size (KB) sent per request. Open files are truncated to fit."
         }
       }
     }

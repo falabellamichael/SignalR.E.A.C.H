@@ -24,7 +24,7 @@
   "contributes": {
     "pages": [
       {
-        "id": "simple-reach.reach-page",
+        "id": "signal-reach.reach-page",
         "location": "app-bar",
         "icon": "fa-satellite-dish",
         "title": "REACH",

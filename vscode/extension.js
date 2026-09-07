@@ -23,7 +23,103 @@ function config() {
     accessKey: String(cfg.get('accessKey') || ''),
     model: String(cfg.get('model') || 'gpt-4o'),
     maxTokens: Number(cfg.get('maxTokens') || 2048),
+    workspaceContext: cfg.get('workspaceContext') !== false,
+    contextMaxKb: Math.max(8, Number(cfg.get('contextMaxKb') || 120)),
   };
+}
+
+/* ---------- workspace context gathering ---------- */
+
+const TREE_EXCLUDES = [
+  '**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**',
+  '**/build/**', '**/.next/**', '**/.venv/**', '**/venv/**',
+  '**/__pycache__/**', '**/*.min.js', '**/*.map', '**/*.lock',
+  '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif', '**/*.webp',
+  '**/*.ico', '**/*.svg', '**/*.woff*', '**/*.ttf', '**/*.pdf',
+  '**/*.zip', '**/*.exe', '**/*.dll', '**/*.bin',
+];
+const MAX_TREE_ENTRIES = 250;
+const MAX_OPEN_FILES = 40;
+const PER_FILE_BUDGET = 20 * 1024;      // per-file cap (chars)
+const TOTAL_CONTEXT_BUDGET = 120 * 1024; // total context cap (chars)
+
+function relativePath(fileUri) {
+  const folder = vscode.workspace.getWorkspaceFolder(fileUri);
+  if (folder && fileUri.fsPath.startsWith(folder.uri.fsPath)) {
+    return fileUri.fsPath.slice(folder.uri.fsPath.length + 1);
+  }
+  return vscode.workspace.asRelativePath(fileUri, false);
+}
+
+function openTextDocuments() {
+  const docs = [];
+  const seen = new Set();
+  const active = vscode.window.activeTextEditor
+    && vscode.window.activeTextEditor.document;
+  if (active && !active.isUntitled) {
+    docs.push(active);
+    seen.add(active.uri.toString());
+  }
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (!(tab.input instanceof vscode.TabInputText)) continue;
+      const doc = tab.input.uri && vscode.workspace.textDocuments.find(
+        (d) => d.uri.toString() === tab.input.uri.toString());
+      if (doc && !doc.isUntitled && !seen.has(doc.uri.toString())) {
+        docs.push(doc);
+        seen.add(doc.uri.toString());
+      }
+      if (docs.length >= MAX_OPEN_FILES) break;
+    }
+    if (docs.length >= MAX_OPEN_FILES) break;
+  }
+  return docs;
+}
+
+async function buildTreeLines() {
+  const folders = vscode.workspace.workspaceFolders || [];
+  if (!folders.length) return [];
+  const all = [];
+  for (const folder of folders) {
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, '**/*'), `{${TREE_EXCLUDES.join(',')}}`, 400);
+    for (const f of files) all.push(f);
+  }
+  all.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
+  const roots = new Map();
+  for (const folder of folders) roots.set(folder.name, folder.uri.fsPath);
+  const lines = [];
+  let count = 0;
+  for (const f of all) {
+    if (count >= MAX_TREE_ENTRIES) { lines.push('… (more files)'); break; }
+    const rel = relativePath(f);
+    const depth = rel.split(/[\\/]/).length - 1;
+    if (depth > 3) continue;          // keep the tree shallow
+    lines.push('  '.repeat(Math.max(0, depth)) + rel.split(/[\\/]/).pop());
+    count += 1;
+  }
+  return lines;
+}
+
+function buildContextBlock(files, treeLines) {
+  const parts = [];
+  parts.push('Workspace context (files open in VS Code):');
+  if (treeLines && treeLines.length) {
+    parts.push('Workspace tree:');
+    parts.push(treeLines.slice(0, 80).join('\n'));
+  }
+  let used = 0;
+  for (const doc of files) {
+    const rel = relativePath(doc.uri);
+    const content = doc.getText().slice(0, PER_FILE_BUDGET);
+    if (used + content.length > TOTAL_CONTEXT_BUDGET) {
+      parts.push(`… (context truncated after ${files.length} files)`);
+      break;
+    }
+    used += content.length;
+    parts.push(`\n--- ${rel} (${doc.languageId}) ---\n${content}`);
+  }
+  return parts.join('\n');
 }
 
 class ReachChatViewProvider {
@@ -51,6 +147,12 @@ class ReachChatViewProvider {
           break;
         case 'chat':
           await this._chat(msg.body || {});
+          break;
+        case 'workspaceToggle':
+          this._post('workspaceState', {
+            files: openTextDocuments().length,
+            workspaceFolders: (vscode.workspace.workspaceFolders || []).length,
+          });
           break;
         case 'abort':
           if (this._controller) this._controller.abort();
@@ -95,8 +197,37 @@ class ReachChatViewProvider {
   }
 
   async _chat(body) {
-    const { endpoint, maxTokens } = config();
-    const payload = Object.assign({}, body, { max_tokens: maxTokens || 2048 });
+    const { endpoint, maxTokens, workspaceContext, contextMaxKb } = config();
+    const messages = Array.isArray(body.messages) ? body.messages.slice() : [];
+    // ---- workspace context injection ----
+    if (body.includeWorkspace && workspaceContext) {
+      const docs = openTextDocuments();
+      const treeLines = await buildTreeLines();
+      const contextBlock = buildContextBlock(docs, treeLines).slice(0, contextMaxKb * 1024);
+      const contextMsg = {
+        role: 'system',
+        content: 'You are assisting the user inside VS Code. Below is the current '
+          + 'workspace context — files they have open. Use it to ground answers; '
+          + 'never invent file contents.\n\n' + contextBlock,
+      };
+      const existingSystem = messages.findIndex((m) => m.role === 'system');
+      if (existingSystem >= 0) {
+        messages[existingSystem] = {
+          role: 'system',
+          content: messages[existingSystem].content + '\n\n' + contextMsg.content,
+        };
+      } else {
+        messages.unshift(contextMsg);
+      }
+      this._post('contextInfo', {
+        files: docs.length,
+        chars: contextBlock.length,
+      });
+    }
+    const payload = Object.assign({}, body, {
+      max_tokens: maxTokens || 2048,
+      messages,
+    });
     const url = `${endpoint}/chat/completions`;
     const controller = new AbortController();
     this._controller = controller;

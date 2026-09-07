@@ -21,6 +21,10 @@
       <button id="refresh" class="icon-btn" title="Reload models" aria-label="Reload models">
         <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9l-1 1A4.5 4.5 0 1 0 12.5 8h1z" fill="currentColor"/><path d="M13.5 1.5v4h-4l1.3-1.3A6.5 6.5 0 1 1 1.5 8h1A5.5 5.5 0 1 0 11 2.8l2.5 2.5v-3.8h0z" fill="currentColor"/></svg>
       </button>
+      <label id="ws-toggle" class="ws-toggle" title="Include the files open in VS Code as context for the model">
+        <input type="checkbox" id="ws-check" checked>
+        <span class="ws-label">📄 <span id="ws-count">Workspace</span></span>
+      </label>
     </div>
     <div id="history-panel" class="history-panel" hidden></div>
     <div id="endpoint" class="endpoint-line" title="Endpoint">…</div>

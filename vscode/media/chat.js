@@ -12,6 +12,8 @@
   const historyPanel = $('#history-panel');
   const historyBtn = $('#history-btn');
   const clearBtn = $('#clear-btn');
+  const wsCheck = $('#ws-check');
+  const wsCount = $('#ws-count');
 
   let conv = null;            // current conversation {id, model, ts, title, messages}
   let busy = false;
@@ -19,6 +21,7 @@
   let pendingText = '';
   let clearArmed = false;
   let clearTimer = null;
+  let includeWorkspace = true;
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
@@ -247,6 +250,7 @@
         model: conv.model,
         stream: true,
         messages: conv.messages.slice(),
+        includeWorkspace,
       },
     });
     scrollBottom();
@@ -300,6 +304,20 @@
         log.appendChild(err);
         scrollBottom();
         break;
+      case 'contextInfo':
+        wsCount.textContent = msg.files
+          ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
+          : 'Workspace';
+        wsCount.title = msg.chars ? `~${Math.round(msg.chars / 1024)}KB of file context sent` : '';
+        break;
+      case 'workspaceState':
+        wsCount.textContent = msg.files
+          ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
+          : 'Workspace';
+        if (!msg.workspaceFolders) {
+          wsCount.title = 'No workspace folder open — only open-file contents are included.';
+        }
+        break;
       case 'reload':
         post('fetchModels');
         break;
@@ -312,6 +330,11 @@
 
   $('#send').addEventListener('click', send);
   $('#refresh').addEventListener('click', () => post('fetchModels'));
+  wsCheck.addEventListener('change', () => {
+    includeWorkspace = wsCheck.checked;
+    vscode.setState(Object.assign(state(), { includeWorkspace }));
+    post('workspaceToggle');
+  });
   historyBtn.addEventListener('click', () => {
     historyPanel.hidden = !historyPanel.hidden;
     if (!historyPanel.hidden) renderHistory();
@@ -330,6 +353,10 @@
   /* ---------- boot ---------- */
 
   const saved = state();
+  if (saved.includeWorkspace !== undefined) {
+    includeWorkspace = !!saved.includeWorkspace;
+    wsCheck.checked = includeWorkspace;
+  }
   if (saved.conv) {
     conv = saved.conv;
     modelSelect.innerHTML = '';
