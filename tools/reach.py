@@ -829,7 +829,22 @@ def require_relay():
         raise SystemExit("error: relay not running — `python tools/reach.py start`")
 
 
+def split_dotted(path):
+    """Split a settings path. Model aliases may contain dots
+    (e.g. models.claude-opus-4.6.description), so the models section gets
+    special handling: everything between 'models.' and the LAST dot is the
+    alias."""
+    parts = path.split(".")
+    if len(parts) >= 3 and parts[0] == "models":
+        return "models", ".".join(parts[1:-1]), parts[-1]
+    return None, None, None
+
+
 def get_dotted(cfg, path):
+    section, alias, key = split_dotted(path)
+    if section:
+        spec = (cfg.get("models") or {}).get(alias)
+        return spec.get(key) if isinstance(spec, dict) else None
     node = cfg
     for part in path.split("."):
         if isinstance(node, dict) and part in node:
@@ -841,6 +856,9 @@ def get_dotted(cfg, path):
 
 def set_dotted_patch(path, value):
     """Build a nested PUT patch from a dotted path, e.g. models.gpt-4o.rpm."""
+    section, alias, key = split_dotted(path)
+    if section:
+        return {"models": {alias: {key: value}}}
     parts = path.split(".")
     patch = {}
     node = patch
