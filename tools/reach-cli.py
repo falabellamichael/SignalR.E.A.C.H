@@ -15,13 +15,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from reach_cli.entry import (  # noqa: E402
-    DDGParser,
     ReachApiError,
     ReachClient,
-    TextExtractor,
     build_grounded_messages,
     main,
 )
+from reach_cli.websearch import DDGParser, TextExtractor  # noqa: E402
 
 __all__ = ["DDGParser", "ReachApiError", "ReachClient",
            "TextExtractor", "build_grounded_messages", "main"]
