@@ -1,0 +1,353 @@
+/* SimpleREACH page styles — reach-* prefixed, theme-agnostic (translucent
+ * surfaces so it reads well on both SimpleRAG's light and dark themes).
+ * Never restyle host UI outside .reach-page. */
+
+/* Contributed pages get .calendar-mode stamped on .reading-content, which
+ * reserves a 292px side-helper column. Collapse it for this page without
+ * touching SimpleRAG's CSS. */
+.reading-content.calendar-mode:has(> #settings-container > .reach-page) {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.reach-page {
+    padding: 18px 20px 28px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 1080px;
+    color: inherit;
+    font-family: inherit;
+}
+
+.reach-page *,
+.reach-page *::before,
+.reach-page *::after {
+    box-sizing: border-box;
+}
+
+.reach-page [hidden] {
+    display: none !important;
+}
+
+/* ---- hero ---- */
+.reach-hero {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.reach-hero-badge {
+    flex: 0 0 auto;
+    width: 64px;
+    height: 64px;
+    border-radius: 14px;
+    display: grid;
+    place-items: center;
+    font-weight: 800;
+    font-size: 15px;
+    letter-spacing: 0.06em;
+    color: #ffd37a;
+    background: linear-gradient(145deg, rgba(255, 176, 32, 0.22), rgba(255, 176, 32, 0.06));
+    border: 1px solid rgba(255, 176, 32, 0.45);
+    text-shadow: 0 0 12px rgba(255, 176, 32, 0.35);
+}
+
+.reach-title {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.reach-tagline {
+    margin: 4px 0 0;
+    font-size: 13.5px;
+    opacity: 0.78;
+    line-height: 1.5;
+}
+
+/* ---- cards ---- */
+.reach-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+}
+
+.reach-card {
+    background: rgba(128, 128, 128, 0.07);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
+}
+
+.reach-card-wide {
+    grid-column: 1 / -1;
+}
+
+.reach-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.reach-card-head h2 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    opacity: 0.9;
+}
+
+.reach-card-foot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.reach-foot-card {
+    padding: 14px 16px;
+}
+
+.reach-footnote {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.6;
+    opacity: 0.75;
+}
+
+.reach-link {
+    color: #ffb020;
+    text-decoration: none;
+}
+.reach-link:hover { text-decoration: underline; }
+
+/* ---- URL row ---- */
+.reach-url-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.reach-url {
+    flex: 1;
+    min-width: 0;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 13px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.28);
+    color: #ffd37a;
+}
+
+/* ---- badges / chips ---- */
+.reach-badge {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 3px 9px;
+    border-radius: 999px;
+}
+
+.reach-badge-live {
+    color: #7ce8a0;
+    background: rgba(46, 204, 113, 0.14);
+    border: 1px solid rgba(46, 204, 113, 0.4);
+}
+
+.reach-badge-off {
+    color: #ff8f7a;
+    background: rgba(231, 76, 60, 0.14);
+    border: 1px solid rgba(231, 76, 60, 0.4);
+}
+
+.reach-chip {
+    font-size: 11.5px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(128, 128, 128, 0.1);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    opacity: 0.9;
+}
+
+.reach-meta-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* ---- buttons ---- */
+.reach-btn {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: inherit;
+    background: rgba(128, 128, 128, 0.1);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    transition: filter 120ms ease, transform 80ms ease;
+}
+
+.reach-btn:hover { filter: brightness(1.2); }
+.reach-btn:active { transform: translateY(1px); }
+
+.reach-btn-primary {
+    color: #1a1206;
+    background: #ffb020;
+    border-color: #ffb020;
+    font-weight: 700;
+}
+
+.reach-hint {
+    font-size: 11.5px;
+    opacity: 0.6;
+}
+
+/* ---- result line ---- */
+.reach-result {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 12.5px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.reach-result-ok {
+    color: #7ce8a0;
+    border-color: rgba(46, 204, 113, 0.4);
+}
+
+.reach-result-error {
+    color: #ff8f7a;
+    border-color: rgba(231, 76, 60, 0.4);
+}
+
+/* ---- local relay kv ---- */
+.reach-kv {
+    margin: 0;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 6px 14px;
+    font-size: 12.5px;
+}
+
+.reach-kv dt {
+    opacity: 0.62;
+    margin: 0;
+}
+
+.reach-kv dd {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+}
+
+.reach-dot-on {
+    background: #2ecc71;
+    box-shadow: 0 0 8px rgba(46, 204, 113, 0.7);
+}
+
+.reach-dot-off {
+    background: #e74c3c;
+    box-shadow: 0 0 8px rgba(231, 76, 60, 0.6);
+}
+
+/* ---- usage tabs + snippets ---- */
+.reach-usage-tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.reach-tab {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+    color: inherit;
+    background: transparent;
+    border: 1px solid rgba(128, 128, 128, 0.28);
+    opacity: 0.75;
+}
+
+.reach-tab-active {
+    opacity: 1;
+    color: #ffd37a;
+    border-color: rgba(255, 176, 32, 0.55);
+    background: rgba(255, 176, 32, 0.08);
+}
+
+.reach-snippet {
+    margin: 0;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    overflow-x: auto;
+}
+
+.reach-snippet code {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: inherit;
+}
+
+.reach-snippet-steps {
+    font-size: 13px;
+    line-height: 1.7;
+    opacity: 0.9;
+}
+
+.reach-snippet-steps ol {
+    margin: 0;
+    padding-left: 20px;
+}
+
+.reach-snippet-steps code {
+    color: #ffd37a;
+}
+
+/* ---- narrow screens ---- */
+@media (max-width: 760px) {
+    .reach-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .reach-url-row {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .reach-url {
+        white-space: normal;
+        word-break: break-all;
+    }
+}
