@@ -17,6 +17,13 @@
   const thinkCheck = $('#think-check');
   const webCheck = $('#web-check');
   const webCount = $('#web-count');
+  const searchInput = $('#search');
+  const searchResults = $('#search-results');
+  const settingsBtn = $('#settings-btn');
+  const settingsPanel = $('#settings-panel');
+  const topThink = $('#top-think');
+  const modelChip = $('#model-chip');
+  const statusDot = $('#status-dot');
 
   let conv = null;            // current conversation {id, model, ts, title, messages, thoughts}
   let busy = false;
@@ -29,6 +36,7 @@
   let thinkEnabled = true;
   let webEnabled = true;
   let pendingThought = '';
+  let configCache = null;
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
@@ -62,20 +70,33 @@
   }
 
   function showThinking() {
-    if (!pendingBubble) return;
-    const row = document.createElement('div');
-    row.className = 'think-row';
+    if (!pendingBubble || thinkRow) return;
     const spinner = document.createElement('span');
     spinner.className = 'think-spinner';
     spinner.setAttribute('aria-label', 'thinking');
-    row.appendChild(spinner);
-    log.insertBefore(row, pendingBubble.parentElement);
-    thinkRow = row;
+    pendingBubble.prepend(spinner);
+    thinkRow = spinner;
   }
 
   function hideThinking() {
     if (thinkRow) { thinkRow.remove(); thinkRow = null; }
     if (pendingBubble && pendingBubble.parentElement) pendingBubble.parentElement.classList.remove('thinking');
+    topThink.hidden = true;
+  }
+
+  function thoughtIcon(title) {
+    const icon = document.createElement('span');
+    icon.className = 'thought-icon';
+    icon.textContent = '💭';
+    icon.title = 'Private reasoning:\n\n' + title;
+    return icon;
+  }
+
+  function attachThoughts(body, title) {
+    body.prepend(document.createTextNode('... '));
+    body.prepend(thoughtIcon(title));
+    body.appendChild(document.createTextNode(' ...'));
+    body.appendChild(thoughtIcon(title));
   }
 
   function renderMessages() {
@@ -89,14 +110,7 @@
       const body = bubble(m.role);
       body.textContent = m.content;
       if (m.role === 'assistant' && conv.thoughts && conv.thoughts[idx]) {
-        const row = document.createElement('div');
-        row.className = 'think-row';
-        const icon = document.createElement('span');
-        icon.className = 'thought-icon';
-        icon.textContent = '💭';
-        icon.title = 'Private reasoning:\n\n' + conv.thoughts[idx];
-        row.appendChild(icon);
-        log.insertBefore(row, body.parentElement);
+        attachThoughts(body, conv.thoughts[idx]);
       }
     });
     scrollBottom();
@@ -112,6 +126,61 @@
     const sameDay = d.toDateString() === now.toDateString();
     const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     return sameDay ? time : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + time;
+  }
+
+  function snippet(messages, query) {
+    const q = query.toLowerCase();
+    for (const m of messages || []) {
+      const content = m.content || '';
+      const i = content.toLowerCase().indexOf(q);
+      if (i >= 0) {
+        const start = Math.max(0, i - 30);
+        const s = content.slice(start, start + 110).replace(/\s+/g, ' ').trim();
+        return (start > 0 ? '…' : '') + s + (start + 110 < content.length ? '…' : '');
+      }
+    }
+    return '';
+  }
+
+  function renderSearch() {
+    searchResults.innerHTML = '';
+    const q = searchInput.value.trim().toLowerCase();
+    if (!q) { searchResults.hidden = true; return; }
+    const matches = [];
+    state().history.forEach((item) => {
+      const inTitle = (item.title || '').toLowerCase().includes(q);
+      const inMsg = (item.messages || []).some((m) => (m.content || '').toLowerCase().includes(q));
+      if (inTitle || inMsg) matches.push({ item, sn: inTitle ? '' : snippet(item.messages, q) });
+    });
+    if (!matches.length) {
+      const empty = document.createElement('div');
+      empty.className = 'history-empty';
+      empty.textContent = 'No saved chats match.';
+      searchResults.appendChild(empty);
+    } else {
+      matches.slice(0, 20).forEach(({ item, sn }) => {
+        const row = document.createElement('div');
+        row.className = 'history-item';
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        const t = document.createElement('div');
+        t.className = 'title';
+        t.textContent = item.title || '(untitled)';
+        const sub = document.createElement('div');
+        sub.className = 'sub';
+        sub.textContent = sn || (item.model || '') + ' · ' + fmtTime(item.ts);
+        meta.appendChild(t);
+        meta.appendChild(sub);
+        row.appendChild(meta);
+        row.addEventListener('click', () => {
+          searchResults.hidden = true;
+          searchInput.value = '';
+          loadHistory(item.id);
+        });
+        searchResults.appendChild(row);
+      });
+    }
+    searchResults.hidden = false;
   }
 
   function renderHistory() {
@@ -156,6 +225,62 @@
     });
   }
 
+  const SETTING_FIELDS = [
+    { key: 'endpoint', label: 'Endpoint', type: 'text' },
+    { key: 'accessKey', label: 'Access key', type: 'password' },
+    { key: 'model', label: 'Default model', type: 'text' },
+    { key: 'maxTokens', label: 'Max tokens', type: 'number', min: 1 },
+    { key: 'workspaceContext', label: 'Workspace context', type: 'check' },
+    { key: 'contextMaxKb', label: 'Context max KB', type: 'number', min: 8 },
+    { key: 'think', label: 'WhisperThink', type: 'check' },
+    { key: 'thinkModel', label: 'Think model', type: 'text' },
+    { key: 'thinkMaxTokens', label: 'Think max tokens', type: 'number', min: 64 },
+    { key: 'webSearch', label: 'Web search', type: 'check' },
+    { key: 'searchResults', label: 'Search results', type: 'number', min: 1, max: 10 },
+    { key: 'playwright', label: 'Playwright fetch', type: 'check' },
+  ];
+
+  function renderSettings() {
+    const cfg = configCache || {};
+    settingsPanel.innerHTML = '';
+    SETTING_FIELDS.forEach((f) => {
+      const row = document.createElement('div');
+      row.className = 'setting-row' + (f.type === 'check' ? ' check' : '');
+      const id = 'set-' + f.key;
+      if (f.type === 'check') {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.id = id;
+        box.checked = !!cfg[f.key];
+        box.addEventListener('change', () => post('setConfig', { key: f.key, value: box.checked }));
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.textContent = f.label;
+        row.appendChild(box);
+        row.appendChild(label);
+      } else {
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.textContent = f.label;
+        const input = document.createElement('input');
+        input.type = f.type;
+        input.id = id;
+        input.value = cfg[f.key] !== undefined ? String(cfg[f.key]) : '';
+        if (f.min !== undefined) input.min = f.min;
+        if (f.max !== undefined) input.max = f.max;
+        input.addEventListener('change', () => post('setConfig', { key: f.key, value: input.value }));
+        row.appendChild(label);
+        row.appendChild(input);
+      }
+      settingsPanel.appendChild(row);
+    });
+    const link = document.createElement('div');
+    link.className = 'settings-link';
+    link.textContent = 'Edit in VS Code settings…';
+    link.addEventListener('click', () => post('openSettings'));
+    settingsPanel.appendChild(link);
+  }
+
   /* ---------- history / conversation management ---------- */
 
   function ensureConv() {
@@ -187,6 +312,7 @@
     renderMessages();
     renderHistory();
     historyPanel.hidden = true;
+    updateModelChip();
   }
 
   function deleteHistory(id) {
@@ -196,6 +322,7 @@
       conv = null;
       persist();
       renderMessages();
+      updateModelChip();
     }
     renderHistory();
   }
@@ -221,6 +348,7 @@
     persist();
     renderMessages();
     renderHistory();
+    updateModelChip();
   }
 
   /* ---------- sending ---------- */
@@ -235,21 +363,30 @@
       modelSelect.appendChild(opt);
     });
     if (!modelSelect.value && models.length) modelSelect.value = models[0];
+    updateModelChip();
+    setStatus('online');
+  }
+
+  function updateModelChip() {
+    const m = (conv && conv.model) || modelSelect.value || '';
+    modelChip.textContent = m || '—';
+    modelChip.title = m ? 'Active model: ' + m : 'Active model';
+    modelChip.classList.toggle('live', !!m);
+  }
+
+  function setStatus(kind) {
+    statusDot.className = 'status-dot' + (kind ? ' ' + kind : '');
+    statusDot.title = kind === 'online' ? 'Relay connected'
+      : kind === 'offline' ? 'Relay unreachable'
+        : kind === 'checking' ? 'Checking relay…' : 'Relay status unknown';
   }
 
   function finishBubble() {
     if (pendingBubble) {
       hideThinking();
       if (pendingThought && conv) {
-        // discreet: private reasoning stays hoverable via a single icon above the reply
-        const row = document.createElement('div');
-        row.className = 'think-row';
-        const icon = document.createElement('span');
-        icon.className = 'thought-icon';
-        icon.textContent = '💭';
-        icon.title = 'Private reasoning:\n\n' + pendingThought;
-        row.appendChild(icon);
-        log.insertBefore(row, pendingBubble.parentElement);
+        // discreet: private reasoning stays hoverable via a single icon inline with the reply
+        attachThoughts(pendingBubble, pendingThought);
         if (!conv.thoughts) conv.thoughts = {};
         conv.thoughts[conv.messages.length - 1] = pendingThought;
       }
@@ -278,6 +415,7 @@
     pendingDiv.classList.add('pending');
     pendingDiv.classList.add('thinking');
     showThinking();
+    topThink.hidden = false;
     busy = true;
     $('#send').disabled = true;
     persist();
@@ -300,6 +438,7 @@
     const msg = event.data || {};
     switch (msg.type) {
       case 'config':
+        configCache = msg;
         if (msg.model) {
           const opt = document.createElement('option');
           opt.value = msg.model;
@@ -308,7 +447,12 @@
           modelSelect.appendChild(opt);
         }
         endpointLine.textContent = msg.endpoint || '';
+        setStatus('checking');
         if (msg.endpoint) post('fetchModels');
+        break;
+      case 'configSaved':
+        configCache = msg.config || configCache;
+        if (msg.config && msg.config.endpoint) endpointLine.textContent = msg.config.endpoint;
         break;
       case 'models':
         endpointLine.textContent = msg.endpoint || endpointLine.textContent;
@@ -338,6 +482,7 @@
         if (msg.aborted) hint('(stopped)');
         break;
       case 'error':
+        setStatus('offline');
         finishBubble();
         const err = document.createElement('div');
         err.className = 'bubble error';
@@ -350,10 +495,7 @@
         break;
       case 'thought':
         pendingThought = (msg.text || '').trim();
-        if (thinkRow) {
-          const icon = thinkRow.querySelector('.think-spinner');
-          if (icon) icon.title = 'Private reasoning:\n\n' + pendingThought;
-        }
+        if (thinkRow) thinkRow.title = 'Private reasoning:\n\n' + pendingThought;
         break;
       case 'searchInfo':
         webCount.textContent = msg.results
@@ -404,11 +546,48 @@
   });
   historyBtn.addEventListener('click', () => {
     historyPanel.hidden = !historyPanel.hidden;
+    settingsPanel.hidden = true;
+    searchResults.hidden = true;
     if (!historyPanel.hidden) renderHistory();
+  });
+  settingsBtn.addEventListener('click', () => {
+    const open = settingsPanel.hidden;
+    settingsPanel.hidden = !open;
+    settingsBtn.classList.toggle('open', open);
+    if (open) {
+      historyPanel.hidden = true;
+      searchResults.hidden = true;
+      renderSettings();
+    }
+  });
+  document.addEventListener('click', (e) => {
+    if (!settingsPanel.hidden && !settingsPanel.contains(e.target) && !settingsBtn.contains(e.target)) {
+      settingsPanel.hidden = true;
+      settingsBtn.classList.remove('open');
+    }
+    if (!searchResults.hidden && !searchResults.contains(e.target) && !searchInput.contains(e.target)) {
+      searchResults.hidden = true;
+    }
+    if (!historyPanel.hidden && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) {
+      historyPanel.hidden = true;
+    }
+  });
+  searchInput.addEventListener('input', () => {
+    historyPanel.hidden = true;
+    settingsPanel.hidden = true;
+    renderSearch();
+  });
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      searchInput.value = '';
+      renderSearch();
+      searchInput.blur();
+    }
   });
   clearBtn.addEventListener('click', clearChat);
   modelSelect.addEventListener('change', () => {
     if (conv) { conv.model = modelSelect.value; persist(); }
+    updateModelChip();
   });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -441,5 +620,6 @@
     modelSelect.appendChild(opt);
     renderMessages();
   }
+  updateModelChip();
   post('getConfig');
 })();

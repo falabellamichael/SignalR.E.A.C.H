@@ -69,10 +69,112 @@ body {
 
 #topbar {
   flex: 0 0 auto;
-  padding: 6px 8px;
-  background: var(--reach-raised);
+  padding: 8px 10px 6px;
+  background: linear-gradient(180deg,
+              color-mix(in srgb, var(--reach-raised) 96%, var(--reach-accent) 4%) 0%,
+              var(--reach-raised) 100%);
   border-bottom: 1px solid var(--reach-border);
   position: relative;
+}
+#topbar::after {
+  /* gold hairline under the header — REACH identity */
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: -1px;
+  height: 1px;
+  background: linear-gradient(90deg,
+              transparent 0%,
+              var(--reach-accent) 18%,
+              var(--reach-accent-light) 50%,
+              var(--reach-accent) 82%,
+              transparent 100%);
+  opacity: 0.55;
+}
+
+/* ---- brand row ---- */
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  background: var(--reach-accent-bg);
+  border: 1px solid var(--reach-accent-border);
+  color: var(--reach-accent);
+}
+.brand-name {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--reach-accent-light);
+  flex: 0 0 auto;
+}
+.brand-spacer { flex: 1 1 auto; }
+
+.model-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  font-size: 10px;
+  color: var(--reach-muted);
+  background: var(--reach-surface);
+  border: 1px solid var(--reach-border);
+  border-radius: 9px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-chip.live {
+  color: var(--reach-accent-light);
+  border-color: var(--reach-accent-border);
+}
+
+/* ---- search row ---- */
+.search-row {
+  position: relative;
+}
+.search-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--reach-muted);
+  pointer-events: none;
+}
+.search-row .search-input { padding-left: 26px; }
+
+/* ---- status dot + endpoint ---- */
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--reach-muted);
+  margin-right: 5px;
+  flex: 0 0 auto;
+  vertical-align: middle;
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+.status-dot.online {
+  background: #52d273;
+  box-shadow: 0 0 5px rgba(82, 210, 115, 0.65);
+}
+.status-dot.offline {
+  background: var(--reach-error);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--reach-error) 60%, transparent);
+}
+.status-dot.checking {
+  background: var(--reach-accent);
+  animation: reach-pulse 1s ease-in-out infinite;
 }
 
 .row { display: flex; gap: 4px; align-items: center; }
@@ -192,11 +294,88 @@ body {
   color: var(--reach-muted);
 }
 
+/* ---- top bar: search chat + settings ---- */
+.search-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--reach-surface);
+  color: var(--reach-text);
+  border: 1px solid var(--reach-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.search-input:focus { outline: none; border-color: var(--reach-accent-border); }
+.search-input::-webkit-search-cancel-button { -webkit-appearance: none; }
+.search-input::placeholder { color: var(--reach-muted); }
+
+.icon-btn.open {
+  color: var(--reach-accent-light);
+  border-color: var(--reach-accent-border);
+  background: var(--reach-accent-bg);
+}
+
+/* ---- settings dropdown ---- */
+.settings-panel {
+  margin-top: 5px;
+  max-height: 60%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--reach-surface);
+  border: 1px solid var(--reach-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px var(--reach-shadow);
+  padding: 6px 8px;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.setting-row label {
+  flex: 0 0 104px;
+  font-size: 11px;
+  color: var(--reach-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.setting-row.check label { flex: 1 1 auto; color: var(--reach-text); }
+.setting-row input[type="text"],
+.setting-row input[type="password"],
+.setting-row input[type="number"] {
+  flex: 1;
+  min-width: 0;
+  background: var(--reach-panel);
+  color: var(--reach-text);
+  border: 1px solid var(--reach-border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.setting-row input:focus { outline: none; border-color: var(--reach-accent-border); }
+.setting-row input::placeholder { color: var(--reach-muted); }
+.setting-row input[type="checkbox"] { accent-color: var(--reach-accent); flex: 0 0 auto; }
+.settings-link {
+  font-size: 11px;
+  color: var(--reach-accent-light);
+  cursor: pointer;
+  text-align: right;
+}
+.settings-link:hover { text-decoration: underline; }
+
 /* ---- endpoint line ---- */
 .endpoint-line {
-  margin-top: 4px;
+  margin-top: 5px;
   font-size: 10px;
   color: var(--reach-muted);
+  display: flex;
+  align-items: center;
+}
+.endpoint-line #endpoint {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -254,13 +433,7 @@ body {
   animation: blink 0.9s steps(2, start) infinite;
 }
 
-/* thinking indicator: one small spinning gold ring on its own line above the response */
-.think-row {
-  display: flex;
-  align-items: center;
-  min-height: 18px;
-  padding: 3px 2px;
-}
+/* thinking indicator: small spinning gold ring at the start of the response */
 .think-spinner {
   display: inline-block;
   width: 11px;
@@ -273,6 +446,7 @@ body {
   animation: think-spin 0.8s linear infinite, think-glow 1.6s ease-in-out infinite;
 }
 .thought-icon {
+  margin-right: 1px;
   font-size: 11px;
   line-height: 1;
   color: var(--reach-muted);

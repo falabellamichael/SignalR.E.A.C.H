@@ -164,6 +164,26 @@ class ReachChatViewProvider {
         case 'abort':
           if (this._controller) this._controller.abort();
           break;
+        case 'openSettings':
+          vscode.commands.executeCommand('workbench.action.openSettings', '@ext:simplereach.simplereach');
+          break;
+        case 'setConfig': {
+          const key = String(msg.key || '');
+          const allowed = ['endpoint', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright'];
+          if (!allowed.includes(key)) break;
+          const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
+          const current = cfg.get(key);
+          let value = msg.value;
+          if (typeof current === 'number') value = Number(value);
+          else if (typeof current === 'boolean') value = value === true || value === 'true';
+          else value = String(value == null ? '' : value);
+          try {
+            await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+          } catch (e) { break; }
+          this._post('configSaved', { key, value, config: config() });
+          if (key === 'endpoint') await this._fetchModels();
+          break;
+        }
         default:
           break;
       }
