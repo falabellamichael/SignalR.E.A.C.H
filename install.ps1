@@ -1,10 +1,18 @@
 # SimpleREACH one-click installer (Windows).
 # Usage: powershell -ExecutionPolicy Bypass -File install.ps1
-# Clones (or reuses) the repo, then runs: python tools\reach.py install
+# If run inside a SimpleREACH checkout it installs from that checkout;
+# otherwise it clones (or refreshes) the repo next to the current folder.
 $ErrorActionPreference = 'Stop'
 
 $Repo = 'https://github.com/falabellamichael/SimpleREACH.git'
-$Dir = Join-Path (Get-Location) 'SimpleREACH'
+
+# 0. Use the current folder if it is already a SimpleREACH checkout
+if (Test-Path (Join-Path (Get-Location) 'tools\reach.py')) {
+    $Dir = (Get-Location).Path
+    Write-Host "[SimpleREACH] using current checkout: $Dir"
+} else {
+    $Dir = Join-Path (Get-Location) 'SimpleREACH'
+}
 
 # 1. Python (3.9+)
 $py = $null
@@ -13,18 +21,21 @@ foreach ($cand in @('python', 'python3')) {
     if ($cmd) { $py = $cand; break }
 }
 if (-not $py) { throw "Python not found on PATH. Install Python 3.9+ from https://python.org and re-run." }
-$ver = & $py -c 'import sys; print("%d.%d" % sys.version_info[:2])'
+$ver = (& $py -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>$null)
+if (-not $ver) { $ver = 'unknown' }
 Write-Host "[SimpleREACH] using $py ($ver)"
 
-# 2. Clone or refresh
-if (Test-Path (Join-Path $Dir '.git')) {
-    Write-Host "[SimpleREACH] existing checkout at $Dir - pulling latest"
-    Push-Location $Dir
-    git pull --ff-only
-    Pop-Location
-} else {
-    Write-Host "[SimpleREACH] cloning $Repo"
-    git clone --depth 1 $Repo $Dir
+# 2. Clone or refresh (only when not already in a checkout)
+if ($Dir -ne (Get-Location).Path) {
+    if (Test-Path (Join-Path $Dir '.git')) {
+        Write-Host "[SimpleREACH] existing checkout at $Dir - pulling latest"
+        Push-Location $Dir
+        git pull --ff-only
+        Pop-Location
+    } else {
+        Write-Host "[SimpleREACH] cloning $Repo"
+        git clone --depth 1 $Repo $Dir
+    }
 }
 
 # 3. Install panel + relay + tunnel
