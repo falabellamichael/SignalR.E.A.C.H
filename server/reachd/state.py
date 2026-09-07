@@ -1,0 +1,179 @@
+"""The live relay state: settings, upstream health, and stats."""
+
+import collections
+import json
+import os
+import threading
+import time
+import urllib.request
+
+import reachd.core as core   # PORT is read at call time (cycle-safe)
+from reachd.analytics import Analytics
+from reachd.cache import ResponseCache
+from reachd.const import (
+    LATENCY_SAMPLE_LIMIT,
+    SERVICE,
+    VERSION,
+)
+from reachd.limits import CounterGate, RateLimiter
+from reachd.settings import DEFAULT_SETTINGS, config_dir
+
+
+class RelayState:
+    def __init__(self, cfg, cfg_path):
+        self.cfg = cfg
+        self.cfg_path = cfg_path
+        self.analytics = Analytics(config_dir() / "data" / "reach.db")
+        self.limiter = RateLimiter()
+        self.cache = ResponseCache()
+        self.gate = CounterGate()
+        self.latencies = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
+        self.speeds = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
+        self.public_url = None
+        self.public_url_source = None
+        self.started_at = time.time()
+        self.upstream_ok = None
+        self.upstream_checked = 0.0
+        self.circuit_open_until = 0.0
+        self.consecutive_failures = 0
+        self._lock = threading.RLock()
+
+    @property
+    def omniroute_url(self):
+        return self.cfg.get("omniroute_url", DEFAULT_SETTINGS["omniroute_url"])
+
+    @property
+    def key(self):
+        return self.cfg.get("omniroute_key", "")
+
+    def upstream_alive(self):
+        interval = int(self.cfg.get("health_check_interval_s", 60))
+        with self._lock:
+            now = time.time()
+            if self.upstream_checked and now - self.upstream_checked < interval:
+                return self.upstream_ok
+        ok = False
+        if self.key:
+            try:
+                req = urllib.request.Request(
+                    self.omniroute_url.rstrip("/") + "/models",
+                    headers={"Authorization": "Bearer " + self.key})
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    ok = resp.status == 200
+            except Exception:
+                ok = False
+        with self._lock:
+            self.upstream_ok = ok
+            self.upstream_checked = time.time()
+        return ok
+
+    def note_failure(self):
+        threshold = int(self.cfg.get("circuit_threshold", 5))
+        cooldown = int(self.cfg.get("circuit_cooldown_s", 30))
+        with self._lock:
+            self.consecutive_failures += 1
+            if self.consecutive_failures >= threshold:
+                self.circuit_open_until = time.time() + cooldown
+                self.consecutive_failures = 0
+
+    def note_success(self):
+        with self._lock:
+            self.consecutive_failures = 0
+            self.circuit_open_until = 0.0
+
+    def circuit_open(self):
+        with self._lock:
+            return time.time() < self.circuit_open_until
+
+    def discover_public_url(self):
+        if self.cfg.get("tunnel", "ngrok") != "ngrok":
+            return None, None
+        try:
+            req = urllib.request.Request("http://127.0.0.1:4040/api/tunnels")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                payload = json.loads(resp.read().decode("utf-8", "replace"))
+            for tun in payload.get("tunnels", []):
+                if tun.get("proto") == "https" and tun.get("public_url"):
+                    return tun["public_url"], "ngrok"
+        except Exception:
+            pass
+        return None, None
+
+    def poll_public_url(self):
+        manual = (self.cfg.get("public_url_override") or "").strip() or None
+        if manual:
+            with self._lock:
+                self.public_url, self.public_url_source = manual, "manual"
+            return
+        url, source = self.discover_public_url()
+        if url:
+            with self._lock:
+                self.public_url, self.public_url_source = url, source
+
+    def enabled_models(self):
+        return {alias: spec["upstream"] for alias, spec
+                in self.cfg.get("models", {}).items() if spec.get("enabled")}
+
+    def public_models(self):
+        return {alias: spec["upstream"] for alias, spec
+                in self.cfg.get("models", {}).items()
+                if spec.get("enabled") and spec.get("public", True)}
+
+    def p95_latency_ms(self):
+        with self._lock:
+            if not self.latencies:
+                return 0.0
+            ordered = sorted(self.latencies)
+            return round(ordered[int(len(ordered) * 0.95) - 1], 1)
+
+    def note_speed(self, tps):
+        if tps and tps > 0:
+            with self._lock:
+                self.speeds.append(float(tps))
+
+    def current_speed(self):
+        with self._lock:
+            if not self.speeds:
+                return 0.0
+            return round(sum(self.speeds) / len(self.speeds), 1)
+
+    def snapshot(self):
+        with self._lock:
+            stats = self.analytics.stats()
+            today = stats.get("today", {})
+            speed = self.current_speed() or today.get("tokens_per_sec", 0.0)
+            today["tokens_per_sec"] = speed
+            today["live_tps"] = speed
+            return {
+                "service": SERVICE,
+                "version": VERSION,
+                "ok": True,
+                "port": core.PORT,
+                "upstream": self.omniroute_url,
+                "upstream_ok": self.upstream_alive(),
+                "circuit_open": self.circuit_open(),
+                "models": list(self.public_models()),
+                "model_count": len(self.cfg.get("models", {})),
+                "public_url": self.public_url,
+                "public_url_source": self.public_url_source,
+                "uptime_s": round(time.time() - self.started_at, 1),
+                "p95_latency_ms": self.p95_latency_ms(),
+                "tokens_per_sec": speed,
+                "today": today,
+                "cache": self.cache.snapshot(),
+                "rate_limits": {
+                    "enabled": bool(self.cfg.get("rate_limits", {})
+                                   .get("enabled")),
+                },
+                "access_required": bool(self.cfg.get("access", {})
+                                       .get("key_required")),
+                "config_error": self.cfg.get("_last_config_error"),
+            }
+
+    def log_rotation(self, log_path):
+        try:
+            limit_mb = int(self.cfg.get("system", {}).get("log_rotation_mb", 2))
+            if log_path.is_file() and log_path.stat().st_size > limit_mb * 1024 * 1024:
+                os.replace(str(log_path), str(log_path) + ".1")
+        except OSError:
+            pass
