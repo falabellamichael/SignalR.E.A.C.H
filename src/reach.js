@@ -163,8 +163,68 @@
         mounted: false,
         pollTimer: null,
         cleanupPage: null,
-        activePage: core.store.page || core.prefsGet('page', 'dashboard')
+        activePage: core.store.page || core.prefsGet('page', 'dashboard'),
+        accentColor: core.prefsGet('accent_color', '#ffb020')
     };
+
+    const ACCENT_PRESETS = [
+        { name: 'Amber Gold', hex: '#ffb020' },
+        { name: 'Cyber Cyan', hex: '#00e5ff' },
+        { name: 'Neon Emerald', hex: '#00e676' },
+        { name: 'Electric Purple', hex: '#b388ff' },
+        { name: 'Sunset Coral', hex: '#ff5252' },
+        { name: 'Synth Pink', hex: '#ff4081' }
+    ];
+
+    function hexToRgb(hex) {
+        let clean = (hex || '').replace('#', '');
+        if (clean.length === 3) {
+            clean = clean.split('').map(c => c + c).join('');
+        }
+        if (clean.length !== 6) return { r: 255, g: 176, b: 32 };
+        const num = parseInt(clean, 16);
+        return {
+            r: (num >> 16) & 255,
+            g: (num >> 8) & 255,
+            b: num & 255
+        };
+    }
+
+    function applyAccentColor(hex) {
+        if (!hex || !/^#[0-9a-fA-F]{3,6}$/.test(hex)) return;
+        const rgb = hexToRgb(hex);
+        // Contrast luminance calculation: if bright, use dark text on solid buttons, else white
+        const lum = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+        const textColor = lum > 0.55 ? '#101418' : '#ffffff';
+
+        // Lighten by 28% for light text accents
+        const lightHex = '#' + [rgb.r, rgb.g, rgb.b].map(x => {
+            const v = Math.min(255, Math.round(x + (255 - x) * 0.28));
+            return v.toString(16).padStart(2, '0');
+        }).join('');
+
+        const vars = {
+            '--reach-accent': hex,
+            '--reach-accent-light': lightHex,
+            '--reach-accent-glow': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.45)`,
+            '--reach-accent-bg': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.14)`,
+            '--reach-accent-border': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.38)`,
+            '--reach-accent-text': textColor
+        };
+
+        // CRITICAL: Scoped EXCLUSIVELY to SimpleREACH containers — NEVER touches body, :root, or SimpleRAG
+        const targets = document.querySelectorAll(
+            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page'
+        );
+        targets.forEach(node => {
+            for (const [key, val] of Object.entries(vars)) {
+                node.style.setProperty(key, val);
+            }
+        });
+
+        core.prefsSet('accent_color', hex);
+        runtime.accentColor = hex;
+    }
 
     function hostElements() {
         const ctx = runtime.context;
@@ -232,6 +292,7 @@
         container.innerHTML = '';
         panel = core.el('div', 'reach-stationary-panel');
         container.appendChild(panel);
+        applyAccentColor(runtime.accentColor);
 
         // --- Card 1: Relay Status & Live Controls ---
         const c1 = core.el('div', 'reach-stat-card');
@@ -302,6 +363,63 @@
         hookupRow.appendChild(hookupBtn);
         c2.appendChild(hookupRow);
         panel.appendChild(c2);
+
+        // --- Card 2b: REACH Theme Accent Color (Scoped to SimpleREACH only) ---
+        const cTheme = core.el('div', 'reach-stat-card');
+        const cThemeHead = core.el('div', 'reach-stat-card-head');
+        const cThemeTitle = core.el('div', 'reach-stat-card-title');
+        cThemeTitle.innerHTML = '<i class="fa-solid fa-palette"></i> REACH Accent';
+        const resetThemeBtn = core.el('button', 'reach-btn reach-btn-sm', 'Default');
+        cThemeHead.appendChild(cThemeTitle);
+        cThemeHead.appendChild(resetThemeBtn);
+        cTheme.appendChild(cThemeHead);
+
+        const swatchesWrap = core.el('div', 'reach-theme-swatches');
+        const currentAccent = runtime.accentColor || core.prefsGet('accent_color', '#ffb020');
+
+        ACCENT_PRESETS.forEach(preset => {
+            const swatch = core.el('button', 'reach-swatch' + (currentAccent.toLowerCase() === preset.hex.toLowerCase() ? ' active' : ''));
+            swatch.style.backgroundColor = preset.hex;
+            swatch.title = preset.name + ' (' + preset.hex + ')';
+            swatch.dataset.hex = preset.hex;
+            swatch.addEventListener('click', () => {
+                swatchesWrap.querySelectorAll('.reach-swatch').forEach(s => s.classList.remove('active'));
+                swatch.classList.add('active');
+                colorInput.value = preset.hex;
+                applyAccentColor(preset.hex);
+                core.toast('REACH Accent: ' + preset.name, 'info');
+            });
+            swatchesWrap.appendChild(swatch);
+        });
+
+        // Custom Color Picker input
+        const pickerWrap = core.el('div', 'reach-swatch-picker-wrap');
+        pickerWrap.title = 'Custom Accent Color';
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = currentAccent;
+        colorInput.addEventListener('input', (e) => {
+            const val = e.target.value;
+            swatchesWrap.querySelectorAll('.reach-swatch').forEach(s => s.classList.remove('active'));
+            applyAccentColor(val);
+        });
+        colorInput.addEventListener('change', (e) => {
+            core.toast('Custom accent: ' + e.target.value, 'ok');
+        });
+        pickerWrap.appendChild(colorInput);
+        swatchesWrap.appendChild(pickerWrap);
+        cTheme.appendChild(swatchesWrap);
+
+        resetThemeBtn.addEventListener('click', () => {
+            swatchesWrap.querySelectorAll('.reach-swatch').forEach(s => s.classList.remove('active'));
+            const first = swatchesWrap.querySelector('[data-hex="#ffb020"]');
+            if (first) first.classList.add('active');
+            colorInput.value = '#ffb020';
+            applyAccentColor('#ffb020');
+            core.toast('Accent reset to Amber Gold ✓', 'ok');
+        });
+
+        panel.appendChild(cTheme);
 
         // --- Card 3: Stationary Settings & Knobs ---
         const c3 = core.el('div', 'reach-stat-card');
@@ -582,6 +700,7 @@
         const content = core.el('main', 'reach-content');
         root.appendChild(content);
         container.appendChild(root);
+        applyAccentColor(runtime.accentColor);
 
         const renderer = pages[pageId];
         if (typeof renderer === 'function') {
@@ -620,6 +739,7 @@
             + '  <main class="reach-content" id="reach-content"></main>'
             + '</div>';
         container.appendChild(root);
+        applyAccentColor(runtime.accentColor);
 
         const items = root.querySelector('.reach-menu-items');
         pages.defs.forEach(def => {

@@ -53,6 +53,7 @@
     }
 
     /* ------------------------------------------------------------- DASHBOARD */
+    /* ------------------------------------------------------------- DASHBOARD */
     function renderDashboard(container) {
         container.appendChild(pageHeader('fa-gauge-high', 'Dashboard',
             'Live health of the hosted endpoint, the relay, and the upstream.'));
@@ -60,31 +61,29 @@
         container.appendChild(body);
         let timer = null;
 
-        function draw() {
-            const snap = core.store.local;
-            if (!snap) {
-                body.innerHTML = '';
-                const offline = el('div', 'reach-banner reach-banner-off');
-                offline.appendChild(el('strong', null, 'Relay offline on this machine. '));
-                offline.appendChild(document.createTextNode(
-                    'The hosted endpoint keeps working as long as the relay + tunnel run somewhere — '
-                    + 'but live stats are unavailable right now. Check Settings → Tunnel.'));
-                body.appendChild(offline);
-                return;
-            }
-            const today = snap.today || {};
-            const tiles = el('div', 'reach-tiles');
-            tiles.appendChild(statTile('Requests today', core.fmtNum(today.requests),
-                'all clients', ''));
-            tiles.appendChild(statTile('Tokens today', core.fmtNum((today.tokens_in || 0) + (today.tokens_out || 0)),
-                core.fmtNum(today.tokens_in || 0) + ' in · ' + core.fmtNum(today.tokens_out || 0) + ' out'));
-            tiles.appendChild(statTile('Avg latency', core.fmtLatency(today.avg_latency_ms),
-                'p95 ' + core.fmtLatency(snap.p95_latency_ms)));
-            tiles.appendChild(statTile('Errors today', core.fmtNum(today.errors),
-                core.fmtNum(today.rate_limited || 0) + ' rate-limited', (today.errors || 0) > 0 ? 'bad' : 'good'));
+        // References for zero-flicker in-place updates
+        let dom = null;
 
+        function buildDashboardDOM() {
+            body.innerHTML = '';
+
+            // Stat tiles
+            const tiles = el('div', 'reach-tiles');
+            const tileReqs = statTile('Requests today', '—', 'all clients', '');
+            const tileTokens = statTile('Tokens today', '—', '0 in · 0 out', '');
+            const tileLatency = statTile('Avg latency', '—', 'p95 —', '');
+            const tileErrors = statTile('Errors today', '—', '0 rate-limited', 'good');
+            tiles.appendChild(tileReqs);
+            tiles.appendChild(tileTokens);
+            tiles.appendChild(tileLatency);
+            tiles.appendChild(tileErrors);
+            body.appendChild(tiles);
+
+            // Dashboard Grid
             const grid = el('div', 'reach-dash-grid');
-            grid.appendChild(dashCard('Public endpoint', () => {
+
+            // Card 1: Public Endpoint
+            const cEndpoint = dashCard('Public endpoint', () => {
                 const wrap = el('div', 'reach-card-body');
                 const row = el('div', 'reach-url-row');
                 const code = el('code', 'reach-url', core.store.pointerUrl || 'resolving…');
@@ -97,70 +96,244 @@
                 });
                 row.appendChild(copyBtn);
                 wrap.appendChild(row);
+
                 const meta = el('div', 'reach-meta-row');
-                meta.appendChild(chip('model: ' + (snap.models || ['gpt-4o']).join(', ')));
-                meta.appendChild(chip('streaming ✓'));
-                meta.appendChild(chip('no API key'));
-                if (snap.access_required) meta.appendChild(chip('access key required', 'warn'));
+                const metaModel = chip('model: gpt-4o');
+                const metaStream = chip('streaming ✓');
+                const metaAuth = chip('no API key');
+                meta.appendChild(metaModel);
+                meta.appendChild(metaStream);
+                meta.appendChild(metaAuth);
                 wrap.appendChild(meta);
+
                 const foot = el('div', 'reach-card-foot');
                 const testBtn = el('button', 'reach-btn reach-btn-primary', 'Test endpoint');
                 testBtn.addEventListener('click', () => runPublicTest(testBtn, wrap));
                 foot.appendChild(testBtn);
-                const hint = el('span', 'reach-hint', '1-token completion through the public URL');
+                const hint = el('span', 'reach-hint', '1-token test through public tunnel');
                 foot.appendChild(hint);
                 wrap.appendChild(foot);
+
                 const result = el('div', 'reach-result', '');
                 result.hidden = true;
                 wrap.appendChild(result);
                 return wrap;
-            }));
+            });
+            grid.appendChild(cEndpoint);
 
-            grid.appendChild(dashCard('Relay', () => {
+            // Card 2: Relay
+            const cRelay = dashCard('Relay', () => {
                 const wrap = el('div', 'reach-card-body');
                 const dl = el('dl', 'reach-kv');
-                kv(dl, 'Status', 'running v' + snap.version, snap.ok ? 'ok' : 'bad');
-                kv(dl, 'Port', String(snap.port || 20777));
-                kv(dl, 'Uptime', core.fmtUptime(snap.uptime_s));
-                kv(dl, 'Tunnel', core.store.local ? (snap.public_url_source || 'ngrok') : 'offline');
-                kv(dl, 'Rate limiting', snap.rate_limits && snap.rate_limits.enabled ? 'on' : 'off');
+                kv(dl, 'Status', 'checking…', 'ok');
+                kv(dl, 'Port', ':20777');
+                kv(dl, 'Uptime', '—');
+                kv(dl, 'Tunnel', 'checking…');
+                kv(dl, 'Rate limiting', 'on');
                 wrap.appendChild(dl);
                 return wrap;
-            }));
+            });
+            grid.appendChild(cRelay);
 
-            grid.appendChild(dashCard('Upstream (OmniRoute)', () => {
+            // Card 3: Upstream (OmniRoute) with Live Ping Meter
+            const cUpstream = dashCard('Upstream (OmniRoute)', () => {
                 const wrap = el('div', 'reach-card-body');
                 const dl = el('dl', 'reach-kv');
-                kv(dl, 'Health', snap.upstream_ok ? 'healthy' : 'DOWN',
-                    snap.upstream_ok ? 'ok' : 'bad');
-                kv(dl, 'Circuit', snap.circuit_open ? 'OPEN (cool-down)' : 'closed',
-                    snap.circuit_open ? 'bad' : 'ok');
-                kv(dl, 'URL', String(snap.upstream || '—'));
+                kv(dl, 'Health', 'checking…', 'ok');
+                kv(dl, 'Circuit', 'closed', 'ok');
+                kv(dl, 'Target', '127.0.0.1:20128');
                 wrap.appendChild(dl);
-                return wrap;
-            }));
 
-            grid.appendChild(dashCard('Quick actions', () => {
+                // Meter Bar
+                const meterLabelRow = el('div', 'reach-stat-meta-row');
+                meterLabelRow.appendChild(el('span', 'reach-hint', 'Upstream Responsiveness'));
+                const meterVal = el('span', 'reach-hint', '—');
+                meterVal.id = 'reach-dash-meter-val';
+                meterLabelRow.appendChild(meterVal);
+                wrap.appendChild(meterLabelRow);
+
+                const meterBar = el('div', 'reach-meter-bar');
+                const meterFill = el('div', 'reach-meter-fill');
+                meterFill.style.width = '30%';
+                meterBar.appendChild(meterFill);
+                wrap.appendChild(meterBar);
+
+                const foot = el('div', 'reach-card-foot');
+                const pingBtn = el('button', 'reach-btn reach-btn-sm reach-btn-primary');
+                pingBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Ping Upstream';
+                foot.appendChild(pingBtn);
+                const pingTag = el('span', 'reach-hint', 'Direct check via /_reach/test');
+                foot.appendChild(pingTag);
+                wrap.appendChild(foot);
+
+                pingBtn.addEventListener('click', () => {
+                    pingBtn.disabled = true;
+                    pingTag.textContent = 'Pinging…';
+                    core.relayFetch('/_reach/test', { method: 'POST' }, 20000)
+                        .then(r => r.json())
+                        .then(d => {
+                            if (d.ok) {
+                                pingTag.textContent = '✓ ' + core.fmtLatency(d.latency_ms) + ' (' + (d.model || 'gpt-4o') + ')';
+                                toast('Upstream reachable: ' + core.fmtLatency(d.latency_ms), 'ok');
+                                if (meterFill) meterFill.style.width = Math.min(100, Math.max(10, Math.round(d.latency_ms / 15))) + '%';
+                            } else {
+                                pingTag.textContent = '✗ ' + (d.error || 'Failed');
+                                toast('Upstream test: ' + (d.error || 'Failed'), 'error');
+                            }
+                        })
+                        .catch(err => {
+                            pingTag.textContent = '✗ ' + err.message;
+                            toast('Ping failed: ' + err.message, 'error');
+                        })
+                        .finally(() => { pingBtn.disabled = false; });
+                });
+
+                return wrap;
+            });
+            grid.appendChild(cUpstream);
+
+            // Card 4: Quick Navigation Jumps
+            const cJumps = dashCard('Quick Jumps', () => {
                 const wrap = el('div', 'reach-card-body');
-                const rows = el('div', 'reach-actions');
-                rows.appendChild(actionBtn('fa-cloud-arrow-up', 'Publish URL to pointer gist',
+                const jumpGrid = el('div', 'reach-dash-jump-grid');
+
+                const jumps = [
+                    { id: 'endpoint', icon: 'fa-terminal', label: 'API Playground' },
+                    { id: 'models', icon: 'fa-cubes', label: 'Model Aliases' },
+                    { id: 'usage', icon: 'fa-chart-column', label: 'Live Feeds' },
+                    { id: 'logs', icon: 'fa-list', label: 'Request Logs' }
+                ];
+
+                jumps.forEach(j => {
+                    const btn = el('button', 'reach-dash-jump-btn');
+                    btn.innerHTML = '<i class="fa-solid ' + j.icon + '"></i><span>' + j.label + '</span>';
+                    btn.addEventListener('click', () => {
+                        if (window.simpleReach && typeof window.simpleReach.switchPage === 'function') {
+                            window.simpleReach.switchPage(j.id, true);
+                        }
+                    });
+                    jumpGrid.appendChild(btn);
+                });
+                wrap.appendChild(jumpGrid);
+
+                const actRow = el('div', 'reach-actions');
+                actRow.style.marginTop = '10px';
+                actRow.appendChild(actionBtn('fa-cloud-arrow-up', 'Publish pointer URL',
                     () => publishNow().then(() => toast('Published ✓', 'ok'))));
-                rows.appendChild(actionBtn('fa-trash-can', 'Clear request log',
+                actRow.appendChild(actionBtn('fa-trash-can', 'Clear request log',
                     () => core.relayFetch('/_reach/logs', { method: 'DELETE' }, 5000)
                         .then(() => toast('Log cleared ✓', 'ok'))));
-                rows.appendChild(actionBtn('fa-rotate', 'Refresh now',
-                    () => { core.refreshLocal().then(draw); toast('Refreshed', 'info'); }));
-                wrap.appendChild(rows);
-                return wrap;
-            }));
+                wrap.appendChild(actRow);
 
-            body.innerHTML = '';
-            body.appendChild(tiles);
+                return wrap;
+            });
+            grid.appendChild(cJumps);
+
             body.appendChild(grid);
+
+            dom = {
+                tileReqs,
+                tileTokens,
+                tileLatency,
+                tileErrors,
+                urlCode: cEndpoint.querySelector('code.reach-url'),
+                metaModel: cEndpoint.querySelectorAll('.reach-chip')[0],
+                relayDl: cRelay.querySelector('dl.reach-kv'),
+                upstreamDl: cUpstream.querySelector('dl.reach-kv'),
+                meterFill: cUpstream.querySelector('.reach-meter-fill'),
+                meterVal: cUpstream.querySelector('#reach-dash-meter-val')
+            };
         }
 
-        draw();
-        timer = setInterval(() => core.refreshLocal().then(draw), 10000);
+        function update() {
+            const snap = core.store.local;
+            if (!snap) {
+                if (!body.querySelector('.reach-banner-off')) {
+                    body.innerHTML = '';
+                    const offline = el('div', 'reach-banner reach-banner-off');
+                    offline.appendChild(el('strong', null, 'Relay offline on this machine. '));
+                    offline.appendChild(document.createTextNode(
+                        'The hosted endpoint keeps working as long as the relay + tunnel run somewhere — '
+                        + 'but live stats are unavailable right now. Check Settings → Tunnel.'));
+                    body.appendChild(offline);
+                    dom = null;
+                }
+                return;
+            }
+
+            // If not built yet, construct once
+            if (!dom || !body.querySelector('.reach-dash-grid')) {
+                buildDashboardDOM();
+            }
+
+            const today = snap.today || {};
+
+            // Patch tiles in-place without flicker
+            const reqVal = dom.tileReqs.querySelector('.reach-tile-value');
+            if (reqVal) reqVal.textContent = core.fmtNum(today.requests);
+
+            const tokVal = dom.tileTokens.querySelector('.reach-tile-value');
+            const tokSub = dom.tileTokens.querySelector('.reach-tile-sub');
+            if (tokVal) tokVal.textContent = core.fmtNum((today.tokens_in || 0) + (today.tokens_out || 0));
+            if (tokSub) tokSub.textContent = core.fmtNum(today.tokens_in || 0) + ' in · ' + core.fmtNum(today.tokens_out || 0) + ' out';
+
+            const latVal = dom.tileLatency.querySelector('.reach-tile-value');
+            const latSub = dom.tileLatency.querySelector('.reach-tile-sub');
+            if (latVal) latVal.textContent = core.fmtLatency(today.avg_latency_ms);
+            if (latSub) latSub.textContent = 'p95 ' + core.fmtLatency(snap.p95_latency_ms);
+
+            const errVal = dom.tileErrors.querySelector('.reach-tile-value');
+            const errSub = dom.tileErrors.querySelector('.reach-tile-sub');
+            if (errVal) errVal.textContent = core.fmtNum(today.errors);
+            if (errSub) errSub.textContent = core.fmtNum(today.rate_limited || 0) + ' rate-limited';
+            dom.tileErrors.className = 'reach-tile ' + ((today.errors || 0) > 0 ? 'reach-tile-bad' : 'reach-tile-good');
+
+            // Patch URL code
+            if (dom.urlCode) {
+                dom.urlCode.textContent = core.store.pointerUrl || ('http://127.0.0.1:' + (snap.port || 20777) + '/v1');
+            }
+            if (dom.metaModel && snap.models) {
+                dom.metaModel.textContent = 'models: ' + snap.models.join(', ');
+            }
+
+            // Patch Relay KV
+            if (dom.relayDl) {
+                const dds = dom.relayDl.querySelectorAll('dd');
+                if (dds[0]) {
+                    dds[0].textContent = 'running v' + snap.version;
+                    dds[0].className = snap.ok ? 'reach-kv-ok' : 'reach-kv-bad';
+                }
+                if (dds[1]) dds[1].textContent = ':' + (snap.port || 20777);
+                if (dds[2]) dds[2].textContent = core.fmtUptime(snap.uptime_s);
+                if (dds[3]) dds[3].textContent = snap.public_url_source || 'ngrok';
+                if (dds[4]) dds[4].textContent = (snap.rate_limits && snap.rate_limits.enabled) ? 'on' : 'off';
+            }
+
+            // Patch Upstream KV
+            if (dom.upstreamDl) {
+                const dds = dom.upstreamDl.querySelectorAll('dd');
+                if (dds[0]) {
+                    dds[0].textContent = snap.upstream_ok ? 'healthy' : 'DOWN';
+                    dds[0].className = snap.upstream_ok ? 'reach-kv-ok' : 'reach-kv-bad';
+                }
+                if (dds[1]) {
+                    dds[1].textContent = snap.circuit_open ? 'OPEN (cool-down)' : 'closed';
+                    dds[1].className = snap.circuit_open ? 'reach-kv-bad' : 'reach-kv-ok';
+                }
+                if (dds[2]) dds[2].textContent = String(snap.upstream || '127.0.0.1:20128');
+            }
+
+            // Patch Upstream Meter
+            if (dom.meterVal) {
+                dom.meterVal.textContent = core.fmtLatency(today.avg_latency_ms);
+            }
+            if (dom.meterFill && today.avg_latency_ms) {
+                dom.meterFill.style.width = Math.min(100, Math.max(15, Math.round(today.avg_latency_ms / 20))) + '%';
+            }
+        }
+
+        update();
+        timer = setInterval(() => core.refreshLocal().then(update), 8000);
         return () => { if (timer) clearInterval(timer); };
     }
 
@@ -261,6 +434,241 @@
         meta.appendChild(chip('no API key'));
         urlCard.appendChild(meta);
         body.appendChild(urlCard);
+
+        // --- Interactive API Playground Card ---
+        const playCard = el('section', 'reach-card');
+        const playHead = el('header', 'reach-card-head');
+        playHead.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">'
+            + '<i class="fa-solid fa-terminal" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+            + '<span>Interactive API Playground</span>'
+            + '</div>'
+            + '<span class="reach-chip reach-chip-live">Live</span>';
+        playCard.appendChild(playHead);
+
+        const playBody = el('div', 'reach-card-body reach-playground');
+
+        // Sample Prompt Pills
+        const pillsWrap = el('div', 'reach-playground-pills');
+        const samplePrompts = [
+            'Explain quantum computing in 1 sentence',
+            'Write a haiku about local LLMs',
+            'Generate a TypeScript interface for a User',
+            'Reply with: REACH RELAY OK'
+        ];
+        samplePrompts.forEach(sp => {
+            const p = el('button', 'reach-pill', sp);
+            p.type = 'button';
+            p.addEventListener('click', () => {
+                promptInput.value = sp;
+                promptInput.focus();
+            });
+            pillsWrap.appendChild(p);
+        });
+        playBody.appendChild(pillsWrap);
+
+        // Prompt Input
+        const promptInput = el('textarea', 'reach-playground-textarea');
+        promptInput.placeholder = 'Type a message to test this endpoint…';
+        promptInput.value = 'Explain how SimpleREACH relays to OmniRoute in 2 brief bullets.';
+        playBody.appendChild(promptInput);
+
+        // Controls bar
+        const ctrlBar = el('div', 'reach-playground-controls');
+
+        // Model select
+        const modelLabel = el('span', 'reach-hint', 'Model:');
+        ctrlBar.appendChild(modelLabel);
+        const modelSelect = el('select', 'reach-input reach-input-sm');
+        const availModels = (core.store.local && core.store.local.models) || ['gpt-4o', 'gpt-4o-mini'];
+        availModels.forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = m;
+            modelSelect.appendChild(opt);
+        });
+        ctrlBar.appendChild(modelSelect);
+
+        // Stream switch
+        const streamLabel = el('label', 'reach-check');
+        const streamCheck = document.createElement('input');
+        streamCheck.type = 'checkbox';
+        streamCheck.checked = true;
+        streamLabel.appendChild(streamCheck);
+        streamLabel.appendChild(document.createTextNode('Stream'));
+        ctrlBar.appendChild(streamLabel);
+
+        // Temperature
+        const tempLabel = el('span', 'reach-hint', 'Temp:');
+        ctrlBar.appendChild(tempLabel);
+        const tempInput = el('input', 'reach-input reach-input-sm');
+        tempInput.type = 'number';
+        tempInput.min = '0';
+        tempInput.max = '2';
+        tempInput.step = '0.1';
+        tempInput.value = '0.7';
+        tempInput.style.width = '54px';
+        ctrlBar.appendChild(tempInput);
+
+        // Send Button
+        const sendBtn = el('button', 'reach-btn reach-btn-primary');
+        sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
+        ctrlBar.appendChild(sendBtn);
+
+        // Clear Button
+        const clearBtn = el('button', 'reach-btn reach-btn-sm', 'Clear Console');
+        ctrlBar.appendChild(clearBtn);
+
+        playBody.appendChild(ctrlBar);
+
+        // Console Output
+        const consoleBox = el('div', 'reach-playground-console', '// Response stream will appear here…');
+        playBody.appendChild(consoleBox);
+
+        // Stats Bar
+        const statsBar = el('div', 'reach-playground-stats');
+        statsBar.innerHTML = '<span>Status: <strong class="reach-playground-stat-val" id="play-stat-status">Idle</strong></span>'
+            + '<span>Latency: <strong class="reach-playground-stat-val" id="play-stat-lat">—</strong></span>'
+            + '<span>Tokens: <strong class="reach-playground-stat-val" id="play-stat-tok">0</strong></span>'
+            + '<span>Speed: <strong class="reach-playground-stat-val" id="play-stat-spd">—</strong></span>';
+        playBody.appendChild(statsBar);
+
+        clearBtn.addEventListener('click', () => {
+            consoleBox.textContent = '// Console cleared';
+            statsBar.querySelector('#play-stat-status').textContent = 'Idle';
+            statsBar.querySelector('#play-stat-lat').textContent = '—';
+            statsBar.querySelector('#play-stat-tok').textContent = '0';
+            statsBar.querySelector('#play-stat-spd').textContent = '—';
+        });
+
+        sendBtn.addEventListener('click', () => {
+            const prompt = promptInput.value.trim();
+            if (!prompt) {
+                toast('Please enter a prompt', 'warn');
+                return;
+            }
+            const model = modelSelect.value || 'gpt-4o';
+            const isStream = streamCheck.checked;
+            const temp = parseFloat(tempInput.value) || 0.7;
+
+            sendBtn.disabled = true;
+            sendBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending…';
+            consoleBox.textContent = '';
+            statsBar.querySelector('#play-stat-status').textContent = isStream ? 'Streaming…' : 'Waiting…';
+
+            const startTime = Date.now();
+            let tokenCount = 0;
+
+            const payload = {
+                model: model,
+                messages: [{ role: 'user', content: prompt }],
+                stream: isStream,
+                temperature: temp,
+                max_tokens: 512
+            };
+
+            const targetUrl = core.RELAY + '/v1/chat/completions';
+
+            if (!isStream) {
+                fetch(targetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                    .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
+                    .then(({ ok, status, data }) => {
+                        const elapsed = Date.now() - startTime;
+                        statsBar.querySelector('#play-stat-lat').textContent = core.fmtLatency(elapsed);
+                        if (ok) {
+                            const reply = data?.choices?.[0]?.message?.content || '';
+                            consoleBox.textContent = reply;
+                            const totalTok = data?.usage?.total_tokens || Math.ceil(reply.length / 4);
+                            statsBar.querySelector('#play-stat-status').textContent = '200 OK';
+                            statsBar.querySelector('#play-stat-tok').textContent = totalTok;
+                            const spd = (totalTok / (elapsed / 1000)).toFixed(1);
+                            statsBar.querySelector('#play-stat-spd').textContent = spd + ' tok/s';
+                        } else {
+                            consoleBox.textContent = 'Error ' + status + ':\n' + JSON.stringify(data, null, 2);
+                            statsBar.querySelector('#play-stat-status').textContent = 'Error ' + status;
+                        }
+                    })
+                    .catch(err => {
+                        consoleBox.textContent = 'Network error: ' + err.message;
+                        statsBar.querySelector('#play-stat-status').textContent = 'Net Error';
+                    })
+                    .finally(() => {
+                        sendBtn.disabled = false;
+                        sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
+                    });
+            } else {
+                fetch(targetUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                })
+                    .then(res => {
+                        if (!res.ok) {
+                            return res.text().then(t => {
+                                throw new Error('HTTP ' + res.status + ': ' + t);
+                            });
+                        }
+                        const reader = res.body ? res.body.getReader() : null;
+                        if (!reader) throw new Error('ReadableStream unsupported in browser');
+
+                        const decoder = new TextDecoder('utf-8');
+                        let buffer = '';
+
+                        function readChunk() {
+                            return reader.read().then(({ done, value }) => {
+                                if (done) {
+                                    const elapsed = Date.now() - startTime;
+                                    statsBar.querySelector('#play-stat-status').textContent = '200 OK';
+                                    statsBar.querySelector('#play-stat-lat').textContent = core.fmtLatency(elapsed);
+                                    const spd = elapsed > 0 ? (tokenCount / (elapsed / 1000)).toFixed(1) : '—';
+                                    statsBar.querySelector('#play-stat-spd').textContent = spd + ' tok/s';
+                                    return;
+                                }
+                                buffer += decoder.decode(value, { stream: true });
+                                const lines = buffer.split('\n');
+                                buffer = lines.pop();
+
+                                for (const line of lines) {
+                                    const trimmed = line.trim();
+                                    if (!trimmed || trimmed.startsWith(':')) continue;
+                                    if (trimmed === 'data: [DONE]') continue;
+                                    if (trimmed.startsWith('data: ')) {
+                                        try {
+                                            const json = JSON.parse(trimmed.slice(6));
+                                            const delta = json.choices?.[0]?.delta?.content;
+                                            if (delta) {
+                                                consoleBox.textContent += delta;
+                                                consoleBox.scrollTop = consoleBox.scrollHeight;
+                                                tokenCount += 1;
+                                                statsBar.querySelector('#play-stat-tok').textContent = tokenCount;
+                                                const elapsed = Date.now() - startTime;
+                                                statsBar.querySelector('#play-stat-lat').textContent = core.fmtLatency(elapsed);
+                                            }
+                                        } catch (_e) {}
+                                    }
+                                }
+                                return readChunk();
+                            });
+                        }
+
+                        return readChunk();
+                    })
+                    .catch(err => {
+                        consoleBox.textContent = 'Stream error:\n' + err.message;
+                        statsBar.querySelector('#play-stat-status').textContent = 'Error';
+                    })
+                    .finally(() => {
+                        sendBtn.disabled = false;
+                        sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
+                    });
+            }
+        });
+
+        playCard.appendChild(playBody);
+        body.appendChild(playCard);
 
         const addCard = el('section', 'reach-card');
         addCard.appendChild(el('header', 'reach-card-head', 'One-click SimpleRAG hookup'));
@@ -375,13 +783,80 @@
                 return;
             }
             const table = el('table', 'reach-table');
-            table.innerHTML = '<thead><tr><th>Public alias</th><th>Upstream model</th><th>Enabled</th><th></th><th></th></tr></thead>';
+            table.innerHTML = '<thead><tr><th>Public alias</th><th>Upstream target &amp; specs</th><th>Live Test</th><th>Enabled</th><th></th><th></th></tr></thead>';
             const tbody = document.createElement('tbody');
             const entries = Object.entries(cfg.models).sort((a, b) => a[0].localeCompare(b[0]));
             entries.forEach(([alias, spec]) => {
                 const tr = document.createElement('tr');
-                tr.appendChild(el('td', null, alias));
-                tr.appendChild(el('td', null, spec.upstream));
+
+                // Alias + badges
+                const aliasTd = document.createElement('td');
+                const aliasStrong = el('strong', null, alias);
+                aliasTd.appendChild(aliasStrong);
+                if (spec.fallback) {
+                    const fbBadge = el('span', 'reach-model-spec-badge', 'fallback: ' + spec.fallback);
+                    aliasTd.appendChild(fbBadge);
+                }
+                tr.appendChild(aliasTd);
+
+                // Upstream & specs
+                const upTd = document.createElement('td');
+                upTd.appendChild(document.createTextNode(spec.upstream || '—'));
+                const ctxBadge = el('span', 'reach-model-spec-badge', (spec.context_window ? Math.round(spec.context_window / 1000) + 'k ctx' : '128k ctx'));
+                upTd.appendChild(ctxBadge);
+                tr.appendChild(upTd);
+
+                // Ping Test TD
+                const pingTd = document.createElement('td');
+                const pingBtn = el('button', 'reach-btn reach-btn-sm reach-model-ping-btn');
+                pingBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Ping';
+                const pingTag = el('span', 'reach-model-ping-tag', '');
+                pingTag.hidden = true;
+
+                pingBtn.addEventListener('click', () => {
+                    pingBtn.disabled = true;
+                    pingBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+                    const start = Date.now();
+                    fetch(core.RELAY + '/v1/chat/completions', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            model: alias,
+                            messages: [{ role: 'user', content: 'Ping' }],
+                            max_tokens: 4
+                        })
+                    })
+                        .then(r => r.json())
+                        .then(d => {
+                            const lat = Date.now() - start;
+                            pingTag.hidden = false;
+                            if (d.choices && d.choices[0]) {
+                                pingTag.className = 'reach-model-ping-tag reach-chip-good';
+                                pingTag.textContent = '✓ ' + core.fmtLatency(lat);
+                                toast(alias + ' ping: ' + core.fmtLatency(lat), 'ok');
+                            } else {
+                                pingTag.className = 'reach-model-ping-tag reach-chip-bad';
+                                pingTag.textContent = '✗ Error';
+                                toast(alias + ': ' + (d.error?.message || 'failed'), 'error');
+                            }
+                        })
+                        .catch(e => {
+                            pingTag.hidden = false;
+                            pingTag.className = 'reach-model-ping-tag reach-chip-bad';
+                            pingTag.textContent = '✗ ' + e.message;
+                            toast(alias + ': ' + e.message, 'error');
+                        })
+                        .finally(() => {
+                            pingBtn.disabled = false;
+                            pingBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Ping';
+                        });
+                });
+
+                pingTd.appendChild(pingBtn);
+                pingTd.appendChild(pingTag);
+                tr.appendChild(pingTd);
+
+                // Toggle
                 const toggleTd = document.createElement('td');
                 const toggle = el('label', 'reach-switch');
                 const input = document.createElement('input');
@@ -399,6 +874,8 @@
                 toggle.appendChild(slider);
                 toggleTd.appendChild(toggle);
                 tr.appendChild(toggleTd);
+
+                // Edit
                 const editTd = document.createElement('td');
                 const edit = el('button', 'reach-btn', 'Edit');
                 edit.title = 'Open the full per-model editor in Settings';
@@ -410,11 +887,12 @@
                 });
                 editTd.appendChild(edit);
                 tr.appendChild(editTd);
+
+                // Remove
                 const rmTd = document.createElement('td');
                 const rm = el('button', 'reach-btn reach-btn-danger', 'Remove');
                 rm.addEventListener('click', () => {
                     if (Object.keys(cfg.models).length <= 1) { toast('Keep at least one alias', 'error'); return; }
-                    // alias -> null is the removal sentinel in the settings merge
                     core.saveSettings({ models: { [alias]: null } }).then(({ ok, data }) => {
                         if (ok) {
                             toast('Removed ' + alias, 'ok');
@@ -426,6 +904,7 @@
                 });
                 rmTd.appendChild(rm);
                 tr.appendChild(rmTd);
+
                 tbody.appendChild(tr);
             });
             table.appendChild(tbody);
@@ -1247,13 +1726,94 @@
     /* ------------------------------------------------------------------ LOGS */
     function renderLogs(container) {
         container.appendChild(pageHeader('fa-list', 'Logs',
-            'Recent requests through the relay (local store).'));
+            'Recent requests through the relay (local store). Click any row to inspect full payload.'));
         const body = el('div', 'reach-stack');
         container.appendChild(body);
         let timer = null;
         let limit = 100;
         let statusFilter = '';
         let modelFilter = '';
+        let activeModal = null;
+
+        function showLogInspector(entry) {
+            if (activeModal) activeModal.remove();
+
+            const overlay = el('div', 'reach-modal-overlay');
+            const modal = el('div', 'reach-modal-card');
+
+            // Header
+            const head = el('div', 'reach-modal-head');
+            const titleWrap = el('h3', null);
+            titleWrap.innerHTML = '<i class="fa-solid fa-file-lines" style="color:var(--reach-accent-light, #ffd37a);"></i> Request Inspector';
+            const closeBtn = el('button', 'reach-btn reach-btn-sm', '✕');
+            closeBtn.style.padding = '2px 8px';
+            head.appendChild(titleWrap);
+            head.appendChild(closeBtn);
+            modal.appendChild(head);
+
+            // Body
+            const modalBody = el('div', 'reach-modal-body');
+
+            const statusClass = entry.status >= 500 ? 'reach-kv-bad' : (entry.status >= 400 ? 'reach-kv-warn' : 'reach-kv-ok');
+            const dl = el('dl', 'reach-kv');
+            kv(dl, 'Timestamp', core.fmtTime(entry.ts) + ' (' + (entry.ts || '') + ')');
+            kv(dl, 'HTTP Status', String(entry.status || '—'), statusClass);
+            kv(dl, 'Client IP', entry.ip || 'Unknown');
+            kv(dl, 'User Agent', entry.user_agent || 'Unknown');
+            kv(dl, 'Model Alias', entry.model || '—');
+            kv(dl, 'Upstream Target', entry.upstream_model || '—');
+            kv(dl, 'Streaming', entry.stream ? 'Yes (SSE)' : 'No (JSON)');
+            kv(dl, 'Latency', core.fmtLatency(entry.latency_ms) + ' (' + (entry.latency_ms || 0) + ' ms)');
+            kv(dl, 'Input Tokens', core.fmtNum(entry.tokens_in || 0));
+            kv(dl, 'Output Tokens', core.fmtNum(entry.tokens_out || 0));
+            kv(dl, 'Total Tokens', core.fmtNum((entry.tokens_in || 0) + (entry.tokens_out || 0)));
+            if (entry.error) {
+                kv(dl, 'Error Message', entry.error, 'bad');
+            }
+            modalBody.appendChild(dl);
+
+            const jsonTitle = el('div', 'reach-hint', 'Full JSON Record:');
+            jsonTitle.style.fontWeight = '600';
+            modalBody.appendChild(jsonTitle);
+
+            const pre = el('pre', 'reach-modal-pre', JSON.stringify(entry, null, 2));
+            modalBody.appendChild(pre);
+
+            modal.appendChild(modalBody);
+
+            // Footer
+            const foot = el('div', 'reach-modal-foot');
+            const copyBtn = el('button', 'reach-btn reach-btn-sm', 'Copy JSON');
+            copyBtn.addEventListener('click', () => {
+                core.copyText(JSON.stringify(entry, null, 2))
+                    .then(ok => toast(ok ? 'JSON copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
+            });
+            const dismissBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Close');
+            foot.appendChild(copyBtn);
+            foot.appendChild(dismissBtn);
+            modal.appendChild(foot);
+
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            activeModal = overlay;
+
+            const close = () => {
+                if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                activeModal = null;
+                document.removeEventListener('keydown', onKey);
+            };
+
+            const onKey = (e) => {
+                if (e.key === 'Escape') close();
+            };
+
+            closeBtn.addEventListener('click', close);
+            dismissBtn.addEventListener('click', close);
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) close();
+            });
+            document.addEventListener('keydown', onKey);
+        }
 
         function draw() {
             const params = new URLSearchParams({ limit: String(limit) });
@@ -1264,34 +1824,69 @@
                 .then(data => {
                     const logs = data.logs || [];
                     body.innerHTML = '';
+
                     const toolbar = el('div', 'reach-toolbar');
-                    const statusSel = document.createElement('select');
-                    statusSel.className = 'reach-input reach-input-sm';
-                    ['', '2*', '4*', '429', '5*'].forEach(v => {
-                        const opt = document.createElement('option');
-                        opt.value = v;
-                        opt.textContent = v === '' ? 'All statuses' : v;
-                        if (v === statusFilter) opt.selected = true;
-                        statusSel.appendChild(opt);
+
+                    // Filter chips
+                    const filterChips = el('div', 'reach-presence-filters');
+                    filterChips.style.marginRight = '8px';
+
+                    const chipDefs = [
+                        { label: 'All', val: '' },
+                        { label: '2xx OK', val: '2*' },
+                        { label: '429 RL', val: '429' },
+                        { label: '5xx Err', val: '5*' }
+                    ];
+
+                    chipDefs.forEach(c => {
+                        const b = el('button', 'reach-presence-filter-btn' + (statusFilter === c.val ? ' active' : ''), c.label);
+                        b.addEventListener('click', () => {
+                            statusFilter = c.val;
+                            draw();
+                        });
+                        filterChips.appendChild(b);
                     });
-                    statusSel.addEventListener('change', () => { statusFilter = statusSel.value; draw(); });
-                    toolbar.appendChild(statusSel);
+                    toolbar.appendChild(filterChips);
+
                     const modelInput = document.createElement('input');
                     modelInput.className = 'reach-input reach-input-sm';
-                    modelInput.placeholder = 'model filter (gpt-4o*)';
+                    modelInput.placeholder = 'model filter (e.g. gpt-4o*)';
                     modelInput.value = modelFilter;
                     modelInput.addEventListener('change', () => { modelFilter = modelInput.value.trim(); draw(); });
                     toolbar.appendChild(modelInput);
-                    const refreshBtn = el('button', 'reach-btn', 'Refresh');
+
+                    const refreshBtn = el('button', 'reach-btn reach-btn-sm', 'Refresh');
                     refreshBtn.addEventListener('click', draw);
                     toolbar.appendChild(refreshBtn);
-                    const clearBtn = el('button', 'reach-btn reach-btn-danger', 'Clear');
+
+                    const exportBtn = el('button', 'reach-btn reach-btn-sm');
+                    exportBtn.innerHTML = '<i class="fa-solid fa-download"></i> Export JSON';
+                    exportBtn.addEventListener('click', () => {
+                        if (!logs.length) {
+                            toast('No logs to export', 'warn');
+                            return;
+                        }
+                        const blob = new Blob([JSON.stringify(logs, null, 2)], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'reach-logs-' + new Date().toISOString().slice(0, 10) + '.json';
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                        toast('Exported ' + logs.length + ' logs ✓', 'ok');
+                    });
+                    toolbar.appendChild(exportBtn);
+
+                    const clearBtn = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Clear');
                     clearBtn.addEventListener('click', () => {
                         core.relayFetch('/_reach/logs', { method: 'DELETE' }, 5000)
-                            .then(() => { toast('Cleared ✓', 'ok'); draw(); });
+                            .then(() => { toast('Log cleared ✓', 'ok'); draw(); });
                     });
                     toolbar.appendChild(clearBtn);
-                    const count = el('span', 'reach-hint', logs.length + ' rows');
+
+                    const count = el('span', 'reach-hint', logs.length + ' rows (click to inspect)');
                     toolbar.appendChild(count);
                     body.appendChild(toolbar);
 
@@ -1300,6 +1895,8 @@
                     const tbody = document.createElement('tbody');
                     logs.forEach(entry => {
                         const tr = document.createElement('tr');
+                        tr.className = 'reach-log-row-clickable';
+                        tr.title = 'Click to inspect full request payload';
                         tr.appendChild(el('td', 'reach-nowrap', core.fmtTime(entry.ts)));
                         tr.appendChild(el('td', null, entry.ip || '?'));
                         tr.appendChild(el('td', null, entry.model || '—'));
@@ -1312,6 +1909,8 @@
                         tr.appendChild(el('td', null, entry.tokens_in == null ? '·' : core.fmtNum(entry.tokens_in)));
                         tr.appendChild(el('td', null, entry.tokens_out == null ? '·' : core.fmtNum(entry.tokens_out)));
                         tr.appendChild(el('td', 'reach-err', entry.error || ''));
+
+                        tr.addEventListener('click', () => showLogInspector(entry));
                         tbody.appendChild(tr);
                     });
                     if (!logs.length) {
@@ -1332,7 +1931,10 @@
 
         draw();
         timer = setInterval(draw, 10000);
-        return () => { if (timer) clearInterval(timer); };
+        return () => {
+            if (timer) clearInterval(timer);
+            if (activeModal && activeModal.parentNode) activeModal.parentNode.removeChild(activeModal);
+        };
     }
 
     /* -------------------------------------------------------------- SETTINGS */
@@ -1923,16 +2525,59 @@
         body.appendChild(arch);
 
         const facts = el('section', 'reach-card');
-        facts.appendChild(el('header', 'reach-card-head', 'Facts'));
+        facts.appendChild(el('header', 'reach-card-head', 'Facts & Runtime Telemetry'));
         const dl = el('dl', 'reach-kv');
         kv(dl, 'Plugin', 'SimpleREACH v' + core.store.version);
         kv(dl, 'Repository', core.REPO_URL);
         kv(dl, 'License', 'MIT');
         kv(dl, 'Author', 'Michael Anthony Falabella');
-        kv(dl, 'Relay', 'stdlib-only Python — no dependencies');
-        kv(dl, 'Plugin install', 'local-extension registry — zero SimpleRAG files touched');
+        kv(dl, 'Relay Process', 'Python 3 stdlib — PID /:20777');
+        kv(dl, 'Upstream Route', 'OmniRoute :20128 (codegpt tier)');
+        kv(dl, 'Tunnel Provider', (core.store.local && core.store.local.public_url_source) || 'ngrok');
+        kv(dl, 'Active Accent', core.prefsGet('accent_color', '#ffb020'));
+        kv(dl, 'Plugin Isolation', 'Zero SimpleRAG host files touched — scoped theme engine');
         facts.appendChild(dl);
         body.appendChild(facts);
+
+        // Database Maintenance Card
+        const dbCard = el('section', 'reach-card');
+        dbCard.appendChild(el('header', 'reach-card-head', 'Database & Cache Maintenance'));
+        const dbBody = el('div', 'reach-card-body');
+        dbBody.appendChild(el('p', 'reach-copy',
+            'SimpleREACH logs requests into an optimized SQLite database for telemetry, rate limiting, and live presence analytics. Response caching reduces upstream calls for duplicate queries.'));
+
+        const dbActions = el('div', 'reach-stat-actions-row');
+        dbActions.style.marginTop = '8px';
+
+        const flushCacheBtn = el('button', 'reach-btn reach-btn-sm');
+        flushCacheBtn.innerHTML = '<i class="fa-solid fa-broom"></i> Flush Response Cache';
+        flushCacheBtn.addEventListener('click', () => {
+            flushCacheBtn.disabled = true;
+            core.relayFetch('/_reach/cache/clear', { method: 'POST' }, 5000)
+                .then(r => r.json())
+                .then(d => {
+                    toast(d.cleared ? 'Cache flushed ✓' : 'Flush failed', d.cleared ? 'ok' : 'error');
+                })
+                .catch(e => toast('Cache flush: ' + e.message, 'error'))
+                .finally(() => { flushCacheBtn.disabled = false; });
+        });
+
+        const clearLogsBtn = el('button', 'reach-btn reach-btn-danger reach-btn-sm');
+        clearLogsBtn.innerHTML = '<i class="fa-solid fa-trash-can"></i> Vacuum & Prune Logs';
+        clearLogsBtn.addEventListener('click', () => {
+            if (!confirm('Are you sure you want to clear all request telemetry and logs?')) return;
+            clearLogsBtn.disabled = true;
+            core.relayFetch('/_reach/logs', { method: 'DELETE' }, 6000)
+                .then(() => toast('Database logs pruned & vacuumed ✓', 'ok'))
+                .catch(e => toast('Log prune: ' + e.message, 'error'))
+                .finally(() => { clearLogsBtn.disabled = false; });
+        });
+
+        dbActions.appendChild(flushCacheBtn);
+        dbActions.appendChild(clearLogsBtn);
+        dbBody.appendChild(dbActions);
+        dbCard.appendChild(dbBody);
+        body.appendChild(dbCard);
 
         const privacy = el('section', 'reach-card');
         privacy.appendChild(el('header', 'reach-card-head', 'Privacy & availability'));
