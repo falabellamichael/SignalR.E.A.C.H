@@ -96,7 +96,7 @@
     function ensureHostRecord() {
         const snapshot = readHostRecords();
         if (snapshot.error || !snapshot.records) {
-            console.warn('[simple-reach] refusing to touch the host plugin registry:', snapshot.error);
+            console.warn('[signal-reach] refusing to touch the host plugin registry:', snapshot.error);
             return false;
         }
         const records = snapshot.records.map(r => (r && typeof r === 'object')
@@ -212,7 +212,7 @@
             '--reach-accent-text': textColor
         };
 
-        // CRITICAL: Scoped EXCLUSIVELY to SimpleREACH containers — NEVER touches body, :root, or SimpleRAG
+        // CRITICAL: Scoped EXCLUSIVELY to SignalR.E.A.C.H containers — NEVER touches body, :root, or SimpleRAG
         const targets = document.querySelectorAll(
             '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page'
         );
@@ -364,7 +364,7 @@
         c2.appendChild(hookupRow);
         panel.appendChild(c2);
 
-        // --- Card 2b: REACH Theme Accent Color (Scoped to SimpleREACH only) ---
+        // --- Card 2b: REACH Theme Accent Color (Scoped to SignalR.E.A.C.H only) ---
         const cTheme = core.el('div', 'reach-stat-card');
         const cThemeHead = core.el('div', 'reach-stat-card-head');
         const cThemeTitle = core.el('div', 'reach-stat-card-title');

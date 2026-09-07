@@ -1,0 +1,606 @@
+/* SimpleREACH reach-components.css — shared components (split of reach.css; loaded in STYLE_SOURCES order). */
+/* ---- stationary panel (Panel 2 in #list-content) ---- */
+.reach-stationary-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px 18px;
+    overflow-y: auto;
+    font-size: 11.5px;
+    min-width: 0;
+}
+
+.reach-stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 7px;
+    background: rgba(128, 128, 128, 0.07);
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    min-width: 0;
+}
+
+.reach-stat-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.reach-stat-status-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.reach-stat-status-title {
+    font-weight: 700;
+    font-size: 11.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-stat-card-title {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.75;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.reach-stat-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 5px;
+    font-size: 10px;
+    opacity: 0.65;
+}
+
+.reach-stat-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.reach-stat-url-box {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 10px;
+    padding: 4px 7px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    color: var(--reach-accent-light, #ffd37a);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-stat-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.reach-stat-setting-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.reach-stat-input {
+    width: 60px !important;
+    text-align: right;
+    padding: 2px 5px;
+    font-size: 11px;
+    height: 24px;
+}
+
+.reach-stat-kv {
+    font-size: 11px;
+}
+
+.reach-stat-grid-4,
+.reach-stat-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+}
+
+.reach-stat-mini-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 4px 2px;
+    border-radius: 5px;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(128, 128, 128, 0.18);
+    text-align: center;
+}
+
+.reach-stat-mini-val {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--reach-accent-light, #ffd37a);
+    font-variant-numeric: tabular-nums;
+}
+
+.reach-stat-mini-lbl {
+    font-size: 8.5px;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.reach-stat-ping-result {
+    font-size: 10.5px;
+    padding: 4px 7px;
+    margin-top: 2px;
+}
+
+/* ---- actions ---- */
+.reach-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* ---- result line ---- */
+.reach-result {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11px;
+    padding: 6px 9px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.reach-result-ok { color: #7ce8a0; border-color: rgba(46, 204, 113, 0.4); }
+.reach-result-error { color: #ff8f7a; border-color: rgba(231, 76, 60, 0.4); }
+
+/* ---- kv lists ---- */
+.reach-kv {
+    margin: 0;
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 10px;
+    font-size: 11.5px;
+}
+
+.reach-kv dt { opacity: 0.62; margin: 0; }
+.reach-kv dd {
+    margin: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-kv-ok { color: #7ce8a0; }
+.reach-kv-warn { color: var(--reach-accent-light, #ffd37a); }
+.reach-kv-bad { color: #ff8f7a; }
+
+/* ---- dots ---- */
+.reach-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+}
+
+.reach-dot-on { background: #2ecc71; box-shadow: 0 0 7px rgba(46, 204, 113, 0.7); }
+.reach-dot-warn { background: var(--reach-accent, #ffb020); box-shadow: 0 0 7px var(--reach-accent-glow, rgba(255, 176, 32, 0.7)); }
+.reach-dot-off { background: #e74c3c; box-shadow: 0 0 7px rgba(231, 76, 60, 0.6); }
+
+/* ---- tables ---- */
+.reach-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11.5px;
+    min-width: 0;
+}
+
+.reach-table th {
+    text-align: left;
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+.reach-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 240px;
+    font-variant-numeric: tabular-nums;
+}
+
+.reach-table code {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 10.5px;
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+.reach-table-logs td {
+    max-width: 160px;
+    padding: 3px 6px;
+}
+
+.reach-nowrap { white-space: nowrap; }
+
+.reach-err {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 10.5px;
+    opacity: 0.7;
+}
+
+/* ---- toolbar ---- */
+.reach-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex-wrap: wrap;
+}
+
+/* ---- charts ---- */
+.reach-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 80px;
+    padding: 4px 2px 0;
+}
+
+.reach-chart-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+    gap: 3px;
+}
+
+.reach-chart-bar {
+    width: 70%;
+    max-width: 22px;
+    border-radius: 3px 3px 0 0;
+    background: rgba(128, 128, 128, 0.35);
+    min-height: 2px;
+    transition: height 300ms ease;
+}
+
+.reach-chart-gold { background: linear-gradient(180deg, var(--reach-accent-light, #ffd37a), var(--reach-accent-bg, rgba(255, 176, 32, 0.35))); }
+.reach-chart-green { background: linear-gradient(180deg, #7ce8a0, rgba(46, 204, 113, 0.3)); }
+
+.reach-chart-x {
+    font-size: 8.5px;
+    opacity: 0.5;
+    white-space: nowrap;
+    transform: rotate(-35deg);
+    transform-origin: center;
+    width: 0;
+}
+
+/* ---- forms ---- */
+.reach-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.reach-form-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.reach-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.reach-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.reach-field-label {
+    font-size: 11px;
+    font-weight: 700;
+    opacity: 0.85;
+}
+
+.reach-field-help {
+    font-size: 10px;
+    opacity: 0.55;
+    line-height: 1.35;
+}
+
+.reach-input {
+    font: inherit;
+    font-size: 11.5px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    color: inherit;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    width: 100%;
+    min-width: 0;
+    min-height: 26px;
+}
+
+.reach-input:focus {
+    outline: none;
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.6));
+    box-shadow: 0 0 0 2px var(--reach-accent-glow, rgba(255, 176, 32, 0.15));
+}
+
+.reach-input-sm {
+    width: auto;
+    flex: 0 1 auto;
+}
+
+.reach-field input[type="checkbox"] {
+    width: auto;
+}
+
+.reach-save-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding: 7px 11px;
+    border-radius: 7px;
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.06));
+    border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.25));
+}
+
+/* ---- toggle switch ---- */
+.reach-switch {
+    position: relative;
+    display: inline-block;
+    width: 32px;
+    height: 18px;
+    flex: 0 0 auto;
+}
+
+.reach-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.reach-switch-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: rgba(128, 128, 128, 0.3);
+    border-radius: 999px;
+    transition: background 150ms ease;
+}
+
+.reach-switch-slider::before {
+    content: "";
+    position: absolute;
+    height: 12px;
+    width: 12px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 150ms ease;
+}
+
+.reach-switch input:checked + .reach-switch-slider {
+    background: var(--reach-accent, #ffb020);
+}
+
+.reach-switch input:checked + .reach-switch-slider::before {
+    transform: translateX(14px);
+}
+
+/* ---- per-model editor ---- */
+.reach-model-card {
+    border-left: 3px solid var(--reach-accent-border, rgba(255, 176, 32, 0.45));
+    padding: 8px 11px;
+}
+
+.reach-model-head {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.reach-model-head strong {
+    font-size: 12.5px;
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+.reach-model-desc {
+    font-size: 10.5px;
+    opacity: 0.55;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+}
+
+.reach-model-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.reach-model-rl {
+    grid-column: 1 / -1;
+    border-top: 1px dashed rgba(128, 128, 128, 0.25);
+    padding-top: 6px;
+    margin-top: 2px;
+}
+
+.reach-toggle-row {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 14px;
+    align-items: center;
+}
+
+.reach-check {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.reach-check input {
+    accent-color: var(--reach-accent, #ffb020);
+    width: 13px;
+    height: 13px;
+    cursor: pointer;
+}
+
+.reach-model-flash {
+    animation: reach-flash 1.4s ease;
+}
+
+@keyframes reach-flash {
+    0% { box-shadow: 0 0 0 3px var(--reach-accent-glow, rgba(255, 176, 32, 0.75)); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 176, 32, 0); }
+}
+
+/* ---- tabs + snippets ---- */
+.reach-usage-tabs {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.reach-tab {
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 5px;
+    cursor: pointer;
+    color: inherit;
+    background: transparent;
+    border: 1px solid rgba(128, 128, 128, 0.28);
+    opacity: 0.75;
+    text-transform: capitalize;
+}
+
+.reach-tab-active {
+    opacity: 1;
+    color: var(--reach-accent-light, #ffd37a);
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.55));
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.08));
+}
+
+.reach-snippet {
+    margin: 0;
+    padding: 8px 11px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    overflow-x: auto;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    color: inherit;
+    white-space: pre;
+}
+
+.reach-snippet code {
+    font-family: inherit;
+    font-size: inherit;
+}
+
+.reach-flow {
+    white-space: pre;
+    line-height: 1.4;
+    color: var(--reach-accent-light, #ffd37a);
+    font-size: 10.5px;
+}
+
+/* ---- toast ---- */
+.reach-toast {
+    position: fixed;
+    bottom: 26px;
+    right: 26px;
+    z-index: 99999;
+    padding: 11px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #101418;
+    background: #e8e8ea;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+    max-width: 420px;
+}
+
+.reach-toast-ok { background: #2ecc71; color: #08140c; }
+.reach-toast-error { background: #e74c3c; color: #fff; }
+.reach-toast-info { background: var(--reach-accent, #ffd37a); color: var(--reach-accent-text, #1a1206); }
+
+/* ---- Model hover notes ---- */
+.reach-note-wrap {
+    position: relative;
+    display: inline-block;
+    margin-left: 8px;
+    cursor: help;
+    vertical-align: middle;
+}
+.reach-note-badge {
+    color: var(--reach-accent, #ffd37a);
+    font-size: 13px;
+    font-weight: 700;
+}
+.reach-note-tip {
+    visibility: hidden;
+    opacity: 0;
+    position: absolute;
+    bottom: 140%;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1e1f26;
+    color: #e8e6e3;
+    padding: 7px 11px;
+    border-radius: 8px;
+    font-size: 12px;
+    white-space: nowrap;
+    border: 1px solid #3a3b45;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+    z-index: 60;
+    transition: opacity .15s ease;
+    pointer-events: none;
+}
+.reach-note-wrap:hover .reach-note-tip {
+    visibility: visible;
+    opacity: 1;
+}

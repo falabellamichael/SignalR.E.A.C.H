@@ -13,7 +13,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
-| **Version** | 3.0.0 |
+| **Version** | 3.2.0 |
 
 ## Use the endpoint
 
@@ -38,7 +38,19 @@ print(reply.choices[0].message.content)
 
 > The public URL is a tunnel that changes when the host restarts it — always resolve it through the pointer gist above (the REACH panel and README do this automatically).
 
-## Install the plugin (from the GitHub URL)
+## Install the plugin — one-click
+
+```powershell
+# Windows
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/falabellamichael/SimpleREACH/main/install.ps1 | iex"
+```
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/falabellamichael/SimpleREACH/main/install.sh | sh
+```
+
+Or install manually:
 
 ```bash
 git clone https://github.com/falabellamichael/SignalR.E.A.C.H.git

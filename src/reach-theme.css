@@ -1,0 +1,124 @@
+/* SimpleREACH reach-theme.css — theme swatches & dashboard enhancements (split of reach.css; loaded in STYLE_SOURCES order). */
+/* ---- Scoped Theme Swatches & Color Picker ---- */
+.reach-theme-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 0 1px;
+}
+
+.reach-swatch {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.25);
+    cursor: pointer;
+    transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    outline: none;
+    position: relative;
+}
+
+.reach-swatch:hover {
+    transform: scale(1.18);
+    border-color: rgba(255, 255, 255, 0.85);
+}
+
+.reach-swatch.active {
+    border-color: #ffffff;
+    box-shadow: 0 0 8px var(--reach-accent-glow, rgba(255, 176, 32, 0.6));
+    transform: scale(1.15);
+}
+
+.reach-swatch.active::after {
+    content: '✓';
+    font-size: 9px;
+    font-weight: 800;
+    color: var(--reach-accent-text, #1a1206);
+}
+
+.reach-swatch-picker-wrap {
+    position: relative;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    overflow: hidden;
+    border: 1.5px solid rgba(255, 255, 255, 0.3);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: conic-gradient(red, yellow, lime, aqua, blue, magenta, red);
+    transition: transform 120ms ease, border-color 120ms ease;
+}
+
+.reach-swatch-picker-wrap:hover {
+    transform: scale(1.18);
+    border-color: #ffffff;
+}
+
+.reach-swatch-picker-wrap input[type="color"] {
+    position: absolute;
+    top: -10px;
+    left: -10px;
+    width: 40px;
+    height: 40px;
+    opacity: 0;
+    cursor: pointer;
+}
+
+/* ---- Dashboard Enhancements ---- */
+.reach-dash-jump-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.reach-dash-jump-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.08);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    color: inherit;
+    font-size: 10.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 120ms ease;
+}
+
+.reach-dash-jump-btn i {
+    font-size: 13px;
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+.reach-dash-jump-btn:hover {
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.14));
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.4));
+    transform: translateY(-1px);
+}
+
+.reach-meter-bar {
+    height: 5px;
+    background: rgba(128, 128, 128, 0.2);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 4px 0;
+}
+
+.reach-meter-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--reach-accent, #ffb020);
+    transition: width 300ms ease;
+}
+

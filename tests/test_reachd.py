@@ -268,34 +268,22 @@ class ScrubberTests(unittest.TestCase):
         clean = "A perfectly normal answer with no continuation."
         self.assertEqual(reachd.scrub_trailing_roles(clean), clean)
 
-    def test_check_role_continuation_detection(self):
+    def test_scrub_role_continuation_detection(self):
         # Match detection
-        status, cut = reachd.check_role_continuation("Hello\n\nUser: How are you?")
-        self.assertEqual(status, "MATCH")
-        self.assertEqual(cut, len("Hello"))
-
-        # Prefix detection on newline
-        status, cut = reachd.check_role_continuation("Hello\n\n")
-        self.assertEqual(status, "PREFIX")
-        self.assertEqual(cut, len("Hello"))
-
-        status, cut = reachd.check_role_continuation("Hello\n\nUs")
-        self.assertEqual(status, "PREFIX")
-        self.assertEqual(cut, len("Hello"))
+        cut = reachd.scrub_trailing_roles("Hello\n\nUser: How are you?")
+        self.assertEqual(cut, "Hello")
 
         # Safe normal text
-        status, cut = reachd.check_role_continuation("Hello\n1. User accounts")
-        self.assertEqual(status, "SAFE")
+        self.assertEqual(
+            reachd.scrub_trailing_roles("Hello\n1. User accounts"),
+            "Hello\n1. User accounts")
+        self.assertEqual(
+            reachd.scrub_trailing_roles("Hello world!"), "Hello world!")
 
-        status, cut = reachd.check_role_continuation("Hello world!")
-        self.assertEqual(status, "SAFE")
-
-    def test_make_sse_chunk(self):
-        orig = {"id": "c1", "choices": [{"index": 0, "delta": {"content": "Old"}}]}
-        chunk_bytes = reachd.make_sse_chunk(orig, "New")
-        self.assertTrue(chunk_bytes.startswith(b"data: {"))
-        parsed = json.loads(chunk_bytes.decode("utf-8")[5:].strip())
-        self.assertEqual(parsed["choices"][0]["delta"]["content"], "New")
+        # Other role markers truncate too
+        self.assertEqual(
+            reachd.scrub_trailing_roles("Hello there my friend\n\nHuman: what now?"),
+            "Hello there my friend")
 
 
 
@@ -409,7 +397,7 @@ class ClientKeyManagementTests(unittest.TestCase):
         masked = json.loads(json.dumps(reachd.settings_public(cfg)))
         # simulate the handler flow: guard runs BEFORE merged_settings
         patch = {"access": {"keys": masked["access"]["keys"]}}
-        touched = reachd.RelayHandler.restore_masked_client_keys(
+        touched = reachd.restore_masked_client_keys(
             cfg["access"], patch["access"])
         self.assertTrue(touched)
         next_cfg = reachd.merged_settings(cfg, patch)
@@ -424,7 +412,7 @@ class ClientKeyManagementTests(unittest.TestCase):
                                   "created_at": "x", "last_used_at": None,
                                   "enabled": True, "rate_limit_rpm": 0}]
         patch = {"access": {"keys": [{"id": "key_a", "name": "Kept", "key": raw_key}]}}
-        touched = reachd.RelayHandler.restore_masked_client_keys(
+        touched = reachd.restore_masked_client_keys(
             cfg["access"], patch["access"])
         self.assertFalse(touched)
         self.assertEqual(patch["access"]["keys"][0]["key"], raw_key)
