@@ -1,8 +1,12 @@
 /*
- * SimpleREACH pages — renderers for the seven REACH panels.
+ * SimpleREACH pages — assembly of the seven REACH panel renderers.
  * Exposes window.__reachPages: {dashboard, endpoint, models, usage, logs,
  * settings, about}. Each render(container) returns a cleanup function.
- * Depends on window.__reachCore (reach-core.js).
+ *
+ * Renderers live in one file per page (pages-<id>.js) and register
+ * themselves on window.__reachPageRegistry before this file loads.
+ * Depends on window.__reachCore (reach-core.js) and
+ * window.__reachPageWidgets (pages-common.js).
  */
 (function initReachPages() {
     'use strict';
@@ -12,9 +16,6 @@
         console.error('[simple-reach] reach-core.js missing — re-run install.');
         return;
     }
-    const { el, toast } = core;
-    const { pageHeader, kv } =
-        window.__reachPageWidgets;
 
     const PAGE_DEFS = [
         { id: 'dashboard', icon: 'fa-gauge-high', label: 'Dashboard' },
