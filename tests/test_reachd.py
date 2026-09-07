@@ -237,6 +237,29 @@ class RateLimiterTests(unittest.TestCase):
         self.assertEqual(ok, 2)
 
 
+class ScrubberTests(unittest.TestCase):
+    def test_truncates_at_user_continuation(self):
+        content = "The answer is Paris.\n\nUser: what about London?"
+        self.assertEqual(reachd.scrub_trailing_roles(content),
+                         "The answer is Paris.")
+
+    def test_truncates_at_human_and_assistant(self):
+        for marker in ("Human:", "Assistant:", "system:", "Anthropic:"):
+            content = "Here is the answer.\n" + marker + " continue"
+            self.assertEqual(reachd.scrub_trailing_roles(content),
+                             "Here is the answer.")
+
+    def test_leaves_mid_text_mentions(self):
+        content = "I asked: what do you think?\nIt was about user: experience."
+        self.assertEqual(reachd.scrub_trailing_roles(content), content)
+
+    def test_leaves_short_and_clean_content(self):
+        self.assertEqual(reachd.scrub_trailing_roles("OK"), "OK")
+        self.assertEqual(reachd.scrub_trailing_roles(""), "")
+        clean = "A perfectly normal answer with no continuation."
+        self.assertEqual(reachd.scrub_trailing_roles(clean), clean)
+
+
 class ResponseCacheTests(unittest.TestCase):
     def test_lru_and_ttl(self):
         cache = reachd.ResponseCache()

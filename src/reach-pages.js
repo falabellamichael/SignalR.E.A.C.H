@@ -1569,6 +1569,8 @@
                 ...aliases.filter(a => a !== alias).map(a => ({ value: a, label: a }))
             ], 'Tried when the upstream fails (non-stream).'));
             grid.appendChild(mf('number', 'context_window', 'Context window'));
+            grid.appendChild(mf('checkbox', 'strip_trailing_roles', 'Strip trailing role turns',
+                'Truncates fake "User:"/"Assistant:" transcript continuations some upstream routes leak.'));
             grid.appendChild(mf('number', 'temperature', 'Default temperature', 'null = passthrough (client controls it).', { step: 'any' }));
             grid.appendChild(mf('number', 'temperature_min', 'Temperature min', 'Clamp window.', { step: 'any' }));
             grid.appendChild(mf('number', 'temperature_max', 'Temperature max', 'Clamp window.', { step: 'any' }));

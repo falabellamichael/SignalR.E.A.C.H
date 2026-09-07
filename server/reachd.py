@@ -45,7 +45,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 SERVICE = "simplereach"
 DEFAULT_PORT = 20777
 MAX_BODY_BYTES = 32 * 1024 * 1024
@@ -54,6 +54,25 @@ MAX_RATE_BUCKETS = 10000
 
 GIST_ID = "e261e0c31ad08c373bcd667b6982847a"
 GIST_FILE = "simple-reach-endpoint.txt"
+
+# Some upstream routes (e.g. no-think wrappers over chat-log-finetuned models)
+# occasionally keep writing the transcript after the answer, emitting fake
+# role turns like "User: ..." / "Human: ..." / "Assistant: ...". The scrubber
+# truncates at the first such line-start marker (opt-in per model).
+ROLE_CONTINUATION_RE = re.compile(
+    r"^\s*(user|human|assistant|system|anthropic|claude)\s*:\s*",
+    re.IGNORECASE)
+
+
+def scrub_trailing_roles(content):
+    """Truncate content at the first transcript-continuation role line."""
+    if not content or len(content) < 20:
+        return content
+    lines = content.splitlines()
+    for idx in range(1, len(lines)):
+        if ROLE_CONTINUATION_RE.match(lines[idx]):
+            return "\n".join(lines[:idx]).rstrip()
+    return content
 
 STATE = None          # RelayState, set in main()
 PORT = DEFAULT_PORT
@@ -80,6 +99,7 @@ MODEL_SPEC_DEFAULTS = {
     "allow_stream": True,
     "allow_tools": True,
     "context_window": 128000,       # informational + input guard
+    "strip_trailing_roles": False,  # truncate fake "User:" transcript continuations
     "rate_limits": {"rpm": 0, "tokens_day": 0},   # 0 = inherit global
 }
 
@@ -288,6 +308,7 @@ def _validate_model_spec(alias, spec, all_aliases, errors):
                 path + ".fallback must name a different alias")
     _bool(spec.get("allow_stream", True), path + ".allow_stream")
     _bool(spec.get("allow_tools", True), path + ".allow_tools")
+    _bool(spec.get("strip_trailing_roles", False), path + ".strip_trailing_roles")
     _int(spec.get("context_window", 128000), *MODEL_NUMERIC["context_window"],
          path + ".context_window")
     rl = spec.get("rate_limits", {})
@@ -1724,14 +1745,56 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Transfer-Encoding", "chunked")
                 self.end_headers()
-                try:
+                if spec.get("strip_trailing_roles"):
+                    # Buffer the stream, scrub the assembled content, then
+                    # emit a single clean completion. (Same total latency;
+                    # the client just receives it in one delta.)
+                    buffered = b""
                     while True:
                         line = upstream.readline()
                         if not line:
                             break
-                        self._write_chunk(line)
-                finally:
-                    self._write_chunk(b"")
+                        buffered += line
+                    assembled = []
+                    for line in buffered.decode("utf-8", "replace").splitlines():
+                        if not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
+                            continue
+                        try:
+                            delta = (json.loads(chunk).get("choices")
+                                     or [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if isinstance(content, str):
+                                assembled.append(content)
+                        except json.JSONDecodeError:
+                            pass
+                    scrubbed = scrub_trailing_roles("".join(assembled))
+                    created = int(time.time())
+                    for payload_chunk in (
+                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
+                         "created": created, "model": requested,
+                         "choices": [{"index": 0, "delta": {"content": scrubbed},
+                                      "finish_reason": None}]},
+                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
+                         "created": created, "model": requested,
+                         "choices": [{"index": 0, "delta": {},
+                                      "finish_reason": "stop"}]},
+                    ):
+                        self._write_chunk(("data: " + json.dumps(payload_chunk)
+                                           + "\n\n").encode("utf-8"))
+                    self._write_chunk(b"data: [DONE]\n\n")
+                    self._write_chunk(b"")  # terminating chunk
+                else:
+                    try:
+                        while True:
+                            line = upstream.readline()
+                            if not line:
+                                break
+                            self._write_chunk(line)
+                    finally:
+                        self._write_chunk(b"")
                 STATE.note_success()
                 self._log_chat(model=requested, upstream_model=upstream_model,
                                ip=ip, user_agent=self.headers.get("User-Agent"),
@@ -1756,7 +1819,20 @@ class RelayHandler(BaseHTTPRequestHandler):
             tokens_in = usage.get("prompt_tokens")
             tokens_out = usage.get("completion_tokens")
         except Exception:
-            pass
+            parsed = None
+        if spec.get("strip_trailing_roles") and isinstance(parsed, dict):
+            try:
+                choices = parsed.get("choices")
+                if isinstance(choices, list):
+                    for choice in choices:
+                        message = choice.get("message")
+                        if isinstance(message, dict) \
+                                and isinstance(message.get("content"), str):
+                            message["content"] = scrub_trailing_roles(
+                                message["content"])
+                    data = json.dumps(parsed).encode("utf-8")
+            except Exception:
+                pass  # scrubbing is best-effort; serve the raw body on failure
         if STATE.cfg.get("data", {}).get("log_bodies"):
             response_body = data[:2048].decode("utf-8", "replace")
         STATE.note_success()
