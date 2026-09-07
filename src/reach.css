@@ -9,14 +9,33 @@
     grid-template-columns: minmax(0, 1fr);
 }
 
-.reach-page {
-    padding: 18px 20px 28px;
+#settings-container:has(> .reach-panel3) {
+    width: 100%;
+    height: 100%;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    max-width: 1080px;
+}
+
+.reach-page {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    max-width: 1180px;
     color: inherit;
     font-family: inherit;
+}
+
+.reach-page.reach-panel3 {
+    max-width: 100%;
+    width: 100%;
+    padding: 4px 10px 32px;
+}
+
+.reach-page.reach-panel3 .reach-content {
+    padding: 6px 2px 24px;
+    max-height: none;
+    overflow-y: visible;
 }
 
 .reach-page *,
@@ -29,22 +48,165 @@
     display: none !important;
 }
 
-/* ---- hero ---- */
-.reach-hero {
-    display: flex;
-    align-items: center;
-    gap: 16px;
+/* ---- shell: menu panel + content ---- */
+.reach-shell {
+    display: grid;
+    grid-template-columns: 216px minmax(0, 1fr);
+    gap: 0;
+    min-height: 480px;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    background: rgba(128, 128, 128, 0.05);
 }
 
+.reach-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 10px;
+    border-right: 1px solid rgba(128, 128, 128, 0.18);
+    background: rgba(0, 0, 0, 0.14);
+}
+
+.reach-menu-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px 14px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.16);
+    margin-bottom: 10px;
+}
+
+.reach-menu-brand .reach-hero-badge {
+    width: 38px;
+    height: 38px;
+    font-size: 10px;
+    border-radius: 10px;
+}
+
+.reach-menu-brand-copy {
+    min-width: 0;
+}
+
+.reach-menu-brand-name {
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.02em;
+}
+
+.reach-menu-brand-sub {
+    font-size: 11px;
+    opacity: 0.55;
+}
+
+.reach-menu-items {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+}
+
+.reach-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    opacity: 0.78;
+    transition: opacity 120ms ease, background 120ms ease;
+}
+
+.reach-menu-item i {
+    width: 16px;
+    text-align: center;
+    font-size: 13px;
+}
+
+.reach-menu-item:hover {
+    opacity: 1;
+    background: rgba(128, 128, 128, 0.1);
+}
+
+.reach-menu-active {
+    opacity: 1;
+    color: #ffd37a;
+    background: rgba(255, 176, 32, 0.1);
+    border-color: rgba(255, 176, 32, 0.35);
+}
+
+.reach-menu-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px 2px;
+    border-top: 1px solid rgba(128, 128, 128, 0.16);
+    margin-top: 10px;
+    font-size: 11.5px;
+    opacity: 0.85;
+}
+
+.reach-content {
+    padding: 20px 22px 28px;
+    overflow-y: auto;
+    min-width: 0;
+    max-height: 78vh;
+}
+
+/* ---- page header ---- */
+.reach-page-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+}
+
+.reach-page-head-icon {
+    flex: 0 0 auto;
+    width: 42px;
+    height: 42px;
+    border-radius: 11px;
+    display: grid;
+    place-items: center;
+    color: #ffd37a;
+    background: linear-gradient(145deg, rgba(255, 176, 32, 0.2), rgba(255, 176, 32, 0.05));
+    border: 1px solid rgba(255, 176, 32, 0.4);
+    font-size: 16px;
+}
+
+.reach-page-title {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.2;
+}
+
+.reach-page-sub {
+    margin: 2px 0 0;
+    font-size: 12.5px;
+    opacity: 0.7;
+    line-height: 1.5;
+}
+
+/* ---- hero ---- */
 .reach-hero-badge {
     flex: 0 0 auto;
-    width: 64px;
-    height: 64px;
-    border-radius: 14px;
+    width: 56px;
+    height: 56px;
+    border-radius: 13px;
     display: grid;
     place-items: center;
     font-weight: 800;
-    font-size: 15px;
+    font-size: 13px;
     letter-spacing: 0.06em;
     color: #ffd37a;
     background: linear-gradient(145deg, rgba(255, 176, 32, 0.22), rgba(255, 176, 32, 0.06));
@@ -52,40 +214,48 @@
     text-shadow: 0 0 12px rgba(255, 176, 32, 0.35);
 }
 
-.reach-title {
-    margin: 0;
-    font-size: 22px;
-    font-weight: 700;
-    line-height: 1.2;
+.reach-hero-badge-lg {
+    width: 74px;
+    height: 74px;
+    font-size: 17px;
+    border-radius: 16px;
 }
 
-.reach-tagline {
-    margin: 4px 0 0;
-    font-size: 13.5px;
-    opacity: 0.78;
-    line-height: 1.5;
+.reach-about-hero {
+    display: flex;
+    align-items: center;
+    gap: 18px;
 }
 
-/* ---- cards ---- */
-.reach-grid {
+/* ---- stacks + cards ---- */
+.reach-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.reach-dash {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.reach-dash-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 16px;
+    gap: 14px;
+    align-items: start;
 }
 
 .reach-card {
     background: rgba(128, 128, 128, 0.07);
     border: 1px solid rgba(128, 128, 128, 0.22);
     border-radius: 12px;
-    padding: 16px;
+    padding: 15px;
     display: flex;
     flex-direction: column;
     gap: 12px;
     min-width: 0;
-}
-
-.reach-card-wide {
-    grid-column: 1 / -1;
 }
 
 .reach-card-head {
@@ -97,10 +267,17 @@
 
 .reach-card-head h2 {
     margin: 0;
-    font-size: 14px;
+    font-size: 13.5px;
     font-weight: 700;
     letter-spacing: 0.02em;
-    opacity: 0.9;
+    opacity: 0.92;
+}
+
+.reach-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    min-width: 0;
 }
 
 .reach-card-foot {
@@ -110,22 +287,75 @@
     flex-wrap: wrap;
 }
 
-.reach-foot-card {
-    padding: 14px 16px;
-}
-
-.reach-footnote {
+.reach-copy {
     margin: 0;
     font-size: 12.5px;
     line-height: 1.6;
-    opacity: 0.75;
+    opacity: 0.82;
 }
 
-.reach-link {
-    color: #ffb020;
-    text-decoration: none;
+/* ---- stat tiles ---- */
+.reach-tiles {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 14px;
 }
-.reach-link:hover { text-decoration: underline; }
+
+.reach-tile {
+    background: rgba(128, 128, 128, 0.07);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    border-radius: 12px;
+    padding: 13px 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.reach-tile-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.6;
+}
+
+.reach-tile-value {
+    font-size: 21px;
+    font-weight: 800;
+    line-height: 1.15;
+}
+
+.reach-tile-sub {
+    font-size: 11.5px;
+    opacity: 0.65;
+}
+
+.reach-tile-good .reach-tile-value { color: #7ce8a0; }
+.reach-tile-bad .reach-tile-value { color: #ff8f7a; }
+
+/* ---- banners + empty ---- */
+.reach-banner {
+    padding: 12px 15px;
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.reach-banner-off {
+    color: #ffd0c7;
+    background: rgba(231, 76, 60, 0.12);
+    border: 1px solid rgba(231, 76, 60, 0.4);
+}
+
+.reach-empty {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 4px;
+    font-size: 13px;
+    opacity: 0.75;
+}
 
 /* ---- URL row ---- */
 .reach-url-row {
@@ -143,7 +373,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 13px;
+    font-size: 12.5px;
     padding: 10px 12px;
     border-radius: 8px;
     background: rgba(0, 0, 0, 0.22);
@@ -183,6 +413,11 @@
     opacity: 0.9;
 }
 
+.reach-chip-warn {
+    color: #ffd37a;
+    border-color: rgba(255, 176, 32, 0.45);
+}
+
 .reach-meta-row {
     display: flex;
     gap: 8px;
@@ -201,11 +436,12 @@
     color: inherit;
     background: rgba(128, 128, 128, 0.1);
     border: 1px solid rgba(128, 128, 128, 0.3);
-    transition: filter 120ms ease, transform 80ms ease;
+    transition: filter 120ms ease, transform 80ms ease, opacity 120ms ease;
 }
 
 .reach-btn:hover { filter: brightness(1.2); }
 .reach-btn:active { transform: translateY(1px); }
+.reach-btn:disabled { opacity: 0.5; cursor: default; }
 
 .reach-btn-primary {
     color: #1a1206;
@@ -214,9 +450,183 @@
     font-weight: 700;
 }
 
+.reach-btn-danger {
+    color: #ff8f7a;
+    border-color: rgba(231, 76, 60, 0.45);
+    background: rgba(231, 76, 60, 0.1);
+}
+
+.reach-btn-block {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    justify-content: flex-start;
+}
+
+.reach-btn-sm {
+    padding: 4px 9px;
+    font-size: 11px;
+    border-radius: 6px;
+}
+
 .reach-hint {
-    font-size: 11.5px;
+    font-size: 11px;
     opacity: 0.6;
+}
+
+/* ---- stationary panel (Panel 2 in #list-content) ---- */
+.reach-stationary-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 8px 10px 24px;
+    overflow-y: auto;
+    font-size: 12px;
+    min-width: 0;
+}
+
+.reach-stat-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px 11px;
+    border-radius: 10px;
+    background: rgba(128, 128, 128, 0.07);
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    min-width: 0;
+}
+
+.reach-stat-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.reach-stat-status-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+}
+
+.reach-stat-status-title {
+    font-weight: 700;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-stat-card-title {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.75;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.reach-stat-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 10.5px;
+    opacity: 0.65;
+}
+
+.reach-stat-actions-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.reach-stat-url-box {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 10.5px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    color: #ffd37a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-stat-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.reach-stat-setting-label {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    font-size: 11.5px;
+    font-weight: 600;
+}
+
+.reach-stat-input {
+    width: 68px !important;
+    text-align: right;
+    padding: 3px 6px;
+    font-size: 11.5px;
+}
+
+.reach-stat-kv {
+    font-size: 11.5px;
+}
+
+.reach-stat-grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.reach-stat-mini-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 3px;
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.15);
+    border: 1px solid rgba(128, 128, 128, 0.18);
+    text-align: center;
+}
+
+.reach-stat-mini-val {
+    font-size: 13px;
+    font-weight: 700;
+    color: #ffd37a;
+}
+
+.reach-stat-mini-lbl {
+    font-size: 9px;
+    opacity: 0.6;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.reach-stat-ping-result {
+    font-size: 11px;
+    padding: 5px 8px;
+    margin-top: 2px;
+}
+
+/* ---- actions ---- */
+.reach-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
 }
 
 /* ---- result line ---- */
@@ -231,17 +641,10 @@
     word-break: break-word;
 }
 
-.reach-result-ok {
-    color: #7ce8a0;
-    border-color: rgba(46, 204, 113, 0.4);
-}
+.reach-result-ok { color: #7ce8a0; border-color: rgba(46, 204, 113, 0.4); }
+.reach-result-error { color: #ff8f7a; border-color: rgba(231, 76, 60, 0.4); }
 
-.reach-result-error {
-    color: #ff8f7a;
-    border-color: rgba(231, 76, 60, 0.4);
-}
-
-/* ---- local relay kv ---- */
+/* ---- kv lists ---- */
 .reach-kv {
     margin: 0;
     display: grid;
@@ -250,11 +653,7 @@
     font-size: 12.5px;
 }
 
-.reach-kv dt {
-    opacity: 0.62;
-    margin: 0;
-}
-
+.reach-kv dt { opacity: 0.62; margin: 0; }
 .reach-kv dd {
     margin: 0;
     overflow: hidden;
@@ -262,24 +661,237 @@
     white-space: nowrap;
 }
 
+.reach-kv-ok { color: #7ce8a0; }
+.reach-kv-warn { color: #ffd37a; }
+.reach-kv-bad { color: #ff8f7a; }
+
+/* ---- dots ---- */
 .reach-dot {
-    width: 10px;
-    height: 10px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     flex: 0 0 auto;
 }
 
-.reach-dot-on {
-    background: #2ecc71;
-    box-shadow: 0 0 8px rgba(46, 204, 113, 0.7);
+.reach-dot-on { background: #2ecc71; box-shadow: 0 0 8px rgba(46, 204, 113, 0.7); }
+.reach-dot-warn { background: #ffb020; box-shadow: 0 0 8px rgba(255, 176, 32, 0.7); }
+.reach-dot-off { background: #e74c3c; box-shadow: 0 0 8px rgba(231, 76, 60, 0.6); }
+
+/* ---- tables ---- */
+.reach-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+    min-width: 0;
 }
 
-.reach-dot-off {
-    background: #e74c3c;
-    box-shadow: 0 0 8px rgba(231, 76, 60, 0.6);
+.reach-table th {
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    opacity: 0.55;
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
 }
 
-/* ---- usage tabs + snippets ---- */
+.reach-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 240px;
+}
+
+.reach-table code {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11.5px;
+    color: #ffd37a;
+}
+
+.reach-table-logs td {
+    max-width: 160px;
+}
+
+.reach-nowrap { white-space: nowrap; }
+
+.reach-err {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11px;
+    opacity: 0.7;
+}
+
+/* ---- toolbar ---- */
+.reach-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+/* ---- charts ---- */
+.reach-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 110px;
+    padding: 4px 2px 0;
+}
+
+.reach-chart-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    height: 100%;
+    gap: 4px;
+}
+
+.reach-chart-bar {
+    width: 70%;
+    max-width: 26px;
+    border-radius: 3px 3px 0 0;
+    background: rgba(128, 128, 128, 0.35);
+    min-height: 2px;
+    transition: height 300ms ease;
+}
+
+.reach-chart-gold { background: linear-gradient(180deg, #ffd37a, rgba(255, 176, 32, 0.35)); }
+.reach-chart-green { background: linear-gradient(180deg, #7ce8a0, rgba(46, 204, 113, 0.3)); }
+
+.reach-chart-x {
+    font-size: 9px;
+    opacity: 0.5;
+    white-space: nowrap;
+    transform: rotate(-35deg);
+    transform-origin: center;
+    width: 0;
+}
+
+/* ---- forms ---- */
+.reach-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.reach-form-row {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.reach-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.reach-field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.reach-field-label {
+    font-size: 12px;
+    font-weight: 700;
+    opacity: 0.85;
+}
+
+.reach-field-help {
+    font-size: 11px;
+    opacity: 0.55;
+    line-height: 1.45;
+}
+
+.reach-input {
+    font: inherit;
+    font-size: 12.5px;
+    padding: 8px 11px;
+    border-radius: 8px;
+    color: inherit;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    width: 100%;
+    min-width: 0;
+}
+
+.reach-input:focus {
+    outline: none;
+    border-color: rgba(255, 176, 32, 0.6);
+    box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.15);
+}
+
+.reach-input-sm {
+    width: auto;
+    flex: 0 1 auto;
+}
+
+.reach-field input[type="checkbox"] {
+    width: auto;
+}
+
+.reach-save-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(255, 176, 32, 0.06);
+    border: 1px solid rgba(255, 176, 32, 0.25);
+}
+
+/* ---- toggle switch ---- */
+.reach-switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+}
+
+.reach-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.reach-switch-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: rgba(128, 128, 128, 0.3);
+    border-radius: 999px;
+    transition: background 150ms ease;
+}
+
+.reach-switch-slider::before {
+    content: "";
+    position: absolute;
+    height: 16px;
+    width: 16px;
+    left: 3px;
+    top: 3px;
+    background: #fff;
+    border-radius: 50%;
+    transition: transform 150ms ease;
+}
+
+.reach-switch input:checked + .reach-switch-slider {
+    background: #ffb020;
+}
+
+.reach-switch input:checked + .reach-switch-slider::before {
+    transform: translateX(18px);
+}
+
+/* ---- tabs + snippets ---- */
 .reach-usage-tabs {
     display: flex;
     gap: 6px;
@@ -297,6 +909,7 @@
     background: transparent;
     border: 1px solid rgba(128, 128, 128, 0.28);
     opacity: 0.75;
+    text-transform: capitalize;
 }
 
 .reach-tab-active {
@@ -313,41 +926,80 @@
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(128, 128, 128, 0.22);
     overflow-x: auto;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    color: inherit;
+    white-space: pre;
 }
 
 .reach-snippet code {
-    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 12.5px;
-    line-height: 1.55;
-    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
 }
 
-.reach-snippet-steps {
-    font-size: 13px;
-    line-height: 1.7;
-    opacity: 0.9;
-}
-
-.reach-snippet-steps ol {
-    margin: 0;
-    padding-left: 20px;
-}
-
-.reach-snippet-steps code {
+.reach-flow {
+    white-space: pre;
+    line-height: 1.5;
     color: #ffd37a;
 }
 
-/* ---- narrow screens ---- */
-@media (max-width: 760px) {
-    .reach-grid {
+/* ---- toast ---- */
+.reach-toast {
+    position: fixed;
+    bottom: 26px;
+    right: 26px;
+    z-index: 99999;
+    padding: 11px 18px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: #101418;
+    background: #e8e8ea;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+    max-width: 420px;
+}
+
+.reach-toast-ok { background: #2ecc71; color: #08140c; }
+.reach-toast-error { background: #e74c3c; color: #fff; }
+.reach-toast-info { background: #ffd37a; color: #1a1206; }
+
+/* ---- responsive ---- */
+@media (max-width: 900px) {
+    .reach-shell {
         grid-template-columns: minmax(0, 1fr);
     }
-    .reach-url-row {
-        flex-direction: column;
-        align-items: stretch;
+    .reach-menu {
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+        border-right: none;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+        padding: 8px 10px;
     }
-    .reach-url {
-        white-space: normal;
-        word-break: break-all;
+    .reach-menu-brand {
+        display: none;
+    }
+    .reach-menu-items {
+        flex-direction: row;
+        flex: 0 0 auto;
+    }
+    .reach-menu-item span {
+        display: none;
+    }
+    .reach-menu-foot {
+        display: none;
+    }
+    .reach-tiles {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .reach-dash-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .reach-form-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .reach-content {
+        max-height: none;
     }
 }

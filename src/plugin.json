@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "simple-reach",
   "name": "SimpleREACH",
-  "version": "1.0.0",
-  "description": "REACH — RAG Endpoint & AI Chat Host. Adds a hosted OpenAI-compatible endpoint with unlimited gpt-4o (no key required) to SimpleRAG, relayed through OmniRoute's codegpt provider. Copy the URL into Endpoint settings or use it from any OpenAI client.",
+  "version": "2.0.0",
+  "description": "REACH — RAG Endpoint & AI Chat Host. A full control panel for the hosted OpenAI-compatible endpoint (unlimited gpt-4o, no key): live dashboard, endpoint docs with one-click SimpleRAG hookup, model aliases, usage analytics, request logs, and a complete settings suite — relay, tunnel, rate limits, access key, data retention.",
   "publisher": {
     "name": "Michael Anthony Falabella"
   },
@@ -11,7 +11,7 @@
   "permissions": [
     {
       "id": "ui.page",
-      "reason": "Contributes one dedicated app-bar page showing endpoint status, the public URL, and usage snippets.",
+      "reason": "Contributes one dedicated app-bar page with a menu panel: Dashboard, Endpoint, Models, Usage, Logs, Settings, About.",
       "required": true
     }
   ],
@@ -28,7 +28,7 @@
         "location": "app-bar",
         "icon": "fa-satellite-dish",
         "title": "REACH",
-        "ariaLabel": "Open the SimpleREACH endpoint page",
+        "ariaLabel": "Open the SimpleREACH endpoint control panel",
         "order": 39,
         "entrypoint": "reach.js",
         "offlineCapable": true,

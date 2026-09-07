@@ -3,16 +3,12 @@
  *
  * REACH = RAG Endpoint & AI Chat Host.
  *
- * Registers with SimpleRAG's public extension host
- * (window.RAGWorkspaceExtensions) using the page-controller contract, and
- * renders one app-bar page: endpoint status, the hosted public URL, and
- * usage snippets. The page talks to the local relay on 127.0.0.1:20777 when
- * it is present and always resolves the canonical public endpoint through
- * the pointer gist.
+ * Implements SimpleRAG's native 3-column architecture via window.RAGWorkspaceExtensions:
+ *   - Panel 1 (#nav-pane): Navigation options (Dashboard, Endpoint, Models, Usage, Logs, Settings, About)
+ *   - Panel 2 (#list-pane): Stationary controls & settings (Relay status, ping test, hookup, rate limits)
+ *   - Panel 3 (#settings-container): Dynamic main content pane corresponding to Panel 1 selection
  *
- * Everything lives under the reach-* class prefix and the simple-reach.*
- * storage keys. No SimpleRAG source file is modified; the only host state
- * written is this plugin's own entry in localStorage ragworkspace_plugins.
+ * Falls back gracefully to the self-contained 2-column shell if SimpleRAG's 3-panel DOM is unavailable.
  */
 (function registerSimpleReach() {
     'use strict';
@@ -22,21 +18,20 @@
     const APP_ID = 'reach';
     const HOST_STORAGE_KEY = 'ragworkspace_plugins';
     const CONTROLLER_DISPOSE_KEY = '__simpleReachControllerDispose';
-    const LOCAL_STATUS_URL = 'http://127.0.0.1:20777/status';
-    const ENDPOINT_POINTER = 'https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt';
-    const REPO_URL = 'https://github.com/falabellamichael/SimpleREACH';
-    const MODEL_ID = 'gpt-4o';
-    const POINTER_TTL_MS = 60000;
-    const POLL_INTERVAL_MS = 15000;
 
     const MANIFEST = window.__simpleReachManifest;
+    const core = window.__reachCore;
+    const pages = window.__reachPages;
+
     if (!MANIFEST || typeof MANIFEST !== 'object') {
         console.error('[simple-reach] manifest.js did not load — re-run "python tools/reach.py install".');
         return;
     }
+    if (!core || !pages) {
+        console.error('[simple-reach] package incomplete — re-run "python tools/reach.py install".');
+        return;
+    }
 
-    /* Say WHY the page is missing, on the page itself (inline styles: if the
-     * host bundle failed, our own stylesheet may not have loaded either). */
     function showBootFailure(title, detail) {
         try {
             if (typeof document === 'undefined' || !document.body) return;
@@ -70,7 +65,6 @@
         return;
     }
 
-    // Idempotence: a development re-evaluation keeps the live controller.
     const priorDispose = window[CONTROLLER_DISPOSE_KEY];
     if (typeof priorDispose === 'function'
         || (window.simpleReach && window.simpleReach.pluginId === PLUGIN_ID)) {
@@ -110,11 +104,11 @@
         const existing = records.find(r => r && r.id === PLUGIN_ID);
         if (existing) {
             let changed = false;
-            // Explicit disablement is authoritative: only repair absent metadata.
             if (!Object.prototype.hasOwnProperty.call(existing, 'enabled')) { existing.enabled = true; changed = true; }
             if (!Object.prototype.hasOwnProperty.call(existing, 'status')) { existing.status = 'running'; changed = true; }
             if (existing.runtimeBacked !== true) { existing.runtimeBacked = true; changed = true; }
             if (!existing.runtimePage) { existing.runtimePage = APP_ID; changed = true; }
+            if (existing.version !== MANIFEST.version) { existing.version = MANIFEST.version; changed = true; }
             return !changed || writeHostRecords(records);
         }
         records.push({
@@ -140,7 +134,7 @@
             installMethod: 'Local extension registry',
             source: 'local-file',
             sourceLabel: 'Local extension registry',
-            repository: REPO_URL,
+            repository: core.REPO_URL,
             isolation: 'inline',
             verified: false,
             signed: false,
@@ -162,169 +156,563 @@
     }
 
     // ------------------------------------------------------------------
-    // Runtime state
+    // Runtime state & DOM helpers
     // ------------------------------------------------------------------
     const runtime = {
         context: null,
         mounted: false,
         pollTimer: null,
-        local: null,          // relay /status snapshot or null
-        pointerUrl: null,     // canonical public endpoint (gist)
-        pointerAt: 0,
-        testing: false,
-        lastTest: null        // {ok, text}
+        cleanupPage: null,
+        activePage: core.store.page || core.prefsGet('page', 'dashboard')
     };
 
     function hostElements() {
         const ctx = runtime.context;
-        if (ctx && ctx.elements && ctx.elements.settingsContainer) {
-            return ctx.elements.settingsContainer;
+        const elObj = (ctx && ctx.elements) || {};
+        return {
+            navTitle: elObj.navTitle || document.getElementById('nav-title') || document.querySelector('.nav-title'),
+            navFolderList: elObj.navFolderList || document.getElementById('nav-folder-list'),
+            listTitle: elObj.listTitle || document.getElementById('list-title'),
+            listContent: elObj.listContent || document.getElementById('list-content'),
+            settingsContainer: elObj.settingsContainer || document.getElementById('settings-container') || document.getElementById('settingsContainer'),
+            readingContent: elObj.readingContent || document.querySelector('.reading-content')
+        };
+    }
+
+    function isThreePanelMode() {
+        const els = hostElements();
+        return Boolean(els.navFolderList && els.listContent && els.settingsContainer);
+    }
+
+    // ------------------------------------------------------------------
+    // Panel 1: Navigation Pane (#nav-folder-list)
+    // ------------------------------------------------------------------
+    function renderNav(context, hostApi) {
+        runtime.context = context || runtime.context;
+        const els = hostElements();
+        if (els.navTitle) {
+            els.navTitle.textContent = 'SimpleREACH';
         }
-        return document.getElementById('settings-container')
-            || document.getElementById('settingsContainer');
+        if (els.navFolderList) {
+            els.navFolderList.setAttribute('aria-label', 'SimpleREACH navigation');
+        }
+
+        const ctx = runtime.context;
+        if (ctx && ctx.state) {
+            if (!pages.defs.some(d => d.id === ctx.state.folder)) {
+                ctx.state.folder = runtime.activePage || core.prefsGet('page', 'dashboard');
+            }
+        }
+
+        const addFolder = (hostApi && typeof hostApi.addFolder === 'function')
+            ? hostApi.addFolder
+            : (typeof context?.addFolder === 'function' ? context.addFolder : null);
+
+        if (addFolder) {
+            pages.defs.forEach(def => {
+                let count = null;
+                if (def.id === 'models' && core.store.settings && core.store.settings.models) {
+                    count = Object.keys(core.store.settings.models).length;
+                }
+                addFolder(def.id, def.icon, def.label, count);
+            });
+        }
     }
 
-    function escapeText(value) {
-        const el = document.createElement('span');
-        el.textContent = String(value == null ? '' : value);
-        return el.innerHTML;
-    }
+    // ------------------------------------------------------------------
+    // Panel 2: Stationary Controls & Settings (#list-content)
+    // ------------------------------------------------------------------
+    function renderStationaryPanel(container) {
+        let panel = container.querySelector('.reach-stationary-panel');
+        if (panel) {
+            updateStationaryValues(panel);
+            return;
+        }
 
-    function fetchJson(url, timeoutMs, parseRaw) {
-        const controller = typeof AbortController === 'function' ? new AbortController() : null;
-        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
-        return fetch(url, { signal: controller ? controller.signal : undefined })
-            .then(res => {
-                if (!res.ok) throw new Error('HTTP ' + res.status);
-                return res.text();
+        container.innerHTML = '';
+        panel = core.el('div', 'reach-stationary-panel');
+        container.appendChild(panel);
+
+        // --- Card 1: Relay Status & Live Controls ---
+        const c1 = core.el('div', 'reach-stat-card');
+        const c1Head = core.el('div', 'reach-stat-card-head');
+        const c1Status = core.el('div', 'reach-stat-status-row');
+        const dot = core.el('span', 'reach-dot reach-dot-off');
+        dot.id = 'reach-stat-dot';
+        const title = core.el('span', 'reach-stat-status-title', 'Relay Offline');
+        title.id = 'reach-stat-title';
+        c1Status.appendChild(dot);
+        c1Status.appendChild(title);
+        c1Head.appendChild(c1Status);
+        const portBadge = core.el('span', 'reach-badge reach-badge-live', ':20777');
+        portBadge.id = 'reach-stat-port';
+        c1Head.appendChild(portBadge);
+        c1.appendChild(c1Head);
+
+        const metaRow = core.el('div', 'reach-stat-meta-row');
+        const uptimeEl = core.el('span', 'reach-hint', 'Uptime: checking…');
+        uptimeEl.id = 'reach-stat-uptime';
+        const upstreamHint = core.el('span', 'reach-hint', 'OmniRoute :20128');
+        upstreamHint.id = 'reach-stat-upstream-hint';
+        metaRow.appendChild(uptimeEl);
+        metaRow.appendChild(upstreamHint);
+        c1.appendChild(metaRow);
+
+        const actRow = core.el('div', 'reach-stat-actions-row');
+        const pingBtn = core.el('button', 'reach-btn reach-btn-primary reach-btn-sm');
+        pingBtn.id = 'reach-stat-ping-btn';
+        pingBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Ping Test';
+        const restartBtn = core.el('button', 'reach-btn reach-btn-sm');
+        restartBtn.id = 'reach-stat-restart-btn';
+        restartBtn.innerHTML = '<i class="fa-solid fa-rotate"></i> Restart';
+        const refreshBtn = core.el('button', 'reach-btn reach-btn-sm');
+        refreshBtn.id = 'reach-stat-refresh-btn';
+        refreshBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i>';
+        actRow.appendChild(pingBtn);
+        actRow.appendChild(restartBtn);
+        actRow.appendChild(refreshBtn);
+        c1.appendChild(actRow);
+
+        const pingResult = core.el('div', 'reach-result reach-stat-ping-result');
+        pingResult.id = 'reach-stat-ping-result';
+        pingResult.hidden = true;
+        c1.appendChild(pingResult);
+        panel.appendChild(c1);
+
+        // --- Card 2: Public Endpoint & 1-Click SimpleRAG Hookup ---
+        const c2 = core.el('div', 'reach-stat-card');
+        const c2Head = core.el('div', 'reach-stat-card-head');
+        const c2Title = core.el('div', 'reach-stat-card-title');
+        c2Title.innerHTML = '<i class="fa-solid fa-link"></i> Endpoint';
+        const copyBtn = core.el('button', 'reach-btn reach-btn-sm');
+        copyBtn.id = 'reach-stat-copy-btn';
+        copyBtn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy';
+        c2Head.appendChild(c2Title);
+        c2Head.appendChild(copyBtn);
+        c2.appendChild(c2Head);
+
+        const urlBox = core.el('div', 'reach-stat-url-box', 'http://127.0.0.1:20777/v1');
+        urlBox.id = 'reach-stat-url-box';
+        c2.appendChild(urlBox);
+
+        const hookupRow = core.el('div', 'reach-stat-actions-row');
+        const hookupBtn = core.el('button', 'reach-btn reach-btn-primary reach-btn-block');
+        hookupBtn.id = 'reach-stat-hookup-btn';
+        hookupBtn.innerHTML = '<i class="fa-solid fa-plug"></i> 1-Click Add to SimpleRAG';
+        hookupRow.appendChild(hookupBtn);
+        c2.appendChild(hookupRow);
+        panel.appendChild(c2);
+
+        // --- Card 3: Stationary Settings & Knobs ---
+        const c3 = core.el('div', 'reach-stat-card');
+        const c3Head = core.el('div', 'reach-stat-card-head');
+        const c3Title = core.el('div', 'reach-stat-card-title');
+        c3Title.innerHTML = '<i class="fa-solid fa-sliders"></i> Relay Settings';
+        const saveSettingsBtn = core.el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Save');
+        saveSettingsBtn.id = 'reach-stat-save-settings-btn';
+        c3Head.appendChild(c3Title);
+        c3Head.appendChild(saveSettingsBtn);
+        c3.appendChild(c3Head);
+
+        // Row A: Rate Limiter Toggle
+        const setRow1 = core.el('div', 'reach-stat-setting-row');
+        const setLbl1 = core.el('div', 'reach-stat-setting-label');
+        setLbl1.appendChild(core.el('span', null, 'Rate Limiter'));
+        setLbl1.appendChild(core.el('span', 'reach-hint', 'Token-bucket per IP'));
+        const switchLabel = core.el('label', 'reach-switch');
+        const switchInput = core.el('input');
+        switchInput.type = 'checkbox';
+        switchInput.id = 'reach-stat-rate-limit-toggle';
+        switchInput.checked = true;
+        const switchSlider = core.el('span', 'reach-switch-slider');
+        switchLabel.appendChild(switchInput);
+        switchLabel.appendChild(switchSlider);
+        setRow1.appendChild(setLbl1);
+        setRow1.appendChild(switchLabel);
+        c3.appendChild(setRow1);
+
+        // Row B: Per-IP RPM
+        const setRow2 = core.el('div', 'reach-stat-setting-row');
+        const setLbl2 = core.el('div', 'reach-stat-setting-label');
+        setLbl2.appendChild(core.el('span', null, 'Per-IP RPM'));
+        setLbl2.appendChild(core.el('span', 'reach-hint', 'Requests / minute'));
+        const rpmInput = core.el('input', 'reach-input reach-input-sm reach-stat-input');
+        rpmInput.type = 'number';
+        rpmInput.id = 'reach-stat-rpm-input';
+        rpmInput.min = '1';
+        rpmInput.max = '1000';
+        rpmInput.value = '60';
+        setRow2.appendChild(setLbl2);
+        setRow2.appendChild(rpmInput);
+        c3.appendChild(setRow2);
+
+        // Row C: Max Concurrency
+        const setRow3 = core.el('div', 'reach-stat-setting-row');
+        const setLbl3 = core.el('div', 'reach-stat-setting-label');
+        setLbl3.appendChild(core.el('span', null, 'Max Concurrency'));
+        setLbl3.appendChild(core.el('span', 'reach-hint', 'Parallel requests'));
+        const concInput = core.el('input', 'reach-input reach-input-sm reach-stat-input');
+        concInput.type = 'number';
+        concInput.id = 'reach-stat-concurrency-input';
+        concInput.min = '1';
+        concInput.max = '64';
+        concInput.value = '8';
+        setRow3.appendChild(setLbl3);
+        setRow3.appendChild(concInput);
+        c3.appendChild(setRow3);
+
+        panel.appendChild(c3);
+
+        // --- Card 4: Upstream Routing ---
+        const c4 = core.el('div', 'reach-stat-card');
+        const c4Head = core.el('div', 'reach-stat-card-head');
+        const c4Title = core.el('div', 'reach-stat-card-title');
+        c4Title.innerHTML = '<i class="fa-solid fa-route"></i> Upstream';
+        const upstreamBadge = core.el('span', 'reach-badge reach-badge-live', 'OmniRoute OK');
+        upstreamBadge.id = 'reach-stat-upstream-badge';
+        c4Head.appendChild(c4Title);
+        c4Head.appendChild(upstreamBadge);
+        c4.appendChild(c4Head);
+
+        const dl = core.el('dl', 'reach-kv');
+        dl.innerHTML = '<dt>Target</dt><dd>127.0.0.1:20128</dd>'
+            + '<dt>Provider</dt><dd>codegpt (gpt-4o)</dd>'
+            + '<dt>Aliases</dt><dd>gpt-4o, gpt-4o-mini</dd>';
+        c4.appendChild(dl);
+        panel.appendChild(c4);
+
+        // --- Card 5: Live Activity Today ---
+        const c5 = core.el('div', 'reach-stat-card');
+        const c5Head = core.el('div', 'reach-stat-card-head');
+        const c5Title = core.el('div', 'reach-stat-card-title');
+        c5Title.innerHTML = '<i class="fa-solid fa-chart-simple"></i> Activity Today';
+        const viewLogsBtn = core.el('button', 'reach-btn reach-btn-sm', 'Full Logs →');
+        viewLogsBtn.id = 'reach-stat-view-logs-btn';
+        c5Head.appendChild(c5Title);
+        c5Head.appendChild(viewLogsBtn);
+        c5.appendChild(c5Head);
+
+        const grid3 = core.el('div', 'reach-stat-grid-3');
+        const mkMini = (val, lbl, id) => {
+            const wrap = core.el('div', 'reach-stat-mini-tile');
+            const v = core.el('div', 'reach-stat-mini-val', val);
+            v.id = id;
+            wrap.appendChild(v);
+            wrap.appendChild(core.el('div', 'reach-stat-mini-lbl', lbl));
+            return wrap;
+        };
+        grid3.appendChild(mkMini('0', 'Requests', 'reach-stat-mini-reqs'));
+        grid3.appendChild(mkMini('0', 'Tokens', 'reach-stat-mini-tokens'));
+        grid3.appendChild(mkMini('0ms', 'Avg Lat', 'reach-stat-mini-latency'));
+        c5.appendChild(grid3);
+        panel.appendChild(c5);
+
+        // --- Event Listeners ---
+        pingBtn.addEventListener('click', () => {
+            pingBtn.disabled = true;
+            pingResult.hidden = false;
+            pingResult.className = 'reach-result';
+            pingResult.textContent = 'Pinging upstream via /_reach/test …';
+            core.relayFetch('/_reach/test', { method: 'POST' }, 20000)
+                .then(res => res.json())
+                .then(data => {
+                    pingResult.className = 'reach-result ' + (data.ok ? 'reach-result-ok' : 'reach-result-error');
+                    pingResult.textContent = data.ok
+                        ? '✓ ' + core.fmtLatency(data.latency_ms) + ' (' + (data.model || 'gpt-4o') + '): ' + (data.reply || 'OK')
+                        : '✗ ' + (data.error || 'Test failed');
+                })
+                .catch(err => {
+                    pingResult.className = 'reach-result reach-result-error';
+                    pingResult.textContent = '✗ ' + err.message;
+                })
+                .finally(() => { pingBtn.disabled = false; });
+        });
+
+        restartBtn.addEventListener('click', () => {
+            restartBtn.disabled = true;
+            core.toast('Restarting relay…', 'info');
+            core.relayFetch('/_reach/restart', { method: 'POST' }, 8000)
+                .then(() => {
+                    setTimeout(() => {
+                        core.refreshLocal().then(() => {
+                            updateStationaryValues(panel);
+                            core.toast('Relay restarted ✓', 'ok');
+                        });
+                    }, 1200);
+                })
+                .catch(err => core.toast('Restart: ' + err.message, 'error'))
+                .finally(() => { restartBtn.disabled = false; });
+        });
+
+        refreshBtn.addEventListener('click', () => {
+            core.refreshLocal().then(() => {
+                updateStationaryValues(panel);
+                core.toast('Refreshed', 'info');
+            });
+        });
+
+        copyBtn.addEventListener('click', () => {
+            const text = urlBox.textContent;
+            if (text) {
+                core.copyText(text).then(ok => core.toast(ok ? 'Endpoint copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
+            }
+        });
+
+        hookupBtn.addEventListener('click', () => {
+            const url = core.store.pointerUrl || ('http://127.0.0.1:' + ((core.store.local && core.store.local.port) || 20777));
+            hookupBtn.disabled = true;
+            hookupBtn.textContent = 'Adding…';
+            fetch(core.API_BASE + '/model-endpoints', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: 'SimpleREACH (gpt-4o)',
+                    base_url: url + '/v1',
+                    api_key: '',
+                    default_model: 'gpt-4o'
+                })
             })
-            .then(text => (parseRaw ? text.trim() : JSON.parse(text)))
-            .catch(err => { throw err; })
-            .finally(() => { if (timer) clearTimeout(timer); });
+                .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                .then(({ ok, data }) => {
+                    if (ok) {
+                        core.toast('Added to SimpleRAG ✓ — select SimpleREACH in Model Settings', 'ok');
+                    } else {
+                        core.toast('Hookup: ' + (data?.detail || 'failed'), 'error');
+                    }
+                })
+                .catch(err => core.toast('Hookup failed: ' + err.message, 'error'))
+                .finally(() => {
+                    hookupBtn.disabled = false;
+                    hookupBtn.innerHTML = '<i class="fa-solid fa-plug"></i> 1-Click Add to SimpleRAG';
+                });
+        });
+
+        saveSettingsBtn.addEventListener('click', () => {
+            saveSettingsBtn.disabled = true;
+            saveSettingsBtn.textContent = 'Saving…';
+            const patch = {
+                rate_limit_enabled: switchInput.checked,
+                rate_limit_per_minute: parseInt(rpmInput.value, 10) || 60,
+                max_concurrency: parseInt(concInput.value, 10) || 8
+            };
+            core.saveSettings(patch)
+                .then(res => {
+                    if (res.ok) {
+                        core.toast('Settings applied ✓', 'ok');
+                    } else {
+                        core.toast('Save failed: ' + (res.data?.error?.message || 'status ' + res.status), 'error');
+                    }
+                })
+                .catch(err => core.toast('Save error: ' + err.message, 'error'))
+                .finally(() => {
+                    saveSettingsBtn.disabled = false;
+                    saveSettingsBtn.textContent = 'Save';
+                });
+        });
+
+        viewLogsBtn.addEventListener('click', () => {
+            switchPage('logs');
+        });
+
+        // Hydrate initial values
+        updateStationaryValues(panel);
+        core.loadSettings().then(cfg => {
+            if (!cfg) return;
+            if (typeof cfg.rate_limit_enabled === 'boolean') switchInput.checked = cfg.rate_limit_enabled;
+            if (cfg.rate_limit_per_minute) rpmInput.value = cfg.rate_limit_per_minute;
+            if (cfg.max_concurrency) concInput.value = cfg.max_concurrency;
+        });
+    }
+
+    function updateStationaryValues(panel) {
+        if (!panel) return;
+        const snap = core.store.local;
+        const dot = panel.querySelector('#reach-stat-dot');
+        const title = panel.querySelector('#reach-stat-title');
+        const port = panel.querySelector('#reach-stat-port');
+        const uptime = panel.querySelector('#reach-stat-uptime');
+        const upstreamBadge = panel.querySelector('#reach-stat-upstream-badge');
+        const urlBox = panel.querySelector('#reach-stat-url-box');
+        const miniReqs = panel.querySelector('#reach-stat-mini-reqs');
+        const miniTokens = panel.querySelector('#reach-stat-mini-tokens');
+        const miniLatency = panel.querySelector('#reach-stat-mini-latency');
+
+        if (snap) {
+            if (dot) dot.className = 'reach-dot ' + (snap.upstream_ok ? 'reach-dot-on' : 'reach-dot-warn');
+            if (title) title.textContent = snap.upstream_ok ? 'Relay Active' : 'Relay Active (Upstream Issue)';
+            if (port) port.textContent = ':' + (snap.port || 20777);
+            if (uptime) uptime.textContent = 'Uptime: ' + core.fmtUptime(snap.uptime_s || 0);
+            if (upstreamBadge) {
+                upstreamBadge.className = 'reach-badge ' + (snap.upstream_ok ? 'reach-badge-live' : 'reach-badge-off');
+                upstreamBadge.textContent = snap.upstream_ok ? 'OmniRoute OK' : 'OmniRoute DOWN';
+            }
+            const today = snap.today || {};
+            if (miniReqs) miniReqs.textContent = core.fmtNum(today.requests);
+            if (miniTokens) miniTokens.textContent = core.fmtNum((today.tokens_in || 0) + (today.tokens_out || 0));
+            if (miniLatency) miniLatency.textContent = core.fmtLatency(today.avg_latency_ms);
+        } else {
+            if (dot) dot.className = 'reach-dot reach-dot-off';
+            if (title) title.textContent = 'Relay Offline';
+            if (port) port.textContent = ':20777';
+            if (uptime) uptime.textContent = 'Uptime: —';
+            if (upstreamBadge) {
+                upstreamBadge.className = 'reach-badge reach-badge-off';
+                upstreamBadge.textContent = 'Offline';
+            }
+        }
+
+        if (urlBox) {
+            urlBox.textContent = core.store.pointerUrl
+                ? core.store.pointerUrl + '/v1'
+                : 'http://127.0.0.1:' + ((snap && snap.port) || 20777) + '/v1';
+        }
     }
 
     // ------------------------------------------------------------------
-    // Page DOM
+    // Panel 3: Reading Pane Content (#settings-container)
     // ------------------------------------------------------------------
-    function pageMarkup() {
-        return [
-            '<div class="reach-hero">',
-            '  <div class="reach-hero-badge">REACH</div>',
-            '  <div class="reach-hero-copy">',
-            '    <h1 class="reach-title">SimpleREACH</h1>',
-            '    <p class="reach-tagline">RAG Endpoint &amp; AI Chat Host — hosted OpenAI-compatible endpoint with unlimited gpt-4o. No key. No quotas. For everyone.</p>',
-            '  </div>',
-            '</div>',
-            '<div class="reach-grid">',
-            '  <section class="reach-card reach-card-wide">',
-            '    <header class="reach-card-head">',
-            '      <h2>Public endpoint</h2>',
-            '      <span class="reach-badge reach-badge-live" id="reach-pointer-badge">resolving…</span>',
-            '    </header>',
-            '    <div class="reach-url-row">',
-            '      <code class="reach-url" id="reach-public-url">resolving…</code>',
-            '      <button class="reach-btn" data-reach-copy>Copy</button>',
-            '    </div>',
-            '    <div class="reach-meta-row">',
-            '      <span class="reach-chip">model: gpt-4o</span>',
-            '      <span class="reach-chip">streaming ✓</span>',
-            '      <span class="reach-chip">unlimited · free</span>',
-            '      <span class="reach-chip">no API key</span>',
-            '    </div>',
-            '    <div class="reach-result" id="reach-test-result" hidden></div>',
-            '    <footer class="reach-card-foot">',
-            '      <button class="reach-btn reach-btn-primary" data-reach-test>Test endpoint</button>',
-            '      <span class="reach-hint">fires a 1-token completion through the public URL</span>',
-            '    </footer>',
-            '  </section>',
-            '  <section class="reach-card">',
-            '    <header class="reach-card-head">',
-            '      <h2>Local relay</h2>',
-            '      <span class="reach-dot" id="reach-relay-dot"></span>',
-            '    </header>',
-            '    <dl class="reach-kv">',
-            '      <dt>Server</dt><dd id="reach-relay-state">checking…</dd>',
-            '      <dt>Port</dt><dd>20777</dd>',
-            '      <dt>Upstream</dt><dd id="reach-upstream-state">OmniRoute :20128</dd>',
-            '      <dt>Requests served</dt><dd id="reach-relay-count">—</dd>',
-            '      <dt>Uptime</dt><dd id="reach-relay-uptime">—</dd>',
-            '    </dl>',
-            '  </section>',
-            '  <section class="reach-card reach-card-wide">',
-            '    <header class="reach-card-head"><h2>Use it anywhere</h2></header>',
-            '    <div class="reach-usage-tabs">',
-            '      <button class="reach-tab reach-tab-active" data-reach-tab="curl">curl</button>',
-            '      <button class="reach-tab" data-reach-tab="python">Python</button>',
-            '      <button class="reach-tab" data-reach-tab="simplerag">SimpleRAG</button>',
-            '    </div>',
-            '<pre class="reach-snippet" id="reach-snippet-curl"><code>curl REACH_URL/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}\'</code></pre>',
-            '<pre class="reach-snippet" id="reach-snippet-python" hidden><code>from openai import OpenAI\n\nclient = OpenAI(\n    base_url="REACH_URL/v1",\n    api_key="not-needed",\n)\nreply = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)</code></pre>',
-            '<div class="reach-snippet reach-snippet-steps" id="reach-snippet-simplerag" hidden><ol>',
-            '  <li>Open <strong>Endpoint settings</strong> in SimpleRAG.</li>',
-            '  <li>Add an <strong>OpenAI-compatible</strong> endpoint.</li>',
-            '  <li><strong>Base URL:</strong> <code>REACH_URL/v1</code></li>',
-            '  <li><strong>Model:</strong> <code>gpt-4o</code> — leave the API key blank.</li>',
-            '  <li>Save, then pick it as your active chat model.</li>',
-            '</ol></div>',
-            '  </section>',
-            '  <section class="reach-card reach-card-wide reach-foot-card">',
-            '    <p class="reach-footnote">',
-            '      REACH = <strong>R</strong>AG <strong>E</strong>ndpoint &amp; <strong>A</strong>I <strong>C</strong>hat <strong>H</strong>ost.',
-            '      Relay runs locally on the host machine and is exposed through a tunnel;',
-            '      availability rides on the host’s free codegpt tier. MIT — ',
-            '      <a class="reach-link" href="' + REPO_URL + '" target="_blank" rel="noopener">' + REPO_URL + '</a> — by Michael Anthony Falabella.',
-            '    </p>',
-            '  </section>',
-            '</div>'
-        ].join('\n');
+    function renderPageInContainer(container, pageId) {
+        if (typeof runtime.cleanupPage === 'function') {
+            try { runtime.cleanupPage(); } catch (_e) { /* page cleanup must not cascade */ }
+            runtime.cleanupPage = null;
+        }
+
+        container.innerHTML = '';
+        const root = core.el('div', 'reach-page reach-panel3');
+        const content = core.el('main', 'reach-content');
+        root.appendChild(content);
+        container.appendChild(root);
+
+        const renderer = pages[pageId];
+        if (typeof renderer === 'function') {
+            runtime.cleanupPage = renderer(content) || null;
+        }
+        content.scrollTop = 0;
     }
 
-    function buildPage() {
-        const container = hostElements();
-        if (!container) return;
-        if (container.querySelector('.reach-page')) return;
+    // ------------------------------------------------------------------
+    // Fallback Shell (for standalone or environments lacking 3 panels)
+    // ------------------------------------------------------------------
+    function buildShell() {
+        const els = hostElements();
+        const container = els.settingsContainer;
+        if (!container) return null;
+        if (container.querySelector('.reach-shell')) return container.querySelector('.reach-page');
+
+        container.innerHTML = '';
         const root = document.createElement('div');
         root.className = 'reach-page';
-        root.innerHTML = pageMarkup();
+        root.innerHTML = '<div class="reach-shell">'
+            + '  <nav class="reach-menu" aria-label="SimpleREACH">'
+            + '    <div class="reach-menu-brand">'
+            + '      <div class="reach-hero-badge">REACH</div>'
+            + '      <div class="reach-menu-brand-copy">'
+            + '        <div class="reach-menu-brand-name">SimpleREACH</div>'
+            + '        <div class="reach-menu-brand-sub">v' + MANIFEST.version + '</div>'
+            + '      </div>'
+            + '    </div>'
+            + '    <div class="reach-menu-items"></div>'
+            + '    <div class="reach-menu-foot">'
+            + '      <span class="reach-dot" id="reach-relay-dot"></span>'
+            + '      <span id="reach-relay-label">checking relay…</span>'
+            + '    </div>'
+            + '  </nav>'
+            + '  <main class="reach-content" id="reach-content"></main>'
+            + '</div>';
         container.appendChild(root);
-        bindEvents(root);
-        refreshAll();
-        startPolling();
+
+        const items = root.querySelector('.reach-menu-items');
+        pages.defs.forEach(def => {
+            const item = document.createElement('button');
+            item.className = 'reach-menu-item';
+            item.dataset.page = def.id;
+            item.title = def.label;
+            const icon = document.createElement('i');
+            icon.className = 'fa-solid ' + def.icon;
+            icon.setAttribute('aria-hidden', 'true');
+            item.appendChild(icon);
+            item.appendChild(document.createElement('span')).textContent = def.label;
+            item.addEventListener('click', () => switchPage(def.id));
+            items.appendChild(item);
+        });
+        return root;
     }
 
-    function removePageDom() {
-        const container = hostElements();
-        if (container) {
-            const root = container.querySelector('.reach-page');
-            if (root) root.remove();
+    function switchPage(pageId, force) {
+        if (!force && pageId === runtime.activePage && runtime.cleanupPage) return;
+        runtime.activePage = pageId;
+        core.store.page = pageId;
+        core.prefsSet('page', pageId);
+
+        if (runtime.context && runtime.context.state) {
+            runtime.context.state.folder = pageId;
+        }
+
+        if (isThreePanelMode()) {
+            const els = hostElements();
+            if (els.settingsContainer) {
+                renderPageInContainer(els.settingsContainer, pageId);
+            }
+            if (els.navFolderList) {
+                const items = els.navFolderList.querySelectorAll('.nav-item');
+                pages.defs.forEach((def, idx) => {
+                    if (items[idx]) {
+                        items[idx].classList.toggle('active', def.id === pageId);
+                    }
+                });
+            }
+        } else {
+            const root = document.querySelector('.reach-page');
+            if (root) {
+                root.querySelectorAll('.reach-menu-item').forEach(item => {
+                    item.classList.toggle('reach-menu-active', item.dataset.page === pageId);
+                });
+            }
+            const content = document.getElementById('reach-content');
+            if (content) {
+                if (typeof runtime.cleanupPage === 'function') {
+                    try { runtime.cleanupPage(); } catch (_e) { }
+                    runtime.cleanupPage = null;
+                }
+                content.innerHTML = '';
+                const renderer = pages[pageId];
+                if (typeof renderer === 'function') {
+                    runtime.cleanupPage = renderer(content) || null;
+                }
+                content.scrollTop = 0;
+            }
         }
     }
 
-    function bindEvents(root) {
-        const copyBtn = root.querySelector('[data-reach-copy]');
-        if (copyBtn) copyBtn.addEventListener('click', onCopy);
-
-        const testBtn = root.querySelector('[data-reach-test]');
-        if (testBtn) testBtn.addEventListener('click', onTest);
-
-        const tabs = root.querySelectorAll('[data-reach-tab]');
-        const panels = {
-            curl: root.querySelector('#reach-snippet-curl'),
-            python: root.querySelector('#reach-snippet-python'),
-            simplerag: root.querySelector('#reach-snippet-simplerag')
-        };
-        tabs.forEach(tab => tab.addEventListener('click', () => {
-            tabs.forEach(t => t.classList.remove('reach-tab-active'));
-            tab.classList.add('reach-tab-active');
-            Object.keys(panels).forEach(key => {
-                if (panels[key]) panels[key].hidden = key !== tab.dataset.reachTab;
-            });
-        }));
+    function renderOfflineBanner() {
+        const label = document.getElementById('reach-relay-label');
+        const dot = document.getElementById('reach-relay-dot');
+        if (!label || !dot) return;
+        if (core.store.local) {
+            dot.className = 'reach-dot reach-dot-on';
+            label.textContent = 'relay up · :' + (core.store.local.port || 20777)
+                + (core.store.local.upstream_ok ? '' : ' · upstream DOWN');
+            if (!core.store.local.upstream_ok) dot.className = 'reach-dot reach-dot-warn';
+        } else {
+            dot.className = 'reach-dot reach-dot-off';
+            label.textContent = 'relay offline (this machine)';
+        }
     }
 
     function startPolling() {
         if (runtime.pollTimer) return;
-        runtime.pollTimer = setInterval(refreshAll, POLL_INTERVAL_MS);
+        const tick = () => core.refreshLocal().then(() => {
+            const panel = document.querySelector('.reach-stationary-panel');
+            if (panel) updateStationaryValues(panel);
+            renderOfflineBanner();
+            if (core.store.pointerAt === 0) {
+                core.refreshPointer().then(() => {
+                    if (panel) updateStationaryValues(panel);
+                });
+            }
+        });
+        tick();
+        runtime.pollTimer = setInterval(tick, 15000);
     }
 
     function stopPolling() {
@@ -335,180 +723,7 @@
     }
 
     // ------------------------------------------------------------------
-    // Rendering
-    // ------------------------------------------------------------------
-    function refreshAll() {
-        fetchJson(LOCAL_STATUS_URL, 2500)
-            .then(snap => { runtime.local = snap; renderLocal(); })
-            .catch(() => { runtime.local = null; renderLocal(); });
-        const now = Date.now();
-        if (!runtime.pointerUrl || now - runtime.pointerAt > POINTER_TTL_MS) {
-            fetchJson(ENDPOINT_POINTER, 8000, true)
-                .then(url => {
-                    if (url) {
-                        runtime.pointerUrl = url;
-                        runtime.pointerAt = Date.now();
-                    }
-                })
-                .catch(() => { /* keep the last known URL */ })
-                .finally(renderPointer);
-        } else {
-            renderPointer();
-        }
-    }
-
-    function renderPointer() {
-        const urlEl = document.getElementById('reach-public-url');
-        const badgeEl = document.getElementById('reach-pointer-badge');
-        if (!urlEl) return;
-        const url = runtime.pointerUrl;
-        if (url) {
-            urlEl.textContent = url;
-            if (badgeEl) {
-                badgeEl.textContent = '● LIVE';
-                badgeEl.className = 'reach-badge reach-badge-live';
-            }
-        } else {
-            urlEl.textContent = 'resolving… (endpoint pointer unreachable)';
-            if (badgeEl) {
-                badgeEl.textContent = 'OFFLINE';
-                badgeEl.className = 'reach-badge reach-badge-off';
-            }
-        }
-        const snippets = document.querySelectorAll('.reach-page pre code, .reach-page .reach-snippet-steps code');
-        snippets.forEach(code => {
-            if (url && code.textContent.indexOf('REACH_URL') !== -1) {
-                code.textContent = code.textContent.split('REACH_URL').join(url);
-            }
-        });
-    }
-
-    function renderLocal() {
-        const stateEl = document.getElementById('reach-relay-state');
-        const dotEl = document.getElementById('reach-relay-dot');
-        const upstreamEl = document.getElementById('reach-upstream-state');
-        const countEl = document.getElementById('reach-relay-count');
-        const uptimeEl = document.getElementById('reach-relay-uptime');
-        const snap = runtime.local;
-        if (!snap) {
-            if (stateEl) stateEl.textContent = 'offline (this machine) — hosted endpoint still works';
-            if (dotEl) dotEl.className = 'reach-dot reach-dot-off';
-            if (upstreamEl) upstreamEl.textContent = 'n/a';
-            return;
-        }
-        if (stateEl) stateEl.textContent = 'running';
-        if (dotEl) dotEl.className = 'reach-dot reach-dot-on';
-        if (upstreamEl) {
-            upstreamEl.textContent = snap.upstream_ok
-                ? 'OmniRoute ok · ' + escapeText(snap.upstream_model)
-                : 'OmniRoute DOWN · relay cannot serve';
-        }
-        if (countEl) countEl.textContent = String(snap.requests_served || 0);
-        if (uptimeEl) uptimeEl.textContent = fmtUptime(snap.uptime_s || 0);
-    }
-
-    function fmtUptime(seconds) {
-        seconds = Math.max(0, Math.floor(seconds));
-        const h = Math.floor(seconds / 3600);
-        const m = Math.floor((seconds % 3600) / 60);
-        const s = seconds % 60;
-        if (h) return h + 'h ' + m + 'm';
-        if (m) return m + 'm ' + s + 's';
-        return s + 's';
-    }
-
-    // ------------------------------------------------------------------
-    // Actions
-    // ------------------------------------------------------------------
-    function copyText(text) {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-            return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
-        }
-        try {
-            const ta = document.createElement('textarea');
-            ta.value = text;
-            ta.style.cssText = 'position:fixed;opacity:0;';
-            document.body.appendChild(ta);
-            ta.select();
-            const ok = document.execCommand('copy');
-            ta.remove();
-            return Promise.resolve(ok);
-        } catch (_e) {
-            return Promise.resolve(false);
-        }
-    }
-
-    function onCopy() {
-        const url = runtime.pointerUrl;
-        if (!url) return;
-        copyText(url).then(ok => flashButton('[data-reach-copy]', ok ? 'Copied ✓' : 'Copy failed'));
-    }
-
-    function flashButton(selector, label) {
-        const btn = document.querySelector(selector);
-        if (!btn) return;
-        const original = btn.textContent;
-        btn.textContent = label;
-        setTimeout(() => { btn.textContent = original; }, 1600);
-    }
-
-    function onTest() {
-        if (runtime.testing) return;
-        const url = runtime.pointerUrl;
-        const resultEl = document.getElementById('reach-test-result');
-        if (!url) {
-            if (resultEl) {
-                resultEl.hidden = false;
-                resultEl.className = 'reach-result reach-result-error';
-                resultEl.textContent = 'No public URL yet — is the tunnel up?';
-            }
-            return;
-        }
-        runtime.testing = true;
-        if (resultEl) {
-            resultEl.hidden = false;
-            resultEl.className = 'reach-result';
-            resultEl.textContent = 'Calling ' + url + '/v1/chat/completions …';
-        }
-        const payload = {
-            model: MODEL_ID,
-            messages: [{ role: 'user', content: 'Reply with exactly: REACH OK' }],
-            max_tokens: 24
-        };
-        fetch(url + '/v1/chat/completions', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        })
-            .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
-            .then(({ ok, data }) => {
-                runtime.lastTest = { ok: ok, text: '' };
-                if (ok && data.choices && data.choices[0] && data.choices[0].message) {
-                    runtime.lastTest.text = String(data.choices[0].message.content || '');
-                    if (resultEl) {
-                        resultEl.className = 'reach-result reach-result-ok';
-                        resultEl.textContent = '✓ ' + runtime.lastTest.text;
-                    }
-                } else {
-                    const message = data && data.error && data.error.message
-                        ? data.error.message : JSON.stringify(data).slice(0, 300);
-                    if (resultEl) {
-                        resultEl.className = 'reach-result reach-result-error';
-                        resultEl.textContent = '✗ ' + message;
-                    }
-                }
-            })
-            .catch(err => {
-                if (resultEl) {
-                    resultEl.className = 'reach-result reach-result-error';
-                    resultEl.textContent = '✗ ' + err.message;
-                }
-            })
-            .finally(() => { runtime.testing = false; });
-    }
-
-    // ------------------------------------------------------------------
-    // Page controller (host contract)
+    // Page controller (SimpleRAG host contract)
     // ------------------------------------------------------------------
     const controller = {
         appId: APP_ID,
@@ -521,26 +736,71 @@
         activate(context) {
             runtime.context = context || runtime.context;
             runtime.mounted = true;
-            buildPage();
-            refreshAll();
+            const saved = core.prefsGet('page', 'dashboard');
+            runtime.activePage = pages.defs.some(d => d.id === saved) ? saved : 'dashboard';
+            if (runtime.context && runtime.context.state) {
+                runtime.context.state.folder = runtime.activePage;
+            }
             startPolling();
         },
 
-        renderNav(context) {
-            runtime.context = context || runtime.context;
+        onFolderChanged(contextOrId, maybeId) {
+            const id = typeof maybeId === 'string' ? maybeId : (typeof contextOrId === 'string' ? contextOrId : '');
+            const folder = id || (runtime.context?.state?.folder) || 'dashboard';
+            if (pages.defs.some(d => d.id === folder)) {
+                switchPage(folder);
+            }
         },
 
-        renderRibbon(context) {
+        renderNav(context, hostApi) {
+            renderNav(context, hostApi);
+        },
+
+        renderRibbon(context, hostApi) {
             runtime.context = context || runtime.context;
+            if (hostApi && typeof hostApi.addBtn === 'function') {
+                hostApi.addBtn('reach-btn-ping', 'fa-bolt', 'Ping Test', false, () => {
+                    const pingBtn = document.getElementById('reach-stat-ping-btn');
+                    if (pingBtn) pingBtn.click();
+                    else core.toast('Pinging…', 'info');
+                });
+                hostApi.addBtn('reach-btn-refresh', 'fa-rotate', 'Refresh', false, () => {
+                    core.refreshLocal().then(() => core.toast('Refreshed', 'info'));
+                });
+            }
         },
 
         renderList(context) {
             runtime.context = context || runtime.context;
+            const els = hostElements();
+            if (els.listTitle) {
+                els.listTitle.textContent = 'Relay & Controls';
+            }
+            if (els.listContent) {
+                renderStationaryPanel(els.listContent);
+            }
         },
 
         renderPage(context) {
             runtime.context = context || runtime.context;
-            renderPageNow();
+            const targetPage = (runtime.context?.state?.folder) || runtime.activePage || core.prefsGet('page', 'dashboard');
+            const pageId = pages.defs.some(d => d.id === targetPage) ? targetPage : 'dashboard';
+            runtime.activePage = pageId;
+
+            if (isThreePanelMode()) {
+                const els = hostElements();
+                if (els.settingsContainer) {
+                    renderPageInContainer(els.settingsContainer, pageId);
+                }
+            } else {
+                if (!runtime.mounted) {
+                    buildShell();
+                }
+                switchPage(pageId, true);
+            }
+            if (!runtime.pollTimer) {
+                startPolling();
+            }
         },
 
         deactivate() {
@@ -551,16 +811,19 @@
         unmount() {
             runtime.mounted = false;
             stopPolling();
-            removePageDom();
+            if (typeof runtime.cleanupPage === 'function') {
+                try { runtime.cleanupPage(); } catch (_e) { }
+                runtime.cleanupPage = null;
+            }
+            const els = hostElements();
+            if (els.settingsContainer) {
+                const root = els.settingsContainer.querySelector('.reach-page');
+                if (root) root.remove();
+            }
             window[CONTROLLER_DISPOSE_KEY] = null;
             if (window.simpleReach) delete window.simpleReach;
         }
     };
-
-    function renderPageNow() {
-        if (!runtime.mounted) buildPage();
-        refreshAll();
-    }
 
     // ------------------------------------------------------------------
     // Register with the host (script-load time)
@@ -570,7 +833,7 @@
         capabilities: MANIFEST.frontend.capabilities.slice(),
         extensionType: 'assistant',
         commandMeta: {
-            'simpleReach.openPage': { icon: 'fa-satellite-dish', contexts: ['reach'], featured: true, keywords: ['reach', 'gpt-4o', 'endpoint', 'hosting', 'free'] }
+            'simpleReach.openPage': { icon: 'fa-satellite-dish', contexts: ['reach'], featured: true, keywords: ['reach', 'gpt-4o', 'endpoint', 'hosting', 'free', 'relay'] }
         },
         commands: {
             'simpleReach.openPage': () => {
@@ -582,19 +845,16 @@
     });
 
     host.registerManifest(MANIFEST);
-
-    // Seed the host record NOW, at script-load time — app.bundle.js defers its
-    // loadPluginsFromStorage() read to DOMContentLoaded, which fires after this
-    // injected script runs.
     ensureHostRecord();
 
-    // Global handle for tests and the host command dispatcher.
     window.simpleReach = Object.freeze({
         pluginId: PLUGIN_ID,
         pageId: PAGE_ID,
         appId: APP_ID,
         version: MANIFEST.version,
-        ensureHostRecord: ensureHostRecord
+        ensureHostRecord: ensureHostRecord,
+        switchPage: switchPage,
+        controller: controller
     });
     window[CONTROLLER_DISPOSE_KEY] = controller.unmount;
 })();

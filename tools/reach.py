@@ -44,7 +44,7 @@ from pathlib import Path
 PLUGIN_ID = "simple-reach"
 SCHEMA_VERSION = 1
 SURFACES = ["advanced"]
-SCRIPT_SOURCES = ["manifest.js", "reach.js"]
+SCRIPT_SOURCES = ["manifest.js", "reach-core.js", "reach-pages.js", "reach.js"]
 STYLE_SOURCES = ["reach.css"]
 MANIFEST_PLACEHOLDER = "__REACH_MANIFEST_JSON__"
 DEFAULT_PORT = 20777
@@ -208,20 +208,42 @@ def read_registry(home):
 
 
 def write_registry(home, registry):
+    """Atomic write: peer installers (Blueprint, gradient-studio) rewrite this
+    file concurrently, so a partial write must never be visible to the server."""
     home.mkdir(parents=True, exist_ok=True)
-    (home / "registry.json").write_text(
-        json.dumps(registry, separators=(",", ":")), encoding="utf-8")
+    path = home / "registry.json"
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(registry, separators=(",", ":")),
+                   encoding="utf-8")
+    os.replace(str(tmp), str(path))
 
 
-def upsert_registry(home, version, manifest_bytes):
+def verify_registry_entry(home, entry_id):
+    """Re-read the registry from disk and confirm our entry is present."""
     registry = read_registry(home)
-    entries = [e for e in registry["extensions"] if e.get("id") != PLUGIN_ID]
-    entries.append({
+    return any(e.get("id") == entry_id for e in registry.get("extensions", []))
+
+
+def registry_entry(plugin, assets, manifest_bytes):
+    """Registry entry in the format the frontend server REQUIRES:
+    {id, version, enabled: true, manifest_sha256}. The served response
+    expands entries with scripts/styles, but discovery silently drops any
+    entry lacking `enabled`/`manifest_sha256` — write the full old format."""
+    return {
         "id": PLUGIN_ID,
-        "version": version,
+        "version": plugin["version"],
         "enabled": True,
         "manifest_sha256": sha256_bytes(manifest_bytes),
-    })
+    }
+
+
+def upsert_registry(home, entry):
+    """Insert/replace ONLY our entry; every other entry is preserved as-is.
+    Peers can overwrite the file a moment later — the caller verifies and
+    retries (see cmd_install)."""
+    registry = read_registry(home)
+    entries = [e for e in registry["extensions"] if e.get("id") != PLUGIN_ID]
+    entries.append(entry)
     entries.sort(key=lambda e: e.get("id", ""))
     registry["extensions"] = entries
     write_registry(home, registry)
@@ -571,6 +593,7 @@ def register_autostart():
             lines.append("\"%s\" tools\\reach.py publish --quiet" % resolve_interpreter())
     else:
         lines.append("echo ngrok not found - run: winget install ngrok")
+    lines.append("\"%s\" tools\\reach.py reassert" % resolve_interpreter())
     BAT_PATH.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     result = subprocess.run(
         ["schtasks", "/Create", "/TN", "SimpleREACH", "/SC", "ONLOGON",
@@ -611,13 +634,45 @@ def remove_autostart():
 # Commands
 # ----------------------------------------------------------------------
 
+STASH_DIR = CONFIG_DIR / "extension-stash"
+
+
+def stash_extension(entry, assets, manifest_bytes):
+    """Keep the built package beside the runtime so `reassert` can restore the
+    registry entry WITHOUT the git checkout (peer installers clobber the
+    shared registry.json; autostart reasserts on every logon)."""
+    STASH_DIR.mkdir(parents=True, exist_ok=True)
+    for name, data in assets:
+        (STASH_DIR / name).write_bytes(data)
+    (STASH_DIR / "manifest.json").write_bytes(manifest_bytes)
+    (STASH_DIR / "entry.json").write_text(json.dumps(entry), encoding="utf-8")
+
+
+def cmd_reassert(_args):
+    """Rewrite the extension package + registry entry from the install stash."""
+    if not (STASH_DIR / "entry.json").is_file():
+        raise SystemExit("error: no extension stash — run `reach.py install` "
+                         "once from a checkout first")
+    entry = json.loads((STASH_DIR / "entry.json").read_text(encoding="utf-8"))
+    home = extension_home(None)
+    pkg = package_dir(home, entry["version"])
+    pkg.mkdir(parents=True, exist_ok=True)
+    for path in STASH_DIR.iterdir():
+        if path.is_file() and path.name != "entry.json":
+            (pkg / path.name).write_bytes(path.read_bytes())
+    upsert_registry(home, entry)
+    if verify_registry_entry(home, PLUGIN_ID):
+        print("  registry entry re-asserted (%s)" % entry["version"])
+    else:
+        print("  warning: entry clobbered again — re-run `reach.py reassert`")
+
+
 def cmd_install(args):
     if not IS_FULL_REPO:
         raise SystemExit("error: 'install' must run from a full SimpleREACH "
                          "checkout (src/ missing)")
     print("SimpleREACH installer — REACH: RAG Endpoint & AI Chat Host")
     print("repo: " + REPO_URL)
-
     # 1. plugin page -> local-extension registry (never touches SimpleRAG files)
     plugin = load_plugin_manifest()
     version = plugin["version"]
@@ -630,7 +685,25 @@ def cmd_install(args):
     for name, data in assets:
         (pkg / name).write_bytes(data)
     (pkg / "manifest.json").write_bytes(manifest)
-    upsert_registry(home, version, manifest)
+    entry = registry_entry(plugin, assets, manifest)
+    upsert_registry(home, entry)
+    # Peers (Blueprint, gradient-studio installers) rewrite the shared
+    # registry concurrently — verify our entry landed and retry if clobbered.
+    for attempt in range(3):
+        if verify_registry_entry(home, PLUGIN_ID):
+            break
+        time.sleep(1)
+        upsert_registry(home, entry)
+    if not verify_registry_entry(home, PLUGIN_ID):
+        print("  warning: registry entry was clobbered by a concurrent "
+              "installer — re-run install to restore it")
+    stash_extension(entry, assets, manifest)
+    # prune stale versions of OUR package (never other extensions')
+    pkg_root = home / "packages" / PLUGIN_ID
+    if pkg_root.is_dir():
+        for entry in pkg_root.iterdir():
+            if entry.is_dir() and entry.name != version:
+                shutil.rmtree(entry, ignore_errors=True)
     print("  plugin page installed -> " + str(pkg))
 
     # 2. runtime copy + config
@@ -656,8 +729,12 @@ def cmd_install(args):
     save_config(cfg)
     print("  runtime + config -> " + str(CONFIG_DIR))
 
-    # 3. start + host + publish
+    # 3. (re)start + host + publish
     if not args.no_start:
+        if args.restart and port_open(runtime_port()):
+            print("  restarting relay to load the new server version…")
+            stop_server()
+            time.sleep(1)
         start_server()
         if args.tunnel != "none":
             start_tunnel(args.tunnel, runtime_port())
@@ -732,6 +809,157 @@ def cmd_restart(args):
         publish()
 
 
+# ----------------------------------------------------------------------
+# v2 admin commands (talk to the running relay's _reach API)
+# ----------------------------------------------------------------------
+
+def admin_request(path, method="GET", payload=None, port=None):
+    url = "http://127.0.0.1:%d%s" % (port or runtime_port(), path)
+    req = urllib.request.Request(url, method=method)
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        req.add_header("Content-Type", "application/json")
+    with urllib.request.urlopen(req, data=data, timeout=10) as resp:
+        return resp.status, json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def require_relay():
+    if not port_open(runtime_port()):
+        raise SystemExit("error: relay not running — `python tools/reach.py start`")
+
+
+def cmd_settings(args):
+    require_relay()
+    if not args.key:
+        _, cfg = admin_request("/_reach/settings")
+        print(json.dumps(cfg, indent=2))
+        return
+    value = args.value
+    if value is None:
+        _, cfg = admin_request("/_reach/settings")
+        current = cfg.get(args.key)
+        if isinstance(current, dict):
+            print(json.dumps(current, indent=2))
+        else:
+            print(current if current is not None else "(unset)")
+        return
+    patch = {args.key: value}
+    if value.lower() in ("true", "false"):
+        patch[args.key] = value.lower() == "true"
+    elif value.isdigit():
+        patch[args.key] = int(value)
+    _, result = admin_request("/_reach/settings", "PUT", patch)
+    if result.get("saved"):
+        print("saved: %s = %r" % (args.key, patch[args.key]))
+    else:
+        raise SystemExit("error: %s" % (result.get("error") or {}).get("message"))
+
+
+def cmd_models(args):
+    require_relay()
+    if args.action == "list":
+        _, cfg = admin_request("/_reach/settings")
+        for alias, spec in sorted(cfg["models"].items()):
+            print("%-18s %-34s %s" % (alias, spec["upstream"],
+                                      "enabled" if spec["enabled"] else "disabled"))
+        return
+    if args.action == "add":
+        _, cfg = admin_request("/_reach/settings")
+        models = dict(cfg["models"])
+        models[args.alias] = {"upstream": args.upstream, "enabled": True}
+        _, result = admin_request("/_reach/settings", "PUT", {"models": models})
+        if result.get("saved"):
+            print("added alias %s -> %s" % (args.alias, args.upstream))
+        else:
+            raise SystemExit("error: %s" % (result.get("error") or {}).get("message"))
+        return
+    if args.action == "remove":
+        _, cfg = admin_request("/_reach/settings")
+        models = dict(cfg["models"])
+        if args.alias not in models:
+            raise SystemExit("error: unknown alias " + args.alias)
+        if len(models) <= 1:
+            raise SystemExit("error: keep at least one alias")
+        # alias -> null is the removal sentinel in the settings merge
+        _, result = admin_request("/_reach/settings", "PUT",
+                                  {"models": {args.alias: None}})
+        if result.get("saved"):
+            print("removed alias " + args.alias)
+        else:
+            raise SystemExit("error: %s" % (result.get("error") or {}).get("message"))
+
+
+def cmd_stats(args):
+    require_relay()
+    _, snap = admin_request("/_reach/stats")
+    stats = snap.get("stats", {})
+    today = stats.get("today", {})
+    print("SimpleREACH stats (today)")
+    print("  requests:      %d" % today.get("requests", 0))
+    print("  tokens in/out: %d / %d" % (today.get("tokens_in", 0),
+                                       today.get("tokens_out", 0)))
+    print("  errors:        %d (rate-limited %d)"
+          % (today.get("errors", 0), today.get("rate_limited", 0)))
+    print("  avg latency:   %s ms | p95 %s ms"
+          % (today.get("avg_latency_ms", 0), snap.get("p95_latency_ms", 0)))
+    print("  uptime:        %.0fs | version %s" % (snap.get("uptime_s", 0),
+                                                     snap.get("version")))
+    if args.verbose:
+        print("\nBy model:")
+        for m in stats.get("by_model", []):
+            print("  %-16s %5d req  %s/%s tokens"
+                  % (m["model"], m["requests"], m["tokens_in"], m["tokens_out"]))
+        print("\nTop clients:")
+        for c in stats.get("top_clients", []):
+            print("  %-20s %5d req  %s tokens out"
+                  % (c["ip"], c["requests"], c["tokens_out"]))
+
+
+def cmd_logs(args):
+    require_relay()
+    query = "limit=%d" % max(1, min(args.limit, 500))
+    if args.status:
+        query += "&status=" + args.status
+    if args.model:
+        query += "&model=" + args.model
+    _, data = admin_request("/_reach/logs?" + query)
+    logs = data.get("logs", [])
+    print("%-19s %-18s %-12s %6s %9s %8s %8s  %s"
+          % ("time", "ip", "model", "status", "latency", "in", "out", "error"))
+    for entry in logs:
+        print("%-19s %-18s %-12s %6s %9s %8s %8s  %s"
+              % (entry.get("ts", "")[:19], entry.get("ip") or "?",
+                 (entry.get("model") or "—")[:12], entry.get("status"),
+                 entry.get("latency_ms") or "—",
+                 entry.get("tokens_in") if entry.get("tokens_in") is not None else "·",
+                 entry.get("tokens_out") if entry.get("tokens_out") is not None else "·",
+                 entry.get("error") or ""))
+
+
+def cmd_test(args):
+    require_relay()
+    _, result = admin_request("/_reach/test", "POST")
+    if result.get("ok"):
+        print("upstream OK in %s ms via %s: %r"
+              % (result.get("latency_ms"), result.get("model"),
+                 result.get("reply")))
+    else:
+        raise SystemExit("upstream test failed: " + result.get("error", "?"))
+
+
+def cmd_update(args):
+    if not IS_FULL_REPO:
+        raise SystemExit("error: 'update' must run from a SimpleREACH checkout")
+    print("pulling latest from " + REPO_URL + " …")
+    result = subprocess.run(["git", "pull", "--ff-only"], cwd=str(REPO_ROOT),
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SystemExit("git pull failed: " + (result.stderr or "").strip()[:300])
+    print(result.stdout.strip() or "  already up to date")
+    cmd_install(args)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="SimpleREACH installer + runtime manager",
@@ -742,11 +970,13 @@ def main():
                                                "start relay + tunnel")
     p_install.add_argument("--no-start", action="store_true",
                            help="install files only")
+    p_install.add_argument("--no-restart", action="store_true",
+                           help="don't restart a running relay")
     p_install.add_argument("--tunnel", choices=["ngrok", "cloudflared", "none"],
                            default="ngrok")
     p_install.add_argument("--no-publish", action="store_true")
     p_install.add_argument("--extension-home", default=None)
-    p_install.set_defaults(func=cmd_install)
+    p_install.set_defaults(func=cmd_install, restart=True)
 
     p_un = sub.add_parser("uninstall", help="remove the plugin page")
     p_un.add_argument("--all", action="store_true",
@@ -780,10 +1010,52 @@ def main():
                    help="create a Windows logon task (relay + tunnel + publish)") \
        .set_defaults(func=lambda _a: register_autostart())
 
+    sub.add_parser("reassert",
+                   help="restore the registry entry from the install stash "
+                        "(peer installers clobber the shared registry.json)") \
+       .set_defaults(func=cmd_reassert)
+
+    p_settings = sub.add_parser("settings",
+                                help="read/update relay settings (v2)")
+    p_settings.add_argument("key", nargs="?", default=None)
+    p_settings.add_argument("value", nargs="?", default=None)
+    p_settings.set_defaults(func=cmd_settings)
+
+    p_models = sub.add_parser("models", help="manage model aliases (v2)")
+    p_models.add_argument("action", choices=["list", "add", "remove"])
+    p_models.add_argument("alias", nargs="?", default=None)
+    p_models.add_argument("upstream", nargs="?", default=None)
+    p_models.set_defaults(func=cmd_models)
+
+    p_stats = sub.add_parser("stats", help="usage statistics (v2)")
+    p_stats.add_argument("--verbose", "-v", action="store_true")
+    p_stats.set_defaults(func=cmd_stats)
+
+    p_logs = sub.add_parser("logs", help="recent request log (v2)")
+    p_logs.add_argument("--limit", type=int, default=50)
+    p_logs.add_argument("--status", default=None)
+    p_logs.add_argument("--model", default=None)
+    p_logs.set_defaults(func=cmd_logs)
+
+    sub.add_parser("test", help="live upstream test (v2)") \
+       .set_defaults(func=cmd_test)
+
+    p_update = sub.add_parser("update",
+                              help="git pull + reinstall (v2)")
+    p_update.add_argument("--no-start", action="store_true")
+    p_update.add_argument("--no-restart", action="store_true")
+    p_update.add_argument("--tunnel", choices=["ngrok", "cloudflared", "none"],
+                          default="ngrok")
+    p_update.add_argument("--no-publish", action="store_true")
+    p_update.add_argument("--extension-home", default=None)
+    p_update.set_defaults(func=cmd_update, restart=True)
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
         raise SystemExit(1)
+    if getattr(args, "no_restart", False):
+        args.restart = False
     args.func(args)
 
 
