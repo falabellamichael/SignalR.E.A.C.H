@@ -52,6 +52,44 @@
         return note;
     }
 
+    function showNewKeyModal(keyObj) {
+        const overlay = el('div', 'reach-modal-overlay');
+        const dialog = el('div', 'reach-modal-dialog');
+        dialog.innerHTML = '<header class="reach-card-head">'
+            + '<h3 style="margin:0;font-size:15px;display:flex;align-items:center;gap:8px;">'
+            + '<i class="fa-solid fa-key" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+            + '<span>Client API Key Generated</span>'
+            + '</h3>'
+            + '</header>'
+            + '<div class="reach-card-body" style="padding:16px;">'
+            + '<p class="reach-copy" style="margin-top:0;">Key Name: <strong>' + esc(keyObj.name || 'Client') + '</strong> &nbsp;·&nbsp; ID: <code>' + esc(keyObj.id || '') + '</code></p>'
+            + '<div style="background:rgba(255, 176, 32, 0.12);border:1px solid rgba(255, 176, 32, 0.35);padding:10px 12px;border-radius:8px;margin-bottom:12px;">'
+            + '<p class="reach-copy" style="margin:0;font-size:12px;color:var(--reach-accent-light, #ffd37a);font-weight:600;">'
+            + '<i class="fa-solid fa-triangle-exclamation" style="margin-right:6px;"></i>Please copy and store this key now. You will not be able to view the full token again!'
+            + '</p>'
+            + '</div>'
+            + '<div class="reach-url-row" style="margin:12px 0;">'
+            + '<code class="reach-url" id="new-client-token" style="word-break:break-all;font-size:13px;user-select:all;">' + esc(keyObj.key || '') + '</code>'
+            + '</div>'
+            + '<p class="reach-hint" style="margin-bottom:0;">Use in clients via <code>Authorization: Bearer ' + esc(keyObj.key ? keyObj.key.slice(0, 14) + '…' : '') + '</code> or <code>X-Reach-Key</code>.</p>'
+            + '</div>';
+        const foot = el('div', 'reach-card-foot');
+        const copyBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm');
+        copyBtn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy Key';
+        copyBtn.addEventListener('click', () => {
+            core.copyText(keyObj.key).then(ok => toast(ok ? 'Key copied to clipboard ✓' : 'Copy failed', ok ? 'ok' : 'error'));
+        });
+        const closeBtn = el('button', 'reach-btn reach-btn-sm', 'Done');
+        closeBtn.addEventListener('click', () => {
+            overlay.remove();
+        });
+        foot.appendChild(copyBtn);
+        foot.appendChild(closeBtn);
+        dialog.appendChild(foot);
+        overlay.appendChild(dialog);
+        document.body.appendChild(overlay);
+    }
+
     /* ------------------------------------------------------------- DASHBOARD */
     /* ------------------------------------------------------------- DASHBOARD */
     function renderDashboard(container) {
@@ -748,10 +786,10 @@
         const U = () => (core.store.pointerUrl || 'https://YOUR-PUBLIC-URL');
         const renderedUrl = U();
         const snips = [
-            { id: 'curl', text: 'curl ' + renderedUrl + '/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}\'' },
-            { id: 'python', text: 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + renderedUrl + '/v1", api_key="not-needed")\nreply = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)' },
-            { id: 'javascript', text: 'const res = await fetch("' + renderedUrl + '/v1/chat/completions", {\n  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({ model: "gpt-4o",\n    messages: [{ role: "user", content: "Hello!" }] }),\n});\nconst data = await res.json();\nconsole.log(data.choices[0].message.content);' },
-            { id: 'simplerag', text: '1. Endpoint settings → add OpenAI-compatible\n2. Base URL: ' + renderedUrl + '/v1\n3. Model: gpt-4o\n4. API key: leave blank\n5. Save + select as active model\n(or just hit "Add to SimpleRAG" above)' }
+            { id: 'curl', text: 'curl ' + renderedUrl + '/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -H "Authorization: Bearer sk-reach-..." \\\n  -d \'{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}\'' },
+            { id: 'python', text: 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + renderedUrl + '/v1", api_key="sk-reach-...")\nreply = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)' },
+            { id: 'javascript', text: 'const res = await fetch("' + renderedUrl + '/v1/chat/completions", {\n  method: "POST",\n  headers: { "Content-Type": "application/json", "Authorization": "Bearer sk-reach-..." },\n  body: JSON.stringify({ model: "gpt-4o",\n    messages: [{ role: "user", content: "Hello!" }] }),\n});\nconst data = await res.json();\nconsole.log(data.choices[0].message.content);' },
+            { id: 'simplerag', text: '1. Endpoint settings → add OpenAI-compatible\n2. Base URL: ' + renderedUrl + '/v1\n3. Model: gpt-4o\n4. API key: sk-reach-... (or leave blank if key_required is off)\n5. Save + select as active model\n(or just hit "Add to SimpleRAG" above)' }
         ];
         snips.forEach(s => {
             const pre = el('pre', 'reach-snippet');
@@ -2355,15 +2393,154 @@
 
             // 6. Access & security
             const ac = section('Access & security', 'fa-key', 'Who may call the endpoint and from where.');
-            ac.appendChild(buildInput('checkbox', 'access', 'key_required', 'Require access key',
-                'Clients send X-Reach-Key (or Bearer).'));
-            ac.appendChild(buildInput('password', 'access', 'access_key', 'Access key',
-                'Blank keeps the current key; min 6 chars when required.'));
+            ac.appendChild(buildInput('checkbox', 'access', 'key_required', 'Require client API key',
+                'When checked, requests without a valid sk-reach-... key return 401 Unauthorized.'));
             ac.appendChild(buildInput('csv', 'access', 'ip_allowlist', 'IP allowlist',
                 'Empty = everyone. Loopback is always allowed.'));
             ac.appendChild(buildInput('csv', 'access', 'ip_blocklist', 'IP blocklist'));
             ac.appendChild(buildInput('text', 'access', 'cors_origins', 'CORS origins',
                 '"*" or comma-separated origins.'));
+
+            // 6b. Client API Keys card
+            const keysCard = el('section', 'reach-card');
+            const kHead = el('header', 'reach-card-head');
+            kHead.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">'
+                + '<i class="fa-solid fa-id-card-clip" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+                + '<span>Client API Keys (sk-reach)</span>'
+                + '</div>';
+            keysCard.appendChild(kHead);
+            keysCard.appendChild(el('p', 'reach-copy',
+                'Generate standardized sk-reach tokens for external tools (Postman, Cursor, LibreChat, teammates). SimpleREACH authenticates external clients using these keys while securely routing upstream on the fly without revealing your OmniRoute credentials.'));
+
+            const keysBody = el('div', 'reach-card-body');
+            keysCard.appendChild(keysBody);
+
+            const keysList = el('div', 'reach-keys-list');
+            keysBody.appendChild(keysList);
+
+            function renderKeysList() {
+                keysList.innerHTML = '';
+                const keys = (draft.access && draft.access.keys) || [];
+                if (!keys.length) {
+                    keysList.appendChild(emptyNote('No client API keys generated yet. Create one below.'));
+                } else {
+                    const table = el('table', 'reach-table');
+                    table.innerHTML = '<thead><tr><th>Name</th><th>Key ID</th><th>Token</th><th>Status</th><th>Last Used</th><th>Actions</th></tr></thead>';
+                    const tbody = document.createElement('tbody');
+                    keys.forEach((k, idx) => {
+                        const tr = document.createElement('tr');
+                        const tdName = el('td', null);
+                        tdName.appendChild(el('strong', null, k.name || 'Client'));
+
+                        const tdId = el('td', null);
+                        tdId.appendChild(el('code', 'reach-code-sm', k.id || '—'));
+
+                        const tdToken = el('td', null);
+                        const tokDisplay = k.preview || k.masked_key || (k.key ? (k.key.length > 18 ? k.key.slice(0, 14) + '…' : k.key) : '—');
+                        tdToken.appendChild(el('code', 'reach-code-sm', tokDisplay));
+
+                        const tdStatus = el('td', null);
+                        const enToggle = el('label', 'reach-switch');
+                        const enInput = document.createElement('input');
+                        enInput.type = 'checkbox';
+                        enInput.checked = k.enabled !== false;
+                        enInput.title = enInput.checked ? 'Enabled' : 'Disabled';
+                        enInput.addEventListener('change', () => {
+                            k.enabled = enInput.checked;
+                            markDirty(true);
+                            renderKeysList();
+                        });
+                        const enSlider = el('span', 'reach-switch-slider');
+                        enToggle.appendChild(enInput);
+                        enToggle.appendChild(enSlider);
+                        tdStatus.appendChild(enToggle);
+
+                        const tdUsed = el('td', 'reach-hint', (k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'));
+
+                        const tdActions = el('td', null);
+                        const actWrap = el('div', 'reach-actions-row');
+
+                        const copyBtn = el('button', 'reach-btn reach-btn-sm', 'Copy');
+                        copyBtn.type = 'button';
+                        copyBtn.title = 'Copy token';
+                        copyBtn.addEventListener('click', () => {
+                            if (k.key && !k.key.includes('…') && !k.key.startsWith('set (')) {
+                                core.copyText(k.key).then(ok => toast(ok ? 'Key copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
+                            } else {
+                                toast('Full secret key is hidden for security. Create a new key if lost.', 'warn');
+                            }
+                        });
+                        actWrap.appendChild(copyBtn);
+
+                        const delBtn = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Revoke');
+                        delBtn.type = 'button';
+                        delBtn.title = 'Revoke client key';
+                        delBtn.addEventListener('click', () => {
+                            if (confirm('Revoke client key "' + (k.name || k.id) + '"? Calls with this key will fail.')) {
+                                draft.access.keys.splice(idx, 1);
+                                markDirty(true);
+                                renderKeysList();
+                                toast('Key revoked (click "Save settings" to commit)', 'ok');
+                            }
+                        });
+                        actWrap.appendChild(delBtn);
+                        tdActions.appendChild(actWrap);
+
+                        tr.appendChild(tdName);
+                        tr.appendChild(tdId);
+                        tr.appendChild(tdToken);
+                        tr.appendChild(tdStatus);
+                        tr.appendChild(tdUsed);
+                        tr.appendChild(tdActions);
+                        tbody.appendChild(tr);
+                    });
+                    table.appendChild(tbody);
+                    keysList.appendChild(table);
+                }
+            }
+
+            renderKeysList();
+
+            // Foot bar: generate key
+            const newKeyBar = el('div', 'reach-card-foot');
+            const keyNameInput = document.createElement('input');
+            keyNameInput.className = 'reach-input reach-input-sm';
+            keyNameInput.placeholder = 'Key name (e.g. WhiteShadow, Cursor, Postman)';
+            keyNameInput.style.maxWidth = '280px';
+
+            const createKeyBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm');
+            createKeyBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Generate Client Key';
+            createKeyBtn.type = 'button';
+            createKeyBtn.addEventListener('click', () => {
+                const name = keyNameInput.value.trim() || 'Client';
+                createKeyBtn.disabled = true;
+                core.relayFetch('/_reach/keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name })
+                })
+                    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                    .then(({ ok, data }) => {
+                        if (ok && data.created && data.key) {
+                            keyNameInput.value = '';
+                            draft.access = draft.access || {};
+                            draft.access.keys = draft.access.keys || [];
+                            draft.access.keys.push(data.key);
+                            renderKeysList();
+                            showNewKeyModal(data.key);
+                            toast('Client key generated ✓', 'ok');
+                        } else {
+                            toast('Failed to create key: ' + (data?.error?.message || 'unknown error'), 'error');
+                        }
+                    })
+                    .catch(err => toast('Error: ' + err.message, 'error'))
+                    .finally(() => { createKeyBtn.disabled = false; });
+            });
+
+            newKeyBar.appendChild(keyNameInput);
+            newKeyBar.appendChild(createKeyBtn);
+            keysCard.appendChild(newKeyBar);
+            body.appendChild(keysCard);
 
             // 7. Caching
             const ca = section('Caching', 'fa-bolt', 'Repeat identical prompts are served from the relay cache.');

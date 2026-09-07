@@ -331,5 +331,66 @@ class ResponseCacheTests(unittest.TestCase):
         self.assertEqual(key3, key4)
 
 
+class ClientKeyManagementTests(unittest.TestCase):
+    def test_generate_client_key_format(self):
+        k = reachd.generate_client_key("WhiteShadow")
+        self.assertEqual(k["name"], "WhiteShadow")
+        self.assertTrue(k["key"].startswith("sk-reach-"))
+        self.assertTrue(k["id"].startswith("key_"))
+        self.assertTrue(k["enabled"])
+        self.assertIn("created_at", k)
+        self.assertIsNone(k["last_used_at"])
+
+    def test_validate_keys_array(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["access"]["keys"] = [reachd.generate_client_key("Test")]
+        reachd.validate_settings(cfg)
+
+        cfg["access"]["keys"] = "not a list"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+        cfg["access"]["keys"] = [{"id": "bad"}]  # missing key
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_key_required_validates_presence(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["access"]["key_required"] = True
+        cfg["access"]["keys"] = []
+        cfg["access"]["access_key"] = ""
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+        cfg["access"]["keys"] = [reachd.generate_client_key("Valid")]
+        reachd.validate_settings(cfg)  # passes with valid key
+
+    def test_mask_key(self):
+        self.assertEqual(reachd.mask_key(""), "(none)")
+        self.assertEqual(reachd.mask_key("short"), "set (short)")
+        masked = reachd.mask_key("sk-reach-1234567890abcdef1234567890abcdef")
+        self.assertTrue(masked.startswith("sk-reach-1234"))
+        self.assertTrue(masked.endswith("cdef"))
+        self.assertIn("…", masked)
+
+    def test_load_config_generates_default_key_and_migrates_legacy(self):
+        with tempfile.TemporaryDirectory() as td:
+            cfg_path = Path(td) / "config.json"
+            cfg_path.write_text(json.dumps({"access": {"access_key": "legacy-secret-123"}}), encoding="utf-8")
+            cfg = reachd.load_config(cfg_path)
+            keys = cfg.get("access", {}).get("keys", [])
+            self.assertTrue(len(keys) >= 1)
+            self.assertTrue(any(k.get("key") == "legacy-secret-123" for k in keys))
+
+    def test_analytics_records_key_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "reach.db"
+            an = reachd.Analytics(db_path)
+            an.log_request(model="gpt-4o", status=200, latency_ms=45, key_name="WhiteShadow")
+            logs = an.logs(limit=10)
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(logs[0]["key_name"], "WhiteShadow")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

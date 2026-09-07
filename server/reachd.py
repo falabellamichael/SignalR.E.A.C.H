@@ -35,6 +35,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
 import subprocess
 import sys
@@ -165,6 +166,53 @@ def count_tokens(text):
         else:
             count += 1
     return max(1, count)
+
+
+def find_omniroute_key():
+    """Auto-detect OmniRoute API key from local storage on the fly."""
+    db = Path.home() / ".omniroute" / "storage.sqlite"
+    if not db.is_file():
+        return None
+    try:
+        conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
+        rows = conn.execute(
+            "SELECT name, key FROM api_keys "
+            "WHERE revoked_at IS NULL AND is_active = 1").fetchall()
+        conn.close()
+    except sqlite3.Error:
+        return None
+    preferred = [k for name, k in rows if name == "SimpleRAG"]
+    if preferred:
+        return preferred[0]
+    return rows[0][1] if rows else None
+
+
+def mask_key(key):
+    """Mask key for safe display in logs and UI."""
+    if not key or not isinstance(key, str):
+        return "(none)"
+    if len(key) <= 12:
+        return "set (short)"
+    if key.startswith("sk-reach-") and len(key) > 16:
+        return key[:13] + "…" + key[-4:]
+    return key[:8] + "…" + key[-4:]
+
+
+def generate_client_key(name="Default"):
+    """Generate a clean, secure sk-reach-... API key for external clients."""
+    token = "sk-reach-" + secrets.token_hex(16)
+    key_id = "key_" + secrets.token_hex(4)
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return {
+        "id": key_id,
+        "name": (name or "Key").strip(),
+        "key": token,
+        "created_at": now_iso,
+        "last_used_at": None,
+        "enabled": True,
+        "rate_limit_rpm": 0,
+    }
+
 
 STATE = None          # RelayState, set in main()
 PORT = DEFAULT_PORT
@@ -316,6 +364,7 @@ DEFAULT_SETTINGS = {
     "access": {
         "key_required": False,
         "access_key": "",
+        "keys": [],                    # client API keys: list of {"id", "name", "key", "created_at", "last_used_at", "enabled", "rate_limit_rpm"}
         "ip_allowlist": [],            # empty = everyone (loopback always ok)
         "ip_blocklist": [],
         "cors_origins": "*",           # "*" or comma-separated origins
@@ -550,9 +599,18 @@ def validate_settings(cfg):
     access = cfg["access"]
     _bool(access.get("key_required", False), "access.key_required")
     _str(access.get("access_key", ""), "access.access_key", 0, 128)
+    keys_list = access.get("keys", [])
+    _expect(isinstance(keys_list, list) and len(keys_list) <= 100,
+            "access.keys must be a list of at most 100 keys")
+    for k in keys_list:
+        _expect(isinstance(k, dict), "access.keys entries must be objects")
+        _expect(isinstance(k.get("key"), str) and len(k["key"]) >= 6,
+                "access.keys key must be at least 6 chars")
+        _expect(isinstance(k.get("name", "Key"), str), "access.keys name must be string")
     if access.get("key_required"):
-        _expect(len(access.get("access_key", "")) >= 6,
-                "access_key must be at least 6 chars when key_required is on")
+        has_key = len(access.get("access_key", "")) >= 6 or any(k.get("enabled", True) for k in keys_list)
+        _expect(has_key,
+                "access_key or at least one active client key required when key_required is on")
     for key in ("ip_allowlist", "ip_blocklist"):
         value = access.get(key, [])
         _expect(isinstance(value, list) and len(value) <= 256,
@@ -629,6 +687,12 @@ def settings_public(cfg):
     access = shown.get("access") or {}
     if access.get("access_key"):
         access["access_key"] = "set (" + access["access_key"][:4] + "…)"
+    if access.get("keys"):
+        for k in access["keys"]:
+            raw = k.get("key", "")
+            k["masked_key"] = mask_key(raw)
+            k["preview"] = raw[:12] + "…" if len(raw) > 16 else raw
+            k["key"] = k["masked_key"]
     return shown
 
 
@@ -659,6 +723,42 @@ def load_config(path):
                         **(spec if isinstance(spec, dict) else {})}
                 for alias, spec in raw_models.items()
             } or dict(DEFAULT_SETTINGS["models"])
+
+            access = cfg.setdefault("access", {})
+            keys = list(access.get("keys") or [])
+            dirty = False
+            if not keys:
+                legacy_key = access.get("access_key")
+                if legacy_key and len(legacy_key) >= 6:
+                    keys.append({
+                        "id": "key_legacy",
+                        "name": "Legacy Key",
+                        "key": legacy_key,
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "last_used_at": None,
+                        "enabled": True,
+                        "rate_limit_rpm": 0,
+                    })
+                else:
+                    def_k = generate_client_key("Default")
+                    keys.append(def_k)
+                    if not access.get("access_key"):
+                        access["access_key"] = def_k["key"]
+                access["keys"] = keys
+                dirty = True
+
+            if not cfg.get("omniroute_key"):
+                detected = find_omniroute_key()
+                if detected:
+                    cfg["omniroute_key"] = detected
+                    dirty = True
+
+            if dirty:
+                try:
+                    save_config(cfg, path)
+                except Exception:
+                    pass
+
             try:
                 validate_settings(cfg)
                 return cfg
@@ -666,7 +766,14 @@ def load_config(path):
                 print("config warning: %s — using defaults where possible" % exc)
                 cfg["_last_config_error"] = str(exc)
                 return cfg
-    return json.loads(json.dumps(DEFAULT_SETTINGS))
+    init_cfg = json.loads(json.dumps(DEFAULT_SETTINGS))
+    def_k = generate_client_key("Default")
+    init_cfg["access"]["keys"] = [def_k]
+    init_cfg["access"]["access_key"] = def_k["key"]
+    detected = find_omniroute_key()
+    if detected:
+        init_cfg["omniroute_key"] = detected
+    return init_cfg
 
 
 def save_config(cfg, cfg_path):
@@ -686,6 +793,7 @@ class Analytics:
         ("cached", "INTEGER DEFAULT 0"),
         ("request_body", "TEXT"),
         ("response_body", "TEXT"),
+        ("key_name", "TEXT DEFAULT ''"),
     ]
 
     def __init__(self, db_path):
@@ -742,8 +850,8 @@ class Analytics:
                 conn.execute(
                     "INSERT INTO requests (ts, model, upstream_model, ip,"
                     " user_agent, status, error, latency_ms, tokens_in,"
-                    " tokens_out, stream, cached, request_body, response_body)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " tokens_out, stream, cached, request_body, response_body, key_name)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (time.strftime("%Y-%m-%dT%H:%M:%S"),
                      fields.get("model"), fields.get("upstream_model"),
                      fields.get("ip"), (fields.get("user_agent") or "")[:200],
@@ -751,7 +859,8 @@ class Analytics:
                      fields.get("latency_ms"), fields.get("tokens_in"),
                      fields.get("tokens_out"), 1 if fields.get("stream") else 0,
                      1 if fields.get("cached") else 0,
-                     fields.get("request_body"), fields.get("response_body")))
+                     fields.get("request_body"), fields.get("response_body"),
+                     fields.get("key_name") or ""))
                 conn.commit()
             self._run(_write)
         except sqlite3.Error:
@@ -873,7 +982,7 @@ class Analytics:
 
     def logs(self, limit=100, status=None, model=None):
         query = ("SELECT id, ts, model, upstream_model, ip, user_agent, status,"
-                 " error, latency_ms, tokens_in, tokens_out, stream, cached "
+                 " error, latency_ms, tokens_in, tokens_out, stream, cached, key_name "
                  "FROM requests")
         clauses, params = [], []
         if status:
@@ -1076,7 +1185,10 @@ class RelayState:
 
     @property
     def key(self):
-        return self.cfg.get("omniroute_key", "")
+        k = self.cfg.get("omniroute_key", "")
+        if not k:
+            k = find_omniroute_key() or ""
+        return k
 
     def upstream_alive(self):
         interval = int(self.cfg.get("health_check_interval_s", 60))
@@ -1286,15 +1398,37 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def _check_access(self):
         access = STATE.cfg.get("access", {})
-        if not access.get("key_required") or not access.get("access_key"):
-            return True
+        key_required = access.get("key_required", False)
+        keys = access.get("keys", [])
+        legacy_key = access.get("access_key")
+
         presented = (self.headers.get("X-Reach-Key") or "").strip()
         if not presented:
-            auth = self.headers.get("Authorization") or ""
-            presented = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-        if presented == access.get("access_key"):
+            auth = (self.headers.get("Authorization") or "").strip()
+            presented = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+
+        matched_key = None
+        if presented:
+            for k in keys:
+                if k.get("enabled", True) and k.get("key") == presented:
+                    matched_key = k
+                    break
+            if not matched_key and legacy_key and presented == legacy_key:
+                matched_key = {"id": "legacy", "name": "Legacy Key", "key": legacy_key}
+
+        if matched_key:
+            self._auth_key_name = matched_key.get("name", "Key")
+            self._auth_key_id = matched_key.get("id", "")
+            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            matched_key["last_used_at"] = now_iso
             return True
-        self._json(401, {"error": {"message": "REACH access key required",
+
+        if not key_required:
+            self._auth_key_name = "anonymous"
+            self._auth_key_id = ""
+            return True
+
+        self._json(401, {"error": {"message": "Invalid SimpleREACH API Key. Send 'Authorization: Bearer sk-reach-...' or 'X-Reach-Key'.",
                                    "type": "authentication_error",
                                    "code": "invalid_api_key"}},
                    {"WWW-Authenticate": "Bearer"})
@@ -1374,6 +1508,18 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self._json(200, settings_public(STATE.cfg))
+            elif path == "/_reach/keys":
+                if not self._require_admin():
+                    return
+                keys = (STATE.cfg.get("access") or {}).get("keys", [])
+                safe_keys = []
+                for k in keys:
+                    sk = dict(k)
+                    raw_k = sk.get("key", "")
+                    sk["masked_key"] = mask_key(raw_k)
+                    sk["preview"] = raw_k[:12] + "…" if len(raw_k) > 16 else raw_k
+                    safe_keys.append(sk)
+                self._json(200, {"keys": safe_keys})
             elif path == "/_reach/stats":
                 if not self._require_admin():
                     return
@@ -1410,6 +1556,31 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_settings_update()
+            elif path.startswith("/_reach/keys/"):
+                if not self._require_admin():
+                    return
+                key_id = path[len("/_reach/keys/"):]
+                raw_b = self._read_body()
+                patch = json.loads(raw_b.decode("utf-8")) if raw_b else {}
+                with STATE._lock:
+                    access = STATE.cfg.setdefault("access", {})
+                    keys = access.setdefault("keys", [])
+                    found = None
+                    for k in keys:
+                        if k.get("id") == key_id or k.get("key") == key_id:
+                            if "name" in patch:
+                                k["name"] = str(patch["name"]).strip()
+                            if "enabled" in patch:
+                                k["enabled"] = bool(patch["enabled"])
+                            found = k
+                            break
+                    if found:
+                        save_config(STATE.cfg, STATE.cfg_path)
+                        safe_f = dict(found)
+                        safe_f["masked_key"] = mask_key(safe_f.get("key", ""))
+                        self._json(200, {"updated": True, "key": safe_f})
+                    else:
+                        self._json(404, {"error": {"message": "Key not found", "type": "not_found"}})
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
@@ -1429,6 +1600,20 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 STATE.analytics.clear()
                 self._json(200, {"cleared": True})
+            elif path.startswith("/_reach/keys/"):
+                if not self._require_admin():
+                    return
+                key_id = path[len("/_reach/keys/"):]
+                with STATE._lock:
+                    access = STATE.cfg.setdefault("access", {})
+                    keys = access.setdefault("keys", [])
+                    orig_len = len(keys)
+                    access["keys"] = [k for k in keys if k.get("id") != key_id and k.get("key") != key_id]
+                    if len(access["keys"]) < orig_len:
+                        save_config(STATE.cfg, STATE.cfg_path)
+                        self._json(200, {"deleted": True, "id": key_id})
+                    else:
+                        self._json(404, {"error": {"message": "Key not found", "type": "not_found"}})
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
@@ -1468,6 +1653,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return
                 STATE.cache.clear()
                 self._json(200, {"cleared": True})
+            elif path == "/_reach/keys":
+                if not self._require_admin():
+                    return
+                self.handle_create_key()
             elif path in ("/v1/chat/completions", "/chat/completions"):
                 if not self._check_access():
                     return
@@ -1505,10 +1694,17 @@ class RelayHandler(BaseHTTPRequestHandler):
                 and patch["omniroute_key"].startswith("set ("):
             patch.pop("omniroute_key")  # masked placeholder means keep it too
         access_patch = patch.get("access")
-        if isinstance(access_patch, dict) \
-                and isinstance(access_patch.get("access_key"), str) \
-                and access_patch["access_key"].startswith("set ("):
-            access_patch.pop("access_key")
+        if isinstance(access_patch, dict):
+            if isinstance(access_patch.get("access_key"), str) \
+                    and access_patch["access_key"].startswith("set ("):
+                access_patch.pop("access_key")
+            if "keys" in access_patch and isinstance(access_patch["keys"], list):
+                existing_by_id = {k.get("id"): k.get("key") for k in (STATE.cfg.get("access") or {}).get("keys", [])}
+                for k in access_patch["keys"]:
+                    if isinstance(k, dict) and k.get("id") in existing_by_id:
+                        raw_val = k.get("key", "")
+                        if not raw_val or raw_val.startswith("set (") or "…" in raw_val:
+                            k["key"] = existing_by_id[k["id"]]
         next_cfg = merged_settings(STATE.cfg, patch)
         try:
             validate_settings(next_cfg)
@@ -1548,6 +1744,21 @@ class RelayHandler(BaseHTTPRequestHandler):
         except SettingsError as exc:
             self._json(400, {"error": {"message": str(exc), "type": "invalid_settings"},
                              "valid": False})
+
+    def handle_create_key(self):
+        raw = self._read_body()
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            body = {}
+        name = (body.get("name") or "Client").strip()
+        new_key = generate_client_key(name)
+        with STATE._lock:
+            access = STATE.cfg.setdefault("access", {})
+            keys = access.setdefault("keys", [])
+            keys.append(new_key)
+            save_config(STATE.cfg, STATE.cfg_path)
+        self._json(201, {"created": True, "key": new_key})
 
     def handle_upstream_test(self):
         started = time.time()
@@ -1618,6 +1829,8 @@ class RelayHandler(BaseHTTPRequestHandler):
     def _log_chat(self, **fields):
         if not self._should_log(fields.get("status", 0)):
             return
+        if "key_name" not in fields:
+            fields["key_name"] = getattr(self, "_auth_key_name", "")
         verbose = STATE.cfg.get("data", {}).get("log_level") == "verbose"
         if not verbose:
             fields.pop("request_body", None)

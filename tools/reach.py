@@ -276,7 +276,9 @@ def mask_key(key):
         return "(none)"
     if len(key) <= 12:
         return "set (short)"
-    return key[:8] + "…" + key[-4:]
+    if str(key).startswith("sk-reach-") and len(str(key)) > 16:
+        return str(key)[:13] + "…" + str(key)[-4:]
+    return str(key)[:8] + "…" + str(key)[-4:]
 
 
 def load_config():
@@ -774,17 +776,41 @@ def cmd_status(_args):
     cfg = load_config()
     port = runtime_port()
     print("SimpleREACH status")
-    print("  relay:      %s" % ("running (port %d)" % port if port_open(port)
-                               else "stopped"))
+    print("  relay:       %s" % ("running (port %d)" % port if port_open(port)
+                                else "stopped"))
     url = public_url_from_server(port)
     if url:
-        print("  public URL: %s" % url)
-        print("  models:     %s/v1/models" % url)
+        print("  public URL:  %s" % url)
+        print("  models:      %s/v1/models" % url)
     else:
-        print("  public URL: (no tunnel up — run `reach.py start`)")
-    print("  pointer:    " + GIST_RAW)
-    print("  config:     " + str(CONFIG_PATH))
-    print("  key:        %s" % mask_key(cfg.get("omniroute_key")))
+        print("  public URL:  (no tunnel up — run `reach.py start`)")
+    print("  pointer:     " + GIST_RAW)
+    print("  config:      " + str(CONFIG_PATH))
+
+    # Client authentication status & keys
+    access = cfg.get("access", {})
+    key_req = access.get("key_required", False)
+    print("  auth mode:   %s" % ("strict (client key required)" if key_req else "open (client key optional)"))
+
+    keys = access.get("keys", [])
+    if port_open(port):
+        try:
+            status, data = admin_request("/_reach/keys", port=port)
+            if status == 200 and "keys" in data:
+                keys = data["keys"]
+        except Exception:
+            pass
+    active_keys = [k for k in keys if k.get("enabled", True)]
+    if active_keys:
+        default_k = active_keys[0]
+        name = default_k.get("name", "Client")
+        tok = default_k.get("masked_key") or mask_key(default_k.get("key", ""))
+        print("  client keys: %d active (e.g. %s: %s)" % (len(active_keys), name, tok))
+    else:
+        print("  client keys: none configured (create with `reach key create`)")
+
+    omni_url = cfg.get("omniroute_url", "http://127.0.0.1:20128/v1")
+    print("  upstream:    %s" % omni_url)
 
 
 def cmd_start(args):
@@ -820,8 +846,87 @@ def admin_request(path, method="GET", payload=None, port=None):
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         req.add_header("Content-Type", "application/json")
-    with urllib.request.urlopen(req, data=data, timeout=10) as resp:
-        return resp.status, json.loads(resp.read().decode("utf-8", "replace"))
+    try:
+        with urllib.request.urlopen(req, data=data, timeout=10) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8", "replace"))
+        except Exception:
+            body = {"error": {"message": str(exc)}}
+        return exc.code, body
+    except urllib.error.URLError as exc:
+        raise SystemExit("error: cannot connect to relay on port %d: %s"
+                         % (port or runtime_port(), exc))
+
+
+def cmd_keys(args):
+    require_relay()
+    action = getattr(args, "action", None) or "list"
+
+    if action == "list":
+        status, data = admin_request("/_reach/keys")
+        if status != 200:
+            raise SystemExit("error listing keys: %s"
+                             % (data.get("error", {}).get("message") or status))
+        keys = data.get("keys", [])
+        if not keys:
+            print("No client API keys found. Create one with `reach key create [name]`.")
+            return
+        print("%-16s %-16s %-32s %-10s %-12s %s"
+              % ("NAME", "ID", "TOKEN", "STATUS", "CREATED", "LAST USED"))
+        for k in keys:
+            status_str = "enabled" if k.get("enabled", True) else "disabled"
+            created = (k.get("created_at") or "")[:10] or "—"
+            last_used = (k.get("last_used_at") or "")[:10] or "never"
+            tok = k.get("masked_key") or mask_key(k.get("key", ""))
+            print("%-16s %-16s %-32s %-10s %-12s %s"
+                  % ((k.get("name") or "Client")[:16],
+                     k.get("id", "")[:16],
+                     tok[:32],
+                     status_str,
+                     created,
+                     last_used))
+        return
+
+    if action == "create":
+        name = getattr(args, "name", None) or "Client"
+        status, data = admin_request("/_reach/keys", method="POST", payload={"name": name})
+        if status not in (200, 201):
+            raise SystemExit("error creating key: %s"
+                             % (data.get("error", {}).get("message") or status))
+        key_info = data.get("key", {})
+        print("Created client API key:")
+        print("  Name:   %s" % key_info.get("name"))
+        print("  ID:     %s" % key_info.get("id"))
+        print("  Token:  %s" % key_info.get("key"))
+        print()
+        print("  IMPORTANT: Save this secret key now. You will not be able to see the full token again.")
+        print("  Authenticate external requests using:")
+        print("    Authorization: Bearer %s" % key_info.get("key"))
+        return
+
+    if action in ("revoke", "delete", "remove"):
+        target = getattr(args, "name", None)
+        if not target:
+            raise SystemExit("error: specify the key ID or name to revoke, e.g. `reach key revoke WhiteShadow`")
+        _, data = admin_request("/_reach/keys")
+        keys = data.get("keys", [])
+        matched = None
+        for k in keys:
+            if (k.get("id") == target or k.get("key") == target
+                    or (k.get("name") or "").lower() == target.lower()):
+                matched = k
+                break
+        key_id = matched.get("id") if matched else target
+        status, res = admin_request("/_reach/keys/%s" % key_id, method="DELETE")
+        if status == 200 and res.get("deleted"):
+            name_disp = (" (%s)" % matched.get("name")) if matched and matched.get("name") else ""
+            print("Revoked client API key %s%s" % (key_id, name_disp))
+        else:
+            raise SystemExit("error revoking key: %s"
+                             % (res.get("error", {}).get("message") or "not found"))
+        return
 
 
 def require_relay():
@@ -1103,6 +1208,20 @@ def main():
     p_models.add_argument("alias", nargs="?", default=None)
     p_models.add_argument("upstream", nargs="?", default=None)
     p_models.set_defaults(func=cmd_models)
+
+    p_key = sub.add_parser("key", help="manage client API keys (sk-reach)")
+    p_key.add_argument("action", choices=["list", "create", "revoke", "delete", "remove"],
+                       nargs="?", default="list")
+    p_key.add_argument("name", nargs="?", default=None,
+                       help="key name (for create) or ID/name (for revoke)")
+    p_key.set_defaults(func=cmd_keys)
+
+    p_keys = sub.add_parser("keys", help="manage client API keys (sk-reach)")
+    p_keys.add_argument("action", choices=["list", "create", "revoke", "delete", "remove"],
+                        nargs="?", default="list")
+    p_keys.add_argument("name", nargs="?", default=None,
+                        help="key name (for create) or ID/name (for revoke)")
+    p_keys.set_defaults(func=cmd_keys)
 
     p_stats = sub.add_parser("stats", help="usage statistics (v2)")
     p_stats.add_argument("--verbose", "-v", action="store_true")
