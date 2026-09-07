@@ -177,7 +177,7 @@ confirm the starting point works.
     `__main__`.
     → verify: `python -m unittest discover -s tests` + `python server/reachd.py --help` + scratch boot
 
-### Phase 2 — Installer package (tools/reach.py → tools/reach/)
+### Phase 2 — Installer package (tools/reach.py → tools/reach/) — DONE (commits 5ab4745..693c370)
 
  1. Scaffold `tools/reach/` package (`__init__.py` with shared constants: repo/urls,
     port, limits, paths) and turn `tools/reach.py` into a thin shim importing
@@ -226,7 +226,7 @@ confirm the starting point works.
     gone, relay starts, `status` shows running, `settings` round-trips one key,
     `uninstall --all` cleans up
 
-### Phase 3 — Chat CLI package (tools/reach-cli.py → tools/reach_cli/)
+### Phase 3 — Chat CLI package (tools/reach-cli.py → tools/reach_cli/) — DONE (commits e0dfcbc..2ac52a6)
 
  1. Scaffold `tools/reach_cli/` package; move the current body verbatim into
     `reach_cli/chat.py` as a temporary home for `main`; `tools/reach-cli.py` becomes
