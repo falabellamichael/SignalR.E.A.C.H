@@ -1,9 +1,19 @@
 """SimpleREACH relay daemon — package (v3.2.0).
 
 The daemon runs from ``server/reachd.py`` (a thin launcher shim); all
-implementation lives in this package. ``reachd.core`` currently holds the
-monolith body and is being split module-by-module across the commits of
-this refactor.
+implementation lives in this package. The monolith has been split
+module-by-module across the commits of this refactor:
+
+  const     shared module-level constants
+  text      role-scrubbing + token counting
+  settings  settings schema, validation, config I/O
+  analytics SQLite request log + daily token counters
+  cache     in-memory LRU response cache
+  limits    token-bucket rate limiter + concurrency gate
+  state     the live RelayState
+  publish   pointer-gist publishing
+  chat      the chat request pipeline (transform / relay / finalize)
+  core      the HTTP handler + main()
 
 ``import reachd`` keeps exposing the public surface the test suite and
 external importers rely on (``reachd.RelayHandler``, ``reachd.DEFAULT_SETTINGS``,
@@ -14,11 +24,10 @@ live globals owned by ``reachd.core`` and are only meaningful once
 ``main()`` has run.
 """
 
-from reachd.settings import MODEL_SPEC_DEFAULTS
-
-from reachd.core import (
+from reachd.analytics import Analytics
+from reachd.cache import ResponseCache
+from reachd.const import (
     DEFAULT_PORT,
-    DEFAULT_SETTINGS,
     GIST_FILE,
     GIST_ID,
     LATENCY_SAMPLE_LIMIT,
@@ -26,23 +35,22 @@ from reachd.core import (
     MAX_RATE_BUCKETS,
     SERVICE,
     VERSION,
-    Analytics,
-    CounterGate,
-    RateLimiter,
-    RelayHandler,
-    RelayState,
-    ResponseCache,
+)
+from reachd.core import RelayHandler, main
+from reachd.limits import CounterGate, RateLimiter
+from reachd.publish import publish_url
+from reachd.settings import (
+    DEFAULT_SETTINGS,
+    MODEL_SPEC_DEFAULTS,
     SettingsError,
-    count_tokens,
     load_config,
-    main,
     merged_settings,
-    publish_url,
     save_config,
-    scrub_trailing_roles,
     settings_public,
     validate_settings,
 )
+from reachd.state import RelayState
+from reachd.text import count_tokens, scrub_trailing_roles
 
 __all__ = [
     "VERSION",
