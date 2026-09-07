@@ -805,6 +805,14 @@
                 const aliasTd = document.createElement('td');
                 const aliasStrong = el('strong', null, alias);
                 aliasTd.appendChild(aliasStrong);
+                if (alias === 'copilot-chat') {
+                    const wrap = el('span', 'reach-note-wrap');
+                    wrap.title = 'shared usage, shared responses';
+                    wrap.appendChild(el('span', 'reach-note-badge', 'ℹ'));
+                    const tip = el('span', 'reach-note-tip', 'shared usage, shared responses');
+                    wrap.appendChild(tip);
+                    aliasTd.appendChild(wrap);
+                }
                 if (spec.fallback) {
                     const fbBadge = el('span', 'reach-model-spec-badge', 'fallback: ' + spec.fallback);
                     aliasTd.appendChild(fbBadge);
