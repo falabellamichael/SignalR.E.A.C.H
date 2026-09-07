@@ -667,13 +667,24 @@ class Analytics:
                     "FROM requests WHERE ts >= ? GROUP BY model ORDER BY n DESC",
                     (today,))]
                 out["top_clients"] = [{
-                    "ip": r["ip"] or "?", "requests": r["n"],
+                    "ip": r["ip"] or "?",
+                    "requests": r["n"],
+                    "tokens_in": r["ti"],
                     "tokens_out": r["tout"],
+                    "errors": r["err"],
+                    "last_seen": r["last_seen"],
+                    "last_model": r["last_model"] or "—",
+                    "user_agent": r["user_agent"] or "",
                 } for r in conn.execute(
                     "SELECT ip, COUNT(*) AS n,"
-                    " COALESCE(SUM(tokens_out),0) AS tout "
+                    " COALESCE(SUM(tokens_in),0) AS ti,"
+                    " COALESCE(SUM(tokens_out),0) AS tout,"
+                    " COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END),0) AS err,"
+                    " MAX(ts) AS last_seen,"
+                    " (SELECT model FROM requests r2 WHERE r2.ip = requests.ip AND r2.ts >= ? ORDER BY r2.id DESC LIMIT 1) AS last_model,"
+                    " (SELECT user_agent FROM requests r3 WHERE r3.ip = requests.ip AND r3.ts >= ? ORDER BY r3.id DESC LIMIT 1) AS user_agent "
                     "FROM requests WHERE ts >= ? AND ip IS NOT NULL "
-                    "GROUP BY ip ORDER BY n DESC LIMIT 10", (today,))]
+                    "GROUP BY ip ORDER BY last_seen DESC LIMIT 25", (today, today, today))]
             self._run(_read)
         except sqlite3.Error:
             pass

@@ -476,17 +476,21 @@
     /* ----------------------------------------------------------------- USAGE */
     function renderUsage(container) {
         container.appendChild(pageHeader('fa-chart-column', 'Live Usage & Telemetry',
-            'Real-time event stream, throughput velocity, and latency analytics.'));
+            'Real-time event stream, client presence, throughput velocity, and latency analytics.'));
         const body = el('div', 'reach-stack');
         container.appendChild(body);
 
         // State
         let timer = null;
+        let clockTimer = null;
         let isPaused = false;
         let cadenceMs = 2500;
         let activeFilter = 'all';
+        let clientFilter = '';
+        let showPresence = core.prefsGet('show_client_presence', '1') === '1';
         let seenLogIds = new Set();
         let logsCache = [];
+        let clientsCache = [];
         let isInitialMount = true;
         let lastTickAt = Date.now();
         let prevReqCount = null;
@@ -511,6 +515,24 @@
         hud.appendChild(statusGroup);
 
         const controls = el('div', 'reach-live-controls');
+
+        // Toggle Option: Live Client Presence
+        const presenceToggleWrap = el('label', 'reach-toggle-wrap' + (showPresence ? ' active' : ''));
+        const presenceCheckbox = document.createElement('input');
+        presenceCheckbox.type = 'checkbox';
+        presenceCheckbox.checked = showPresence;
+        presenceCheckbox.addEventListener('change', () => {
+            showPresence = presenceCheckbox.checked;
+            core.prefsSet('show_client_presence', showPresence ? '1' : '0');
+            presenceSection.style.display = showPresence ? 'flex' : 'none';
+            if (showPresence) presenceToggleWrap.classList.add('active');
+            else presenceToggleWrap.classList.remove('active');
+        });
+        presenceToggleWrap.appendChild(presenceCheckbox);
+        presenceToggleWrap.appendChild(document.createTextNode('👥 Live Users'));
+        controls.appendChild(presenceToggleWrap);
+
+        // Cadence Selector
         const cadenceWrap = el('div', 'reach-cadence-selector');
         const cadenceOptions = [
             { label: '1s Turbo', ms: 1000 },
@@ -579,6 +601,37 @@
         tiles.appendChild(errTile);
         body.appendChild(tiles);
 
+        // ---- Active Client Presence Section (Toggleable) ----
+        const presenceSection = el('section', 'reach-presence-section');
+        presenceSection.style.display = showPresence ? 'flex' : 'none';
+
+        const presenceHead = el('div', 'reach-presence-head');
+        const presTitleWrap = el('div', 'reach-presence-title-wrap');
+        const presIcon = el('i', 'fa-solid fa-users-viewfinder');
+        presIcon.style.color = '#ffd37a';
+        presTitleWrap.appendChild(presIcon);
+        presTitleWrap.appendChild(el('h3', 'reach-presence-title', 'Live Client Presence'));
+        const presCountBadge = el('span', 'reach-presence-count', '0 active');
+        presTitleWrap.appendChild(presCountBadge);
+        presenceHead.appendChild(presTitleWrap);
+
+        const presActions = el('div', 'reach-live-controls');
+        const clearFilterBtn = el('button', 'reach-btn reach-btn-sm', 'Show All Clients');
+        clearFilterBtn.style.display = 'none';
+        clearFilterBtn.addEventListener('click', () => {
+            clientFilter = '';
+            clearFilterBtn.style.display = 'none';
+            renderPresenceCards();
+            renderFeedList();
+        });
+        presActions.appendChild(clearFilterBtn);
+        presenceHead.appendChild(presActions);
+        presenceSection.appendChild(presenceHead);
+
+        const presenceGrid = el('div', 'reach-presence-grid');
+        presenceSection.appendChild(presenceGrid);
+        body.appendChild(presenceSection);
+
         // ---- Live Request Feed Card ----
         const feedCard = el('section', 'reach-feed-card');
         const feedHead = el('div', 'reach-feed-head');
@@ -624,6 +677,11 @@
         feedActions.appendChild(clearFeedBtn);
         feedHead.appendChild(feedActions);
         feedCard.appendChild(feedHead);
+
+        // Client Filter Banner inside Feed Card
+        const clientFilterBanner = el('div', 'reach-client-filter-banner');
+        clientFilterBanner.style.display = 'none';
+        feedCard.appendChild(clientFilterBanner);
 
         const feedList = el('div', 'reach-feed-list');
         feedCard.appendChild(feedList);
@@ -674,8 +732,156 @@
 
         body.appendChild(grid);
 
+        // ---- Presence Helpers ----
+        function getClientPresence(lastSeenStr) {
+            if (!lastSeenStr) return { status: 'dormant', text: 'Dormant', diffSec: 999999 };
+            const t = new Date(lastSeenStr.length === 19 ? lastSeenStr : lastSeenStr);
+            const diffSec = Math.max(0, Math.floor((Date.now() - t.getTime()) / 1000));
+            if (diffSec < 60) {
+                return { status: 'active', text: 'Online Now (' + diffSec + 's ago)', diffSec: diffSec };
+            }
+            if (diffSec < 300) {
+                return { status: 'idle', text: 'Idle (' + Math.floor(diffSec / 60) + 'm ago)', diffSec: diffSec };
+            }
+            return { status: 'dormant', text: 'Dormant (' + core.fmtAgo(lastSeenStr) + ')', diffSec: diffSec };
+        }
+
+        function getClientLabel(ip) {
+            if (ip === '127.0.0.1' || ip === '::1' || ip === 'localhost') {
+                return '🖥️ Localhost Session';
+            }
+            if (ip === '142.186.13.229') {
+                return '🤖 DeepSeek / Remote Peer';
+            }
+            return '🌐 Remote Client (' + ip + ')';
+        }
+
+        function renderPresenceCards() {
+            presenceGrid.innerHTML = '';
+            if (clientFilter) {
+                clearFilterBtn.style.display = 'inline-flex';
+                clearFilterBtn.textContent = 'Reset Filter (' + clientFilter + ')';
+                clientFilterBanner.innerHTML = '';
+                const bannerText = el('span', null, '');
+                bannerText.innerHTML = '<i class="fa-solid fa-filter"></i> Filtering live events for: <strong>' + clientFilter + '</strong>';
+                clientFilterBanner.appendChild(bannerText);
+
+                const unfilterBtn = document.createElement('button');
+                unfilterBtn.textContent = 'Clear Filter';
+                unfilterBtn.addEventListener('click', () => {
+                    clientFilter = '';
+                    clearFilterBtn.style.display = 'none';
+                    renderPresenceCards();
+                    renderFeedList();
+                });
+                clientFilterBanner.appendChild(unfilterBtn);
+                clientFilterBanner.style.display = 'flex';
+            } else {
+                clearFilterBtn.style.display = 'none';
+                clientFilterBanner.style.display = 'none';
+            }
+
+            if (!clientsCache.length) {
+                const empty = el('div', 'reach-feed-empty', 'No client connections detected today yet.');
+                presenceGrid.appendChild(empty);
+                presCountBadge.textContent = '0 active';
+                return;
+            }
+
+            let activeCount = 0;
+            clientsCache.forEach(c => {
+                const pres = getClientPresence(c.last_seen);
+                if (pres.status === 'active') activeCount++;
+
+                const card = el('div', 'reach-presence-card' + (clientFilter === c.ip ? ' selected' : ''));
+                card.addEventListener('click', () => {
+                    clientFilter = (clientFilter === c.ip) ? '' : c.ip;
+                    renderPresenceCards();
+                    renderFeedList();
+                });
+
+                // Top row: Dot + Name + Status Pill
+                const topRow = el('div', 'reach-presence-card-top');
+                const userWrap = el('div', 'reach-presence-user-wrap');
+                const dot = el('span', 'reach-presence-status-dot ' + pres.status);
+                userWrap.appendChild(dot);
+                const name = el('span', 'reach-presence-name', getClientLabel(c.ip));
+                name.title = c.ip;
+                userWrap.appendChild(name);
+                topRow.appendChild(userWrap);
+
+                const pill = el('span', 'reach-presence-pill ' + pres.status, pres.text);
+                topRow.appendChild(pill);
+                card.appendChild(topRow);
+
+                // IP & UA Row
+                const ipRow = el('div', 'reach-presence-ip-row');
+                const ipCode = el('span', null, c.ip);
+                ipRow.appendChild(ipCode);
+
+                const copyBtn = el('button', 'reach-presence-btn', '');
+                copyBtn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy';
+                copyBtn.title = 'Copy IP address';
+                copyBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    core.copyText(c.ip).then(ok => core.toast(ok ? 'IP copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
+                });
+                ipRow.appendChild(copyBtn);
+                card.appendChild(ipRow);
+
+                if (c.user_agent) {
+                    const uaEl = el('div', 'reach-presence-ua', c.user_agent);
+                    uaEl.title = c.user_agent;
+                    card.appendChild(uaEl);
+                }
+
+                // Stats Grid
+                const statsGrid = el('div', 'reach-presence-stats-grid');
+                const s1 = el('div', 'reach-presence-stat-item');
+                s1.appendChild(el('span', 'reach-presence-stat-val', core.fmtNum(c.requests || 0)));
+                s1.appendChild(el('span', 'reach-presence-stat-lbl', 'Requests'));
+                statsGrid.appendChild(s1);
+
+                const s2 = el('div', 'reach-presence-stat-item');
+                s2.appendChild(el('span', 'reach-presence-stat-val', core.fmtNum(c.tokens_out || 0)));
+                s2.appendChild(el('span', 'reach-presence-stat-lbl', 'Tokens Out'));
+                statsGrid.appendChild(s2);
+
+                const s3 = el('div', 'reach-presence-stat-item');
+                const errCount = c.errors || 0;
+                const errVal = el('span', 'reach-presence-stat-val', errCount > 0 ? (errCount + ' err') : '100%');
+                if (errCount > 0) errVal.style.color = '#ff8f7a';
+                s3.appendChild(errVal);
+                s3.appendChild(el('span', 'reach-presence-stat-lbl', errCount > 0 ? 'Errors' : 'Success'));
+                statsGrid.appendChild(s3);
+                card.appendChild(statsGrid);
+
+                // Footer: Last model + Filter button
+                const foot = el('div', 'reach-presence-footer');
+                const modelBadge = el('span', 'reach-presence-model-badge');
+                modelBadge.innerHTML = '<i class="fa-solid fa-cube"></i> ' + (c.last_model || '—');
+                foot.appendChild(modelBadge);
+
+                const filterBtn = el('button', 'reach-presence-btn' + (clientFilter === c.ip ? ' active' : ''));
+                filterBtn.innerHTML = clientFilter === c.ip ? '<i class="fa-solid fa-check"></i> Filtered' : '<i class="fa-solid fa-filter"></i> Filter Feed';
+                filterBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    clientFilter = (clientFilter === c.ip) ? '' : c.ip;
+                    renderPresenceCards();
+                    renderFeedList();
+                });
+                foot.appendChild(filterBtn);
+                card.appendChild(foot);
+
+                presenceGrid.appendChild(card);
+            });
+
+            presCountBadge.textContent = activeCount + ' online · ' + clientsCache.length + ' total';
+        }
+
         // ---- Feed Rendering & Filtering ----
         function filterMatch(entry) {
+            if (clientFilter && entry.ip !== clientFilter) return false;
             if (activeFilter === '200') return entry.status === 200;
             if (activeFilter === '429') return entry.status === 429;
             if (activeFilter === 'err') return entry.status >= 400;
@@ -862,6 +1068,48 @@
                 if (errSubNode) errSubNode.textContent = core.fmtNum(today.rate_limited || 0) + ' rate-limited';
                 errTile.className = 'reach-tile' + (errRate > 0 ? ' reach-tile-bad' : ' reach-tile-good');
 
+                // Update Client Presence Cache (Merge topClients + fresh logs)
+                const clientMap = new Map();
+                topClients.forEach(c => {
+                    clientMap.set(c.ip, {
+                        ip: c.ip,
+                        requests: c.requests || 0,
+                        tokens_in: c.tokens_in || 0,
+                        tokens_out: c.tokens_out || 0,
+                        errors: c.errors || 0,
+                        last_seen: c.last_seen || null,
+                        last_model: c.last_model || null,
+                        user_agent: c.user_agent || null
+                    });
+                });
+
+                if (logsData && Array.isArray(logsData.logs)) {
+                    logsData.logs.forEach(l => {
+                        if (!l.ip) return;
+                        const existing = clientMap.get(l.ip);
+                        if (!existing) {
+                            clientMap.set(l.ip, {
+                                ip: l.ip,
+                                requests: 1,
+                                tokens_in: l.tokens_in || 0,
+                                tokens_out: l.tokens_out || 0,
+                                errors: (l.status >= 400) ? 1 : 0,
+                                last_seen: l.ts,
+                                last_model: l.model,
+                                user_agent: l.user_agent
+                            });
+                        } else {
+                            if (!existing.last_seen || l.ts > existing.last_seen) {
+                                existing.last_seen = l.ts;
+                                existing.last_model = l.model;
+                                if (l.user_agent) existing.user_agent = l.user_agent;
+                            }
+                        }
+                    });
+                }
+                clientsCache = Array.from(clientMap.values()).sort((a, b) => (b.last_seen || '').localeCompare(a.last_seen || ''));
+                renderPresenceCards();
+
                 // Update Live Feed with incoming items
                 if (logsData && Array.isArray(logsData.logs)) {
                     const newLogs = logsData.logs;
@@ -983,8 +1231,16 @@
         tick(true);
         resetTimer();
 
+        // 1-second interval to update relative timestamps smoothly
+        clockTimer = setInterval(() => {
+            if (!isPaused && showPresence && clientsCache.length) {
+                renderPresenceCards();
+            }
+        }, 2000);
+
         return () => {
             if (timer) clearInterval(timer);
+            if (clockTimer) clearInterval(clockTimer);
         };
     }
 

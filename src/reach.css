@@ -1489,6 +1489,301 @@
     opacity: 1;
 }
 
+/* ---- Client Presence Toggle & Grid ---- */
+.reach-toggle-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    padding: 5px 10px;
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    transition: all 120ms ease;
+}
+
+.reach-toggle-wrap:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(128, 128, 128, 0.35);
+}
+
+.reach-toggle-wrap input[type="checkbox"] {
+    accent-color: #ffb020;
+    cursor: pointer;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+}
+
+.reach-toggle-wrap.active {
+    background: rgba(255, 176, 32, 0.16);
+    border-color: rgba(255, 176, 32, 0.45);
+    color: #ffd37a;
+}
+
+.reach-presence-section {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(255, 176, 32, 0.05), rgba(0, 0, 0, 0.22));
+    border: 1px solid rgba(255, 176, 32, 0.2);
+}
+
+.reach-presence-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.reach-presence-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.reach-presence-title {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.85;
+    margin: 0;
+}
+
+.reach-presence-count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(128, 128, 128, 0.15);
+    opacity: 0.75;
+}
+
+.reach-presence-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+}
+
+.reach-presence-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    background: rgba(0, 0, 0, 0.28);
+    border: 1px solid rgba(128, 128, 128, 0.18);
+    position: relative;
+    transition: border-color 150ms ease, box-shadow 150ms ease, transform 120ms ease;
+}
+
+.reach-presence-card:hover {
+    border-color: rgba(255, 176, 32, 0.45);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    transform: translateY(-1px);
+}
+
+.reach-presence-card.selected {
+    border-color: #ffb020;
+    box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.4), 0 4px 16px rgba(0, 0, 0, 0.4);
+    background: linear-gradient(135deg, rgba(255, 176, 32, 0.12), rgba(0, 0, 0, 0.32));
+}
+
+.reach-presence-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.reach-presence-user-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.reach-presence-status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex: 0 0 auto;
+}
+
+.reach-presence-status-dot.active {
+    background: #2ecc71;
+    box-shadow: 0 0 10px rgba(46, 204, 113, 0.85);
+    animation: reachLivePulse 1.8s infinite ease-in-out;
+}
+
+.reach-presence-status-dot.idle {
+    background: #ffb020;
+    box-shadow: 0 0 6px rgba(255, 176, 32, 0.6);
+}
+
+.reach-presence-status-dot.dormant {
+    background: rgba(128, 128, 128, 0.5);
+}
+
+.reach-presence-name {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #ffd37a;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.reach-presence-pill {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 2px 7px;
+    border-radius: 999px;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+}
+
+.reach-presence-pill.active {
+    background: rgba(46, 204, 113, 0.18);
+    color: #7ce8a0;
+    border: 1px solid rgba(46, 204, 113, 0.4);
+}
+
+.reach-presence-pill.idle {
+    background: rgba(255, 176, 32, 0.18);
+    color: #ffd37a;
+    border: 1px solid rgba(255, 176, 32, 0.4);
+}
+
+.reach-presence-pill.dormant {
+    background: rgba(128, 128, 128, 0.14);
+    color: rgba(255, 255, 255, 0.6);
+    border: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+.reach-presence-ip-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11.5px;
+    opacity: 0.85;
+}
+
+.reach-presence-ua {
+    font-size: 10.5px;
+    color: #b0b4b8;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0.7;
+}
+
+.reach-presence-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    padding: 6px 0;
+    border-top: 1px solid rgba(128, 128, 128, 0.14);
+    border-bottom: 1px solid rgba(128, 128, 128, 0.14);
+}
+
+.reach-presence-stat-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.reach-presence-stat-val {
+    font-size: 12.5px;
+    font-weight: 700;
+    color: #ffd37a;
+}
+
+.reach-presence-stat-lbl {
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
+}
+
+.reach-presence-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.reach-presence-model-badge {
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    color: #62d8ea;
+}
+
+.reach-presence-btn {
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.12);
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    color: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 120ms ease;
+}
+
+.reach-presence-btn:hover {
+    background: rgba(255, 176, 32, 0.2);
+    border-color: rgba(255, 176, 32, 0.45);
+    color: #ffd37a;
+}
+
+.reach-presence-btn.active {
+    background: #ffb020;
+    border-color: #ffb020;
+    color: #1a1206;
+    font-weight: 700;
+}
+
+/* Active Client Filter Banner in Feed */
+.reach-client-filter-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 12px;
+    border-radius: 8px;
+    background: rgba(255, 176, 32, 0.14);
+    border: 1px solid rgba(255, 176, 32, 0.35);
+    font-size: 11.5px;
+    color: #ffd37a;
+}
+
+.reach-client-filter-banner button {
+    background: transparent;
+    border: none;
+    color: #ffd37a;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: underline;
+    font-size: 11px;
+}
+
 /* ---- responsive ---- */
 @media (max-width: 900px) {
     .reach-shell {
