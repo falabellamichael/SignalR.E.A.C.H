@@ -33,6 +33,7 @@
       <span id="status-dot" class="status-dot"></span>
       <span id="endpoint">…</span>
     </div>
+    <div id="workspace-line" class="endpoint-line" title="Workspace folder" hidden>…</div>
   </header>
 
   <main id="log" class="log" aria-live="polite">
@@ -53,10 +54,17 @@
       </button>
     </div>
     <div class="row">
-      <textarea id="input" rows="1" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
-      <button id="send" class="send-btn" title="Send">➤</button>
+      <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+      <div class="send-col">
+        <button id="send" class="send-btn" title="Send">➤</button>
+        <button id="stop" class="stop-btn" title="Stop generating" aria-label="Stop generating" disabled>■</button>
+      </div>
     </div>
-    <div class="row">
+    <div class="row toggles">
+      <label id="agent-toggle" class="ws-toggle" title="Agentic mode — when on, REACH proposes code edits shown as diffs you can apply or discard">
+        <input type="checkbox" id="agent-check" checked>
+        <span class="ws-label">🤖 Agent</span>
+      </label>
       <label id="ws-toggle" class="ws-toggle" title="Include the files open in VS Code as context for the model">
         <input type="checkbox" id="ws-check" checked>
         <span class="ws-label">📄 <span id="ws-count">Workspace</span></span>

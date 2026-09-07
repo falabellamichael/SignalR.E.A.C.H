@@ -65,7 +65,7 @@
         },
         "simplereach.model": {
           "type": "string",
-          "default": "gpt-4o",
+          "default": "gpt-4o-mini",
           "markdownDescription": "Default model for new chats."
         },
         "simplereach.maxTokens": {
@@ -112,6 +112,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Use Playwright (headless Chromium) for page fetching when the module is installed in the extension folder. Falls back to plain HTTP fetching when unavailable."
+        },
+        "simplereach.agentic": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Agentic mode — the model can propose file edits (shown as accept/reject diffs in the chat) using your workspace tree + open files as context."
         }
       }
     }

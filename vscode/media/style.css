@@ -388,6 +388,161 @@ body {
   text-overflow: ellipsis;
 }
 
+/* ---- agentic edit cards (Cursor-style) ---- */
+.edit-card {
+  margin: 2px 0;
+  border: 1px solid var(--reach-border);
+  border-left: 3px solid var(--reach-accent);
+  border-radius: 8px;
+  background: var(--reach-surface);
+  overflow: hidden;
+}
+.edit-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--reach-accent) 8%, transparent);
+  border-bottom: 1px solid var(--reach-border);
+}
+.edit-path {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 11px;
+  color: var(--reach-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.edit-kind {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--reach-muted);
+}
+.edit-diff {
+  padding: 4px 0;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.edit-line { padding: 0 8px; }
+.edit-line.ctx { color: var(--reach-muted); }
+.edit-line.add { color: #7fd68b; background: rgba(80, 200, 110, 0.09); }
+.edit-line.del { color: #ff8f7a; background: rgba(255, 90, 70, 0.09); }
+.edit-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--reach-border);
+}
+.edit-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--reach-border);
+  background: transparent;
+  color: var(--reach-text);
+  cursor: pointer;
+}
+.edit-btn.apply {
+  background: var(--reach-accent-bg);
+  border-color: var(--reach-accent-border);
+  color: var(--reach-accent-light);
+  font-weight: 600;
+}
+.edit-btn:disabled { opacity: 0.45; cursor: default; }
+.edit-status { margin-left: auto; font-size: 11px; color: var(--reach-muted); }
+.edit-status.ok { color: #7fd68b; }
+.edit-status.err { color: var(--reach-error); }
+.edit-allbar {
+  display: flex;
+  padding: 2px 0 6px;
+}
+
+/* ---- Cursor-style step tracker ---- */
+.step-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--reach-muted);
+  padding: 1px 2px 6px;
+}
+.step-line .mini-spin {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--reach-accent) 25%, transparent);
+  border-top-color: var(--reach-accent);
+  animation: think-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+.step-line.done { color: var(--reach-accent-light); }
+.step-line.done .mini-spin { animation: none; border-color: var(--reach-accent); }
+
+/* ---- LaTeX + markdown rendering ---- */
+.tex sup, .tex sub { font-size: 0.75em; line-height: 0; }
+.tex-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 2px;
+  line-height: 1.25;
+}
+.tex-frac .tex-num { border-bottom: 1px solid currentColor; padding: 0 3px; }
+.tex-frac .tex-den { padding: 0 3px; }
+.tex-sqrt { white-space: nowrap; }
+.tex-sqrt-in { border-top: 1px solid currentColor; padding: 0 2px; margin-left: -2px; }
+.tex-block { padding: 3px 0; }
+.md-code-wrap {
+  position: relative;
+}
+.md-code-wrap .md-code {
+  padding-right: 64px;
+}
+.run-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--reach-border);
+  background: var(--reach-surface);
+  color: var(--reach-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.md-code-wrap:hover .run-btn,
+.run-btn:focus-visible { opacity: 1; }
+.md-code {
+  margin: 4px 0;
+  padding: 6px 8px;
+  background: var(--reach-panel);
+  border: 1px solid var(--reach-border);
+  border-radius: 6px;
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 11px;
+  overflow-x: auto;
+}
+.body code {
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 0.92em;
+  background: var(--reach-panel);
+  border: 1px solid var(--reach-border);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
 /* ---- messages ---- */
 .log {
   flex: 1 1 auto;
@@ -457,8 +612,19 @@ body {
   font-size: 11px;
   line-height: 1;
   color: var(--reach-muted);
-  cursor: help;
+  cursor: pointer;
   opacity: 0.9;
+}
+.thought-detail {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--reach-muted);
+  background: var(--reach-surface);
+  border-left: 2px solid var(--reach-accent-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 0 0 8px;
+  white-space: pre-wrap;
 }
 .bubble.pending.thinking .body::after { content: none; }
 
@@ -499,22 +665,49 @@ body {
   padding: 8px;
   font-family: inherit;
   font-size: 13px;
-  min-height: 34px;
+  min-height: 46px;
   max-height: 160px;
 }
 #input:focus { outline: none; border-color: var(--reach-accent-border); box-shadow: 0 0 6px var(--reach-accent-glow); }
+
+.send-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: stretch;
+  flex: 0 0 auto;
+}
 
 .send-btn {
   background: var(--reach-gold);
   color: var(--reach-accent-text);
   border: none;
   border-radius: 6px;
-  padding: 0 14px;
+  padding: 3px 10px;
   font-size: 14px;
   cursor: pointer;
+  flex: 1;
 }
 .send-btn:hover { background: var(--reach-gold-hover); }
 .send-btn:disabled { opacity: 0.45; cursor: default; }
+
+.stop-btn {
+  flex: 1;
+  background: var(--reach-surface);
+  color: var(--reach-muted);
+  border: 1px solid var(--reach-border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+.stop-btn:hover:not(:disabled) {
+  color: var(--reach-error);
+  border-color: var(--reach-error);
+  background: color-mix(in srgb, var(--reach-error) 8%, transparent);
+}
+.stop-btn:disabled { opacity: 0.4; cursor: default; }
 
 
 /* ---- workspace context toggle ---- */
@@ -533,6 +726,19 @@ body {
   white-space: nowrap;
 }
 .ws-toggle:hover { opacity: 1; }
+
+/* toggle pills get their own horizontal scroll on narrow panels */
+.row.toggles {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+.row.toggles .ws-toggle { flex: 0 0 auto; }
+.row.toggles::-webkit-scrollbar { height: 4px; }
+.row.toggles::-webkit-scrollbar-thumb {
+  background: var(--reach-border);
+  border-radius: 2px;
+}
 .ws-toggle input[type="checkbox"] {
   accent-color: var(--vscode-focusBorder, #007acc);
   margin: 0;
