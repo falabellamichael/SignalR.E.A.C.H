@@ -13,7 +13,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
-| **Version** | 3.2.0 |
+| **Version** | 3.2.0 <!-- x-release-please-version --> |
 
 ## Use the endpoint
 
@@ -158,6 +158,15 @@ any OpenAI client ──► https://<tunnel>/v1  (public · no auth · CORS *)
 - Python 3.8+ (stdlib only — no pip installs)
 - A running local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) with a codegpt connection (the installer auto-detects its API key)
 - `ngrok` (winget) or the cloudflared binary that ships with OmniRoute, for public hosting
+
+## Development
+
+```bash
+python -m unittest tests.test_reachd tests.test_reach_cli -v   # 48 tests, stdlib only
+git config core.hooksPath .githooks                            # once per clone
+```
+
+`main` is the development branch: branch off it, open a PR, and merge with squash. The PR title is the only string release-please parses, so it must be a Conventional Commit (`feat:`, `fix:`, `fix!:`, …) — CI and the `commit-msg` hook both enforce that. Merging the release PR tags the version and rewrites every version string in the repo.
 
 ## License
 

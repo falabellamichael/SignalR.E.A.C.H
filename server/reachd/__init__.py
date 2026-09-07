@@ -1,3 +1,4 @@
+# x-release-please-start-version
 """SignalR.E.A.C.H relay daemon — package (v3.2.0).
 
 The daemon runs from ``server/reachd.py`` (a thin launcher shim); all
@@ -23,6 +24,7 @@ Note: ``STATE`` and ``PORT`` are intentionally NOT re-exported — they are
 live globals owned by ``reachd.core`` and are only meaningful once
 ``main()`` has run.
 """
+# x-release-please-end-version
 
 from reachd.__main__ import main
 from reachd.analytics import Analytics
