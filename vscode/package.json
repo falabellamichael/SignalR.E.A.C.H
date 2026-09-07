@@ -82,6 +82,21 @@
           "type": "number",
           "default": 120,
           "markdownDescription": "Max total workspace-context size (KB) sent per request. Open files are truncated to fit."
+        },
+        "simplereach.think": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "WhisperThink \u2014 the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the \ud83d\udcad chip on a reply to peek). Toggle in the sidebar."
+        },
+        "simplereach.thinkModel": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Model used for the private reasoning pass (blank = same model as the chat)."
+        },
+        "simplereach.thinkMaxTokens": {
+          "type": "number",
+          "default": 512,
+          "markdownDescription": "Max tokens for the private reasoning pass."
         }
       }
     }

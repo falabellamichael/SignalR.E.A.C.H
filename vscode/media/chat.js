@@ -14,14 +14,17 @@
   const clearBtn = $('#clear-btn');
   const wsCheck = $('#ws-check');
   const wsCount = $('#ws-count');
+  const thinkCheck = $('#think-check');
 
-  let conv = null;            // current conversation {id, model, ts, title, messages}
+  let conv = null;            // current conversation {id, model, ts, title, messages, thoughts}
   let busy = false;
   let pendingBubble = null;
   let pendingText = '';
   let clearArmed = false;
   let clearTimer = null;
   let includeWorkspace = true;
+  let thinkEnabled = true;
+  let pendingThought = '';
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
@@ -76,9 +79,16 @@
       hint('Type a message below. Models and endpoint load automatically from your REACH relay.');
       return;
     }
-    msgs.forEach((m) => {
+    msgs.forEach((m, idx) => {
       const body = bubble(m.role);
       body.textContent = m.content;
+      if (m.role === 'assistant' && conv.thoughts && conv.thoughts[idx]) {
+        const chip = document.createElement('span');
+        chip.className = 'thought-chip';
+        chip.textContent = '💭';
+        chip.title = 'Private reasoning:\n\n' + conv.thoughts[idx];
+        body.parentElement.appendChild(chip);
+      }
     });
     scrollBottom();
   }
@@ -152,6 +162,7 @@
     const entry = {
       id: conv.id, model: conv.model, ts: conv.ts,
       title: conv.title, messages: conv.messages.slice(),
+      thoughts: Object.assign({}, conv.thoughts || {}),
     };
     hist.push(entry);
     vscode.setState({ history: hist, conv });
@@ -161,7 +172,7 @@
     const item = state().history.find((h) => h.id === id);
     if (!item) return;
     if (conv && conv.messages.length) saveConv();
-    conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice() };
+    conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice(), thoughts: Object.assign({}, item.thoughts || {}) };
     modelSelect.value = item.model || 'gpt-4o';
     persist();
     renderMessages();
@@ -220,10 +231,21 @@
   function finishBubble() {
     if (pendingBubble) {
       hideThinking(pendingBubble);
+      if (pendingThought && conv) {
+        // discreet: attach the private reasoning to the reply as a tooltip only
+        const chip = document.createElement('span');
+        chip.className = 'thought-chip';
+        chip.textContent = '💭';
+        chip.title = 'Private reasoning:\n\n' + pendingThought;
+        pendingBubble.parentElement.appendChild(chip);
+        if (!conv.thoughts) conv.thoughts = {};
+        conv.thoughts[conv.messages.length - 1] = pendingThought;
+      }
       pendingBubble.classList.remove('pending');
       pendingBubble = null;
     }
     pendingText = '';
+    pendingThought = '';
     busy = false;
     $('#send').disabled = false;
     scrollBottom();
@@ -251,6 +273,7 @@
         stream: true,
         messages: conv.messages.slice(),
         includeWorkspace,
+        think: thinkEnabled,
       },
     });
     scrollBottom();
@@ -304,6 +327,19 @@
         log.appendChild(err);
         scrollBottom();
         break;
+      case 'thinking':
+        if (pendingBubble) {
+          const thinkSpinner = document.createElement('span');
+          thinkSpinner.className = 'think-chip';
+          thinkSpinner.textContent = '🧠 thinking…';
+          pendingBubble.parentElement.appendChild(thinkSpinner);
+        }
+        break;
+      case 'thought':
+        pendingThought = (msg.text || '').trim();
+        const chips = document.querySelectorAll('.think-chip');
+        chips.forEach((c) => { c.textContent = '🧠'; c.title = 'Private reasoning:\n\n' + pendingThought; });
+        break;
       case 'contextInfo':
         wsCount.textContent = msg.files
           ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
@@ -335,6 +371,10 @@
     vscode.setState(Object.assign(state(), { includeWorkspace }));
     post('workspaceToggle');
   });
+  thinkCheck.addEventListener('change', () => {
+    thinkEnabled = thinkCheck.checked;
+    vscode.setState(Object.assign(state(), { thinkEnabled }));
+  });
   historyBtn.addEventListener('click', () => {
     historyPanel.hidden = !historyPanel.hidden;
     if (!historyPanel.hidden) renderHistory();
@@ -356,6 +396,10 @@
   if (saved.includeWorkspace !== undefined) {
     includeWorkspace = !!saved.includeWorkspace;
     wsCheck.checked = includeWorkspace;
+  }
+  if (saved.thinkEnabled !== undefined) {
+    thinkEnabled = !!saved.thinkEnabled;
+    thinkCheck.checked = thinkEnabled;
   }
   if (saved.conv) {
     conv = saved.conv;

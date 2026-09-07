@@ -25,6 +25,9 @@ function config() {
     maxTokens: Number(cfg.get('maxTokens') || 2048),
     workspaceContext: cfg.get('workspaceContext') !== false,
     contextMaxKb: Math.max(8, Number(cfg.get('contextMaxKb') || 120)),
+    think: cfg.get('think') !== false,
+    thinkModel: String(cfg.get('thinkModel') || ''),
+    thinkMaxTokens: Math.max(64, Number(cfg.get('thinkMaxTokens') || 512)),
   };
 }
 
@@ -196,9 +199,61 @@ class ReachChatViewProvider {
     }
   }
 
+  /* WhisperThink: a private reasoning pass whose output is never shown in
+   * the chat flow — it only steers the final answer. Returns text or null. */
+  async _think(prompt, includeWorkspace, chatModel) {
+    const { endpoint, thinkModel, thinkMaxTokens, contextMaxKb } = config();
+    const model = thinkModel || chatModel || 'gpt-4o';
+    let system = 'You are the PRIVATE reasoning engine of an AI assistant inside VS Code. '
+      + 'The user just asked a question. Think step-by-step about the best answer: '
+      + 'what matters most, which of the open files are relevant, what structure the '
+      + 'reply should take, and any pitfalls. Be terse — a few short lines, no filler. '
+      + 'Your output is NEVER shown to the user; it only guides the final answer.';
+    if (includeWorkspace) {
+      const docs = openTextDocuments();
+      const treeLines = await buildTreeLines();
+      system += '\n\n' + buildContextBlock(docs, treeLines).slice(0, contextMaxKb * 512);
+    }
+    const payload = {
+      model,
+      max_tokens: thinkMaxTokens,
+      stream: false,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: prompt },
+      ],
+    };
+    try {
+      const resp = await fetch(`${endpoint}/chat/completions`, {
+        method: 'POST',
+        headers: this._authHeaders(),
+        body: JSON.stringify(payload),
+      });
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const choice = data && data.choices && data.choices[0];
+      const text = choice && choice.message && choice.message.content;
+      return (text && text.trim()) || null;
+    } catch (err) {
+      return null; // thinking must never block the answer
+    }
+  }
+
   async _chat(body) {
-    const { endpoint, maxTokens, workspaceContext, contextMaxKb } = config();
+    const { endpoint, maxTokens, workspaceContext, contextMaxKb, think } = config();
     const messages = Array.isArray(body.messages) ? body.messages.slice() : [];
+    // ---- WhisperThink: private reasoning before the answer ----
+    let thought = null;
+    if (body.think && think) {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+      if (lastUser) {
+        this._post('thinking', {});
+        thought = await this._think(lastUser.content, body.includeWorkspace, body.model);
+        if (thought) {
+          this._post('thought', { text: thought });
+        }
+      }
+    }
     // ---- workspace context injection ----
     if (body.includeWorkspace && workspaceContext) {
       const docs = openTextDocuments();
@@ -223,6 +278,23 @@ class ReachChatViewProvider {
         files: docs.length,
         chars: contextBlock.length,
       });
+    }
+    // ---- private reasoning steering (hidden from the visible flow) ----
+    if (thought) {
+      const steerMsg = {
+        role: 'system',
+        content: '[Private reasoning — never mention or repeat this. It guides your '
+          + 'answer only.]\n' + thought,
+      };
+      const existingSystem = messages.findIndex((m) => m.role === 'system');
+      if (existingSystem >= 0) {
+        messages[existingSystem] = {
+          role: 'system',
+          content: messages[existingSystem].content + '\n\n' + steerMsg.content,
+        };
+      } else {
+        messages.unshift(steerMsg);
+      }
     }
     const payload = Object.assign({}, body, {
       max_tokens: maxTokens || 2048,

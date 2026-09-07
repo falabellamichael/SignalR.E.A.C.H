@@ -318,3 +318,20 @@ body {
   margin: 0;
 }
 .ws-label { display: inline-flex; align-items: center; gap: 2px; }
+
+
+/* ---- WhisperThink chips (discreet reasoning indicators) ---- */
+.thought-chip, .think-chip {
+  display: inline-block;
+  margin: 2px 0 0 6px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--vscode-descriptionForeground, #9d9d9d);
+  cursor: help;
+  user-select: none;
+}
+.think-chip { animation: reach-pulse 1.2s ease-in-out infinite; }
+@keyframes reach-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
