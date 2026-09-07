@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 import reachd.core as core  # STATE is read at call time (cycle-safe)
+from reachd.const import CLIENT_DISCONNECT_ERRORS
 from reachd.text import count_tokens, scrub_trailing_roles
 
 
@@ -234,7 +235,7 @@ def chat_execute(h):
             h.end_headers()
             try:
                 h.wfile.write(cached_body)
-            except core.CLIENT_DISCONNECT_ERRORS:
+            except CLIENT_DISCONNECT_ERRORS:
                 pass
             return
 
@@ -635,5 +636,5 @@ def chat_finalize(h, upstream, ctx):
     h.end_headers()
     try:
         h.wfile.write(data)
-    except core.CLIENT_DISCONNECT_ERRORS:
+    except CLIENT_DISCONNECT_ERRORS:
         pass

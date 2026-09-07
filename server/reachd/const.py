@@ -9,3 +9,5 @@ MAX_RATE_BUCKETS = 10000
 
 GIST_ID = "e261e0c31ad08c373bcd667b6982847a"
 GIST_FILE = "simple-reach-endpoint.txt"
+
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
