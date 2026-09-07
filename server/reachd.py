@@ -1074,6 +1074,9 @@ class RelayState:
 # HTTP handler
 # ----------------------------------------------------------------------
 
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SimpleREACH/" + VERSION
     protocol_version = "HTTP/1.1"
@@ -1110,7 +1113,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(body)
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             pass
 
     def _read_body(self):
@@ -1200,7 +1203,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(("%x\r\n" % len(data)).encode("ascii") + data + b"\r\n")
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             raise
 
     # ------------------------------------------------------------------- routes
@@ -1246,10 +1249,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             pass
         except Exception as exc:
-            self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            try:
+                self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            except Exception:
+                pass
 
     def _query_params(self):
         from urllib.parse import parse_qs, urlsplit
@@ -1266,10 +1272,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             pass
         except Exception as exc:
-            self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            try:
+                self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            except Exception:
+                pass
 
     def do_DELETE(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
@@ -1282,10 +1291,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             pass
         except Exception as exc:
-            self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            try:
+                self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            except Exception:
+                pass
 
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
@@ -1322,10 +1334,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             pass
         except Exception as exc:
-            self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            try:
+                self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
+            except Exception:
+                pass
 
     # ------------------------------------------------------------- admin routes
     def handle_settings_update(self):
@@ -1683,7 +1698,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 try:
                     self.wfile.write(cached_body)
-                except (BrokenPipeError, ConnectionResetError):
+                except CLIENT_DISCONNECT_ERRORS:
                     pass
                 return
 
@@ -1837,8 +1852,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                     ):
                         self._write_chunk(("data: " + json.dumps(payload_chunk)
                                            + "\n\n").encode("utf-8"))
-                    self._write_chunk(b"data: [DONE]\n\n")
-                    self._write_chunk(b"")  # terminating chunk
+                    try:
+                        self._write_chunk(b"data: [DONE]\n\n")
+                        self._write_chunk(b"")  # terminating chunk
+                    except Exception:
+                        pass
                 else:
                     first_token_time = None
                     last_token_time = None
@@ -1925,7 +1943,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                         self._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
                         self._write_chunk(b"data: [DONE]\n\n")
                     finally:
-                        self._write_chunk(b"")
+                        try:
+                            self._write_chunk(b"")
+                        except Exception:
+                            pass
                 STATE.note_success()
                 self._log_chat(model=requested, upstream_model=upstream_model,
                                ip=ip, user_agent=self.headers.get("User-Agent"),
@@ -2057,7 +2078,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError):
+        except CLIENT_DISCONNECT_ERRORS:
             pass
 
     @staticmethod
