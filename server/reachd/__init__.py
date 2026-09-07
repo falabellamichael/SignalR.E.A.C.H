@@ -24,6 +24,7 @@ live globals owned by ``reachd.core`` and are only meaningful once
 ``main()`` has run.
 """
 
+from reachd.__main__ import main
 from reachd.analytics import Analytics
 from reachd.cache import ResponseCache
 from reachd.const import (
@@ -36,7 +37,7 @@ from reachd.const import (
     SERVICE,
     VERSION,
 )
-from reachd.core import RelayHandler, main
+from reachd.handler import RelayHandler
 from reachd.limits import CounterGate, RateLimiter
 from reachd.publish import publish_url
 from reachd.settings import (
