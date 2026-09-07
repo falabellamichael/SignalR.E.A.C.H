@@ -28,7 +28,24 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.0.0"
+from . import terminal
+from .terminal import (
+    Paint,
+    banner,
+    c_bold,
+    c_cyan,
+    c_dim,
+    c_green,
+    c_magenta,
+    c_red,
+    c_yellow,
+    enable_ansi,
+    print_footer,
+    spinner,
+    spinner_clear,
+    status_line,
+)
+
 DEFAULT_BASE = os.environ.get("REACH_BASE_URL", "http://127.0.0.1:20777/v1")
 POINTER_GIST = (
     "https://gist.githubusercontent.com/falabellamichael/"
@@ -55,59 +72,6 @@ USER_AGENTS = [
 # ---------------------------------------------------------------------------
 # ANSI colour helpers (auto-disabled for pipes / NO_COLOR / --no-color)
 # ---------------------------------------------------------------------------
-
-
-class Paint:
-    def __init__(self, enabled):
-        self.on = enabled
-
-    def __call__(self, code, text):
-        if not self.on:
-            return text
-        return "\x1b[%sm%s\x1b[0m" % (code, text)
-
-
-PAINT = Paint(False)
-
-
-def c_red(t):
-    return PAINT("31", t)
-
-
-def c_green(t):
-    return PAINT("32", t)
-
-
-def c_yellow(t):
-    return PAINT("33", t)
-
-
-def c_blue(t):
-    return PAINT("34", t)
-
-
-def c_magenta(t):
-    return PAINT("35", t)
-
-
-def c_cyan(t):
-    return PAINT("36", t)
-
-
-def c_bold(t):
-    return PAINT("1", t)
-
-
-def c_dim(t):
-    return PAINT("2", t)
-
-
-def c_inverse(t):
-    return PAINT("7", t)
-
-
-def spinner_char():
-    return "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.time() * 10) % 10]
 
 
 # ---------------------------------------------------------------------------
@@ -460,76 +424,6 @@ def build_grounded_messages(query, results, pages, rich=None):
 # ---------------------------------------------------------------------------
 
 
-def banner(client, base, mode):
-    width = 66
-    print(c_cyan("┌" + "─" * width + "┐"))
-    print(
-        c_cyan("│")
-        + c_bold(c_yellow("  ⚡ SimpleREACH CLI"))
-        + c_dim("  v" + VERSION)
-        + (" " * (width - 32))
-        + c_cyan("│")
-    )
-    print(
-        c_cyan("│")
-        + c_dim("  REACH = RAG Endpoint & AI Chat Host — keyless gpt-4o/5, Claude")
-        + " " * (width - 72)
-        + c_cyan("│")
-    )
-    print(c_cyan("├") + "─" * width + "┤")
-    model = client.model or "(auto — set with /model)"
-    print(
-        c_cyan("│")
-        + "  "
-        + c_green("endpoint ")
-        + c_dim(base)
-        + (" " * max(1, width - 16 - len(base)))
-        + c_cyan("│")
-    )
-    print(
-        c_cyan("│")
-        + "  "
-        + c_green("model    ")
-        + c_bold(model)
-        + (" " * max(1, width - 15 - len(model)))
-        + c_cyan("│")
-    )
-    print(c_cyan("└") + "─" * width + "┘")
-    print(c_dim("  /help for commands · /web <question> for grounded search\n"))
-
-
-def print_footer(client, cited=False):
-    parts = ["%s ms" % round(client.last_latency_ms)]
-    if client.usage.get("completion"):
-        parts.append("%s tok" % client.usage["completion"])
-    if cited:
-        parts.append("grounded")
-    print(c_dim("  · ".join(parts)))
-
-
-def spinner(message):
-    sys.stdout.write("\r" + c_cyan(spinner_char()) + " " + message + "   ")
-    sys.stdout.flush()
-
-
-def spinner_clear():
-    sys.stdout.write("\r" + " " * 60 + "\r")
-    sys.stdout.flush()
-
-
-def spin_while(message, seconds):
-    """Animated wait for local work (page fetches are quick)."""
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        spinner(message)
-        time.sleep(0.08)
-    spinner_clear()
-
-
-def status_line(message):
-    print(c_dim("  " + message))
-
-
 # ---------------------------------------------------------------------------
 # Chat modes
 # ---------------------------------------------------------------------------
@@ -725,18 +619,7 @@ def run_ask(client, question, web=False):
 # ---------------------------------------------------------------------------
 
 
-def enable_ansi():
-    if os.environ.get("NO_COLOR"):
-        return False
-    if not sys.stdout.isatty():
-        return False
-    if os.name == "nt":
-        os.system("")  # enable VT processing on Windows consoles
-    return True
-
-
 def main(argv=None):
-    global PAINT
     parser = argparse.ArgumentParser(
         prog="reach-cli",
         description="SimpleREACH CLI — terminal chat + web-grounded answers "
@@ -763,7 +646,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    PAINT = Paint(enable_ansi() and not args.no_color)
+    terminal.PAINT = Paint(enable_ansi() and not args.no_color)
     if os.name == "nt":
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
         sys.stdin.reconfigure(encoding="utf-8", errors="replace")
