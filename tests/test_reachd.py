@@ -152,7 +152,8 @@ class MergeTests(unittest.TestCase):
         self.assertEqual(spec["temperature"], 0.5)
         self.assertEqual(spec["max_tokens_cap"],
                          reachd.MODEL_SPEC_DEFAULTS["max_tokens_cap"])
-        self.assertEqual(spec["upstream"], "codegpt/codegpt-gpt-4o")
+        self.assertEqual(spec["upstream"],
+                         reachd.DEFAULT_SETTINGS["models"]["gpt-4o"]["upstream"])
 
 
 class AnalyticsTests(unittest.TestCase):
@@ -266,6 +267,36 @@ class ScrubberTests(unittest.TestCase):
         self.assertEqual(reachd.scrub_trailing_roles(""), "")
         clean = "A perfectly normal answer with no continuation."
         self.assertEqual(reachd.scrub_trailing_roles(clean), clean)
+
+    def test_check_role_continuation_detection(self):
+        # Match detection
+        status, cut = reachd.check_role_continuation("Hello\n\nUser: How are you?")
+        self.assertEqual(status, "MATCH")
+        self.assertEqual(cut, len("Hello"))
+
+        # Prefix detection on newline
+        status, cut = reachd.check_role_continuation("Hello\n\n")
+        self.assertEqual(status, "PREFIX")
+        self.assertEqual(cut, len("Hello"))
+
+        status, cut = reachd.check_role_continuation("Hello\n\nUs")
+        self.assertEqual(status, "PREFIX")
+        self.assertEqual(cut, len("Hello"))
+
+        # Safe normal text
+        status, cut = reachd.check_role_continuation("Hello\n1. User accounts")
+        self.assertEqual(status, "SAFE")
+
+        status, cut = reachd.check_role_continuation("Hello world!")
+        self.assertEqual(status, "SAFE")
+
+    def test_make_sse_chunk(self):
+        orig = {"id": "c1", "choices": [{"index": 0, "delta": {"content": "Old"}}]}
+        chunk_bytes = reachd.make_sse_chunk(orig, "New")
+        self.assertTrue(chunk_bytes.startswith(b"data: {"))
+        parsed = json.loads(chunk_bytes.decode("utf-8")[5:].strip())
+        self.assertEqual(parsed["choices"][0]["delta"]["content"], "New")
+
 
 
 class ResponseCacheTests(unittest.TestCase):

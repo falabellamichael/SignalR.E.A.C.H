@@ -63,6 +63,80 @@ ROLE_CONTINUATION_RE = re.compile(
     r"^\s*(user|human|assistant|system|anthropic|claude)\s*:\s*",
     re.IGNORECASE)
 
+ROLE_LINE_RE = re.compile(
+    r"(?:\r?\n)[ \t]*(user|human|assistant|system|anthropic|claude)[ \t]*:\s*",
+    re.IGNORECASE)
+
+ROLE_NAMES = ("user", "human", "assistant", "system", "anthropic", "claude")
+
+
+def check_role_continuation(text):
+    """Detect if accumulated stream text contains a role marker or potential role prefix.
+    Returns:
+      ('MATCH', cut_idx): completed role continuation marker starting at char cut_idx
+      ('PREFIX', cut_idx): tail of text from cut_idx onwards could be a role prefix
+      ('SAFE', len(text)): all text is safe to flush
+    """
+    match = ROLE_LINE_RE.search(text)
+    if match:
+        raw_cut = match.start()
+        clean_cut = len(text[:raw_cut].rstrip("\r\n \t"))
+        return 'MATCH', clean_cut
+
+    line0_match = re.match(r"^[ \t]*(user|human)[ \t]*:\s*", text, re.IGNORECASE)
+    if line0_match:
+        return 'MATCH', 0
+
+    trailing_ws_match = re.search(r"[\r\n][ \t\r\n]*$", text)
+    if trailing_ws_match:
+        return 'PREFIX', trailing_ws_match.start()
+
+    last_nl = max(text.rfind('\n'), text.rfind('\r'))
+    if last_nl == -1:
+        s0 = text.lstrip(" \t").lower()
+        if s0 and any(role.startswith(s0) for role in ("user", "human")):
+            return 'PREFIX', 0
+        return 'SAFE', len(text)
+
+    tail = text[last_nl + 1:]
+    start_idx = len(text[:last_nl + 1].rstrip("\r\n \t"))
+
+    s = tail.lstrip(" \t")
+    s_lower = s.lower()
+    for role in ROLE_NAMES:
+        if role.startswith(s_lower):
+            return 'PREFIX', start_idx
+        if s_lower.startswith(role):
+            rem = s_lower[len(role):]
+            if rem.strip(" \t") == "":
+                return 'PREFIX', start_idx
+            if rem.lstrip(" \t").startswith(":"):
+                return 'MATCH', start_idx
+
+    return 'SAFE', len(text)
+
+
+def make_sse_chunk(parsed_dict, content):
+    """Re-encode an SSE data chunk with trimmed content."""
+    try:
+        chunk = json.loads(json.dumps(parsed_dict))
+        choices = chunk.get("choices")
+        if isinstance(choices, list) and choices:
+            ch0 = choices[0]
+            delta = ch0.get("delta", {})
+            if "content" in delta:
+                delta["content"] = content
+            elif "reasoning_content" in delta:
+                delta["reasoning_content"] = content
+            elif "reasoning" in delta:
+                delta["reasoning"] = content
+            elif "thought" in delta:
+                delta["thought"] = content
+            ch0["delta"] = delta
+        return ("data: " + json.dumps(chunk) + "\n\n").encode("utf-8")
+    except Exception:
+        return None
+
 
 def scrub_trailing_roles(content):
     """Truncate content at the first transcript-continuation role line."""
@@ -73,6 +147,7 @@ def scrub_trailing_roles(content):
         if ROLE_CONTINUATION_RE.match(lines[idx]):
             return "\n".join(lines[:idx]).rstrip()
     return content
+
 
 
 TOKEN_RE = re.compile(r"""'(?:[sdmt]|ll|ve|re)|[\w]+|[^\s\w]""", re.UNICODE)
@@ -154,13 +229,77 @@ DEFAULT_SETTINGS = {
     "models": {
         "gpt-4o": {
             **MODEL_SPEC_DEFAULTS,
-            "upstream": "codegpt/codegpt-gpt-4o",
-            "description": "Flagship free gpt-4o (codegpt tier)",
+            "upstream": "antigravity/claude-sonnet-4-6",
+            "fallback": "gemini-3.7-flash",
+            "description": "Flagship OpenAI drop-in (high capability, zero cooldown)",
         },
         "gpt-4o-mini": {
             **MODEL_SPEC_DEFAULTS,
-            "upstream": "codegpt/codegpt-gpt-4o-mini",
-            "description": "Cheaper, faster gpt-4o-mini",
+            "upstream": "antigravity/gemini-3.7-flash-low",
+            "fallback": "claude-sonnet-4.6",
+            "description": "Fast, responsive mini model (<1s latency)",
+        },
+        "gpt-5": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "antigravity/claude-opus-4-6-thinking",
+            "fallback": "claude-sonnet-4.6",
+            "description": "Ultra reasoning model",
+        },
+        "claude-sonnet-4.6": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "antigravity/claude-sonnet-4-6",
+            "fallback": "claude-opus-4.6-fast",
+            "description": "Claude Sonnet 4.6 (fast coding & analysis)",
+            "context_window": 200000,
+        },
+        "claude-opus-4.6": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "antigravity/claude-opus-4-6-thinking",
+            "fallback": "claude-opus-4.6-fast",
+            "description": "Claude Opus 4.6 Thinking",
+            "context_window": 200000,
+        },
+        "claude-opus-4.6-fast": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "antigravity/claude-opus-4-6-thinking-low",
+            "fallback": "claude-sonnet-4.6",
+            "description": "Claude Opus 4.6 low-think (fast agent loops)",
+            "context_window": 200000,
+        },
+        "deepseek-chat": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "deepseek/deepseek-v4-pro",
+            "fallback": "deepseek-v4-flash",
+            "description": "DeepSeek V4 Pro flagship chat & reasoning",
+            "context_window": 128000,
+        },
+        "deepseek-reasoner": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "deepseek/deepseek-v4-pro",
+            "fallback": "deepseek-v4-flash",
+            "description": "DeepSeek V4 Pro deep reasoning (thinking)",
+            "context_window": 128000,
+        },
+        "deepseek-v4-pro": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "deepseek/deepseek-v4-pro",
+            "fallback": "deepseek-v4-flash",
+            "description": "DeepSeek V4 Pro high intelligence",
+            "context_window": 128000,
+        },
+        "deepseek-v4-flash": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "deepseek/deepseek-v4-flash",
+            "fallback": "deepseek-v4-pro",
+            "description": "DeepSeek V4 Flash ultra-low latency (<1s TTFT)",
+            "context_window": 128000,
+        },
+        "gemini-3.7-flash": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "antigravity/gemini-3.7-flash-low",
+            "fallback": "claude-sonnet-4.6",
+            "description": "Gemini 3.7 Flash ultra-fast tier",
+            "context_window": 128000,
         },
     },
     # ---- rate limits ----
@@ -784,7 +923,7 @@ class ResponseCache:
                 self.misses += 1
                 return None
             expires, body = entry
-            if time.time() > expires:
+            if time.time() >= expires:
                 self._entries.pop(key, None)
                 self.misses += 1
                 return None
@@ -1523,7 +1662,44 @@ class RelayHandler(BaseHTTPRequestHandler):
         requested = payload.get("model") or req_cfg.get("default_model", "")
         spec = models.get(requested)
 
-        # model visibility: unknown or disabled → 404; private + remote → 404
+        # model visibility: unknown or disabled → check smart alias fallback, else 404
+        if not spec or not spec.get("enabled"):
+            req_lower = (requested or "").lower()
+            resolved = None
+            if "deepseek" in req_lower or "r1" in req_lower:
+                for candidate in ("deepseek-chat", "deepseek-reasoner", "deepseek-v4-pro", "deepseek-v4-flash"):
+                    if candidate in models and models[candidate].get("enabled"):
+                        resolved = candidate
+                        break
+            elif "sonnet" in req_lower or "claude" in req_lower:
+                for candidate in ("claude-sonnet-4.6", "claude-opus-4.6-fast", "claude-opus-4.6"):
+                    if candidate in models and models[candidate].get("enabled"):
+                        resolved = candidate
+                        break
+            elif "opus" in req_lower:
+                for candidate in ("claude-opus-4.6", "claude-opus-4.6-fast", "claude-sonnet-4.6"):
+                    if candidate in models and models[candidate].get("enabled"):
+                        resolved = candidate
+                        break
+            elif "flash" in req_lower or "gemini" in req_lower:
+                for candidate in ("gemini-3.7-flash", "deepseek-v4-flash", "gpt-4o-mini"):
+                    if candidate in models and models[candidate].get("enabled"):
+                        resolved = candidate
+                        break
+            elif "gpt-4" in req_lower:
+                for candidate in ("gpt-4o", "gpt-4o-mini", "claude-sonnet-4.6"):
+                    if candidate in models and models[candidate].get("enabled"):
+                        resolved = candidate
+                        break
+            elif "gpt-5" in req_lower or "o1" in req_lower or "o3" in req_lower:
+                for candidate in ("gpt-5", "claude-opus-4.6", "deepseek-reasoner"):
+                    if candidate in models and models[candidate].get("enabled"):
+                        resolved = candidate
+                        break
+            if resolved:
+                spec = models.get(resolved)
+                requested = resolved
+
         if not spec or not spec.get("enabled"):
             self._json(404, {
                 "error": {
@@ -1720,7 +1896,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             retries = int(STATE.cfg.get("upstream_retries", 1))
             retry_delay = float(STATE.cfg.get("retry_delay_ms", 1000)) / 1000.0
             upstream = None
-            attempts = retries + 1 if not stream else 1
+            attempts = retries + 1
             last_error = None
             fallback_used = False
             for attempt in range(attempts):
@@ -1795,6 +1971,102 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         content_type = upstream.headers.get("Content-Type", "application/json")
         if stream:
+            first_line = None
+            raw_sock = None
+            pending_prefix = []
+            ttft_timeout = min(45.0, float(STATE.cfg.get("stream_timeout_s", 300)))
+            try:
+                sock = getattr(upstream, "fp", None)
+                raw_sock = getattr(sock, "raw", None) or getattr(sock, "_sock", None)
+                if raw_sock and hasattr(raw_sock, "settimeout"):
+                    raw_sock.settimeout(ttft_timeout)
+                # Pre-read until the first real content token: some upstream
+                # routes (e.g. Gemini via OmniRoute) return 200 with only
+                # keepalive chunks and then [DONE] — an empty stream. Treat
+                # that as a failure so the fallback alias can serve instead.
+                deadline = time.time() + int(STATE.cfg.get("stream_timeout_s", 300))
+                while time.time() < deadline:
+                    line = upstream.readline()
+                    if not line:
+                        break
+                    pending_prefix.append(line)
+                    stripped = line.strip()
+                    if stripped == b"data: [DONE]":
+                        break
+                    if stripped.startswith(b"data:"):
+                        try:
+                            parsed = json.loads(stripped[5:].decode("utf-8", "replace"))
+                            choices = parsed.get("choices") \
+                                if isinstance(parsed, dict) else None
+                            if isinstance(choices, list) and choices:
+                                delta = choices[0].get("delta", {})
+                                token_text = (delta.get("content")
+                                              or delta.get("reasoning_content")
+                                              or delta.get("reasoning")
+                                              or delta.get("thought"))
+                                if isinstance(token_text, str) and token_text:
+                                    first_line = pending_prefix.pop()
+                                    break
+                        except Exception:
+                            pass
+                if first_line is None:
+                    # EOF, [DONE], or deadline without a content token
+                    pending_prefix = []
+                    upstream = None
+            except Exception:
+                pending_prefix = []
+                upstream = None
+
+            # If primary upstream failed or hung on first token, attempt fallback
+            if upstream is None:
+                fallback_alias = spec.get("fallback")
+                if fallback_alias and fallback_alias in models \
+                        and models[fallback_alias].get("enabled"):
+                    fb_upstream = models[fallback_alias]["upstream"]
+                    try:
+                        fb_payload = dict(payload)
+                        fb_payload["model"] = fb_upstream
+                        fb_req = urllib.request.Request(
+                            url, data=json.dumps(fb_payload).encode("utf-8"),
+                            method="POST",
+                            headers={"Content-Type": "application/json",
+                                     "Authorization": "Bearer " + STATE.key})
+                        fb_up = urllib.request.urlopen(
+                            fb_req,
+                            timeout=int(STATE.cfg.get("stream_timeout_s", 300)))
+                        fb_sock = getattr(fb_up, "fp", None)
+                        fb_raw = getattr(fb_sock, "raw", None) or getattr(fb_sock, "_sock", None)
+                        if fb_raw and hasattr(fb_raw, "settimeout"):
+                            fb_raw.settimeout(ttft_timeout)
+                        fb_first = fb_up.readline()
+                        if fb_first and fb_first.strip() != b"data: [DONE]":
+                            upstream = fb_up
+                            first_line = fb_first
+                            upstream_model = fb_upstream
+                            spec = models[fallback_alias]
+                            fallback_used = True
+                            raw_sock = fb_raw
+                    except Exception as exc:
+                        last_error = exc
+
+            if upstream is None:
+                STATE.note_failure()
+                self._log_chat(model=requested, upstream_model=upstream_model,
+                               ip=ip, user_agent=self.headers.get("User-Agent"),
+                               status=504, error="upstream_timeout",
+                               latency_ms=int((time.time() - started) * 1000),
+                               tokens_in=0, tokens_out=0, stream=stream,
+                               request_body=request_body)
+                return self._relay_upstream_error(
+                    last_error or OSError("Upstream model failed to emit tokens"),
+                    "OmniRoute model timed out emitting first token")
+
+            if raw_sock and hasattr(raw_sock, "settimeout"):
+                try:
+                    raw_sock.settimeout(int(STATE.cfg.get("upstream_timeout_s", 600)))
+                except Exception:
+                    pass
+
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", content_type or "text/event-stream")
@@ -1805,156 +2077,201 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if fallback_used:
                     self.send_header("X-Reach-Fallback", "used")
                 self.end_headers()
-                if spec.get("strip_trailing_roles"):
-                    # Buffer the stream, scrub the assembled content, then
-                    # emit a single clean completion.
-                    buffered = b""
-                    while True:
+
+                first_token_time = None
+                last_token_time = None
+                token_chunks_count = 0
+                streamed_tokens = 0
+                streamed_prompt_tokens = 0
+                assembled_chunks = []
+                last_chunk_id = "chatcmpl-reach"
+                stop_role_marker = spec.get("strip_trailing_roles")
+
+                pending_buffer = []
+                accumulated_text = ""
+                stream_stopped = False
+
+                def _flush_buffer(cut_offset=None, is_match=False):
+                    nonlocal pending_buffer
+                    if cut_offset is None:
+                        for item in pending_buffer:
+                            self._write_chunk(item[0])
+                        pending_buffer = []
+                    elif is_match:
+                        for r_bytes, p_chunk, t_text, s_off, e_off in pending_buffer:
+                            if e_off <= cut_offset:
+                                self._write_chunk(r_bytes)
+                            elif s_off < cut_offset:
+                                safe_len = cut_offset - s_off
+                                safe_content = t_text[:safe_len].rstrip("\r\n \t")
+                                if safe_content and p_chunk:
+                                    rewritten = make_sse_chunk(p_chunk, safe_content)
+                                    if rewritten:
+                                        self._write_chunk(rewritten)
+                        pending_buffer = []
+                    else:
+                        new_pending = []
+                        for r_bytes, p_chunk, t_text, s_off, e_off in pending_buffer:
+                            if e_off <= cut_offset:
+                                self._write_chunk(r_bytes)
+                            else:
+                                new_pending.append((r_bytes, p_chunk, t_text, s_off, e_off))
+                        pending_buffer = new_pending
+
+                def _handle_stream_line(line_bytes):
+                    nonlocal first_token_time, last_token_time, token_chunks_count
+                    nonlocal streamed_tokens, streamed_prompt_tokens, last_chunk_id
+                    nonlocal accumulated_text, stream_stopped
+
+                    if stream_stopped:
+                        return False
+
+                    if not line_bytes.startswith(b"data:"):
+                        if not stop_role_marker:
+                            self._write_chunk(line_bytes)
+                        else:
+                            if pending_buffer:
+                                pending_buffer.append((line_bytes, None, "", len(accumulated_text), len(accumulated_text)))
+                            else:
+                                self._write_chunk(line_bytes)
+                        return True
+
+                    text_line = line_bytes[5:].strip()
+                    if text_line == b"[DONE]":
+                        if stop_role_marker:
+                            _flush_buffer()
+                        return False
+
+                    parsed_chunk = None
+                    token_text = None
+                    try:
+                        parsed_chunk = json.loads(text_line.decode("utf-8", "replace"))
+                        if isinstance(parsed_chunk, dict):
+                            if parsed_chunk.get("id"):
+                                last_chunk_id = parsed_chunk["id"]
+                            usage_obj = parsed_chunk.get("usage")
+                            if isinstance(usage_obj, dict):
+                                if usage_obj.get("completion_tokens"):
+                                    streamed_tokens = int(usage_obj["completion_tokens"])
+                                if usage_obj.get("prompt_tokens"):
+                                    streamed_prompt_tokens = int(usage_obj["prompt_tokens"])
+                            choices = parsed_chunk.get("choices")
+                            if isinstance(choices, list) and choices:
+                                delta = choices[0].get("delta", {})
+                                content = delta.get("content")
+                                reasoning = (delta.get("reasoning_content")
+                                             or delta.get("reasoning")
+                                             or delta.get("thought"))
+                                if isinstance(content or reasoning, str):
+                                    token_text = content or reasoning
+                    except Exception:
+                        pass
+
+                    if token_text:
+                        now_t = time.time()
+                        token_chunks_count += 1
+                        if first_token_time is None:
+                            first_token_time = now_t
+                        last_token_time = now_t
+                        assembled_chunks.append(token_text)
+
+                    if not stop_role_marker:
+                        self._write_chunk(line_bytes)
+                        return True
+
+                    if not token_text:
+                        if pending_buffer:
+                            pending_buffer.append((line_bytes, parsed_chunk, "", len(accumulated_text), len(accumulated_text)))
+                        else:
+                            self._write_chunk(line_bytes)
+                        return True
+
+                    start_off = len(accumulated_text)
+                    end_off = start_off + len(token_text)
+                    accumulated_text += token_text
+                    pending_buffer.append((line_bytes, parsed_chunk, token_text, start_off, end_off))
+
+                    status, cut_idx = check_role_continuation(accumulated_text)
+                    if status == 'MATCH':
+                        stream_stopped = True
+                        _flush_buffer(cut_idx, is_match=True)
+                        pending_buffer.clear()
+                        return False
+                    elif status == 'PREFIX':
+                        _flush_buffer(cut_idx, is_match=False)
+                        return True
+                    else:
+                        _flush_buffer()
+                        return True
+
+                for pre_line in pending_prefix:
+                    if not _handle_stream_line(pre_line):
+                        break
+
+                if first_line and not stream_stopped:
+                    _handle_stream_line(first_line)
+
+                try:
+                    while not stream_stopped:
                         line = upstream.readline()
                         if not line:
                             break
-                        buffered += line
-                    assembled = []
-                    for line in buffered.decode("utf-8", "replace").splitlines():
-                        if not line.startswith("data:"):
-                            continue
-                        chunk = line[5:].strip()
-                        if chunk == "[DONE]":
-                            continue
-                        try:
-                            delta = (json.loads(chunk).get("choices")
-                                     or [{}])[0].get("delta", {})
-                            content = delta.get("content")
-                            if isinstance(content, str):
-                                assembled.append(content)
-                        except json.JSONDecodeError:
-                            pass
-                    scrubbed = scrub_trailing_roles("".join(assembled))
+                        if not _handle_stream_line(line):
+                            break
+
+                    if not stream_stopped and stop_role_marker:
+                        _flush_buffer()
+                    pending_buffer.clear()
+
+                    full_streamed_text = "".join(assembled_chunks)
+                    if stream_stopped and stop_role_marker:
+                        full_streamed_text = scrub_trailing_roles(full_streamed_text)
+                    approx_out = count_tokens(full_streamed_text) if (stream_stopped and stop_role_marker) else (streamed_tokens if streamed_tokens > 0 else count_tokens(full_streamed_text))
                     now_end = time.time()
-                    stream_duration = max(0.2, now_end - started)
-                    latency_ms = int(stream_duration * 1000)
-                    approx_in = max(1, total_chars // 4)
-                    approx_out = count_tokens(scrubbed)
-                    tps = round(approx_out / stream_duration, 1)
+                    total_elapsed = max(0.2, now_end - started)
+                    latency_ms = int((now_end - started) * 1000)
+
+                    # Genuine continuous stream: multiple chunks spread over at least 300ms
+                    if (first_token_time and last_token_time and
+                            (last_token_time - first_token_time) >= 0.3 and
+                            token_chunks_count >= 3 and approx_out > 2):
+                        decode_duration = last_token_time - first_token_time
+                        tps = round((approx_out - 1) / decode_duration, 1)
+                    else:
+                        # Buffered burst: tokens arrived in 1-2 chunks, use elapsed request duration
+                        tps = round(approx_out / total_elapsed, 1)
+
+                    if streamed_prompt_tokens > 0:
+                        approx_in = streamed_prompt_tokens
+                    else:
+                        approx_in = max(1, total_chars // 4)
+
                     STATE.note_speed(tps)
-                    created = int(time.time())
-                    for payload_chunk in (
-                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
-                         "created": created, "model": requested,
-                         "choices": [{"index": 0, "delta": {"content": scrubbed},
-                                      "finish_reason": None}]},
-                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
-                         "created": created, "model": requested,
-                         "choices": [{"index": 0, "delta": {},
-                                      "finish_reason": "stop"}]},
-                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
-                         "created": created, "model": requested,
-                         "choices": [],
-                         "usage": {"prompt_tokens": approx_in,
-                                   "completion_tokens": approx_out,
-                                   "total_tokens": approx_in + approx_out,
-                                   "tokens_per_second": tps,
-                                   "tokensPerSecond": tps,
-                                   "completion_tokens_per_second": tps,
-                                   "speed_tps": tps}}
-                    ):
-                        self._write_chunk(("data: " + json.dumps(payload_chunk)
-                                           + "\n\n").encode("utf-8"))
+
+                    created_now = int(time.time())
+                    usage_chunk = {
+                        "id": last_chunk_id,
+                        "object": "chat.completion.chunk",
+                        "created": created_now,
+                        "model": requested,
+                        "choices": [],
+                        "usage": {
+                            "prompt_tokens": approx_in,
+                            "completion_tokens": approx_out,
+                            "total_tokens": approx_in + approx_out,
+                            "tokens_per_second": tps,
+                            "tokensPerSecond": tps,
+                            "completion_tokens_per_second": tps,
+                            "speed_tps": tps,
+                        }
+                    }
+                    self._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
+                    self._write_chunk(b"data: [DONE]\n\n")
+                finally:
                     try:
-                        self._write_chunk(b"data: [DONE]\n\n")
-                        self._write_chunk(b"")  # terminating chunk
+                        self._write_chunk(b"")
                     except Exception:
                         pass
-                else:
-                    first_token_time = None
-                    last_token_time = None
-                    token_chunks_count = 0
-                    streamed_tokens = 0
-                    streamed_prompt_tokens = 0
-                    assembled_chunks = []
-                    last_chunk_id = "chatcmpl-reach"
-                    try:
-                        while True:
-                            line = upstream.readline()
-                            if not line:
-                                break
-                            if line.startswith(b"data:"):
-                                text_line = line[5:].strip()
-                                if text_line == b"[DONE]":
-                                    break
-                                try:
-                                    parsed_chunk = json.loads(text_line.decode("utf-8", "replace"))
-                                    if isinstance(parsed_chunk, dict):
-                                        if parsed_chunk.get("id"):
-                                            last_chunk_id = parsed_chunk["id"]
-                                        usage_obj = parsed_chunk.get("usage")
-                                        if isinstance(usage_obj, dict):
-                                            if usage_obj.get("completion_tokens"):
-                                                streamed_tokens = int(usage_obj["completion_tokens"])
-                                            if usage_obj.get("prompt_tokens"):
-                                                streamed_prompt_tokens = int(usage_obj["prompt_tokens"])
-                                        choices = parsed_chunk.get("choices")
-                                        if isinstance(choices, list) and choices:
-                                            delta = choices[0].get("delta", {})
-                                            content = delta.get("content")
-                                            if isinstance(content, str) and content:
-                                                now_t = time.time()
-                                                token_chunks_count += 1
-                                                if first_token_time is None:
-                                                    first_token_time = now_t
-                                                last_token_time = now_t
-                                                assembled_chunks.append(content)
-                                except Exception:
-                                    pass
-                            self._write_chunk(line)
-
-                        full_streamed_text = "".join(assembled_chunks)
-                        approx_out = streamed_tokens if streamed_tokens > 0 else count_tokens(full_streamed_text)
-                        now_end = time.time()
-                        total_elapsed = max(0.2, now_end - started)
-                        latency_ms = int((now_end - started) * 1000)
-
-                        # Genuine continuous stream: multiple chunks spread over at least 300ms
-                        if (first_token_time and last_token_time and
-                                (last_token_time - first_token_time) >= 0.3 and
-                                token_chunks_count >= 3 and approx_out > 2):
-                            decode_duration = last_token_time - first_token_time
-                            tps = round((approx_out - 1) / decode_duration, 1)
-                        else:
-                            # Buffered burst: tokens arrived in 1-2 chunks, use elapsed request duration
-                            tps = round(approx_out / total_elapsed, 1)
-
-                        if streamed_prompt_tokens > 0:
-                            approx_in = streamed_prompt_tokens
-                        else:
-                            approx_in = max(1, total_chars // 4)
-
-                        STATE.note_speed(tps)
-
-                        created_now = int(time.time())
-                        usage_chunk = {
-                            "id": last_chunk_id,
-                            "object": "chat.completion.chunk",
-                            "created": created_now,
-                            "model": requested,
-                            "choices": [],
-                            "usage": {
-                                "prompt_tokens": approx_in,
-                                "completion_tokens": approx_out,
-                                "total_tokens": approx_in + approx_out,
-                                "tokens_per_second": tps,
-                                "tokensPerSecond": tps,
-                                "completion_tokens_per_second": tps,
-                                "speed_tps": tps
-                            }
-                        }
-                        self._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
-                        self._write_chunk(b"data: [DONE]\n\n")
-                    finally:
-                        try:
-                            self._write_chunk(b"")
-                        except Exception:
-                            pass
                 STATE.note_success()
                 self._log_chat(model=requested, upstream_model=upstream_model,
                                ip=ip, user_agent=self.headers.get("User-Agent"),
