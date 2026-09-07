@@ -2294,8 +2294,6 @@
             rq.appendChild(buildInput('checkbox', 'request', 'allow_logprobs', 'Allow logprobs'));
             rq.appendChild(buildInput('csv', 'request', 'blocked_fields', 'Blocked fields',
                 'Request fields to reject or strip (e.g. seed, stop, logit_bias).'));
-            rq.appendChild(buildInput('checkbox', 'request', 'show_speed_in_chat', 'Show tokens/s in AI chat responses',
-                'Appends live generation throughput (⚡ X.X tok/s) directly to AI chat completions so users and chat windows see speed metrics.'));
             rq.appendChild(buildInput('checkbox', 'request', 'reject_blocked', 'Reject blocked fields (400)',
                 'Off = silently strip them; on = refuse the request.'));
 

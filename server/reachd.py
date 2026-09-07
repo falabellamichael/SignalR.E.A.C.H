@@ -74,6 +74,23 @@ def scrub_trailing_roles(content):
             return "\n".join(lines[:idx]).rstrip()
     return content
 
+
+TOKEN_RE = re.compile(r"""'(?:[sdmt]|ll|ve|re)|[\w]+|[^\s\w]""", re.UNICODE)
+
+
+def count_tokens(text):
+    """Accurate BPE token estimate for LLM text."""
+    if not text:
+        return 0
+    words_and_punct = TOKEN_RE.findall(text)
+    count = 0
+    for token in words_and_punct:
+        if len(token) > 6 and token.isalnum():
+            count += max(1, (len(token) + 3) // 4)
+        else:
+            count += 1
+    return max(1, count)
+
 STATE = None          # RelayState, set in main()
 PORT = DEFAULT_PORT
 
@@ -131,7 +148,6 @@ DEFAULT_SETTINGS = {
         "reject_blocked": False,    # True → 400 on blocked fields, else strip
         "temperature_min": 0.0,
         "temperature_max": 2.0,
-        "show_speed_in_chat": True, # broadcast speed badge (⚡ X tok/s) in chat responses
     },
     # ---- model aliases (per-alias specs, see MODEL_SPEC_DEFAULTS) ----
     "models": {
@@ -351,7 +367,7 @@ def validate_settings(cfg):
         _int(req.get(field, DEFAULT_SETTINGS["request"][field]), lo, hi,
              "request." + field)
     for key in ("allow_tools", "allow_response_format", "allow_logprobs",
-                "reject_blocked", "show_speed_in_chat"):
+                "reject_blocked"):
         _bool(req.get(key, False), "request." + key)
     blocked = req.get("blocked_fields", [])
     _expect(isinstance(blocked, list) and len(blocked) <= 64,
@@ -1768,8 +1784,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 if spec.get("strip_trailing_roles"):
                     # Buffer the stream, scrub the assembled content, then
-                    # emit a single clean completion. (Same total latency;
-                    # the client just receives it in one delta.)
+                    # emit a single clean completion.
                     buffered = b""
                     while True:
                         line = upstream.readline()
@@ -1792,14 +1807,13 @@ class RelayHandler(BaseHTTPRequestHandler):
                         except json.JSONDecodeError:
                             pass
                     scrubbed = scrub_trailing_roles("".join(assembled))
-                    stream_duration = max(0.001, time.time() - started)
+                    now_end = time.time()
+                    stream_duration = max(0.2, now_end - started)
                     latency_ms = int(stream_duration * 1000)
                     approx_in = max(1, total_chars // 4)
-                    approx_out = max(1, len(scrubbed) // 4)
+                    approx_out = count_tokens(scrubbed)
                     tps = round(approx_out / stream_duration, 1)
                     STATE.note_speed(tps)
-                    if req_cfg.get("show_speed_in_chat", True) and tps > 0:
-                        scrubbed += "\n\n*(⚡ %.1f tok/s)*" % tps
                     created = int(time.time())
                     for payload_chunk in (
                         {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
@@ -1817,6 +1831,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                                    "completion_tokens": approx_out,
                                    "total_tokens": approx_in + approx_out,
                                    "tokens_per_second": tps,
+                                   "tokensPerSecond": tps,
                                    "completion_tokens_per_second": tps,
                                    "speed_tps": tps}}
                     ):
@@ -1825,8 +1840,12 @@ class RelayHandler(BaseHTTPRequestHandler):
                     self._write_chunk(b"data: [DONE]\n\n")
                     self._write_chunk(b"")  # terminating chunk
                 else:
+                    first_token_time = None
+                    last_token_time = None
+                    token_chunks_count = 0
                     streamed_tokens = 0
-                    streamed_chars = 0
+                    streamed_prompt_tokens = 0
+                    assembled_chunks = []
                     last_chunk_id = "chatcmpl-reach"
                     try:
                         while True:
@@ -1843,45 +1862,62 @@ class RelayHandler(BaseHTTPRequestHandler):
                                         if parsed_chunk.get("id"):
                                             last_chunk_id = parsed_chunk["id"]
                                         usage_obj = parsed_chunk.get("usage")
-                                        if isinstance(usage_obj, dict) and usage_obj.get("completion_tokens"):
-                                            streamed_tokens = int(usage_obj["completion_tokens"])
+                                        if isinstance(usage_obj, dict):
+                                            if usage_obj.get("completion_tokens"):
+                                                streamed_tokens = int(usage_obj["completion_tokens"])
+                                            if usage_obj.get("prompt_tokens"):
+                                                streamed_prompt_tokens = int(usage_obj["prompt_tokens"])
                                         choices = parsed_chunk.get("choices")
                                         if isinstance(choices, list) and choices:
                                             delta = choices[0].get("delta", {})
                                             content = delta.get("content")
-                                            if isinstance(content, str):
-                                                streamed_chars += len(content)
-                                                streamed_tokens += 1
+                                            if isinstance(content, str) and content:
+                                                now_t = time.time()
+                                                token_chunks_count += 1
+                                                if first_token_time is None:
+                                                    first_token_time = now_t
+                                                last_token_time = now_t
+                                                assembled_chunks.append(content)
                                 except Exception:
                                     pass
                             self._write_chunk(line)
 
-                        stream_duration = max(0.001, time.time() - started)
-                        latency_ms = int(stream_duration * 1000)
-                        approx_in = max(1, total_chars // 4)
-                        approx_out = max(1, streamed_tokens if streamed_tokens > 0 else (streamed_chars // 4 or 1))
-                        tps = round(approx_out / stream_duration, 1)
+                        full_streamed_text = "".join(assembled_chunks)
+                        approx_out = streamed_tokens if streamed_tokens > 0 else count_tokens(full_streamed_text)
+                        now_end = time.time()
+                        total_elapsed = max(0.2, now_end - started)
+                        latency_ms = int((now_end - started) * 1000)
+
+                        # Genuine continuous stream: multiple chunks spread over at least 300ms
+                        if (first_token_time and last_token_time and
+                                (last_token_time - first_token_time) >= 0.3 and
+                                token_chunks_count >= 3 and approx_out > 2):
+                            decode_duration = last_token_time - first_token_time
+                            tps = round((approx_out - 1) / decode_duration, 1)
+                        else:
+                            # Buffered burst: tokens arrived in 1-2 chunks, use elapsed request duration
+                            tps = round(approx_out / total_elapsed, 1)
+
+                        if streamed_prompt_tokens > 0:
+                            approx_in = streamed_prompt_tokens
+                        else:
+                            approx_in = max(1, total_chars // 4)
+
                         STATE.note_speed(tps)
 
                         created_now = int(time.time())
-                        if req_cfg.get("show_speed_in_chat", True) and tps > 0:
-                            speed_chunk = {
-                                "id": last_chunk_id, "object": "chat.completion.chunk",
-                                "created": created_now, "model": requested,
-                                "choices": [{"index": 0, "delta": {"content": "\n\n*(⚡ %.1f tok/s)*" % tps},
-                                             "finish_reason": None}]
-                            }
-                            self._write_chunk(("data: " + json.dumps(speed_chunk) + "\n\n").encode("utf-8"))
-
                         usage_chunk = {
-                            "id": last_chunk_id, "object": "chat.completion.chunk",
-                            "created": created_now, "model": requested,
+                            "id": last_chunk_id,
+                            "object": "chat.completion.chunk",
+                            "created": created_now,
+                            "model": requested,
                             "choices": [],
                             "usage": {
                                 "prompt_tokens": approx_in,
                                 "completion_tokens": approx_out,
                                 "total_tokens": approx_in + approx_out,
                                 "tokens_per_second": tps,
+                                "tokensPerSecond": tps,
                                 "completion_tokens_per_second": tps,
                                 "speed_tps": tps
                             }
@@ -1924,43 +1960,27 @@ class RelayHandler(BaseHTTPRequestHandler):
             if choices and isinstance(choices[0], dict):
                 content_text = (choices[0].get("message") or {}).get("content") or ""
 
-        # If upstream gave 0 or missing completion_tokens, estimate from generated content
-        if (tokens_out is None or tokens_out == 0) and content_text:
-            tokens_out = max(1, max(len(content_text.split()), len(content_text) // 4))
+        if tokens_out is None or tokens_out == 0:
+            tokens_out = count_tokens(content_text) if content_text else 1
 
         if tokens_in is None or tokens_in == 0:
             tokens_in = max(1, total_chars // 4)
 
-        tps = 0.0
-        if tokens_out and latency_ms > 0:
-            tps = round(tokens_out / (latency_ms / 1000.0), 1)
-            STATE.note_speed(tps)
+        tps = round(tokens_out / max(0.2, latency_ms / 1000.0), 1)
+        STATE.note_speed(tps)
 
         if isinstance(parsed, dict):
             usage = parsed.get("usage")
             if not isinstance(usage, dict):
                 usage = {}
-            if tokens_in is not None:
-                usage["prompt_tokens"] = tokens_in
-            if tokens_out is not None:
-                usage["completion_tokens"] = tokens_out
-            if tps > 0:
-                usage["tokens_per_second"] = tps
-                usage["completion_tokens_per_second"] = tps
-                usage["speed_tps"] = tps
+            usage["prompt_tokens"] = tokens_in
+            usage["completion_tokens"] = tokens_out
+            usage["total_tokens"] = tokens_in + tokens_out
+            usage["tokens_per_second"] = tps
+            usage["tokensPerSecond"] = tps
+            usage["completion_tokens_per_second"] = tps
+            usage["speed_tps"] = tps
             parsed["usage"] = usage
-
-            if req_cfg.get("show_speed_in_chat", True) and tps > 0:
-                try:
-                    choices = parsed.get("choices")
-                    if isinstance(choices, list) and choices:
-                        first_choice = choices[0]
-                        if isinstance(first_choice, dict):
-                            msg = first_choice.get("message")
-                            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-                                msg["content"] += "\n\n*(⚡ %.1f tok/s · %dms)*" % (tps, latency_ms)
-                except Exception:
-                    pass
 
             if spec.get("strip_trailing_roles"):
                 try:
