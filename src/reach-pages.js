@@ -13,6 +13,8 @@
         return;
     }
     const { el, esc, toast } = core;
+    const { pageHeader, statTile, emptyNote, chip, kv, publishNow } =
+        window.__reachPageWidgets;
 
     const PAGE_DEFS = [
         { id: 'dashboard', icon: 'fa-gauge-high', label: 'Dashboard' },
@@ -23,34 +25,6 @@
         { id: 'settings', icon: 'fa-sliders', label: 'Settings' },
         { id: 'about', icon: 'fa-circle-info', label: 'About' }
     ];
-
-    function pageHeader(icon, title, subtitle) {
-        const head = el('div', 'reach-page-head');
-        const iconEl = el('div', 'reach-page-head-icon');
-        const i = el('i', 'fa-solid ' + icon);
-        iconEl.appendChild(i);
-        const copy = el('div', 'reach-page-head-copy');
-        copy.appendChild(el('h1', 'reach-page-title', title));
-        if (subtitle) copy.appendChild(el('p', 'reach-page-sub', subtitle));
-        head.appendChild(iconEl);
-        head.appendChild(copy);
-        return head;
-    }
-
-    function statTile(label, value, sub, tone) {
-        const tile = el('div', 'reach-tile' + (tone ? ' reach-tile-' + tone : ''));
-        tile.appendChild(el('div', 'reach-tile-label', label));
-        tile.appendChild(el('div', 'reach-tile-value', value));
-        if (sub) tile.appendChild(el('div', 'reach-tile-sub', sub));
-        return tile;
-    }
-
-    function emptyNote(text) {
-        const note = el('div', 'reach-empty');
-        note.appendChild(el('i', 'fa-regular fa-circle-question'));
-        note.appendChild(el('span', null, text));
-        return note;
-    }
 
     /* ------------------------------------------------------------- DASHBOARD */
     /* ------------------------------------------------------------- DASHBOARD */
@@ -348,18 +322,6 @@
         return () => { if (timer) clearInterval(timer); };
     }
 
-    function chip(label, tone) {
-        const c = el('span', 'reach-chip' + (tone ? ' reach-chip-' + tone : ''));
-        c.textContent = label;
-        return c;
-    }
-
-    function kv(dl, key, value, tone) {
-        dl.appendChild(el('dt', null, key));
-        const dd = el('dd', tone ? 'reach-kv-' + tone : null, value);
-        dl.appendChild(dd);
-    }
-
     function dashCard(title, bodyFn) {
         const card = el('section', 'reach-card');
         const head = el('header', 'reach-card-head');
@@ -380,15 +342,6 @@
             Promise.resolve().then(onClick).finally(() => { btn.disabled = false; });
         });
         return btn;
-    }
-
-    function publishNow() {
-        return core.relayFetch('/_reach/publish', { method: 'POST' }, 30000)
-            .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
-            .then(({ ok, data }) => {
-                if (!ok) throw new Error((data && data.error) || 'publish failed');
-                return data.public_url;
-            });
     }
 
     function runPublicTest(btn, wrap) {

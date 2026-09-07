@@ -8,7 +8,8 @@ from pathlib import Path
 PLUGIN_ID = "simple-reach"
 SCHEMA_VERSION = 1
 SURFACES = ["advanced"]
-SCRIPT_SOURCES = ["manifest.js", "reach-core.js", "reach-pages.js", "reach.js"]
+SCRIPT_SOURCES = ["manifest.js", "reach-core.js", "pages-common.js",
+                   "reach-pages.js", "reach.js"]
 STYLE_SOURCES = ["reach.css"]
 MANIFEST_PLACEHOLDER = "__REACH_MANIFEST_JSON__"
 DEFAULT_PORT = 20777
