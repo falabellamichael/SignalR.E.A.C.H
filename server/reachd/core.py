@@ -35,3 +35,17 @@ from reachd.const import (
 
 STATE = None          # RelayState, set in main()
 PORT = DEFAULT_PORT
+
+
+def log_error(message):
+    """Append a line to the relay log (best effort — never raises)."""
+    try:
+        import time as _time
+        from pathlib import Path as _Path
+        import os as _os
+        base = _os.environ.get("LOCALAPPDATA") or str(_Path.home() / "AppData" / "Local")
+        log_path = _Path(base) / "SignalREACH" / "reach.log"
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write("[%s] %s\n" % (_time.strftime("%Y-%m-%d %H:%M:%S"), message))
+    except Exception:
+        pass

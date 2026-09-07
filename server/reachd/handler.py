@@ -338,6 +338,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         except CLIENT_DISCONNECT_ERRORS:
             pass
         except Exception as exc:
+            import traceback
+            try:
+                core.log_error("500 on %s: %s\n%s" % (self.path, exc,
+                                                      traceback.format_exc(limit=12)))
+            except Exception:
+                pass
             try:
                 self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
             except Exception:
@@ -385,6 +391,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         except CLIENT_DISCONNECT_ERRORS:
             pass
         except Exception as exc:
+            import traceback
+            try:
+                core.log_error("500(POST) on %s: %s\n%s" % (self.path, exc,
+                                                            traceback.format_exc(limit=12)))
+            except Exception:
+                pass
             try:
                 self._json(500, {"error": {"message": str(exc), "type": "internal_error"}})
             except Exception:

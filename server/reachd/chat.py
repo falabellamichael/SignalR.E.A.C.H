@@ -341,8 +341,18 @@ def chat_execute(h):
 
 
 def chat_finalize(h, upstream, ctx):
-    (started, ip, rl_headers, requested, upstream_model, spec, stream,
-     total_chars, request_body, fallback_used, cache_cfg, cache_key) = ctx
+    started = ctx["started"]
+    ip = ctx["ip"]
+    rl_headers = ctx["rl_headers"]
+    requested = ctx["requested"]
+    upstream_model = ctx["upstream_model"]
+    spec = ctx["spec"]
+    stream = ctx["stream"]
+    total_chars = ctx["total_chars"]
+    request_body = ctx["request_body"]
+    fallback_used = ctx["fallback_used"]
+    cache_cfg = ctx["cache_cfg"]
+    cache_key = ctx["cache_key"]
     content_type = upstream.headers.get("Content-Type", "application/json")
     if stream:
         try:

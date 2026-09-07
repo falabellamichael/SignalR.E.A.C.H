@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -99,9 +100,14 @@ def public_url_from_server(port=None):
 
 
 def start_server():
+    # a reinstall must reload the NEW code: stop any running relay first,
+    # otherwise the stale process keeps serving and the update is invisible
     if port_open(runtime_port()):
-        print("  relay already running on 127.0.0.1:%d" % runtime_port())
-        return True
+        stop_server()
+        for _ in range(40):
+            if not port_open(runtime_port()):
+                break
+            time.sleep(0.25)
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     server_py = CONFIG_DIR / "server" / "reachd.py"
     if not server_py.is_file():
