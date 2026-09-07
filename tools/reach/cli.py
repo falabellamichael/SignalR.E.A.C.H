@@ -87,6 +87,8 @@ from .http_admin import (admin_request, coerce_value, get_dotted, require_relay,
 
 from .tunnel import (find_ngrok, start_tunnel, stop_tunnel)
 
+from .publish import (find_gh, publish)
+
 # ----------------------------------------------------------------------
 # Registry location — mirrors chat_frontend_server.local_extension_root()
 # ----------------------------------------------------------------------
@@ -112,14 +114,6 @@ from .tunnel import (find_ngrok, start_tunnel, stop_tunnel)
 # ----------------------------------------------------------------------
 
 
-def find_gh():
-    for cand in (shutil.which("gh"),
-                 str(Path(os.environ.get("PROGRAMFILES", "")) / "GitHub CLI" / "gh.exe")):
-        if cand and Path(cand).is_file():
-            return str(Path(cand))
-    return None
-
-
 # ----------------------------------------------------------------------
 # Relay server lifecycle
 # ----------------------------------------------------------------------
@@ -133,32 +127,6 @@ def find_gh():
 # ----------------------------------------------------------------------
 # Endpoint pointer gist
 # ----------------------------------------------------------------------
-
-def publish(quiet=False):
-    port = runtime_port()
-    url = public_url_from_server(port)
-    if not url:
-        if not quiet:
-            print("publish: no public URL available (is the tunnel up?)")
-        return False
-    gh = find_gh()
-    if not gh:
-        if not quiet:
-            print("publish: gh CLI not found — cannot update the pointer gist")
-        return False
-    tmp = CONFIG_DIR / GIST_FILE
-    tmp.write_text(url.strip(), encoding="utf-8")
-    result = subprocess.run([gh, "gist", "edit", GIST_ID, str(tmp)],
-                            capture_output=True, text=True, timeout=60,
-                            **no_window_kwargs())
-    if result.returncode != 0:
-        if not quiet:
-            print("publish: gh gist edit failed: %s"
-                  % (result.stderr or "").strip()[:200])
-        return False
-    if not quiet:
-        print("published public endpoint -> " + url)
-    return True
 
 
 # ----------------------------------------------------------------------
