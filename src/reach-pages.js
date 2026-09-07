@@ -88,7 +88,7 @@
                 const row = el('div', 'reach-url-row');
                 const code = el('code', 'reach-url', core.store.pointerUrl || 'resolving…');
                 row.appendChild(code);
-                const copyBtn = el('button', 'reach-btn', 'Copy');
+                const copyBtn = el('button', 'reach-btn reach-btn-sm', 'Copy');
                 copyBtn.addEventListener('click', () => {
                     if (core.store.pointerUrl) {
                         core.copyText(core.store.pointerUrl).then(ok => toast(ok ? 'Copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
@@ -107,7 +107,7 @@
                 wrap.appendChild(meta);
 
                 const foot = el('div', 'reach-card-foot');
-                const testBtn = el('button', 'reach-btn reach-btn-primary', 'Test endpoint');
+                const testBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Test endpoint');
                 testBtn.addEventListener('click', () => runPublicTest(testBtn, wrap));
                 foot.appendChild(testBtn);
                 const hint = el('span', 'reach-hint', '1-token test through public tunnel');
@@ -217,7 +217,7 @@
                 wrap.appendChild(jumpGrid);
 
                 const actRow = el('div', 'reach-actions');
-                actRow.style.marginTop = '10px';
+                actRow.style.marginTop = '6px';
                 actRow.appendChild(actionBtn('fa-cloud-arrow-up', 'Publish pointer URL',
                     () => publishNow().then(() => toast('Published ✓', 'ok'))));
                 actRow.appendChild(actionBtn('fa-trash-can', 'Clear request log',
@@ -420,7 +420,7 @@
         const urlRow = el('div', 'reach-url-row');
         const urlCode = el('code', 'reach-url', core.store.pointerUrl ? core.store.pointerUrl + '/v1' : 'resolving…');
         urlRow.appendChild(urlCode);
-        const copyBtn = el('button', 'reach-btn', 'Copy');
+        const copyBtn = el('button', 'reach-btn reach-btn-sm', 'Copy');
         copyBtn.addEventListener('click', () => {
             if (core.store.pointerUrl) {
                 core.copyText(core.store.pointerUrl + '/v1').then(ok => toast(ok ? 'Copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
@@ -510,7 +510,7 @@
         ctrlBar.appendChild(tempInput);
 
         // Send Button
-        const sendBtn = el('button', 'reach-btn reach-btn-primary');
+        const sendBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm');
         sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
         ctrlBar.appendChild(sendBtn);
 
@@ -675,7 +675,7 @@
         const addBody = el('div', 'reach-card-body');
         addBody.appendChild(el('p', 'reach-copy', 'Register this endpoint in SimpleRAG\'s endpoint list (idempotent — re-running just refreshes it).'));
         const addFoot = el('div', 'reach-card-foot');
-        const addBtn = el('button', 'reach-btn reach-btn-primary', 'Add to SimpleRAG');
+        const addBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Add to SimpleRAG');
         addBtn.addEventListener('click', () => {
             const url = core.store.pointerUrl;
             if (!url) { toast('No public URL yet', 'error'); return; }
@@ -877,7 +877,7 @@
 
                 // Edit
                 const editTd = document.createElement('td');
-                const edit = el('button', 'reach-btn', 'Edit');
+                const edit = el('button', 'reach-btn reach-btn-sm', 'Edit');
                 edit.title = 'Open the full per-model editor in Settings';
                 edit.addEventListener('click', () => {
                     core.prefsSet('model-edit', alias);
@@ -890,7 +890,7 @@
 
                 // Remove
                 const rmTd = document.createElement('td');
-                const rm = el('button', 'reach-btn reach-btn-danger', 'Remove');
+                const rm = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Remove');
                 rm.addEventListener('click', () => {
                     if (Object.keys(cfg.models).length <= 1) { toast('Keep at least one alias', 'error'); return; }
                     core.saveSettings({ models: { [alias]: null } }).then(({ ok, data }) => {
@@ -938,7 +938,7 @@
             upstreamInput.className = 'reach-input';
             row.appendChild(aliasInput);
             row.appendChild(upstreamInput);
-            const submit = el('button', 'reach-btn reach-btn-primary', 'Add');
+            const submit = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Add');
             submit.type = 'submit';
             row.appendChild(submit);
             form.appendChild(row);
@@ -1949,13 +1949,13 @@
         const dirtyNote = el('span', 'reach-hint', '');
         saveBar.appendChild(saveBtn);
         saveBar.appendChild(dirtyNote);
-        const exportBtn = el('button', 'reach-btn', 'Export');
-        const importBtn = el('button', 'reach-btn', 'Import');
+        const exportBtn = el('button', 'reach-btn reach-btn-sm', 'Export');
+        const importBtn = el('button', 'reach-btn reach-btn-sm', 'Import');
         const importInput = document.createElement('input');
         importInput.type = 'file';
         importInput.accept = '.json,application/json';
         importInput.style.display = 'none';
-        const resetBtn = el('button', 'reach-btn reach-btn-danger', 'Reset defaults');
+        const resetBtn = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Reset defaults');
         saveBar.appendChild(exportBtn);
         saveBar.appendChild(importBtn);
         saveBar.appendChild(importInput);
@@ -2097,7 +2097,7 @@
             enToggle.appendChild(enInput);
             enToggle.appendChild(enSlider);
             controls.appendChild(enToggle);
-            const rm = el('button', 'reach-btn reach-btn-danger', 'Remove');
+            const rm = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Remove');
             rm.addEventListener('click', () => {
                 if (Object.keys(draft.models).length <= 1) { toast('Keep at least one alias', 'error'); return; }
                 delete draft.models[alias];
@@ -2314,7 +2314,7 @@
             upstreamInput.className = 'reach-input';
             row.appendChild(aliasInput);
             row.appendChild(upstreamInput);
-            const submit = el('button', 'reach-btn reach-btn-primary', 'Add');
+            const submit = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Add');
             submit.type = 'submit';
             row.appendChild(submit);
             form.appendChild(row);
@@ -2352,7 +2352,7 @@
             ca.appendChild(buildInput('checkbox', 'cache', 'match_temperature', 'Temperature-sensitive keys',
                 'Different temperatures never share a cached reply.'));
             const cacheStats = el('div', 'reach-card-foot');
-            const clearCacheBtn = el('button', 'reach-btn', 'Clear cache');
+            const clearCacheBtn = el('button', 'reach-btn reach-btn-sm', 'Clear cache');
             clearCacheBtn.addEventListener('click', () => {
                 core.relayFetch('/_reach/cache/clear', { method: 'POST' }, 5000)
                     .then(() => toast('Cache cleared ✓', 'ok'));
@@ -2388,7 +2388,7 @@
                 { nullable: true }));
             ho.appendChild(buildInput('checkbox', 'publish', 'enabled', 'Publish URL to the pointer gist'));
             ho.appendChild(buildInput('number', 'publish', 'interval_min', 'Republish interval (min)', '0 = on change only.'));
-            const pubBtn = el('button', 'reach-btn', 'Publish now');
+            const pubBtn = el('button', 'reach-btn reach-btn-sm', 'Publish now');
             pubBtn.addEventListener('click', () => publishNow()
                 .then(() => toast('Published ✓', 'ok'))
                 .catch(e => toast(e.message, 'error')));

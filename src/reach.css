@@ -44,11 +44,11 @@
 .reach-page.reach-panel3 {
     max-width: 100%;
     width: 100%;
-    padding: 4px 10px 32px;
+    padding: 2px 8px 16px;
 }
 
 .reach-page.reach-panel3 .reach-content {
-    padding: 6px 2px 24px;
+    padding: 2px 2px 14px;
     max-height: none;
     overflow-y: visible;
 }
@@ -181,95 +181,96 @@
 .reach-page-head {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 16px;
+    gap: 9px;
+    margin-bottom: 10px;
 }
 
 .reach-page-head-icon {
     flex: 0 0 auto;
-    width: 42px;
-    height: 42px;
-    border-radius: 11px;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
     display: grid;
     place-items: center;
     color: var(--reach-accent-light, #ffd37a);
     background: linear-gradient(145deg, var(--reach-accent-bg, rgba(255, 176, 32, 0.2)), rgba(0, 0, 0, 0.15));
     border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.4));
-    font-size: 16px;
+    font-size: 13.5px;
 }
 
 .reach-page-title {
     margin: 0;
-    font-size: 19px;
+    font-size: 15.5px;
     font-weight: 700;
     line-height: 1.2;
+    letter-spacing: -0.01em;
 }
 
 .reach-page-sub {
-    margin: 2px 0 0;
-    font-size: 12.5px;
-    opacity: 0.7;
-    line-height: 1.5;
+    margin: 1px 0 0;
+    font-size: 11px;
+    opacity: 0.65;
+    line-height: 1.35;
 }
 
 /* ---- hero ---- */
 .reach-hero-badge {
     flex: 0 0 auto;
-    width: 56px;
-    height: 56px;
-    border-radius: 13px;
+    width: 40px;
+    height: 40px;
+    border-radius: 9px;
     display: grid;
     place-items: center;
     font-weight: 800;
-    font-size: 13px;
-    letter-spacing: 0.06em;
+    font-size: 11px;
+    letter-spacing: 0.05em;
     color: var(--reach-accent-light, #ffd37a);
     background: linear-gradient(145deg, var(--reach-accent-bg, rgba(255, 176, 32, 0.22)), rgba(0, 0, 0, 0.15));
     border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.45));
-    text-shadow: 0 0 12px var(--reach-accent-glow, rgba(255, 176, 32, 0.35));
+    text-shadow: 0 0 10px var(--reach-accent-glow, rgba(255, 176, 32, 0.35));
 }
 
 .reach-hero-badge-lg {
-    width: 74px;
-    height: 74px;
-    font-size: 17px;
-    border-radius: 16px;
+    width: 50px;
+    height: 50px;
+    font-size: 14px;
+    border-radius: 11px;
 }
 
 .reach-about-hero {
     display: flex;
     align-items: center;
-    gap: 18px;
+    gap: 12px;
 }
 
 /* ---- stacks + cards ---- */
 .reach-stack {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 9px;
 }
 
 .reach-dash {
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 9px;
 }
 
 .reach-dash-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
+    gap: 9px;
     align-items: start;
 }
 
 .reach-card {
-    background: rgba(128, 128, 128, 0.07);
-    border: 1px solid rgba(128, 128, 128, 0.22);
-    border-radius: 12px;
-    padding: 15px;
+    background: rgba(128, 128, 128, 0.06);
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    border-radius: 8px;
+    padding: 9px 12px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     min-width: 0;
 }
 
@@ -277,12 +278,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
 }
 
 .reach-card-head h2 {
     margin: 0;
-    font-size: 13.5px;
+    font-size: 12.5px;
     font-weight: 700;
     letter-spacing: 0.02em;
     opacity: 0.92;
@@ -291,21 +292,21 @@
 .reach-card-body {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     min-width: 0;
 }
 
 .reach-card-foot {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .reach-copy {
     margin: 0;
-    font-size: 12.5px;
-    line-height: 1.6;
+    font-size: 11.5px;
+    line-height: 1.5;
     opacity: 0.82;
 }
 
@@ -313,22 +314,22 @@
 .reach-tiles {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 14px;
+    gap: 8px;
 }
 
 .reach-tile {
-    background: rgba(128, 128, 128, 0.07);
-    border: 1px solid rgba(128, 128, 128, 0.22);
-    border-radius: 12px;
-    padding: 13px 15px;
+    background: rgba(128, 128, 128, 0.06);
+    border: 1px solid rgba(128, 128, 128, 0.2);
+    border-radius: 7px;
+    padding: 7px 10px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
 }
 
 .reach-tile-label {
-    font-size: 11px;
+    font-size: 9.5px;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -336,13 +337,14 @@
 }
 
 .reach-tile-value {
-    font-size: 21px;
+    font-size: 17px;
     font-weight: 800;
     line-height: 1.15;
+    font-variant-numeric: tabular-nums;
 }
 
 .reach-tile-sub {
-    font-size: 11.5px;
+    font-size: 10px;
     opacity: 0.65;
 }
 
@@ -351,10 +353,10 @@
 
 /* ---- banners + empty ---- */
 .reach-banner {
-    padding: 12px 15px;
-    border-radius: 10px;
-    font-size: 13px;
-    line-height: 1.55;
+    padding: 8px 11px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    line-height: 1.45;
 }
 
 .reach-banner-off {
@@ -366,9 +368,9 @@
 .reach-empty {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 18px 4px;
-    font-size: 13px;
+    gap: 8px;
+    padding: 12px 4px;
+    font-size: 11.5px;
     opacity: 0.75;
 }
 
@@ -376,7 +378,7 @@
 .reach-url-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     min-width: 0;
 }
 
@@ -388,21 +390,21 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 12.5px;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: rgba(0, 0, 0, 0.22);
-    border: 1px solid rgba(128, 128, 128, 0.28);
-    color: #ffd37a;
+    font-size: 11px;
+    padding: 5px 9px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.24);
+    border: 1px solid rgba(128, 128, 128, 0.26);
+    color: var(--reach-accent-light, #ffd37a);
 }
 
 /* ---- badges / chips ---- */
 .reach-badge {
     flex: 0 0 auto;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    padding: 3px 9px;
+    letter-spacing: 0.04em;
+    padding: 2px 7px;
     border-radius: 999px;
 }
 
@@ -419,23 +421,23 @@
 }
 
 .reach-chip {
-    font-size: 11.5px;
+    font-size: 10.5px;
     font-weight: 600;
-    padding: 4px 10px;
+    padding: 2px 7px;
     border-radius: 999px;
     background: rgba(128, 128, 128, 0.1);
-    border: 1px solid rgba(128, 128, 128, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.2);
     opacity: 0.9;
 }
 
 .reach-chip-warn {
-    color: #ffd37a;
-    border-color: rgba(255, 176, 32, 0.45);
+    color: var(--reach-accent-light, #ffd37a);
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.45));
 }
 
 .reach-meta-row {
     display: flex;
-    gap: 8px;
+    gap: 5px;
     flex-wrap: wrap;
 }
 
@@ -443,14 +445,15 @@
 .reach-btn {
     flex: 0 0 auto;
     font: inherit;
-    font-size: 12.5px;
+    font-size: 11.5px;
     font-weight: 600;
-    padding: 7px 14px;
-    border-radius: 8px;
+    padding: 4px 10px;
+    border-radius: 6px;
     cursor: pointer;
+    line-height: 1.35;
     color: inherit;
     background: rgba(128, 128, 128, 0.1);
-    border: 1px solid rgba(128, 128, 128, 0.3);
+    border: 1px solid rgba(128, 128, 128, 0.28);
     transition: filter 120ms ease, transform 80ms ease, opacity 120ms ease;
 }
 
@@ -474,19 +477,19 @@
 .reach-btn-block {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
     justify-content: flex-start;
 }
 
 .reach-btn-sm {
-    padding: 4px 9px;
-    font-size: 11px;
-    border-radius: 6px;
+    padding: 2px 7px;
+    font-size: 10.5px;
+    border-radius: 5px;
 }
 
 .reach-hint {
-    font-size: 11px;
+    font-size: 10.5px;
     opacity: 0.6;
 }
 
@@ -494,19 +497,19 @@
 .reach-stationary-panel {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 8px 10px 24px;
+    gap: 6px;
+    padding: 6px 8px 18px;
     overflow-y: auto;
-    font-size: 12px;
+    font-size: 11.5px;
     min-width: 0;
 }
 
 .reach-stat-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px 11px;
-    border-radius: 10px;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 7px;
     background: rgba(128, 128, 128, 0.07);
     border: 1px solid rgba(128, 128, 128, 0.2);
     min-width: 0;
@@ -522,53 +525,53 @@
 .reach-stat-status-row {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 6px;
     min-width: 0;
 }
 
 .reach-stat-status-title {
     font-weight: 700;
-    font-size: 12px;
+    font-size: 11.5px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .reach-stat-card-title {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     opacity: 0.75;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
 }
 
 .reach-stat-meta-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
-    font-size: 10.5px;
+    gap: 5px;
+    font-size: 10px;
     opacity: 0.65;
 }
 
 .reach-stat-actions-row {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     flex-wrap: wrap;
 }
 
 .reach-stat-url-box {
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 10.5px;
-    padding: 5px 8px;
-    border-radius: 6px;
+    font-size: 10px;
+    padding: 4px 7px;
+    border-radius: 5px;
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(128, 128, 128, 0.22);
-    color: #ffd37a;
+    color: var(--reach-accent-light, #ffd37a);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -578,32 +581,33 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
 }
 
 .reach-stat-setting-label {
     display: flex;
     flex-direction: column;
-    gap: 1px;
-    font-size: 11.5px;
+    gap: 0;
+    font-size: 11px;
     font-weight: 600;
 }
 
 .reach-stat-input {
-    width: 68px !important;
+    width: 60px !important;
     text-align: right;
-    padding: 3px 6px;
-    font-size: 11.5px;
+    padding: 2px 5px;
+    font-size: 11px;
+    height: 24px;
 }
 
 .reach-stat-kv {
-    font-size: 11.5px;
+    font-size: 11px;
 }
 
 .reach-stat-grid-3 {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
+    gap: 5px;
 }
 
 .reach-stat-mini-tile {
@@ -611,29 +615,30 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 6px 3px;
-    border-radius: 7px;
+    padding: 4px 2px;
+    border-radius: 5px;
     background: rgba(0, 0, 0, 0.15);
     border: 1px solid rgba(128, 128, 128, 0.18);
     text-align: center;
 }
 
 .reach-stat-mini-val {
-    font-size: 13px;
+    font-size: 11.5px;
     font-weight: 700;
-    color: #ffd37a;
+    color: var(--reach-accent-light, #ffd37a);
+    font-variant-numeric: tabular-nums;
 }
 
 .reach-stat-mini-lbl {
-    font-size: 9px;
+    font-size: 8.5px;
     opacity: 0.6;
     text-transform: uppercase;
     letter-spacing: 0.04em;
 }
 
 .reach-stat-ping-result {
-    font-size: 11px;
-    padding: 5px 8px;
+    font-size: 10.5px;
+    padding: 4px 7px;
     margin-top: 2px;
 }
 
@@ -641,15 +646,15 @@
 .reach-actions {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
 }
 
 /* ---- result line ---- */
 .reach-result {
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 12.5px;
-    padding: 10px 12px;
-    border-radius: 8px;
+    font-size: 11px;
+    padding: 6px 9px;
+    border-radius: 6px;
     background: rgba(0, 0, 0, 0.22);
     border: 1px solid rgba(128, 128, 128, 0.22);
     white-space: pre-wrap;
@@ -664,8 +669,8 @@
     margin: 0;
     display: grid;
     grid-template-columns: max-content 1fr;
-    gap: 6px 14px;
-    font-size: 12.5px;
+    gap: 4px 10px;
+    font-size: 11.5px;
 }
 
 .reach-kv dt { opacity: 0.62; margin: 0; }
@@ -677,64 +682,66 @@
 }
 
 .reach-kv-ok { color: #7ce8a0; }
-.reach-kv-warn { color: #ffd37a; }
+.reach-kv-warn { color: var(--reach-accent-light, #ffd37a); }
 .reach-kv-bad { color: #ff8f7a; }
 
 /* ---- dots ---- */
 .reach-dot {
-    width: 9px;
-    height: 9px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     flex: 0 0 auto;
 }
 
-.reach-dot-on { background: #2ecc71; box-shadow: 0 0 8px rgba(46, 204, 113, 0.7); }
-.reach-dot-warn { background: #ffb020; box-shadow: 0 0 8px rgba(255, 176, 32, 0.7); }
-.reach-dot-off { background: #e74c3c; box-shadow: 0 0 8px rgba(231, 76, 60, 0.6); }
+.reach-dot-on { background: #2ecc71; box-shadow: 0 0 7px rgba(46, 204, 113, 0.7); }
+.reach-dot-warn { background: var(--reach-accent, #ffb020); box-shadow: 0 0 7px var(--reach-accent-glow, rgba(255, 176, 32, 0.7)); }
+.reach-dot-off { background: #e74c3c; box-shadow: 0 0 7px rgba(231, 76, 60, 0.6); }
 
 /* ---- tables ---- */
 .reach-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12.5px;
+    font-size: 11.5px;
     min-width: 0;
 }
 
 .reach-table th {
     text-align: left;
-    font-size: 10.5px;
+    font-size: 9.5px;
     font-weight: 700;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
     opacity: 0.55;
-    padding: 6px 10px;
+    padding: 4px 8px;
     border-bottom: 1px solid rgba(128, 128, 128, 0.25);
 }
 
 .reach-table td {
-    padding: 7px 10px;
-    border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     max-width: 240px;
+    font-variant-numeric: tabular-nums;
 }
 
 .reach-table code {
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 11.5px;
-    color: #ffd37a;
+    font-size: 10.5px;
+    color: var(--reach-accent-light, #ffd37a);
 }
 
 .reach-table-logs td {
     max-width: 160px;
+    padding: 3px 6px;
 }
 
 .reach-nowrap { white-space: nowrap; }
 
 .reach-err {
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 11px;
+    font-size: 10.5px;
     opacity: 0.7;
 }
 
@@ -742,7 +749,7 @@
 .reach-toolbar {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 7px;
     flex-wrap: wrap;
 }
 
@@ -751,7 +758,7 @@
     display: flex;
     align-items: flex-end;
     gap: 3px;
-    height: 110px;
+    height: 80px;
     padding: 4px 2px 0;
 }
 
@@ -763,23 +770,23 @@
     align-items: center;
     justify-content: flex-end;
     height: 100%;
-    gap: 4px;
+    gap: 3px;
 }
 
 .reach-chart-bar {
     width: 70%;
-    max-width: 26px;
+    max-width: 22px;
     border-radius: 3px 3px 0 0;
     background: rgba(128, 128, 128, 0.35);
     min-height: 2px;
     transition: height 300ms ease;
 }
 
-.reach-chart-gold { background: linear-gradient(180deg, #ffd37a, rgba(255, 176, 32, 0.35)); }
+.reach-chart-gold { background: linear-gradient(180deg, var(--reach-accent-light, #ffd37a), var(--reach-accent-bg, rgba(255, 176, 32, 0.35))); }
 .reach-chart-green { background: linear-gradient(180deg, #7ce8a0, rgba(46, 204, 113, 0.3)); }
 
 .reach-chart-x {
-    font-size: 9px;
+    font-size: 8.5px;
     opacity: 0.5;
     white-space: nowrap;
     transform: rotate(-35deg);
@@ -791,56 +798,57 @@
 .reach-form {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
 }
 
 .reach-form-row {
     display: flex;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .reach-form-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+    gap: 8px;
 }
 
 .reach-field {
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 3px;
     min-width: 0;
 }
 
 .reach-field-label {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
     opacity: 0.85;
 }
 
 .reach-field-help {
-    font-size: 11px;
+    font-size: 10px;
     opacity: 0.55;
-    line-height: 1.45;
+    line-height: 1.35;
 }
 
 .reach-input {
     font: inherit;
-    font-size: 12.5px;
-    padding: 8px 11px;
-    border-radius: 8px;
+    font-size: 11.5px;
+    padding: 4px 8px;
+    border-radius: 6px;
     color: inherit;
     background: rgba(0, 0, 0, 0.22);
     border: 1px solid rgba(128, 128, 128, 0.3);
     width: 100%;
     min-width: 0;
+    min-height: 26px;
 }
 
 .reach-input:focus {
     outline: none;
-    border-color: rgba(255, 176, 32, 0.6);
-    box-shadow: 0 0 0 2px rgba(255, 176, 32, 0.15);
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.6));
+    box-shadow: 0 0 0 2px var(--reach-accent-glow, rgba(255, 176, 32, 0.15));
 }
 
 .reach-input-sm {
@@ -855,20 +863,21 @@
 .reach-save-bar {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 14px;
-    padding: 10px 14px;
-    border-radius: 10px;
-    background: rgba(255, 176, 32, 0.06);
-    border: 1px solid rgba(255, 176, 32, 0.25);
+    gap: 10px;
+    margin-bottom: 10px;
+    padding: 7px 11px;
+    border-radius: 7px;
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.06));
+    border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.25));
 }
 
 /* ---- toggle switch ---- */
 .reach-switch {
     position: relative;
     display: inline-block;
-    width: 40px;
-    height: 22px;
+    width: 32px;
+    height: 18px;
+    flex: 0 0 auto;
 }
 
 .reach-switch input {
@@ -889,8 +898,8 @@
 .reach-switch-slider::before {
     content: "";
     position: absolute;
-    height: 16px;
-    width: 16px;
+    height: 12px;
+    width: 12px;
     left: 3px;
     top: 3px;
     background: #fff;
@@ -903,12 +912,13 @@
 }
 
 .reach-switch input:checked + .reach-switch-slider::before {
-    transform: translateX(18px);
+    transform: translateX(14px);
 }
 
 /* ---- per-model editor ---- */
 .reach-model-card {
     border-left: 3px solid var(--reach-accent-border, rgba(255, 176, 32, 0.45));
+    padding: 8px 11px;
 }
 
 .reach-model-head {
@@ -919,12 +929,12 @@
 }
 
 .reach-model-head strong {
-    font-size: 13.5px;
+    font-size: 12.5px;
     color: var(--reach-accent-light, #ffd37a);
 }
 
 .reach-model-desc {
-    font-size: 11px;
+    font-size: 10.5px;
     opacity: 0.55;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -935,36 +945,36 @@
 .reach-model-controls {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .reach-model-rl {
     grid-column: 1 / -1;
     border-top: 1px dashed rgba(128, 128, 128, 0.25);
-    padding-top: 10px;
+    padding-top: 6px;
     margin-top: 2px;
 }
 
 .reach-toggle-row {
     grid-column: 1 / -1;
     display: flex;
-    gap: 18px;
+    gap: 14px;
     align-items: center;
 }
 
 .reach-check {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
+    gap: 5px;
+    font-size: 11.5px;
     font-weight: 600;
     cursor: pointer;
 }
 
 .reach-check input {
     accent-color: var(--reach-accent, #ffb020);
-    width: 15px;
-    height: 15px;
+    width: 13px;
+    height: 13px;
     cursor: pointer;
 }
 
@@ -980,16 +990,16 @@
 /* ---- tabs + snippets ---- */
 .reach-usage-tabs {
     display: flex;
-    gap: 6px;
+    gap: 5px;
     flex-wrap: wrap;
 }
 
 .reach-tab {
     font: inherit;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
-    padding: 5px 12px;
-    border-radius: 7px;
+    padding: 3px 9px;
+    border-radius: 5px;
     cursor: pointer;
     color: inherit;
     background: transparent;
@@ -1007,14 +1017,14 @@
 
 .reach-snippet {
     margin: 0;
-    padding: 12px 14px;
-    border-radius: 8px;
+    padding: 8px 11px;
+    border-radius: 6px;
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(128, 128, 128, 0.22);
     overflow-x: auto;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 12px;
-    line-height: 1.55;
+    font-size: 11px;
+    line-height: 1.45;
     color: inherit;
     white-space: pre;
 }
@@ -1026,8 +1036,9 @@
 
 .reach-flow {
     white-space: pre;
-    line-height: 1.5;
+    line-height: 1.4;
     color: var(--reach-accent-light, #ffd37a);
+    font-size: 10.5px;
 }
 
 /* ---- toast ---- */
@@ -1055,41 +1066,41 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 11px 16px;
-    border-radius: 12px;
-    background: linear-gradient(135deg, rgba(255, 176, 32, 0.08), rgba(0, 0, 0, 0.28));
-    border: 1px solid rgba(255, 176, 32, 0.22);
-    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
+    gap: 8px;
+    padding: 6px 11px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, var(--reach-accent-bg, rgba(255, 176, 32, 0.08)), rgba(0, 0, 0, 0.28));
+    border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.22));
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.2);
     flex-wrap: wrap;
 }
 
 .reach-live-status-group {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 9px;
     min-width: 0;
 }
 
 .reach-live-dot {
-    width: 11px;
-    height: 11px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
     background: #2ecc71;
-    box-shadow: 0 0 12px rgba(46, 204, 113, 0.85);
+    box-shadow: 0 0 8px rgba(46, 204, 113, 0.85);
     flex: 0 0 auto;
     animation: reachLivePulse 1.8s infinite ease-in-out;
 }
 
 .reach-live-dot.paused {
-    background: #ffb020;
-    box-shadow: 0 0 8px rgba(255, 176, 32, 0.7);
+    background: var(--reach-accent, #ffb020);
+    box-shadow: 0 0 6px var(--reach-accent-glow, rgba(255, 176, 32, 0.7));
     animation: none;
 }
 
 .reach-live-dot.error {
     background: #e74c3c;
-    box-shadow: 0 0 8px rgba(231, 76, 60, 0.7);
+    box-shadow: 0 0 6px rgba(231, 76, 60, 0.7);
     animation: none;
 }
 
@@ -1100,7 +1111,7 @@
     }
     70% {
         transform: scale(1.18);
-        box-shadow: 0 0 0 9px rgba(46, 204, 113, 0);
+        box-shadow: 0 0 0 7px rgba(46, 204, 113, 0);
     }
     100% {
         transform: scale(0.92);
@@ -1111,64 +1122,64 @@
 .reach-live-meta {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
 }
 
 .reach-live-title-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .reach-live-title {
-    font-size: 13px;
+    font-size: 11.5px;
     font-weight: 800;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: #ffd37a;
+    color: var(--reach-accent-light, #ffd37a);
 }
 
 .reach-live-badge {
-    font-size: 10px;
+    font-size: 9.5px;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: 999px;
     background: rgba(46, 204, 113, 0.16);
     color: #7ce8a0;
     border: 1px solid rgba(46, 204, 113, 0.35);
-    letter-spacing: 0.04em;
+    letter-spacing: 0.03em;
 }
 
 .reach-live-sub {
-    font-size: 11px;
+    font-size: 10px;
     opacity: 0.65;
 }
 
 .reach-live-controls {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: wrap;
 }
 
 .reach-cadence-selector {
     display: flex;
     align-items: center;
-    border-radius: 8px;
+    border-radius: 6px;
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(128, 128, 128, 0.22);
-    padding: 2px;
-    gap: 2px;
+    padding: 1px;
+    gap: 1px;
 }
 
 .reach-cadence-btn {
     background: transparent;
     border: none;
     color: inherit;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
-    padding: 4px 8px;
-    border-radius: 6px;
+    padding: 2px 6px;
+    border-radius: 4px;
     cursor: pointer;
     opacity: 0.7;
     transition: all 120ms ease;
@@ -1181,19 +1192,19 @@
 
 .reach-cadence-btn.active {
     opacity: 1;
-    background: #ffb020;
-    color: #1a1206;
+    background: var(--reach-accent, #ffb020);
+    color: var(--reach-accent-text, #1a1206);
     font-weight: 700;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
 
 /* ---- Real-Time Live Feed Card ---- */
 .reach-feed-card {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 16px;
-    border-radius: 12px;
+    gap: 7px;
+    padding: 9px 12px;
+    border-radius: 8px;
     background: rgba(128, 128, 128, 0.06);
     border: 1px solid rgba(128, 128, 128, 0.2);
 }
@@ -1202,18 +1213,18 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .reach-feed-title-wrap {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .reach-feed-title {
-    font-size: 13px;
+    font-size: 11.5px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1222,9 +1233,9 @@
 }
 
 .reach-feed-count {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: 999px;
     background: rgba(128, 128, 128, 0.15);
     opacity: 0.75;
@@ -1233,22 +1244,22 @@
 .reach-feed-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: wrap;
 }
 
 .reach-feed-filters {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     flex-wrap: wrap;
 }
 
 .reach-feed-chip {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
-    padding: 3px 8px;
-    border-radius: 6px;
+    padding: 2px 6px;
+    border-radius: 5px;
     cursor: pointer;
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid rgba(128, 128, 128, 0.2);
@@ -1264,40 +1275,40 @@
 
 .reach-feed-chip.active {
     opacity: 1;
-    background: rgba(255, 176, 32, 0.18);
-    border-color: rgba(255, 176, 32, 0.45);
-    color: #ffd37a;
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.18));
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.45));
+    color: var(--reach-accent-light, #ffd37a);
     font-weight: 700;
 }
 
 .reach-feed-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    max-height: 380px;
+    gap: 4px;
+    max-height: 320px;
     overflow-y: auto;
-    padding-right: 4px;
+    padding-right: 2px;
 }
 
 .reach-feed-list::-webkit-scrollbar {
-    width: 6px;
+    width: 5px;
 }
 
 .reach-feed-list::-webkit-scrollbar-thumb {
     background: rgba(128, 128, 128, 0.25);
-    border-radius: 4px;
+    border-radius: 3px;
 }
 
 .reach-feed-item {
     display: grid;
-    grid-template-columns: 78px 68px 150px 75px 1fr auto;
+    grid-template-columns: 66px 56px 130px 65px 1fr auto;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    border-radius: 8px;
+    gap: 7px;
+    padding: 4px 8px;
+    border-radius: 6px;
     background: rgba(0, 0, 0, 0.18);
     border: 1px solid rgba(128, 128, 128, 0.14);
-    font-size: 12px;
+    font-size: 11px;
     transition: background 150ms ease, border-color 150ms ease;
 }
 
@@ -1312,9 +1323,9 @@
 
 @keyframes reachFeedFlash {
     0% {
-        background: rgba(255, 176, 32, 0.32);
-        border-color: rgba(255, 176, 32, 0.6);
-        transform: translateY(-3px);
+        background: var(--reach-accent-bg, rgba(255, 176, 32, 0.32));
+        border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.6));
+        transform: translateY(-2px);
     }
     100% {
         background: rgba(0, 0, 0, 0.18);
@@ -1324,17 +1335,17 @@
 }
 
 .reach-feed-ts {
-    font-size: 11px;
+    font-size: 10px;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
     opacity: 0.65;
     white-space: nowrap;
 }
 
 .reach-feed-status {
-    font-size: 10.5px;
+    font-size: 9.5px;
     font-weight: 700;
-    padding: 2px 7px;
-    border-radius: 5px;
+    padding: 1px 5px;
+    border-radius: 4px;
     text-align: center;
     letter-spacing: 0.03em;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
@@ -1348,9 +1359,9 @@
 }
 
 .reach-feed-status-429 {
-    background: rgba(255, 176, 32, 0.18);
-    color: #ffd37a;
-    border: 1px solid rgba(255, 176, 32, 0.4);
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.18));
+    color: var(--reach-accent-light, #ffd37a);
+    border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.4));
 }
 
 .reach-feed-status-err {
@@ -1361,29 +1372,29 @@
 
 .reach-feed-model {
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 11.5px;
+    font-size: 10.5px;
     font-weight: 600;
-    color: #ffd37a;
+    color: var(--reach-accent-light, #ffd37a);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
 }
 
 .reach-feed-lat {
-    font-size: 11.5px;
+    font-size: 10.5px;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
     white-space: nowrap;
 }
 
 .reach-feed-lat-fast { color: #7ce8a0; }
-.reach-feed-lat-mid { color: #ffd37a; }
+.reach-feed-lat-mid { color: var(--reach-accent-light, #ffd37a); }
 .reach-feed-lat-slow { color: #ff8f7a; }
 
 .reach-feed-tokens {
-    font-size: 11.5px;
+    font-size: 10.5px;
     opacity: 0.75;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1393,8 +1404,8 @@
 .reach-feed-meta {
     display: flex;
     align-items: center;
-    gap: 8px;
-    font-size: 11px;
+    gap: 6px;
+    font-size: 10px;
     opacity: 0.65;
     white-space: nowrap;
 }
@@ -1405,27 +1416,27 @@
 }
 
 .reach-feed-stream-tag {
-    font-size: 9.5px;
-    padding: 1px 5px;
-    border-radius: 4px;
+    font-size: 8.5px;
+    padding: 1px 4px;
+    border-radius: 3px;
     background: rgba(52, 152, 219, 0.18);
     color: #72b7ff;
     border: 1px solid rgba(52, 152, 219, 0.3);
 }
 
 .reach-feed-cache-tag {
-    font-size: 9.5px;
-    padding: 1px 5px;
-    border-radius: 4px;
+    font-size: 8.5px;
+    padding: 1px 4px;
+    border-radius: 3px;
     background: rgba(155, 89, 182, 0.18);
     color: #c993ff;
     border: 1px solid rgba(155, 89, 182, 0.3);
 }
 
 .reach-feed-empty {
-    padding: 24px;
+    padding: 16px;
     text-align: center;
-    font-size: 12.5px;
+    font-size: 11.5px;
     opacity: 0.6;
 }
 
@@ -1433,11 +1444,11 @@
 .reach-model-share-bar {
     display: flex;
     width: 100%;
-    height: 14px;
-    border-radius: 6px;
+    height: 10px;
+    border-radius: 5px;
     overflow: hidden;
     background: rgba(0, 0, 0, 0.3);
-    margin: 8px 0 12px;
+    margin: 6px 0 8px;
     border: 1px solid rgba(128, 128, 128, 0.2);
 }
 
@@ -1456,21 +1467,21 @@
 .reach-model-legend {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 10px;
     flex-wrap: wrap;
-    font-size: 11.5px;
-    margin-bottom: 12px;
+    font-size: 10.5px;
+    margin-bottom: 8px;
 }
 
 .reach-model-legend-item {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
 }
 
 .reach-model-legend-dot {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
 }
 
@@ -1481,15 +1492,15 @@
 
 .reach-chart-tooltip {
     position: absolute;
-    bottom: calc(100% + 6px);
+    bottom: calc(100% + 5px);
     left: 50%;
     transform: translateX(-50%);
     background: rgba(16, 20, 24, 0.94);
     border: 1px solid rgba(128, 128, 128, 0.35);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
-    padding: 5px 8px;
-    border-radius: 6px;
-    font-size: 11px;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    padding: 4px 7px;
+    border-radius: 5px;
+    font-size: 10.5px;
     white-space: nowrap;
     pointer-events: none;
     z-index: 100;
@@ -1497,7 +1508,7 @@
     transition: opacity 120ms ease;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 1px;
 }
 
 .reach-chart-col:hover .reach-chart-tooltip {
@@ -1508,13 +1519,13 @@
 .reach-toggle-wrap {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    font-size: 11.5px;
+    gap: 6px;
+    font-size: 10.5px;
     font-weight: 600;
     cursor: pointer;
     user-select: none;
-    padding: 5px 10px;
-    border-radius: 8px;
+    padding: 3px 8px;
+    border-radius: 6px;
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(128, 128, 128, 0.22);
     transition: all 120ms ease;
@@ -1526,45 +1537,45 @@
 }
 
 .reach-toggle-wrap input[type="checkbox"] {
-    accent-color: #ffb020;
+    accent-color: var(--reach-accent, #ffb020);
     cursor: pointer;
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     margin: 0;
 }
 
 .reach-toggle-wrap.active {
-    background: rgba(255, 176, 32, 0.16);
-    border-color: rgba(255, 176, 32, 0.45);
-    color: #ffd37a;
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.16));
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.45));
+    color: var(--reach-accent-light, #ffd37a);
 }
 
 .reach-presence-section {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 16px;
-    border-radius: 12px;
-    background: linear-gradient(180deg, rgba(255, 176, 32, 0.05), rgba(0, 0, 0, 0.22));
-    border: 1px solid rgba(255, 176, 32, 0.2);
+    gap: 8px;
+    padding: 9px 12px;
+    border-radius: 8px;
+    background: linear-gradient(180deg, var(--reach-accent-bg, rgba(255, 176, 32, 0.05)), rgba(0, 0, 0, 0.22));
+    border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.2));
 }
 
 .reach-presence-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .reach-presence-title-wrap {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .reach-presence-title {
-    font-size: 13px;
+    font-size: 11.5px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1573,9 +1584,9 @@
 }
 
 .reach-presence-count {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: 999px;
     background: rgba(128, 128, 128, 0.15);
     opacity: 0.75;
@@ -1583,16 +1594,16 @@
 
 .reach-presence-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 8px;
 }
 
 .reach-presence-card {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 12px 14px;
-    border-radius: 10px;
+    gap: 6px;
+    padding: 7px 9px;
+    border-radius: 7px;
     background: rgba(0, 0, 0, 0.28);
     border: 1px solid rgba(128, 128, 128, 0.18);
     position: relative;
@@ -1601,13 +1612,13 @@
 
 .reach-presence-card:hover {
     border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.45));
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
     transform: translateY(-1px);
 }
 
 .reach-presence-card.selected {
     border-color: var(--reach-accent, #ffb020);
-    box-shadow: 0 0 0 2px var(--reach-accent-glow, rgba(255, 176, 32, 0.4)), 0 4px 16px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 0 0 2px var(--reach-accent-glow, rgba(255, 176, 32, 0.4)), 0 4px 14px rgba(0, 0, 0, 0.4);
     background: linear-gradient(135deg, var(--reach-accent-bg, rgba(255, 176, 32, 0.12)), rgba(0, 0, 0, 0.32));
 }
 
@@ -1615,32 +1626,32 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
 }
 
 .reach-presence-user-wrap {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
 }
 
 .reach-presence-status-dot {
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     flex: 0 0 auto;
 }
 
 .reach-presence-status-dot.active {
     background: #2ecc71;
-    box-shadow: 0 0 10px rgba(46, 204, 113, 0.85);
+    box-shadow: 0 0 8px rgba(46, 204, 113, 0.85);
     animation: reachLivePulse 1.8s infinite ease-in-out;
 }
 
 .reach-presence-status-dot.idle {
     background: var(--reach-accent, #ffb020);
-    box-shadow: 0 0 6px var(--reach-accent-glow, rgba(255, 176, 32, 0.6));
+    box-shadow: 0 0 5px var(--reach-accent-glow, rgba(255, 176, 32, 0.6));
 }
 
 .reach-presence-status-dot.dormant {
@@ -1648,7 +1659,7 @@
 }
 
 .reach-presence-name {
-    font-size: 12.5px;
+    font-size: 11.5px;
     font-weight: 700;
     color: var(--reach-accent-light, #ffd37a);
     overflow: hidden;
@@ -1657,11 +1668,11 @@
 }
 
 .reach-presence-pill {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
-    padding: 2px 7px;
+    padding: 1px 5px;
     border-radius: 999px;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.03em;
     white-space: nowrap;
 }
 
@@ -1687,14 +1698,14 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 11.5px;
+    font-size: 10.5px;
     opacity: 0.85;
 }
 
 .reach-presence-ua {
-    font-size: 10.5px;
+    font-size: 9.5px;
     color: #b0b4b8;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1705,8 +1716,8 @@
 .reach-presence-stats-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    padding: 6px 0;
+    gap: 4px;
+    padding: 3px 0;
     border-top: 1px solid rgba(128, 128, 128, 0.14);
     border-bottom: 1px solid rgba(128, 128, 128, 0.14);
 }
@@ -1720,13 +1731,14 @@
 }
 
 .reach-presence-stat-val {
-    font-size: 12.5px;
+    font-size: 11px;
     font-weight: 700;
     color: var(--reach-accent-light, #ffd37a);
+    font-variant-numeric: tabular-nums;
 }
 
 .reach-presence-stat-lbl {
-    font-size: 9.5px;
+    font-size: 8.5px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
     opacity: 0.6;
@@ -1736,29 +1748,29 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 6px;
+    gap: 5px;
 }
 
 .reach-presence-model-badge {
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 11px;
+    font-size: 10px;
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     color: #62d8ea;
 }
 
 .reach-presence-btn {
-    font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 6px;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 5px;
     background: rgba(128, 128, 128, 0.12);
     border: 1px solid rgba(128, 128, 128, 0.25);
     color: inherit;
     cursor: pointer;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     transition: all 120ms ease;
 }
 
@@ -1780,12 +1792,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 7px 12px;
-    border-radius: 8px;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 6px;
     background: var(--reach-accent-bg, rgba(255, 176, 32, 0.14));
     border: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.35));
-    font-size: 11.5px;
+    font-size: 10.5px;
     color: var(--reach-accent-light, #ffd37a);
 }
 
@@ -1796,7 +1808,7 @@
     font-weight: 700;
     cursor: pointer;
     text-decoration: underline;
-    font-size: 11px;
+    font-size: 10px;
 }
 
 /* ---- Scoped Theme Swatches & Color Picker ---- */
@@ -1804,15 +1816,15 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    padding: 6px 0 2px;
+    gap: 5px;
+    padding: 3px 0 1px;
 }
 
 .reach-swatch {
-    width: 26px;
-    height: 26px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
-    border: 2px solid rgba(255, 255, 255, 0.25);
+    border: 1.5px solid rgba(255, 255, 255, 0.25);
     cursor: pointer;
     transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
     display: flex;
@@ -1824,30 +1836,30 @@
 }
 
 .reach-swatch:hover {
-    transform: scale(1.15);
+    transform: scale(1.18);
     border-color: rgba(255, 255, 255, 0.85);
 }
 
 .reach-swatch.active {
     border-color: #ffffff;
-    box-shadow: 0 0 10px var(--reach-accent-glow, rgba(255, 176, 32, 0.6));
-    transform: scale(1.12);
+    box-shadow: 0 0 8px var(--reach-accent-glow, rgba(255, 176, 32, 0.6));
+    transform: scale(1.15);
 }
 
 .reach-swatch.active::after {
     content: '✓';
-    font-size: 11px;
+    font-size: 9px;
     font-weight: 800;
     color: var(--reach-accent-text, #1a1206);
 }
 
 .reach-swatch-picker-wrap {
     position: relative;
-    width: 26px;
-    height: 26px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
     overflow: hidden;
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: 1.5px solid rgba(255, 255, 255, 0.3);
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -1857,7 +1869,7 @@
 }
 
 .reach-swatch-picker-wrap:hover {
-    transform: scale(1.15);
+    transform: scale(1.18);
     border-color: #ffffff;
 }
 
@@ -1865,8 +1877,8 @@
     position: absolute;
     top: -10px;
     left: -10px;
-    width: 50px;
-    height: 50px;
+    width: 40px;
+    height: 40px;
     opacity: 0;
     cursor: pointer;
 }
@@ -1874,9 +1886,9 @@
 /* ---- Dashboard Enhancements ---- */
 .reach-dash-jump-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-    gap: 8px;
-    margin-top: 4px;
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 6px;
+    margin-top: 2px;
 }
 
 .reach-dash-jump-btn {
@@ -1884,20 +1896,20 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 12px 10px;
-    border-radius: 8px;
+    gap: 4px;
+    padding: 7px 8px;
+    border-radius: 6px;
     background: rgba(128, 128, 128, 0.08);
     border: 1px solid rgba(128, 128, 128, 0.22);
     color: inherit;
-    font-size: 11.5px;
+    font-size: 10.5px;
     font-weight: 600;
     cursor: pointer;
     transition: all 120ms ease;
 }
 
 .reach-dash-jump-btn i {
-    font-size: 16px;
+    font-size: 13px;
     color: var(--reach-accent-light, #ffd37a);
 }
 
@@ -1908,11 +1920,11 @@
 }
 
 .reach-meter-bar {
-    height: 6px;
+    height: 5px;
     background: rgba(128, 128, 128, 0.2);
     border-radius: 3px;
     overflow: hidden;
-    margin: 6px 0;
+    margin: 4px 0;
 }
 
 .reach-meter-fill {
@@ -1926,27 +1938,27 @@
 .reach-playground {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
 }
 
 .reach-playground-controls {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
 }
 
 .reach-playground-pills {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     flex-wrap: wrap;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
 }
 
 .reach-pill {
-    font-size: 11px;
-    padding: 3px 9px;
+    font-size: 10px;
+    padding: 2px 7px;
     border-radius: 999px;
     background: rgba(128, 128, 128, 0.1);
     border: 1px solid rgba(128, 128, 128, 0.25);
@@ -1963,12 +1975,12 @@
 
 .reach-playground-textarea {
     width: 100%;
-    min-height: 85px;
-    border-radius: 8px;
-    padding: 10px 12px;
+    min-height: 56px;
+    border-radius: 6px;
+    padding: 6px 9px;
     font-family: inherit;
-    font-size: 13px;
-    line-height: 1.5;
+    font-size: 11.5px;
+    line-height: 1.45;
     background: rgba(0, 0, 0, 0.25);
     border: 1px solid rgba(128, 128, 128, 0.3);
     color: inherit;
@@ -1984,13 +1996,13 @@
 .reach-playground-console {
     background: #090d12;
     border: 1px solid rgba(128, 128, 128, 0.25);
-    border-radius: 8px;
-    padding: 12px 14px;
+    border-radius: 6px;
+    padding: 8px 10px;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 12.5px;
-    line-height: 1.55;
-    min-height: 90px;
-    max-height: 350px;
+    font-size: 11px;
+    line-height: 1.45;
+    min-height: 65px;
+    max-height: 280px;
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
@@ -2001,10 +2013,10 @@
 .reach-playground-stats {
     display: flex;
     align-items: center;
-    gap: 14px;
-    font-size: 11px;
+    gap: 10px;
+    font-size: 10px;
     opacity: 0.8;
-    margin-top: 4px;
+    margin-top: 2px;
 }
 
 .reach-playground-stat-val {
@@ -2014,27 +2026,27 @@
 
 /* ---- Models Per-Row Live Ping ---- */
 .reach-model-ping-btn {
-    font-size: 11px;
-    padding: 3px 8px;
-    border-radius: 6px;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 5px;
 }
 
 .reach-model-ping-tag {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
-    padding: 2px 7px;
-    border-radius: 5px;
-    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 5px;
     display: inline-block;
 }
 
 .reach-model-spec-badge {
-    font-size: 10.5px;
-    padding: 2px 6px;
-    border-radius: 4px;
+    font-size: 9.5px;
+    padding: 1px 5px;
+    border-radius: 3px;
     background: rgba(128, 128, 128, 0.15);
     opacity: 0.8;
-    margin-left: 6px;
+    margin-left: 5px;
 }
 
 /* ---- Logs Payload Modal / Drawer ---- */
@@ -2056,16 +2068,16 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 16px;
+    padding: 12px;
     animation: reachFadeIn 140ms ease;
 }
 
 .reach-modal-card {
     background: #141920;
     border: 1px solid rgba(128, 128, 128, 0.3);
-    border-radius: 12px;
+    border-radius: 8px;
     width: 100%;
-    max-width: 680px;
+    max-width: 620px;
     max-height: 85vh;
     display: flex;
     flex-direction: column;
@@ -2077,36 +2089,36 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 18px;
+    padding: 8px 12px;
     border-bottom: 1px solid rgba(128, 128, 128, 0.2);
 }
 
 .reach-modal-head h3 {
     margin: 0;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 700;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 
 .reach-modal-body {
-    padding: 16px 18px;
+    padding: 10px 12px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
 }
 
 .reach-modal-pre {
     background: #090d12;
     border: 1px solid rgba(128, 128, 128, 0.22);
-    border-radius: 8px;
-    padding: 12px 14px;
+    border-radius: 6px;
+    padding: 8px 10px;
     font-family: Consolas, "Cascadia Mono", Menlo, monospace;
-    font-size: 11.5px;
-    line-height: 1.5;
-    max-height: 280px;
+    font-size: 10.5px;
+    line-height: 1.45;
+    max-height: 240px;
     overflow-y: auto;
     color: #cbd5e1;
     white-space: pre-wrap;
@@ -2118,8 +2130,8 @@
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 10px;
-    padding: 10px 18px;
+    gap: 8px;
+    padding: 6px 12px;
     border-top: 1px solid rgba(128, 128, 128, 0.2);
     background: rgba(0, 0, 0, 0.2);
 }
