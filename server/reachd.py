@@ -1741,8 +1741,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                     if attempt == attempts - 1:
                         break
                     time.sleep(retry_delay)
-            # fallback alias on total failure (non-stream only)
-            if upstream is None and not stream:
+            # fallback alias on total failure (streaming or non-streaming)
+            if upstream is None:
                 fallback_alias = spec.get("fallback")
                 if fallback_alias and fallback_alias in models \
                         and models[fallback_alias].get("enabled"):
@@ -1759,6 +1759,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                             fb_req,
                             timeout=int(STATE.cfg.get("upstream_timeout_s", 600)))
                         upstream_model = fb_upstream
+                        spec = models[fallback_alias]
                         fallback_used = True
                     except Exception as exc:
                         last_error = exc
@@ -1796,6 +1797,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                 self._rate_limit_headers(rl_headers)
                 self.send_header("Cache-Control", "no-cache")
                 self.send_header("Transfer-Encoding", "chunked")
+                if fallback_used:
+                    self.send_header("X-Reach-Fallback", "used")
                 self.end_headers()
                 if spec.get("strip_trailing_roles"):
                     # Buffer the stream, scrub the assembled content, then
