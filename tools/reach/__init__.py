@@ -24,7 +24,7 @@ MAX_ASSET_BYTES = 8 * 1024 * 1024
 MAX_EXTENSION_BYTES = 16 * 1024 * 1024
 CONFLICT_MARKERS = (b"<<<<<<<", b">>>>>>>", b"\n=======")
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
 PLUGIN_JSON = SRC_DIR / "plugin.json"
 MANIFEST_TEMPLATE = SRC_DIR / "manifest.template.js"

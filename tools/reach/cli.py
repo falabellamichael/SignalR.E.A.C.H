@@ -29,26 +29,19 @@ Commands:
 
 import argparse
 import json
-import os
 import shutil
-import socket
-import sqlite3
 import subprocess
-import sys
 import time
-import urllib.request
-from pathlib import Path
 
 from . import (
     DEFAULT_PORT,
-    GIST_FILE,
-    GIST_ID,
     GIST_RAW,
     IS_FULL_REPO,
     PLUGIN_ID,
     REPO_ROOT,
     REPO_URL,
 )
+from .autostart import register_autostart, remove_autostart
 from .build import (
     build_extension_manifest,
     collect_assets,
@@ -56,17 +49,21 @@ from .build import (
     validate_assets,
 )
 from .config import (
-    BAT_PATH,
     CONFIG_DIR,
     CONFIG_PATH,
-    LOG_PATH,
-    PID_PATH,
-    TUNNEL_LOG,
-    TUNNEL_PID_PATH,
     load_config,
     runtime_port,
     save_config,
 )
+from .http_admin import (
+    admin_request,
+    coerce_value,
+    get_dotted,
+    require_relay,
+    set_dotted_patch,
+)
+from .keys import find_omniroute_key, mask_key
+from .publish import publish
 from .registry import (
     STASH_DIR,
     extension_home,
@@ -78,18 +75,13 @@ from .registry import (
     verify_registry_entry,
     write_registry,
 )
-
-from .keys import (find_omniroute_key, mask_key)
-
-from .runtime import (kill_pid, no_window_kwargs, port_open, public_url_from_server, read_pid, resolve_interpreter, resolve_pythonw, start_server, stop_server)
-
-from .http_admin import (admin_request, coerce_value, get_dotted, require_relay, set_dotted_patch)
-
-from .tunnel import (find_ngrok, start_tunnel, stop_tunnel)
-
-from .publish import (find_gh, publish)
-
-from .autostart import (register_autostart, remove_autostart)
+from .runtime import (
+    port_open,
+    public_url_from_server,
+    start_server,
+    stop_server,
+)
+from .tunnel import start_tunnel, stop_tunnel
 
 # ----------------------------------------------------------------------
 # Registry location — mirrors chat_frontend_server.local_extension_root()
@@ -202,10 +194,17 @@ def cmd_install(args):
     # 2. runtime copy + config
     (CONFIG_DIR / "server").mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / "tools").mkdir(parents=True, exist_ok=True)
+    ignore = shutil.ignore_patterns("__pycache__")
     shutil.copy2(REPO_ROOT / "server" / "reachd.py",
                  CONFIG_DIR / "server" / "reachd.py")
+    shutil.copytree(REPO_ROOT / "server" / "reachd",
+                    CONFIG_DIR / "server" / "reachd",
+                    dirs_exist_ok=True, ignore=ignore)
     shutil.copy2(REPO_ROOT / "tools" / "reach.py",
                  CONFIG_DIR / "tools" / "reach.py")
+    shutil.copytree(REPO_ROOT / "tools" / "reach",
+                    CONFIG_DIR / "tools" / "reach",
+                    dirs_exist_ok=True, ignore=ignore)
     cfg = load_config()
     if not cfg.get("omniroute_key"):
         key = find_omniroute_key()
