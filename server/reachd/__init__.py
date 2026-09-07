@@ -14,6 +14,8 @@ live globals owned by ``reachd.core`` and are only meaningful once
 ``main()`` has run.
 """
 
+from reachd.settings import MODEL_SPEC_DEFAULTS
+
 from reachd.core import (
     DEFAULT_PORT,
     DEFAULT_SETTINGS,
@@ -22,7 +24,6 @@ from reachd.core import (
     LATENCY_SAMPLE_LIMIT,
     MAX_BODY_BYTES,
     MAX_RATE_BUCKETS,
-    MODEL_SPEC_DEFAULTS,
     SERVICE,
     VERSION,
     Analytics,
