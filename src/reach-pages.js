@@ -475,101 +475,517 @@
 
     /* ----------------------------------------------------------------- USAGE */
     function renderUsage(container) {
-        container.appendChild(pageHeader('fa-chart-column', 'Usage',
-            'Traffic through the public endpoint — requests, tokens, latency.'));
+        container.appendChild(pageHeader('fa-chart-column', 'Live Usage & Telemetry',
+            'Real-time event stream, throughput velocity, and latency analytics.'));
         const body = el('div', 'reach-stack');
         container.appendChild(body);
-        let timer = null;
 
-        function bars(title, series, valueKey, color) {
-            const card = el('section', 'reach-card');
-            card.appendChild(el('header', 'reach-card-head', title));
-            const chart = el('div', 'reach-chart');
-            const max = Math.max(1, ...series.map(s => s[valueKey] || 0));
+        // State
+        let timer = null;
+        let isPaused = false;
+        let cadenceMs = 2500;
+        let activeFilter = 'all';
+        let seenLogIds = new Set();
+        let logsCache = [];
+        let isInitialMount = true;
+        let lastTickAt = Date.now();
+        let prevReqCount = null;
+        let prevTokCount = null;
+
+        // 1. Build Persistent DOM Skeleton
+        // ---- Live HUD ----
+        const hud = el('div', 'reach-live-hud');
+        const statusGroup = el('div', 'reach-live-status-group');
+        const liveDot = el('div', 'reach-live-dot');
+        const liveMeta = el('div', 'reach-live-meta');
+        const titleRow = el('div', 'reach-live-title-row');
+        const liveTitle = el('span', 'reach-live-title', 'LIVE TELEMETRY');
+        const liveBadge = el('span', 'reach-live-badge', 'STREAMING');
+        titleRow.appendChild(liveTitle);
+        titleRow.appendChild(liveBadge);
+        const liveSub = el('span', 'reach-live-sub', 'Polling every 2.5s · Instant velocity tracking');
+        liveMeta.appendChild(titleRow);
+        liveMeta.appendChild(liveSub);
+        statusGroup.appendChild(liveDot);
+        statusGroup.appendChild(liveMeta);
+        hud.appendChild(statusGroup);
+
+        const controls = el('div', 'reach-live-controls');
+        const cadenceWrap = el('div', 'reach-cadence-selector');
+        const cadenceOptions = [
+            { label: '1s Turbo', ms: 1000 },
+            { label: '2.5s Live', ms: 2500 },
+            { label: '5s Normal', ms: 5000 },
+            { label: '15s Eco', ms: 15000 }
+        ];
+        const cadenceBtns = [];
+        cadenceOptions.forEach(opt => {
+            const btn = el('button', 'reach-cadence-btn' + (opt.ms === cadenceMs ? ' active' : ''), opt.label);
+            btn.addEventListener('click', () => {
+                cadenceMs = opt.ms;
+                cadenceBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                liveSub.textContent = 'Polling every ' + (opt.ms / 1000).toFixed(1) + 's · Instant velocity tracking';
+                resetTimer();
+            });
+            cadenceBtns.push(btn);
+            cadenceWrap.appendChild(btn);
+        });
+        controls.appendChild(cadenceWrap);
+
+        const pauseBtn = el('button', 'reach-btn reach-btn-sm', 'Pause');
+        pauseBtn.addEventListener('click', () => {
+            isPaused = !isPaused;
+            if (isPaused) {
+                liveDot.classList.add('paused');
+                liveBadge.textContent = 'PAUSED';
+                liveBadge.style.background = 'rgba(255, 176, 32, 0.18)';
+                liveBadge.style.color = '#ffd37a';
+                liveBadge.style.borderColor = 'rgba(255, 176, 32, 0.4)';
+                pauseBtn.textContent = 'Resume';
+            } else {
+                liveDot.classList.remove('paused');
+                liveBadge.textContent = 'STREAMING';
+                liveBadge.style.background = 'rgba(46, 204, 113, 0.16)';
+                liveBadge.style.color = '#7ce8a0';
+                liveBadge.style.borderColor = 'rgba(46, 204, 113, 0.35)';
+                pauseBtn.textContent = 'Pause';
+                tick(true);
+            }
+        });
+        controls.appendChild(pauseBtn);
+
+        const refreshBtn = el('button', 'reach-btn reach-btn-sm', '');
+        const refreshIcon = el('i', 'fa-solid fa-rotate');
+        refreshBtn.appendChild(refreshIcon);
+        refreshBtn.title = 'Refresh immediately';
+        refreshBtn.addEventListener('click', () => {
+            refreshIcon.classList.add('fa-spin');
+            tick(true).finally(() => setTimeout(() => refreshIcon.classList.remove('fa-spin'), 600));
+        });
+        controls.appendChild(refreshBtn);
+        hud.appendChild(controls);
+        body.appendChild(hud);
+
+        // ---- KPI Tiles ----
+        const tiles = el('div', 'reach-tiles');
+        const reqTile = statTile('Requests (24h)', '—', '0.0 req/s live');
+        const tokTile = statTile('Tokens out (24h)', '—', '0 in · 0 out');
+        const latTile = statTile('Avg Latency (Today)', '—', 'p95 —');
+        const errTile = statTile('Error Rate', '0%', '0 rate-limited', 'good');
+        tiles.appendChild(reqTile);
+        tiles.appendChild(tokTile);
+        tiles.appendChild(latTile);
+        tiles.appendChild(errTile);
+        body.appendChild(tiles);
+
+        // ---- Live Request Feed Card ----
+        const feedCard = el('section', 'reach-feed-card');
+        const feedHead = el('div', 'reach-feed-head');
+        const titleWrap = el('div', 'reach-feed-title-wrap');
+        const feedIcon = el('i', 'fa-solid fa-bolt', '');
+        feedIcon.style.color = '#ffd37a';
+        titleWrap.appendChild(feedIcon);
+        titleWrap.appendChild(el('h3', 'reach-feed-title', 'Live Request Feed'));
+        const feedCountBadge = el('span', 'reach-feed-count', '0 events');
+        titleWrap.appendChild(feedCountBadge);
+        feedHead.appendChild(titleWrap);
+
+        const feedActions = el('div', 'reach-feed-actions');
+        const filtersWrap = el('div', 'reach-feed-filters');
+        const filterDefs = [
+            { id: 'all', label: 'All' },
+            { id: '200', label: '200 OK' },
+            { id: '429', label: '429 Limited' },
+            { id: 'err', label: 'Errors' },
+            { id: 'stream', label: 'Streams' }
+        ];
+        const filterChips = [];
+        filterDefs.forEach(f => {
+            const chip = el('button', 'reach-feed-chip' + (f.id === activeFilter ? ' active' : ''), f.label);
+            chip.addEventListener('click', () => {
+                activeFilter = f.id;
+                filterChips.forEach(c => c.classList.remove('active'));
+                chip.classList.add('active');
+                renderFeedList();
+            });
+            filterChips.push(chip);
+            filtersWrap.appendChild(chip);
+        });
+        feedActions.appendChild(filtersWrap);
+
+        const clearFeedBtn = el('button', 'reach-btn reach-btn-sm', 'Clear View');
+        clearFeedBtn.addEventListener('click', () => {
+            logsCache = [];
+            feedList.innerHTML = '';
+            feedCountBadge.textContent = '0 events';
+            renderFeedList();
+        });
+        feedActions.appendChild(clearFeedBtn);
+        feedHead.appendChild(feedActions);
+        feedCard.appendChild(feedHead);
+
+        const feedList = el('div', 'reach-feed-list');
+        feedCard.appendChild(feedList);
+        body.appendChild(feedCard);
+
+        // ---- Hourly Charts ----
+        const reqChartCard = el('section', 'reach-card');
+        reqChartCard.appendChild(el('header', 'reach-card-head', 'Requests per hour (last 24h)'));
+        const reqChart = el('div', 'reach-chart');
+        reqChartCard.appendChild(reqChart);
+        body.appendChild(reqChartCard);
+
+        const tokChartCard = el('section', 'reach-card');
+        tokChartCard.appendChild(el('header', 'reach-card-head', 'Tokens out per hour (last 24h)'));
+        const tokChart = el('div', 'reach-chart');
+        tokChartCard.appendChild(tokChart);
+        body.appendChild(tokChartCard);
+
+        // ---- Grid: Model Share & Top Clients ----
+        const grid = el('div', 'reach-dash-grid');
+
+        // By Model Card
+        const byModelCard = el('section', 'reach-card');
+        byModelCard.appendChild(el('header', 'reach-card-head', 'Model Traffic Distribution (Today)'));
+        const shareBarWrap = el('div', 'reach-model-share-wrap');
+        const shareBar = el('div', 'reach-model-share-bar');
+        const shareLegend = el('div', 'reach-model-legend');
+        shareBarWrap.appendChild(shareBar);
+        shareBarWrap.appendChild(shareLegend);
+        byModelCard.appendChild(shareBarWrap);
+
+        const modelTable = el('table', 'reach-table');
+        modelTable.innerHTML = '<thead><tr><th>Model</th><th>Share</th><th>Requests</th><th>In</th><th>Out</th></tr></thead>';
+        const modelTbody = document.createElement('tbody');
+        modelTable.appendChild(modelTbody);
+        byModelCard.appendChild(modelTable);
+        grid.appendChild(byModelCard);
+
+        // Top Clients Card
+        const clientsCard = el('section', 'reach-card');
+        clientsCard.appendChild(el('header', 'reach-card-head', 'Top Clients (Today)'));
+        const clientsTable = el('table', 'reach-table');
+        clientsTable.innerHTML = '<thead><tr><th>Client IP</th><th>Requests</th><th>Tokens out</th></tr></thead>';
+        const clientsTbody = document.createElement('tbody');
+        clientsTable.appendChild(clientsTbody);
+        clientsCard.appendChild(clientsTable);
+        grid.appendChild(clientsCard);
+
+        body.appendChild(grid);
+
+        // ---- Feed Rendering & Filtering ----
+        function filterMatch(entry) {
+            if (activeFilter === '200') return entry.status === 200;
+            if (activeFilter === '429') return entry.status === 429;
+            if (activeFilter === 'err') return entry.status >= 400;
+            if (activeFilter === 'stream') return !!entry.stream;
+            return true;
+        }
+
+        function buildFeedItem(entry, isNew) {
+            const row = el('div', 'reach-feed-item' + (isNew ? ' reach-feed-item-new' : ''));
+
+            // 1. Time
+            const timeStr = (entry.ts || '').includes('T') ? entry.ts.split('T')[1].slice(0, 8) : core.fmtTime(entry.ts);
+            const tsSpan = el('span', 'reach-feed-ts', timeStr);
+            tsSpan.title = entry.ts || '';
+            row.appendChild(tsSpan);
+
+            // 2. Status Badge
+            let statusClass = 'reach-feed-status-200';
+            let statusText = String(entry.status || 200);
+            if (entry.status === 429) {
+                statusClass = 'reach-feed-status-429';
+                statusText = '429 LMT';
+            } else if (entry.status >= 400) {
+                statusClass = 'reach-feed-status-err';
+                statusText = (entry.status || 'ERR') + ' ERR';
+            } else {
+                statusText = statusText + ' OK';
+            }
+            const statusBadge = el('span', 'reach-feed-status ' + statusClass, statusText);
+            row.appendChild(statusBadge);
+
+            // 3. Model
+            const modelSpan = el('span', 'reach-feed-model');
+            const modelIcon = el('i', 'fa-solid fa-cube');
+            modelSpan.appendChild(modelIcon);
+            modelSpan.appendChild(document.createTextNode(' ' + (entry.model || 'unknown')));
+            modelSpan.title = (entry.model || '') + ' → ' + (entry.upstream_model || '');
+            row.appendChild(modelSpan);
+
+            // 4. Latency
+            const lat = entry.latency_ms;
+            let latClass = 'reach-feed-lat-mid';
+            if (lat != null) {
+                if (lat < 600) latClass = 'reach-feed-lat-fast';
+                else if (lat > 2500) latClass = 'reach-feed-lat-slow';
+            }
+            const latSpan = el('span', 'reach-feed-lat ' + latClass, core.fmtLatency(lat));
+            row.appendChild(latSpan);
+
+            // 5. Tokens
+            let tokText = '—';
+            if (entry.tokens_in != null || entry.tokens_out != null) {
+                tokText = core.fmtNum(entry.tokens_in || 0) + ' in / ' + core.fmtNum(entry.tokens_out || 0) + ' out';
+            } else if (entry.stream) {
+                tokText = 'streaming';
+            }
+            const tokSpan = el('span', 'reach-feed-tokens', tokText);
+            row.appendChild(tokSpan);
+
+            // 6. Meta: stream/cache/ip
+            const metaWrap = el('div', 'reach-feed-meta');
+            if (entry.stream) {
+                const strTag = el('span', 'reach-feed-stream-tag', '⚡ stream');
+                metaWrap.appendChild(strTag);
+            }
+            if (entry.cached) {
+                const cTag = el('span', 'reach-feed-cache-tag', '💾 hit');
+                metaWrap.appendChild(cTag);
+            }
+            const ipSpan = el('span', 'reach-feed-ip', entry.ip || '—');
+            metaWrap.appendChild(ipSpan);
+            if (entry.error) {
+                const errIcon = el('i', 'fa-solid fa-triangle-exclamation');
+                errIcon.style.color = '#ff8f7a';
+                errIcon.title = entry.error;
+                metaWrap.appendChild(errIcon);
+            }
+            row.appendChild(metaWrap);
+
+            return row;
+        }
+
+        function renderFeedList() {
+            feedList.innerHTML = '';
+            const filtered = logsCache.filter(filterMatch);
+            feedCountBadge.textContent = filtered.length + ' event' + (filtered.length === 1 ? '' : 's');
+            if (!filtered.length) {
+                const empty = el('div', 'reach-feed-empty', 'No requests match current filter.');
+                feedList.appendChild(empty);
+                return;
+            }
+            filtered.forEach(item => {
+                feedList.appendChild(buildFeedItem(item, false));
+            });
+        }
+
+        // ---- Chart Bar Updater ----
+        function updateChartBars(chartEl, series, valueKey, color) {
+            chartEl.innerHTML = '';
             const seriesCopy = series.slice(-24);
+            const max = Math.max(1, ...seriesCopy.map(s => s[valueKey] || 0));
             seriesCopy.forEach(s => {
                 const col = el('div', 'reach-chart-col');
                 const bar = el('div', 'reach-chart-bar' + (color ? ' reach-chart-' + color : ''));
-                bar.style.height = Math.max(2, Math.round(((s[valueKey] || 0) / max) * 100)) + '%';
-                bar.title = core.fmtHour(s.hour) + ': ' + core.fmtNum(s[valueKey]) + ' ' + valueKey;
+                const val = s[valueKey] || 0;
+                bar.style.height = Math.max(2, Math.round((val / max) * 100)) + '%';
                 col.appendChild(bar);
                 col.appendChild(el('span', 'reach-chart-x', core.fmtHour(s.hour)));
-                chart.appendChild(col);
+
+                // Rich Tooltip
+                const tooltip = el('div', 'reach-chart-tooltip');
+                tooltip.appendChild(el('strong', null, core.fmtHour(s.hour) + ' (' + s.hour.slice(0, 10) + ')'));
+                tooltip.appendChild(el('span', null, core.fmtNum(val) + ' ' + valueKey));
+                if (s.errors != null && s.errors > 0) {
+                    const errLine = el('span', null, s.errors + ' error' + (s.errors === 1 ? '' : 's'));
+                    errLine.style.color = '#ff8f7a';
+                    tooltip.appendChild(errLine);
+                }
+                col.appendChild(tooltip);
+                chartEl.appendChild(col);
             });
-            card.appendChild(chart);
-            return card;
         }
 
-        function draw() {
-            core.relayFetch('/_reach/stats', undefined, 4000)
-                .then(res => (res.ok ? res.json() : Promise.reject(new Error('HTTP ' + res.status))))
-                .then(snap => {
-                    const stats = snap.stats || {};
-                    const today = snap.today || stats.today || {};
-                    body.innerHTML = '';
-                    const tiles = el('div', 'reach-tiles');
-                    tiles.appendChild(statTile('Requests (24h)', core.fmtNum((stats.hourly || []).reduce((a, h) => a + h.requests, 0))));
-                    tiles.appendChild(statTile('Tokens out (24h)', core.fmtNum((stats.hourly || []).reduce((a, h) => a + h.tokens_out, 0))));
-                    tiles.appendChild(statTile('Avg latency (today)', core.fmtLatency(today.avg_latency_ms)));
-                    tiles.appendChild(statTile('Error rate', ((today.requests || 0) ? Math.round(100 * today.errors / today.requests) : 0) + '%',
-                        core.fmtNum(today.rate_limited || 0) + ' rate-limited', (today.errors || 0) > 0 ? 'bad' : 'good'));
-                    body.appendChild(tiles);
-                    body.appendChild(bars('Requests per hour (last 24h)', stats.hourly || [], 'requests', 'gold'));
-                    body.appendChild(bars('Tokens out per hour (last 24h)', stats.hourly || [], 'tokens_out', 'green'));
+        // ---- Main Data Tick ----
+        function tick(force) {
+            if (isPaused && !force) return Promise.resolve();
 
-                    const grid = el('div', 'reach-dash-grid');
-                    const byModel = el('section', 'reach-card');
-                    byModel.appendChild(el('header', 'reach-card-head', 'By model (today)'));
-                    const table = el('table', 'reach-table');
-                    table.innerHTML = '<thead><tr><th>Model</th><th>Requests</th><th>Tokens in</th><th>Tokens out</th></tr></thead>';
-                    const tbody = document.createElement('tbody');
-                    (stats.by_model || []).forEach(m => {
-                        const tr = document.createElement('tr');
-                        tr.appendChild(el('td', null, m.model));
-                        tr.appendChild(el('td', null, core.fmtNum(m.requests)));
-                        tr.appendChild(el('td', null, core.fmtNum(m.tokens_in)));
-                        tr.appendChild(el('td', null, core.fmtNum(m.tokens_out)));
-                        tbody.appendChild(tr);
-                    });
-                    if (!(stats.by_model || []).length) {
-                        tbody.appendChild(el('tr', null, ''));
-                        tbody.lastChild.appendChild(el('td', 'reach-copy', 'No traffic today yet'));
-                    }
-                    table.appendChild(tbody);
-                    byModel.appendChild(table);
-                    grid.appendChild(byModel);
+            return Promise.all([
+                core.relayFetch('/_reach/stats', undefined, 4000).then(r => (r.ok ? r.json() : null)),
+                core.relayFetch('/_reach/logs?limit=40', undefined, 4000).then(r => (r.ok ? r.json() : null))
+            ]).then(([snap, logsData]) => {
+                if (!snap) return;
+                const stats = snap.stats || {};
+                const today = snap.today || stats.today || {};
+                const hourly = stats.hourly || [];
+                const byModel = stats.by_model || [];
+                const topClients = stats.top_clients || [];
 
-                    const clients = el('section', 'reach-card');
-                    clients.appendChild(el('header', 'reach-card-head', 'Top clients (today)'));
-                    const ctable = el('table', 'reach-table');
-                    ctable.innerHTML = '<thead><tr><th>Client IP</th><th>Requests</th><th>Tokens out</th></tr></thead>';
-                    const cbody = document.createElement('tbody');
-                    (stats.top_clients || []).forEach(c => {
-                        const tr = document.createElement('tr');
-                        tr.appendChild(el('td', null, c.ip));
-                        tr.appendChild(el('td', null, core.fmtNum(c.requests)));
-                        tr.appendChild(el('td', null, core.fmtNum(c.tokens_out)));
-                        cbody.appendChild(tr);
-                    });
-                    if (!(stats.top_clients || []).length) {
-                        cbody.appendChild(el('tr', null, ''));
-                        cbody.lastChild.appendChild(el('td', 'reach-copy', 'No clients yet'));
+                // Velocity computation
+                const now = Date.now();
+                const dt = Math.max(0.8, (now - lastTickAt) / 1000);
+                lastTickAt = now;
+                const curReq = today.requests || 0;
+                const curTok = (today.tokens_in || 0) + (today.tokens_out || 0);
+
+                let velocityRps = '0.0';
+                let velocityTps = 0;
+                if (prevReqCount !== null) {
+                    const dReq = Math.max(0, curReq - prevReqCount);
+                    velocityRps = (dReq / dt).toFixed(1);
+                    const dTok = Math.max(0, curTok - prevTokCount);
+                    velocityTps = Math.round(dTok / dt);
+                }
+                prevReqCount = curReq;
+                prevTokCount = curTok;
+
+                // Update KPI Tiles
+                const total24hReq = hourly.reduce((a, h) => a + (h.requests || 0), 0);
+                const total24hTok = hourly.reduce((a, h) => a + (h.tokens_out || 0), 0);
+
+                const reqValNode = reqTile.querySelector('.reach-tile-value');
+                const reqSubNode = reqTile.querySelector('.reach-tile-sub');
+                if (reqValNode) reqValNode.textContent = core.fmtNum(total24hReq);
+                if (reqSubNode) {
+                    reqSubNode.innerHTML = core.fmtNum(curReq) + ' today <span class="reach-velocity-badge">' + velocityRps + ' req/s</span>';
+                }
+
+                const tokValNode = tokTile.querySelector('.reach-tile-value');
+                const tokSubNode = tokTile.querySelector('.reach-tile-sub');
+                if (tokValNode) tokValNode.textContent = core.fmtNum(total24hTok);
+                if (tokSubNode) {
+                    tokSubNode.textContent = core.fmtNum(today.tokens_in || 0) + ' in · ' + core.fmtNum(today.tokens_out || 0) + ' out' + (velocityTps > 0 ? ' (' + velocityTps + ' tps)' : '');
+                }
+
+                const latValNode = latTile.querySelector('.reach-tile-value');
+                const latSubNode = latTile.querySelector('.reach-tile-sub');
+                if (latValNode) latValNode.textContent = core.fmtLatency(today.avg_latency_ms);
+                if (latSubNode) latSubNode.textContent = 'p95 ' + core.fmtLatency(snap.p95_latency_ms || today.avg_latency_ms);
+
+                const errValNode = errTile.querySelector('.reach-tile-value');
+                const errSubNode = errTile.querySelector('.reach-tile-sub');
+                const errRate = curReq ? Math.round(100 * (today.errors || 0) / curReq) : 0;
+                if (errValNode) errValNode.textContent = errRate + '%';
+                if (errSubNode) errSubNode.textContent = core.fmtNum(today.rate_limited || 0) + ' rate-limited';
+                errTile.className = 'reach-tile' + (errRate > 0 ? ' reach-tile-bad' : ' reach-tile-good');
+
+                // Update Live Feed with incoming items
+                if (logsData && Array.isArray(logsData.logs)) {
+                    const newLogs = logsData.logs;
+                    if (isInitialMount) {
+                        logsCache = newLogs;
+                        newLogs.forEach(l => seenLogIds.add(l.id));
+                        renderFeedList();
+                    } else {
+                        // Find freshly arrived items that weren't in seenLogIds
+                        const freshItems = [];
+                        newLogs.forEach(l => {
+                            if (!seenLogIds.has(l.id)) {
+                                freshItems.push(l);
+                                seenLogIds.add(l.id);
+                            }
+                        });
+                        if (freshItems.length > 0) {
+                            logsCache = freshItems.concat(logsCache).slice(0, 100);
+                            // Prepend matching fresh items to the live feed with flash effect
+                            const emptyPlaceholder = feedList.querySelector('.reach-feed-empty');
+                            if (emptyPlaceholder) emptyPlaceholder.remove();
+
+                            freshItems.reverse().forEach(fresh => {
+                                if (filterMatch(fresh)) {
+                                    const elRow = buildFeedItem(fresh, true);
+                                    feedList.insertBefore(elRow, feedList.firstChild);
+                                }
+                            });
+                            // Cap visible elements to 50
+                            while (feedList.children.length > 50) {
+                                feedList.lastChild.remove();
+                            }
+                            const currentFilteredCount = logsCache.filter(filterMatch).length;
+                            feedCountBadge.textContent = currentFilteredCount + ' event' + (currentFilteredCount === 1 ? '' : 's');
+                        }
                     }
-                    ctable.appendChild(cbody);
-                    clients.appendChild(ctable);
-                    grid.appendChild(clients);
-                    body.appendChild(grid);
-                })
-                .catch(err => {
-                    body.innerHTML = '';
-                    body.appendChild(el('div', 'reach-banner reach-banner-off',
-                        'Stats unavailable: ' + err.message));
+                }
+
+                // Update 24h Hourly Charts
+                updateChartBars(reqChart, hourly, 'requests', 'gold');
+                updateChartBars(tokChart, hourly, 'tokens_out', 'green');
+
+                // Update Model Traffic Share Bar & Table
+                const totalModelReq = byModel.reduce((sum, m) => sum + (m.requests || 0), 0) || 1;
+                shareBar.innerHTML = '';
+                shareLegend.innerHTML = '';
+                modelTbody.innerHTML = '';
+
+                const colors = ['#ffd37a', '#62d8ea', '#ba8fff', '#7ce8a0', '#ff8f7a'];
+                byModel.forEach((m, idx) => {
+                    const pct = Math.max(0, Math.round(((m.requests || 0) / totalModelReq) * 100));
+                    const segColor = colors[idx % colors.length];
+
+                    // Segment
+                    if (pct > 0) {
+                        const seg = el('div', 'reach-model-share-seg reach-model-seg-' + (idx % 5));
+                        seg.style.width = pct + '%';
+                        seg.title = m.model + ': ' + pct + '% (' + core.fmtNum(m.requests) + ' reqs)';
+                        shareBar.appendChild(seg);
+                    }
+
+                    // Legend item
+                    const leg = el('div', 'reach-model-legend-item');
+                    const dot = el('span', 'reach-model-legend-dot');
+                    dot.style.background = segColor;
+                    leg.appendChild(dot);
+                    leg.appendChild(document.createTextNode(m.model + ' (' + pct + '%)'));
+                    shareLegend.appendChild(leg);
+
+                    // Table row
+                    const tr = document.createElement('tr');
+                    tr.appendChild(el('td', null, m.model));
+                    tr.appendChild(el('td', null, pct + '%'));
+                    tr.appendChild(el('td', null, core.fmtNum(m.requests)));
+                    tr.appendChild(el('td', null, core.fmtNum(m.tokens_in)));
+                    tr.appendChild(el('td', null, core.fmtNum(m.tokens_out)));
+                    modelTbody.appendChild(tr);
                 });
+                if (!byModel.length) {
+                    const tr = document.createElement('tr');
+                    const td = el('td', 'reach-copy', 'No traffic today yet');
+                    td.colSpan = 5;
+                    tr.appendChild(td);
+                    modelTbody.appendChild(tr);
+                }
+
+                // Update Top Clients Table
+                clientsTbody.innerHTML = '';
+                topClients.forEach(c => {
+                    const tr = document.createElement('tr');
+                    tr.appendChild(el('td', null, c.ip));
+                    tr.appendChild(el('td', null, core.fmtNum(c.requests)));
+                    tr.appendChild(el('td', null, core.fmtNum(c.tokens_out)));
+                    clientsTbody.appendChild(tr);
+                });
+                if (!topClients.length) {
+                    const tr = document.createElement('tr');
+                    const td = el('td', 'reach-copy', 'No client connections today yet');
+                    td.colSpan = 3;
+                    tr.appendChild(td);
+                    clientsTbody.appendChild(tr);
+                }
+
+                isInitialMount = false;
+            }).catch(err => {
+                liveDot.classList.add('error');
+                liveBadge.textContent = 'OFFLINE';
+                liveBadge.style.background = 'rgba(231, 76, 60, 0.16)';
+                liveBadge.style.color = '#ff8f7a';
+                liveBadge.style.borderColor = 'rgba(231, 76, 60, 0.35)';
+            });
         }
 
-        draw();
-        timer = setInterval(draw, 15000);
-        return () => { if (timer) clearInterval(timer); };
+        function resetTimer() {
+            if (timer) clearInterval(timer);
+            timer = setInterval(() => tick(false), cadenceMs);
+        }
+
+        tick(true);
+        resetTimer();
+
+        return () => {
+            if (timer) clearInterval(timer);
+        };
     }
 
     /* ------------------------------------------------------------------ LOGS */
