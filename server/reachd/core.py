@@ -43,6 +43,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from reachd.analytics import Analytics
+from reachd.cache import ResponseCache
+from reachd.const import (
+    DEFAULT_PORT,
+    GIST_FILE,
+    GIST_ID,
+    LATENCY_SAMPLE_LIMIT,
+    MAX_BODY_BYTES,
+    MAX_RATE_BUCKETS,
+    SERVICE,
+    VERSION,
+)
+from reachd.limits import CounterGate, RateLimiter
 from reachd.settings import (
     DEFAULT_SETTINGS,
     SettingsError,
@@ -55,16 +67,6 @@ from reachd.settings import (
 )
 from reachd.text import count_tokens, scrub_trailing_roles
 
-VERSION = "3.1.1"
-SERVICE = "simplereach"
-DEFAULT_PORT = 20777
-MAX_BODY_BYTES = 32 * 1024 * 1024
-LATENCY_SAMPLE_LIMIT = 1000
-MAX_RATE_BUCKETS = 10000
-
-GIST_ID = "e261e0c31ad08c373bcd667b6982847a"
-GIST_FILE = "simple-reach-endpoint.txt"
-
 STATE = None          # RelayState, set in main()
 PORT = DEFAULT_PORT
 
@@ -72,152 +74,6 @@ PORT = DEFAULT_PORT
 # Paths + analytics DB
 # ----------------------------------------------------------------------
 
-
-
-# ----------------------------------------------------------------------
-# Response cache (in-memory LRU)
-# ----------------------------------------------------------------------
-
-class ResponseCache:
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._entries = collections.OrderedDict()   # key -> (expires, body)
-        self.hits = 0
-        self.misses = 0
-
-    def get(self, key):
-        with self._lock:
-            entry = self._entries.get(key)
-            if not entry:
-                self.misses += 1
-                return None
-            expires, body = entry
-            if time.time() > expires:
-                self._entries.pop(key, None)
-                self.misses += 1
-                return None
-            self._entries.move_to_end(key)
-            self.hits += 1
-            return body
-
-    def put(self, key, body, ttl_s, max_entries):
-        with self._lock:
-            while len(self._entries) >= max_entries:
-                self._entries.popitem(last=False)
-            self._entries[key] = (time.time() + ttl_s, body)
-
-    def clear(self):
-        with self._lock:
-            self._entries.clear()
-
-    def snapshot(self):
-        with self._lock:
-            return {"entries": len(self._entries), "hits": self.hits,
-                    "misses": self.misses}
-
-
-# ----------------------------------------------------------------------
-# Rate limiter (token buckets: per-IP, per-IP+model, global)
-# ----------------------------------------------------------------------
-
-class RateLimiter:
-    def __init__(self):
-        self._lock = threading.RLock()
-        self._buckets = {}        # key -> {"tokens": float, "updated": float}
-        self._global = {"tokens": 0.0, "updated": 0.0}
-
-    def _refill(self, bucket, rate, capacity, now):
-        if bucket["updated"] == 0.0:
-            bucket["updated"] = now
-            bucket["tokens"] = float(capacity)
-            return
-        bucket["tokens"] = min(capacity,
-                               bucket["tokens"] + (now - bucket["updated"]) * rate)
-        bucket["updated"] = now
-
-    def check(self, ip, settings, model=None):
-        """Returns (allowed, headers, reason). Optionally enforces a per-model
-        bucket (rate_limits.rpm on the alias)."""
-        rl = settings.get("rate_limits", {})
-        if not rl.get("enabled"):
-            return True, {}, None
-        with self._lock:
-            if len(self._buckets) > MAX_RATE_BUCKETS:
-                self._buckets.clear()
-            now = time.time()
-            per_ip_rpm = float(rl.get("per_ip_rpm", 12))
-            burst = float(rl.get("burst", 4))
-            global_rpm = float(rl.get("global_rpm", 60))
-
-            self._refill(self._global, global_rpm / 60.0,
-                         global_rpm + burst, now)
-            if self._global["tokens"] < 1:
-                wait = (1.0 - self._global["tokens"]) * 60.0 / global_rpm
-                return False, {"X-RateLimit-Limit": str(int(global_rpm + burst)),
-                               "X-RateLimit-Remaining": "0",
-                               "Retry-After": str(max(1, int(wait)) + 1)}, \
-                    "global_rpm"
-
-            def bucket_for(key, rpm):
-                bucket = self._buckets.setdefault(
-                    key, {"tokens": 0.0, "updated": 0.0})
-                self._refill(bucket, float(rpm) / 60.0, float(rpm) + burst, now)
-                return bucket
-
-            ip_bucket = bucket_for(ip, per_ip_rpm)
-            headers = {"X-RateLimit-Limit": str(int(per_ip_rpm + burst)),
-                       "X-RateLimit-Remaining": str(max(0, int(ip_bucket["tokens"] - 1)))}
-            if ip_bucket["tokens"] < 1:
-                wait = (1.0 - ip_bucket["tokens"]) * 60.0 / per_ip_rpm
-                return False, {**headers, "X-RateLimit-Remaining": "0",
-                               "Retry-After": str(max(1, int(wait)) + 1)}, \
-                    "per_ip_rpm"
-
-            model_rpm = None
-            if model:
-                model_rpm = settings.get("models", {}).get(model, {}) \
-                    .get("rate_limits", {}).get("rpm", 0)
-            if model_rpm:
-                m_bucket = bucket_for(ip + "::" + model, model_rpm)
-                if m_bucket["tokens"] < 1:
-                    wait = (1.0 - m_bucket["tokens"]) * 60.0 / float(model_rpm)
-                    return False, {**headers, "X-RateLimit-Limit": str(int(model_rpm + burst)),
-                                   "X-RateLimit-Remaining": "0",
-                                   "Retry-After": str(max(1, int(wait)) + 1)}, \
-                        "model_rpm"
-
-            ip_bucket["tokens"] -= 1.0
-            self._global["tokens"] -= 1.0
-            if model_rpm:
-                self._buckets[ip + "::" + model]["tokens"] -= 1.0
-        return True, headers, None
-
-
-# ----------------------------------------------------------------------
-# Relay state
-# ----------------------------------------------------------------------
-
-class CounterGate:
-    """Configurable concurrency limit (live-updatable, unlike BoundedSemaphore)."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._active = 0
-
-    def acquire(self, limit, timeout_s):
-        deadline = time.time() + timeout_s
-        while True:
-            with self._lock:
-                if self._active < limit:
-                    self._active += 1
-                    return True
-            if time.time() >= deadline:
-                return False
-            time.sleep(0.05)
-
-    def release(self):
-        with self._lock:
-            self._active = max(0, self._active - 1)
 
 
 class RelayState:
