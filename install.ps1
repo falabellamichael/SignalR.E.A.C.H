@@ -50,4 +50,5 @@ if ($code -ne 0) { throw "install failed (exit $code). See output above; re-run 
 
 Write-Host ''
 Write-Host '[SimpleREACH] done. Open SimpleRAG -> Advanced -> REACH for the control panel.'
+Write-Host '[SimpleREACH] VS Code: reload the window, then click the REACH icon in the Activity Bar.'
 Write-Host '[SimpleREACH] pointer URL: https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt'

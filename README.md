@@ -63,7 +63,16 @@ python tools/reach.py install
 1. **Plugin panel** — installs the REACH control panel into SimpleRAG's app bar via the *local-extension registry* (`%LOCALAPPDATA%\RAGWorkspace\extensions\`). **Zero SimpleRAG files are modified**; uninstall removes just the registry entry. Old plugin versions of SignalR.E.A.C.H are pruned on upgrade.
 2. **Relay server v2** — copies a dependency-free relay to `%LOCALAPPDATA%\SignalREACH\` and auto-detects the OmniRoute API key from `~/.omniroute/storage.sqlite` (stored only in local `config.json` — never committed, never exposed). `install` restarts the relay so new server versions load immediately.
 3. **Hosting** — starts the relay on `127.0.0.1:20777` and opens an **ngrok** tunnel (`--tunnel cloudflared` uses the cloudflared binary OmniRoute ships, no account needed). The public URL is published to the endpoint-pointer gist.
-4. **Control panel** — open SimpleRAG → Advanced → **REACH** for the full menu panel.
+4. **VS Code extension** — side-loads the REACH chat extension into VS Code (`~/.vscode/extensions/`, no marketplace/vsce needed). Reload the window and click the **REACH icon** in the Activity Bar for a chat panel with model picker + streaming. Skip it with `--no-vscode`; manage it later with `python tools/reach.py vscode install|uninstall|status`.
+5. **Control panel** — open SimpleRAG → Advanced → **REACH** for the full menu panel.
+
+## VS Code
+
+The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
+
+- **Activity Bar icon** opens the REACH chat — model dropdown, streaming replies, conversation history.
+- **Zero config by default** — points at `http://127.0.0.1:20777/v1` and loads the model list from the relay. Override via Settings → Extensions → SimpleREACH (`simplereach.endpoint` also accepts the public pointer URL, e.g. `https://<pointer>/v1`).
+- Installed automatically by `install` / `install.ps1`; standalone: `python tools/reach.py vscode install` (copy-based side-load, no vsce/npm build step).
 
 ## The panel
 

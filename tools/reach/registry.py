@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from . import PLUGIN_ID, SCHEMA_VERSION
+from . import PLUGIN_ID, SCHEMA_VERSION, SURFACES
 from .config import CONFIG_DIR
 
 
@@ -67,15 +67,33 @@ def verify_registry_entry(home, entry_id):
 
 
 def registry_entry(plugin, assets, manifest_bytes):
-    """Registry entry in the format the frontend server REQUIRES:
-    {id, version, enabled: true, manifest_sha256}. The served response
-    expands entries with scripts/styles, but discovery silently drops any
-    entry lacking `enabled`/`manifest_sha256` — write the full old format."""
+    """Hybrid registry entry.
+
+    Current frontend servers require {id, version, enabled, manifest_sha256}
+    and read the assets from the package manifest. OLDER installed builds
+    read inline scripts/styles off the entry itself and silently drop
+    entries without them. Emit both shapes so every build injects the
+    panel: new loaders ignore the inline extras, legacy loaders ignore
+    manifest_sha256.
+    """
+    scripts = []
+    styles = []
+    for name, data in assets:
+        item = {"path": name, "sha256": sha256_bytes(data), "size": len(data)}
+        if name.endswith(".js"):
+            scripts.append(item)
+        elif name.endswith(".css"):
+            styles.append(item)
     return {
         "id": PLUGIN_ID,
         "version": plugin["version"],
         "enabled": True,
         "manifest_sha256": sha256_bytes(manifest_bytes),
+        # legacy inline shape (kept for older app builds)
+        "schema_version": SCHEMA_VERSION,
+        "surfaces": plugin.get("surfaces") or SURFACES,
+        "scripts": scripts,
+        "styles": styles,
     }
 
 

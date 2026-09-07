@@ -1,0 +1,79 @@
+{
+  "name": "simplereach",
+  "displayName": "SimpleREACH",
+  "description": "Chat with your SimpleREACH models (gpt-4o, claude-opus-4.6, gemini, deepseek…) directly inside VS Code. Zero config — points at your local REACH endpoint.",
+  "version": "1.0.0",
+  "publisher": "simplereach",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "keywords": [
+    "reach",
+    "simplereach",
+    "gpt-4o",
+    "claude",
+    "openai-compatible"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "simplereach.openChat",
+        "title": "REACH: Open Chat",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "simplereach.reload",
+        "title": "REACH: Reload Models"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "reach",
+          "title": "REACH",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "reach": [
+        {
+          "type": "webview",
+          "id": "reach.chat",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "SimpleREACH",
+      "properties": {
+        "simplereach.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:20777/v1",
+          "markdownDescription": "REACH OpenAI-compatible base URL (your local relay or the public pointer URL + `/v1`)."
+        },
+        "simplereach.accessKey": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional shared access key (set in the REACH panel → Settings → Access)."
+        },
+        "simplereach.model": {
+          "type": "string",
+          "default": "gpt-4o",
+          "markdownDescription": "Default model for new chats."
+        },
+        "simplereach.maxTokens": {
+          "type": "number",
+          "default": 2048,
+          "markdownDescription": "Max output tokens per request."
+        }
+      }
+    }
+  }
+}

@@ -28,10 +28,11 @@ else
     git clone --depth 1 "$REPO" "$DIR"
 fi
 
-# 3. Install panel + relay + tunnel
+# 3. Install panel + relay + tunnel (+ VS Code extension)
 echo "[SimpleREACH] installing..."
 (cd "$DIR" && "$PY" tools/reach.py install)
 
 echo ''
 echo '[SimpleREACH] done. Open SimpleRAG -> Advanced -> REACH for the control panel.'
+echo '[SimpleREACH] VS Code: reload the window, then click the REACH icon in the Activity Bar.'
 echo '[SimpleREACH] pointer URL: https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt'

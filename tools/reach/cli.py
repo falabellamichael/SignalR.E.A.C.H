@@ -19,8 +19,11 @@ Install (the GitHub URL way):
 
 Commands:
   reach.py install            build + install plugin page, copy runtime,
-                              start relay + tunnel, publish endpoint pointer
+                              start relay + tunnel, publish endpoint pointer,
+                              side-load the VS Code chat extension
   reach.py uninstall [--all]  remove plugin page (+ stop everything with --all)
+  reach.py vscode install     install just the VS Code extension
+  reach.py vscode uninstall|status
   reach.py status             relay/tunnel/public-URL status
   reach.py start|stop|restart relay + tunnel
   reach.py publish            push the current public URL to the pointer gist
@@ -42,6 +45,13 @@ from . import (
     REPO_URL,
 )
 from .autostart import register_autostart, remove_autostart
+from .vscode import (
+    FOLDER as VSCODE_FOLDER,
+    installed as vscode_installed,
+    install as vscode_install,
+    uninstall as vscode_uninstall,
+    vscode_extensions_dir,
+)
 from .build import (
     build_extension_manifest,
     collect_assets,
@@ -124,7 +134,6 @@ def cmd_reassert(_args):
     else:
         print("  warning: entry clobbered again — re-run `reach.py reassert`")
 
-
 def cmd_install(args):
     if not IS_FULL_REPO:
         raise SystemExit("error: 'install' must run from a full SignalR.E.A.C.H "
@@ -194,6 +203,10 @@ def cmd_install(args):
     save_config(cfg)
     print("  runtime + config -> " + str(CONFIG_DIR))
 
+    # 2.5 VS Code extension (side-load; skipped with --no-vscode)
+    if not getattr(args, "no_vscode", False):
+        vscode_install(REPO_ROOT)
+
     # 3. (re)start + host + publish
     if not args.no_start:
         if args.restart and port_open(runtime_port()):
@@ -209,7 +222,29 @@ def cmd_install(args):
     print("Done. Local endpoint: http://127.0.0.1:%d/v1" % runtime_port())
     print("Endpoint pointer:  " + GIST_RAW)
     print("Plugin page: open SimpleRAG -> Advanced -> REACH (app bar).")
+    print("VS Code: reload the window (Ctrl+Shift+P -> Reload Window), "
+          "then click the REACH icon in the Activity Bar.")
     print("Run `python tools/reach.py register-autostart` to survive reboots.")
+
+
+def cmd_vscode(args):
+    if not IS_FULL_REPO:
+        raise SystemExit("error: 'vscode' must run from a full SignalR.E.A.C.H "
+                         "checkout (vscode/ missing)")
+    act = getattr(args, "vscode_cmd", None) or "status"
+    if act == "install":
+        if vscode_install(REPO_ROOT):
+            print("VS Code extension installed — reload VS Code to activate "
+                  "(Ctrl+Shift+P -> Developer: Reload Window)")
+    elif act == "uninstall":
+        vscode_uninstall()
+    else:
+        if vscode_installed():
+            print("VS Code extension: installed at "
+                  + str(vscode_extensions_dir() / VSCODE_FOLDER))
+        else:
+            print("VS Code extension: not installed "
+                  "(run `reach.py vscode install`)")
 
 
 def cmd_uninstall(args):
@@ -429,6 +464,8 @@ def main():
     p_install.add_argument("--tunnel", choices=["ngrok", "cloudflared", "none"],
                            default="ngrok")
     p_install.add_argument("--no-publish", action="store_true")
+    p_install.add_argument("--no-vscode", action="store_true",
+                           help="skip the VS Code extension install")
     p_install.add_argument("--extension-home", default=None)
     p_install.set_defaults(func=cmd_install, restart=True)
 
@@ -436,6 +473,19 @@ def main():
     p_un.add_argument("--all", action="store_true",
                       help="also stop relay/tunnel and remove autostart")
     p_un.set_defaults(func=cmd_uninstall)
+
+    p_vscode = sub.add_parser("vscode",
+                              help="manage the VS Code chat extension")
+    vsc_sub = p_vscode.add_subparsers(dest="vscode_cmd")
+    vsc_sub.add_parser("install",
+                       help="side-load the extension into VS Code") \
+          .set_defaults(func=cmd_vscode)
+    vsc_sub.add_parser("uninstall",
+                       help="remove the extension from VS Code") \
+          .set_defaults(func=cmd_vscode)
+    vsc_sub.add_parser("status",
+                       help="show whether the extension is installed") \
+          .set_defaults(func=cmd_vscode)
 
     sub.add_parser("status", help="show relay/tunnel/public-URL status") \
        .set_defaults(func=cmd_status)

@@ -7,7 +7,7 @@ import urllib.request
 
 import reachd.core as core  # STATE is read at call time (cycle-safe)
 from reachd.const import CLIENT_DISCONNECT_ERRORS
-from reachd.text import count_tokens, scrub_trailing_roles
+from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
 
 def chat_execute(h):
@@ -336,6 +336,7 @@ def chat_execute(h):
         "spec": spec, "stream": stream, "total_chars": total_chars,
         "request_body": request_body, "fallback_used": fallback_used,
         "cache_cfg": cache_cfg, "cache_key": cache_key,
+        "url": url, "payload": payload, "models": models,
     }
     return upstream, ctx
 
@@ -355,6 +356,90 @@ def chat_finalize(h, upstream, ctx):
     cache_key = ctx["cache_key"]
     content_type = upstream.headers.get("Content-Type", "application/json")
     if stream:
+        # Pre-read the upstream until the first real content token BEFORE
+        # committing the 200: some routes (Gemini via OmniRoute) answer 200
+        # with only keepalive chunks and then [DONE] -- an empty stream.
+        # Treat that as a failure so the fallback alias can serve instead.
+        pending_prefix = []
+        saw_content = False
+        raw_sock = None
+        deadline = time.time() + int(core.STATE.cfg.get("stream_timeout_s", 300))
+        try:
+            sock = getattr(upstream, "fp", None)
+            raw_sock = getattr(sock, "raw", None) or getattr(sock, "_sock", None)
+            if raw_sock and hasattr(raw_sock, "settimeout"):
+                raw_sock.settimeout(8.0)
+            while time.time() < deadline:
+                line = upstream.readline()
+                if not line:
+                    break
+                pending_prefix.append(line)
+                stripped = line.strip()
+                if stripped == b"data: [DONE]":
+                    break
+                if stripped.startswith(b"data:"):
+                    try:
+                        parsed = json.loads(stripped[5:].decode("utf-8", "replace"))
+                        choices = parsed.get("choices") if isinstance(parsed, dict) else None
+                        if isinstance(choices, list) and choices:
+                            delta = choices[0].get("delta", {})
+                            token_text = (delta.get("content")
+                                          or delta.get("reasoning_content")
+                                          or delta.get("reasoning")
+                                          or delta.get("thought"))
+                            if isinstance(token_text, str) and token_text:
+                                saw_content = True
+                                break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        if raw_sock and hasattr(raw_sock, "settimeout"):
+            try:
+                raw_sock.settimeout(
+                    int(core.STATE.cfg.get("stream_timeout_s", 300)))
+            except Exception:
+                pass
+        if not saw_content:
+            pending_prefix = []
+            fallback_alias = spec.get("fallback")
+            models = ctx.get("models") or {}
+            if fallback_alias and fallback_alias in models                     and models[fallback_alias].get("enabled"):
+                try:
+                    fb_payload = dict(ctx.get("payload") or {})
+                    fb_payload["model"] = models[fallback_alias]["upstream"]
+                    fb_req = urllib.request.Request(
+                        ctx["url"], data=json.dumps(fb_payload).encode("utf-8"),
+                        method="POST",
+                        headers={"Content-Type": "application/json",
+                                 "Authorization": "Bearer " + core.STATE.key})
+                    upstream = urllib.request.urlopen(
+                        fb_req,
+                        timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)))
+                    upstream_model = models[fallback_alias]["upstream"]
+                    spec = models[fallback_alias]
+                    fallback_used = True
+                except Exception:
+                    upstream = None
+            if upstream is None:
+                core.STATE.note_failure()
+                h._log_chat(model=requested, upstream_model=upstream_model,
+                               ip=ip, user_agent=h.headers.get("User-Agent"),
+                               status=502, error="upstream_timeout",
+                               latency_ms=int((time.time() - started) * 1000),
+                               tokens_in=0, tokens_out=0, stream=True,
+                               request_body=request_body)
+                h._relay_upstream_error(
+                    OSError("Upstream model failed to emit tokens"),
+                    "OmniRoute model timed out emitting first token")
+                core.STATE.gate.release()
+                return None
+
+        def _next_line():
+            if pending_prefix:
+                return pending_prefix.pop(0)
+            return upstream.readline()
+
         try:
             h.send_response(200)
             h.send_header("Content-Type", content_type or "text/event-stream")
@@ -366,30 +451,78 @@ def chat_finalize(h, upstream, ctx):
                 h.send_header("X-Reach-Fallback", "used")
             h.end_headers()
             if spec.get("strip_trailing_roles"):
-                # Buffer the stream, scrub the assembled content, then
-                # emit a single clean completion.
-                buffered = b""
+                # Stream with a sliding scrub window: content deltas are
+                # forwarded immediately, but the stream stops at the first
+                # line-start transcript-continuation marker ("User:" etc.).
+                # The first line is exempt, mirroring scrub_trailing_roles.
+                assembled_chunks = []
+                pending = ""
+                first_line_done = False
+                stopped = False
+                created = int(time.time())
                 while True:
-                    line = upstream.readline()
+                    line = _next_line()
                     if not line:
                         break
-                    buffered += line
-                assembled = []
-                for line in buffered.decode("utf-8", "replace").splitlines():
-                    if not line.startswith("data:"):
+                    if not line.startswith(b"data:"):
                         continue
-                    chunk = line[5:].strip()
-                    if chunk == "[DONE]":
-                        continue
+                    text_line = line[5:].strip()
+                    if text_line == b"[DONE]":
+                        break
                     try:
-                        delta = (json.loads(chunk).get("choices")
-                                 or [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        if isinstance(content, str):
-                            assembled.append(content)
-                    except json.JSONDecodeError:
-                        pass
-                scrubbed = scrub_trailing_roles("".join(assembled))
+                        parsed = json.loads(text_line.decode("utf-8", "replace"))
+                    except Exception:
+                        continue
+                    choices = parsed.get("choices") if isinstance(parsed, dict) else None
+                    if not (isinstance(choices, list) and choices):
+                        continue
+                    delta = choices[0].get("delta", {})
+                    content = delta.get("content")
+                    if not (isinstance(content, str) and content):
+                        continue
+                    pending += content
+                    emit = ""
+                    if not first_line_done:
+                        idx = pending.find("\n")
+                        if idx >= 0:
+                            emit += pending[:idx + 1]
+                            pending = pending[idx + 1:]
+                            first_line_done = True
+                    if first_line_done:
+                        while "\n" in pending:
+                            idx = pending.find("\n")
+                            candidate = pending[:idx]
+                            if ROLE_CONTINUATION_RE.match(candidate):
+                                stopped = True
+                                pending = ""
+                                break
+                            emit += candidate + "\n"
+                            pending = pending[idx + 1:]
+                    if emit:
+                        assembled_chunks.append(emit)
+                        h._write_chunk(("data: " + json.dumps({
+                            "id": "chatcmpl-reach",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": requested,
+                            "choices": [{"index": 0,
+                                         "delta": {"content": emit},
+                                         "finish_reason": None}]
+                        }) + "\n\n").encode("utf-8"))
+                    if stopped:
+                        break
+                if pending:
+                    assembled_chunks.append(pending)
+                    h._write_chunk(("data: " + json.dumps({
+                        "id": "chatcmpl-reach",
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": requested,
+                        "choices": [{"index": 0,
+                                     "delta": {"content": pending},
+                                     "finish_reason": None}]
+                    }) + "\n\n").encode("utf-8"))
+                scrubbed = "".join(assembled_chunks)
                 now_end = time.time()
                 stream_duration = max(0.2, now_end - started)
                 latency_ms = int(stream_duration * 1000)
@@ -397,12 +530,7 @@ def chat_finalize(h, upstream, ctx):
                 approx_out = count_tokens(scrubbed)
                 tps = round(approx_out / stream_duration, 1)
                 core.STATE.note_speed(tps)
-                created = int(time.time())
                 for payload_chunk in (
-                    {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
-                     "created": created, "model": requested,
-                     "choices": [{"index": 0, "delta": {"content": scrubbed},
-                                  "finish_reason": None}]},
                     {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
                      "created": created, "model": requested,
                      "choices": [{"index": 0, "delta": {},
@@ -435,7 +563,7 @@ def chat_finalize(h, upstream, ctx):
                 last_chunk_id = "chatcmpl-reach"
                 try:
                     while True:
-                        line = upstream.readline()
+                        line = _next_line()
                         if not line:
                             break
                         if line.startswith(b"data:"):
