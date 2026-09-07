@@ -18,7 +18,7 @@ Write-Host "[SimpleREACH] using $py ($ver)"
 
 # 2. Clone or refresh
 if (Test-Path (Join-Path $Dir '.git')) {
-    Write-Host "[SimpleREACH] existing checkout at $Dir — pulling latest"
+    Write-Host "[SimpleREACH] existing checkout at $Dir - pulling latest"
     Push-Location $Dir
     git pull --ff-only
     Pop-Location
