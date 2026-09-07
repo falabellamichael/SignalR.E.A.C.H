@@ -89,6 +89,24 @@ python tools/reach.py logs [--limit N] [--status 4*] [--model gpt-4o]
 python tools/reach.py test                   # live upstream completion test
 python tools/reach.py update                 # git pull + reinstall (upgrade path)
 python tools/reach.py uninstall --all        # remove panel + stop everything
+
+### The chat CLI (`tools/reach-cli.py`)
+
+A terminal suite for using the endpoint — stdlib-only, keyless, streaming:
+
+```bash
+python tools/reach-cli.py chat                # interactive REPL (/help for commands)
+python tools/reach-cli.py ask "question"      # one-shot answer
+python tools/reach-cli.py ask "…" --web       # grounded in live web search
+python tools/reach-cli.py web "question"      # search → read top pages → cited answer
+python tools/reach-cli.py models              # list served aliases
+# flags: --model gpt-4o | --base URL | --system "…" | --no-stream | --no-color
+```
+
+Web mode ports SimpleRAG's websearch: DuckDuckGo HTML scraping (lite
+fallback), rotating user agents, rich answer modules, page excerpt fetch,
+and a grounding prompt with `[n]` citations. Auto-discovers the endpoint
+(local relay → public pointer gist).
 ```
 
 ## Architecture

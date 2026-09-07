@@ -45,7 +45,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "3.1.0"
+VERSION = "3.1.1"
 SERVICE = "simplereach"
 DEFAULT_PORT = 20777
 MAX_BODY_BYTES = 32 * 1024 * 1024
@@ -127,11 +127,12 @@ DEFAULT_SETTINGS = {
     "port": 20777,
     "host": "127.0.0.1",
     "upstream_timeout_s": 600,
+    "stream_timeout_s": 300,       # hung keepalive streams free their slot sooner
     "upstream_retries": 1,          # extra attempts on URLError/5xx (non-stream)
     "retry_delay_ms": 1000,
     "circuit_threshold": 5,         # consecutive failures before cool-down
     "circuit_cooldown_s": 30,
-    "max_concurrency": 6,           # simultaneous upstream calls
+    "max_concurrency": 12,          # simultaneous upstream calls
     "health_check_interval_s": 60,
     # ---- request handling ----
     "request": {
@@ -207,6 +208,7 @@ DEFAULT_SETTINGS = {
 NUMERIC_FIELDS = {
     "port": (1024, 65535),
     "upstream_timeout_s": (10, 3600),
+    "stream_timeout_s": (10, 3600),
     "upstream_retries": (0, 5),
     "retry_delay_ms": (0, 30000),
     "circuit_threshold": (1, 100),
@@ -1728,7 +1730,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                         headers={"Content-Type": "application/json",
                                  "Authorization": "Bearer " + STATE.key})
                     upstream = urllib.request.urlopen(
-                        req, timeout=int(STATE.cfg.get("upstream_timeout_s", 600)))
+                        req,
+                        timeout=int(STATE.cfg.get("stream_timeout_s", 300)
+                                    if stream
+                                    else STATE.cfg.get("upstream_timeout_s", 600)))
                     break
                 except urllib.error.HTTPError as exc:
                     if exc.code < 500 or attempt == attempts - 1:

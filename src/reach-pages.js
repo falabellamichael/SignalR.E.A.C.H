@@ -2264,6 +2264,7 @@
             relay.appendChild(buildInput('password', null, 'omniroute_key', 'OmniRoute API key',
                 'Blank keeps the current key.'));
             relay.appendChild(buildInput('number', null, 'upstream_timeout_s', 'Upstream timeout (s)', '10–3600.'));
+            relay.appendChild(buildInput('number', null, 'stream_timeout_s', 'Stream timeout (s)', 'Hung keepalive streams free their slot after this.'));
             relay.appendChild(buildInput('number', null, 'max_concurrency', 'Max concurrent upstream calls', '1–64.'));
             relay.appendChild(buildInput('number', null, 'health_check_interval_s', 'Health check interval (s)', 'How often the upstream is probed.'));
 

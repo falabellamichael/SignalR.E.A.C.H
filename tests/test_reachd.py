@@ -57,6 +57,14 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(reachd.SettingsError):
             reachd.validate_settings(cfg)
 
+    def test_stream_timeout_validated(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["stream_timeout_s"] = 5
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+        cfg["stream_timeout_s"] = 300
+        reachd.validate_settings(cfg)  # must not raise
+
     def test_model_spec_fallback_must_exist(self):
         cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
         cfg["models"]["gpt-4o"]["fallback"] = "does-not-exist"
