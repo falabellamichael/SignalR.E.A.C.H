@@ -52,6 +52,10 @@ body.vscode-light {
 
 * { box-sizing: border-box; }
 
+/* the hidden attribute must always win — .settings-panel uses display:flex,
+ * which would otherwise override [hidden]'s UA display:none */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   padding: 0;
@@ -220,7 +224,7 @@ body {
 /* ---- history panel ---- */
 .history-panel {
   margin-top: 5px;
-  max-height: 46%;
+  max-height: 58%;
   overflow-y: auto;
   background: var(--reach-surface);
   border: 1px solid var(--reach-border);
@@ -229,41 +233,44 @@ body {
 }
 
 .history-title {
-  padding: 6px 8px 2px;
-  font-size: 10px;
+  padding: 9px 10px 4px;
+  font-size: 10.5px;
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.6px;
   color: var(--reach-muted);
 }
 
 .history-item {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 8px;
+  padding: 9px 10px;
   cursor: pointer;
   border-bottom: 1px solid var(--reach-border);
 }
 .history-item:last-child { border-bottom: none; }
 .history-item:hover { background: var(--reach-accent-bg); }
-.history-item.active { border-left: 3px solid var(--reach-accent); padding-left: 5px; }
+.history-item.active { border-left: 3px solid var(--reach-accent); padding-left: 7px; }
 
 .history-item .meta {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
 }
 .history-item .title {
-  font-size: 12px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
   color: var(--reach-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .history-item .sub {
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.3;
   color: var(--reach-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -272,8 +279,8 @@ body {
 
 .history-item .del {
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -289,7 +296,7 @@ body {
 .history-item .del:hover { color: var(--reach-error); background: color-mix(in srgb, var(--reach-error) 12%, transparent); }
 
 .history-empty {
-  padding: 8px;
+  padding: 10px;
   font-size: 11px;
   color: var(--reach-muted);
 }
