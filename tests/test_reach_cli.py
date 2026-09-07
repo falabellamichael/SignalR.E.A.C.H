@@ -8,7 +8,7 @@ TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
                      "tools")
 sys.path.insert(0, TOOLS)
 
-from reach_cli.entry import build_grounded_messages  # noqa: E402
+from reach_cli.grounding import build_grounded_messages  # noqa: E402
 from reach_cli.websearch import DDGParser, TextExtractor  # noqa: E402
 
 DDG_HTML_FIXTURE = """<!DOCTYPE html>

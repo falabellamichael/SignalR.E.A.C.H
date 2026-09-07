@@ -14,12 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from reach_cli.entry import (  # noqa: E402
-    ReachApiError,
-    ReachClient,
-    build_grounded_messages,
-    main,
-)
+from reach_cli.client import ReachApiError, ReachClient  # noqa: E402
+from reach_cli.entry import main  # noqa: E402
+from reach_cli.grounding import build_grounded_messages  # noqa: E402
 from reach_cli.websearch import DDGParser, TextExtractor  # noqa: E402
 
 __all__ = ["DDGParser", "ReachApiError", "ReachClient",
