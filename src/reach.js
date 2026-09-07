@@ -1,5 +1,5 @@
 /*
- * SimpleREACH — page controller entrypoint.
+ * SignalR.E.A.C.H — page controller entrypoint.
  *
  * REACH = RAG Endpoint & AI Chat Host.
  *
@@ -10,34 +10,34 @@
  *
  * Falls back gracefully to the self-contained 2-column shell if SimpleRAG's 3-panel DOM is unavailable.
  */
-(function registerSimpleReach() {
+(function registerSignalReach() {
     'use strict';
 
-    const PLUGIN_ID = 'simple-reach';
-    const PAGE_ID = 'simple-reach.reach-page';
+    const PLUGIN_ID = 'signal-reach';
+    const PAGE_ID = 'signal-reach.reach-page';
     const APP_ID = 'reach';
     const HOST_STORAGE_KEY = 'ragworkspace_plugins';
-    const CONTROLLER_DISPOSE_KEY = '__simpleReachControllerDispose';
+    const CONTROLLER_DISPOSE_KEY = '__signalReachControllerDispose';
 
-    const MANIFEST = window.__simpleReachManifest;
+    const MANIFEST = window.__signalReachManifest || window.__simpleReachManifest;
     const core = window.__reachCore;
     const pages = window.__reachPages;
 
     if (!MANIFEST || typeof MANIFEST !== 'object') {
-        console.error('[simple-reach] manifest.js did not load — re-run "python tools/reach.py install".');
+        console.error('[signal-reach] manifest.js did not load — re-run "python tools/reach.py install".');
         return;
     }
     if (!core || !pages) {
-        console.error('[simple-reach] package incomplete — re-run "python tools/reach.py install".');
+        console.error('[signal-reach] package incomplete — re-run "python tools/reach.py install".');
         return;
     }
 
     function showBootFailure(title, detail) {
         try {
             if (typeof document === 'undefined' || !document.body) return;
-            if (document.getElementById('simple-reach-boot-failure')) return;
+            if (document.getElementById('signal-reach-boot-failure')) return;
             const panel = document.createElement('div');
-            panel.id = 'simple-reach-boot-failure';
+            panel.id = 'signal-reach-boot-failure';
             panel.setAttribute('role', 'alert');
             panel.style.cssText = 'margin:18px;padding:14px 16px;max-width:720px;'
                 + 'background:#2a1410;border:1px solid #7c2d12;border-radius:8px;'
@@ -56,9 +56,9 @@
 
     const host = window.RAGWorkspaceExtensions;
     if (!host || typeof host.registerController !== 'function' || typeof host.registerManifest !== 'function') {
-        console.error('[simple-reach] the SimpleRAG extension host is unavailable.');
+        console.error('[signal-reach] the SimpleRAG extension host is unavailable.');
         showBootFailure(
-            "SimpleREACH could not start: SimpleRAG's extension host is not available.",
+            "SignalR.E.A.C.H could not start: SimpleRAG's extension host is not available.",
             'This usually means SimpleRAG\'s own bundle failed to load. Check the console, '
             + 'then reload. If the console is clean, re-run "python tools/reach.py install".'
         );
@@ -251,10 +251,10 @@
         runtime.context = context || runtime.context;
         const els = hostElements();
         if (els.navTitle) {
-            els.navTitle.textContent = 'SimpleREACH';
+            els.navTitle.textContent = 'SignalR.E.A.C.H';
         }
         if (els.navFolderList) {
-            els.navFolderList.setAttribute('aria-label', 'SimpleREACH navigation');
+            els.navFolderList.setAttribute('aria-label', 'SignalR.E.A.C.H navigation');
         }
 
         const ctx = runtime.context;
@@ -586,7 +586,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    name: 'SimpleREACH (gpt-4o)',
+                    name: 'SignalR.E.A.C.H (gpt-4o)',
                     base_url: url + '/v1',
                     api_key: '',
                     default_model: 'gpt-4o'
@@ -595,7 +595,7 @@
                 .then(res => res.json().then(data => ({ ok: res.ok, data })))
                 .then(({ ok, data }) => {
                     if (ok) {
-                        core.toast('Added to SimpleRAG ✓ — select SimpleREACH in Model Settings', 'ok');
+                        core.toast('Added to SimpleRAG ✓ — select SignalR.E.A.C.H in Model Settings', 'ok');
                     } else {
                         core.toast('Hookup: ' + (data?.detail || 'failed'), 'error');
                     }
@@ -729,11 +729,11 @@
         const root = document.createElement('div');
         root.className = 'reach-page';
         root.innerHTML = '<div class="reach-shell">'
-            + '  <nav class="reach-menu" aria-label="SimpleREACH">'
+            + '  <nav class="reach-menu" aria-label="SignalR.E.A.C.H">'
             + '    <div class="reach-menu-brand">'
             + '      <div class="reach-hero-badge">REACH</div>'
             + '      <div class="reach-menu-brand-copy">'
-            + '        <div class="reach-menu-brand-name">SimpleREACH</div>'
+            + '        <div class="reach-menu-brand-name">SignalR.E.A.C.H</div>'
             + '        <div class="reach-menu-brand-sub">v' + MANIFEST.version + '</div>'
             + '      </div>'
             + '    </div>'
@@ -948,6 +948,8 @@
                 if (root) root.remove();
             }
             window[CONTROLLER_DISPOSE_KEY] = null;
+            window.__simpleReachControllerDispose = null;
+            if (window.signalReach) delete window.signalReach;
             if (window.simpleReach) delete window.simpleReach;
         }
     };
@@ -960,9 +962,13 @@
         capabilities: MANIFEST.frontend.capabilities.slice(),
         extensionType: 'assistant',
         commandMeta: {
+            'signalReach.openPage': { icon: 'fa-satellite-dish', contexts: ['reach'], featured: true, keywords: ['reach', 'gpt-4o', 'endpoint', 'hosting', 'free', 'relay'] },
             'simpleReach.openPage': { icon: 'fa-satellite-dish', contexts: ['reach'], featured: true, keywords: ['reach', 'gpt-4o', 'endpoint', 'hosting', 'free', 'relay'] }
         },
         commands: {
+            'signalReach.openPage': () => {
+                if (typeof window.setApp === 'function') window.setApp(APP_ID);
+            },
             'simpleReach.openPage': () => {
                 if (typeof window.setApp === 'function') window.setApp(APP_ID);
             }
@@ -974,7 +980,7 @@
     host.registerManifest(MANIFEST);
     ensureHostRecord();
 
-    window.simpleReach = Object.freeze({
+    window.signalReach = window.simpleReach = Object.freeze({
         pluginId: PLUGIN_ID,
         pageId: PAGE_ID,
         appId: APP_ID,
@@ -984,4 +990,5 @@
         controller: controller
     });
     window[CONTROLLER_DISPOSE_KEY] = controller.unmount;
+    window.__simpleReachControllerDispose = controller.unmount;
 })();

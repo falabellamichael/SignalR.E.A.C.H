@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SimpleREACH CLI — a terminal suite for the REACH endpoint.
+"""SignalR.E.A.C.H CLI — a terminal suite for the REACH endpoint.
 
 REACH = RAG Endpoint & AI Chat Host.
 
@@ -399,7 +399,7 @@ def discover_public_url():
 # ---------------------------------------------------------------------------
 
 GROUNDING_SYSTEM = (
-    "You are SimpleREACH web chat — a search-grounded assistant.\n"
+    "You are SignalR.E.A.C.H web chat — a search-grounded assistant.\n"
     "Use the SEARCH RESULTS and PAGE EXCERPTS below to answer accurately.\n"
     "Cite facts with [n] where n is the result number. If the evidence is\n"
     "insufficient, say so instead of guessing. Keep the answer focused and\n"
@@ -420,10 +420,11 @@ def build_grounded_messages(query, results, pages, rich=None):
         lines += ["", "INSTANT ANSWER:", rich]
     evidence = "\n".join(lines)
     user = ("Question: %s\n\n%s\n\nAnswer with [n] citations." % (query, evidence))
-    system = GROUNDING_SYSTEM.format(
-        date=time.strftime("%Y-%m-%d"))
-    return [{"role": "system", "content": system},
-            {"role": "user", "content": user}]
+    system = GROUNDING_SYSTEM.format(date=time.strftime("%Y-%m-%d"))
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +434,7 @@ def build_grounded_messages(query, results, pages, rich=None):
 def banner(client, base, mode):
     width = 66
     print(c_cyan("┌" + "─" * width + "┐"))
-    print(c_cyan("│") + c_bold(c_yellow("  ⚡ SimpleREACH CLI")) + c_dim("  v" + VERSION)
+    print(c_cyan("│") + c_bold(c_yellow("  ⚡ SignalR.E.A.C.H CLI")) + c_dim("  v" + VERSION)
           + (" " * (width - 32)) + c_cyan("│"))
     print(c_cyan("│") + c_dim("  REACH = RAG Endpoint & AI Chat Host — keyless gpt-4o/5, "
                               "Claude") + " " * (width - 72) + c_cyan("│"))
@@ -683,7 +684,7 @@ def main(argv=None):
     global PAINT
     parser = argparse.ArgumentParser(
         prog="reach-cli",
-        description="SimpleREACH CLI — terminal chat + web-grounded answers "
+        description="SignalR.E.A.C.H CLI — terminal chat + web-grounded answers "
                     "over the REACH endpoint (keyless).")
     parser.add_argument("command", nargs="?",
                         choices=("chat", "ask", "web", "models"),

@@ -1,5 +1,5 @@
 /*
- * SimpleREACH pages — renderers for the seven REACH panels.
+ * SignalR.E.A.C.H pages — renderers for the seven REACH panels.
  * Exposes window.__reachPages: {dashboard, endpoint, models, usage, logs,
  * settings, about}. Each render(container) returns a cleanup function.
  * Depends on window.__reachCore (reach-core.js).
@@ -9,7 +9,7 @@
 
     const core = window.__reachCore;
     if (!core) {
-        console.error('[simple-reach] reach-core.js missing — re-run install.');
+        console.error('[signal-reach] reach-core.js missing — re-run install.');
         return;
     }
     const { el, esc, toast } = core;
@@ -248,8 +248,9 @@
                     const btn = el('button', 'reach-dash-jump-btn');
                     btn.innerHTML = '<i class="fa-solid ' + j.icon + '"></i><span>' + j.label + '</span>';
                     btn.addEventListener('click', () => {
-                        if (window.simpleReach && typeof window.simpleReach.switchPage === 'function') {
-                            window.simpleReach.switchPage(j.id, true);
+                        const sr = window.signalReach || window.simpleReach;
+                        if (sr && typeof sr.switchPage === 'function') {
+                            sr.switchPage(j.id, true);
                         }
                     });
                     jumpGrid.appendChild(btn);
@@ -519,7 +520,7 @@
         // Prompt Input
         const promptInput = el('textarea', 'reach-playground-textarea');
         promptInput.placeholder = 'Type a message to test this endpoint…';
-        promptInput.value = 'Explain how SimpleREACH relays to OmniRoute in 2 brief bullets.';
+        promptInput.value = 'Explain how SignalR.E.A.C.H relays to OmniRoute in 2 brief bullets.';
         playBody.appendChild(promptInput);
 
         // Controls bar
@@ -735,7 +736,7 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    name: 'SimpleREACH (REACH)',
+                    name: 'SignalR.E.A.C.H (REACH)',
                     base_url: url + '/v1',
                     api_key: '',
                     default_model: 'gpt-4o'
@@ -744,7 +745,7 @@
                 .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
                 .then(({ ok, data }) => {
                     if (ok) {
-                        toast('Added ✓ — pick "SimpleREACH (REACH)" as your active model', 'ok');
+                        toast('Added ✓ — pick "SignalR.E.A.C.H (REACH)" as your active model', 'ok');
                     } else {
                         toast('Add failed: ' + esc((data && data.detail) || 'unknown error'), 'error');
                     }
@@ -939,8 +940,9 @@
                 edit.title = 'Open the full per-model editor in Settings';
                 edit.addEventListener('click', () => {
                     core.prefsSet('model-edit', alias);
-                    if (window.simpleReach && typeof window.simpleReach.switchPage === 'function') {
-                        window.simpleReach.switchPage('settings', true);
+                    const sr = window.signalReach || window.simpleReach;
+                    if (sr && typeof sr.switchPage === 'function') {
+                        sr.switchPage('settings', true);
                     }
                 });
                 editTd.appendChild(edit);
@@ -2410,7 +2412,7 @@
                 + '</div>';
             keysCard.appendChild(kHead);
             keysCard.appendChild(el('p', 'reach-copy',
-                'Generate standardized sk-reach tokens for external tools (Postman, Cursor, LibreChat, teammates). SimpleREACH authenticates external clients using these keys while securely routing upstream on the fly without revealing your OmniRoute credentials.'));
+                'Generate standardized sk-reach tokens for external tools (Postman, Cursor, LibreChat, teammates). SignalR.E.A.C.H authenticates external clients using these keys while securely routing upstream on the fly without revealing your OmniRoute credentials.'));
 
             const keysBody = el('div', 'reach-card-body');
             keysCard.appendChild(keysBody);
@@ -2625,7 +2627,7 @@
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = 'simplereach-settings.json';
+            a.download = 'signalreach-settings.json';
             a.click();
             URL.revokeObjectURL(url);
             toast('Settings exported (keys excluded)', 'info');
@@ -2708,8 +2710,8 @@
         const heroBody = el('div', 'reach-about-hero');
         heroBody.appendChild(el('div', 'reach-hero-badge reach-hero-badge-lg', 'REACH'));
         const copy = el('div', null);
-        copy.appendChild(el('p', 'reach-copy', 'SimpleREACH adds a hosted OpenAI-compatible endpoint with unlimited gpt-4o to SimpleRAG — no key, no quotas, for everyone. Requests relay through OmniRoute\'s codegpt provider; the public tunnel only ever exposes the keyless relay surface.'));
-        copy.appendChild(el('p', 'reach-copy', 'REACH = RAG Endpoint & AI Chat Host'));
+        copy.appendChild(el('p', 'reach-copy', 'SignalR.E.A.C.H adds a hosted OpenAI-compatible endpoint with unlimited gpt-4o to SimpleRAG — no key, no quotas, for everyone. Requests relay through OmniRoute\'s codegpt provider; the public tunnel only ever exposes the keyless relay surface.'));
+        copy.appendChild(el('p', 'reach-copy', 'R.E.A.C.H = RAG Endpoint & AI Chat Host'));
         heroBody.appendChild(copy);
         hero.appendChild(heroBody);
         body.appendChild(hero);
@@ -2725,7 +2727,7 @@
         const facts = el('section', 'reach-card');
         facts.appendChild(el('header', 'reach-card-head', 'Facts & Runtime Telemetry'));
         const dl = el('dl', 'reach-kv');
-        kv(dl, 'Plugin', 'SimpleREACH v' + core.store.version);
+        kv(dl, 'Plugin', 'SignalR.E.A.C.H v' + core.store.version);
         kv(dl, 'Repository', core.REPO_URL);
         kv(dl, 'License', 'MIT');
         kv(dl, 'Author', 'Michael Anthony Falabella');
@@ -2742,7 +2744,7 @@
         dbCard.appendChild(el('header', 'reach-card-head', 'Database & Cache Maintenance'));
         const dbBody = el('div', 'reach-card-body');
         dbBody.appendChild(el('p', 'reach-copy',
-            'SimpleREACH logs requests into an optimized SQLite database for telemetry, rate limiting, and live presence analytics. Response caching reduces upstream calls for duplicate queries.'));
+            'SignalR.E.A.C.H logs requests into an optimized SQLite database for telemetry, rate limiting, and live presence analytics. Response caching reduces upstream calls for duplicate queries.'));
 
         const dbActions = el('div', 'reach-stat-actions-row');
         dbActions.style.marginTop = '8px';

@@ -1,4 +1,4 @@
-# SimpleREACH
+# SignalR.E.A.C.H
 
 **REACH** = **R**AG **E**ndpoint & **A**I **C**hat **H**ost
 
@@ -41,15 +41,15 @@ print(reply.choices[0].message.content)
 ## Install the plugin (from the GitHub URL)
 
 ```bash
-git clone https://github.com/falabellamichael/SimpleREACH.git
-cd SimpleREACH
+git clone https://github.com/falabellamichael/SignalR.E.A.C.H.git
+cd SignalR.E.A.C.H
 python tools/reach.py install
 ```
 
 `install` does everything:
 
-1. **Plugin panel** — installs the REACH control panel into SimpleRAG's app bar via the *local-extension registry* (`%LOCALAPPDATA%\RAGWorkspace\extensions\`). **Zero SimpleRAG files are modified**; uninstall removes just the registry entry. Old plugin versions of SimpleREACH are pruned on upgrade.
-2. **Relay server v2** — copies a dependency-free relay to `%LOCALAPPDATA%\SimpleREACH\` and auto-detects the OmniRoute API key from `~/.omniroute/storage.sqlite` (stored only in local `config.json` — never committed, never exposed). `install` restarts the relay so new server versions load immediately.
+1. **Plugin panel** — installs the REACH control panel into SimpleRAG's app bar via the *local-extension registry* (`%LOCALAPPDATA%\RAGWorkspace\extensions\`). **Zero SimpleRAG files are modified**; uninstall removes just the registry entry. Old plugin versions of SignalR.E.A.C.H are pruned on upgrade.
+2. **Relay server v2** — copies a dependency-free relay to `%LOCALAPPDATA%\SignalREACH\` and auto-detects the OmniRoute API key from `~/.omniroute/storage.sqlite` (stored only in local `config.json` — never committed, never exposed). `install` restarts the relay so new server versions load immediately.
 3. **Hosting** — starts the relay on `127.0.0.1:20777` and opens an **ngrok** tunnel (`--tunnel cloudflared` uses the cloudflared binary OmniRoute ships, no account needed). The public URL is published to the endpoint-pointer gist.
 4. **Control panel** — open SimpleRAG → Advanced → **REACH** for the full menu panel.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SimpleREACH installer + runtime manager.
+"""SignalR.E.A.C.H installer + runtime manager.
 
 REACH = RAG Endpoint & AI Chat Host — a SimpleRAG plugin that adds a hosted
 OpenAI-compatible endpoint with unlimited gpt-4o (no key required), relayed
@@ -8,14 +8,14 @@ through a local OmniRoute instance's codegpt provider.
 
 Install (the GitHub URL way):
 
-    git clone https://github.com/falabellamichael/SimpleREACH.git
-    cd SimpleREACH
+    git clone https://github.com/falabellamichael/SignalR.E.A.C.H.git
+    cd SignalR.E.A.C.H
     python tools/reach.py install
 
 `install` writes ONLY outside SimpleRAG's own files:
-  * %LOCALAPPDATA%\\RAGWorkspace\\extensions\\   registry.json + packages/simple-reach/
+  * %LOCALAPPDATA%\RAGWorkspace\extensions\   registry.json + packages/signal-reach/
     (the same local-extension registry the app's frontend server injects from)
-  * %LOCALAPPDATA%\\SimpleREACH\\                 relay server, config, logs, pids
+  * %LOCALAPPDATA%\SignalREACH\               relay server, config, logs, pids
     (config.json holds the OmniRoute key, auto-detected from ~/.omniroute)
 
 Commands:
@@ -41,7 +41,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-PLUGIN_ID = "simple-reach"
+PLUGIN_ID = "signal-reach"
 SCHEMA_VERSION = 1
 SURFACES = ["advanced"]
 SCRIPT_SOURCES = ["manifest.js", "reach-core.js", "reach-pages.js", "reach.js"]
@@ -53,7 +53,7 @@ GIST_ID = "e261e0c31ad08c373bcd667b6982847a"
 GIST_FILE = "simple-reach-endpoint.txt"
 GIST_RAW = ("https://gist.githubusercontent.com/falabellamichael/"
             + GIST_ID + "/raw/" + GIST_FILE)
-REPO_URL = "https://github.com/falabellamichael/SimpleREACH"
+REPO_URL = "https://github.com/falabellamichael/SignalR.E.A.C.H"
 
 MAX_ASSETS = 32
 MAX_ASSET_BYTES = 8 * 1024 * 1024
@@ -69,7 +69,14 @@ IS_FULL_REPO = SRC_DIR.is_dir() and PLUGIN_JSON.is_file()
 
 def config_dir():
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "SimpleREACH"
+    new_dir = Path(base) / "SignalREACH"
+    old_dir = Path(base) / "SimpleREACH"
+    if not new_dir.exists() and old_dir.exists():
+        try:
+            shutil.copytree(old_dir, new_dir)
+        except Exception:
+            pass
+    return new_dir
 
 
 CONFIG_DIR = config_dir()
@@ -598,18 +605,18 @@ def register_autostart():
     lines.append("\"%s\" tools\\reach.py reassert" % resolve_interpreter())
     BAT_PATH.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     result = subprocess.run(
-        ["schtasks", "/Create", "/TN", "SimpleREACH", "/SC", "ONLOGON",
+        ["schtasks", "/Create", "/TN", "SignalREACH", "/SC", "ONLOGON",
          "/TR", str(BAT_PATH), "/F", "/RL", "LIMITED"],
         capture_output=True, text=True, **no_window_kwargs())
     if result.returncode == 0:
-        print("  autostart registered: SimpleREACH (logon task) -> "
+        print("  autostart registered: SignalREACH (logon task) -> "
               + str(BAT_PATH))
         return
     # schtasks /Create can require elevation; the per-user Startup folder
     # needs none and runs the same batch at every logon.
     startup = startup_folder()
     if startup.is_dir():
-        target = startup / "SimpleREACH.bat"
+        target = startup / "SignalREACH.bat"
         shutil.copy2(BAT_PATH, target)
         print("  schtasks denied (needs elevation) — using the Startup "
               "folder instead: " + str(target))
@@ -621,15 +628,17 @@ def register_autostart():
 def remove_autostart():
     if os.name != "nt":
         return
-    subprocess.run(["schtasks", "/Delete", "/TN", "SimpleREACH", "/F"],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                   **no_window_kwargs())
-    startup = startup_folder() / "SimpleREACH.bat"
-    if startup.is_file():
-        try:
-            startup.unlink()
-        except OSError:
-            pass
+    for tn in ("SignalREACH", "SimpleREACH"):
+        subprocess.run(["schtasks", "/Delete", "/TN", tn, "/F"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       **no_window_kwargs())
+    for fn in ("SignalREACH.bat", "SimpleREACH.bat"):
+        bat = startup_folder() / fn
+        if bat.is_file():
+            try:
+                bat.unlink()
+            except OSError:
+                pass
 
 
 # ----------------------------------------------------------------------
@@ -671,9 +680,9 @@ def cmd_reassert(_args):
 
 def cmd_install(args):
     if not IS_FULL_REPO:
-        raise SystemExit("error: 'install' must run from a full SimpleREACH "
+        raise SystemExit("error: 'install' must run from a full SignalR.E.A.C.H "
                          "checkout (src/ missing)")
-    print("SimpleREACH installer — REACH: RAG Endpoint & AI Chat Host")
+    print("SignalR.E.A.C.H installer — REACH: RAG Endpoint & AI Chat Host")
     print("repo: " + REPO_URL)
     # 1. plugin page -> local-extension registry (never touches SimpleRAG files)
     plugin = load_plugin_manifest()
@@ -689,6 +698,16 @@ def cmd_install(args):
     (pkg / "manifest.json").write_bytes(manifest)
     entry = registry_entry(plugin, assets, manifest)
     upsert_registry(home, entry)
+
+    # Clean up legacy simple-reach extension if migrating
+    legacy_pkg = home / "packages" / "simple-reach"
+    if legacy_pkg.is_dir():
+        shutil.rmtree(legacy_pkg, ignore_errors=True)
+    reg = read_registry(home)
+    if any(e.get("id") == "simple-reach" for e in reg.get("extensions", [])):
+        reg["extensions"] = [e for e in reg["extensions"] if e.get("id") != "simple-reach"]
+        write_registry(home, reg)
+
     # Peers (Blueprint, gradient-studio installers) rewrite the shared
     # registry concurrently — verify our entry landed and retry if clobbered.
     for attempt in range(3):
@@ -775,7 +794,7 @@ def cmd_uninstall(args):
 def cmd_status(_args):
     cfg = load_config()
     port = runtime_port()
-    print("SimpleREACH status")
+    print("SignalR.E.A.C.H status")
     print("  relay:       %s" % ("running (port %d)" % port if port_open(port)
                                 else "stopped"))
     url = public_url_from_server(port)
@@ -1077,7 +1096,7 @@ def cmd_stats(args):
     _, snap = admin_request("/_reach/stats")
     stats = snap.get("stats", {})
     today = stats.get("today", {})
-    print("SimpleREACH stats (today)")
+    print("SignalR.E.A.C.H stats (today)")
     print("  requests:      %d" % today.get("requests", 0))
     print("  tokens in/out: %d / %d" % (today.get("tokens_in", 0),
                                        today.get("tokens_out", 0)))
@@ -1132,7 +1151,7 @@ def cmd_test(args):
 
 def cmd_update(args):
     if not IS_FULL_REPO:
-        raise SystemExit("error: 'update' must run from a SimpleREACH checkout")
+        raise SystemExit("error: 'update' must run from a SignalR.E.A.C.H checkout")
     print("pulling latest from " + REPO_URL + " …")
     result = subprocess.run(["git", "pull", "--ff-only"], cwd=str(REPO_ROOT),
                             capture_output=True, text=True)
@@ -1144,7 +1163,7 @@ def cmd_update(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SimpleREACH installer + runtime manager",
+        description="SignalR.E.A.C.H installer + runtime manager",
         prog="reach.py")
     sub = parser.add_subparsers(dest="command")
 

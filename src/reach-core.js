@@ -1,5 +1,5 @@
 /*
- * SimpleREACH core — shared helpers for the REACH plugin pages.
+ * SignalR.E.A.C.H core — shared helpers for the REACH plugin pages.
  * Exposes window.__reachCore. Loaded before reach-pages.js / reach.js.
  */
 (function initReachCore() {
@@ -7,10 +7,11 @@
 
     const RELAY = 'http://127.0.0.1:20777';
     const POINTER = 'https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt';
-    const REPO_URL = 'https://github.com/falabellamichael/SimpleREACH';
+    const REPO_URL = 'https://github.com/falabellamichael/SignalR.E.A.C.H';
     const API_BASE = '/api/extensions/rag-workspace';
     const POINTER_TTL_MS = 60000;
-    const PREFS_PREFIX = 'simple-reach.ui.';
+    const PREFS_PREFIX = 'signal-reach.ui.';
+    const LEGACY_PREFS_PREFIX = 'simple-reach.ui.';
 
     const store = {
         local: null,            // relay /status snapshot (or null when offline)
@@ -27,7 +28,9 @@
     function prefsGet(key, fallback) {
         try {
             const raw = localStorage.getItem(PREFS_PREFIX + key);
-            return raw === null ? fallback : raw;
+            if (raw !== null) return raw;
+            const legacy = localStorage.getItem(LEGACY_PREFS_PREFIX + key);
+            return legacy === null ? fallback : legacy;
         } catch (_e) {
             return fallback;
         }

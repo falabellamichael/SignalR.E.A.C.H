@@ -1,4 +1,4 @@
-/* SimpleREACH page styles — reach-* prefixed, theme-agnostic (translucent
+/* SignalR.E.A.C.H page styles — reach-* prefixed, theme-agnostic (translucent
  * surfaces so it reads well on both SimpleRAG's light and dark themes).
  * Never restyle host UI outside .reach-page. */
 
@@ -17,7 +17,7 @@
     flex-direction: column;
 }
 
-/* ---- Scoped Theme Tokens (affect SimpleREACH ONLY) ---- */
+/* ---- Scoped Theme Tokens (affect SignalR.E.A.C.H ONLY) ---- */
 .reach-page,
 .reach-shell,
 .reach-stationary-panel,

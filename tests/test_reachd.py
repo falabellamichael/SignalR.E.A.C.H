@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Tests for the SimpleREACH relay server (stdlib-only, unittest).
+"""Tests for the SignalR.E.A.C.H relay server (stdlib-only, unittest).
 
 Run:  python -m unittest tests.test_reachd -v
   or: python tests/test_reachd.py

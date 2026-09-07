@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Offline unit tests for the SimpleREACH CLI (parser + grounding)."""
+"""Offline unit tests for the SignalR.E.A.C.H CLI (parser + grounding)."""
 import importlib.util
 import os
 import re

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "id": "simple-reach",
-  "name": "SimpleREACH",
+  "id": "signal-reach",
+  "name": "SignalR.E.A.C.H",
   "version": "3.1.1",
   "description": "REACH — RAG Endpoint & AI Chat Host. A full control panel for the hosted OpenAI-compatible endpoint (unlimited gpt-4o, no key): live dashboard, endpoint docs with one-click SimpleRAG hookup, model aliases with per-model tuning, usage analytics, request logs, and a complete settings suite — relay, request policy, per-model editors, rate limits, access lists, caching, failover, observability, hosting, system.",
   "publisher": {
@@ -24,11 +24,11 @@
   "contributes": {
     "pages": [
       {
-        "id": "simple-reach.reach-page",
+        "id": "signal-reach.reach-page",
         "location": "app-bar",
         "icon": "fa-satellite-dish",
         "title": "REACH",
-        "ariaLabel": "Open the SimpleREACH endpoint control panel",
+        "ariaLabel": "Open the SignalR.E.A.C.H endpoint control panel",
         "order": 39,
         "entrypoint": "reach.js",
         "offlineCapable": true,

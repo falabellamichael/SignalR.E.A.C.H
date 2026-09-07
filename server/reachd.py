@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SimpleREACH relay v3 — OpenAI-compatible endpoint backed by OmniRoute's codegpt.
+"""SignalR.E.A.C.H relay v3 — OpenAI-compatible endpoint backed by OmniRoute's codegpt.
 
 REACH = RAG Endpoint & AI Chat Host.
 
@@ -23,10 +23,12 @@ Admin surface (loopback-only unless system.allow_remote_admin):
   POST    /_reach/cache/clear    flush the response cache
   GET     /_reach/stats          totals, 24h series, by-model, top clients
   GET/DELETE /_reach/logs        recent request log / clear
+  GET/POST/DELETE /_reach/keys   client API key management
 
-Settings schema: see DEFAULT_SETTINGS. Every field is validated and applied
-live; per-alias model settings carry defaults, caps, rate limits, system
-prompts, fallback chains, visibility, and streaming/tools toggles.
+Listens on loopback (:20777 by default), authenticates incoming client keys
+(sk-reach-...), enforces per-model and per-IP rate limits, caches repeat
+prompts, logs structured telemetry into an embedded SQLite DB, and relays
+to OmniRoute on :20128 while securely injecting the OmniRoute API key on the fly.
 """
 
 import argparse
@@ -37,6 +39,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -48,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 VERSION = "3.1.1"
-SERVICE = "simplereach"
+SERVICE = "signalreach"
 DEFAULT_PORT = 20777
 MAX_BODY_BYTES = 32 * 1024 * 1024
 LATENCY_SAMPLE_LIMIT = 1000
@@ -712,7 +715,14 @@ def settings_public(cfg):
 
 def config_dir():
     base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(base) / "SimpleREACH"
+    new_dir = Path(base) / "SignalREACH"
+    old_dir = Path(base) / "SimpleREACH"
+    if not new_dir.exists() and old_dir.exists():
+        try:
+            shutil.copytree(old_dir, new_dir)
+        except Exception:
+            pass
+    return new_dir
 
 
 def load_config(path):
@@ -1341,7 +1351,7 @@ CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbo
 
 
 class RelayHandler(BaseHTTPRequestHandler):
-    server_version = "SimpleREACH/" + VERSION
+    server_version = "SignalR.E.A.C.H/" + VERSION
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
@@ -1438,7 +1448,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._auth_key_id = ""
             return True
 
-        self._json(401, {"error": {"message": "Invalid SimpleREACH API Key. Send 'Authorization: Bearer sk-reach-...' or 'X-Reach-Key'.",
+        self._json(401, {"error": {"message": "Invalid SignalR.E.A.C.H API Key. Send 'Authorization: Bearer sk-reach-...' or 'X-Reach-Key'.",
                                    "type": "authentication_error",
                                    "code": "invalid_api_key"}},
                    {"WWW-Authenticate": "Bearer"})
@@ -1511,7 +1521,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._check_access():
                     return
                 data = [{"id": alias, "object": "model",
-                         "created": 1715367049, "owned_by": "SimpleREACH"}
+                         "created": 1715367049, "owned_by": "SignalR.E.A.C.H"}
                         for alias in sorted(STATE.public_models())]
                 self._json(200, {"object": "list", "data": data})
             elif path == "/_reach/settings":
@@ -2084,7 +2094,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         # ---- upstream model + circuit + key ----
         upstream_model = spec["upstream"]
         if not STATE.key:
-            return self._json(503, {"error": {"message": "SimpleREACH is not "
+            return self._json(503, {"error": {"message": "SignalR.E.A.C.H is not "
                                                           "configured yet (no "
                                                           "OmniRoute key).",
                                               "type": "server_error"}}, rl_headers)
@@ -2694,7 +2704,7 @@ def publish_url(state):
 
 def main():
     global STATE, PORT
-    parser = argparse.ArgumentParser(description="SimpleREACH relay server")
+    parser = argparse.ArgumentParser(description="SignalR.E.A.C.H relay server")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--config-dir", default=None)
     args = parser.parse_args()
@@ -2709,7 +2719,7 @@ def main():
     try:
         httpd = ThreadingHTTPServer((host, PORT), RelayHandler)
     except OSError as exc:
-        print("SimpleREACH: cannot bind %s:%d — %s" % (host, PORT, exc),
+        print("SignalR.E.A.C.H: cannot bind %s:%d — %s" % (host, PORT, exc),
               file=sys.stderr)
         sys.exit(1)
 
@@ -2743,7 +2753,7 @@ def main():
     threading.Thread(target=poller, daemon=True).start()
     threading.Thread(target=pruner, daemon=True).start()
     threading.Thread(target=publisher, daemon=True).start()
-    print("SimpleREACH %s listening on http://%s:%d" % (VERSION, host, PORT),
+    print("SignalR.E.A.C.H %s listening on http://%s:%d" % (VERSION, host, PORT),
           flush=True)
     try:
         httpd.serve_forever()
