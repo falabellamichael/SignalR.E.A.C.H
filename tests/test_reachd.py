@@ -40,7 +40,7 @@ class SettingsTests(unittest.TestCase):
         cfg["rate_limits"]["per_ip_rpm"] = 0
         with self.assertRaises(reachd.SettingsError):
             reachd.validate_settings(cfg)
-        cfg["rate_limits"]["per_ip_rpm"] = 1001
+        cfg["rate_limits"]["per_ip_rpm"] = 10001
         with self.assertRaises(reachd.SettingsError):
             reachd.validate_settings(cfg)
 
@@ -54,6 +54,61 @@ class SettingsTests(unittest.TestCase):
     def test_public_url_override_must_be_https(self):
         cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
         cfg["public_url_override"] = "http://insecure.example"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_model_spec_fallback_must_exist(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["models"]["gpt-4o"]["fallback"] = "does-not-exist"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_model_temperature_accepts_number_and_null(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["models"]["gpt-4o"]["temperature"] = 0.7
+        reachd.validate_settings(cfg)  # must not raise
+        cfg["models"]["gpt-4o"]["temperature"] = None
+        reachd.validate_settings(cfg)
+        cfg["models"]["gpt-4o"]["temperature"] = "warm"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_model_spec_fallback_cannot_be_self(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["models"]["gpt-4o"]["fallback"] = "gpt-4o"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_model_spec_unknown_key_rejected(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["models"]["gpt-4o"]["bogus"] = 1
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_model_rate_limit_ranges(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["models"]["gpt-4o"]["rate_limits"]["rpm"] = 99999
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_request_section_validation(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["request"]["blocked_fields"] = [123]
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+        cfg["request"]["blocked_fields"] = ["temperature"]
+        cfg["request"]["temperature_min"] = 2.0
+        cfg["request"]["temperature_max"] = 1.0
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_log_level_and_publish_interval(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["data"]["log_level"] = "everything"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+        cfg["data"]["log_level"] = "verbose"
+        cfg["publish"]["interval_min"] = 2000
         with self.assertRaises(reachd.SettingsError):
             reachd.validate_settings(cfg)
 
@@ -81,6 +136,15 @@ class MergeTests(unittest.TestCase):
                                      {"models": {"gpt-4o-mini": None}})
         self.assertNotIn("gpt-4o-mini", cfg["models"])
         self.assertIn("gpt-4o", cfg["models"])
+
+    def test_model_alias_partial_spec_fills_defaults(self):
+        cfg = reachd.merged_settings(reachd.DEFAULT_SETTINGS,
+                                     {"models": {"gpt-4o": {"temperature": 0.5}}})
+        spec = cfg["models"]["gpt-4o"]
+        self.assertEqual(spec["temperature"], 0.5)
+        self.assertEqual(spec["max_tokens_cap"],
+                         reachd.MODEL_SPEC_DEFAULTS["max_tokens_cap"])
+        self.assertEqual(spec["upstream"], "codegpt/codegpt-gpt-4o")
 
 
 class AnalyticsTests(unittest.TestCase):
@@ -156,6 +220,53 @@ class RateLimiterTests(unittest.TestCase):
         for _ in range(1000):
             allowed, _h, _r = limiter.check("9.9.9.9", settings)
             self.assertTrue(allowed)
+
+    def test_per_model_bucket_independent(self):
+        limiter = reachd.RateLimiter()
+        settings = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        settings["rate_limits"]["per_ip_rpm"] = 1000   # global plenty
+        settings["rate_limits"]["burst"] = 0
+        settings["models"]["gpt-4o"]["rate_limits"]["rpm"] = 2
+        ok = 0
+        for _ in range(4):
+            allowed, _h, reason = limiter.check("1.1.1.1", settings, model="gpt-4o")
+            if allowed:
+                ok += 1
+            else:
+                self.assertEqual(reason, "model_rpm")
+        self.assertEqual(ok, 2)
+
+
+class ResponseCacheTests(unittest.TestCase):
+    def test_lru_and_ttl(self):
+        cache = reachd.ResponseCache()
+        cache.put("a", b"1", ttl_s=60, max_entries=2)
+        cache.put("b", b"2", ttl_s=60, max_entries=2)
+        cache.put("c", b"3", ttl_s=60, max_entries=2)   # evicts "a"
+        self.assertIsNone(cache.get("a"))
+        self.assertEqual(cache.get("b"), b"2")
+        self.assertEqual(cache.get("c"), b"3")
+        self.assertEqual(cache.snapshot()["entries"], 2)
+
+    def test_expiry(self):
+        cache = reachd.ResponseCache()
+        cache.put("a", b"1", ttl_s=0, max_entries=10)
+        self.assertIsNone(cache.get("a"))
+
+    def test_cache_key_deterministic_and_temperature_aware(self):
+        payload = {"model": "gpt-4o",
+                   "messages": [{"role": "user", "content": "hi"}],
+                   "temperature": 0.7}
+        cache_cfg = {"match_temperature": True}
+        key1 = reachd.RelayHandler._cache_key(payload, cache_cfg)
+        payload["temperature"] = 0.2
+        key2 = reachd.RelayHandler._cache_key(payload, cache_cfg)
+        self.assertNotEqual(key1, key2)
+        cache_cfg = {"match_temperature": False}
+        key3 = reachd.RelayHandler._cache_key(payload, cache_cfg)
+        payload["temperature"] = 0.9
+        key4 = reachd.RelayHandler._cache_key(payload, cache_cfg)
+        self.assertEqual(key3, key4)
 
 
 if __name__ == "__main__":

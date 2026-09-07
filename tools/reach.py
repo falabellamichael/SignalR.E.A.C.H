@@ -829,31 +829,90 @@ def require_relay():
         raise SystemExit("error: relay not running — `python tools/reach.py start`")
 
 
+def get_dotted(cfg, path):
+    node = cfg
+    for part in path.split("."):
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        else:
+            return None
+    return node
+
+
+def set_dotted_patch(path, value):
+    """Build a nested PUT patch from a dotted path, e.g. models.gpt-4o.rpm."""
+    parts = path.split(".")
+    patch = {}
+    node = patch
+    for part in parts[:-1]:
+        node[part] = {}
+        node = node[part]
+    node[parts[-1]] = value
+    return patch
+
+
+def coerce_value(current, raw):
+    """Coerce a CLI string to the type of the current value."""
+    if isinstance(current, bool):
+        if raw.lower() in ("true", "1", "yes", "on"):
+            return True
+        if raw.lower() in ("false", "0", "no", "off"):
+            return False
+        raise ValueError("expected true/false")
+    if isinstance(current, int) and not isinstance(current, bool):
+        if not raw.lstrip("-").isdigit():
+            raise ValueError("expected an integer")
+        return int(raw)
+    if isinstance(current, float):
+        try:
+            return float(raw)
+        except ValueError:
+            raise ValueError("expected a number")
+    if isinstance(current, list):
+        return [item.strip() for item in raw.split(",") if item.strip()]
+    if current is None:
+        if raw.lower() in ("null", "none", "~"):
+            return None
+        if raw.lower() in ("true", "false"):
+            return raw.lower() == "true"
+        if raw.lstrip("-").isdigit():
+            return int(raw)
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
+    return raw
+
+
 def cmd_settings(args):
     require_relay()
     if not args.key:
         _, cfg = admin_request("/_reach/settings")
         print(json.dumps(cfg, indent=2))
         return
+    dotted = "." in args.key
     value = args.value
     if value is None:
         _, cfg = admin_request("/_reach/settings")
-        current = cfg.get(args.key)
-        if isinstance(current, dict):
+        current = get_dotted(cfg, args.key) if dotted else cfg.get(args.key)
+        if isinstance(current, (dict, list)):
             print(json.dumps(current, indent=2))
         else:
             print(current if current is not None else "(unset)")
         return
-    patch = {args.key: value}
-    if value.lower() in ("true", "false"):
-        patch[args.key] = value.lower() == "true"
-    elif value.isdigit():
-        patch[args.key] = int(value)
+    _, cfg = admin_request("/_reach/settings")
+    current = get_dotted(cfg, args.key) if dotted else cfg.get(args.key)
+    try:
+        typed = coerce_value(current, value)
+    except ValueError as exc:
+        raise SystemExit("error: %s" % exc)
+    patch = set_dotted_patch(args.key, typed) if dotted else {args.key: typed}
     _, result = admin_request("/_reach/settings", "PUT", patch)
     if result.get("saved"):
-        print("saved: %s = %r" % (args.key, patch[args.key]))
+        print("saved: %s = %r" % (args.key, typed))
     else:
-        raise SystemExit("error: %s" % (result.get("error") or {}).get("message"))
+        raise SystemExit("error: %s"
+                         % (result.get("error") or {}).get("message"))
 
 
 def cmd_models(args):

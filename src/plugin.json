@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "simple-reach",
   "name": "SimpleREACH",
-  "version": "2.0.0",
-  "description": "REACH — RAG Endpoint & AI Chat Host. A full control panel for the hosted OpenAI-compatible endpoint (unlimited gpt-4o, no key): live dashboard, endpoint docs with one-click SimpleRAG hookup, model aliases, usage analytics, request logs, and a complete settings suite — relay, tunnel, rate limits, access key, data retention.",
+  "version": "3.0.0",
+  "description": "REACH — RAG Endpoint & AI Chat Host. A full control panel for the hosted OpenAI-compatible endpoint (unlimited gpt-4o, no key): live dashboard, endpoint docs with one-click SimpleRAG hookup, model aliases with per-model tuning, usage analytics, request logs, and a complete settings suite — relay, request policy, per-model editors, rate limits, access lists, caching, failover, observability, hosting, system.",
   "publisher": {
     "name": "Michael Anthony Falabella"
   },

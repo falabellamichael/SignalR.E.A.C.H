@@ -9,10 +9,11 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | | |
 |---|---|
 | **Endpoint pointer (always current URL)** | <https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt> |
-| **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`, configurable) |
-| **Auth** | none by default (optional shared access key) |
+| **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`, fully tunable per alias) |
+| **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
-| **Version** | 2.0.0 |
+| **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
+| **Version** | 3.0.0 |
 
 ## Use the endpoint
 
@@ -61,8 +62,16 @@ python tools/reach.py install
 | **Models** | Alias table (public → upstream), enable/disable toggles, add/remove aliases — applied instantly |
 | **Usage** | 24h request + token charts, by-model breakdown, top clients, error rate — auto-refreshes |
 | **Logs** | Recent request log (IP, model, status, latency, tokens, error), filters, clear |
-| **Settings** | Relay (port, host, upstream, key), tunnel + publishing, rate limits (per-IP RPM, daily tokens, global RPM, burst), optional access key, data retention |
+| **Settings** | The full endpoint suite — ten sections: Relay, Upstream & failover, Request handling, **Models (per-alias editors)**, Rate limits, Access & security, Caching, Observability, Hosting, System. Export/import/reset included. |
 | **About** | Backronym, architecture, facts, privacy notes |
+
+### Per-model settings (the Models section)
+
+Every alias carries its own spec: upstream id, enabled/public visibility, description, default temperature + clamp window, default/capped max tokens, injected system prompt, fallback alias (tried when the upstream fails), context window, streaming/tool-call toggles, and per-model rate limits (RPM + tokens/day, 0 = inherit global). The Models page deep-links into the editor.
+
+### Request policy (Request handling)
+
+`default_model`, `default_stream`, message/input-size caps, global max-tokens cap, temperature clamp window, global injected system prompt, tools/response_format/logprobs toggles, and blocked-field policy (strip silently or reject with 400).
 
 ## CLI
 
@@ -72,7 +81,8 @@ python tools/reach.py status                 # relay + tunnel + public URL
 python tools/reach.py start|stop|restart     # manage relay + tunnel
 python tools/reach.py publish                # push current URL to the pointer gist
 python tools/reach.py register-autostart     # logon/startup: relay + tunnel + publish
-python tools/reach.py settings [key [value]] # read/update relay settings live
+python tools/reach.py settings [key [value]] # read/update settings live; keys may be
+                                             # dotted: models.gpt-4o.temperature 0.7
 python tools/reach.py models list|add|remove # manage model aliases live
 python tools/reach.py stats [-v]             # today's usage + breakdowns
 python tools/reach.py logs [--limit N] [--status 4*] [--model gpt-4o]

@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SimpleREACH relay v2 — OpenAI-compatible endpoint backed by OmniRoute's codegpt.
+"""SimpleREACH relay v3 — OpenAI-compatible endpoint backed by OmniRoute's codegpt.
 
 REACH = RAG Endpoint & AI Chat Host.
 
-Public surface (CORS-open, no auth by default):
+Public surface (CORS configurable, no auth by default):
   GET  /health, /status          liveness + rich status (never gated)
   GET  /public-url               {"public_url", "source"}
-  GET  /v1/models                enabled model aliases from settings
-  POST /v1/chat/completions      proxied to OmniRoute, model pinned via alias
-                                 (stream + non-stream); rate-limited; logged
+  GET  /v1/models                public, enabled model aliases
+  POST /v1/chat/completions      proxied to OmniRoute via alias mapping
+                                 (stream + non-stream) with the full request
+                                 pipeline: field policy, clamps, system prompt
+                                 injection, per-alias settings + fallbacks,
+                                 caching, rate limits, access lists, logging
 
-Admin surface (loopback clients only — the relay binds 127.0.0.1 by default,
-and _reach/* refuses non-loopback callers even if `host` is widened):
-  GET/PUT /_reach/settings       full settings (key masked on GET) + validation
-  POST    /_reach/test           tiny live completion through the upstream
+Admin surface (loopback-only unless system.allow_remote_admin):
+  GET/PUT /_reach/settings       settings read (masked) / validated patch
+  POST    /_reach/settings/test  validate a patch without persisting
+  POST    /_reach/reset          reset to defaults (keeps upstream + access keys)
+  POST    /_reach/test           live upstream completion test
   POST    /_reach/publish        push current public URL to the pointer gist
-  GET     /_reach/stats          today totals, 24h series, by-model, top clients
+  POST    /_reach/cache/clear    flush the response cache
+  GET     /_reach/stats          totals, 24h series, by-model, top clients
   GET/DELETE /_reach/logs        recent request log / clear
 
-Robustness: settings schema validation, atomic config writes, SQLite analytics,
-token-bucket rate limiting (per-IP + global), optional shared access key,
-upstream retry + circuit breaker, concurrency semaphore, log rotation.
-Config + data live in %LOCALAPPDATA%\\SimpleREACH\\ (config.json, data/reach.db).
+Settings schema: see DEFAULT_SETTINGS. Every field is validated and applied
+live; per-alias model settings carry defaults, caps, rate limits, system
+prompts, fallback chains, visibility, and streaming/tools toggles.
 """
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import re
@@ -40,14 +45,12 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "2.0.0"
+VERSION = "3.0.0"
 SERVICE = "simplereach"
 DEFAULT_PORT = 20777
 MAX_BODY_BYTES = 32 * 1024 * 1024
-MAX_UPSTREAM_CONCURRENCY = 6
-CIRCUIT_FAILURE_THRESHOLD = 5
-CIRCUIT_OPEN_SECONDS = 30
 LATENCY_SAMPLE_LIMIT = 1000
+MAX_RATE_BUCKETS = 10000
 
 GIST_ID = "e261e0c31ad08c373bcd667b6982847a"
 GIST_FILE = "simple-reach-endpoint.txt"
@@ -62,40 +65,144 @@ PORT = DEFAULT_PORT
 ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 UPSTREAM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
 
+MODEL_SPEC_DEFAULTS = {
+    "upstream": "",                 # OmniRoute model id
+    "enabled": True,                # servable at all
+    "public": True,                 # listed in /v1/models + callable externally
+    "description": "",              # shown in the panel
+    "temperature": None,            # default temperature (null = passthrough)
+    "max_tokens": None,             # default max_tokens (null = passthrough)
+    "max_tokens_cap": 16384,        # hard cap on requested max_tokens (0 = off)
+    "temperature_min": 0.0,         # clamp window
+    "temperature_max": 2.0,
+    "system_prompt": "",            # injected system message (model-level)
+    "fallback": None,               # alias to try when upstream fails
+    "allow_stream": True,
+    "allow_tools": True,
+    "context_window": 128000,       # informational + input guard
+    "rate_limits": {"rpm": 0, "tokens_day": 0},   # 0 = inherit global
+}
+
 DEFAULT_SETTINGS = {
+    # ---- relay core / upstream ----
     "omniroute_url": "http://127.0.0.1:20128/v1",
     "omniroute_key": "",
     "port": 20777,
     "host": "127.0.0.1",
-    "tunnel": "ngrok",                      # ngrok | cloudflared | none
-    "public_url_override": None,
     "upstream_timeout_s": 600,
-    "models": {
-        "gpt-4o": {"upstream": "codegpt/codegpt-gpt-4o", "enabled": True},
-        "gpt-4o-mini": {"upstream": "codegpt/codegpt-gpt-4o-mini", "enabled": True},
+    "upstream_retries": 1,          # extra attempts on URLError/5xx (non-stream)
+    "retry_delay_ms": 1000,
+    "circuit_threshold": 5,         # consecutive failures before cool-down
+    "circuit_cooldown_s": 30,
+    "max_concurrency": 6,           # simultaneous upstream calls
+    "health_check_interval_s": 60,
+    # ---- request handling ----
+    "request": {
+        "default_model": "gpt-4o",  # used when the client omits model
+        "default_stream": False,    # stream mode when the client omits stream
+        "max_messages": 100,
+        "max_input_chars": 400000,
+        "max_tokens_cap": 16384,    # global hard cap (0 = off)
+        "inject_system_prompt": "",  # global system message prepended
+        "allow_tools": True,
+        "allow_response_format": True,
+        "allow_logprobs": False,
+        "blocked_fields": [],       # request fields to reject/strip
+        "reject_blocked": False,    # True → 400 on blocked fields, else strip
+        "temperature_min": 0.0,
+        "temperature_max": 2.0,
     },
+    # ---- model aliases (per-alias specs, see MODEL_SPEC_DEFAULTS) ----
+    "models": {
+        "gpt-4o": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "codegpt/codegpt-gpt-4o",
+            "description": "Flagship free gpt-4o (codegpt tier)",
+        },
+        "gpt-4o-mini": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "codegpt/codegpt-gpt-4o-mini",
+            "description": "Cheaper, faster gpt-4o-mini",
+        },
+    },
+    # ---- rate limits ----
     "rate_limits": {
         "enabled": True,
-        "per_ip_rpm": 12,                   # requests per minute per client IP
-        "per_ip_tokens_day": 400000,        # 0 disables
+        "per_ip_rpm": 12,
+        "per_ip_tokens_day": 400000,   # 0 disables
         "global_rpm": 60,
+        "global_tokens_day": 0,        # 0 disables
         "burst": 4,
+        "max_prompt_tokens": 0,        # reject prompts over N tokens (0 = off)
     },
-    "access": {"key_required": False, "access_key": ""},
-    "data": {"log_retention_days": 7},
-    "publish": {"enabled": True},
+    # ---- access & security ----
+    "access": {
+        "key_required": False,
+        "access_key": "",
+        "ip_allowlist": [],            # empty = everyone (loopback always ok)
+        "ip_blocklist": [],
+        "cors_origins": "*",           # "*" or comma-separated origins
+    },
+    # ---- response caching ----
+    "cache": {
+        "enabled": False,
+        "ttl_s": 300,
+        "max_entries": 1000,
+        "match_temperature": True,
+    },
+    # ---- observability ----
+    "data": {
+        "log_retention_days": 7,
+        "log_level": "normal",         # none | errors | normal | verbose
+        "log_bodies": False,           # store truncated body snippets
+    },
+    # ---- hosting ----
+    "tunnel": "ngrok",                 # ngrok | cloudflared | none
+    "public_url_override": None,
+    "publish": {"enabled": True, "interval_min": 0},   # 0 = on change only
+    # ---- system ----
+    "system": {
+        "allow_remote_admin": False,   # _reach/* beyond loopback (DANGER)
+        "log_rotation_mb": 2,
+    },
 }
 
 NUMERIC_FIELDS = {
     "port": (1024, 65535),
     "upstream_timeout_s": (10, 3600),
+    "upstream_retries": (0, 5),
+    "retry_delay_ms": (0, 30000),
+    "circuit_threshold": (1, 100),
+    "circuit_cooldown_s": (5, 3600),
+    "max_concurrency": (1, 64),
+    "health_check_interval_s": (10, 3600),
+}
+
+REQUEST_NUMERIC = {
+    "max_messages": (1, 1000),
+    "max_input_chars": (1, 20000000),
+    "max_tokens_cap": (0, 1000000),
 }
 
 RATE_LIMIT_FIELDS = {
-    "per_ip_rpm": (1, 1000),
-    "per_ip_tokens_day": (0, 10000000),
-    "global_rpm": (1, 10000),
-    "burst": (0, 100),
+    "per_ip_rpm": (1, 10000),
+    "per_ip_tokens_day": (0, 100000000),
+    "global_rpm": (1, 100000),
+    "global_tokens_day": (0, 1000000000),
+    "burst": (0, 1000),
+    "max_prompt_tokens": (0, 1000000),
+}
+
+CACHE_FIELDS = {
+    "ttl_s": (1, 86400),
+    "max_entries": (1, 100000),
+}
+
+MODEL_NUMERIC = {
+    "max_tokens_cap": (0, 1000000),
+    "context_window": (1, 10000000),
+    "rate_limits.rpm": (0, 10000),
+    "rate_limits.tokens_day": (0, 100000000),
 }
 
 
@@ -108,83 +215,202 @@ def _expect(cond, message):
         raise SettingsError(message)
 
 
+def _int(value, lo, hi, name):
+    _expect(isinstance(value, int) and not isinstance(value, bool),
+            name + " must be an integer")
+    _expect(lo <= value <= hi, "%s must be between %d and %d" % (name, lo, hi))
+
+
+def _float(value, lo, hi, name):
+    _expect(isinstance(value, (int, float)) and not isinstance(value, bool),
+            name + " must be a number")
+    _expect(lo <= float(value) <= hi,
+            "%s must be between %s and %s" % (name, lo, hi))
+
+
+def _bool(value, name):
+    _expect(type(value) is bool, name + " must be a boolean")
+
+
+def _str(value, name, lo=0, hi=2000):
+    _expect(isinstance(value, str) and lo <= len(value) <= hi,
+            "%s must be a string of %d..%d chars" % (name, lo, hi))
+
+
+def _opt_str(value, name, hi=2000):
+    _expect(value is None or (isinstance(value, str) and len(value) <= hi),
+            name + " must be null or a string (max %d)" % hi)
+
+
+def _section_keys(cfg, section, allowed, path):
+    sec = cfg.get(section)
+    _expect(isinstance(sec, dict), path + " must be an object")
+    _expect(set(sec) <= allowed, "%s: unknown keys: %s"
+            % (path, ", ".join(sorted(set(sec) - allowed))))
+
+
+def _validate_model_spec(alias, spec, all_aliases, errors):
+    path = "models." + alias
+    if not isinstance(spec, dict):
+        errors.append(path + " must be an object")
+        return
+    allowed = set(MODEL_SPEC_DEFAULTS)
+    unknown = sorted(set(spec) - allowed)
+    if unknown:
+        errors.append(path + ": unknown keys " + ", ".join(unknown))
+    _expect(UPSTREAM_PATTERN.fullmatch(spec.get("upstream", "")),
+            path + ".upstream is invalid")
+    _bool(spec.get("enabled", True), path + ".enabled")
+    _bool(spec.get("public", True), path + ".public")
+    _str(spec.get("description", ""), path + ".description", 0, 300)
+    temp = spec.get("temperature")
+    _expect(temp is None or (isinstance(temp, (int, float))
+                             and not isinstance(temp, bool)),
+            path + ".temperature must be null or a number")
+    if temp is not None:
+        _float(temp, 0, 2, path + ".temperature")
+    max_tokens = spec.get("max_tokens")
+    _expect(max_tokens is None or (isinstance(max_tokens, int)
+                                   and not isinstance(max_tokens, bool)),
+            path + ".max_tokens must be null or an integer")
+    if max_tokens is not None:
+        _int(max_tokens, 1, 1000000, path + ".max_tokens")
+    _int(spec.get("max_tokens_cap", 16384), *MODEL_NUMERIC["max_tokens_cap"],
+         path + ".max_tokens_cap")
+    _float(spec.get("temperature_min", 0.0), 0, 2, path + ".temperature_min")
+    _float(spec.get("temperature_max", 2.0), 0, 2, path + ".temperature_max")
+    _expect(spec.get("temperature_min", 0) <= spec.get("temperature_max", 2),
+            path + ".temperature_min must be <= temperature_max")
+    _str(spec.get("system_prompt", ""), path + ".system_prompt", 0, 8000)
+    _opt_str(spec.get("fallback"), path + ".fallback", 64)
+    if spec.get("fallback"):
+        _expect(spec["fallback"] in all_aliases and spec["fallback"] != alias,
+                path + ".fallback must name a different alias")
+    _bool(spec.get("allow_stream", True), path + ".allow_stream")
+    _bool(spec.get("allow_tools", True), path + ".allow_tools")
+    _int(spec.get("context_window", 128000), *MODEL_NUMERIC["context_window"],
+         path + ".context_window")
+    rl = spec.get("rate_limits", {})
+    _expect(isinstance(rl, dict) and set(rl) <= {"rpm", "tokens_day"},
+            path + ".rate_limits: only rpm/tokens_day allowed")
+    _int(rl.get("rpm", 0), *MODEL_NUMERIC["rate_limits.rpm"],
+         path + ".rate_limits.rpm")
+    _int(rl.get("tokens_day", 0), *MODEL_NUMERIC["rate_limits.tokens_day"],
+         path + ".rate_limits.tokens_day")
+
+
 def validate_settings(cfg):
-    """Validate a FULL settings dict in place; raises SettingsError."""
+    """Validate a FULL settings dict; raises SettingsError on the first issue."""
     allowed = set(DEFAULT_SETTINGS)
     unknown = sorted(set(cfg) - allowed)
     _expect(not unknown, "unknown settings key(s): " + ", ".join(unknown))
-    for key in ("omniroute_url", "host", "tunnel"):
-        _expect(isinstance(cfg.get(key), str), key + " must be a string")
     _expect(cfg.get("omniroute_url", "").startswith("http"),
             "omniroute_url must start with http(s)")
+    _str(cfg.get("omniroute_url", ""), "omniroute_url", 8, 500)
+    _str(cfg.get("omniroute_key", ""), "omniroute_key", 0, 500)
     _expect(cfg.get("host") in ("127.0.0.1", "localhost", "0.0.0.0"),
             "host must be 127.0.0.1, localhost or 0.0.0.0")
     _expect(cfg.get("tunnel") in ("ngrok", "cloudflared", "none"),
             "tunnel must be ngrok, cloudflared or none")
     for field, (lo, hi) in NUMERIC_FIELDS.items():
-        value = cfg.get(field)
-        _expect(isinstance(value, int) and not isinstance(value, bool),
-                field + " must be an integer")
-        _expect(lo <= value <= hi, "%s must be between %d and %d" % (field, lo, hi))
+        _int(cfg.get(field, DEFAULT_SETTINGS[field]), lo, hi, field)
     override = cfg.get("public_url_override")
     _expect(override is None or (isinstance(override, str)
                                  and override.startswith("https://")),
             "public_url_override must be null or an https URL")
-    _expect(isinstance(cfg.get("omniroute_key"), str),
-            "omniroute_key must be a string")
-    _expect(isinstance(cfg.get("upstream_timeout_s"), int)
-            and not isinstance(cfg.get("upstream_timeout_s"), bool)
-            and 10 <= cfg.get("upstream_timeout_s") <= 3600,
-            "upstream_timeout_s must be an integer between 10 and 3600")
 
+    # request
+    _section_keys(cfg, "request", set(DEFAULT_SETTINGS["request"]), "request")
+    req = cfg["request"]
+    for key in ("default_model", "inject_system_prompt"):
+        _str(req.get(key, ""), "request." + key, 0, 8000)
+    _bool(req.get("default_stream", False), "request.default_stream")
+    for field, (lo, hi) in REQUEST_NUMERIC.items():
+        _int(req.get(field, DEFAULT_SETTINGS["request"][field]), lo, hi,
+             "request." + field)
+    for key in ("allow_tools", "allow_response_format", "allow_logprobs",
+                "reject_blocked"):
+        _bool(req.get(key, False), "request." + key)
+    blocked = req.get("blocked_fields", [])
+    _expect(isinstance(blocked, list) and len(blocked) <= 64,
+            "request.blocked_fields must be a list of at most 64 names")
+    for item in blocked:
+        _expect(isinstance(item, str) and 1 <= len(item) <= 64,
+                "request.blocked_fields entries must be strings (max 64)")
+    _float(req.get("temperature_min", 0.0), 0, 2, "request.temperature_min")
+    _float(req.get("temperature_max", 2.0), 0, 2, "request.temperature_max")
+    _expect(req["temperature_min"] <= req["temperature_max"],
+            "request.temperature_min must be <= temperature_max")
+
+    # models
     models = cfg.get("models")
     _expect(isinstance(models, dict), "models must be an object")
     _expect(0 < len(models) <= 32, "models must hold 1..32 aliases")
+    aliases = set(models)
+    errors = []
     for alias, spec in models.items():
         _expect(ALIAS_PATTERN.fullmatch(alias),
                 "invalid model alias %r (a-zA-Z0-9._-, max 64)" % alias)
-        _expect(isinstance(spec, dict) and set(spec) <= {"upstream", "enabled"},
-                "model %s: only upstream/enabled keys allowed" % alias)
-        _expect(UPSTREAM_PATTERN.fullmatch(spec.get("upstream", "")),
-                "model %s: invalid upstream id" % alias)
-        _expect(type(spec.get("enabled")) is bool,
-                "model %s: enabled must be a boolean" % alias)
+        try:
+            _validate_model_spec(alias, spec, aliases, errors)
+        except SettingsError as exc:
+            errors.append(str(exc))
+    _expect(not errors, "; ".join(errors))
 
-    rl = cfg.get("rate_limits")
-    _expect(isinstance(rl, dict) and set(rl) <= set(DEFAULT_SETTINGS["rate_limits"]),
-            "rate_limits: unknown keys")
-    _expect(type(rl.get("enabled")) is bool, "rate_limits.enabled must be a boolean")
+    # rate limits
+    _section_keys(cfg, "rate_limits", set(DEFAULT_SETTINGS["rate_limits"]),
+                  "rate_limits")
+    rl = cfg["rate_limits"]
+    _bool(rl.get("enabled", True), "rate_limits.enabled")
     for field, (lo, hi) in RATE_LIMIT_FIELDS.items():
-        value = rl.get(field)
-        _expect(isinstance(value, int) and not isinstance(value, bool)
-                and lo <= value <= hi,
-                "rate_limits.%s must be an integer %d..%d" % (field, lo, hi))
+        _int(rl.get(field, DEFAULT_SETTINGS["rate_limits"][field]), lo, hi,
+             "rate_limits." + field)
 
-    access = cfg.get("access")
-    _expect(isinstance(access, dict) and set(access) <= {"key_required", "access_key"},
-            "access: unknown keys")
-    _expect(type(access.get("key_required")) is bool,
-            "access.key_required must be a boolean")
-    _expect(isinstance(access.get("access_key", ""), str)
-            and len(access.get("access_key", "")) <= 128,
-            "access.access_key must be a string of at most 128 chars")
+    # access
+    _section_keys(cfg, "access", set(DEFAULT_SETTINGS["access"]), "access")
+    access = cfg["access"]
+    _bool(access.get("key_required", False), "access.key_required")
+    _str(access.get("access_key", ""), "access.access_key", 0, 128)
     if access.get("key_required"):
         _expect(len(access.get("access_key", "")) >= 6,
                 "access_key must be at least 6 chars when key_required is on")
+    for key in ("ip_allowlist", "ip_blocklist"):
+        value = access.get(key, [])
+        _expect(isinstance(value, list) and len(value) <= 256,
+                "access.%s must be a list of at most 256 IPs" % key)
+        for item in value:
+            _expect(isinstance(item, str) and 1 <= len(item) <= 64,
+                    "access.%s entries must be strings" % key)
+    _str(access.get("cors_origins", "*"), "access.cors_origins", 1, 2000)
 
-    data = cfg.get("data")
-    _expect(isinstance(data, dict) and set(data) <= {"log_retention_days"},
-            "data: unknown keys")
-    retention = data.get("log_retention_days")
-    _expect(isinstance(retention, int) and not isinstance(retention, bool)
-            and 1 <= retention <= 365,
-            "data.log_retention_days must be an integer 1..365")
+    # cache
+    _section_keys(cfg, "cache", set(DEFAULT_SETTINGS["cache"]), "cache")
+    cache = cfg["cache"]
+    _bool(cache.get("enabled", False), "cache.enabled")
+    for field, (lo, hi) in CACHE_FIELDS.items():
+        _int(cache.get(field, DEFAULT_SETTINGS["cache"][field]), lo, hi,
+             "cache." + field)
+    _bool(cache.get("match_temperature", True), "cache.match_temperature")
 
-    publish = cfg.get("publish")
-    _expect(isinstance(publish, dict) and set(publish) <= {"enabled"},
-            "publish: unknown keys")
-    _expect(type(publish.get("enabled")) is bool,
-            "publish.enabled must be a boolean")
+    # data
+    _section_keys(cfg, "data", set(DEFAULT_SETTINGS["data"]), "data")
+    data = cfg["data"]
+    _int(data.get("log_retention_days", 7), 1, 365,
+         "data.log_retention_days")
+    _expect(data.get("log_level") in ("none", "errors", "normal", "verbose"),
+            "data.log_level must be none, errors, normal or verbose")
+    _bool(data.get("log_bodies", False), "data.log_bodies")
+
+    # publish + system
+    _section_keys(cfg, "publish", set(DEFAULT_SETTINGS["publish"]), "publish")
+    _bool(cfg["publish"].get("enabled", True), "publish.enabled")
+    _int(cfg["publish"].get("interval_min", 0), 0, 1440,
+         "publish.interval_min")
+    _section_keys(cfg, "system", set(DEFAULT_SETTINGS["system"]), "system")
+    _bool(cfg["system"].get("allow_remote_admin", False),
+          "system.allow_remote_admin")
+    _int(cfg["system"].get("log_rotation_mb", 2), 1, 100,
+         "system.log_rotation_mb")
 
 
 def merged_settings(base, patch):
@@ -201,8 +427,11 @@ def merged_settings(base, patch):
                 if spec is None:
                     result["models"].pop(alias, None)
                 elif isinstance(spec, dict):
-                    result["models"][alias] = {
-                        **result["models"].get(alias, {}), **spec}
+                    existing = result["models"].get(alias, {})
+                    if not isinstance(existing, dict):
+                        existing = dict(MODEL_SPEC_DEFAULTS)
+                    result["models"][alias] = {**MODEL_SPEC_DEFAULTS,
+                                               **existing, **spec}
                 else:
                     result["models"][alias] = spec
             continue
@@ -214,7 +443,7 @@ def merged_settings(base, patch):
 
 
 def settings_public(cfg):
-    """Settings for display: never leak the upstream key."""
+    """Settings for display: never leak upstream/access keys."""
     shown = json.loads(json.dumps(cfg))
     if shown.get("omniroute_key"):
         shown["omniroute_key"] = "set (" + shown["omniroute_key"][:6] + "…)"
@@ -241,11 +470,16 @@ def load_config(path):
             raw = {}
         if isinstance(raw, dict):
             cfg = {**DEFAULT_SETTINGS, **raw}
-            cfg["models"] = {**DEFAULT_SETTINGS["models"], **(raw.get("models") or {})}
-            cfg["rate_limits"] = {**DEFAULT_SETTINGS["rate_limits"], **(raw.get("rate_limits") or {})}
-            cfg["access"] = {**DEFAULT_SETTINGS["access"], **(raw.get("access") or {})}
-            cfg["data"] = {**DEFAULT_SETTINGS["data"], **(raw.get("data") or {})}
-            cfg["publish"] = {**DEFAULT_SETTINGS["publish"], **(raw.get("publish") or {})}
+            for section in ("request", "rate_limits", "access", "cache",
+                            "data", "publish", "system"):
+                cfg[section] = {**DEFAULT_SETTINGS[section],
+                                **(raw.get(section) or {})}
+            raw_models = raw.get("models") or {}
+            cfg["models"] = {
+                alias: {**MODEL_SPEC_DEFAULTS,
+                        **(spec if isinstance(spec, dict) else {})}
+                for alias, spec in raw_models.items()
+            } or dict(DEFAULT_SETTINGS["models"])
             try:
                 validate_settings(cfg)
                 return cfg
@@ -269,6 +503,12 @@ class Analytics:
     """SQLite request log + daily token counters. Every connection is closed
     explicitly (Windows holds file locks on open handles)."""
 
+    COLUMNS = [
+        ("cached", "INTEGER DEFAULT 0"),
+        ("request_body", "TEXT"),
+        ("response_body", "TEXT"),
+    ]
+
     def __init__(self, db_path):
         self.db_path = db_path
         self._lock = threading.RLock()
@@ -283,6 +523,12 @@ class Analytics:
                     status INTEGER, error TEXT, latency_ms INTEGER,
                     tokens_in INTEGER, tokens_out INTEGER, stream INTEGER DEFAULT 0
                 )""")
+            existing = {row[1] for row in conn.execute(
+                "PRAGMA table_info(requests)").fetchall()}
+            for name, decl in self.COLUMNS:
+                if name not in existing:
+                    conn.execute("ALTER TABLE requests ADD COLUMN %s %s"
+                                 % (name, decl))
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS rate_tokens (
                     ip TEXT PRIMARY KEY, day TEXT NOT NULL,
@@ -303,7 +549,7 @@ class Analytics:
         return conn
 
     def _run(self, fn):
-        """Run fn(conn) under the lock, committing if it writes; always close."""
+        """Run fn(conn) under the lock; always close the connection."""
         with self._lock:
             conn = self._connect()
             try:
@@ -317,13 +563,16 @@ class Analytics:
                 conn.execute(
                     "INSERT INTO requests (ts, model, upstream_model, ip,"
                     " user_agent, status, error, latency_ms, tokens_in,"
-                    " tokens_out, stream) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    " tokens_out, stream, cached, request_body, response_body)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (time.strftime("%Y-%m-%dT%H:%M:%S"),
                      fields.get("model"), fields.get("upstream_model"),
                      fields.get("ip"), (fields.get("user_agent") or "")[:200],
                      fields.get("status"), fields.get("error"),
                      fields.get("latency_ms"), fields.get("tokens_in"),
-                     fields.get("tokens_out"), 1 if fields.get("stream") else 0))
+                     fields.get("tokens_out"), 1 if fields.get("stream") else 0,
+                     1 if fields.get("cached") else 0,
+                     fields.get("request_body"), fields.get("response_body")))
                 conn.commit()
             self._run(_write)
         except sqlite3.Error:
@@ -348,13 +597,13 @@ class Analytics:
         except sqlite3.Error:
             return 0
 
-    def tokens_today(self, ip):
+    def tokens_today(self, key):
         day = time.strftime("%Y-%m-%d")
         try:
             def _read(conn):
                 row = conn.execute(
                     "SELECT tokens FROM rate_tokens WHERE ip = ? AND day = ?",
-                    (ip, day)).fetchone()
+                    (key, day)).fetchone()
                 return row[0] if row else 0
             return self._run(_read)
         except sqlite3.Error:
@@ -378,7 +627,7 @@ class Analytics:
         day_ago = time.strftime("%Y-%m-%dT%H:%M:%S",
                                 time.localtime(now - 86400))
         out = {"today": {}, "hourly": [], "by_model": [], "top_clients": [],
-               "db": str(self.db_path)}
+               "cache_hits": 0, "db": str(self.db_path)}
         try:
             def _read(conn):
                 conn.row_factory = sqlite3.Row
@@ -393,8 +642,12 @@ class Analytics:
                 out["today"] = {
                     "requests": row["n"], "tokens_in": row["ti"],
                     "tokens_out": row["tout"], "errors": row["err"],
-                    "rate_limited": row["rl"], "avg_latency_ms": round(row["lat"], 1),
+                    "rate_limited": row["rl"],
+                    "avg_latency_ms": round(row["lat"], 1),
                 }
+                out["cache_hits"] = conn.execute(
+                    "SELECT COUNT(*) FROM requests WHERE ts >= ? AND cached = 1",
+                    (today,)).fetchone()[0]
                 out["hourly"] = [{
                     "hour": r["h"], "requests": r["n"], "tokens_in": r["ti"],
                     "tokens_out": r["tout"], "errors": r["err"],
@@ -428,7 +681,7 @@ class Analytics:
 
     def logs(self, limit=100, status=None, model=None):
         query = ("SELECT id, ts, model, upstream_model, ip, user_agent, status,"
-                 " error, latency_ms, tokens_in, tokens_out, stream "
+                 " error, latency_ms, tokens_in, tokens_out, stream, cached "
                  "FROM requests")
         clauses, params = [], []
         if status:
@@ -461,57 +714,121 @@ class Analytics:
 
 
 # ----------------------------------------------------------------------
-# Rate limiter (token buckets: per-IP + global, plus daily token budget)
+# Response cache (in-memory LRU)
+# ----------------------------------------------------------------------
+
+class ResponseCache:
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._entries = collections.OrderedDict()   # key -> (expires, body)
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key):
+        with self._lock:
+            entry = self._entries.get(key)
+            if not entry:
+                self.misses += 1
+                return None
+            expires, body = entry
+            if time.time() > expires:
+                self._entries.pop(key, None)
+                self.misses += 1
+                return None
+            self._entries.move_to_end(key)
+            self.hits += 1
+            return body
+
+    def put(self, key, body, ttl_s, max_entries):
+        with self._lock:
+            while len(self._entries) >= max_entries:
+                self._entries.popitem(last=False)
+            self._entries[key] = (time.time() + ttl_s, body)
+
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
+    def snapshot(self):
+        with self._lock:
+            return {"entries": len(self._entries), "hits": self.hits,
+                    "misses": self.misses}
+
+
+# ----------------------------------------------------------------------
+# Rate limiter (token buckets: per-IP, per-IP+model, global)
 # ----------------------------------------------------------------------
 
 class RateLimiter:
     def __init__(self):
         self._lock = threading.RLock()
-        self._buckets = {}        # ip -> {"tokens": float, "updated": float}
+        self._buckets = {}        # key -> {"tokens": float, "updated": float}
         self._global = {"tokens": 0.0, "updated": 0.0}
 
-    def check(self, ip, settings):
-        """Returns (allowed, headers, reason) — headers are X-RateLimit-*."""
+    def _refill(self, bucket, rate, capacity, now):
+        if bucket["updated"] == 0.0:
+            bucket["updated"] = now
+            bucket["tokens"] = float(capacity)
+            return
+        bucket["tokens"] = min(capacity,
+                               bucket["tokens"] + (now - bucket["updated"]) * rate)
+        bucket["updated"] = now
+
+    def check(self, ip, settings, model=None):
+        """Returns (allowed, headers, reason). Optionally enforces a per-model
+        bucket (rate_limits.rpm on the alias)."""
         rl = settings.get("rate_limits", {})
-        headers = {}
         if not rl.get("enabled"):
-            return True, headers, None
+            return True, {}, None
         with self._lock:
+            if len(self._buckets) > MAX_RATE_BUCKETS:
+                self._buckets.clear()
             now = time.time()
-
-            def refill(bucket, rate, capacity, init=False):
-                if init and bucket["updated"] == 0.0:
-                    bucket["updated"] = now
-                    bucket["tokens"] = float(capacity)
-                    return
-                bucket["tokens"] = min(capacity,
-                                       bucket["tokens"] + (now - bucket["updated"]) * rate)
-                bucket["updated"] = now
-
             per_ip_rpm = float(rl.get("per_ip_rpm", 12))
             burst = float(rl.get("burst", 4))
             global_rpm = float(rl.get("global_rpm", 60))
 
-            bucket = self._buckets.setdefault(ip, {"tokens": 0.0, "updated": 0.0})
-            refill(bucket, per_ip_rpm / 60.0, per_ip_rpm + burst,
-                   init=bucket["updated"] == 0.0)
-            refill(self._global, global_rpm / 60.0, global_rpm + burst,
-                   init=self._global["updated"] == 0.0)
-
-            headers["X-RateLimit-Limit"] = str(int(per_ip_rpm + burst))
-            headers["X-RateLimit-Remaining"] = str(max(0, int(bucket["tokens"] - 1)))
-            if bucket["tokens"] < 1:
-                wait = (1.0 - bucket["tokens"]) * 60.0 / per_ip_rpm
-                return False, {"X-RateLimit-Limit": str(int(per_ip_rpm + burst)),
-                               "X-RateLimit-Remaining": "0",
-                               "Retry-After": str(max(1, int(wait)) + 1)}, "per_ip_rpm"
+            self._refill(self._global, global_rpm / 60.0,
+                         global_rpm + burst, now)
             if self._global["tokens"] < 1:
                 wait = (1.0 - self._global["tokens"]) * 60.0 / global_rpm
                 return False, {"X-RateLimit-Limit": str(int(global_rpm + burst)),
                                "X-RateLimit-Remaining": "0",
-                               "Retry-After": str(max(1, int(wait)) + 1)}, "global_rpm"
-            bucket["tokens"] -= 1.0
+                               "Retry-After": str(max(1, int(wait)) + 1)}, \
+                    "global_rpm"
+
+            def bucket_for(key, rpm):
+                bucket = self._buckets.setdefault(
+                    key, {"tokens": 0.0, "updated": 0.0})
+                self._refill(bucket, float(rpm) / 60.0, float(rpm) + burst, now)
+                return bucket
+
+            ip_bucket = bucket_for(ip, per_ip_rpm)
+            headers = {"X-RateLimit-Limit": str(int(per_ip_rpm + burst)),
+                       "X-RateLimit-Remaining": str(max(0, int(ip_bucket["tokens"] - 1)))}
+            if ip_bucket["tokens"] < 1:
+                wait = (1.0 - ip_bucket["tokens"]) * 60.0 / per_ip_rpm
+                return False, {**headers, "X-RateLimit-Remaining": "0",
+                               "Retry-After": str(max(1, int(wait)) + 1)}, \
+                    "per_ip_rpm"
+
+            model_rpm = None
+            if model:
+                model_rpm = settings.get("models", {}).get(model, {}) \
+                    .get("rate_limits", {}).get("rpm", 0)
+            if model_rpm:
+                m_bucket = bucket_for(ip + "::" + model, model_rpm)
+                if m_bucket["tokens"] < 1:
+                    wait = (1.0 - m_bucket["tokens"]) * 60.0 / float(model_rpm)
+                    return False, {**headers, "X-RateLimit-Limit": str(int(model_rpm + burst)),
+                                   "X-RateLimit-Remaining": "0",
+                                   "Retry-After": str(max(1, int(wait)) + 1)}, \
+                        "model_rpm"
+
+            ip_bucket["tokens"] -= 1.0
             self._global["tokens"] -= 1.0
+            if model_rpm:
+                self._buckets[ip + "::" + model]["tokens"] -= 1.0
         return True, headers, None
 
 
@@ -519,13 +836,37 @@ class RateLimiter:
 # Relay state
 # ----------------------------------------------------------------------
 
+class CounterGate:
+    """Configurable concurrency limit (live-updatable, unlike BoundedSemaphore)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def acquire(self, limit, timeout_s):
+        deadline = time.time() + timeout_s
+        while True:
+            with self._lock:
+                if self._active < limit:
+                    self._active += 1
+                    return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    def release(self):
+        with self._lock:
+            self._active = max(0, self._active - 1)
+
+
 class RelayState:
     def __init__(self, cfg, cfg_path):
         self.cfg = cfg
         self.cfg_path = cfg_path
         self.analytics = Analytics(config_dir() / "data" / "reach.db")
         self.limiter = RateLimiter()
-        self.semaphore = threading.BoundedSemaphore(MAX_UPSTREAM_CONCURRENCY)
+        self.cache = ResponseCache()
+        self.gate = CounterGate()
         self.latencies = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
         self.public_url = None
         self.public_url_source = None
@@ -545,9 +886,10 @@ class RelayState:
         return self.cfg.get("omniroute_key", "")
 
     def upstream_alive(self):
+        interval = int(self.cfg.get("health_check_interval_s", 60))
         with self._lock:
             now = time.time()
-            if self.upstream_checked and now - self.upstream_checked < 60:
+            if self.upstream_checked and now - self.upstream_checked < interval:
                 return self.upstream_ok
         ok = False
         if self.key:
@@ -565,10 +907,12 @@ class RelayState:
         return ok
 
     def note_failure(self):
+        threshold = int(self.cfg.get("circuit_threshold", 5))
+        cooldown = int(self.cfg.get("circuit_cooldown_s", 30))
         with self._lock:
             self.consecutive_failures += 1
-            if self.consecutive_failures >= CIRCUIT_FAILURE_THRESHOLD:
-                self.circuit_open_until = time.time() + CIRCUIT_OPEN_SECONDS
+            if self.consecutive_failures >= threshold:
+                self.circuit_open_until = time.time() + cooldown
                 self.consecutive_failures = 0
 
     def note_success(self):
@@ -609,6 +953,11 @@ class RelayState:
         return {alias: spec["upstream"] for alias, spec
                 in self.cfg.get("models", {}).items() if spec.get("enabled")}
 
+    def public_models(self):
+        return {alias: spec["upstream"] for alias, spec
+                in self.cfg.get("models", {}).items()
+                if spec.get("enabled") and spec.get("public", True)}
+
     def p95_latency_ms(self):
         with self._lock:
             if not self.latencies:
@@ -627,22 +976,27 @@ class RelayState:
                 "upstream": self.omniroute_url,
                 "upstream_ok": self.upstream_alive(),
                 "circuit_open": self.circuit_open(),
-                "models": list(self.enabled_models()),
+                "models": list(self.public_models()),
+                "model_count": len(self.cfg.get("models", {})),
                 "public_url": self.public_url,
                 "public_url_source": self.public_url_source,
                 "uptime_s": round(time.time() - self.started_at, 1),
                 "p95_latency_ms": self.p95_latency_ms(),
                 "today": stats.get("today", {}),
+                "cache": self.cache.snapshot(),
                 "rate_limits": {
-                    "enabled": bool(self.cfg.get("rate_limits", {}).get("enabled")),
+                    "enabled": bool(self.cfg.get("rate_limits", {})
+                                   .get("enabled")),
                 },
                 "access_required": bool(self.cfg.get("access", {})
                                        .get("key_required")),
+                "config_error": self.cfg.get("_last_config_error"),
             }
 
     def log_rotation(self, log_path):
         try:
-            if log_path.is_file() and log_path.stat().st_size > 2 * 1024 * 1024:
+            limit_mb = int(self.cfg.get("system", {}).get("log_rotation_mb", 2))
+            if log_path.is_file() and log_path.stat().st_size > limit_mb * 1024 * 1024:
                 os.replace(str(log_path), str(log_path) + ".1")
         except OSError:
             pass
@@ -661,12 +1015,20 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ helpers
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        origins = (STATE.cfg.get("access", {}).get("cors_origins") or "*").strip()
+        origin = self.headers.get("Origin", "")
+        if origins == "*":
+            self.send_header("Access-Control-Allow-Origin", "*")
+        elif origin and origin in [o.strip() for o in origins.split(",")]:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods",
+                         "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers",
                          "Content-Type, Authorization, X-Reach-Key")
         self.send_header("Access-Control-Expose-Headers",
-                         "X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After")
+                         "X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After,"
+                         " X-Reach-Cache")
 
     def _json(self, status, payload, extra_headers=None):
         body = json.dumps(payload).encode("utf-8")
@@ -700,9 +1062,11 @@ class RelayHandler(BaseHTTPRequestHandler):
         return self.client_address and self.client_address[0] in ("127.0.0.1", "::1")
 
     def _require_admin(self):
-        """Admin surface is loopback-only regardless of bind host."""
-        if not self._is_loopback():
-            self._json(403, {"error": {"message": "admin API is local-only",
+        """Admin surface is loopback-only unless system.allow_remote_admin."""
+        if not self._is_loopback() \
+                and not STATE.cfg.get("system", {}).get("allow_remote_admin"):
+            self._json(403, {"error": {"message": "admin API is local-only "
+                                                  "(system.allow_remote_admin=false)",
                                        "type": "forbidden"}})
             return False
         return True
@@ -722,6 +1086,23 @@ class RelayHandler(BaseHTTPRequestHandler):
                                    "code": "invalid_api_key"}},
                    {"WWW-Authenticate": "Bearer"})
         return False
+
+    def _check_ip_lists(self):
+        access = STATE.cfg.get("access", {})
+        ip = self._client_ip()
+        if self._is_loopback():
+            return True
+        allowlist = access.get("ip_allowlist") or []
+        blocklist = access.get("ip_blocklist") or []
+        if allowlist and ip not in allowlist:
+            self._json(403, {"error": {"message": "IP not allowed",
+                                       "type": "forbidden", "code": "ip_denied"}})
+            return False
+        if blocklist and ip in blocklist:
+            self._json(403, {"error": {"message": "IP blocked",
+                                       "type": "forbidden", "code": "ip_denied"}})
+            return False
+        return True
 
     def _rate_limit_headers(self, headers):
         for key, value in (headers or {}).items():
@@ -769,12 +1150,12 @@ class RelayHandler(BaseHTTPRequestHandler):
             elif path == "/public-url":
                 self._json(200, {"public_url": STATE.public_url,
                                  "source": STATE.public_url_source})
-            elif path == "/v1/models":
+            elif path in ("/v1/models", "/models"):
                 if not self._check_access():
                     return
                 data = [{"id": alias, "object": "model",
                          "created": 1715367049, "owned_by": "SimpleREACH"}
-                        for alias in sorted(STATE.enabled_models())]
+                        for alias in sorted(STATE.public_models())]
                 self._json(200, {"object": "list", "data": data})
             elif path == "/_reach/settings":
                 if not self._require_admin():
@@ -848,6 +1229,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_settings_test()
+            elif path == "/_reach/reset":
+                if not self._require_admin():
+                    return
+                self.handle_reset()
             elif path == "/_reach/test":
                 if not self._require_admin():
                     return
@@ -856,7 +1241,12 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_publish()
-            elif path == "/v1/chat/completions":
+            elif path == "/_reach/cache/clear":
+                if not self._require_admin():
+                    return
+                STATE.cache.clear()
+                self._json(200, {"cleared": True})
+            elif path in ("/v1/chat/completions", "/chat/completions"):
                 if not self._check_access():
                     return
                 self.handle_chat()
@@ -879,13 +1269,19 @@ class RelayHandler(BaseHTTPRequestHandler):
         if not isinstance(patch, dict):
             return self._json(400, {"error": {"message": "settings must be an object",
                                               "type": "invalid_request"}})
+        if patch.get("reset") is True:
+            keep = {"omniroute_key": STATE.cfg.get("omniroute_key", ""),
+                    "access": {"access_key": (STATE.cfg.get("access") or {})
+                               .get("access_key", "")}}
+            patch = {**keep}
         if "omniroute_key" in patch and not patch.get("omniroute_key"):
             patch.pop("omniroute_key")  # blank means keep the existing key
         if isinstance(patch.get("omniroute_key"), str) \
                 and patch["omniroute_key"].startswith("set ("):
             patch.pop("omniroute_key")  # masked placeholder means keep it too
         access_patch = patch.get("access")
-        if isinstance(access_patch, dict) and isinstance(access_patch.get("access_key"), str) \
+        if isinstance(access_patch, dict) \
+                and isinstance(access_patch.get("access_key"), str) \
                 and access_patch["access_key"].startswith("set ("):
             access_patch.pop("access_key")
         next_cfg = merged_settings(STATE.cfg, patch)
@@ -899,6 +1295,16 @@ class RelayHandler(BaseHTTPRequestHandler):
         except (OSError, SettingsError) as exc:
             return self._json(500, {"error": {"message": "could not persist: %s" % exc,
                                               "type": "server_error"}})
+        STATE.cfg = next_cfg
+        STATE.poll_public_url()
+        self._json(200, {"saved": True, "settings": settings_public(next_cfg)})
+
+    def handle_reset(self):
+        keep = {"omniroute_key": STATE.cfg.get("omniroute_key", ""),
+                "access": {"access_key": (STATE.cfg.get("access") or {})
+                           .get("access_key", "")}}
+        next_cfg = merged_settings(DEFAULT_SETTINGS, keep)
+        save_config(next_cfg, STATE.cfg_path)
         STATE.cfg = next_cfg
         STATE.poll_public_url()
         self._json(200, {"saved": True, "settings": settings_public(next_cfg)})
@@ -920,7 +1326,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def handle_upstream_test(self):
         started = time.time()
-        models = STATE.enabled_models()
+        models = STATE.public_models() or STATE.enabled_models()
         if not models:
             return self._json(503, {"ok": False,
                                     "error": "no enabled models configured"})
@@ -949,31 +1355,11 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._json(502, {"ok": False, "error": str(exc)[:300]})
 
     def handle_publish(self):
-        if not STATE.cfg.get("publish", {}).get("enabled"):
-            return self._json(400, {"ok": False,
-                                    "error": "publishing is disabled in settings"})
-        url = STATE.public_url
-        if not url:
-            return self._json(400, {"ok": False, "error": "no public URL available"})
-        gh = shutil_which_or_none("gh")
-        if not gh:
-            gh = str(Path(os.environ.get("PROGRAMFILES", "")) / "GitHub CLI"
-                     / "gh.exe")
-            if not Path(gh).is_file():
-                return self._json(500, {"ok": False, "error": "gh CLI not found"})
-        tmp = STATE.cfg_path.parent / GIST_FILE
-        tmp.write_text(url.strip(), encoding="utf-8")
-        try:
-            result = subprocess.run([gh, "gist", "edit", GIST_ID, str(tmp)],
-                                    capture_output=True, text=True, timeout=60,
-                                    creationflags=(subprocess.CREATE_NO_WINDOW
-                                                   if os.name == "nt" else 0))
-            if result.returncode != 0:
-                return self._json(500, {"ok": False,
-                                        "error": (result.stderr or "")[:300]})
-            self._json(200, {"ok": True, "public_url": url})
-        except Exception as exc:
-            self._json(500, {"ok": False, "error": str(exc)[:300]})
+        ok, detail = publish_url(STATE)
+        if ok:
+            self._json(200, {"ok": True, "public_url": detail})
+        else:
+            self._json(400, {"ok": False, "error": detail})
 
     def handle_public_url_override(self):
         body = self._read_body()
@@ -996,16 +1382,35 @@ class RelayHandler(BaseHTTPRequestHandler):
                          "source": STATE.public_url_source})
 
     # ------------------------------------------------------------- chat route
+    def _should_log(self, status):
+        level = STATE.cfg.get("data", {}).get("log_level", "normal")
+        if level == "none":
+            return False
+        if level == "errors":
+            return status >= 400
+        return True  # normal + verbose
+
+    def _log_chat(self, **fields):
+        if not self._should_log(fields.get("status", 0)):
+            return
+        verbose = STATE.cfg.get("data", {}).get("log_level") == "verbose"
+        if not verbose:
+            fields.pop("request_body", None)
+            fields.pop("response_body", None)
+        STATE.analytics.log_request(**fields)
+
     def handle_chat(self):
         ip = self._client_ip()
-        rl_settings = STATE.cfg.get("rate_limits", {})
+        if not self._check_ip_lists():
+            return
+
+        # ---- rate limit (global buckets; per-model applied after parsing) ----
         allowed, rl_headers, reason = STATE.limiter.check(ip, STATE.cfg)
         if not allowed:
-            STATE.analytics.log_request(
-                model=None, upstream_model=None, ip=ip,
-                user_agent=self.headers.get("User-Agent"), status=429,
-                error="rate_limited:" + (reason or "?"), latency_ms=0,
-                tokens_in=0, tokens_out=0, stream=False)
+            self._log_chat(model=None, upstream_model=None, ip=ip,
+                           user_agent=self.headers.get("User-Agent"), status=429,
+                           error="rate_limited:" + (reason or "?"), latency_ms=0,
+                           tokens_in=0, tokens_out=0, stream=False)
             self._json(429, {
                 "error": {"message": "Rate limit reached (%s). Slow down."
                                      % (reason or "limit"),
@@ -1015,6 +1420,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         started = time.time()
         body = self._read_body()
+        request_body = None
         try:
             payload = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1025,73 +1431,277 @@ class RelayHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": {"message": "invalid request body",
                                               "type": "invalid_request"}},
                               rl_headers)
-        requested = payload.get("model") or ""
-        enabled = STATE.enabled_models()
-        if requested not in enabled:
+
+        req_cfg = STATE.cfg.get("request", {})
+        models = STATE.cfg.get("models", {})
+        requested = payload.get("model") or req_cfg.get("default_model", "")
+        spec = models.get(requested)
+
+        # model visibility: unknown or disabled → 404; private + remote → 404
+        if not spec or not spec.get("enabled"):
             self._json(404, {
                 "error": {
                     "message": ("Unknown model %r. Served models: %s"
-                                % (requested, ", ".join(sorted(enabled)) or "(none)")),
+                                % (requested,
+                                   ", ".join(sorted(STATE.public_models()))
+                                   or "(none)")),
                     "type": "invalid_request_error", "param": "model",
                     "code": "model_not_found",
                 },
             }, rl_headers)
             return
+        if not spec.get("public", True) and not self._is_loopback():
+            self._json(404, {
+                "error": {"message": "Unknown model %r." % requested,
+                          "type": "invalid_request_error", "param": "model",
+                          "code": "model_not_found"},
+            }, rl_headers)
+            return
+
+        # ---- per-model rate limit bucket ----
+        allowed, rl_headers, reason = STATE.limiter.check(ip, STATE.cfg,
+                                                          model=requested)
+        if not allowed:
+            self._log_chat(model=requested, upstream_model=None, ip=ip,
+                           user_agent=self.headers.get("User-Agent"), status=429,
+                           error="rate_limited:" + (reason or "?"), latency_ms=0,
+                           tokens_in=0, tokens_out=0, stream=False)
+            self._json(429, {
+                "error": {"message": "Rate limit reached for model %r (%s)."
+                                     % (requested, reason or "limit"),
+                          "type": "rate_limit_error", "code": "rate_limit"},
+            }, rl_headers)
+            return
+
+        # ---- field policy ----
+        blocked = set(req_cfg.get("blocked_fields") or [])
+        if req_cfg.get("allow_tools") is False or not spec.get("allow_tools", True):
+            blocked |= {"tools", "tool_choice"}
+        if not req_cfg.get("allow_response_format", True):
+            blocked.add("response_format")
+        if not req_cfg.get("allow_logprobs", False):
+            blocked |= {"logprobs", "top_logprobs"}
+        blocked = {f for f in blocked if isinstance(f, str) and f}
+        if blocked:
+            present = [f for f in blocked if f in payload]
+            if present and req_cfg.get("reject_blocked"):
+                return self._json(400, {
+                    "error": {"message": "Field(s) not allowed: %s" % ", ".join(sorted(present)),
+                              "type": "invalid_request_error",
+                              "code": "blocked_field"},
+                }, rl_headers)
+            for field in present:
+                payload.pop(field, None)
+
+        # ---- input guards ----
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            return self._json(400, {"error": {"message": "messages must be a "
+                                                          "non-empty array",
+                                              "type": "invalid_request"}},
+                              rl_headers)
+        max_messages = int(req_cfg.get("max_messages", 100))
+        if len(messages) > max_messages:
+            return self._json(400, {"error": {"message": "too many messages "
+                                                          "(max %d)" % max_messages,
+                                              "type": "invalid_request"}},
+                              rl_headers)
+        total_chars = 0
+        for message in messages:
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, str):
+                    total_chars += len(content)
+        max_input_chars = int(req_cfg.get("max_input_chars", 400000))
+        if total_chars > max_input_chars:
+            return self._json(400, {"error": {"message": "input too large "
+                                                          "(max %d chars)" % max_input_chars,
+                                              "type": "invalid_request"}},
+                              rl_headers)
+        max_prompt_tokens = int(STATE.cfg.get("rate_limits", {})
+                                .get("max_prompt_tokens", 0) or 0)
+        if max_prompt_tokens and (total_chars // 4) > max_prompt_tokens:
+            return self._json(400, {"error": {"message": "prompt exceeds %d "
+                                                          "tokens (approx)" % max_prompt_tokens,
+                                              "type": "invalid_request",
+                                              "code": "prompt_too_long"}},
+                              rl_headers)
+
+        # ---- temperature: default + clamp ----
+        t_min = max(float(req_cfg.get("temperature_min", 0.0)),
+                    float(spec.get("temperature_min", 0.0) or 0.0))
+        t_max = min(float(req_cfg.get("temperature_max", 2.0)),
+                    float(spec.get("temperature_max", 2.0) or 2.0))
+        if "temperature" in payload:
+            temp = payload["temperature"]
+            if isinstance(temp, (int, float)):
+                payload["temperature"] = max(t_min, min(t_max, float(temp)))
+        elif spec.get("temperature") is not None:
+            payload["temperature"] = float(spec["temperature"])
+
+        # ---- max_tokens: default + cap ----
+        effective_cap = int(req_cfg.get("max_tokens_cap", 0) or 0)
+        model_cap = int(spec.get("max_tokens_cap", 0) or 0)
+        if effective_cap and model_cap:
+            effective_cap = min(effective_cap, model_cap)
+        else:
+            effective_cap = effective_cap or model_cap
+        if "max_tokens" in payload:
+            requested_tokens = payload["max_tokens"]
+            if isinstance(requested_tokens, int) and requested_tokens > 0 \
+                    and effective_cap:
+                payload["max_tokens"] = min(requested_tokens, effective_cap)
+        elif spec.get("max_tokens") is not None:
+            payload["max_tokens"] = int(spec["max_tokens"])
+
+        # ---- stream ----
+        stream = payload.get("stream")
+        if stream is None:
+            stream = bool(req_cfg.get("default_stream", False))
+            payload["stream"] = stream
+        else:
+            stream = bool(stream)
+        if stream and not spec.get("allow_stream", True):
+            return self._json(400, {"error": {"message": "streaming is disabled "
+                                                          "for model %r" % requested,
+                                              "type": "invalid_request"}},
+                              rl_headers)
+
+        # ---- system prompt injection (model-level, then global) ----
+        injected = (spec.get("system_prompt") or "").strip() \
+            or (req_cfg.get("inject_system_prompt") or "").strip()
+        if injected:
+            first = messages[0] if messages else None
+            already = isinstance(first, dict) and first.get("role") == "system" \
+                and (first.get("content") or "").strip() == injected
+            if not already:
+                messages.insert(0, {"role": "system", "content": injected})
+
+        # ---- upstream model + circuit + key ----
+        upstream_model = spec["upstream"]
         if not STATE.key:
-            self._json(503, {"error": {"message": "SimpleREACH is not configured "
-                                                  "yet (no OmniRoute key).",
-                                       "type": "server_error"}}, rl_headers)
-            return
+            return self._json(503, {"error": {"message": "SimpleREACH is not "
+                                                          "configured yet (no "
+                                                          "OmniRoute key).",
+                                              "type": "server_error"}}, rl_headers)
         if STATE.circuit_open():
-            self._json(503, {"error": {"message": "Upstream is in a failure "
-                                                  "cool-down — retry shortly.",
-                                       "type": "server_error",
-                                       "code": "upstream_cooling_down"}}, rl_headers)
-            return
+            return self._json(503, {"error": {"message": "Upstream is in a "
+                                                          "failure cool-down — "
+                                                          "retry shortly.",
+                                              "type": "server_error",
+                                              "code": "upstream_cooling_down"}},
+                              rl_headers)
 
-        payload["model"] = enabled[requested]
-        stream = bool(payload.get("stream"))
+        # ---- cache lookup (non-stream) ----
+        cache_cfg = STATE.cfg.get("cache", {})
+        cache_key = None
+        if cache_cfg.get("enabled") and not stream:
+            cache_key = self._cache_key(payload, cache_cfg)
+            cached_body = STATE.cache.get(cache_key)
+            if cached_body is not None:
+                latency_ms = int((time.time() - started) * 1000)
+                self._log_chat(model=requested, upstream_model=upstream_model,
+                               ip=ip, user_agent=self.headers.get("User-Agent"),
+                               status=200, error=None, latency_ms=latency_ms,
+                               tokens_in=None, tokens_out=None, stream=False,
+                               cached=True)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(cached_body)))
+                self._cors()
+                self._rate_limit_headers(rl_headers)
+                self.send_header("X-Reach-Cache", "HIT")
+                self.end_headers()
+                try:
+                    self.wfile.write(cached_body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
 
-        if not STATE.semaphore.acquire(timeout=15):
-            self._json(503, {"error": {"message": "Relay is at capacity — "
-                                                  "retry shortly.",
-                                       "type": "server_error",
-                                       "code": "overloaded"}}, rl_headers)
-            return
+        # ---- concurrency gate ----
+        if not STATE.gate.acquire(int(STATE.cfg.get("max_concurrency", 6)),
+                                  timeout_s=15):
+            return self._json(503, {"error": {"message": "Relay is at capacity "
+                                                          "— retry shortly.",
+                                              "type": "server_error",
+                                              "code": "overloaded"}}, rl_headers)
         try:
             url = STATE.omniroute_url.rstrip("/") + "/chat/completions"
-            req = urllib.request.Request(
-                url, data=json.dumps(payload).encode("utf-8"), method="POST",
-                headers={"Content-Type": "application/json",
-                         "Authorization": "Bearer " + STATE.key})
-            try:
-                upstream = urllib.request.urlopen(
-                    req, timeout=int(STATE.cfg.get("upstream_timeout_s", 600)))
-            except (urllib.error.URLError, OSError) as first:
-                if stream:
-                    raise
-                time.sleep(1)  # one retry on non-stream transient failures
-                upstream = urllib.request.urlopen(
-                    req, timeout=int(STATE.cfg.get("upstream_timeout_s", 600)))
-        except urllib.error.HTTPError as exc:
-            STATE.note_failure()
-            STATE.analytics.log_request(
-                model=requested, upstream_model=payload["model"], ip=ip,
-                user_agent=self.headers.get("User-Agent"), status=exc.code,
-                error="upstream_http", latency_ms=int((time.time() - started) * 1000),
-                tokens_in=0, tokens_out=0, stream=stream)
-            return self._relay_upstream_error(exc, "OmniRoute rejected the request")
-        except (urllib.error.URLError, OSError) as exc:
-            STATE.note_failure()
-            STATE.analytics.log_request(
-                model=requested, upstream_model=payload["model"], ip=ip,
-                user_agent=self.headers.get("User-Agent"), status=502,
-                error="upstream_unreachable", latency_ms=int((time.time() - started) * 1000),
-                tokens_in=0, tokens_out=0, stream=stream)
-            return self._relay_upstream_error(exc, "OmniRoute unreachable")
+            payload["model"] = upstream_model
+            encoded = json.dumps(payload).encode("utf-8")
+            if STATE.cfg.get("data", {}).get("log_bodies"):
+                request_body = body[:2048].decode("utf-8", "replace")
+            retries = int(STATE.cfg.get("upstream_retries", 1))
+            retry_delay = float(STATE.cfg.get("retry_delay_ms", 1000)) / 1000.0
+            upstream = None
+            attempts = retries + 1 if not stream else 1
+            last_error = None
+            fallback_used = False
+            for attempt in range(attempts):
+                try:
+                    req = urllib.request.Request(
+                        url, data=encoded, method="POST",
+                        headers={"Content-Type": "application/json",
+                                 "Authorization": "Bearer " + STATE.key})
+                    upstream = urllib.request.urlopen(
+                        req, timeout=int(STATE.cfg.get("upstream_timeout_s", 600)))
+                    break
+                except urllib.error.HTTPError as exc:
+                    if exc.code < 500 or attempt == attempts - 1:
+                        last_error = exc
+                        break
+                    last_error = exc
+                    time.sleep(retry_delay)
+                except (urllib.error.URLError, OSError) as exc:
+                    last_error = exc
+                    if attempt == attempts - 1:
+                        break
+                    time.sleep(retry_delay)
+            # fallback alias on total failure (non-stream only)
+            if upstream is None and not stream:
+                fallback_alias = spec.get("fallback")
+                if fallback_alias and fallback_alias in models \
+                        and models[fallback_alias].get("enabled"):
+                    fb_upstream = models[fallback_alias]["upstream"]
+                    try:
+                        fb_payload = dict(payload)
+                        fb_payload["model"] = fb_upstream
+                        fb_req = urllib.request.Request(
+                            url, data=json.dumps(fb_payload).encode("utf-8"),
+                            method="POST",
+                            headers={"Content-Type": "application/json",
+                                     "Authorization": "Bearer " + STATE.key})
+                        upstream = urllib.request.urlopen(
+                            fb_req,
+                            timeout=int(STATE.cfg.get("upstream_timeout_s", 600)))
+                        upstream_model = fb_upstream
+                        fallback_used = True
+                    except Exception as exc:
+                        last_error = exc
+            if upstream is None:
+                if isinstance(last_error, urllib.error.HTTPError):
+                    STATE.note_failure()
+                    self._log_chat(model=requested, upstream_model=upstream_model,
+                                   ip=ip,
+                                   user_agent=self.headers.get("User-Agent"),
+                                   status=last_error.code, error="upstream_http",
+                                   latency_ms=int((time.time() - started) * 1000),
+                                   tokens_in=0, tokens_out=0, stream=stream,
+                                   request_body=request_body)
+                    return self._relay_upstream_error(
+                        last_error, "OmniRoute rejected the request")
+                STATE.note_failure()
+                self._log_chat(model=requested, upstream_model=upstream_model,
+                               ip=ip, user_agent=self.headers.get("User-Agent"),
+                               status=502, error="upstream_unreachable",
+                               latency_ms=int((time.time() - started) * 1000),
+                               tokens_in=0, tokens_out=0, stream=stream,
+                               request_body=request_body)
+                return self._relay_upstream_error(
+                    last_error, "OmniRoute unreachable")
         finally:
             if not stream:
-                STATE.semaphore.release()
+                STATE.gate.release()
 
         content_type = upstream.headers.get("Content-Type", "application/json")
         if stream:
@@ -1112,13 +1722,14 @@ class RelayHandler(BaseHTTPRequestHandler):
                 finally:
                     self._write_chunk(b"")
                 STATE.note_success()
-                STATE.analytics.log_request(
-                    model=requested, upstream_model=payload["model"], ip=ip,
-                    user_agent=self.headers.get("User-Agent"), status=200,
-                    error=None, latency_ms=int((time.time() - started) * 1000),
-                    tokens_in=None, tokens_out=None, stream=True)
+                self._log_chat(model=requested, upstream_model=upstream_model,
+                               ip=ip, user_agent=self.headers.get("User-Agent"),
+                               status=200, error=None,
+                               latency_ms=int((time.time() - started) * 1000),
+                               tokens_in=None, tokens_out=None, stream=True,
+                               request_body=request_body)
             finally:
-                STATE.semaphore.release()
+                STATE.gate.release()
                 try:
                     upstream.close()
                 except Exception:
@@ -1127,6 +1738,7 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         data = upstream.read()
         tokens_in = tokens_out = None
+        response_body = None
         try:
             parsed = json.loads(data.decode("utf-8", "replace"))
             usage = parsed.get("usage") or {}
@@ -1134,40 +1746,105 @@ class RelayHandler(BaseHTTPRequestHandler):
             tokens_out = usage.get("completion_tokens")
         except Exception:
             pass
+        if STATE.cfg.get("data", {}).get("log_bodies"):
+            response_body = data[:2048].decode("utf-8", "replace")
         STATE.note_success()
         latency_ms = int((time.time() - started) * 1000)
         with STATE._lock:
             STATE.latencies.append(latency_ms)
-        STATE.analytics.log_request(
-            model=requested, upstream_model=payload["model"], ip=ip,
-            user_agent=self.headers.get("User-Agent"), status=200, error=None,
-            latency_ms=latency_ms, tokens_in=tokens_in, tokens_out=tokens_out,
-            stream=False)
+
+        # ---- daily token budgets: global, per-IP, per-model ----
         if tokens_out:
-            daily = STATE.analytics.add_tokens(ip, int(tokens_out or 0))
-            limit = rl_settings.get("per_ip_tokens_day", 0)
-            if limit and daily > limit:
-                self._json(429, {
-                    "error": {"message": "Daily token budget reached.",
-                              "type": "rate_limit_error",
-                              "code": "daily_token_limit"},
-                }, {**rl_headers, "Retry-After": "86400"})
-                return
+            rl = STATE.cfg.get("rate_limits", {})
+            global_budget = int(rl.get("global_tokens_day", 0) or 0)
+            if global_budget:
+                if STATE.analytics.add_tokens("*", int(tokens_out)) > global_budget:
+                    return self._json(429, {
+                        "error": {"message": "Global daily token budget reached.",
+                                  "type": "rate_limit_error",
+                                  "code": "daily_token_limit"},
+                    }, {**rl_headers, "Retry-After": "86400"})
+            per_ip_budget = int(rl.get("per_ip_tokens_day", 0) or 0)
+            if per_ip_budget:
+                if STATE.analytics.add_tokens(ip, int(tokens_out)) > per_ip_budget:
+                    return self._json(429, {
+                        "error": {"message": "Daily token budget reached.",
+                                  "type": "rate_limit_error",
+                                  "code": "daily_token_limit"},
+                    }, {**rl_headers, "Retry-After": "86400"})
+            model_budget = int((spec.get("rate_limits") or {})
+                               .get("tokens_day", 0) or 0)
+            if model_budget:
+                if STATE.analytics.add_tokens(ip + "::" + requested,
+                                              int(tokens_out)) > model_budget:
+                    return self._json(429, {
+                        "error": {"message": "Daily token budget reached for "
+                                             "model %r." % requested,
+                                  "type": "rate_limit_error",
+                                  "code": "daily_token_limit"},
+                    }, {**rl_headers, "Retry-After": "86400"})
+
+        # ---- cache store ----
+        if cache_cfg.get("enabled") and not stream and cache_key:
+            STATE.cache.put(cache_key, data, int(cache_cfg.get("ttl_s", 300)),
+                            int(cache_cfg.get("max_entries", 1000)))
+
+        self._log_chat(model=requested, upstream_model=upstream_model, ip=ip,
+                       user_agent=self.headers.get("User-Agent"), status=200,
+                       error=None, latency_ms=latency_ms, tokens_in=tokens_in,
+                       tokens_out=tokens_out, stream=False,
+                       request_body=request_body, response_body=response_body)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self._cors()
         self._rate_limit_headers(rl_headers)
+        if fallback_used:
+            self.send_header("X-Reach-Fallback", "used")
         self.end_headers()
         try:
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    @staticmethod
+    def _cache_key(payload, cache_cfg):
+        key_payload = {"model": payload.get("model"), "messages": payload.get("messages"),
+                       "tools": payload.get("tools"),
+                       "response_format": payload.get("response_format")}
+        if cache_cfg.get("match_temperature"):
+            key_payload["temperature"] = payload.get("temperature")
+        raw = json.dumps(key_payload, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
 
-def shutil_which_or_none(name):
-    import shutil
-    return shutil.which(name)
+
+def publish_url(state):
+    """Push the current public URL to the pointer gist. Returns (ok, detail)."""
+    if not state.cfg.get("publish", {}).get("enabled"):
+        return False, "publishing is disabled in settings"
+    url = state.public_url
+    if not url:
+        return False, "no public URL available"
+    import shutil as _shutil
+    gh = _shutil.which("gh")
+    if not gh:
+        gh = str(Path(os.environ.get("PROGRAMFILES", "")) / "GitHub CLI"
+                 / "gh.exe")
+        if not Path(gh).is_file():
+            return False, "gh CLI not found"
+    tmp = state.cfg_path.parent / GIST_FILE
+    tmp.write_text(url.strip(), encoding="utf-8")
+    try:
+        result = subprocess.run([gh, "gist", "edit", GIST_ID, str(tmp)],
+                                capture_output=True, text=True, timeout=60,
+                                creationflags=(subprocess.CREATE_NO_WINDOW
+                                               if os.name == "nt" else 0))
+        if result.returncode != 0:
+            return False, (result.stderr or "")[:300]
+        return True, url
+    except Exception as exc:
+        return False, str(exc)[:300]
 
 
 # ----------------------------------------------------------------------
@@ -1209,8 +1886,22 @@ def main():
             STATE.analytics.prune(
                 int(STATE.cfg.get("data", {}).get("log_retention_days", 7)))
 
+    def publisher():
+        interval = int(STATE.cfg.get("publish", {}).get("interval_min", 0)
+                       or 0)
+        if interval <= 0:
+            return  # publishing happens on change only
+        while True:
+            time.sleep(interval * 60)
+            if STATE.public_url:
+                try:
+                    publish_url(STATE)
+                except Exception:
+                    pass
+
     threading.Thread(target=poller, daemon=True).start()
     threading.Thread(target=pruner, daemon=True).start()
+    threading.Thread(target=publisher, daemon=True).start()
     print("SimpleREACH %s listening on http://%s:%d" % (VERSION, host, PORT),
           flush=True)
     try:
