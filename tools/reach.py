@@ -342,9 +342,30 @@ def resolve_interpreter():
     """Pick a stable Python for the relay. Never inherit a sandbox venv
     (e.g. Hermes' own) — a sandbox update would break the background relay."""
     exe = str(Path(sys.executable))
-    if "hermes" in exe.lower() or exe.lower().endswith("venv\\scripts\\python.exe"):
-        cand = shutil.which("python")
-        if cand and Path(cand).is_file():
+    if "hermes" not in exe.lower() and "venv" not in exe.lower():
+        return exe
+    # py launcher: always resolves a real CPython outside any venv.
+    launcher = shutil.which("py")
+    if launcher:
+        try:
+            result = subprocess.run(
+                [launcher, "-3", "-c",
+                 "import sys;print(sys.executable)"],
+                capture_output=True, text=True, timeout=15,
+                **no_window_kwargs())
+            candidate = (result.stdout or "").strip()
+            if result.returncode == 0 and candidate \
+                    and "hermes" not in candidate.lower() \
+                    and Path(candidate).is_file():
+                return candidate
+        except Exception:
+            pass
+    for cand in (shutil.which("python3"), shutil.which("python")):
+        if not cand:
+            continue
+        if "hermes" in str(cand).lower() or "windowsapps" in str(cand).lower():
+            continue
+        if Path(cand).is_file():
             return str(Path(cand))
     return exe
 
