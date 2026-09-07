@@ -391,6 +391,38 @@ class ClientKeyManagementTests(unittest.TestCase):
             self.assertEqual(len(logs), 1)
             self.assertEqual(logs[0]["key_name"], "WhiteShadow")
 
+    def test_settings_put_restores_masked_keys(self):
+        """A full settings PUT carrying masked key strings must not clobber the
+        raw client keys (the panel saves the whole draft, masked)."""
+        raw_key = reachd.generate_client_key("WhiteShadow")["key"]
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["access"]["keys"] = [{"id": "key_1", "name": "WhiteShadow",
+                                  "key": raw_key, "created_at": "x",
+                                  "last_used_at": None, "enabled": True,
+                                  "rate_limit_rpm": 0}]
+        masked = json.loads(json.dumps(reachd.settings_public(cfg)))
+        # simulate the handler flow: guard runs BEFORE merged_settings
+        patch = {"access": {"keys": masked["access"]["keys"]}}
+        touched = reachd.RelayHandler.restore_masked_client_keys(
+            cfg["access"], patch["access"])
+        self.assertTrue(touched)
+        next_cfg = reachd.merged_settings(cfg, patch)
+        reachd.validate_settings(next_cfg)
+        restored = next_cfg["access"]["keys"][0]["key"]
+        self.assertEqual(restored, raw_key, "raw key must survive the masked round-trip")
+
+    def test_restore_masked_keys_leaves_raw_keys_untouched(self):
+        raw_key = reachd.generate_client_key("Kept")["key"]
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["access"]["keys"] = [{"id": "key_a", "name": "Kept", "key": raw_key,
+                                  "created_at": "x", "last_used_at": None,
+                                  "enabled": True, "rate_limit_rpm": 0}]
+        patch = {"access": {"keys": [{"id": "key_a", "name": "Kept", "key": raw_key}]}}
+        touched = reachd.RelayHandler.restore_masked_client_keys(
+            cfg["access"], patch["access"])
+        self.assertFalse(touched)
+        self.assertEqual(patch["access"]["keys"][0]["key"], raw_key)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

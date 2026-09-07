@@ -32,6 +32,7 @@ prompts, fallback chains, visibility, and streaming/tools toggles.
 import argparse
 import collections
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -1410,10 +1411,10 @@ class RelayHandler(BaseHTTPRequestHandler):
         matched_key = None
         if presented:
             for k in keys:
-                if k.get("enabled", True) and k.get("key") == presented:
+                if k.get("enabled", True) and hmac.compare_digest(k.get("key", ""), presented):
                     matched_key = k
                     break
-            if not matched_key and legacy_key and presented == legacy_key:
+            if not matched_key and legacy_key and hmac.compare_digest(legacy_key, presented):
                 matched_key = {"id": "legacy", "name": "Legacy Key", "key": legacy_key}
 
         if matched_key:
@@ -1571,7 +1572,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                             if "name" in patch:
                                 k["name"] = str(patch["name"]).strip()
                             if "enabled" in patch:
-                                k["enabled"] = bool(patch["enabled"])
+                                val = patch["enabled"]
+                                if isinstance(val, bool):
+                                    k["enabled"] = val
+                                else:
+                                    k["enabled"] = str(val).lower() not in ("false", "0", "no", "off", "")
                             found = k
                             break
                     if found:
@@ -1673,6 +1678,27 @@ class RelayHandler(BaseHTTPRequestHandler):
                 pass
 
     # ------------------------------------------------------------- admin routes
+    @staticmethod
+    def restore_masked_client_keys(existing_access, access_patch):
+        """When a settings patch carries access.keys whose entries hold masked
+        or empty token strings (the panel round-trips the public view),
+        restore the raw tokens from the live config by key id. Returns True
+        if it touched the patch."""
+        if not isinstance(access_patch, dict):
+            return False
+        if "keys" not in access_patch or not isinstance(access_patch["keys"], list):
+            return False
+        existing_by_id = {k.get("id"): k.get("key")
+                          for k in (existing_access or {}).get("keys", [])}
+        touched = False
+        for k in access_patch["keys"]:
+            if isinstance(k, dict) and k.get("id") in existing_by_id:
+                raw_val = k.get("key", "")
+                if not raw_val or raw_val.startswith("set (") or "…" in raw_val:
+                    k["key"] = existing_by_id[k["id"]]
+                    touched = True
+        return touched
+
     def handle_settings_update(self):
         body = self._read_body()
         try:
@@ -1698,13 +1724,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             if isinstance(access_patch.get("access_key"), str) \
                     and access_patch["access_key"].startswith("set ("):
                 access_patch.pop("access_key")
-            if "keys" in access_patch and isinstance(access_patch["keys"], list):
-                existing_by_id = {k.get("id"): k.get("key") for k in (STATE.cfg.get("access") or {}).get("keys", [])}
-                for k in access_patch["keys"]:
-                    if isinstance(k, dict) and k.get("id") in existing_by_id:
-                        raw_val = k.get("key", "")
-                        if not raw_val or raw_val.startswith("set (") or "…" in raw_val:
-                            k["key"] = existing_by_id[k["id"]]
+            self.restore_masked_client_keys(STATE.cfg.get("access"), access_patch)
         next_cfg = merged_settings(STATE.cfg, patch)
         try:
             validate_settings(next_cfg)
