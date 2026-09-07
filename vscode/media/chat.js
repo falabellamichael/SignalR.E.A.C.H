@@ -21,6 +21,7 @@
   let conv = null;            // current conversation {id, model, ts, title, messages, thoughts}
   let busy = false;
   let pendingBubble = null;
+  let thinkRow = null;
   let pendingText = '';
   let clearArmed = false;
   let clearTimer = null;
@@ -60,19 +61,21 @@
     return body;
   }
 
-  function showThinking(body) {
+  function showThinking() {
+    if (!pendingBubble) return;
+    const row = document.createElement('div');
+    row.className = 'think-row';
     const spinner = document.createElement('span');
     spinner.className = 'think-spinner';
     spinner.setAttribute('aria-label', 'thinking');
-    body.appendChild(spinner);
-    body.closest('.bubble').classList.add('thinking');
+    row.appendChild(spinner);
+    log.insertBefore(row, pendingBubble.parentElement);
+    thinkRow = row;
   }
 
-  function hideThinking(body) {
-    const spinner = body.querySelector('.think-spinner');
-    if (spinner) spinner.remove();
-    const bub = body.closest('.bubble');
-    if (bub) bub.classList.remove('thinking');
+  function hideThinking() {
+    if (thinkRow) { thinkRow.remove(); thinkRow = null; }
+    if (pendingBubble && pendingBubble.parentElement) pendingBubble.parentElement.classList.remove('thinking');
   }
 
   function renderMessages() {
@@ -86,11 +89,14 @@
       const body = bubble(m.role);
       body.textContent = m.content;
       if (m.role === 'assistant' && conv.thoughts && conv.thoughts[idx]) {
-        const chip = document.createElement('span');
-        chip.className = 'thought-chip';
-        chip.textContent = '💭';
-        chip.title = 'Private reasoning:\n\n' + conv.thoughts[idx];
-        body.parentElement.appendChild(chip);
+        const row = document.createElement('div');
+        row.className = 'think-row';
+        const icon = document.createElement('span');
+        icon.className = 'thought-icon';
+        icon.textContent = '💭';
+        icon.title = 'Private reasoning:\n\n' + conv.thoughts[idx];
+        row.appendChild(icon);
+        log.insertBefore(row, body.parentElement);
       }
     });
     scrollBottom();
@@ -233,18 +239,21 @@
 
   function finishBubble() {
     if (pendingBubble) {
-      hideThinking(pendingBubble);
+      hideThinking();
       if (pendingThought && conv) {
-        // discreet: attach the private reasoning to the reply as a tooltip only
-        const chip = document.createElement('span');
-        chip.className = 'thought-chip';
-        chip.textContent = '💭';
-        chip.title = 'Private reasoning:\n\n' + pendingThought;
-        pendingBubble.parentElement.appendChild(chip);
+        // discreet: private reasoning stays hoverable via a single icon above the reply
+        const row = document.createElement('div');
+        row.className = 'think-row';
+        const icon = document.createElement('span');
+        icon.className = 'thought-icon';
+        icon.textContent = '💭';
+        icon.title = 'Private reasoning:\n\n' + pendingThought;
+        row.appendChild(icon);
+        log.insertBefore(row, pendingBubble.parentElement);
         if (!conv.thoughts) conv.thoughts = {};
         conv.thoughts[conv.messages.length - 1] = pendingThought;
       }
-      pendingBubble.classList.remove('pending');
+      pendingBubble.parentElement.classList.remove('pending');
       pendingBubble = null;
     }
     pendingText = '';
@@ -265,8 +274,10 @@
     const body = bubble('user');
     body.textContent = text;
     pendingBubble = bubble('assistant');
-    pendingBubble.classList.add('pending');
-    showThinking(pendingBubble);
+    const pendingDiv = pendingBubble.parentElement;
+    pendingDiv.classList.add('pending');
+    pendingDiv.classList.add('thinking');
+    showThinking();
     busy = true;
     $('#send').disabled = true;
     persist();
@@ -304,8 +315,11 @@
         setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null);
         break;
       case 'delta':
-        if (!pendingBubble) pendingBubble = bubble('assistant');
-        if (!pendingText) hideThinking(pendingBubble);
+        if (!pendingBubble) {
+          pendingBubble = bubble('assistant');
+          pendingBubble.parentElement.classList.add('pending');
+        }
+        if (!pendingText) hideThinking();
         pendingText += msg.text;
         pendingBubble.textContent = pendingText;
         scrollBottom();
@@ -332,17 +346,14 @@
         scrollBottom();
         break;
       case 'thinking':
-        if (pendingBubble) {
-          const thinkSpinner = document.createElement('span');
-          thinkSpinner.className = 'think-chip';
-          thinkSpinner.textContent = '🧠 thinking…';
-          pendingBubble.parentElement.appendChild(thinkSpinner);
-        }
+        if (pendingBubble && !thinkRow && !pendingText) showThinking();
         break;
       case 'thought':
         pendingThought = (msg.text || '').trim();
-        const chips = document.querySelectorAll('.think-chip');
-        chips.forEach((c) => { c.textContent = '🧠'; c.title = 'Private reasoning:\n\n' + pendingThought; });
+        if (thinkRow) {
+          const icon = thinkRow.querySelector('.think-spinner');
+          if (icon) icon.title = 'Private reasoning:\n\n' + pendingThought;
+        }
         break;
       case 'searchInfo':
         webCount.textContent = msg.results

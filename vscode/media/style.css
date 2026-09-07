@@ -254,24 +254,32 @@ body {
   animation: blink 0.9s steps(2, start) infinite;
 }
 
-/* thinking indicator: tiny spinning gold ring with a breathing glow */
+/* thinking indicator: one small spinning gold ring on its own line above the response */
+.think-row {
+  display: flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 3px 2px;
+}
 .think-spinner {
   display: inline-block;
   width: 11px;
   height: 11px;
-  margin-right: 6px;
-  vertical-align: -1px;
+  flex: 0 0 auto;
   border-radius: 50%;
   border: 1.5px solid color-mix(in srgb, var(--reach-accent) 20%, transparent);
   border-top-color: var(--reach-accent);
   border-right-color: var(--reach-accent-light);
   animation: think-spin 0.8s linear infinite, think-glow 1.6s ease-in-out infinite;
 }
-.bubble.pending.thinking .body::after { content: none; }
-.bubble.pending.thinking .body {
-  display: flex;
-  align-items: center;
+.thought-icon {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--reach-muted);
+  cursor: help;
+  opacity: 0.9;
 }
+.bubble.pending.thinking .body::after { content: none; }
 
 @keyframes think-spin { to { transform: rotate(360deg); } }
 @keyframes think-glow {
@@ -293,6 +301,7 @@ body {
 #composer {
   flex: 0 0 auto;
   display: flex;
+  flex-direction: column;
   gap: 6px;
   padding: 8px;
   background: var(--reach-raised);
@@ -332,7 +341,6 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-left: auto;
   padding: 2px 7px;
   border: 1px solid var(--vscode-input-border, #3c3c3c);
   border-radius: 11px;

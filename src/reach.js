@@ -163,12 +163,14 @@
         mounted: false,
         pollTimer: null,
         cleanupPage: null,
+        themeObserver: null,
         activePage: core.store.page || core.prefsGet('page', 'dashboard'),
-        accentColor: core.prefsGet('accent_color', '#ffb020')
+        accentColor: core.prefsGet('accent_color', null) || null
     };
 
     const ACCENT_PRESETS = [
         { name: 'Amber Gold', hex: '#ffb020' },
+        { name: 'Warm Blue', hex: '#0f6cbd' },
         { name: 'Cyber Cyan', hex: '#00e5ff' },
         { name: 'Neon Emerald', hex: '#00e676' },
         { name: 'Electric Purple', hex: '#b388ff' },
@@ -191,7 +193,23 @@
     }
 
     function applyAccentColor(hex) {
-        if (!hex || !/^#[0-9a-fA-F]{3,6}$/.test(hex)) return;
+        const targets = document.querySelectorAll(
+            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page, .reach-modal-card'
+        );
+        if (!hex || hex === 'default') {
+            const props = [
+                '--reach-accent', '--reach-accent-light', '--reach-accent-hover',
+                '--reach-accent-glow', '--reach-accent-bg', '--reach-accent-border',
+                '--reach-accent-text'
+            ];
+            targets.forEach(node => {
+                props.forEach(p => node.style.removeProperty(p));
+            });
+            core.prefsSet('accent_color', '');
+            runtime.accentColor = null;
+            return;
+        }
+        if (!/^#[0-9a-fA-F]{3,6}$/.test(hex)) return;
         const rgb = hexToRgb(hex);
         // Contrast luminance calculation: if bright, use dark text on solid buttons, else white
         const lum = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
@@ -206,16 +224,14 @@
         const vars = {
             '--reach-accent': hex,
             '--reach-accent-light': lightHex,
+            '--reach-accent-hover': hex,
             '--reach-accent-glow': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.45)`,
             '--reach-accent-bg': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.14)`,
             '--reach-accent-border': `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.38)`,
             '--reach-accent-text': textColor
         };
 
-        // CRITICAL: Scoped EXCLUSIVELY to SignalR.E.A.C.H containers — NEVER touches body, :root, or SimpleRAG
-        const targets = document.querySelectorAll(
-            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page'
-        );
+        // Scoped EXCLUSIVELY to SignalR.E.A.C.H containers — NEVER touches body, :root, or SimpleRAG
         targets.forEach(node => {
             for (const [key, val] of Object.entries(vars)) {
                 node.style.setProperty(key, val);
@@ -224,6 +240,25 @@
 
         core.prefsSet('accent_color', hex);
         runtime.accentColor = hex;
+    }
+
+    function setupThemeObserver() {
+        if (runtime.themeObserver || typeof MutationObserver === 'undefined') return;
+        try {
+            runtime.themeObserver = new MutationObserver(mutations => {
+                for (const m of mutations) {
+                    if (m.type === 'attributes' && (m.attributeName === 'data-workspace-theme' || m.attributeName === 'data-workspace-color-scheme')) {
+                        if (!runtime.accentColor) {
+                            applyAccentColor(null);
+                        }
+                    }
+                }
+            });
+            runtime.themeObserver.observe(document.documentElement, {
+                attributes: true,
+                attributeFilter: ['data-workspace-theme', 'data-workspace-color-scheme']
+            });
+        } catch (_e) { /* ignore */ }
     }
 
     function hostElements() {
@@ -375,10 +410,11 @@
         cTheme.appendChild(cThemeHead);
 
         const swatchesWrap = core.el('div', 'reach-theme-swatches');
-        const currentAccent = runtime.accentColor || core.prefsGet('accent_color', '#ffb020');
+        const currentAccent = runtime.accentColor || core.prefsGet('accent_color', '') || '';
 
         ACCENT_PRESETS.forEach(preset => {
-            const swatch = core.el('button', 'reach-swatch' + (currentAccent.toLowerCase() === preset.hex.toLowerCase() ? ' active' : ''));
+            const isMatch = currentAccent && currentAccent.toLowerCase() === preset.hex.toLowerCase();
+            const swatch = core.el('button', 'reach-swatch' + (isMatch ? ' active' : ''));
             swatch.style.backgroundColor = preset.hex;
             swatch.title = preset.name + ' (' + preset.hex + ')';
             swatch.dataset.hex = preset.hex;
@@ -397,7 +433,7 @@
         pickerWrap.title = 'Custom Accent Color';
         const colorInput = document.createElement('input');
         colorInput.type = 'color';
-        colorInput.value = currentAccent;
+        colorInput.value = currentAccent || '#0f6cbd';
         colorInput.addEventListener('input', (e) => {
             const val = e.target.value;
             swatchesWrap.querySelectorAll('.reach-swatch').forEach(s => s.classList.remove('active'));
@@ -412,11 +448,8 @@
 
         resetThemeBtn.addEventListener('click', () => {
             swatchesWrap.querySelectorAll('.reach-swatch').forEach(s => s.classList.remove('active'));
-            const first = swatchesWrap.querySelector('[data-hex="#ffb020"]');
-            if (first) first.classList.add('active');
-            colorInput.value = '#ffb020';
-            applyAccentColor('#ffb020');
-            core.toast('Accent reset to Amber Gold ✓', 'ok');
+            applyAccentColor(null);
+            core.toast('Accent reset to Theme Default ✓', 'ok');
         });
 
         panel.appendChild(cTheme);
@@ -858,6 +891,13 @@
         mount(context) {
             runtime.context = context || runtime.context;
             ensureHostRecord();
+            setupThemeObserver();
+        },
+
+        onThemeChanged(_theme) {
+            if (!runtime.accentColor) {
+                applyAccentColor(null);
+            }
         },
 
         activate(context) {
@@ -938,6 +978,10 @@
         unmount() {
             runtime.mounted = false;
             stopPolling();
+            if (runtime.themeObserver) {
+                try { runtime.themeObserver.disconnect(); } catch (_e) { }
+                runtime.themeObserver = null;
+            }
             if (typeof runtime.cleanupPage === 'function') {
                 try { runtime.cleanupPage(); } catch (_e) { }
                 runtime.cleanupPage = null;
