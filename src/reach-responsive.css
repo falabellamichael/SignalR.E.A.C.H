@@ -1,0 +1,40 @@
+/* SimpleREACH reach-responsive.css — responsive overrides; split of reach.css, loaded last in STYLE_SOURCES order. */
+/* ---- responsive ---- */
+@media (max-width: 900px) {
+    .reach-shell {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .reach-menu {
+        flex-direction: row;
+        align-items: center;
+        overflow-x: auto;
+        border-right: none;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+        padding: 8px 10px;
+    }
+    .reach-menu-brand {
+        display: none;
+    }
+    .reach-menu-items {
+        flex-direction: row;
+        flex: 0 0 auto;
+    }
+    .reach-menu-item span {
+        display: none;
+    }
+    .reach-menu-foot {
+        display: none;
+    }
+    .reach-tiles {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .reach-dash-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .reach-form-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .reach-content {
+        max-height: none;
+    }
+}

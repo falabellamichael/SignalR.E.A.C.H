@@ -10,7 +10,8 @@ SCHEMA_VERSION = 1
 SURFACES = ["advanced"]
 SCRIPT_SOURCES = ["manifest.js", "reach-core.js", "pages-common.js",
                    "pages-dashboard.js", "pages-endpoint.js", "pages-models.js", "pages-usage.js", "pages-logs.js", "pages-settings.js", "pages-about.js", "reach-pages.js", "reach.js"]
-STYLE_SOURCES = ["reach.css"]
+STYLE_SOURCES = ["reach.css", "reach-components.css", "reach-telemetry.css",
+                   "reach-theme.css", "reach-tools.css", "reach-responsive.css"]
 MANIFEST_PLACEHOLDER = "__REACH_MANIFEST_JSON__"
 DEFAULT_PORT = 20777
 

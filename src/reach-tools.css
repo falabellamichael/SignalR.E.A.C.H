@@ -1,0 +1,208 @@
+/* SimpleREACH reach-tools.css — playground, model ping, logs modal (split of reach.css; loaded in STYLE_SOURCES order). */
+/* ---- API Playground (Endpoint page) ---- */
+.reach-playground {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.reach-playground-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.reach-playground-pills {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 4px;
+}
+
+.reach-pill {
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: rgba(128, 128, 128, 0.1);
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    color: inherit;
+    cursor: pointer;
+    transition: all 120ms ease;
+}
+
+.reach-pill:hover {
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.14));
+    border-color: var(--reach-accent-border, rgba(255, 176, 32, 0.4));
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+.reach-playground-textarea {
+    width: 100%;
+    min-height: 56px;
+    border-radius: 6px;
+    padding: 6px 9px;
+    font-family: inherit;
+    font-size: 11.5px;
+    line-height: 1.45;
+    background: rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    color: inherit;
+    resize: vertical;
+}
+
+.reach-playground-textarea:focus {
+    outline: none;
+    border-color: var(--reach-accent, #ffb020);
+    box-shadow: 0 0 0 2px var(--reach-accent-glow, rgba(255, 176, 32, 0.3));
+}
+
+.reach-playground-console {
+    background: #090d12;
+    border: 1px solid rgba(128, 128, 128, 0.25);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    min-height: 65px;
+    max-height: 280px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: #e2e8f0;
+    position: relative;
+}
+
+.reach-playground-stats {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 10px;
+    opacity: 0.8;
+    margin-top: 2px;
+}
+
+.reach-playground-stat-val {
+    font-weight: 700;
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+/* ---- Models Per-Row Live Ping ---- */
+.reach-model-ping-btn {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 5px;
+}
+
+.reach-model-ping-tag {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 5px;
+    display: inline-block;
+}
+
+.reach-model-spec-badge {
+    font-size: 9.5px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(128, 128, 128, 0.15);
+    opacity: 0.8;
+    margin-left: 5px;
+}
+
+/* ---- Logs Payload Modal / Drawer ---- */
+.reach-log-row-clickable {
+    cursor: pointer;
+    transition: background 120ms ease;
+}
+
+.reach-log-row-clickable:hover {
+    background: rgba(128, 128, 128, 0.12);
+}
+
+.reach-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 99998;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    animation: reachFadeIn 140ms ease;
+}
+
+.reach-modal-card {
+    background: #141920;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 8px;
+    width: 100%;
+    max-width: 620px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+}
+
+.reach-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.reach-modal-head h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.reach-modal-body {
+    padding: 10px 12px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.reach-modal-pre {
+    background: #090d12;
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: Consolas, "Cascadia Mono", Menlo, monospace;
+    font-size: 10.5px;
+    line-height: 1.45;
+    max-height: 240px;
+    overflow-y: auto;
+    color: #cbd5e1;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin: 0;
+}
+
+.reach-modal-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 6px 12px;
+    border-top: 1px solid rgba(128, 128, 128, 0.2);
+    background: rgba(0, 0, 0, 0.2);
+}
+
+@keyframes reachFadeIn {
+    from { opacity: 0; transform: scale(0.97); }
+    to { opacity: 1; transform: scale(1); }
+}
+
