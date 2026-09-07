@@ -21,7 +21,7 @@
         page: 'dashboard',
         dirty: false,
         toastTimer: null,
-        version: '3.1.1'
+        version: '3.2.0'
     };
 
     function prefsGet(key, fallback) {

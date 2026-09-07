@@ -1,6 +1,6 @@
 """Shared module-level constants for the reachd package."""
 
-VERSION = "3.1.1"
+VERSION = "3.2.0"
 SERVICE = "simplereach"
 DEFAULT_PORT = 20777
 MAX_BODY_BYTES = 32 * 1024 * 1024
