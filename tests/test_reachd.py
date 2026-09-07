@@ -368,10 +368,16 @@ class ClientKeyManagementTests(unittest.TestCase):
     def test_mask_key(self):
         self.assertEqual(reachd.mask_key(""), "(none)")
         self.assertEqual(reachd.mask_key("short"), "set (short)")
-        masked = reachd.mask_key("sk-reach-1234567890abcdef1234567890abcdef")
-        self.assertTrue(masked.startswith("sk-reach-1234"))
-        self.assertTrue(masked.endswith("cdef"))
-        self.assertIn("…", masked)
+        masked = reachd.mask_key("sk-reach-" + "a" * 32)
+        self.assertEqual(masked, "sk-reach-…", "sk-reach keys mask to prefix only")
+        self.assertNotIn("a", masked)
+        # generic (legacy) keys keep first/last chars
+        gen = reachd.mask_key("legacy-secret-123")
+        self.assertTrue(gen.startswith("legacy-s"))
+        self.assertTrue(gen.endswith("-123"))
+        # preview never leaks secret characters
+        self.assertEqual(reachd.key_preview("sk-reach-" + "b" * 32), "sk-reach-…")
+        self.assertNotIn("b", reachd.key_preview("sk-reach-" + "b" * 32))
 
     def test_load_config_generates_default_key_and_migrates_legacy(self):
         with tempfile.TemporaryDirectory() as td:

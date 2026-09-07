@@ -189,14 +189,23 @@ def find_omniroute_key():
 
 
 def mask_key(key):
-    """Mask key for safe display in logs and UI."""
+    """Mask key for safe display in logs and UI (prefix only — no secret chars)."""
     if not key or not isinstance(key, str):
         return "(none)"
     if len(key) <= 12:
         return "set (short)"
-    if key.startswith("sk-reach-") and len(key) > 16:
-        return key[:13] + "…" + key[-4:]
+    if key.startswith("sk-reach-"):
+        return "sk-reach-…"
     return key[:8] + "…" + key[-4:]
+
+
+def key_preview(key):
+    """Tight display preview: no secret characters leak."""
+    if not key or not isinstance(key, str):
+        return "—"
+    if key.startswith("sk-reach-"):
+        return "sk-reach-…"
+    return key[:2] + "…" if len(key) > 4 else "…"
 
 
 def generate_client_key(name="Default"):
@@ -692,7 +701,7 @@ def settings_public(cfg):
         for k in access["keys"]:
             raw = k.get("key", "")
             k["masked_key"] = mask_key(raw)
-            k["preview"] = raw[:12] + "…" if len(raw) > 16 else raw
+            k["preview"] = key_preview(raw)
             k["key"] = k["masked_key"]
     return shown
 
@@ -1518,7 +1527,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     sk = dict(k)
                     raw_k = sk.get("key", "")
                     sk["masked_key"] = mask_key(raw_k)
-                    sk["preview"] = raw_k[:12] + "…" if len(raw_k) > 16 else raw_k
+                    sk["preview"] = key_preview(raw_k)
                     safe_keys.append(sk)
                 self._json(200, {"keys": safe_keys})
             elif path == "/_reach/stats":
