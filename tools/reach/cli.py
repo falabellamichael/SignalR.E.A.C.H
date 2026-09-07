@@ -233,7 +233,7 @@ def cmd_vscode(args):
                          "checkout (vscode/ missing)")
     act = getattr(args, "vscode_cmd", None) or "status"
     if act == "install":
-        if vscode_install(REPO_ROOT):
+        if vscode_install(REPO_ROOT, with_playwright=getattr(args, "with_playwright", False)):
             print("VS Code extension installed — reload VS Code to activate "
                   "(Ctrl+Shift+P -> Developer: Reload Window)")
     elif act == "uninstall":
@@ -477,9 +477,11 @@ def main():
     p_vscode = sub.add_parser("vscode",
                               help="manage the VS Code chat extension")
     vsc_sub = p_vscode.add_subparsers(dest="vscode_cmd")
-    vsc_sub.add_parser("install",
-                       help="side-load the extension into VS Code") \
-          .set_defaults(func=cmd_vscode)
+    p_vi = vsc_sub.add_parser("install",
+                               help="side-load the extension into VS Code")
+    p_vi.add_argument("--with-playwright", action="store_true",
+                      help="npm install playwright + headless Chromium for richer page fetching")
+    p_vi.set_defaults(func=cmd_vscode)
     vsc_sub.add_parser("uninstall",
                        help="remove the extension from VS Code") \
           .set_defaults(func=cmd_vscode)

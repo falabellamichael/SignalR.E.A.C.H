@@ -1,7 +1,15 @@
 /* SimpleREACH chat — theme mirrors the REACH control panel:
- * gold #ffb020 accents on translucent dark surfaces (reach.css tokens). */
+ * warm gold on Codalio-style cream/charcoal surfaces.
+ * Dark: gold on warm amber-tinted charcoal. Light (body.vscode-light):
+ * Codalio's warm-light palette — cream #f8efe3, raised #fffaf4, tan
+ * borders #dfd1c3, brown ink #2e2925 (tokens follow codalio-blueprint.css). */
 
 :root {
+  /* REACH identity — warm gold, held in both modes */
+  --reach-gold: #ffb020;
+  --reach-gold-hover: #ffc040;
+
+  /* dark-mode accents (default) */
   --reach-accent: #ffb020;
   --reach-accent-light: #ffd37a;
   --reach-accent-hover: #ffc040;
@@ -9,14 +17,37 @@
   --reach-accent-bg: rgba(255, 176, 32, 0.14);
   --reach-accent-border: rgba(255, 176, 32, 0.38);
   --reach-accent-text: #1a1206;
+  --reach-error: #ff8f7a;
+  --reach-shadow: rgba(0, 0, 0, 0.35);
 
-  /* editor-theme-aware base surfaces (translucent like the panel) */
-  --reach-panel: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 88%, transparent);
-  --reach-surface: color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 82%, transparent);
-  --reach-border: color-mix(in srgb, var(--vscode-panel-border, #3c3c3c) 55%, transparent);
+  /* warm-tinted charcoal (Codalio dark neutrals warmed by the gold) */
+  --reach-panel: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 94%, #3a2c1c);
+  --reach-raised: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 88%, #4a3a28);
+  --reach-surface: color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 90%, #4a3a28);
+  --reach-border: color-mix(in srgb, var(--vscode-panel-border, #3c3c3c) 70%, #7a5c33);
+  --reach-border-strong: var(--vscode-panel-border, #3c3c3c);
   --reach-text: var(--vscode-foreground, #e8e8e8);
   --reach-muted: var(--vscode-descriptionForeground, #9d9d9d);
-  --reach-error: #ff8f7a;
+}
+
+/* ---- warm light — Codalio's cream/brown palette (body.vscode-light) ---- */
+body.vscode-light {
+  --reach-accent: #b45309;
+  --reach-accent-light: #92400e;
+  --reach-accent-hover: #a34d08;
+  --reach-accent-glow: rgba(180, 83, 9, 0.28);
+  --reach-accent-bg: rgba(90, 60, 30, 0.07);
+  --reach-accent-border: rgba(160, 100, 20, 0.5);
+  --reach-error: #dc2626;
+  --reach-shadow: rgba(90, 60, 30, 0.16);
+
+  --reach-panel: #f8efe3;
+  --reach-raised: #fffaf4;
+  --reach-surface: #fffdfa;
+  --reach-border: #dfd1c3;
+  --reach-border-strong: #cbb9a5;
+  --reach-text: #2e2925;
+  --reach-muted: #796f67;
 }
 
 * { box-sizing: border-box; }
@@ -39,7 +70,7 @@ body {
 #topbar {
   flex: 0 0 auto;
   padding: 6px 8px;
-  background: var(--reach-panel);
+  background: var(--reach-raised);
   border-bottom: 1px solid var(--reach-border);
   position: relative;
 }
@@ -52,7 +83,7 @@ body {
   background: var(--reach-surface);
   color: var(--reach-text);
   border: 1px solid var(--reach-border);
-  border-radius: 4px;
+  border-radius: 6px;
   padding: 4px 6px;
   font-size: 12px;
 }
@@ -69,7 +100,7 @@ body {
   background: transparent;
   color: var(--reach-muted);
   border: 1px solid transparent;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
   line-height: 1;
 }
@@ -81,7 +112,7 @@ body {
 .icon-btn.armed {
   color: var(--reach-error);
   border-color: var(--reach-error);
-  background: rgba(255, 143, 122, 0.12);
+  background: color-mix(in srgb, var(--reach-error) 12%, transparent);
 }
 
 /* ---- history panel ---- */
@@ -91,8 +122,8 @@ body {
   overflow-y: auto;
   background: var(--reach-surface);
   border: 1px solid var(--reach-border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px var(--reach-shadow);
 }
 
 .history-title {
@@ -153,7 +184,7 @@ body {
   font-size: 12px;
   line-height: 1;
 }
-.history-item .del:hover { color: var(--reach-error); background: rgba(255, 143, 122, 0.12); }
+.history-item .del:hover { color: var(--reach-error); background: color-mix(in srgb, var(--reach-error) 12%, transparent); }
 
 .history-empty {
   padding: 8px;
@@ -204,7 +235,7 @@ body {
 .bubble .body {
   background: var(--reach-surface);
   border: 1px solid var(--reach-border);
-  border-radius: 8px;
+  border-radius: 10px;
   padding: 8px 10px;
   white-space: pre-wrap;
   word-break: break-word;
@@ -231,7 +262,7 @@ body {
   margin-right: 6px;
   vertical-align: -1px;
   border-radius: 50%;
-  border: 1.5px solid rgba(255, 176, 32, 0.18);
+  border: 1.5px solid color-mix(in srgb, var(--reach-accent) 20%, transparent);
   border-top-color: var(--reach-accent);
   border-right-color: var(--reach-accent-light);
   animation: think-spin 0.8s linear infinite, think-glow 1.6s ease-in-out infinite;
@@ -245,7 +276,7 @@ body {
 @keyframes think-spin { to { transform: rotate(360deg); } }
 @keyframes think-glow {
   0%, 100% { box-shadow: 0 0 2px var(--reach-accent-glow); filter: brightness(0.85); }
-  50% { box-shadow: 0 0 6px var(--reach-accent-glow), 0 0 14px rgba(255, 176, 32, 0.16); filter: brightness(1.25); }
+  50% { box-shadow: 0 0 6px var(--reach-accent-glow), 0 0 14px color-mix(in srgb, var(--reach-accent) 16%, transparent); filter: brightness(1.25); }
 }
 
 .bubble.error {
@@ -264,7 +295,7 @@ body {
   display: flex;
   gap: 6px;
   padding: 8px;
-  background: var(--reach-panel);
+  background: var(--reach-raised);
   border-top: 1px solid var(--reach-border);
 }
 
@@ -284,7 +315,7 @@ body {
 #input:focus { outline: none; border-color: var(--reach-accent-border); box-shadow: 0 0 6px var(--reach-accent-glow); }
 
 .send-btn {
-  background: var(--reach-accent);
+  background: var(--reach-gold);
   color: var(--reach-accent-text);
   border: none;
   border-radius: 6px;
@@ -292,7 +323,7 @@ body {
   font-size: 14px;
   cursor: pointer;
 }
-.send-btn:hover { background: var(--reach-accent-hover); }
+.send-btn:hover { background: var(--reach-gold-hover); }
 .send-btn:disabled { opacity: 0.45; cursor: default; }
 
 

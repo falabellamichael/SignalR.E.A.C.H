@@ -97,6 +97,21 @@
           "type": "number",
           "default": 512,
           "markdownDescription": "Max tokens for the private reasoning pass."
+        },
+        "simplereach.webSearch": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Web search \u2014 the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
+        },
+        "simplereach.searchResults": {
+          "type": "number",
+          "default": 5,
+          "markdownDescription": "Max search results injected per question (1-10)."
+        },
+        "simplereach.playwright": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Use Playwright (headless Chromium) for page fetching when the module is installed in the extension folder. Falls back to plain HTTP fetching when unavailable."
         }
       }
     }

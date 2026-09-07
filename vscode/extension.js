@@ -6,6 +6,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const { webSearchDdg, searchAndFetch, hasPlaywright } = require('./search');
 
 const CONFIG_SECTION = 'simplereach';
 
@@ -28,6 +29,9 @@ function config() {
     think: cfg.get('think') !== false,
     thinkModel: String(cfg.get('thinkModel') || ''),
     thinkMaxTokens: Math.max(64, Number(cfg.get('thinkMaxTokens') || 512)),
+    webSearch: cfg.get('webSearch') !== false,
+    searchResults: Math.max(1, Math.min(10, Number(cfg.get('searchResults') || 5))),
+    playwright: cfg.get('playwright') !== false,
   };
 }
 
@@ -239,8 +243,36 @@ class ReachChatViewProvider {
     }
   }
 
+  /* Turn a user question into a short web-search query (model-assisted with
+   * a heuristic fallback — must never block the request). */
+  async _deriveQuery(prompt, chatModel) {
+    const { endpoint } = config();
+    const clean = prompt.replace(/\s+/g, ' ').trim().slice(0, 500);
+    try {
+      const resp = await fetch(`${endpoint}/chat/completions`, {
+        method: 'POST',
+        headers: this._authHeaders(),
+        body: JSON.stringify({
+          model: chatModel || 'gpt-4o',
+          max_tokens: 30,
+          stream: false,
+          messages: [
+            { role: 'system', content: 'Convert the user question into ONE short web search query (max 8 words). Reply with the query only.' },
+            { role: 'user', content: clean },
+          ],
+        }),
+      });
+      if (!resp.ok) throw new Error('bad status');
+      const data = await resp.json();
+      const q = data && data.choices && data.choices[0]
+        && data.choices[0].message && data.choices[0].message.content;
+      if (q && q.trim().length >= 3) return q.replace(/^["']+|["']+$/g, '').trim().slice(0, 120);
+    } catch (e) { /* fall through to heuristic */ }
+    return clean.replace(/[^\w\s-]/g, ' ').split(/\s+/).slice(0, 10).join(' ');
+  }
+
   async _chat(body) {
-    const { endpoint, maxTokens, workspaceContext, contextMaxKb, think } = config();
+    const { endpoint, maxTokens, workspaceContext, contextMaxKb, think, webSearch, searchResults, playwright } = config();
     const messages = Array.isArray(body.messages) ? body.messages.slice() : [];
     // ---- WhisperThink: private reasoning before the answer ----
     let thought = null;
@@ -252,6 +284,45 @@ class ReachChatViewProvider {
         if (thought) {
           this._post('thought', { text: thought });
         }
+      }
+    }
+    // ---- web search: fresh results injected as grounded context ----
+    if (body.webSearch && webSearch) {
+      const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+      if (lastUser) {
+        try {
+          const query = await this._deriveQuery(lastUser.content, body.model);
+          const { results, pages } = await searchAndFetch(query, searchResults, 2);
+          if (results.length || pages.length) {
+            const block = [];
+            block.push('Web search results (fresh, may change daily):');
+            results.forEach((r, i) => {
+              block.push(`[${i + 1}] ${r.title} — ${r.url}${r.snippet ? '\n    ' + r.snippet : ''}`);
+            });
+            pages.forEach((p) => {
+              block.push(`\nExcerpt from ${p.title} (${p.url}):\n${p.text.slice(0, 4000)}`);
+            });
+            const searchMsg = {
+              role: 'system',
+              content: block.join('\n'),
+            };
+            const existingSystem = messages.findIndex((m) => m.role === 'system');
+            if (existingSystem >= 0) {
+              messages[existingSystem] = {
+                role: 'system',
+                content: messages[existingSystem].content + '\n\n' + searchMsg.content,
+              };
+            } else {
+              messages.unshift(searchMsg);
+            }
+            this._post('searchInfo', {
+              query,
+              results: results.length,
+              pages: pages.length,
+              playwright: playwright && hasPlaywright,
+            });
+          }
+        } catch (e) { /* search must never block the answer */ }
       }
     }
     // ---- workspace context injection ----

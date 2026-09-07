@@ -15,6 +15,8 @@
   const wsCheck = $('#ws-check');
   const wsCount = $('#ws-count');
   const thinkCheck = $('#think-check');
+  const webCheck = $('#web-check');
+  const webCount = $('#web-count');
 
   let conv = null;            // current conversation {id, model, ts, title, messages, thoughts}
   let busy = false;
@@ -24,6 +26,7 @@
   let clearTimer = null;
   let includeWorkspace = true;
   let thinkEnabled = true;
+  let webEnabled = true;
   let pendingThought = '';
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
@@ -274,6 +277,7 @@
         messages: conv.messages.slice(),
         includeWorkspace,
         think: thinkEnabled,
+        webSearch: webEnabled,
       },
     });
     scrollBottom();
@@ -340,6 +344,14 @@
         const chips = document.querySelectorAll('.think-chip');
         chips.forEach((c) => { c.textContent = '🧠'; c.title = 'Private reasoning:\n\n' + pendingThought; });
         break;
+      case 'searchInfo':
+        webCount.textContent = msg.results
+          ? `Web · ${msg.results} hits${msg.pages ? ' + ' + msg.pages + ' pages' : ''}`
+          : 'Web';
+        webCount.title = msg.query
+          ? `Searched: "${msg.query}"${msg.playwright ? ' (Playwright)' : ''}`
+          : '';
+        break;
       case 'contextInfo':
         wsCount.textContent = msg.files
           ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
@@ -375,6 +387,10 @@
     thinkEnabled = thinkCheck.checked;
     vscode.setState(Object.assign(state(), { thinkEnabled }));
   });
+  webCheck.addEventListener('change', () => {
+    webEnabled = webCheck.checked;
+    vscode.setState(Object.assign(state(), { webEnabled }));
+  });
   historyBtn.addEventListener('click', () => {
     historyPanel.hidden = !historyPanel.hidden;
     if (!historyPanel.hidden) renderHistory();
@@ -400,6 +416,10 @@
   if (saved.thinkEnabled !== undefined) {
     thinkEnabled = !!saved.thinkEnabled;
     thinkCheck.checked = thinkEnabled;
+  }
+  if (saved.webEnabled !== undefined) {
+    webEnabled = !!saved.webEnabled;
+    webCheck.checked = webEnabled;
   }
   if (saved.conv) {
     conv = saved.conv;

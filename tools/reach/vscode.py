@@ -35,7 +35,7 @@ def installed():
     return root.is_dir() and any(_is_ours(p) for p in root.iterdir())
 
 
-def install(repo_root, quiet=False):
+def install(repo_root, quiet=False, with_playwright=False):
     """Copy the checkout's vscode/ into the user extensions dir. Returns True on success."""
     src = Path(repo_root) / "vscode"
     if not (src / "package.json").is_file():
@@ -45,8 +45,9 @@ def install(repo_root, quiet=False):
     dst = root / FOLDER
     try:
         dst.mkdir(parents=True, exist_ok=True)
-        for name in ("package.json", "extension.js"):
-            shutil.copy2(src / name, dst / name)
+        for name in ("package.json", "extension.js", "search.js"):
+            if (src / name).is_file():
+                shutil.copy2(src / name, dst / name)
         media_src = src / "media"
         media_dst = dst / "media"
         media_dst.mkdir(exist_ok=True)
@@ -62,10 +63,87 @@ def install(repo_root, quiet=False):
             shutil.rmtree(entry, ignore_errors=True)
             if not quiet:
                 print("  pruned old VS Code extension %s" % entry.name)
+    # default route: the Copilot chat model through the REACH relay
+    configure_defaults(quiet=quiet)
+    # optional Playwright (headless Chromium page fetching)
+    if with_playwright:
+        _install_playwright(dst)
     if not quiet:
         print("  VS Code extension installed -> " + str(dst))
+        print("  default model: copilot-chat (change in Settings -> simplereach.model)")
         print("  (reload VS Code: Ctrl+Shift+P -> Developer: Reload Window)")
     return True
+
+
+def configure_defaults(quiet=False):
+    """Write VS Code user settings so the extension routes to REACH's
+    Copilot chat out of the box (never clobbers unrelated settings)."""
+    import json
+    import urllib.request
+
+    public_url = None
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:20777/public-url",
+                                     timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+            public_url = (data.get("public_url") or "").strip() or None
+    except Exception:
+        pass
+    endpoint = (public_url or "http://127.0.0.1:20777") + "/v1"
+
+    settings_paths = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        settings_paths += [
+            Path(appdata) / "Code" / "User" / "settings.json",
+            Path(appdata) / "Code - Insiders" / "User" / "settings.json",
+        ]
+    for sp in settings_paths:
+        try:
+            settings = {}
+            if sp.is_file():
+                try:
+                    settings = json.loads(sp.read_text(encoding="utf-8"))
+                    if not isinstance(settings, dict):
+                        settings = {}
+                except (OSError, json.JSONDecodeError):
+                    settings = {}
+            settings["simplereach.endpoint"] = endpoint
+            settings["simplereach.model"] = "copilot-chat"
+            sp.parent.mkdir(parents=True, exist_ok=True)
+            sp.write_text(json.dumps(settings, indent=4), encoding="utf-8")
+            if not quiet:
+                print("  VS Code settings routed to Copilot: %s -> %s"
+                      % (sp, endpoint))
+            return
+        except OSError as exc:
+            if not quiet:
+                print("  could not write VS Code settings %s: %s" % (sp, exc))
+
+
+def _install_playwright(dst):
+    """npm install playwright + headless Chromium inside the extension dir."""
+    import subprocess
+    if not shutil.which("npm"):
+        print("  --with-playwright: npm not found — skipped")
+        return
+    print("  installing playwright (npm)…")
+    r1 = subprocess.run(["npm", "install", "playwright", "--no-audit",
+                         "--no-fund"],
+                        cwd=str(dst), capture_output=True, text=True,
+                        timeout=600)
+    if r1.returncode != 0:
+        print("  playwright npm install failed: %s"
+              % (r1.stderr or r1.stdout)[:300])
+        return
+    print("  downloading headless Chromium…")
+    r2 = subprocess.run(["npx", "playwright", "install", "chromium"],
+                        cwd=str(dst), capture_output=True, text=True,
+                        timeout=900)
+    if r2.returncode == 0:
+        print("  playwright ready — page fetching will use headless Chromium")
+    else:
+        print("  chromium download failed — page fetching falls back to HTTP")
 
 
 def uninstall(quiet=False):
