@@ -32,8 +32,6 @@ import argparse
 import collections
 import hashlib
 import json
-import os
-import subprocess
 import sys
 import threading
 import time
@@ -55,6 +53,7 @@ from reachd.const import (
     VERSION,
 )
 from reachd.limits import CounterGate, RateLimiter
+from reachd.publish import publish_url
 from reachd.state import RelayState
 from reachd.settings import (
     DEFAULT_SETTINGS,
@@ -1098,34 +1097,6 @@ class RelayHandler(BaseHTTPRequestHandler):
         raw = json.dumps(key_payload, sort_keys=True,
                          separators=(",", ":")).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
-
-
-def publish_url(state):
-    """Push the current public URL to the pointer gist. Returns (ok, detail)."""
-    if not state.cfg.get("publish", {}).get("enabled"):
-        return False, "publishing is disabled in settings"
-    url = state.public_url
-    if not url:
-        return False, "no public URL available"
-    import shutil as _shutil
-    gh = _shutil.which("gh")
-    if not gh:
-        gh = str(Path(os.environ.get("PROGRAMFILES", "")) / "GitHub CLI"
-                 / "gh.exe")
-        if not Path(gh).is_file():
-            return False, "gh CLI not found"
-    tmp = state.cfg_path.parent / GIST_FILE
-    tmp.write_text(url.strip(), encoding="utf-8")
-    try:
-        result = subprocess.run([gh, "gist", "edit", GIST_ID, str(tmp)],
-                                capture_output=True, text=True, timeout=60,
-                                creationflags=(subprocess.CREATE_NO_WINDOW
-                                               if os.name == "nt" else 0))
-        if result.returncode != 0:
-            return False, (result.stderr or "")[:300]
-        return True, url
-    except Exception as exc:
-        return False, str(exc)[:300]
 
 
 # ----------------------------------------------------------------------
