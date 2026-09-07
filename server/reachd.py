@@ -296,9 +296,9 @@ DEFAULT_SETTINGS = {
         },
         "gemini-3.7-flash": {
             **MODEL_SPEC_DEFAULTS,
-            "upstream": "antigravity/gemini-3.7-flash-low",
+            "upstream": "gemini/gemini-3.7-flash",
             "fallback": "claude-sonnet-4.6",
-            "description": "Gemini 3.7 Flash ultra-fast tier",
+            "description": "Gemini 3.7 Flash via Google AI Studio",
             "context_window": 128000,
         },
     },
