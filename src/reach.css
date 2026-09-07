@@ -313,8 +313,20 @@
 /* ---- stat tiles ---- */
 .reach-tiles {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
+}
+
+@media (max-width: 960px) {
+    .reach-tiles {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 600px) {
+    .reach-tiles {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
 }
 
 .reach-tile {
@@ -604,10 +616,11 @@
     font-size: 11px;
 }
 
+.reach-stat-grid-4,
 .reach-stat-grid-3 {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 5px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
 }
 
 .reach-stat-mini-tile {

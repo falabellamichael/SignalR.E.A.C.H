@@ -131,6 +131,7 @@ DEFAULT_SETTINGS = {
         "reject_blocked": False,    # True → 400 on blocked fields, else strip
         "temperature_min": 0.0,
         "temperature_max": 2.0,
+        "show_speed_in_chat": True, # broadcast speed badge (⚡ X tok/s) in chat responses
     },
     # ---- model aliases (per-alias specs, see MODEL_SPEC_DEFAULTS) ----
     "models": {
@@ -350,7 +351,7 @@ def validate_settings(cfg):
         _int(req.get(field, DEFAULT_SETTINGS["request"][field]), lo, hi,
              "request." + field)
     for key in ("allow_tools", "allow_response_format", "allow_logprobs",
-                "reject_blocked"):
+                "reject_blocked", "show_speed_in_chat"):
         _bool(req.get(key, False), "request." + key)
     blocked = req.get("blocked_fields", [])
     _expect(isinstance(blocked, list) and len(blocked) <= 64,
@@ -658,13 +659,15 @@ class Analytics:
                     " COALESCE(SUM(tokens_out),0) AS tout,"
                     " COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END),0) AS err,"
                     " COALESCE(SUM(CASE WHEN status = 429 THEN 1 ELSE 0 END),0) AS rl,"
-                    " COALESCE(AVG(latency_ms),0) AS lat "
+                    " COALESCE(AVG(latency_ms),0) AS lat,"
+                    " COALESCE(ROUND(SUM(CASE WHEN tokens_out > 0 THEN tokens_out ELSE 0 END) * 1000.0 / NULLIF(SUM(CASE WHEN tokens_out > 0 THEN latency_ms ELSE 0 END), 0), 1), 0.0) AS tps "
                     "FROM requests WHERE ts >= ?", (today,)).fetchone()
                 out["today"] = {
                     "requests": row["n"], "tokens_in": row["ti"],
                     "tokens_out": row["tout"], "errors": row["err"],
                     "rate_limited": row["rl"],
                     "avg_latency_ms": round(row["lat"], 1),
+                    "tokens_per_sec": row["tps"] or 0.0,
                 }
                 out["cache_hits"] = conn.execute(
                     "SELECT COUNT(*) FROM requests WHERE ts >= ? AND cached = 1",
@@ -900,6 +903,7 @@ class RelayState:
         self.cache = ResponseCache()
         self.gate = CounterGate()
         self.latencies = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
+        self.speeds = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
         self.public_url = None
         self.public_url_source = None
         self.started_at = time.time()
@@ -997,9 +1001,24 @@ class RelayState:
             ordered = sorted(self.latencies)
             return round(ordered[int(len(ordered) * 0.95) - 1], 1)
 
+    def note_speed(self, tps):
+        if tps and tps > 0:
+            with self._lock:
+                self.speeds.append(float(tps))
+
+    def current_speed(self):
+        with self._lock:
+            if not self.speeds:
+                return 0.0
+            return round(sum(self.speeds) / len(self.speeds), 1)
+
     def snapshot(self):
         with self._lock:
             stats = self.analytics.stats()
+            today = stats.get("today", {})
+            speed = self.current_speed() or today.get("tokens_per_sec", 0.0)
+            today["tokens_per_sec"] = speed
+            today["live_tps"] = speed
             return {
                 "service": SERVICE,
                 "version": VERSION,
@@ -1014,7 +1033,8 @@ class RelayState:
                 "public_url_source": self.public_url_source,
                 "uptime_s": round(time.time() - self.started_at, 1),
                 "p95_latency_ms": self.p95_latency_ms(),
-                "today": stats.get("today", {}),
+                "tokens_per_sec": speed,
+                "today": today,
                 "cache": self.cache.snapshot(),
                 "rate_limits": {
                     "enabled": bool(self.cfg.get("rate_limits", {})
@@ -1060,7 +1080,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                          "Content-Type, Authorization, X-Reach-Key")
         self.send_header("Access-Control-Expose-Headers",
                          "X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After,"
-                         " X-Reach-Cache")
+                         " X-Reach-Cache, X-Tokens-Per-Second, X-Reach-Tokens-Per-Second,"
+                         " OpenAI-Processing-Ms")
 
     def _json(self, status, payload, extra_headers=None):
         body = json.dumps(payload).encode("utf-8")
@@ -1771,6 +1792,14 @@ class RelayHandler(BaseHTTPRequestHandler):
                         except json.JSONDecodeError:
                             pass
                     scrubbed = scrub_trailing_roles("".join(assembled))
+                    stream_duration = max(0.001, time.time() - started)
+                    latency_ms = int(stream_duration * 1000)
+                    approx_in = max(1, total_chars // 4)
+                    approx_out = max(1, len(scrubbed) // 4)
+                    tps = round(approx_out / stream_duration, 1)
+                    STATE.note_speed(tps)
+                    if req_cfg.get("show_speed_in_chat", True) and tps > 0:
+                        scrubbed += "\n\n*(⚡ %.1f tok/s)*" % tps
                     created = int(time.time())
                     for payload_chunk in (
                         {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
@@ -1781,26 +1810,92 @@ class RelayHandler(BaseHTTPRequestHandler):
                          "created": created, "model": requested,
                          "choices": [{"index": 0, "delta": {},
                                       "finish_reason": "stop"}]},
+                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
+                         "created": created, "model": requested,
+                         "choices": [],
+                         "usage": {"prompt_tokens": approx_in,
+                                   "completion_tokens": approx_out,
+                                   "total_tokens": approx_in + approx_out,
+                                   "tokens_per_second": tps,
+                                   "completion_tokens_per_second": tps,
+                                   "speed_tps": tps}}
                     ):
                         self._write_chunk(("data: " + json.dumps(payload_chunk)
                                            + "\n\n").encode("utf-8"))
                     self._write_chunk(b"data: [DONE]\n\n")
                     self._write_chunk(b"")  # terminating chunk
                 else:
+                    streamed_tokens = 0
+                    streamed_chars = 0
+                    last_chunk_id = "chatcmpl-reach"
                     try:
                         while True:
                             line = upstream.readline()
                             if not line:
                                 break
+                            if line.startswith(b"data:"):
+                                text_line = line[5:].strip()
+                                if text_line == b"[DONE]":
+                                    break
+                                try:
+                                    parsed_chunk = json.loads(text_line.decode("utf-8", "replace"))
+                                    if isinstance(parsed_chunk, dict):
+                                        if parsed_chunk.get("id"):
+                                            last_chunk_id = parsed_chunk["id"]
+                                        usage_obj = parsed_chunk.get("usage")
+                                        if isinstance(usage_obj, dict) and usage_obj.get("completion_tokens"):
+                                            streamed_tokens = int(usage_obj["completion_tokens"])
+                                        choices = parsed_chunk.get("choices")
+                                        if isinstance(choices, list) and choices:
+                                            delta = choices[0].get("delta", {})
+                                            content = delta.get("content")
+                                            if isinstance(content, str):
+                                                streamed_chars += len(content)
+                                                streamed_tokens += 1
+                                except Exception:
+                                    pass
                             self._write_chunk(line)
+
+                        stream_duration = max(0.001, time.time() - started)
+                        latency_ms = int(stream_duration * 1000)
+                        approx_in = max(1, total_chars // 4)
+                        approx_out = max(1, streamed_tokens if streamed_tokens > 0 else (streamed_chars // 4 or 1))
+                        tps = round(approx_out / stream_duration, 1)
+                        STATE.note_speed(tps)
+
+                        created_now = int(time.time())
+                        if req_cfg.get("show_speed_in_chat", True) and tps > 0:
+                            speed_chunk = {
+                                "id": last_chunk_id, "object": "chat.completion.chunk",
+                                "created": created_now, "model": requested,
+                                "choices": [{"index": 0, "delta": {"content": "\n\n*(⚡ %.1f tok/s)*" % tps},
+                                             "finish_reason": None}]
+                            }
+                            self._write_chunk(("data: " + json.dumps(speed_chunk) + "\n\n").encode("utf-8"))
+
+                        usage_chunk = {
+                            "id": last_chunk_id, "object": "chat.completion.chunk",
+                            "created": created_now, "model": requested,
+                            "choices": [],
+                            "usage": {
+                                "prompt_tokens": approx_in,
+                                "completion_tokens": approx_out,
+                                "total_tokens": approx_in + approx_out,
+                                "tokens_per_second": tps,
+                                "completion_tokens_per_second": tps,
+                                "speed_tps": tps
+                            }
+                        }
+                        self._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
+                        self._write_chunk(b"data: [DONE]\n\n")
                     finally:
                         self._write_chunk(b"")
                 STATE.note_success()
                 self._log_chat(model=requested, upstream_model=upstream_model,
                                ip=ip, user_agent=self.headers.get("User-Agent"),
                                status=200, error=None,
-                               latency_ms=int((time.time() - started) * 1000),
-                               tokens_in=None, tokens_out=None, stream=True,
+                               latency_ms=latency_ms,
+                               tokens_in=approx_in, tokens_out=approx_out, stream=True,
                                request_body=request_body)
             finally:
                 STATE.gate.release()
@@ -1813,6 +1908,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         data = upstream.read()
         tokens_in = tokens_out = None
         response_body = None
+        parsed = None
         try:
             parsed = json.loads(data.decode("utf-8", "replace"))
             usage = parsed.get("usage") or {}
@@ -1820,23 +1916,69 @@ class RelayHandler(BaseHTTPRequestHandler):
             tokens_out = usage.get("completion_tokens")
         except Exception:
             parsed = None
-        if spec.get("strip_trailing_roles") and isinstance(parsed, dict):
-            try:
-                choices = parsed.get("choices")
-                if isinstance(choices, list):
-                    for choice in choices:
-                        message = choice.get("message")
-                        if isinstance(message, dict) \
-                                and isinstance(message.get("content"), str):
-                            message["content"] = scrub_trailing_roles(
-                                message["content"])
-                    data = json.dumps(parsed).encode("utf-8")
-            except Exception:
-                pass  # scrubbing is best-effort; serve the raw body on failure
+
+        latency_ms = int((time.time() - started) * 1000)
+        content_text = ""
+        if isinstance(parsed, dict):
+            choices = parsed.get("choices") or []
+            if choices and isinstance(choices[0], dict):
+                content_text = (choices[0].get("message") or {}).get("content") or ""
+
+        # If upstream gave 0 or missing completion_tokens, estimate from generated content
+        if (tokens_out is None or tokens_out == 0) and content_text:
+            tokens_out = max(1, max(len(content_text.split()), len(content_text) // 4))
+
+        if tokens_in is None or tokens_in == 0:
+            tokens_in = max(1, total_chars // 4)
+
+        tps = 0.0
+        if tokens_out and latency_ms > 0:
+            tps = round(tokens_out / (latency_ms / 1000.0), 1)
+            STATE.note_speed(tps)
+
+        if isinstance(parsed, dict):
+            usage = parsed.get("usage")
+            if not isinstance(usage, dict):
+                usage = {}
+            if tokens_in is not None:
+                usage["prompt_tokens"] = tokens_in
+            if tokens_out is not None:
+                usage["completion_tokens"] = tokens_out
+            if tps > 0:
+                usage["tokens_per_second"] = tps
+                usage["completion_tokens_per_second"] = tps
+                usage["speed_tps"] = tps
+            parsed["usage"] = usage
+
+            if req_cfg.get("show_speed_in_chat", True) and tps > 0:
+                try:
+                    choices = parsed.get("choices")
+                    if isinstance(choices, list) and choices:
+                        first_choice = choices[0]
+                        if isinstance(first_choice, dict):
+                            msg = first_choice.get("message")
+                            if isinstance(msg, dict) and isinstance(msg.get("content"), str):
+                                msg["content"] += "\n\n*(⚡ %.1f tok/s · %dms)*" % (tps, latency_ms)
+                except Exception:
+                    pass
+
+            if spec.get("strip_trailing_roles"):
+                try:
+                    choices = parsed.get("choices")
+                    if isinstance(choices, list):
+                        for choice in choices:
+                            message = choice.get("message")
+                            if isinstance(message, dict) \
+                                    and isinstance(message.get("content"), str):
+                                message["content"] = scrub_trailing_roles(
+                                    message["content"])
+                except Exception:
+                    pass
+            data = json.dumps(parsed).encode("utf-8")
+
         if STATE.cfg.get("data", {}).get("log_bodies"):
             response_body = data[:2048].decode("utf-8", "replace")
         STATE.note_success()
-        latency_ms = int((time.time() - started) * 1000)
         with STATE._lock:
             STATE.latencies.append(latency_ms)
 
@@ -1886,6 +2028,10 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self._cors()
         self._rate_limit_headers(rl_headers)
+        if tps > 0:
+            self.send_header("X-Tokens-Per-Second", str(tps))
+            self.send_header("X-Reach-Tokens-Per-Second", str(tps))
+        self.send_header("OpenAI-Processing-Ms", str(latency_ms))
         if fallback_used:
             self.send_header("X-Reach-Fallback", "used")
         self.end_headers()

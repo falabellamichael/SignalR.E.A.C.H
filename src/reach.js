@@ -519,10 +519,12 @@
             wrap.appendChild(core.el('div', 'reach-stat-mini-lbl', lbl));
             return wrap;
         };
-        grid3.appendChild(mkMini('0', 'Requests', 'reach-stat-mini-reqs'));
-        grid3.appendChild(mkMini('0', 'Tokens', 'reach-stat-mini-tokens'));
-        grid3.appendChild(mkMini('0ms', 'Avg Lat', 'reach-stat-mini-latency'));
-        c5.appendChild(grid3);
+        const grid4 = core.el('div', 'reach-stat-grid-4');
+        grid4.appendChild(mkMini('0', 'Reqs', 'reach-stat-mini-reqs'));
+        grid4.appendChild(mkMini('0', 'Tokens', 'reach-stat-mini-tokens'));
+        grid4.appendChild(mkMini('—', 'Tok/s', 'reach-stat-mini-tps'));
+        grid4.appendChild(mkMini('0ms', 'Avg Lat', 'reach-stat-mini-latency'));
+        c5.appendChild(grid4);
         panel.appendChild(c5);
 
         // --- Event Listeners ---
@@ -653,6 +655,7 @@
         const urlBox = panel.querySelector('#reach-stat-url-box');
         const miniReqs = panel.querySelector('#reach-stat-mini-reqs');
         const miniTokens = panel.querySelector('#reach-stat-mini-tokens');
+        const miniTps = panel.querySelector('#reach-stat-mini-tps');
         const miniLatency = panel.querySelector('#reach-stat-mini-latency');
 
         if (snap) {
@@ -667,6 +670,10 @@
             const today = snap.today || {};
             if (miniReqs) miniReqs.textContent = core.fmtNum(today.requests);
             if (miniTokens) miniTokens.textContent = core.fmtNum((today.tokens_in || 0) + (today.tokens_out || 0));
+            const speed = (today.tokens_per_sec != null && today.tokens_per_sec > 0)
+                ? today.tokens_per_sec
+                : (snap.tokens_per_sec || 0);
+            if (miniTps) miniTps.textContent = speed > 0 ? (speed + ' tps') : '—';
             if (miniLatency) miniLatency.textContent = core.fmtLatency(today.avg_latency_ms);
         } else {
             if (dot) dot.className = 'reach-dot reach-dot-off';

@@ -71,10 +71,12 @@
             const tiles = el('div', 'reach-tiles');
             const tileReqs = statTile('Requests today', '—', 'all clients', '');
             const tileTokens = statTile('Tokens today', '—', '0 in · 0 out', '');
+            const tileSpeed = statTile('Tokens / sec', '—', 'live generation', 'good');
             const tileLatency = statTile('Avg latency', '—', 'p95 —', '');
             const tileErrors = statTile('Errors today', '—', '0 rate-limited', 'good');
             tiles.appendChild(tileReqs);
             tiles.appendChild(tileTokens);
+            tiles.appendChild(tileSpeed);
             tiles.appendChild(tileLatency);
             tiles.appendChild(tileErrors);
             body.appendChild(tiles);
@@ -234,6 +236,7 @@
             dom = {
                 tileReqs,
                 tileTokens,
+                tileSpeed,
                 tileLatency,
                 tileErrors,
                 urlCode: cEndpoint.querySelector('code.reach-url'),
@@ -276,6 +279,14 @@
             const tokSub = dom.tileTokens.querySelector('.reach-tile-sub');
             if (tokVal) tokVal.textContent = core.fmtNum((today.tokens_in || 0) + (today.tokens_out || 0));
             if (tokSub) tokSub.textContent = core.fmtNum(today.tokens_in || 0) + ' in · ' + core.fmtNum(today.tokens_out || 0) + ' out';
+
+            const speedVal = dom.tileSpeed ? dom.tileSpeed.querySelector('.reach-tile-value') : null;
+            const speedSub = dom.tileSpeed ? dom.tileSpeed.querySelector('.reach-tile-sub') : null;
+            const liveTps = (today.tokens_per_sec != null && today.tokens_per_sec > 0)
+                ? today.tokens_per_sec
+                : (snap.tokens_per_sec || 0);
+            if (speedVal) speedVal.textContent = liveTps > 0 ? (liveTps + ' tps') : '—';
+            if (speedSub) speedSub.textContent = liveTps > 0 ? '⚡ live generation' : 'awaiting traffic';
 
             const latVal = dom.tileLatency.querySelector('.reach-tile-value');
             const latSub = dom.tileLatency.querySelector('.reach-tile-sub');
@@ -430,6 +441,7 @@
         urlCard.appendChild(urlRow);
         const meta = el('div', 'reach-meta-row');
         meta.appendChild(chip('model: gpt-4o'));
+        meta.appendChild(chip('tokens/s telemetry'));
         meta.appendChild(chip('unlimited · free'));
         meta.appendChild(chip('no API key'));
         urlCard.appendChild(meta);
@@ -2282,6 +2294,8 @@
             rq.appendChild(buildInput('checkbox', 'request', 'allow_logprobs', 'Allow logprobs'));
             rq.appendChild(buildInput('csv', 'request', 'blocked_fields', 'Blocked fields',
                 'Request fields to reject or strip (e.g. seed, stop, logit_bias).'));
+            rq.appendChild(buildInput('checkbox', 'request', 'show_speed_in_chat', 'Show tokens/s in AI chat responses',
+                'Appends live generation throughput (⚡ X.X tok/s) directly to AI chat completions so users and chat windows see speed metrics.'));
             rq.appendChild(buildInput('checkbox', 'request', 'reject_blocked', 'Reject blocked fields (400)',
                 'Off = silently strip them; on = refuse the request.'));
 
