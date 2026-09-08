@@ -306,6 +306,11 @@ class ReachChatViewProvider {
 
   resolveWebviewView(webviewView) {
     this._view = webviewView;
+    if (this._pendingContext && this._pendingContext.length) {
+      const pending = this._pendingContext;
+      this._pendingContext = [];
+      for (const item of pending) this._post('addContextItem', item);
+    }
     const wv = webviewView.webview;
     wv.options = {
       enableScripts: true,
@@ -1054,14 +1059,28 @@ function activate(context) {
   let browserPanel = null;
   const browserState = { history: [], index: -1 };
 
-  // Send the picked element to the REACH chat panel (focuses it first).
+  // Elements picked in the REACH Browser (or via the Add Element command)
+  // become chat ATTACHMENTS — context that rides along with the user's next
+  // message — instead of auto-running the AI.
   const reachBrowserAddElement = (data) => {
     const text = String((data && data.text) || '').trim();
     if (!text) return;
-    postPrompt('Add this element from the browser page'
-      + (data.url ? ' (' + String(data.url).slice(0, 500) + ')' : '')
-      + (data.title ? ' — page: "' + String(data.title).slice(0, 120) + '"' : '')
-      + ' to our context:\n\n' + text.slice(0, 8000));
+    const tagMatch = /^<([a-z0-9]+)>/i.exec(text);
+    const source = String((data && data.title) || (data && data.url) || 'REACH Browser');
+    const item = {
+      name: ((tagMatch ? '<' + tagMatch[1] + '> ' : '') + source).slice(0, 60),
+      content: text.slice(0, 8000),
+      url: String((data && data.url) || '').slice(0, 500),
+      title: String((data && data.title) || '').slice(0, 120),
+    };
+    if (provider._view) {
+      provider._post('addContextItem', item);
+    } else {
+      // Chat view not created yet — flush it when the view resolves.
+      provider._pendingContext = provider._pendingContext || [];
+      provider._pendingContext.push(item);
+    }
+    vscode.commands.executeCommand('reach.chat.focus');
   };
 
   const browserPost = (type, payload) => {

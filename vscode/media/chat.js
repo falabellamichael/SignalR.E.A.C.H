@@ -1199,7 +1199,7 @@
       const imgs = attachments.filter((a) => a.kind === 'image' && a.dataUrl);
       const texts = attachments.filter((a) => a.kind === 'text' && a.content);
       const block = texts.length
-        ? '\n\nAttached files:\n' + texts.map((t) => '--- ' + t.name + ' ---\n' + t.content.slice(0, 30000)).join('\n\n')
+        ? '\n\nAttached context:\n' + texts.map((t) => '--- ' + t.name + ' ---\n' + t.content.slice(0, 30000)).join('\n\n')
         : '';
       if (imgs.length) {
         msgs[msgs.length - 1] = Object.assign({}, last, {
@@ -1512,6 +1512,27 @@
         ok.forEach((i) => { if (attachments.length < MAX_ATTACHMENTS) attachments.push(i); });
         renderChips();
         if (errs.length) hint('⚠ ' + errs.map((e) => e.name + ': ' + e.error).join(' · '));
+        break;
+      }
+      case 'addContextItem': {
+        // Element picked in the REACH Browser — attach it like a file so it
+        // rides along with the user's next message. Never auto-answers.
+        const content = String(msg.content || '').slice(0, 200000);
+        if (!content) break;
+        if (attachments.length >= MAX_ATTACHMENTS) {
+          hint('⚠ Attachment limit reached (' + MAX_ATTACHMENTS + ') — remove one first');
+          break;
+        }
+        attachments.push({
+          kind: 'text',
+          name: String(msg.name || 'browser element').slice(0, 60),
+          content,
+          sourceUrl: String(msg.url || ''),
+          sourceTitle: String(msg.title || ''),
+        });
+        renderChips();
+        hint('📎 Element attached — type your question and send');
+        input.focus();
         break;
       }
       case 'editResult': {
