@@ -1,5 +1,5 @@
 # x-release-please-start-version
-"""SignalR.E.A.C.H relay daemon — package (v3.4.0).
+"""SignalR.E.A.C.H relay daemon — package (v26.9.1).
 
 The daemon runs from ``server/reachd.py`` (a thin launcher shim); all
 implementation lives in this package. The monolith has been split
