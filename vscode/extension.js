@@ -22,7 +22,7 @@ function config() {
   return {
     endpoint: String(cfg.get('endpoint') || 'http://127.0.0.1:20777/v1').replace(/\/+$/, ''),
     accessKey: String(cfg.get('accessKey') || ''),
-    model: String(cfg.get('model') || 'gpt-4o'),
+    model: String(cfg.get('model') || 'gpt-4o-mini'),
     maxTokens: Number(cfg.get('maxTokens') || 2048),
     workspaceContext: cfg.get('workspaceContext') !== false,
     contextMaxKb: Math.max(8, Number(cfg.get('contextMaxKb') || 120)),
@@ -32,6 +32,7 @@ function config() {
     webSearch: cfg.get('webSearch') !== false,
     searchResults: Math.max(1, Math.min(10, Number(cfg.get('searchResults') || 5))),
     playwright: cfg.get('playwright') !== false,
+    agentic: cfg.get('agentic') !== false,
   };
 }
 
@@ -49,6 +50,10 @@ const MAX_TREE_ENTRIES = 250;
 const MAX_OPEN_FILES = 40;
 const PER_FILE_BUDGET = 20 * 1024;      // per-file cap (chars)
 const TOTAL_CONTEXT_BUDGET = 120 * 1024; // total context cap (chars)
+
+const EXCLUDED_NAMES = TREE_EXCLUDES
+  .map((ex) => ex.replace(/^\*\*\//, '').replace(/\/\*\*$/, ''))
+  .filter((n) => n && !n.includes('/'));
 
 function relativePath(fileUri) {
   const folder = vscode.workspace.getWorkspaceFolder(fileUri);
@@ -101,7 +106,7 @@ async function buildTreeLines() {
     if (count >= MAX_TREE_ENTRIES) { lines.push('… (more files)'); break; }
     const rel = relativePath(f);
     const depth = rel.split(/[\\/]/).length - 1;
-    if (depth > 3) continue;          // keep the tree shallow
+    if (depth > 5) continue;          // keep the tree shallow
     lines.push('  '.repeat(Math.max(0, depth)) + rel.split(/[\\/]/).pop());
     count += 1;
   }
@@ -111,9 +116,13 @@ async function buildTreeLines() {
 function buildContextBlock(files, treeLines) {
   const parts = [];
   parts.push('Workspace context (files open in VS Code):');
+  const roots = vscode.workspace.workspaceFolders || [];
+  if (roots.length) {
+    parts.push('Workspace root(s): ' + roots.map((f) => f.uri.fsPath).join(' ; '));
+  }
   if (treeLines && treeLines.length) {
     parts.push('Workspace tree:');
-    parts.push(treeLines.slice(0, 80).join('\n'));
+    parts.push(treeLines.slice(0, 160).join('\n'));
   }
   let used = 0;
   for (const doc of files) {
@@ -156,10 +165,10 @@ class ReachChatViewProvider {
           await this._chat(msg.body || {});
           break;
         case 'workspaceToggle':
-          this._post('workspaceState', {
-            files: openTextDocuments().length,
-            workspaceFolders: (vscode.workspace.workspaceFolders || []).length,
-          });
+          this._workspaceState();
+          break;
+        case 'workspaceInfo':
+          this._workspaceState();
           break;
         case 'abort':
           if (this._controller) this._controller.abort();
@@ -184,6 +193,107 @@ class ReachChatViewProvider {
           if (key === 'endpoint') await this._fetchModels();
           break;
         }
+        case 'applyEdit': {
+          const uid = String(msg.uid || '');
+          const rel = String(msg.path || '').replace(/\\/g, '/');
+          const search = String(msg.search == null ? '' : msg.search);
+          const replace = String(msg.replace == null ? '' : msg.replace);
+          const folders = vscode.workspace.workspaceFolders || [];
+          if (!folders.length) { this._post('editResult', { uid, error: 'No workspace folder is open.' }); break; }
+          if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) {
+            this._post('editResult', { uid, error: 'Invalid path: ' + rel });
+            break;
+          }
+          try {
+            const uri = vscode.Uri.joinPath(folders[0].uri, rel);
+            let current = '';
+            let exists = true;
+            try {
+              current = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+            } catch (e) { exists = false; }
+            let newText;
+            if (!exists) {
+              if (search !== '') {
+                this._post('editResult', { uid, error: rel + ' does not exist (use empty search to create it).' });
+                break;
+              }
+              newText = replace;
+            } else {
+              const idx = current.indexOf(search);
+              if (idx === -1) {
+                this._post('editResult', { uid, error: 'Search text not found in ' + rel + ' — the file may have changed.' });
+                break;
+              }
+              newText = current.slice(0, idx) + replace + current.slice(idx + search.length);
+            }
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(newText, 'utf8'));
+            const td = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(td, { preview: false, preserveFocus: false });
+            this._post('editResult', { uid, ok: true, path: rel });
+          } catch (e) {
+            this._post('editResult', { uid, error: String((e && e.message) || e) });
+          }
+          break;
+        }
+        case 'toolReq': {
+          const uid = String(msg.uid || '');
+          const action = String(msg.action || '');
+          const rel = String(msg.path || '').replace(/\\/g, '/');
+          const pattern = String(msg.pattern || '').slice(0, 200);
+          const command = String(msg.command || '').slice(0, 1000);
+          const folders = vscode.workspace.workspaceFolders || [];
+          if (!folders.length) { this._post('toolResult', { uid, ok: false, error: 'No workspace folder is open.' }); break; }
+          const withTimeout = (p) => Promise.race([
+            p,
+            new Promise((_, rej) => setTimeout(() => rej(new Error('tool timed out')), 15000)),
+          ]);
+          try {
+            let result = '';
+            if (action === 'read') {
+              if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) throw new Error('invalid path');
+              const uri = vscode.Uri.joinPath(folders[0].uri, rel);
+              const text = Buffer.from(await withTimeout(vscode.workspace.fs.readFile(uri))).toString('utf8');
+              result = '--- ' + rel + ' ---\n' + text.slice(0, 30000);
+            } else if (action === 'search') {
+              if (!pattern) throw new Error('no search pattern');
+              result = await withTimeout(this._workspaceSearch(pattern));
+            } else if (action === 'list') {
+              result = await withTimeout(this._workspaceList(rel));
+            } else if (action === 'shell') {
+              if (!command) throw new Error('no command');
+              const ok = await vscode.window.showWarningMessage(
+                'REACH agent wants to run this in the integrated terminal:\n\n' + command,
+                { modal: true },
+                'Run', 'Cancel');
+              if (ok !== 'Run') throw new Error('command not approved');
+              const term = vscode.window.createTerminal('REACH Agent');
+              term.show(true);
+              term.sendText(command);
+              result = 'Approved — command sent to the integrated terminal: ' + command
+                + '\n(The output appears in the VS Code terminal panel; you cannot read it. '
+                + 'Tell the user it is running there and continue based on your reasoning.)';
+            } else {
+              throw new Error('unknown action: ' + action);
+            }
+            this._post('toolResult', { uid, ok: true, result: String(result).slice(0, 40000) });
+          } catch (e) {
+            this._post('toolResult', { uid, ok: false, error: String((e && e.message) || e) });
+          }
+          break;
+        }
+        case 'runCode': {
+          const code = String(msg.code || '').slice(0, 4000);
+          if (!code) break;
+          const ok = await vscode.window.showWarningMessage(
+            'REACH will run this in the integrated terminal:\n\n' + code.slice(0, 500),
+            { modal: true },
+            'Run', 'Cancel');
+          if (ok !== 'Run') break;
+          const term = vscode.window.createTerminal('REACH Run');
+          term.show(true);
+          term.sendText(code);
+          break;
+        }
         default:
           break;
       }
@@ -192,6 +302,62 @@ class ReachChatViewProvider {
 
   _post(type, payload) {
     if (this._view) this._view.webview.postMessage({ type, ...payload });
+  }
+
+  _workspaceState() {
+    const folders = vscode.workspace.workspaceFolders || [];
+    this._post('workspaceState', {
+      files: openTextDocuments().length,
+      workspaceFolders: folders.length,
+      roots: folders.map((f) => f.uri.fsPath),
+    });
+  }
+
+  async _workspaceSearch(pattern) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (!folders.length) return 'No workspace folder open.';
+    const folder = folders[0];
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, '**/*'), `{${TREE_EXCLUDES.join(',')}}`, 300);
+    const needle = pattern.toLowerCase();
+    const out = [];
+    let scanned = 0;
+    for (const f of files) {
+      if (scanned >= 120 || out.length >= 40) break;
+      try {
+        const text = Buffer.from(await vscode.workspace.fs.readFile(f)).toString('utf8');
+        scanned += 1;
+        const lines = text.split('\n');
+        for (let idx = 0; idx < lines.length; idx += 1) {
+          if (lines[idx].toLowerCase().includes(needle)) {
+            out.push(relativePath(f) + ':' + (idx + 1) + ': ' + lines[idx].trim().slice(0, 160));
+            if (out.length >= 40) break;
+          }
+        }
+      } catch (e) { /* skip unreadable files */ }
+    }
+    return out.length ? out.join('\n') : 'No matches for "' + pattern + '" (scanned ' + scanned + ' files).';
+  }
+
+  async _workspaceList(subPath) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (!folders.length) return 'No workspace folder open.';
+    const folder = folders[0];
+    const base = subPath ? vscode.Uri.joinPath(folder.uri, subPath) : folder.uri;
+    const out = [];
+    const walk = async (uri, depth, prefix) => {
+      if (depth > 3 || out.length >= 250) return;
+      let entries;
+      try { entries = await vscode.workspace.fs.readDirectory(uri); } catch (e) { return; }
+      for (const [name, type] of entries) {
+        if (out.length >= 250) return;
+        if (EXCLUDED_NAMES.includes(name)) continue;
+        out.push(prefix + name + (type === vscode.FileType.Directory ? '/' : ''));
+        if (type === vscode.FileType.Directory) await walk(vscode.Uri.joinPath(uri, name), depth + 1, prefix + '  ');
+      }
+    };
+    await walk(base, 0, '');
+    return out.length ? out.join('\n') : '(empty directory)';
   }
 
   _authHeaders(extra) {
@@ -227,7 +393,7 @@ class ReachChatViewProvider {
    * the chat flow — it only steers the final answer. Returns text or null. */
   async _think(prompt, includeWorkspace, chatModel) {
     const { endpoint, thinkModel, thinkMaxTokens, contextMaxKb } = config();
-    const model = thinkModel || chatModel || 'gpt-4o';
+    const model = thinkModel || chatModel || 'gpt-4o-mini';
     let system = 'You are the PRIVATE reasoning engine of an AI assistant inside VS Code. '
       + 'The user just asked a question. Think step-by-step about the best answer: '
       + 'what matters most, which of the open files are relevant, what structure the '
@@ -273,7 +439,7 @@ class ReachChatViewProvider {
         method: 'POST',
         headers: this._authHeaders(),
         body: JSON.stringify({
-          model: chatModel || 'gpt-4o',
+          model: chatModel || 'gpt-4o-mini',
           max_tokens: 30,
           stream: false,
           messages: [
@@ -292,7 +458,7 @@ class ReachChatViewProvider {
   }
 
   async _chat(body) {
-    const { endpoint, maxTokens, workspaceContext, contextMaxKb, think, webSearch, searchResults, playwright } = config();
+    const { endpoint, maxTokens, workspaceContext, contextMaxKb, think, webSearch, searchResults, playwright, agentic } = config();
     const messages = Array.isArray(body.messages) ? body.messages.slice() : [];
     // ---- WhisperThink: private reasoning before the answer ----
     let thought = null;
@@ -368,6 +534,34 @@ class ReachChatViewProvider {
       this._post('contextInfo', {
         files: docs.length,
         chars: contextBlock.length,
+      });
+    }
+    // ---- agentic mode: the model proposes file edits as fenced JSON blocks ----
+    if (body.agentic && agentic) {
+      messages.unshift({
+        role: 'system',
+        content: 'You are an agentic coding assistant inside VS Code with live workspace access. '
+          + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
+          + 'in the workspace context above. When the user asks you to change or create files, act '
+          + 'like an agent: briefly explain what you will do, then emit each file change as a fenced '
+          + 'JSON block — one ```edit block per file, like this:\n'
+          + '```edit\n{"path": "relative/path/in/workspace", "search": "exact existing text", "replace": "new text"}\n```\n'
+          + 'Rules: path is relative to the workspace root, forward slashes. "search" must be a small '
+          + 'exact snippet of the current file; use "" as search to create a brand-new file with the '
+          + 'full content in "replace". Emit multiple blocks for multiple edits. Only emit blocks when '
+          + 'the change is clear — otherwise ask. The user sees each block as a diff and can accept or '
+          + 'reject it, so never claim a file was already changed; you only propose edits.\n'
+          + 'You may also inspect the workspace first by emitting tool blocks and then STOPPING — the '
+          + 'tool results are handed back to you and you continue from there:\n'
+          + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
+          + '```tool\n{"action": "search", "pattern": "text to find"}\n```\n'
+          + '```tool\n{"action": "list", "path": ""}\n```\n'
+          + '```tool\n{"action": "shell", "command": "npm test"}\n```\n'
+          + 'Actions: "read" reads one file, "search" greps the whole workspace for a pattern, "list" '
+          + 'prints a directory tree (empty path = workspace root), "shell" runs a command in the '
+          + 'integrated terminal (the user must approve it first — you cannot see its output). Use them '
+          + 'when you need to see files that are not already in the context, then finish with edit '
+          + 'blocks for the actual changes.',
       });
     }
     // ---- private reasoning steering (hidden from the visible flow) ----

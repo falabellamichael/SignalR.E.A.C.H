@@ -63,21 +63,21 @@ def install(repo_root, quiet=False, with_playwright=False):
             shutil.rmtree(entry, ignore_errors=True)
             if not quiet:
                 print("  pruned old VS Code extension %s" % entry.name)
-    # default route: the Copilot chat model through the REACH relay
+    # default route: gpt-4o-mini through the REACH relay
     configure_defaults(quiet=quiet)
     # optional Playwright (headless Chromium page fetching)
     if with_playwright:
         _install_playwright(dst)
     if not quiet:
         print("  VS Code extension installed -> " + str(dst))
-        print("  default model: copilot-chat (change in Settings -> simplereach.model)")
+        print("  default model: gpt-4o-mini (change in Settings -> simplereach.model)")
         print("  (reload VS Code: Ctrl+Shift+P -> Developer: Reload Window)")
     return True
 
 
 def configure_defaults(quiet=False):
     """Write VS Code user settings so the extension routes to REACH's
-    Copilot chat out of the box (never clobbers unrelated settings)."""
+    gpt-4o-mini chat out of the box (never clobbers unrelated settings)."""
     import json
     import urllib.request
 
@@ -109,11 +109,11 @@ def configure_defaults(quiet=False):
                 except (OSError, json.JSONDecodeError):
                     settings = {}
             settings["simplereach.endpoint"] = endpoint
-            settings["simplereach.model"] = "copilot-chat"
+            settings["simplereach.model"] = "gpt-4o-mini"
             sp.parent.mkdir(parents=True, exist_ok=True)
             sp.write_text(json.dumps(settings, indent=4), encoding="utf-8")
             if not quiet:
-                print("  VS Code settings routed to Copilot: %s -> %s"
+                print("  VS Code settings routed to REACH: %s -> %s"
                       % (sp, endpoint))
             return
         except OSError as exc:
