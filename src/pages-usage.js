@@ -305,8 +305,12 @@
                 clearFilterBtn.style.display = 'inline-flex';
                 clearFilterBtn.textContent = 'Reset Filter (' + clientFilter + ')';
                 clientFilterBanner.innerHTML = '';
+                // clientFilter is an attacker-controlled client IP string; build
+                // via DOM/textContent, never innerHTML concatenation (stored XSS).
                 const bannerText = el('span', null, '');
-                bannerText.innerHTML = '<i class="fa-solid fa-filter"></i> Filtering live events for: <strong>' + clientFilter + '</strong>';
+                bannerText.appendChild(el('i', 'fa-solid fa-filter'));
+                bannerText.appendChild(document.createTextNode(' Filtering live events for: '));
+                bannerText.appendChild(el('strong', null, clientFilter));
                 clientFilterBanner.appendChild(bannerText);
 
                 const unfilterBtn = document.createElement('button');
@@ -402,7 +406,8 @@
                 // Footer: Last model + Filter button
                 const foot = el('div', 'reach-presence-footer');
                 const modelBadge = el('span', 'reach-presence-model-badge');
-                modelBadge.innerHTML = '<i class="fa-solid fa-cube"></i> ' + (c.last_model || '—');
+                modelBadge.appendChild(el('i', 'fa-solid fa-cube'));
+                modelBadge.appendChild(document.createTextNode(' ' + (c.last_model || '—')));
                 foot.appendChild(modelBadge);
 
                 const filterBtn = el('button', 'reach-presence-btn' + (clientFilter === c.ip ? ' active' : ''));
