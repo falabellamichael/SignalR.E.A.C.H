@@ -1024,6 +1024,12 @@
     host.registerManifest(MANIFEST);
     ensureHostRecord();
 
+    // start the Copilot system tray if it isn't running — the relay's local
+    // admin surface spawns it (bridge :21302); harmless no-op when it is up
+    try {
+        core.relayFetch('/_reach/tray', { method: 'POST' }, 4000).catch(function () {});
+    } catch (e) { /* relay unreachable — the logon task will handle it */ }
+
     window.signalReach = window.simpleReach = Object.freeze({
         pluginId: PLUGIN_ID,
         pageId: PAGE_ID,

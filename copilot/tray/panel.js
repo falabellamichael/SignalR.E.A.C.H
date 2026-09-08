@@ -107,7 +107,7 @@ function renderChat() {
 function autoresize() {
     inputEl.style.height = 'auto';
     const lh = parseFloat(getComputedStyle(inputEl).lineHeight) || 16;
-    inputEl.style.height = Math.min(inputEl.scrollHeight, lh * 4) + 'px';
+    inputEl.style.height = Math.min(Math.max(inputEl.scrollHeight, 38), lh * 4 + 2) + 'px';
 }
 
 // open a source link in the user's real browser (panel denies navigation)

@@ -5,16 +5,80 @@
  */
 const vscode = require('vscode');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { webSearchDdg, searchAndFetch, hasPlaywright } = require('./search');
+const http = require('http');
+const { spawn } = require('child_process');
+const { webSearchDdg, searchAndFetch, pageText, browsePage, hasPlaywright } = require('./search');
 
 const CONFIG_SECTION = 'simplereach';
+
+const PROPOSED_SCHEME = 'reach-proposed';
+const proposedDocs = new Map();
+
+/* Provides the "proposed" side of a REACH agent edit as a virtual document so
+ * the user can review changes in VS Code's native diff editor. */
+const proposedProvider = {
+  provideTextDocumentContent(uri) {
+    return proposedDocs.get(uri.toString()) || '';
+  },
+};
+
+function proposedUri(kind, rel, text) {
+  const clean = (rel || '').split('/').map(encodeURIComponent).join('/');
+  const uri = vscode.Uri.from({
+    scheme: PROPOSED_SCHEME,
+    path: '/' + kind + '/' + clean,
+    query: 't=' + Date.now().toString(36),
+  });
+  proposedDocs.set(uri.toString(), text);
+  return uri;
+}
 
 function getNonce() {
   let text = '';
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   for (let i = 0; i < 32; i += 1) text += chars.charAt(Math.floor(Math.random() * chars.length));
   return text;
+}
+
+/* ---- Copilot system tray supervisor (invisible browser + bridge :21302) ---- */
+
+const TRAY_PORT = 21302;
+
+function trayDir() {
+  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(base, 'SignalREACH', 'copilot', 'tray');
+}
+
+function trayHealth(timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: TRAY_PORT, path: '/health', timeout: timeoutMs || 700 }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/* 'running' | 'starting' | 'missing' | 'error'. The tray holds a
+ * single-instance lock, so a redundant spawn simply exits. */
+async function startTray() {
+  if (await trayHealth()) return 'running';
+  const dir = trayDir();
+  const electron = path.join(dir, 'node_modules', 'electron', 'dist', 'electron.exe');
+  if (!fs.existsSync(electron) || !fs.existsSync(path.join(dir, 'main.js'))) return 'missing';
+  try {
+    const child = spawn(electron, [dir], {
+      detached: true, stdio: 'ignore', windowsHide: true, cwd: dir,
+    });
+    child.on('error', () => {});
+    child.unref();
+    return 'starting';
+  } catch (e) {
+    return 'error';
+  }
 }
 
 function config() {
@@ -235,6 +299,47 @@ class ReachChatViewProvider {
           }
           break;
         }
+        case 'reviewEdit': {
+          const uid = String(msg.uid || '');
+          const rel = String(msg.path || '').replace(/\\/g, '/');
+          const search = String(msg.search == null ? '' : msg.search);
+          const replace = String(msg.replace == null ? '' : msg.replace);
+          const folders = vscode.workspace.workspaceFolders || [];
+          if (!folders.length) { this._post('editResult', { uid, error: 'No workspace folder is open.' }); break; }
+          if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) {
+            this._post('editResult', { uid, error: 'Invalid path: ' + rel });
+            break;
+          }
+          try {
+            const uri = vscode.Uri.joinPath(folders[0].uri, rel);
+            let current = '';
+            let exists = true;
+            try { current = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8'); }
+            catch (e) { exists = false; }
+            let newText;
+            if (!exists) {
+              if (search !== '') {
+                this._post('editResult', { uid, error: rel + ' does not exist (use empty search to create it).' });
+                break;
+              }
+              newText = replace;
+            } else {
+              const idx = current.indexOf(search);
+              if (idx === -1) {
+                this._post('editResult', { uid, error: 'Search text not found in ' + rel + ' — the file may have changed.' });
+                break;
+              }
+              newText = current.slice(0, idx) + replace + current.slice(idx + search.length);
+            }
+            const leftUri = exists ? uri : proposedUri('empty', rel, '');
+            const rightUri = proposedUri('proposed', rel, newText);
+            await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, (exists ? 'Review: ' : 'New file: ') + rel, { preview: true });
+            this._post('editResult', { uid, ok: true, path: rel, reviewed: true });
+          } catch (e) {
+            this._post('editResult', { uid, error: String((e && e.message) || e) });
+          }
+          break;
+        }
         case 'toolReq': {
           const uid = String(msg.uid || '');
           const action = String(msg.action || '');
@@ -249,6 +354,7 @@ class ReachChatViewProvider {
           ]);
           try {
             let result = '';
+            let image = null;
             if (action === 'read') {
               if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) throw new Error('invalid path');
               const uri = vscode.Uri.joinPath(folders[0].uri, rel);
@@ -272,10 +378,30 @@ class ReachChatViewProvider {
               result = 'Approved — command sent to the integrated terminal: ' + command
                 + '\n(The output appears in the VS Code terminal panel; you cannot read it. '
                 + 'Tell the user it is running there and continue based on your reasoning.)';
+            } else if (action === 'browse') {
+              const url = String(msg.url || '').slice(0, 800);
+              if (!/^https?:\/\//i.test(url)) throw new Error('invalid url: ' + url);
+              const bp = await browsePage(url);
+              if (!bp.ok) throw new Error(bp.error || 'browse failed');
+              image = bp.image || null;
+              result = '--- ' + url + (bp.title ? ' (' + bp.title + ')' : '') + ' ---\n' + (bp.text || '(no readable text)');
+            } else if (action === 'websearch') {
+              const query = String(msg.query || '').slice(0, 200);
+              if (!query) throw new Error('no search query');
+              const found = await searchAndFetch(query, 5, 2);
+              const out = [];
+              (found.results || []).forEach((r, i) => {
+                out.push('[' + (i + 1) + '] ' + r.title + ' — ' + r.url
+                  + ((r.snippet || '') ? '\n    ' + r.snippet : ''));
+              });
+              (found.pages || []).forEach((p) => {
+                out.push('\nExcerpt from ' + p.title + ' (' + p.url + '):\n' + String(p.text).slice(0, 4000));
+              });
+              result = out.join('\n') || '(no results)';
             } else {
               throw new Error('unknown action: ' + action);
             }
-            this._post('toolResult', { uid, ok: true, result: String(result).slice(0, 40000) });
+            this._post('toolResult', { uid, ok: true, result: String(result).slice(0, 40000), image });
           } catch (e) {
             this._post('toolResult', { uid, ok: false, error: String((e && e.message) || e) });
           }
@@ -292,6 +418,54 @@ class ReachChatViewProvider {
           const term = vscode.window.createTerminal('REACH Run');
           term.show(true);
           term.sendText(code);
+          break;
+        }
+        case 'pickFiles': {
+          const wantImages = msg.kind === 'images';
+          const uris = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            openLabel: wantImages ? 'Attach Images' : 'Attach Files',
+            filters: wantImages
+              ? { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }
+              : undefined,
+          });
+          if (!uris || !uris.length) break;
+          const items = [];
+          for (const u of uris) {
+            try {
+              const stat = await vscode.workspace.fs.stat(u);
+              const ext = (u.path.split('.').pop() || '').toLowerCase();
+              const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext);
+              const name = vscode.workspace.asRelativePath(u, false).split(/[\\/]/).pop()
+                || u.path.split(/[\\/]/).pop() || 'file';
+              const bytes = await vscode.workspace.fs.readFile(u);
+              if (isImage) {
+                if (stat.size > 5 * 1024 * 1024) {
+                  items.push({ name, error: 'image too large (>5MB)' });
+                  continue;
+                }
+                const mime = 'image/' + (ext === 'jpg' ? 'jpeg' : ext);
+                items.push({
+                  name, size: stat.size, kind: 'image', mime,
+                  dataUrl: 'data:' + mime + ';base64,' + Buffer.from(bytes).toString('base64'),
+                });
+              } else {
+                if (stat.size > 200 * 1024) {
+                  items.push({ name, error: 'text file too large (>200KB)' });
+                  continue;
+                }
+                const text = Buffer.from(bytes).toString('utf8');
+                if (text.indexOf('\uFFFD') !== -1) {
+                  items.push({ name, error: 'binary file — not attachable' });
+                  continue;
+                }
+                items.push({ name, size: stat.size, kind: 'text', content: text.slice(0, 200 * 1024) });
+              }
+            } catch (e) {
+              items.push({ name: u.path.split(/[\\/]/).pop() || 'file', error: String((e && e.message) || e) });
+            }
+          }
+          this._post('pickedFiles', { items });
           break;
         }
         default:
@@ -394,7 +568,7 @@ class ReachChatViewProvider {
   async _think(prompt, includeWorkspace, chatModel) {
     const { endpoint, thinkModel, thinkMaxTokens, contextMaxKb } = config();
     const model = thinkModel || chatModel || 'gpt-4o-mini';
-    let system = 'You are the PRIVATE reasoning engine of an AI assistant inside VS Code. '
+    let system = 'You are SimpleREACH — the private reasoning engine of the REACH coding assistant inside VS Code. '
       + 'The user just asked a question. Think step-by-step about the best answer: '
       + 'what matters most, which of the open files are relevant, what structure the '
       + 'reply should take, and any pitfalls. Be terse — a few short lines, no filler. '
@@ -518,7 +692,7 @@ class ReachChatViewProvider {
       const contextBlock = buildContextBlock(docs, treeLines).slice(0, contextMaxKb * 1024);
       const contextMsg = {
         role: 'system',
-        content: 'You are assisting the user inside VS Code. Below is the current '
+        content: 'You are SimpleREACH, the REACH coding assistant inside VS Code. Below is the current '
           + 'workspace context — files they have open. Use it to ground answers; '
           + 'never invent file contents.\n\n' + contextBlock,
       };
@@ -540,7 +714,7 @@ class ReachChatViewProvider {
     if (body.agentic && agentic) {
       messages.unshift({
         role: 'system',
-        content: 'You are an agentic coding assistant inside VS Code with live workspace access. '
+        content: 'You are SimpleREACH, an agentic coding assistant inside VS Code with live workspace access. '
           + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
           + 'in the workspace context above. When the user asks you to change or create files, act '
           + 'like an agent: briefly explain what you will do, then emit each file change as a fenced '
@@ -557,9 +731,13 @@ class ReachChatViewProvider {
           + '```tool\n{"action": "search", "pattern": "text to find"}\n```\n'
           + '```tool\n{"action": "list", "path": ""}\n```\n'
           + '```tool\n{"action": "shell", "command": "npm test"}\n```\n'
+          + '```tool\n{"action": "browse", "url": "https://example.com"}\n```\n'
+          + '```tool\n{"action": "websearch", "query": "latest news"}\n```\n'
           + 'Actions: "read" reads one file, "search" greps the whole workspace for a pattern, "list" '
           + 'prints a directory tree (empty path = workspace root), "shell" runs a command in the '
-          + 'integrated terminal (the user must approve it first — you cannot see its output). Use them '
+          + 'integrated terminal (the user must approve it first — you cannot see its output), "browse" '
+          + 'opens a web page in a browser (reads its text and shows a snapshot), "websearch" searches the '
+          + 'web and reads the top pages. Use them '
           + 'when you need to see files that are not already in the context, then finish with edit '
           + 'blocks for the actual changes.',
       });
@@ -659,6 +837,7 @@ class ReachChatViewProvider {
 function activate(context) {
   const provider = new ReachChatViewProvider(context.extensionUri);
   context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(PROPOSED_SCHEME, proposedProvider),
     vscode.window.registerWebviewViewProvider('reach.chat', provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -669,6 +848,53 @@ function activate(context) {
       if (provider._view) provider._post('reload', {});
     }),
   );
+
+  /* ---- right-click selection actions (CodeGPT-style) ---- */
+
+  const postPrompt = (text) => {
+    vscode.commands.executeCommand('reach.chat.focus');
+    provider._post('startPrompt', { text });
+  };
+
+  const buildPrompt = (instruction) => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('REACH: open a file first.');
+      return null;
+    }
+    const sel = editor.selection;
+    const hasSel = !!(sel && !sel.isEmpty);
+    const code = hasSel ? editor.document.getText(sel) : editor.document.getText();
+    const rel = vscode.workspace.asRelativePath(editor.document.uri, false);
+    const lang = editor.document.languageId;
+    return 'File: ' + rel + ' (' + lang + ')\n'
+      + (hasSel ? 'Selected code' : 'File contents (no selection)') + ':\n'
+      + '```' + lang + '\n' + code.slice(0, 12000) + '\n```\n\n' + instruction;
+  };
+
+  const SELECTION_ACTIONS = {
+    explainSelection: 'Explain what this code does, clearly and concisely.',
+    refactorSelection: 'Refactor this code to be cleaner and more idiomatic while preserving behavior. If agent mode is on, propose the changes as edit blocks.',
+    fixSelection: 'Find and fix bugs in this code. Explain each issue; if agent mode is on, propose the fixes as edit blocks.',
+    commentSelection: 'Add clear, concise comments to this code. If agent mode is on, propose them as edit blocks.',
+    testSelection: 'Write focused unit tests for this code. If agent mode is on, propose them as edit blocks.',
+    optimizeSelection: 'Optimize this code for performance and explain the tradeoffs. If agent mode is on, propose the changes as edit blocks.',
+  };
+
+  for (const [cmd, instruction] of Object.entries(SELECTION_ACTIONS)) {
+    context.subscriptions.push(vscode.commands.registerCommand('simplereach.' + cmd, () => {
+      const prompt = buildPrompt(instruction);
+      if (prompt) postPrompt(prompt);
+    }));
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.askSelection', () => {
+    const prompt = buildPrompt('');
+    if (prompt) postPrompt(prompt);
+  }));
+
+  // The Copilot system tray starts with the extension (no-op when it is
+  // already running); the chat panel's tray icon reflects the live state.
+  startTray().catch(() => {});
 }
 
 function deactivate() {}

@@ -1,15 +1,13 @@
-/* SimpleREACH chat — theme mirrors the REACH control panel:
- * warm gold on Codalio-style cream/charcoal surfaces.
- * Dark: gold on warm amber-tinted charcoal. Light (body.vscode-light):
- * Codalio's warm-light palette — cream #f8efe3, raised #fffaf4, tan
- * borders #dfd1c3, brown ink #2e2925 (tokens follow codalio-blueprint.css). */
+/* SimpleREACH chat — surfaces, text and borders come straight from the active
+ * VS Code theme (via the injected --vscode-* variables), so the chat IS the
+ * theme — dark, light, high-contrast or any custom theme. Only the REACH gold
+ * accent is brand-identity, kept legible with a lighter/darker variant. */
 
-:root {
-  /* REACH identity — warm gold, held in both modes */
+body {
+  /* REACH identity — warm gold accent, held in both modes */
   --reach-gold: #ffb020;
   --reach-gold-hover: #ffc040;
 
-  /* dark-mode accents (default) */
   --reach-accent: #ffb020;
   --reach-accent-light: #ffd37a;
   --reach-accent-hover: #ffc040;
@@ -20,18 +18,22 @@
   --reach-error: #ff8f7a;
   --reach-shadow: rgba(0, 0, 0, 0.35);
 
-  /* warm-tinted charcoal (Codalio dark neutrals warmed by the gold) */
-  --reach-panel: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 94%, #3a2c1c);
-  --reach-raised: color-mix(in srgb, var(--vscode-editor-background, #1e1e1e) 88%, #4a3a28);
-  --reach-surface: color-mix(in srgb, var(--vscode-editorWidget-background, #252526) 90%, #4a3a28);
-  --reach-border: color-mix(in srgb, var(--vscode-panel-border, #3c3c3c) 70%, #7a5c33);
-  --reach-border-strong: var(--vscode-panel-border, #3c3c3c);
-  --reach-text: var(--vscode-foreground, #e8e8e8);
-  --reach-muted: var(--vscode-descriptionForeground, #9d9d9d);
+  /* Surfaces, text and borders are derived from the *universal* theme colors
+     (editor background + foreground) that every VS Code theme defines, so the
+     chat adapts even to themes that don't set the niche widget/panel vars. */
+  --reach-panel: var(--vscode-editor-background, #1e1e1e);
+  --reach-text: var(--vscode-foreground, var(--vscode-editor-foreground, #e8e8e8));
+  --reach-raised: color-mix(in srgb, var(--reach-panel) 92%, var(--reach-text) 8%);
+  --reach-surface: color-mix(in srgb, var(--reach-panel) 89%, var(--reach-text) 11%);
+  --reach-border: color-mix(in srgb, var(--reach-panel) 72%, var(--reach-text) 28%);
+  --reach-border-strong: color-mix(in srgb, var(--reach-panel) 56%, var(--reach-text) 44%);
+  --reach-muted: var(--vscode-descriptionForeground, var(--reach-text));
 }
 
-/* ---- warm light — Codalio's cream/brown palette (body.vscode-light) ---- */
-body.vscode-light {
+/* Light / high-contrast-light themes: keep the REACH accent legible. The
+   neutrals already follow the theme via the --vscode-* values above. */
+body.vscode-light,
+body.vscode-high-contrast-light {
   --reach-accent: #b45309;
   --reach-accent-light: #92400e;
   --reach-accent-hover: #a34d08;
@@ -39,15 +41,7 @@ body.vscode-light {
   --reach-accent-bg: rgba(90, 60, 30, 0.07);
   --reach-accent-border: rgba(160, 100, 20, 0.5);
   --reach-error: #dc2626;
-  --reach-shadow: rgba(90, 60, 30, 0.16);
-
-  --reach-panel: #f8efe3;
-  --reach-raised: #fffaf4;
-  --reach-surface: #fffdfa;
-  --reach-border: #dfd1c3;
-  --reach-border-strong: #cbb9a5;
-  --reach-text: #2e2925;
-  --reach-muted: #796f67;
+  --reach-shadow: rgba(0, 0, 0, 0.18);
 }
 
 * { box-sizing: border-box; }
@@ -62,11 +56,11 @@ html, body {
   height: 100%;
   font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
   font-size: 13px;
-  color: var(--reach-text);
-  background: var(--reach-panel);
 }
 
 body {
+  color: var(--reach-text);
+  background: var(--reach-panel);
   display: flex;
   flex-direction: column;
 }
@@ -184,17 +178,23 @@ body {
 .row { display: flex; gap: 4px; align-items: center; }
 
 .model-select {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 0;
+  max-width: 42%;
   background: var(--reach-surface);
   color: var(--reach-text);
   border: 1px solid var(--reach-border);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
+  border-radius: 5px;
+  padding: 3px 5px;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .model-select:focus { outline: none; border-color: var(--reach-accent-border); }
 .model-select:disabled { opacity: 0.55; cursor: not-allowed; border-color: var(--reach-border); }
+
+/* keep composer action buttons pinned to the right */
+#history-btn { margin-left: auto; }
 
 .icon-btn {
   flex: 0 0 auto;
@@ -221,11 +221,14 @@ body {
   border-color: var(--reach-error);
   background: color-mix(in srgb, var(--reach-error) 12%, transparent);
 }
+.tray-btn.tray-on { color: var(--reach-accent); }
+.tray-btn.tray-err { color: var(--reach-error); }
+.tray-btn.tray-busy { color: var(--reach-accent); animation: reach-pulse 1.2s ease-in-out infinite; }
 
 /* ---- history panel ---- */
 .history-panel {
   margin-top: 5px;
-  max-height: 58%;
+  max-height: min(50vh, 320px);
   overflow-y: auto;
   background: var(--reach-surface);
   border: 1px solid var(--reach-border);
@@ -326,7 +329,7 @@ body {
 /* ---- settings dropdown ---- */
 .settings-panel {
   margin-top: 5px;
-  max-height: 60%;
+  max-height: min(50vh, 320px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -388,6 +391,102 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ---- attach (+) — bare plus inside the textbox, beside the first line ---- */
+.input-wrap { position: relative; flex: 1; }
+.attach-plus,
+.attach-minus {
+  position: absolute;
+  left: 8px;
+  width: 15px;
+  text-align: center;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 15px;
+  color: var(--reach-muted);
+  cursor: pointer;
+  user-select: none;
+  border-radius: 0;
+}
+.attach-plus { top: 9px; }
+.attach-minus { top: 27px; }
+.attach-plus:hover { color: var(--reach-accent); }
+.attach-minus:hover { color: var(--reach-error); }
+.attach-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 180px;
+  background: var(--reach-surface);
+  border: 1px solid var(--reach-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px var(--reach-shadow);
+  padding: 4px;
+}
+.attach-item {
+  text-align: left;
+  font-size: 12px;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--reach-text);
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.attach-item:hover { background: var(--reach-accent-bg); }
+.attach-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 4px;
+  padding-bottom: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.attach-chips .chip { flex: 0 0 auto; }
+.attach-chips::-webkit-scrollbar { height: 4px; }
+.attach-chips::-webkit-scrollbar-thumb {
+  background: var(--reach-border);
+  border-radius: 2px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  border: 1px solid var(--reach-border);
+  background: var(--reach-surface);
+  border-radius: 12px;
+  padding: 2px 8px 2px 3px;
+  font-size: 11px;
+  color: var(--reach-text);
+}
+.chip-thumb { width: 20px; height: 20px; border-radius: 10px; object-fit: cover; }
+.chip-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 170px;
+}
+.chip-x {
+  border: none;
+  background: transparent;
+  color: var(--reach-muted);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0 2px;
+  line-height: 1;
+}
+.chip-x:hover { color: var(--reach-error); }
 
 /* ---- agentic edit cards (Cursor-style) ---- */
 .edit-card {
@@ -466,6 +565,9 @@ body {
   display: flex;
   padding: 2px 0 6px;
 }
+.browse-snap { margin: 4px 0; }
+.browse-snap .browse-cap { font-size: 10px; color: var(--reach-muted); margin-bottom: 3px; }
+.browse-snap img { max-width: 100%; border: 1px solid var(--reach-border); border-radius: 6px; display: block; }
 
 /* ---- Copilot-style work log (narrated step stack) ---- */
 .steps { padding: 2px 2px 8px; }
@@ -591,6 +693,49 @@ body {
   background: var(--reach-accent-bg);
 }
 
+/* per-message actions (Copy / Retry / Delete / Edit) */
+.bubble.has-actions { position: relative; }
+.msg-actions {
+  display: flex; align-items: center; gap: 2px;
+  padding-top: 4px; margin-top: 2px;
+  border-top: 1px solid var(--reach-border);
+}
+.msg-act {
+  background: transparent; border: none; color: var(--reach-muted);
+  font-size: 10px; line-height: 1; cursor: pointer;
+  padding: 3px 6px; border-radius: 4px;
+  display: inline-flex; align-items: center; gap: 3px;
+}
+.msg-act:hover { color: var(--reach-accent-light); background: var(--reach-accent-bg); }
+.msg-act-group {
+  display: flex; align-items: center; gap: 2px;
+  flex: 1 1 auto; justify-content: center;
+}
+.msg-act-edit { flex: 0 0 auto; }
+.msg-actions.edit-bar { justify-content: flex-end; }
+.msg-edit {
+  width: 100%; resize: vertical; min-height: 60px; max-height: 320px;
+  box-sizing: border-box; font: inherit; line-height: 1.45;
+  color: var(--reach-text); background: var(--reach-surface);
+  border: 1px solid var(--reach-border); border-radius: 6px; padding: 6px 8px;
+  user-select: text;
+}
+.msg-edit:focus { outline: none; border-color: var(--reach-accent-border); }
+
+/* custom right-click context menu */
+.ctx-menu {
+  position: fixed; z-index: 100; min-width: 180px;
+  background: var(--reach-raised); border: 1px solid var(--reach-border);
+  border-radius: 8px; box-shadow: 0 8px 24px var(--reach-shadow);
+  padding: 4px; display: flex; flex-direction: column; gap: 1px;
+}
+.ctx-item {
+  background: transparent; border: none; color: var(--reach-text);
+  font-size: 12px; text-align: left; cursor: pointer;
+  padding: 6px 10px; border-radius: 5px;
+}
+.ctx-item:hover { background: var(--reach-accent-bg); color: var(--reach-accent-light); }
+
 .bubble.pending .body::after {
   content: '▍';
   color: var(--reach-accent);
@@ -658,13 +803,14 @@ body {
 }
 
 #input {
-  flex: 1;
+  width: 100%;
+  box-sizing: border-box;
   resize: none;
   background: var(--reach-surface);
   color: var(--reach-text);
   border: 1px solid var(--reach-border);
   border-radius: 6px;
-  padding: 8px;
+  padding: 8px 8px 8px 27px;
   font-family: inherit;
   font-size: 13px;
   min-height: 46px;

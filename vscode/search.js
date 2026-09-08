@@ -136,10 +136,41 @@ async function searchAndFetch(query, maxResults = 5, pagesToRead = 2) {
   return { results, pages };
 }
 
+async function browsePage(url, timeoutMs = 15000) {
+  // Render a page with Playwright and capture a screenshot; fall back to plain
+  // HTTP text extraction if Playwright isn't installed.
+  if (!playwright) {
+    const text = await pageText(url, 12000, timeoutMs);
+    return text ? { ok: true, title: url, text, image: null } : { ok: false, error: 'no readable content' };
+  }
+  let browser = null;
+  try {
+    browser = await playwright.chromium.launch({ headless: true });
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.goto(url, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(1500);
+    const title = await page.title().catch(() => url);
+    const text = await page.evaluate(() => {
+      const kill = document.querySelectorAll('script,style,nav,footer,header,aside,iframe');
+      kill.forEach((n) => n.remove());
+      return (document.body && document.body.innerText) || '';
+    });
+    const image = await page.screenshot({ type: 'png' })
+      .then((b) => b.toString('base64')).catch(() => null);
+    await browser.close();
+    browser = null;
+    return { ok: true, title, text: text.replace(/\s+/g, ' ').trim().slice(0, 12000), image };
+  } catch (e) {
+    if (browser) { try { await browser.close(); } catch (x) { /* noop */ } }
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+}
+
 module.exports = {
   webSearchDdg,
   searchAndFetch,
   pageText,
+  browsePage,
   stripTags,
   hasPlaywright: !!playwright,
 };

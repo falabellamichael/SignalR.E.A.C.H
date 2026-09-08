@@ -119,5 +119,91 @@ def time_placeholder_ok(system_prompt):
     return re.search(r"\d{4}-\d{2}-\d{2}", system_prompt) is not None
 
 
+class AgentEditTests(unittest.TestCase):
+    """Agent mode: ```edit block parsing, path safety, and file application."""
+
+    def setUp(self):
+        self.work = os.path.join(os.environ.get("TEMP") or "/tmp",
+                                 "reach-cli-agent-tests")
+        os.makedirs(self.work, exist_ok=True)
+        self.existing = os.path.join(self.work, "existing.txt")
+        with open(self.existing, "w", encoding="utf-8") as handle:
+            handle.write("hello world\nsecond line\n")
+
+    def tearDown(self):
+        for name in ("existing.txt", "created.txt"):
+            path = os.path.join(self.work, name)
+            if os.path.exists(path):
+                os.remove(path)
+
+    def test_parse_edit_blocks_single_and_multiple(self):
+        from reach_cli.chat import parse_edit_blocks
+        text = (
+            'Before text.\n```edit\n{"path": "a.txt", "search": "x",'
+            ' "replace": "y"}\n```\n'
+            'middle\n```edit\n{"path": "b/c.txt", "search": "",'
+            ' "replace": "new"}\n```\nafter'
+        )
+        blocks = parse_edit_blocks(text)
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0], {"path": "a.txt", "search": "x",
+                                     "replace": "y"})
+        self.assertEqual(blocks[1]["path"], "b/c.txt")
+
+    def test_parse_edit_blocks_ignores_malformed(self):
+        from reach_cli.chat import parse_edit_blocks
+        text = '```edit\nnot json\n```\n```edit\n{"no": "path"}\n```'
+        self.assertEqual(parse_edit_blocks(text), [])
+
+    def test_apply_edit_creates_new_file_with_empty_search(self):
+        from reach_cli.chat import apply_edit
+        ok, err = apply_edit(self.work, "created.txt", "", "brand new\n")
+        self.assertTrue(ok, err)
+        with open(os.path.join(self.work, "created.txt"),
+                  encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "brand new\n")
+
+    def test_apply_edit_rejects_create_with_nonempty_search(self):
+        from reach_cli.chat import apply_edit
+        ok, err = apply_edit(self.work, "missing.txt", "x", "y")
+        self.assertFalse(ok)
+        self.assertIn("does not exist", err)
+
+    def test_apply_edit_replaces_snippet(self):
+        from reach_cli.chat import apply_edit
+        ok, err = apply_edit(self.work, "existing.txt", "hello world",
+                             "goodbye world")
+        self.assertTrue(ok, err)
+        with open(self.existing, encoding="utf-8") as handle:
+            self.assertIn("goodbye world", handle.read())
+            self.assertNotIn("hello world", handle.read())
+
+    def test_apply_edit_reports_missing_search_text(self):
+        from reach_cli.chat import apply_edit
+        ok, err = apply_edit(self.work, "existing.txt", "nope nope", "y")
+        self.assertFalse(ok)
+        self.assertIn("not found", err)
+
+    def test_safe_rel_blocks_escapes(self):
+        from reach_cli.chat import _safe_rel
+        self.assertIsNone(_safe_rel("../evil"))
+        self.assertIsNone(_safe_rel("a/../../evil"))
+        self.assertIsNone(_safe_rel("/abs/path"))
+        self.assertIsNone(_safe_rel("C:/win/path"))
+        self.assertEqual(_safe_rel("sub/dir/file.txt"), "sub/dir/file.txt")
+
+    def test_build_system_agent_appends_workpath(self):
+        from reach_cli.chat import build_system
+        from reach_cli.client import ReachClient
+        client = ReachClient("http://127.0.0.1:1")
+        client.agent = True
+        client.workpath = self.work
+        prompt = build_system(client)
+        self.assertIn("workpath is", prompt)
+        self.assertIn("existing.txt", prompt)
+        client.agent = False
+        self.assertNotIn("workpath is", build_system(client))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

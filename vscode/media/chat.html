@@ -21,6 +21,9 @@
       <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 4.754a3.246 3.246 0 1 0 0 6.492 3.246 3.246 0 0 0 0-6.492zM5.754 8a2.246 2.246 0 1 1 4.492 0 2.246 2.246 0 0 1-4.492 0z"/><path d="M9.796 1.343c-.527-1.79-3.065-1.79-3.592 0l-.094.319a.873.873 0 0 1-1.255.52l-.292-.16c-1.64-.892-3.433.902-2.54 2.541l.159.292a.873.873 0 0 1-.52 1.255l-.319.094c-1.79.527-1.79 3.065 0 3.592l.319.094a.873.873 0 0 1 .52 1.255l-.16.292c-.892 1.64.901 3.434 2.541 2.54l.292-.159a.873.873 0 0 1 1.255.52l.094.319c.527 1.79 3.065 1.79 3.592 0l.094-.319a.873.873 0 0 1 1.255-.52l.292.16c1.64.893 3.434-.902 2.54-2.541l-.159-.292a.873.873 0 0 1 .52-1.255l.319-.094c1.79-.527 1.79-3.065 0-3.592l-.319-.094a.873.873 0 0 1-.52-1.255l.16-.292c.893-1.64-.902-3.433-2.541-2.54l-.292.159a.873.873 0 0 1-1.255-.52l-.094-.319z"/></svg>
       </button>
+      <button id="tray-btn" class="icon-btn tray-btn" title="System tray — click to start if stopped" aria-label="System tray">
+        <svg viewBox="0 0 16 16" width="14" height="14"><path d="M1.5 2h13A1.5 1.5 0 0 1 16 3.5v7a1.5 1.5 0 0 1-1.5 1.5H9.2l.5 1.6H11v1H5v-1h1.3l.5-1.6H1.5A1.5 1.5 0 0 1 0 10.5v-7A1.5 1.5 0 0 1 1.5 2zm0 1a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-13z"/></svg>
+      </button>
     </div>
     <div class="row search-row">
       <svg class="search-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85zm-5.242.656a5 5 0 1 1 0-10 5 5 0 0 1 0 10z" fill="currentColor"/></svg>
@@ -41,6 +44,7 @@
   </main>
 
   <footer id="composer">
+    <div id="attach-chips" class="attach-chips" hidden></div>
     <div class="row">
       <select id="model" class="model-select" title="Model"></select>
       <button id="history-btn" class="icon-btn" title="Chat history" aria-label="Chat history">
@@ -54,7 +58,15 @@
       </button>
     </div>
     <div class="row">
-      <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+      <div class="input-wrap">
+        <span id="attach-btn" class="attach-plus" role="button" tabindex="0" title="Attach files or images as context" aria-label="Attach">+</span>
+        <span id="attach-clear" class="attach-minus" role="button" tabindex="0" title="Remove all attachments" aria-label="Remove all attachments" hidden>-</span>
+        <div id="attach-menu" class="attach-menu" hidden>
+          <button class="attach-item" data-kind="all">📄 Attach files…</button>
+          <button class="attach-item" data-kind="images">🖼 Attach images…</button>
+        </div>
+        <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+      </div>
       <div class="send-col">
         <button id="send" class="send-btn" title="Send">➤</button>
         <button id="stop" class="stop-btn" title="Stop generating" aria-label="Stop generating" disabled>■</button>
