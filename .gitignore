@@ -1,7 +1,10 @@
+# Python
 __pycache__/
-*.pyc
-*.log
-config.json
-status.json
-*.pid
-.DS_Store
+*.py[cod]
+
+# tray runtime deps (Electron binary ~250MB) — installed via `npm install`
+copilot/tray/node_modules/
+copilot/tray/package-lock.json
+
+# logs
+copilot/tray/*.log

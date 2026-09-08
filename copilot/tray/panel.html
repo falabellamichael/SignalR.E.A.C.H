@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'">
+<title>SignalR.E.A.C.H Copilot</title>
+<style>
+  /* dark popover panel — SimpleRAG tray panel styling */
+  :root {
+    --bg: #1b1b1f;
+    --raised: #232329;
+    --border: #34343d;
+    --text: #e8e6e0;
+    --muted: #9a978f;
+    --gold: #d4af37;
+    --green: #58d68d;
+    --red: #e06c5f;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: 12px/1.45 "Segoe UI", system-ui, sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  #app { display: flex; flex-direction: column; height: 100%; }
+
+  header {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #24242b 0%, var(--bg) 100%);
+  }
+  .mark {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: radial-gradient(circle at 50% 75%, var(--gold) 1.5px, transparent 2px),
+                conic-gradient(from 225deg at 50% 75%, transparent 0 25%, rgba(212,175,55,.5) 25% 35%, transparent 35%);
+    border: 1px solid var(--border);
+    flex: 0 0 auto;
+  }
+  header h1 { font-size: 12.5px; font-weight: 600; letter-spacing: .06em; }
+  header h1 span { color: var(--gold); }
+  #pill {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 5px;
+    font-size: 10.5px; color: var(--muted);
+    padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px;
+  }
+  #pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  #pill.ok .dot { background: var(--green); }
+  #pill.ok { color: var(--green); }
+  #pill.bad .dot { background: var(--red); }
+  #pill.bad { color: var(--red); }
+
+  main { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px; }
+
+  .card {
+    background: var(--raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 10px;
+    margin-bottom: 9px;
+  }
+  .card h2 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--muted); margin-bottom: 6px; font-weight: 600;
+  }
+  .kv { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; }
+  .kv b { color: var(--muted); font-weight: 500; }
+  .kv span { text-align: right; word-break: break-all; }
+
+  button {
+    font: inherit; color: var(--text);
+    background: #2c2c34; border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer;
+  }
+  button:hover { border-color: var(--gold); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.gold { background: rgba(212,175,55,.14); border-color: rgba(212,175,55,.5); color: var(--gold); }
+  .btn-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  #test-input {
+    width: 100%; margin-bottom: 6px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 8px; font: inherit; user-select: text;
+  }
+  #test-input:focus { outline: none; border-color: var(--gold); }
+  #test-out {
+    margin-top: 7px; font-size: 11px; color: var(--muted);
+    max-height: 120px; overflow-y: auto; white-space: pre-wrap;
+    word-break: break-word; user-select: text; display: none;
+  }
+  #test-out.err { color: var(--red); }
+  #test-out.ok { color: var(--text); display: block; }
+  #test-out.err { display: block; }
+
+  footer {
+    flex: 0 0 auto; padding: 8px 12px 10px;
+    border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+    color: var(--muted); font-size: 10.5px;
+  }
+  footer a { color: var(--muted); text-decoration: none; cursor: pointer; }
+  footer a:hover { color: var(--gold); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="mark" aria-hidden="true"></div>
+    <h1>Signal<span>R.E.A.C.H</span> · Copilot</h1>
+    <div id="pill"><span class="dot"></span><span id="pill-text">checking…</span></div>
+  </header>
+
+  <main>
+    <div class="card">
+      <h2>Bridge</h2>
+      <div class="kv"><b>Session</b><span id="st-session">—</span></div>
+      <div class="kv"><b>Bridge port</b><span id="st-port">—</span></div>
+      <div class="kv"><b>Window</b><span id="st-visible">—</span></div>
+      <div class="kv"><b>Last reply</b><span id="st-last">—</span></div>
+      <div class="kv"><b>Last error</b><span id="st-error">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Controls</h2>
+      <div class="btn-row">
+        <button id="btn-show">Show window</button>
+        <button id="btn-hide">Hide</button>
+      </div>
+      <div class="btn-row" style="margin-top:6px">
+        <button id="btn-refresh-page" title="Reload the Copilot page">⟳ Refresh page</button>
+        <button id="btn-home" title="Back to Copilot chat">⌂ Copilot home</button>
+      </div>
+      <div class="btn-row" style="margin-top:6px">
+        <button id="btn-signout">Sign out</button>
+        <button id="btn-refresh" class="gold">Refresh status</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Test a message</h2>
+      <input id="test-input" type="text" placeholder="Ask Copilot something…"
+             value="Reply with exactly: TRAY OK">
+      <div class="btn-row">
+        <button id="btn-test" class="gold">Send test</button>
+      </div>
+      <div id="test-out"></div>
+    </div>
+  </main>
+
+  <footer>
+    <span id="foot-note">invisible browser · tray supervisor</span>
+    <a id="btn-quit">Quit bridge</a>
+  </footer>
+</div>
+<script src="panel.js"></script>
+</body>
+</html>

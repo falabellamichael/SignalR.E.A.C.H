@@ -1,0 +1,17 @@
+{
+  "name": "signalreach-copilot-tray",
+  "version": "1.0.0",
+  "description": "SignalR.E.A.C.H Copilot tray — invisible browser + system tray supervisor for the M365 Copilot bridge",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "gen-icon": "node gen-icon.mjs"
+  },
+  "devDependencies": {
+    "electron": "30.5.1"
+  },
+  "allowScripts": {
+    "electron@30.5.1": true
+  }
+}
