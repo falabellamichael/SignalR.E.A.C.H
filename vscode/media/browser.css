@@ -1,0 +1,202 @@
+/* REACH Browser — panel shell. Colors derive from the real VS Code theme. */
+:root {
+  --reach-panel: var(--vscode-editor-background, #1e1e1e);
+  --reach-surface: var(--vscode-editorWidget-background, #252526);
+  --reach-raised: var(--vscode-menu-background, #2d2d30);
+  --reach-text: var(--vscode-editor-foreground, #cccccc);
+  --reach-muted: var(--vscode-descriptionForeground, #9d9d9d);
+  --reach-border: var(--vscode-widget-border, #454545);
+  --reach-accent: #d4af37;
+  --reach-accent-light: #f0d98c;
+  --reach-accent-bg: rgba(212, 175, 55, 0.14);
+  --reach-accent-border: rgba(212, 175, 55, 0.55);
+  --reach-shadow: rgba(0, 0, 0, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--reach-panel);
+  color: var(--reach-text);
+  font-family: var(--vscode-font-family, 'Segoe UI', system-ui, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+body { display: flex; flex-direction: column; }
+
+/* ---- toolbar ---- */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--reach-border);
+  background: var(--reach-surface);
+  flex: 0 0 auto;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--reach-muted);
+  padding: 4px 5px;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 0;
+  flex: 0 0 auto;
+}
+.icon-btn:hover:not(:disabled) { background: var(--reach-accent-bg); color: var(--reach-accent-light); }
+.icon-btn:disabled { opacity: 0.35; cursor: default; }
+
+.address-input {
+  flex: 1 1 auto;
+  min-width: 60px;
+  background: var(--reach-panel);
+  color: var(--reach-text);
+  border: 1px solid var(--reach-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  outline: none;
+}
+.address-input:focus { border-color: var(--reach-accent-border); }
+.address-input::placeholder { color: var(--reach-muted); opacity: 1; }
+
+#status {
+  flex: 0 0 auto;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--reach-muted);
+  font-size: 11px;
+}
+
+/* ---- page ---- */
+#page {
+  flex: 1 1 auto;
+  overflow: auto;
+  background: var(--reach-panel);
+  user-select: text;
+}
+#page a { color: var(--vscode-textLink-foreground, #4daafc); cursor: pointer; }
+#page img { max-width: 100%; }
+#page pre, #page code {
+  font-family: var(--vscode-editor-font-family, Consolas, monospace);
+  font-size: 0.95em;
+  background: var(--reach-surface);
+  color: var(--reach-text);
+}
+#page table { border-collapse: collapse; }
+#page th, #page td { border: 1px solid var(--reach-border); padding: 3px 6px; }
+#page blockquote { border-left: 3px solid var(--reach-border); margin: 6px 0; padding: 2px 8px; color: var(--reach-muted); }
+
+.reach-flash {
+  outline: 2px solid var(--reach-accent);
+  outline-offset: 1px;
+  background-color: var(--reach-accent-bg) !important;
+  transition: background-color 0.6s ease;
+}
+
+/* ---- welcome / error ---- */
+.welcome {
+  padding: 40px 28px;
+  text-align: center;
+  color: var(--reach-muted);
+}
+.welcome-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--reach-text);
+  margin-bottom: 12px;
+  letter-spacing: 0.3px;
+}
+.welcome-line { margin: 6px auto; max-width: 520px; line-height: 1.5; }
+.welcome-line b { color: var(--reach-accent-light); }
+
+/* ---- browser engine install banner ---- */
+.engine-banner {
+  margin: 22px auto 0;
+  max-width: 460px;
+  padding: 14px 16px;
+  border: 1px solid var(--reach-accent-border);
+  background: var(--reach-accent-bg);
+  border-radius: 8px;
+  text-align: left;
+}
+.engine-line { line-height: 1.5; color: var(--reach-text); font-size: 12px; }
+.engine-line b { color: var(--reach-accent-light); }
+.engine-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.engine-btn {
+  background: var(--reach-accent);
+  color: #1f1a0a;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.engine-btn:hover { background: var(--reach-accent-light); }
+.engine-btn:disabled { opacity: 0.55; cursor: default; }
+.engine-progress {
+  font-size: 11px;
+  color: var(--reach-muted);
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.engine-ready {
+  margin-top: 18px;
+  font-size: 12px;
+  color: var(--reach-accent-light);
+}
+
+.error-box {
+  margin: 14px 24px;
+  padding: 10px 13px;
+  border: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+  background: var(--vscode-inputValidation-errorBackground, rgba(190, 17, 0, 0.16));
+  color: var(--vscode-errorForeground, #f48771);
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+/* ---- custom right-click context menu ---- */
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 200px;
+  background: var(--reach-raised);
+  border: 1px solid var(--reach-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px var(--reach-shadow);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ctx-item {
+  background: transparent;
+  border: none;
+  color: var(--reach-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 5px;
+}
+.ctx-item:hover { background: var(--reach-accent-bg); color: var(--reach-accent-light); }
+.ctx-item .ctx-sub { color: var(--reach-muted); font-size: 11px; margin-left: 6px; }
+.ctx-sep { height: 1px; background: var(--reach-border); margin: 3px 4px; }

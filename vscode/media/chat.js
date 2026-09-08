@@ -21,6 +21,7 @@
   const searchResults = $('#search-results');
   const settingsBtn = $('#settings-btn');
   const trayBtn = $('#tray-btn');
+  const browserBtn = $('#browser-btn');
   const settingsPanel = $('#settings-panel');
   const topThink = $('#top-think');
   const modelChip = $('#model-chip');
@@ -1414,7 +1415,7 @@
           cap.className = 'browse-cap';
           cap.textContent = '🌐 ' + (t.url || 'browser') + ' — snapshot';
           const img = document.createElement('img');
-          img.src = 'data:image/png;base64,' + msg.image;
+          img.src = 'data:image/jpeg;base64,' + msg.image;
           img.alt = t.url || 'browser snapshot';
           snap.appendChild(cap);
           snap.appendChild(img);
@@ -1640,6 +1641,7 @@
     }
   });
   trayBtn.addEventListener('click', () => post('trayStart'));
+  browserBtn.addEventListener('click', () => post('openBrowser'));
   document.addEventListener('click', (e) => {
     if (!settingsPanel.hidden && !settingsPanel.contains(e.target) && !settingsBtn.contains(e.target)) {
       settingsPanel.hidden = true;
