@@ -1,0 +1,8 @@
+# Bumps SHA-pinned actions so the pins stay current (see the SECURITY NOTE
+# in .github/workflows/ci.yml and the pin comment in release-please.yml).
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
