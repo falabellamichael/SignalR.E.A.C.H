@@ -42,7 +42,10 @@
   let agenticEnabled = true;
   let pendingEdits = [];
   const editCards = {};
-  let stepRow = null;
+  let stepsEl = null;        // Copilot-style work-log container (step stack)
+  let stepRows = [];         // visible narration rows
+  let rowByUid = {};         // tool uid -> row, so results can tick their own line
+  const MAX_STEP_ROWS = 5;
   let stepTimer = null;
   let contTools = [];
   let contResolved = 0;
@@ -95,7 +98,8 @@
     if (thinkRow) { thinkRow.remove(); thinkRow = null; }
     if (pendingBubble && pendingBubble.parentElement) pendingBubble.parentElement.classList.remove('thinking');
     topThink.hidden = true;
-    endStep();
+    // keep the work log visible while the answer streams; freeze the active line
+    if (stepRows.length) closeStep(stepRows[stepRows.length - 1]);
   }
 
   function thoughtIcon(title) {
@@ -274,8 +278,8 @@
         disable: () => { apply.disabled = true; discard.disabled = true; },
       };
       apply.addEventListener('click', () => {
-        startSteps();
-        showStep('✍️ Applying edit to ' + ed.path + '…');
+        const v = pickVoice('apply', ed.path);
+        showStep(v.text, false, v.title);
         post('applyEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
       });
       discard.addEventListener('click', () => card.remove());
@@ -528,59 +532,148 @@
     return arr[Math.floor(Math.random() * arr.length)];
   }
 
-  function startSteps() {
-    endStep();
-    stepRow = document.createElement('div');
-    stepRow.className = 'step-line';
-    const spin = document.createElement('span');
-    spin.className = 'mini-spin';
-    stepRow.appendChild(spin);
-    const txt = document.createElement('span');
-    txt.className = 'step-text';
-    stepRow.appendChild(txt);
-    log.appendChild(stepRow);
-    let last = '';
-    const tick = () => {
-      let pick = FUN_STEPS[Math.floor(Math.random() * FUN_STEPS.length)];
-      if (pick === last) pick = FUN_STEPS[(FUN_STEPS.indexOf(pick) + 1) % FUN_STEPS.length];
-      last = pick;
-      if (stepRow) {
-        const t = stepRow.querySelector('.step-text');
-        if (t) t.textContent = pick;
-      }
-    };
-    tick();
-    stepTimer = setInterval(tick, 2800);
+  /* Narrative voice for real work events — Copilot-chat style ("Let me see this…"). */
+  const VOICE = {
+    read: [
+      ['Let me see this…', 'Reading {d}'],
+      ['Let me take a look…', 'Reading {d}'],
+      ['Opening it up…', 'Reading {d}'],
+    ],
+    search: [
+      ['Scanning for clues…', 'Searching for "{d}"'],
+      ['Hunting through the code…', 'Searching for "{d}"'],
+      ['Searching high and low…', 'Searching for "{d}"'],
+    ],
+    list: [
+      ['Getting the lay of the land…', 'Listing {d}'],
+      ['Mapping this out…', 'Listing {d}'],
+      ['Taking inventory…', 'Listing {d}'],
+    ],
+    run: [
+      ['Let me try something…', 'Running: {d}'],
+      ['Running a little experiment…', 'Running: {d}'],
+    ],
+    think: [
+      ['Let me think about this…', 'WhisperThink — reasoning privately'],
+      ['Mulling it over…', 'WhisperThink — reasoning privately'],
+    ],
+    websearch: [
+      ['Let me ask the internet…', 'Searching the web for "{d}"'],
+      ['Checking the web…', 'Searching the web for "{d}"'],
+    ],
+    workspace: [
+      ['Getting oriented in your project…', 'Reading workspace context'],
+      ['Getting to know the codebase…', 'Reading workspace context'],
+    ],
+    continue: [
+      ['Continuing with what I found…', ''],
+      ['Putting the pieces together…', ''],
+    ],
+    apply: [
+      ['Applying that change…', '{d}'],
+      ['Writing it to disk…', '{d}'],
+    ],
+  };
+
+  function pickVoice(action, detail) {
+    const arr = VOICE[action] || [];
+    if (!arr.length) return { text: detail || '', title: '' };
+    const p = arr[Math.floor(Math.random() * arr.length)];
+    return { text: p[0], title: p[1] ? p[1].replace('{d}', detail || '') : '' };
   }
 
-  function showStep(text, done) {
-    if (!stepRow) return;
-    const t = stepRow.querySelector('.step-text');
-    if (t) t.textContent = text;
-    stepRow.className = 'step-line' + (done ? ' done' : '');
+  function startSteps() {
+    if (stepsEl) return;                 // one work log per request
+    stepsEl = document.createElement('div');
+    stepsEl.className = 'steps';
+    log.appendChild(stepsEl);
+    addStepRow();                        // idle row the fun filler rotates on
+    if (!stepTimer) stepTimer = setInterval(tickFiller, 2800);
+  }
+
+  function addStepRow(uid, text, title) {
+    const el = document.createElement('div');
+    el.className = 'step-line';
+    const spin = document.createElement('span');
+    spin.className = 'mini-spin';
+    const txt = document.createElement('span');
+    txt.className = 'step-text';
+    el.appendChild(spin);
+    el.appendChild(txt);
+    stepsEl.appendChild(el);
+    const row = { el, textEl: txt, real: false, closed: false, uid: uid || null };
+    if (row.uid) rowByUid[row.uid] = row;
+    stepRows.push(row);
+    if (text !== undefined) {
+      row.real = true;
+      row.textEl.textContent = text;
+      if (title) el.title = title;
+    }
+    while (stepRows.length > MAX_STEP_ROWS) {
+      const old = stepRows.shift();
+      if (old.uid) delete rowByUid[old.uid];
+      old.el.remove();
+    }
+    scrollBottom();
+    return row;
+  }
+
+  function tickFiller() {
+    if (!stepRows.length) return;
+    const row = stepRows[stepRows.length - 1];
+    if (row.closed || row.real) return;
+    let pick = FUN_STEPS[Math.floor(Math.random() * FUN_STEPS.length)];
+    if (pick === row.textEl.textContent) pick = FUN_STEPS[(FUN_STEPS.indexOf(pick) + 1) % FUN_STEPS.length];
+    row.textEl.textContent = pick;
+  }
+
+  function closeStep(row) {
+    if (!row || row.closed) return;
+    row.closed = true;
+    row.el.classList.add('done');
+  }
+
+  function showStep(text, done, title) {
+    if (!stepsEl) startSteps();
+    let row = stepRows.length ? stepRows[stepRows.length - 1] : null;
+    if (row && !row.closed && row.real) { closeStep(row); row = null; }
+    if (!row || row.closed) row = addStepRow(null, text, title);
+    else {
+      row.real = true;
+      row.textEl.textContent = text;
+      if (title) row.el.title = title;
+    }
+    if (done) closeStep(row);
+    return row;
   }
 
   function endStep() {
     if (stepTimer) { clearInterval(stepTimer); stepTimer = null; }
-    if (stepRow) { stepRow.remove(); stepRow = null; }
+    if (stepsEl) { stepsEl.remove(); stepsEl = null; }
+    stepRows = [];
+    rowByUid = {};
   }
 
   function beginToolRound(tools) {
     startSteps();
+    // freeze the idle filler row so the tool list reads as a clean work log
+    const idle = stepRows[stepRows.length - 1];
+    if (idle && !idle.closed && !idle.real) closeStep(idle);
     contTools = tools.map((t) => Object.assign({}, t, {
       uid: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       result: null,
     }));
     contResolved = 0;
     contTools.forEach((t) => {
-      const desc = t.action === 'read'
-        ? 'Reading ' + t.path + '…'
+      const detail = t.action === 'read'
+        ? t.path
         : t.action === 'search'
-          ? 'Searching for "' + t.pattern + '"…'
+          ? t.pattern
           : t.action === 'list'
-            ? 'Listing ' + (t.path || 'workspace') + '…'
-            : 'Running: ' + t.command + '…';
-      showStep(desc);
+            ? (t.path || 'the workspace')
+            : t.command;
+      const v = pickVoice(t.action, detail);
+      addStepRow(t.uid, v.text, v.title);
       post('toolReq', { uid: t.uid, action: t.action, path: t.path, pattern: t.pattern, command: t.command });
     });
   }
@@ -596,7 +689,8 @@
         + 'then finish your reply; propose file changes as ```edit blocks):\n\n' + resultsText },
     ]);
     agentRounds += 1;
-    showStep('Continuing with what I found…');
+    const v = pickVoice('continue');
+    showStep(v.text);
     post('chat', {
       body: {
         model: conv.model,
@@ -918,6 +1012,7 @@
     $('#send').disabled = false;
     $('#stop').disabled = true;
     scrollBottom();
+    endStep(); // work log retires with the reply
     if (followUpQueue.length) {
       const next = followUpQueue.shift();
       startChat(next, true);
@@ -1063,13 +1158,8 @@
         if (!t) break;
         t.result = msg.ok ? msg.result : 'ERROR: ' + (msg.error || 'failed');
         contResolved += 1;
-        showStep('✓ ' + (t.action === 'read'
-          ? 'Read ' + t.path
-          : t.action === 'search'
-            ? 'Searched "' + t.pattern + '"'
-            : t.action === 'list'
-              ? 'Listed ' + (t.path || 'workspace')
-              : 'Command sent to terminal'));
+        const row = rowByUid[msg.uid];
+        if (row) closeStep(row); // tick the narrated line that was waiting on this tool
         if (contResolved >= contTools.length) continueAgent();
         break;
       }
@@ -1084,16 +1174,18 @@
         break;
       case 'thinking':
         if (pendingBubble && !thinkRow && !pendingText) showThinking();
-        showStep('🧠 WhisperThink — reasoning privately…');
+        {
+          const v = pickVoice('think');
+          showStep(v.text, false, v.title);
+        }
         break;
       case 'thought':
         pendingThought = (msg.text || '').trim();
         if (thinkRow) thinkRow.title = 'Private reasoning:\n\n' + pendingThought;
         break;
-      case 'searchInfo':
-        showStep(msg.results
-          ? `🔎 Web search — ${msg.results} hit${msg.results === 1 ? '' : 's'} found`
-          : '🔎 Searching the web…');
+      case 'searchInfo': {
+        const v = pickVoice('websearch', msg.query);
+        showStep(v.text, !!msg.results, msg.query ? v.title : '');
         webCount.textContent = msg.results
           ? `Web · ${msg.results} hits${msg.pages ? ' + ' + msg.pages + ' pages' : ''}`
           : 'Web';
@@ -1101,13 +1193,17 @@
           ? `Searched: "${msg.query}"${msg.playwright ? ' (Playwright)' : ''}`
           : '';
         break;
-      case 'contextInfo':
-        showStep(`📂 Read ${msg.files} workspace file${msg.files === 1 ? '' : 's'} (~${Math.round((msg.chars || 0) / 1024)}KB)`);
+      }
+      case 'contextInfo': {
+        const v = pickVoice('workspace');
+        showStep(v.text, true, v.title + ' — ' + msg.files + ' file' + (msg.files === 1 ? '' : 's')
+          + ', ~' + Math.round((msg.chars || 0) / 1024) + 'KB');
         wsCount.textContent = msg.files
           ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
           : 'Workspace';
         wsCount.title = msg.chars ? `~${Math.round(msg.chars / 1024)}KB of file context sent` : '';
         break;
+      }
       case 'workspaceState':
         wsCount.textContent = msg.files
           ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
@@ -1133,12 +1229,12 @@
         if (msg.ok) {
           if (Math.random() < 0.5) showStep(pickFun(FUN_APPLIED), true);
           else showStep('✓ Applied ' + msg.path, true);
-          setTimeout(endStep, 2500);
+          if (!busy) setTimeout(endStep, 2500);
           if (!appliedEdits.includes(msg.path)) appliedEdits.push(msg.path);
           rec.status.textContent = '✓ applied';
           rec.status.className = 'edit-status ok';
         } else {
-          endStep();
+          if (!busy) endStep();
           rec.status.textContent = '⚠ ' + (msg.error || 'failed');
           rec.status.className = 'edit-status err';
           rec.disable();

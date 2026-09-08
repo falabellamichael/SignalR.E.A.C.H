@@ -467,7 +467,8 @@ body {
   padding: 2px 0 6px;
 }
 
-/* ---- Cursor-style step tracker ---- */
+/* ---- Copilot-style work log (narrated step stack) ---- */
+.steps { padding: 2px 2px 8px; }
 .step-line {
   display: flex;
   align-items: center;
