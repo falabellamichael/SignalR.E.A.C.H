@@ -93,11 +93,16 @@
       post('ctx', { x: e.clientX, y: e.clientY, text: describe(el), sel: sel, href: href, tag: el ? el.tagName.toLowerCase() : '' });
     }, true);
     document.addEventListener('click', function (e) {
+      post('click', {});
       var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
       if (!a) return;
       var href = '';
       try { href = a.href || a.getAttribute('href') || ''; } catch (err) {}
       if (/^https?:\\/\\//i.test(href)) { e.preventDefault(); post('nav', { url: href }); }
+    }, true);
+    document.addEventListener('scroll', function () { post('scroll', {}); }, true);
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') post('esc', {});
     }, true);
   })();`;
 
@@ -139,6 +144,7 @@
     hasPage = true;
     errorBox.hidden = true;
     welcome.hidden = true;
+    hideMenu();
     statusEl.textContent = currentTitle ? currentTitle.slice(0, 60) : currentUrl.slice(0, 60);
     const fr = ensureFrame();
     fr.srcdoc = buildDoc(data.html || '', currentUrl);
@@ -149,6 +155,7 @@
   function renderError(data) {
     if (frame) { frame.remove(); frame = null; }
     hasPage = false;
+    hideMenu();
     errorBox.hidden = false;
     errorBox.textContent = 'Could not load ' + (data.url || 'page') + ' — ' + (data.error || 'unknown error');
     statusEl.textContent = 'error';
@@ -268,6 +275,10 @@
     } else if (d.type === 'nav') {
       const url = normalizeUrl(d.url);
       if (url) { statusEl.textContent = 'Loading…'; post('navigate', { url, push: true }); }
+    } else if (d.type === 'click' || d.type === 'scroll' || d.type === 'esc') {
+      // Interactions inside the iframe don't reach the parent document's
+      // listeners — the capture script forwards them so the menu closes.
+      hideMenu();
     }
   });
 

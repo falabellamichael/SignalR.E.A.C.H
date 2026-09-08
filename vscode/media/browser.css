@@ -15,6 +15,10 @@
 
 * { box-sizing: border-box; }
 
+/* Author display rules (e.g. .ctx-menu's flex) must not defeat the `hidden`
+ * attribute — the UA [hidden] rule loses to any author display value. */
+[hidden] { display: none !important; }
+
 html, body {
   height: 100%;
   margin: 0;
