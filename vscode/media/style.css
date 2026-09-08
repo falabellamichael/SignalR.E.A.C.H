@@ -478,15 +478,22 @@ body {
   max-width: 170px;
 }
 .chip-x {
+  flex: 0 0 auto;
   border: none;
   background: transparent;
   color: var(--reach-muted);
   cursor: pointer;
-  font-size: 11px;
-  padding: 0 2px;
+  font-size: 13px;
+  font-weight: 700;
   line-height: 1;
+  padding: 3px 7px;
+  margin-left: 4px;
+  border-radius: 4px;
 }
-.chip-x:hover { color: var(--reach-error); }
+.chip-x:hover {
+  color: var(--reach-error);
+  background: rgba(190, 17, 0, 0.18);
+}
 
 /* ---- agentic edit cards (Cursor-style) ---- */
 .edit-card {
