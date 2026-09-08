@@ -3,11 +3,20 @@
 import json
 import urllib.request
 
-from .config import runtime_port
+from .config import load_config, runtime_port
 from .runtime import port_open
+
+
+def admin_token():
+    return (load_config().get("system") or {}).get("admin_token") or ""
+
+
 def admin_request(path, method="GET", payload=None, port=None):
     url = "http://127.0.0.1:%d%s" % (port or runtime_port(), path)
     req = urllib.request.Request(url, method=method)
+    token = admin_token()
+    if token:
+        req.add_header("X-Reach-Admin", token)
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")

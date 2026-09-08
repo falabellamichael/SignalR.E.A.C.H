@@ -97,11 +97,16 @@ def wait_for_cloudflared_url(timeout_s):
 
 def post_public_url_override(port, url):
     try:
+        headers = {"Content-Type": "application/json"}
+        from .http_admin import admin_token
+        token = admin_token()
+        if token:
+            headers["X-Reach-Admin"] = token
         req = urllib.request.Request(
             "http://127.0.0.1:%d/_reach/public-url" % port,
             data=json.dumps({"public_url": url}).encode("utf-8"),
             method="POST",
-            headers={"Content-Type": "application/json"})
+            headers=headers)
         with urllib.request.urlopen(req, timeout=3) as resp:
             resp.read()
     except Exception:
