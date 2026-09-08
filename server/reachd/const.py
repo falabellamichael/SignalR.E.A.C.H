@@ -1,6 +1,6 @@
 """Shared module-level constants for the reachd package."""
 
-VERSION = "3.3.0"  # x-release-please-version
+VERSION = "3.4.0"  # x-release-please-version
 SERVICE = "signalreach"
 DEFAULT_PORT = 20777
 MAX_BODY_BYTES = 32 * 1024 * 1024
