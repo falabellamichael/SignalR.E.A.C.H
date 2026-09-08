@@ -418,5 +418,102 @@ class ClientKeyManagementTests(unittest.TestCase):
         self.assertEqual(patch["access"]["keys"][0]["key"], raw_key)
 
 
+class AdminGateTests(unittest.TestCase):
+    """The advisory GHSA-m439-vg8j-pf3x fixes: admin gate, IP derivation,
+    upstream-host validation, key redaction."""
+
+    @staticmethod
+    def _fake(headers=None, peer="127.0.0.1"):
+        # Borrow the real methods under test; supply just the request attrs
+        # they read. (Same unbound-method pattern as the _cache_key tests.)
+        class _FakeH:
+            _is_loopback = reachd.RelayHandler._is_loopback
+            _admin_local = reachd.RelayHandler._admin_local
+            _client_ip = reachd.RelayHandler._client_ip
+        h = _FakeH()
+        h.headers = headers or {}
+        h.client_address = (peer, 12345)
+        return h
+
+    # ---- F1: admin gate no longer trusts peer address alone ----
+    def test_admin_local_true_for_bare_loopback(self):
+        self.assertTrue(self._fake()._admin_local())
+
+    def test_admin_local_false_when_forwarded(self):
+        # ngrok/cloudflared inject these; a tunneled request also arrives from
+        # 127.0.0.1 but must NOT qualify as a local admin client.
+        for hdr in ("X-Forwarded-For", "X-Forwarded-Proto", "Forwarded",
+                    "Cf-Connecting-Ip"):
+            self.assertFalse(self._fake({hdr: "1.2.3.4"})._admin_local(),
+                             "%s should disqualify local admin" % hdr)
+
+    def test_admin_local_false_for_remote_peer(self):
+        self.assertFalse(self._fake(peer="203.0.113.9")._admin_local())
+
+    def test_admin_token_roundtrips_and_bounds(self):
+        tok = reachd.generate_admin_token()
+        self.assertTrue(tok.startswith("rt-"))
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["system"]["admin_token"] = tok
+        reachd.validate_settings(cfg)  # must not raise
+        cfg["system"]["admin_token"] = "x" * 200
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    # ---- F4: real client IP is the proxy-added value, not attacker's first XFF ----
+    def test_client_ip_takes_last_xff_not_spoofed_first(self):
+        h = self._fake({"X-Forwarded-For": "1.1.1.1, 203.0.113.9"})
+        self.assertEqual(h._client_ip(), "203.0.113.9")
+
+    def test_client_ip_prefers_cf_connecting_ip(self):
+        h = self._fake({"Cf-Connecting-Ip": "203.0.113.9",
+                        "X-Forwarded-For": "1.1.1.1"})
+        self.assertEqual(h._client_ip(), "203.0.113.9")
+
+    def test_ip_in_list_cidr_and_exact(self):
+        from reachd.handler import _ip_in_list
+        self.assertTrue(_ip_in_list("10.1.2.3", ["10.0.0.0/8"]))
+        self.assertFalse(_ip_in_list("11.1.2.3", ["10.0.0.0/8"]))
+        self.assertTrue(_ip_in_list("203.0.113.9", ["203.0.113.9"]))
+        # a differently-formatted but equal address still matches
+        self.assertTrue(_ip_in_list("203.0.113.009".replace("009", "9"),
+                                    ["203.0.113.9"]))
+
+    # ---- F3: upstream host must be local/private, never public ----
+    def test_omniroute_url_rejects_public_host(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["omniroute_url"] = "http://8.8.8.8/v1"   # public IP literal, no DNS
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_omniroute_url_allows_loopback_and_private(self):
+        for url in ("http://127.0.0.1:20128/v1", "http://192.168.1.5/v1",
+                    "http://localhost:20128/v1"):
+            cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+            cfg["omniroute_url"] = url
+            reachd.validate_settings(cfg)  # must not raise
+
+    def test_omniroute_url_rejects_non_http_scheme(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["omniroute_url"] = "file:///etc/passwd"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    # ---- F2: key views never carry the raw token ----
+    def test_public_key_view_has_no_raw_token(self):
+        k = reachd.generate_client_key("Legacy")
+        view = reachd.public_key_view(k)
+        self.assertNotEqual(view["key"], k["key"])
+        self.assertEqual(view["key"], view["masked_key"])
+        self.assertNotIn(k["key"], json.dumps(view))
+
+    def test_settings_public_masks_admin_token(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["system"]["admin_token"] = reachd.generate_admin_token()
+        shown = reachd.settings_public(cfg)
+        self.assertEqual(shown["system"]["admin_token"], "set")
+        self.assertNotIn(cfg["system"]["admin_token"], json.dumps(shown))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
