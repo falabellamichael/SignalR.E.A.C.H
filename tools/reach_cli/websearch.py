@@ -5,13 +5,56 @@ agents, rich answer modules, then page text extraction.
 """
 
 import html.parser
+import ipaddress
 import random
 import re
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
 
 DDG_URL = "https://duckduckgo.com/html/"
+
+
+def _host_is_safe(host):
+    """Reject SSRF targets: only allow an http(s) host that resolves entirely
+    to public addresses. Loopback, private, link-local, reserved, multicast,
+    and unspecified addresses are blocked so a search result (or a redirect
+    from one) can't reach the cloud metadata service or an intranet host."""
+    if not host:
+        return False
+    host = host.strip("[]")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (addr.is_loopback or addr.is_private or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return False
+    return True
+
+
+def _url_is_safe(url):
+    parts = urllib.parse.urlsplit(url)
+    return parts.scheme in ("http", "https") and _host_is_safe(parts.hostname)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-run the SSRF host check on every redirect target, so a public page
+    cannot 302 into the internal address range."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _url_is_safe(newurl):
+            raise urllib.error.URLError("unsafe redirect target blocked")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_SAFE_OPENER = urllib.request.build_opener(_SafeRedirectHandler)
 
 
 DDG_LITE_URL = "https://lite.duckduckgo.com/lite/"
@@ -99,7 +142,10 @@ class DDGParser(html.parser.HTMLParser):
         if tl == "a" and self._in_title:
             self._in_title = False
             title = " ".join(" ".join(self._title).split())
-            if title and self._url and self._url.startswith("http"):
+            # Scheme check only here (offline, no DNS); the real SSRF host gate
+            # runs in fetch_text/_SafeRedirectHandler before anything is fetched.
+            if title and self._url and \
+                    urllib.parse.urlsplit(self._url).scheme in ("http", "https"):
                 self.results.append({"title": title, "url": self._url, "snippet": ""})
             self._url = None
         elif self._in_snippet:
@@ -172,7 +218,8 @@ def _open(url, timeout=12, headers=None):
             **(headers or {}),
         },
     )
-    return urllib.request.urlopen(request, timeout=timeout)
+    # Route through the SSRF-checking opener so redirects are re-validated.
+    return _SAFE_OPENER.open(request, timeout=timeout)
 
 
 
@@ -202,7 +249,7 @@ def search_web(query, count=6):
 
 def fetch_text(url):
     """Readable text from a page, or None when unfetchable."""
-    if not url.startswith("http"):
+    if not _url_is_safe(url):
         return None
     try:
         with _open(url, timeout=12) as resp:
