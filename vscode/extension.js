@@ -5,16 +5,175 @@
  */
 const vscode = require('vscode');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
-const { webSearchDdg, searchAndFetch, hasPlaywright } = require('./search');
+const http = require('http');
+const { spawn } = require('child_process');
+const { webSearchDdg, searchAndFetch, pageText, browsePage, disposeBrowser, refreshPlaywright, hasPlaywright } = require('./search');
 
 const CONFIG_SECTION = 'simplereach';
+
+const PROPOSED_SCHEME = 'reach-proposed';
+const proposedDocs = new Map();
+
+/* Provides the "proposed" side of a REACH agent edit as a virtual document so
+ * the user can review changes in VS Code's native diff editor. */
+const proposedProvider = {
+  provideTextDocumentContent(uri) {
+    return proposedDocs.get(uri.toString()) || '';
+  },
+};
+
+function proposedUri(kind, rel, text) {
+  const clean = (rel || '').split('/').map(encodeURIComponent).join('/');
+  const uri = vscode.Uri.from({
+    scheme: PROPOSED_SCHEME,
+    path: '/' + kind + '/' + clean,
+    query: 't=' + Date.now().toString(36),
+  });
+  proposedDocs.set(uri.toString(), text);
+  return uri;
+}
 
 function getNonce() {
   let text = '';
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   for (let i = 0; i < 32; i += 1) text += chars.charAt(Math.floor(Math.random() * chars.length));
   return text;
+}
+
+/* ---- Copilot system tray supervisor (invisible browser + bridge :21302) ---- */
+
+const TRAY_PORT = 21302;
+
+function trayDir() {
+  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+  return path.join(base, 'SignalREACH', 'copilot', 'tray');
+}
+
+function trayHealth(timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get({ host: '127.0.0.1', port: TRAY_PORT, path: '/health', timeout: timeoutMs || 700 }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+/* 'running' | 'starting' | 'missing' | 'error'. The tray holds a
+ * single-instance lock, so a redundant spawn simply exits. */
+async function startTray() {
+  if (await trayHealth()) return 'running';
+  const dir = trayDir();
+  const electron = path.join(dir, 'node_modules', 'electron', 'dist', 'electron.exe');
+  if (!fs.existsSync(electron) || !fs.existsSync(path.join(dir, 'main.js'))) return 'missing';
+  try {
+    const child = spawn(electron, [dir], {
+      detached: true, stdio: 'ignore', windowsHide: true, cwd: dir,
+    });
+    child.on('error', () => {});
+    child.unref();
+    return 'starting';
+  } catch (e) {
+    return 'error';
+  }
+}
+
+/* ---- browser engine one-click installer (REACH Browser page) ---------- */
+
+function findNode() {
+  const exe = process.platform === 'win32' ? 'node.exe' : 'node';
+  const candidates = [];
+  for (const dir of (process.env.PATH || '').split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, exe));
+  }
+  if (process.platform === 'win32') {
+    const extra = [
+      path.join(process.env.ProgramFiles || 'C:\\Program Files', 'nodejs', 'node.exe'),
+      path.join(process.env.LOCALAPPDATA || '', 'Programs', 'nodejs', 'node.exe'),
+      path.join(os.homedir(), 'AppData', 'Roaming', 'nvm', 'node.exe'),
+    ];
+    const pf86 = process.env['ProgramFiles(x86)'];
+    if (pf86) extra.push(path.join(pf86, 'nodejs', 'node.exe'));
+    candidates.push(...extra);
+  } else {
+    candidates.push('/usr/local/bin/node', '/usr/bin/node', '/opt/homebrew/bin/node');
+  }
+  for (const c of candidates) {
+    try { if (c && fs.existsSync(c)) return c; } catch (e) { /* keep looking */ }
+  }
+  return null;
+}
+
+/* npm ships as <node dir>/node_modules/npm/bin/npm-cli.js in standard
+ * installs — running it with node avoids .cmd/.ps1 batch-file pitfalls in
+ * the extension host. */
+function npmCliPath(nodeExe) {
+  const p = path.join(path.dirname(nodeExe), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  return fs.existsSync(p) ? p : null;
+}
+
+let browserInstallRunning = false;
+
+async function installBrowserEngine(extRoot, onProgress) {
+  if (browserInstallRunning) return { ok: false, error: 'install already in progress' };
+  browserInstallRunning = true;
+  try {
+    const node = findNode();
+    if (!node) {
+      return { ok: false, error: 'Node.js was not found — install it from nodejs.org, reload VS Code, and try again.' };
+    }
+    const npmCli = npmCliPath(node);
+    if (!npmCli) {
+      return { ok: false, error: 'npm was not found next to node — install Node.js with npm and try again.' };
+    }
+    const run = (argv, stage, timeoutMs) => new Promise((resolve) => {
+      let child;
+      try {
+        child = spawn(node, argv, { cwd: extRoot, windowsHide: true });
+      } catch (e) {
+        resolve({ code: -1, err: String((e && e.message) || e) });
+        return;
+      }
+      let out = '';
+      let err = '';
+      const timer = setTimeout(() => {
+        try { child.kill(); } catch (e) { /* already gone */ }
+        resolve({ code: -1, err: 'timed out after ' + Math.round(timeoutMs / 60000) + ' min' });
+      }, timeoutMs);
+      const feed = (chunk) => {
+        out += String(chunk);
+        if (onProgress) onProgress(stage, out + err);
+      };
+      child.stdout.on('data', feed);
+      child.stderr.on('data', feed);
+      child.on('error', (e) => { clearTimeout(timer); resolve({ code: -1, err: String((e && e.message) || e) }); });
+      child.on('close', (code) => { clearTimeout(timer); resolve({ code, err }); });
+    });
+
+    onProgress('npm', 'Installing the browser engine (npm)…');
+    // --prefix pins the install to the extension dir: without it npm walks up
+    // looking for a package.json and can silently install into the home dir.
+    const r1 = await run([npmCli, 'install', 'playwright', '--prefix', extRoot,
+      '--no-audit', '--no-fund', '--no-package-lock', '--no-save'], 'npm', 10 * 60 * 1000);
+    if (r1.code !== 0) {
+      return { ok: false, error: ('npm install failed: ' + (r1.err || ('exit ' + r1.code))).slice(0, 400) };
+    }
+    onProgress('chromium', 'Downloading headless Chromium…');
+    const cli = path.join(extRoot, 'node_modules', 'playwright', 'cli.js');
+    const r2 = await run([cli, 'install', 'chromium'], 'chromium', 15 * 60 * 1000);
+    if (r2.code !== 0) {
+      return { ok: false, error: ('Chromium download failed: ' + (r2.err || ('exit ' + r2.code))).slice(0, 400) };
+    }
+    const ok = refreshPlaywright();
+    return ok
+      ? { ok: true, error: null }
+      : { ok: false, error: 'engine installed but did not load — reload VS Code (Ctrl+Shift+P → Reload Window)' };
+  } finally {
+    browserInstallRunning = false;
+  }
 }
 
 function config() {
@@ -147,6 +306,11 @@ class ReachChatViewProvider {
 
   resolveWebviewView(webviewView) {
     this._view = webviewView;
+    if (this._pendingContext && this._pendingContext.length) {
+      const pending = this._pendingContext;
+      this._pendingContext = [];
+      for (const item of pending) this._post('addContextItem', item);
+    }
     const wv = webviewView.webview;
     wv.options = {
       enableScripts: true,
@@ -175,6 +339,9 @@ class ReachChatViewProvider {
           break;
         case 'openSettings':
           vscode.commands.executeCommand('workbench.action.openSettings', '@ext:simplereach.simplereach');
+          break;
+        case 'openBrowser':
+          vscode.commands.executeCommand('simplereach.openBrowser');
           break;
         case 'setConfig': {
           const key = String(msg.key || '');
@@ -235,6 +402,47 @@ class ReachChatViewProvider {
           }
           break;
         }
+        case 'reviewEdit': {
+          const uid = String(msg.uid || '');
+          const rel = String(msg.path || '').replace(/\\/g, '/');
+          const search = String(msg.search == null ? '' : msg.search);
+          const replace = String(msg.replace == null ? '' : msg.replace);
+          const folders = vscode.workspace.workspaceFolders || [];
+          if (!folders.length) { this._post('editResult', { uid, error: 'No workspace folder is open.' }); break; }
+          if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) {
+            this._post('editResult', { uid, error: 'Invalid path: ' + rel });
+            break;
+          }
+          try {
+            const uri = vscode.Uri.joinPath(folders[0].uri, rel);
+            let current = '';
+            let exists = true;
+            try { current = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8'); }
+            catch (e) { exists = false; }
+            let newText;
+            if (!exists) {
+              if (search !== '') {
+                this._post('editResult', { uid, error: rel + ' does not exist (use empty search to create it).' });
+                break;
+              }
+              newText = replace;
+            } else {
+              const idx = current.indexOf(search);
+              if (idx === -1) {
+                this._post('editResult', { uid, error: 'Search text not found in ' + rel + ' — the file may have changed.' });
+                break;
+              }
+              newText = current.slice(0, idx) + replace + current.slice(idx + search.length);
+            }
+            const leftUri = exists ? uri : proposedUri('empty', rel, '');
+            const rightUri = proposedUri('proposed', rel, newText);
+            await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, (exists ? 'Review: ' : 'New file: ') + rel, { preview: true });
+            this._post('editResult', { uid, ok: true, path: rel, reviewed: true });
+          } catch (e) {
+            this._post('editResult', { uid, error: String((e && e.message) || e) });
+          }
+          break;
+        }
         case 'toolReq': {
           const uid = String(msg.uid || '');
           const action = String(msg.action || '');
@@ -249,6 +457,7 @@ class ReachChatViewProvider {
           ]);
           try {
             let result = '';
+            let image = null;
             if (action === 'read') {
               if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) throw new Error('invalid path');
               const uri = vscode.Uri.joinPath(folders[0].uri, rel);
@@ -272,10 +481,37 @@ class ReachChatViewProvider {
               result = 'Approved — command sent to the integrated terminal: ' + command
                 + '\n(The output appears in the VS Code terminal panel; you cannot read it. '
                 + 'Tell the user it is running there and continue based on your reasoning.)';
+            } else if (action === 'browse') {
+              const url = String(msg.url || '').slice(0, 800);
+              if (!/^https?:\/\//i.test(url)) throw new Error('invalid url: ' + url);
+              const bp = await browsePage(url, 20000);
+              if (!bp.ok) throw new Error(bp.error || 'browse failed');
+              image = bp.image || null;
+              const shown = (bp.url && bp.url !== url) ? bp.url : url;
+              result = '--- ' + shown + (bp.title ? ' (' + bp.title + ')' : '') + ' ---\n'
+                + (bp.text || '(no readable text)');
+              if (!image && !hasPlaywright()) {
+                result += '\n\n(Engine not installed — this page was read as plain text. '
+                  + 'Open the REACH Browser (globe button in the chat header) and click '
+                  + '“Install browser engine” for full rendering and page snapshots.)';
+              }
+            } else if (action === 'websearch') {
+              const query = String(msg.query || '').slice(0, 200);
+              if (!query) throw new Error('no search query');
+              const found = await searchAndFetch(query, 5, 2);
+              const out = [];
+              (found.results || []).forEach((r, i) => {
+                out.push('[' + (i + 1) + '] ' + r.title + ' — ' + r.url
+                  + ((r.snippet || '') ? '\n    ' + r.snippet : ''));
+              });
+              (found.pages || []).forEach((p) => {
+                out.push('\nExcerpt from ' + p.title + ' (' + p.url + '):\n' + String(p.text).slice(0, 4000));
+              });
+              result = out.join('\n') || '(no results)';
             } else {
               throw new Error('unknown action: ' + action);
             }
-            this._post('toolResult', { uid, ok: true, result: String(result).slice(0, 40000) });
+            this._post('toolResult', { uid, ok: true, result: String(result).slice(0, 40000), image });
           } catch (e) {
             this._post('toolResult', { uid, ok: false, error: String((e && e.message) || e) });
           }
@@ -292,6 +528,54 @@ class ReachChatViewProvider {
           const term = vscode.window.createTerminal('REACH Run');
           term.show(true);
           term.sendText(code);
+          break;
+        }
+        case 'pickFiles': {
+          const wantImages = msg.kind === 'images';
+          const uris = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            openLabel: wantImages ? 'Attach Images' : 'Attach Files',
+            filters: wantImages
+              ? { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }
+              : undefined,
+          });
+          if (!uris || !uris.length) break;
+          const items = [];
+          for (const u of uris) {
+            try {
+              const stat = await vscode.workspace.fs.stat(u);
+              const ext = (u.path.split('.').pop() || '').toLowerCase();
+              const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext);
+              const name = vscode.workspace.asRelativePath(u, false).split(/[\\/]/).pop()
+                || u.path.split(/[\\/]/).pop() || 'file';
+              const bytes = await vscode.workspace.fs.readFile(u);
+              if (isImage) {
+                if (stat.size > 5 * 1024 * 1024) {
+                  items.push({ name, error: 'image too large (>5MB)' });
+                  continue;
+                }
+                const mime = 'image/' + (ext === 'jpg' ? 'jpeg' : ext);
+                items.push({
+                  name, size: stat.size, kind: 'image', mime,
+                  dataUrl: 'data:' + mime + ';base64,' + Buffer.from(bytes).toString('base64'),
+                });
+              } else {
+                if (stat.size > 200 * 1024) {
+                  items.push({ name, error: 'text file too large (>200KB)' });
+                  continue;
+                }
+                const text = Buffer.from(bytes).toString('utf8');
+                if (text.indexOf('\uFFFD') !== -1) {
+                  items.push({ name, error: 'binary file — not attachable' });
+                  continue;
+                }
+                items.push({ name, size: stat.size, kind: 'text', content: text.slice(0, 200 * 1024) });
+              }
+            } catch (e) {
+              items.push({ name: u.path.split(/[\\/]/).pop() || 'file', error: String((e && e.message) || e) });
+            }
+          }
+          this._post('pickedFiles', { items });
           break;
         }
         default:
@@ -394,7 +678,7 @@ class ReachChatViewProvider {
   async _think(prompt, includeWorkspace, chatModel) {
     const { endpoint, thinkModel, thinkMaxTokens, contextMaxKb } = config();
     const model = thinkModel || chatModel || 'gpt-4o-mini';
-    let system = 'You are the PRIVATE reasoning engine of an AI assistant inside VS Code. '
+    let system = 'You are SimpleREACH — the private reasoning engine of the REACH coding assistant inside VS Code. '
       + 'The user just asked a question. Think step-by-step about the best answer: '
       + 'what matters most, which of the open files are relevant, what structure the '
       + 'reply should take, and any pitfalls. Be terse — a few short lines, no filler. '
@@ -505,7 +789,7 @@ class ReachChatViewProvider {
               query,
               results: results.length,
               pages: pages.length,
-              playwright: playwright && hasPlaywright,
+              playwright: playwright && hasPlaywright(),
             });
           }
         } catch (e) { /* search must never block the answer */ }
@@ -518,7 +802,7 @@ class ReachChatViewProvider {
       const contextBlock = buildContextBlock(docs, treeLines).slice(0, contextMaxKb * 1024);
       const contextMsg = {
         role: 'system',
-        content: 'You are assisting the user inside VS Code. Below is the current '
+        content: 'You are SimpleREACH, the REACH coding assistant inside VS Code. Below is the current '
           + 'workspace context — files they have open. Use it to ground answers; '
           + 'never invent file contents.\n\n' + contextBlock,
       };
@@ -540,7 +824,7 @@ class ReachChatViewProvider {
     if (body.agentic && agentic) {
       messages.unshift({
         role: 'system',
-        content: 'You are an agentic coding assistant inside VS Code with live workspace access. '
+        content: 'You are SimpleREACH, an agentic coding assistant inside VS Code with live workspace access. '
           + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
           + 'in the workspace context above. When the user asks you to change or create files, act '
           + 'like an agent: briefly explain what you will do, then emit each file change as a fenced '
@@ -557,9 +841,13 @@ class ReachChatViewProvider {
           + '```tool\n{"action": "search", "pattern": "text to find"}\n```\n'
           + '```tool\n{"action": "list", "path": ""}\n```\n'
           + '```tool\n{"action": "shell", "command": "npm test"}\n```\n'
+          + '```tool\n{"action": "browse", "url": "https://example.com"}\n```\n'
+          + '```tool\n{"action": "websearch", "query": "latest news"}\n```\n'
           + 'Actions: "read" reads one file, "search" greps the whole workspace for a pattern, "list" '
           + 'prints a directory tree (empty path = workspace root), "shell" runs a command in the '
-          + 'integrated terminal (the user must approve it first — you cannot see its output). Use them '
+          + 'integrated terminal (the user must approve it first — you cannot see its output), "browse" '
+          + 'opens a web page in a browser (reads its text and shows a snapshot), "websearch" searches the '
+          + 'web and reads the top pages. Use them '
           + 'when you need to see files that are not already in the context, then finish with edit '
           + 'blocks for the actual changes.',
       });
@@ -656,9 +944,63 @@ class ReachChatViewProvider {
   }
 }
 
+/* ---- REACH Browser: right-click "Add element to chat (REACH)" ----
+ * The VS Code Integrated/Simple Browser context menus are owned by VS Code
+ * core (native Electron menu) — extensions cannot add items to them. So REACH
+ * ships its own browser panel: pages are fetched and rendered with scripts
+ * disabled, which lets us own the right-click menu and read the element the
+ * user right-clicked (elementFromPoint), then send it to the REACH chat. */
+
+const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0';
+
+async function fetchPageHtml(rawUrl, timeoutMs = 15000) {
+  let url = String(rawUrl || '').trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)
+    && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(url)) {
+    url = 'http://' + url;
+  }
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'Enter an http(s) or localhost URL.' };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9' },
+    });
+    if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
+    let html = await resp.text();
+    if (html.length > 2.5 * 1024 * 1024) html = html.slice(0, 2.5 * 1024 * 1024);
+    const titleM = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
+    const title = titleM
+      ? String(titleM[1]).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
+      : url;
+    return { ok: true, url: resp.url || url, title: title.slice(0, 120), html };
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function browserHtml(extensionUri, webview) {
+  const nonce = getNonce();
+  const mediaUri = (name) => webview.asWebviewUri(
+    vscode.Uri.joinPath(extensionUri, 'media', name)).toString();
+  const htmlPath = path.join(extensionUri.fsPath, 'media', 'browser.html');
+  const template = fs.readFileSync(htmlPath, 'utf8');
+  return template
+    .replace(/\{\{cspSource\}\}/g, webview.cspSource)
+    .replace(/\{\{nonce\}\}/g, nonce)
+    .replace(/\{\{styleUri\}\}/g, mediaUri('browser.css'))
+    .replace(/\{\{scriptUri\}\}/g, mediaUri('browser.js'));
+}
+
 function activate(context) {
   const provider = new ReachChatViewProvider(context.extensionUri);
   context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(PROPOSED_SCHEME, proposedProvider),
     vscode.window.registerWebviewViewProvider('reach.chat', provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -669,8 +1011,209 @@ function activate(context) {
       if (provider._view) provider._post('reload', {});
     }),
   );
+
+  /* ---- right-click selection actions (CodeGPT-style) ---- */
+
+  const postPrompt = (text) => {
+    vscode.commands.executeCommand('reach.chat.focus');
+    provider._post('startPrompt', { text });
+  };
+
+  const buildPrompt = (instruction) => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('REACH: open a file first.');
+      return null;
+    }
+    const sel = editor.selection;
+    const hasSel = !!(sel && !sel.isEmpty);
+    const code = hasSel ? editor.document.getText(sel) : editor.document.getText();
+    const rel = vscode.workspace.asRelativePath(editor.document.uri, false);
+    const lang = editor.document.languageId;
+    return 'File: ' + rel + ' (' + lang + ')\n'
+      + (hasSel ? 'Selected code' : 'File contents (no selection)') + ':\n'
+      + '```' + lang + '\n' + code.slice(0, 12000) + '\n```\n\n' + instruction;
+  };
+
+  const SELECTION_ACTIONS = {
+    explainSelection: 'Explain what this code does, clearly and concisely.',
+    refactorSelection: 'Refactor this code to be cleaner and more idiomatic while preserving behavior. If agent mode is on, propose the changes as edit blocks.',
+    fixSelection: 'Find and fix bugs in this code. Explain each issue; if agent mode is on, propose the fixes as edit blocks.',
+    commentSelection: 'Add clear, concise comments to this code. If agent mode is on, propose them as edit blocks.',
+    testSelection: 'Write focused unit tests for this code. If agent mode is on, propose them as edit blocks.',
+    optimizeSelection: 'Optimize this code for performance and explain the tradeoffs. If agent mode is on, propose the changes as edit blocks.',
+  };
+
+  for (const [cmd, instruction] of Object.entries(SELECTION_ACTIONS)) {
+    context.subscriptions.push(vscode.commands.registerCommand('simplereach.' + cmd, () => {
+      const prompt = buildPrompt(instruction);
+      if (prompt) postPrompt(prompt);
+    }));
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.askSelection', () => {
+    const prompt = buildPrompt('');
+    if (prompt) postPrompt(prompt);
+  }));
+
+  // ---- REACH Browser panel ----
+  let browserPanel = null;
+  const browserState = { history: [], index: -1 };
+
+  // Elements picked in the REACH Browser (or via the Add Element command)
+  // become chat ATTACHMENTS — context that rides along with the user's next
+  // message — instead of auto-running the AI.
+  const reachBrowserAddElement = (data) => {
+    const text = String((data && data.text) || '').trim();
+    if (!text) return;
+    const tagMatch = /^<([a-z0-9]+)>/i.exec(text);
+    const source = String((data && data.title) || (data && data.url) || 'REACH Browser');
+    const item = {
+      name: ((tagMatch ? '<' + tagMatch[1] + '> ' : '') + source).slice(0, 60),
+      content: text.slice(0, 8000),
+      url: String((data && data.url) || '').slice(0, 500),
+      title: String((data && data.title) || '').slice(0, 120),
+    };
+    if (provider._view) {
+      provider._post('addContextItem', item);
+    } else {
+      // Chat view not created yet — flush it when the view resolves.
+      provider._pendingContext = provider._pendingContext || [];
+      provider._pendingContext.push(item);
+    }
+    vscode.commands.executeCommand('reach.chat.focus');
+  };
+
+  const browserPost = (type, payload) => {
+    if (browserPanel) browserPanel.webview.postMessage(Object.assign({ type }, payload || {}));
+  };
+
+  const browserGo = async (url, push) => {
+    const res = await fetchPageHtml(url);
+    if (!browserPanel) return;
+    if (!res.ok) {
+      browserPost('pageError', { url, error: res.error });
+      return;
+    }
+    if (push) {
+      browserState.history = browserState.history.slice(0, browserState.index + 1);
+      browserState.history.push({ url: res.url, title: res.title });
+      browserState.index = browserState.history.length - 1;
+    }
+    browserPanel.title = 'REACH Browser — ' + res.title.slice(0, 40);
+    browserPost('page', {
+      url: res.url, title: res.title, html: res.html,
+      canBack: browserState.index > 0,
+      canForward: browserState.index < browserState.history.length - 1,
+    });
+  };
+
+  const browserGoBack = () => {
+    if (browserState.index <= 0) return;
+    browserState.index -= 1;
+    browserGo(browserState.history[browserState.index].url, false);
+  };
+  const browserGoForward = () => {
+    if (browserState.index >= browserState.history.length - 1) return;
+    browserState.index += 1;
+    browserGo(browserState.history[browserState.index].url, false);
+  };
+
+  const openReachBrowser = () => {
+    if (browserPanel) { browserPanel.reveal(); return; }
+    browserPanel = vscode.window.createWebviewPanel(
+      'reach.browser', 'REACH Browser',
+      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
+      });
+    browserPanel.webview.html = browserHtml(context.extensionUri, browserPanel.webview);
+    browserPanel.onDidDispose(() => { browserPanel = null; });
+    browserState.history = [];
+    browserState.index = -1;
+    browserPanel.webview.onDidReceiveMessage(async (msg) => {
+      switch (msg && msg.type) {
+        case 'ready':
+          // Reply to the panel's ready ping — the earlier state post may have
+          // fired before the webview script attached its listener.
+          browserPost('state', {
+            url: '', canBack: browserState.index > 0,
+            canForward: browserState.index < browserState.history.length - 1,
+            engine: hasPlaywright(),
+          });
+          break;
+        case 'navigate':
+          await browserGo(String(msg.url || ''), msg.push !== false);
+          break;
+        case 'back':
+          browserGoBack();
+          break;
+        case 'forward':
+          browserGoForward();
+          break;
+        case 'reload':
+          if (browserState.index >= 0) {
+            await browserGo(browserState.history[browserState.index].url, false);
+          }
+          break;
+        case 'openExternal':
+          try {
+            await vscode.env.openExternal(vscode.Uri.parse(String(msg.url || '')));
+          } catch (e) { /* ignore */ }
+          break;
+        case 'addElement':
+          reachBrowserAddElement(msg);
+          break;
+        case 'installBrowser':
+          browserPost('installProgress', { stage: 'npm', line: 'Starting…' });
+          {
+            const res = await installBrowserEngine(context.extensionUri.fsPath, (stage, all) => {
+              const lines = String(all || '').split('\n').map((l) => l.trim()).filter(Boolean);
+              browserPost('installProgress', { stage, line: (lines[lines.length - 1] || '').slice(0, 160) });
+            });
+            browserPost('installDone', { ok: !!res.ok, error: res.error || null, engine: hasPlaywright() });
+          }
+          break;
+        default:
+          break;
+      }
+    });
+    browserPost('state', { url: '', canBack: false, canForward: false, engine: hasPlaywright() });
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('simplereach.openBrowser', openReachBrowser),
+  );
+
+  // Right-click in the REACH Browser (or an external caller with a payload)
+  // -> send the page element/selection to the REACH chat.
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.addElementToChat', async (arg) => {
+    if (arg && (arg.content || arg.text)) {
+      reachBrowserAddElement({ text: arg.content || arg.text, url: arg.url, title: arg.title });
+      return;
+    }
+    const clip = await vscode.env.clipboard.readText().catch(() => '');
+    let text = (clip || '').trim();
+    if (!text) {
+      const ed = vscode.window.activeTextEditor;
+      if (ed && ed.selection && !ed.selection.isEmpty) text = ed.document.getText(ed.selection).trim();
+    }
+    if (!text) {
+      vscode.window.showInformationMessage('REACH: select or copy page text first, then try again.');
+      return;
+    }
+    reachBrowserAddElement({ text, url: '' });
+  }));
+
+  // The Copilot system tray starts with the extension (no-op when it is
+  // already running); the chat panel's tray icon reflects the live state.
+  startTray().catch(() => {});
 }
 
-function deactivate() {}
+function deactivate() {
+  // Close the shared headless browser so no Chromium lingers after reload.
+  disposeBrowser().catch(() => {});
+}
 
 module.exports = { activate, deactivate };

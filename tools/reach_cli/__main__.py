@@ -40,6 +40,15 @@ def main(argv=None):
     parser.add_argument(
         "--no-fetch", action="store_true", help="web mode: don't fetch page excerpts"
     )
+    parser.add_argument(
+        "--agent", action="store_true",
+        help="agent mode — the assistant can propose file edits inside the "
+        "workpath (each one needs your approval)",
+    )
+    parser.add_argument(
+        "--workpath", default=None,
+        help="directory the agent works in (default: current directory)",
+    )
     args = parser.parse_args(argv)
 
     terminal.PAINT = Paint(enable_ansi() and not args.no_color)
@@ -52,6 +61,14 @@ def main(argv=None):
     )
     if args.system:
         client.system = args.system
+    if args.agent:
+        client.agent = True
+    if args.workpath:
+        workpath = os.path.abspath(os.path.expanduser(args.workpath))
+        if not os.path.isdir(workpath):
+            print(c_red("✗ workpath not a directory: %s" % workpath))
+            return 1
+        client.workpath = workpath
 
     if args.command == "models":
         try:

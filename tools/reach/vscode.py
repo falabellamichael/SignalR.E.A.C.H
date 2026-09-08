@@ -122,14 +122,20 @@ def configure_defaults(quiet=False):
 
 
 def _install_playwright(dst):
-    """npm install playwright + headless Chromium inside the extension dir."""
+    """npm install playwright + headless Chromium inside the extension dir.
+
+    --prefix pins the install to ``dst``: without it npm walks up looking for
+    a package.json and can silently install into the user's home directory.
+    """
     import subprocess
-    if not shutil.which("npm"):
+    npm = shutil.which("npm")
+    if not npm:
         print("  --with-playwright: npm not found — skipped")
         return
     print("  installing playwright (npm)…")
-    r1 = subprocess.run(["npm", "install", "playwright", "--no-audit",
-                         "--no-fund"],
+    r1 = subprocess.run([npm, "install", "playwright", "--prefix", str(dst),
+                         "--no-audit", "--no-fund", "--no-package-lock",
+                         "--no-save"],
                         cwd=str(dst), capture_output=True, text=True,
                         timeout=600)
     if r1.returncode != 0:
@@ -137,9 +143,17 @@ def _install_playwright(dst):
               % (r1.stderr or r1.stdout)[:300])
         return
     print("  downloading headless Chromium…")
-    r2 = subprocess.run(["npx", "playwright", "install", "chromium"],
-                        cwd=str(dst), capture_output=True, text=True,
-                        timeout=900)
+    node = shutil.which("node")  # npm ran fine, so node is present
+    cli = str(Path(dst) / "node_modules" / "playwright" / "cli.js")
+    if node:
+        r2 = subprocess.run([node, cli, "install", "chromium"],
+                            cwd=str(dst), capture_output=True, text=True,
+                            timeout=900)
+    else:
+        r2 = subprocess.run([npm, "exec", "--prefix", str(dst),
+                             "playwright", "install", "chromium"],
+                            cwd=str(dst), capture_output=True, text=True,
+                            timeout=900)
     if r2.returncode == 0:
         print("  playwright ready — page fetching will use headless Chromium")
     else:

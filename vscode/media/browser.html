@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src * data: blob:; script-src 'unsafe-inline' 'unsafe-eval' * data: blob:; style-src 'unsafe-inline' * data:; img-src * data: blob:; font-src * data:; connect-src * data: blob:; frame-src * data: blob: about:; worker-src * blob:; media-src * data: blob:;">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="{{styleUri}}">
+  <title>REACH Browser</title>
+</head>
+<body>
+  <header id="toolbar">
+    <button id="back-btn" class="icon-btn" title="Back" aria-label="Back" disabled>
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M10.7 2.3L9.3 1 3 7.3 9.3 13.6 10.7 12.2 5.8 7.3z" fill="currentColor"/></svg>
+    </button>
+    <button id="fwd-btn" class="icon-btn" title="Forward" aria-label="Forward" disabled>
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M5.3 1 6.7 2.3 11.6 7.3 6.7 12.2 5.3 13.6 11.6 7.3z" fill="currentColor"/></svg>
+    </button>
+    <button id="reload-btn" class="icon-btn" title="Reload" aria-label="Reload">
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9l-1 1A4.5 4.5 0 1 0 12.5 8h1z" fill="currentColor"/><path d="M13.5 1.5v4h-4l1.3-1.3A6.5 6.5 0 1 1 1.5 8h1A5.5 5.5 0 1 0 11 2.8l2.5 2.5v-3.8h0z" fill="currentColor"/></svg>
+    </button>
+    <input id="address" class="address-input" type="text" spellcheck="false"
+           placeholder="Enter a URL (https://…)" title="Address">
+    <button id="open-ext-btn" class="icon-btn" title="Open in your real browser" aria-label="Open in browser">
+      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M9.3 4.3l2.4 2.4 2.3-2.3A1.5 1.5 0 0 0 12 3l-2.3 2.3 2.4 2.4zM9.3 4.3l-3-3 .7-.7 3 3z" fill="currentColor"/><path d="M11.5 6.5l1.3 1.3a3.4 3.4 0 0 1 0 4.8l-2.1 2.1a3.4 3.4 0 0 1-4.8 0l-.8-.8.7-.7.8.8a2.4 2.4 0 0 0 3.4 0l2.1-2.1a2.4 2.4 0 0 0 0-3.4l-1.3-1.3zM4.5 9.5l-1.3-1.3a3.4 3.4 0 0 1 0-4.8l2.1-2.1a3.4 3.4 0 0 1 4.8 0l.8.8-.7.7-.8-.8a2.4 2.4 0 0 0-3.4 0L3.9 4.1a2.4 2.4 0 0 0 0 3.4l1.3 1.3z" fill="currentColor"/></svg>
+    </button>
+    <span id="status" class="status" title="Status"></span>
+  </header>
+
+  <main id="page" class="page">
+    <div id="welcome" class="welcome">
+      <div class="welcome-title">REACH Browser</div>
+      <div class="welcome-line">Enter a URL above and press <b>Enter</b> to open it.
+        Local servers work too: <b>localhost:3000</b> or <b>127.0.0.1:8080</b>.</div>
+      <div class="welcome-line">Right-click <b>any element</b> on the page and pick
+        <b>“Add element to chat”</b> — it attaches as context for your next message.</div>
+      <div class="welcome-line">Pages run with JavaScript in a sandboxed frame — some sites
+        block that (logins etc.), so there's also a 🌐 button to open any page in your real browser.</div>
+      <div id="engine-banner" class="engine-banner" hidden>
+        <div class="engine-line">The <b>browser engine</b> (headless Chromium) isn’t installed —
+          the AI can only read pages as plain text, with no rendering or snapshots.</div>
+        <div class="engine-actions">
+          <button id="engine-install-btn" class="engine-btn">Install browser engine</button>
+          <span id="engine-progress" class="engine-progress" hidden></span>
+        </div>
+      </div>
+      <div id="engine-ready" class="engine-ready" hidden>✓ Browser engine ready</div>
+    </div>
+    <div id="welcome-input-wrap" class="welcome-input-wrap" hidden>
+      <div id="error-box" class="error-box" hidden></div>
+    </div>
+  </main>
+
+  <div id="ctx-menu" class="ctx-menu" hidden></div>
+  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+</body>
+</html>

@@ -4,10 +4,14 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import os
+import socket
+import subprocess
 import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 
 import reachd.core as core  # core.STATE is read at call time (cycle-safe)
 from reachd.chat import chat_execute, chat_finalize
@@ -435,6 +439,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_create_key()
+            elif path == "/_reach/tray":
+                if not self._require_admin():
+                    return
+                self.handle_tray()
             elif path in ("/v1/chat/completions", "/chat/completions"):
                 if not self._check_access():
                     return
@@ -471,6 +479,43 @@ class RelayHandler(BaseHTTPRequestHandler):
             keys.append(new_key)
             save_config(core.STATE.cfg, core.STATE.cfg_path)
         self._json(201, {"created": True, "key": new_key})
+
+    def handle_tray(self):
+        """Start the Copilot 365 system tray (invisible browser + in-process
+        bridge on 127.0.0.1:21302) when it is not already running. The tray
+        lives in %LOCALAPPDATA%\\SignalREACH\\copilot\\tray; its Electron app
+        holds a single-instance lock, so a redundant spawn simply exits."""
+        if self._tray_running():
+            return self._json(200, {"tray": "running", "started": False})
+        local = Path(os.environ.get("LOCALAPPDATA")
+                     or str(Path.home() / "AppData" / "Local"))
+        tray_dir = local / "SignalREACH" / "copilot" / "tray"
+        electron = tray_dir / "node_modules" / "electron" / "dist" / "electron.exe"
+        if not (electron.is_file() and (tray_dir / "main.js").is_file()):
+            return self._json(404, {"tray": "missing", "started": False,
+                                    "error": "tray not installed"})
+        try:
+            flags = 0
+            if os.name == "nt":
+                flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
+            subprocess.Popen([str(electron), str(tray_dir)],
+                             cwd=str(tray_dir),
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, close_fds=True,
+                             creationflags=flags)
+            core.log_error("tray start requested via /_reach/tray")
+            return self._json(200, {"tray": "starting", "started": True})
+        except Exception as exc:  # pragma: no cover - environment-specific
+            core.log_error("tray start failed: %s" % exc)
+            return self._json(500, {"tray": "error", "started": False,
+                                    "error": str(exc)})
+
+    def _tray_running(self):
+        try:
+            with socket.create_connection(("127.0.0.1", 21302), timeout=0.6):
+                return True
+        except OSError:
+            return False
 
     def handle_settings_update(self):
         body = self._read_body()

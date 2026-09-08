@@ -1,7 +1,7 @@
 {
   "name": "simplereach",
   "displayName": "SimpleREACH",
-  "description": "Chat with your SimpleREACH models (gpt-4o, claude-opus-4.6, gemini, deepseek\u2026) directly inside VS Code. Zero config \u2014 points at your local REACH endpoint.",
+  "description": "Chat with your SimpleREACH models (gpt-4o, claude-opus-4.6, gemini, deepseek…) directly inside VS Code. Zero config — points at your local REACH endpoint.",
   "version": "1.0.0",
   "publisher": "simplereach",
   "license": "MIT",
@@ -30,6 +30,51 @@
       {
         "command": "simplereach.reload",
         "title": "REACH: Reload Models"
+      },
+      {
+        "command": "simplereach.askSelection",
+        "title": "REACH: Ask about this",
+        "icon": "$(question)"
+      },
+      {
+        "command": "simplereach.explainSelection",
+        "title": "REACH: Explain this",
+        "icon": "$(book)"
+      },
+      {
+        "command": "simplereach.refactorSelection",
+        "title": "REACH: Refactor this",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "simplereach.fixSelection",
+        "title": "REACH: Fix this",
+        "icon": "$(bug)"
+      },
+      {
+        "command": "simplereach.commentSelection",
+        "title": "REACH: Add comments",
+        "icon": "$(comment)"
+      },
+      {
+        "command": "simplereach.testSelection",
+        "title": "REACH: Generate tests",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "simplereach.optimizeSelection",
+        "title": "REACH: Optimize this",
+        "icon": "$(rocket)"
+      },
+      {
+        "command": "simplereach.addElementToChat",
+        "title": "REACH: Add Element to Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "simplereach.openBrowser",
+        "title": "REACH: Open Browser",
+        "icon": "$(globe)"
       }
     ],
     "viewsContainers": {
@@ -50,6 +95,52 @@
         }
       ]
     },
+    "submenus": [
+      {
+        "id": "reach/selection",
+        "label": "REACH"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "reach/selection",
+          "group": "navigation@50",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "simplereach.askSelection",
+          "group": "navigation@51",
+          "when": "editorHasSelection"
+        }
+      ],
+      "reach/selection": [
+        {
+          "command": "simplereach.explainSelection",
+          "group": "1@1"
+        },
+        {
+          "command": "simplereach.refactorSelection",
+          "group": "1@2"
+        },
+        {
+          "command": "simplereach.fixSelection",
+          "group": "1@3"
+        },
+        {
+          "command": "simplereach.commentSelection",
+          "group": "1@4"
+        },
+        {
+          "command": "simplereach.testSelection",
+          "group": "1@5"
+        },
+        {
+          "command": "simplereach.optimizeSelection",
+          "group": "1@6"
+        }
+      ]
+    },
     "configuration": {
       "title": "SimpleREACH",
       "properties": {
@@ -61,7 +152,7 @@
         "simplereach.accessKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Optional shared access key (set in the REACH panel \u2192 Settings \u2192 Access)."
+          "markdownDescription": "Optional shared access key (set in the REACH panel → Settings → Access)."
         },
         "simplereach.model": {
           "type": "string",
@@ -76,7 +167,7 @@
         "simplereach.workspaceContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on \u2014 toggle it in the sidebar)."
+          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on — toggle it in the sidebar)."
         },
         "simplereach.contextMaxKb": {
           "type": "number",
@@ -86,7 +177,7 @@
         "simplereach.think": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "WhisperThink \u2014 the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the \ud83d\udcad chip on a reply to peek). Toggle in the sidebar."
+          "markdownDescription": "WhisperThink — the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the 💭 chip on a reply to peek). Toggle in the sidebar."
         },
         "simplereach.thinkModel": {
           "type": "string",
@@ -101,7 +192,7 @@
         "simplereach.webSearch": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Web search \u2014 the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
+          "markdownDescription": "Web search — the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
         },
         "simplereach.searchResults": {
           "type": "number",
@@ -120,5 +211,8 @@
         }
       }
     }
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
   }
 }

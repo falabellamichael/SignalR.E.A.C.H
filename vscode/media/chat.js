@@ -20,12 +20,19 @@
   const searchInput = $('#search');
   const searchResults = $('#search-results');
   const settingsBtn = $('#settings-btn');
+  const trayBtn = $('#tray-btn');
+  const browserBtn = $('#browser-btn');
   const settingsPanel = $('#settings-panel');
   const topThink = $('#top-think');
   const modelChip = $('#model-chip');
   const statusDot = $('#status-dot');
   const agentCheck = $('#agent-check');
   const workspaceLine = $('#workspace-line');
+  const attachBtn = $('#attach-btn');
+  const attachClear = $('#attach-clear');
+  const attachMenu = $('#attach-menu');
+  const attachChips = $('#attach-chips');
+  const togglesRow = document.querySelector('.row.toggles');
 
   let conv = null;            // current conversation {id, model, ts, title, messages, thoughts}
   let busy = false;
@@ -53,6 +60,8 @@
   const MAX_AGENT_ROUNDS = 4;
   const followUpQueue = [];
   const appliedEdits = [];
+  const attachments = [];
+  const MAX_ATTACHMENTS = 6;
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
@@ -179,12 +188,15 @@
     while ((m = re.exec(text || ''))) {
       try {
         const it = JSON.parse(repairJson(m[1].trim()));
-        if (it && (it.action === 'read' || it.action === 'search' || it.action === 'list' || it.action === 'shell')) {
+        const allowedTool = ['read', 'search', 'list', 'shell', 'browse', 'websearch'];
+        if (it && allowedTool.includes(it.action)) {
           tools.push({
             action: it.action,
             path: String(it.path || '').replace(/\\/g, '/'),
             pattern: String(it.pattern || '').slice(0, 200),
             command: String(it.command || '').slice(0, 1000),
+            url: String(it.url || '').slice(0, 800),
+            query: String(it.query || '').slice(0, 200),
           });
           clean = clean.replace(m[0], '');
         }
@@ -262,6 +274,9 @@
       card.appendChild(diff);
       const actions = document.createElement('div');
       actions.className = 'edit-actions';
+      const review = document.createElement('button');
+      review.className = 'edit-btn review';
+      review.textContent = '🩺 Review in diff';
       const apply = document.createElement('button');
       apply.className = 'edit-btn apply';
       apply.textContent = '✓ Apply';
@@ -275,14 +290,20 @@
         card,
         path: ed.path,
         status,
-        disable: () => { apply.disabled = true; discard.disabled = true; },
+        disable: () => { review.disabled = true; apply.disabled = true; discard.disabled = true; },
       };
+      review.addEventListener('click', () => {
+        startSteps();
+        showStep('🩺 Opening diff for ' + ed.path + '…');
+        post('reviewEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
+      });
       apply.addEventListener('click', () => {
         const v = pickVoice('apply', ed.path);
         showStep(v.text, false, v.title);
         post('applyEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
       });
       discard.addEventListener('click', () => card.remove());
+      actions.appendChild(review);
       actions.appendChild(apply);
       actions.appendChild(discard);
       actions.appendChild(status);
@@ -293,6 +314,15 @@
     if (cards.length > 1) {
       const bar = document.createElement('div');
       bar.className = 'edit-allbar';
+      const allReview = document.createElement('button');
+      allReview.className = 'edit-btn review';
+      allReview.textContent = '🩺 Review all (' + cards.length + ')';
+      allReview.addEventListener('click', () => {
+        cards.forEach((c) => {
+          const rb = c.querySelector('.edit-btn.review');
+          if (rb && !rb.disabled) rb.click();
+        });
+      });
       const all = document.createElement('button');
       all.className = 'edit-btn apply';
       all.textContent = '⚡ Apply all (' + cards.length + ')';
@@ -302,6 +332,7 @@
           if (ab && !ab.disabled) ab.click();
         });
       });
+      bar.appendChild(allReview);
       bar.appendChild(all);
       log.insertBefore(bar, cards[0]);
     }
@@ -561,6 +592,10 @@
       ['Let me ask the internet…', 'Searching the web for "{d}"'],
       ['Checking the web…', 'Searching the web for "{d}"'],
     ],
+    browse: [
+      ['Opening the page…', 'Browsing {d}'],
+      ['Taking a peek at the web…', 'Browsing {d}'],
+    ],
     workspace: [
       ['Getting oriented in your project…', 'Reading workspace context'],
       ['Getting to know the codebase…', 'Reading workspace context'],
@@ -671,17 +706,21 @@
           ? t.pattern
           : t.action === 'list'
             ? (t.path || 'the workspace')
-            : t.command;
+            : t.action === 'browse'
+              ? t.url
+              : t.action === 'websearch'
+                ? t.query
+                : t.command;
       const v = pickVoice(t.action, detail);
       addStepRow(t.uid, v.text, v.title);
-      post('toolReq', { uid: t.uid, action: t.action, path: t.path, pattern: t.pattern, command: t.command });
+      post('toolReq', { uid: t.uid, action: t.action, path: t.path, pattern: t.pattern, command: t.command, url: t.url, query: t.query });
     });
   }
 
   function continueAgent() {
     if (!conv) return;
     const resultsText = contTools
-      .map((t) => '[' + t.action + ' ' + (t.path || t.pattern || t.command) + ']\n' + t.result)
+      .map((t) => '[' + t.action + ' ' + (t.path || t.pattern || t.command || t.url || t.query) + ']\n' + t.result)
       .join('\n\n');
     const follow = (conv.messages || []).concat([
       { role: 'assistant', content: pendingText },
@@ -704,6 +743,133 @@
     });
   }
 
+  /* ---------- per-message actions (Copy / Retry / Delete / Edit) ---------- */
+
+  function copyText(text) {
+    const t = String(text || '');
+    if (!t) return;
+    const done = () => hint('Copied to clipboard');
+    const legacy = () => {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); hint('Copied to clipboard'); }
+      catch (e) { hint('Copy failed'); }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(t).then(done).catch(legacy);
+    } else legacy();
+  }
+
+  function addMessageButtons(role, body, index) {
+    const bubbleEl = body.parentElement;
+    bubbleEl.classList.add('has-actions');
+    const bar = document.createElement('div');
+    bar.className = 'msg-actions';
+    const mk = (label, title, cb) => {
+      const b = document.createElement('button');
+      b.className = 'msg-act';
+      b.textContent = label;
+      b.title = title;
+      b.addEventListener('click', cb);
+      return b;
+    };
+    const content = () => {
+      const m = conv && conv.messages[index];
+      return (m && m.content) || body.innerText || '';
+    };
+    const group = document.createElement('span');
+    group.className = 'msg-act-group';
+    group.appendChild(mk('Copy', 'Copy message', () => copyText(content())));
+    group.appendChild(mk('Retry', 'Regenerate from this point', () => retryAt(index)));
+    group.appendChild(mk('Delete', 'Delete this message', () => deleteMsgAt(index)));
+    bar.appendChild(group);
+    const edit = mk('Edit', 'Edit this message', () => editMsgAt(body, role, index));
+    edit.classList.add('msg-act-edit');
+    bar.appendChild(edit);
+    bubbleEl.appendChild(bar);
+  }
+
+  function retryAt(index) {
+    if (!conv) return;
+    if (busy) { hint('Wait for the current reply to finish.'); return; }
+    const role = conv.messages[index] && conv.messages[index].role;
+    if (!role) return;
+    conv.messages = role === 'assistant'
+      ? conv.messages.slice(0, index)
+      : conv.messages.slice(0, index + 1);
+    persist();
+    renderMessages();
+    launchChat();
+  }
+
+  function deleteMsgAt(index) {
+    if (!conv) return;
+    const t = conv.thoughts || {};
+    const thoughtsArr = [];
+    conv.messages.forEach((m, i) => { if (t[i] != null) thoughtsArr[i] = t[i]; });
+    conv.messages.splice(index, 1);
+    thoughtsArr.splice(index, 1);
+    conv.thoughts = {};
+    thoughtsArr.forEach((th, i) => { if (th != null) conv.thoughts[i] = th; });
+    persist();
+    saveConv();
+    renderMessages();
+    scrollBottom();
+  }
+
+  function editMsgAt(body, role, index) {
+    if (!conv) return;
+    const msg = conv.messages[index];
+    if (!msg) return;
+    const bubbleEl = body.parentElement;
+    const content = String(msg.content == null ? '' : msg.content);
+    const editor = document.createElement('textarea');
+    editor.className = 'msg-edit';
+    editor.value = content;
+    const normalActions = bubbleEl.querySelector('.msg-actions');
+    body.hidden = true;
+    bubbleEl.insertBefore(editor, body);
+    if (normalActions) normalActions.hidden = true;
+    const editBar = document.createElement('div');
+    editBar.className = 'msg-actions';
+    editBar.classList.add('edit-bar');
+    const save = document.createElement('button');
+    save.className = 'msg-act';
+    save.textContent = 'Save';
+    const cancel = document.createElement('button');
+    cancel.className = 'msg-act';
+    cancel.textContent = 'Cancel';
+    editBar.appendChild(save);
+    editBar.appendChild(cancel);
+    bubbleEl.appendChild(editBar);
+    editor.focus();
+    editor.setSelectionRange(editor.value.length, editor.value.length);
+    const done = (apply) => {
+      if (apply) {
+        const next = editor.value;
+        conv.messages[index].content = next;
+        persist();
+        saveConv();
+      }
+      editor.remove();
+      editBar.remove();
+      body.hidden = false;
+      if (normalActions) normalActions.hidden = false;
+      if (apply) renderMessages();
+    };
+    cancel.addEventListener('click', () => done(false));
+    save.addEventListener('click', () => done(true));
+    editor.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save.click(); }
+      else if (e.key === 'Escape') { e.preventDefault(); cancel.click(); }
+    });
+  }
+
   function renderMessages() {
     log.innerHTML = '';
     const msgs = (conv && conv.messages) || [];
@@ -717,6 +883,7 @@
       if (m.role === 'assistant' && conv.thoughts && conv.thoughts[idx]) {
         attachThoughts(body, conv.thoughts[idx]);
       }
+      addMessageButtons(m.role, body, idx);
     });
     scrollBottom();
   }
@@ -950,6 +1117,7 @@
     if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
     if (conv && conv.messages.length) saveConv();
     conv = null;
+    clearAttachments();
     persist();
     renderMessages();
     renderHistory();
@@ -998,6 +1166,10 @@
         conv.thoughts[conv.messages.length - 1] = pendingThought;
       }
       pendingBubble.parentElement.classList.remove('pending');
+      if (conv && conv.messages[conv.messages.length - 1] &&
+          conv.messages[conv.messages.length - 1].role === 'assistant') {
+        addMessageButtons('assistant', pendingBubble, conv.messages.length - 1);
+      }
       pendingBubble = null;
     }
     pendingText = '';
@@ -1019,6 +1191,74 @@
     }
   }
 
+  function buildRequestMessages() {
+    const msgs = conv.messages.slice();
+    if (!attachments.length) return msgs;
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === 'user') {
+      const imgs = attachments.filter((a) => a.kind === 'image' && a.dataUrl);
+      const texts = attachments.filter((a) => a.kind === 'text' && a.content);
+      const block = texts.length
+        ? '\n\nAttached context:\n' + texts.map((t) => '--- ' + t.name + ' ---\n' + t.content.slice(0, 30000)).join('\n\n')
+        : '';
+      if (imgs.length) {
+        msgs[msgs.length - 1] = Object.assign({}, last, {
+          content: [{ type: 'text', text: last.content + block }].concat(
+            imgs.map((i) => ({ type: 'image_url', image_url: { url: i.dataUrl } }))),
+        });
+      } else if (block) {
+        msgs[msgs.length - 1] = Object.assign({}, last, { content: last.content + block });
+      }
+    }
+    return msgs;
+  }
+
+  function renderChips() {
+    attachChips.innerHTML = '';
+    attachments.forEach((a, idx) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      if (a.kind === 'image' && a.dataUrl) {
+        const img = document.createElement('img');
+        img.className = 'chip-thumb';
+        img.src = a.dataUrl;
+        chip.appendChild(img);
+      }
+      const label = document.createElement('span');
+      label.className = 'chip-label';
+      label.textContent = (a.kind === 'image' ? '🖼 ' : '📎 ') + a.name
+        + (a.size ? ' (' + Math.max(1, Math.round(a.size / 1024)) + 'KB)' : '');
+      chip.appendChild(label);
+      const x = document.createElement('button');
+      x.className = 'chip-x';
+      x.textContent = '✕';
+      x.title = 'Remove ' + a.name;
+      x.addEventListener('click', () => { attachments.splice(idx, 1); renderChips(); });
+      chip.appendChild(x);
+      attachChips.appendChild(chip);
+    });
+    attachChips.hidden = !attachments.length;
+    attachClear.hidden = !attachments.length;
+  }
+
+  function clearAttachments() {
+    attachments.length = 0;
+    renderChips();
+  }
+
+  function setTrayState(status) {
+    trayBtn.classList.toggle('tray-on', status === 'running');
+    trayBtn.classList.toggle('tray-busy', status === 'starting');
+    trayBtn.classList.toggle('tray-err', status === 'error' || status === 'missing');
+    trayBtn.title = status === 'running'
+      ? 'System tray running (Copilot bridge :21302)'
+      : status === 'starting'
+        ? 'System tray starting…'
+        : status === 'error' || status === 'missing'
+          ? 'System tray unavailable — click to retry'
+          : 'System tray stopped — click to start';
+  }
+
   function launchChat() {
     pendingBubble = bubble('assistant');
     const pendingDiv = pendingBubble.parentElement;
@@ -1034,7 +1274,7 @@
     persist();
     agentRounds = 0;
     pendingEdits = [];
-    const msgs = conv.messages.slice();
+    const msgs = buildRequestMessages();
     if (appliedEdits.length) {
       msgs.unshift({
         role: 'system',
@@ -1057,12 +1297,14 @@
     scrollBottom();
   }
 
-  function startChat(text, queued) {
+  function startChat(text, queued, displaySuffix) {
     ensureConv();
     if (!queued) {
       if (!conv.title) conv.title = text.slice(0, 48);
       conv.messages.push({ role: 'user', content: text });
-      setRich(bubble('user'), text);
+      const body = bubble('user');
+      setRich(body, text + (displaySuffix || ''));
+      addMessageButtons('user', body, conv.messages.length - 1);
       persist();
     }
     launchChat();
@@ -1076,14 +1318,20 @@
       // follow-up: fires the moment the current reply finishes
       ensureConv();
       conv.messages.push({ role: 'user', content: text });
-      setRich(bubble('user'), text);
+      const body = bubble('user');
+      setRich(body, text);
+      addMessageButtons('user', body, conv.messages.length - 1);
       persist();
       followUpQueue.push(text);
       hint(pickFun(QUEUE_LINES));
       scrollBottom();
       return;
     }
-    startChat(text);
+    const suffix = attachments.length
+      ? '  ' + attachments.map((a) => (a.kind === 'image' ? '🖼' : '📎')).join(' ')
+      : '';
+    startChat(text, false, suffix);
+    clearAttachments();
   }
 
   /* ---------- extension-host messages ---------- */
@@ -1160,6 +1408,20 @@
         contResolved += 1;
         const row = rowByUid[msg.uid];
         if (row) closeStep(row); // tick the narrated line that was waiting on this tool
+        if (msg.image) {
+          const snap = document.createElement('div');
+          snap.className = 'browse-snap';
+          const cap = document.createElement('div');
+          cap.className = 'browse-cap';
+          cap.textContent = '🌐 ' + (t.url || 'browser') + ' — snapshot';
+          const img = document.createElement('img');
+          img.src = 'data:image/jpeg;base64,' + msg.image;
+          img.alt = t.url || 'browser snapshot';
+          snap.appendChild(cap);
+          snap.appendChild(img);
+          log.appendChild(snap);
+          scrollBottom();
+        }
         if (contResolved >= contTools.length) continueAgent();
         break;
       }
@@ -1223,9 +1485,70 @@
       case 'reload':
         post('fetchModels');
         break;
+      case 'trayState':
+        setTrayState(String(msg.status || 'stopped'));
+        break;
+      case 'startPrompt': {
+        const text = String(msg.text || '').slice(0, 20000);
+        if (!text) break;
+        if (busy) {
+          ensureConv();
+          conv.messages.push({ role: 'user', content: text });
+          const body = bubble('user');
+          setRich(body, text);
+          addMessageButtons('user', body, conv.messages.length - 1);
+          persist();
+          followUpQueue.push(text);
+          hint(pickFun(QUEUE_LINES));
+          scrollBottom();
+          break;
+        }
+        startChat(text);
+        break;
+      }
+      case 'pickedFiles': {
+        const errs = (msg.items || []).filter((i) => i.error);
+        const ok = (msg.items || []).filter((i) => !i.error);
+        ok.forEach((i) => { if (attachments.length < MAX_ATTACHMENTS) attachments.push(i); });
+        renderChips();
+        if (errs.length) hint('⚠ ' + errs.map((e) => e.name + ': ' + e.error).join(' · '));
+        break;
+      }
+      case 'addContextItem': {
+        // Element picked in the REACH Browser — attach it like a file so it
+        // rides along with the user's next message. Never auto-answers.
+        const content = String(msg.content || '').slice(0, 200000);
+        if (!content) break;
+        if (attachments.length >= MAX_ATTACHMENTS) {
+          hint('⚠ Attachment limit reached (' + MAX_ATTACHMENTS + ') — remove one first');
+          break;
+        }
+        attachments.push({
+          kind: 'text',
+          name: String(msg.name || 'browser element').slice(0, 60),
+          content,
+          sourceUrl: String(msg.url || ''),
+          sourceTitle: String(msg.title || ''),
+        });
+        renderChips();
+        hint('📎 Element attached — type your question and send');
+        input.focus();
+        break;
+      }
       case 'editResult': {
         const rec = editCards[msg.uid];
         if (!rec) break;
+        if (msg.reviewed) {
+          endStep();
+          if (msg.ok) {
+            rec.status.textContent = '✓ opened in VS Code diff';
+            rec.status.className = 'edit-status ok';
+          } else {
+            rec.status.textContent = '⚠ ' + (msg.error || 'failed');
+            rec.status.className = 'edit-status err';
+          }
+          break;
+        }
         if (msg.ok) {
           if (Math.random() < 0.5) showStep(pickFun(FUN_APPLIED), true);
           else showStep('✓ Applied ' + msg.path, true);
@@ -1263,6 +1586,47 @@
   $('#stop').addEventListener('click', () => {
     if (busy) post('abort');
   });
+  attachBtn.addEventListener('click', () => {
+    attachMenu.hidden = !attachMenu.hidden;
+  });
+  attachBtn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      attachMenu.hidden = !attachMenu.hidden;
+    }
+  });
+  attachClear.addEventListener('click', clearAttachments);
+  attachClear.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      clearAttachments();
+    }
+  });
+  [attachBtn, attachClear].forEach((el) => {
+    el.addEventListener('mousedown', (e) => e.preventDefault());
+  });
+  attachMenu.querySelectorAll('.attach-item').forEach((b) => {
+    b.addEventListener('click', () => {
+      attachMenu.hidden = true;
+      post('pickFiles', { kind: b.dataset.kind });
+    });
+  });
+  attachChips.addEventListener('wheel', (e) => {
+    if (attachChips.scrollWidth <= attachChips.clientWidth + 1) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      attachChips.scrollLeft += e.deltaY;
+    }
+  }, { passive: false });
+  if (togglesRow) {
+    togglesRow.addEventListener('wheel', (e) => {
+      if (togglesRow.scrollWidth <= togglesRow.clientWidth + 1) return;
+      if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        e.preventDefault();
+        togglesRow.scrollLeft += e.deltaY;
+      }
+    }, { passive: false });
+  }
   $('#refresh').addEventListener('click', () => post('fetchModels'));
   wsCheck.addEventListener('change', () => {
     includeWorkspace = wsCheck.checked;
@@ -1297,6 +1661,8 @@
       renderSettings();
     }
   });
+  trayBtn.addEventListener('click', () => post('trayStart'));
+  browserBtn.addEventListener('click', () => post('openBrowser'));
   document.addEventListener('click', (e) => {
     if (!settingsPanel.hidden && !settingsPanel.contains(e.target) && !settingsBtn.contains(e.target)) {
       settingsPanel.hidden = true;
@@ -1307,6 +1673,9 @@
     }
     if (!historyPanel.hidden && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) {
       historyPanel.hidden = true;
+    }
+    if (!attachMenu.hidden && !attachMenu.contains(e.target) && !attachBtn.contains(e.target)) {
+      attachMenu.hidden = true;
     }
   });
   searchInput.addEventListener('input', () => {
@@ -1333,6 +1702,72 @@
       send();
     }
   });
+
+  /* ---------- custom right-click context menu (REACH) ---------- */
+
+  let ctxMenu = null;
+  function getSelectionText() {
+    const s = window.getSelection && window.getSelection().toString();
+    return s ? s.trim() : '';
+  }
+  function hideCtxMenu() {
+    if (ctxMenu) { ctxMenu.remove(); ctxMenu = null; }
+  }
+  function forceClearChat() {
+    if (conv && conv.messages.length) saveConv();
+    conv = null;
+    clearAttachments();
+    persist();
+    renderMessages();
+    renderHistory();
+    updateModelChip();
+  }
+  function askAbout(text) {
+    if (!text) { hint('Select some text first.'); return; }
+    if (busy) {
+      ensureConv();
+      conv.messages.push({ role: 'user', content: text });
+      const body = bubble('user');
+      setRich(body, text);
+      addMessageButtons('user', body, conv.messages.length - 1);
+      persist();
+      followUpQueue.push(text);
+      hint(pickFun(QUEUE_LINES));
+      scrollBottom();
+    } else {
+      startChat(text, false, '');
+    }
+  }
+  function showCtxMenu(x, y) {
+    hideCtxMenu();
+    const menu = document.createElement('div');
+    menu.className = 'ctx-menu';
+    const item = (label, cb) => {
+      const b = document.createElement('button');
+      b.className = 'ctx-item';
+      b.textContent = label;
+      b.addEventListener('click', () => { hideCtxMenu(); cb(); });
+      return b;
+    };
+    const sel = getSelectionText();
+    if (sel) {
+      menu.appendChild(item('Copy', () => copyText(sel)));
+      menu.appendChild(item('Ask about selection', () => askAbout(sel)));
+    }
+    menu.appendChild(item('Reload models', () => post('fetchModels')));
+    menu.appendChild(item('Clear chat', forceClearChat));
+    document.body.appendChild(menu);
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + 'px';
+    menu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + 'px';
+    ctxMenu = menu;
+  }
+  log.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    showCtxMenu(e.clientX, e.clientY);
+  });
+  document.addEventListener('click', hideCtxMenu);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
 
   /* ---------- boot ---------- */
 
@@ -1365,4 +1800,5 @@
   updateModelChip();
   post('getConfig');
   post('workspaceInfo');
+  post('trayStatus');
 })();

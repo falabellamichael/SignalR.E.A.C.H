@@ -5,6 +5,7 @@ streaming chat completions, model listing, and pointer fallback.
 """
 
 import json
+import os
 import time
 import urllib.error
 import urllib.parse
@@ -49,6 +50,8 @@ class ReachClient:
         self.usage = {"prompt": None, "completion": None}
         self.last_latency_ms = 0.0
         self.system = None
+        self.agent = False
+        self.workpath = os.getcwd()
 
     def resolve_base(self):
         """Fall back to the public pointer gist when the local relay is down."""
