@@ -913,6 +913,8 @@
       pendingEdits = [];
     }
     busy = false;
+    modelSelect.disabled = false;
+    modelSelect.title = 'Model';
     $('#send').disabled = false;
     $('#stop').disabled = true;
     scrollBottom();
@@ -931,6 +933,8 @@
     topThink.hidden = false;
     startSteps();
     busy = true;
+    modelSelect.disabled = true;
+    modelSelect.title = 'Model is locked while the AI is responding';
     $('#stop').disabled = false;
     persist();
     agentRounds = 0;
@@ -1223,6 +1227,7 @@
   });
   clearBtn.addEventListener('click', clearChat);
   modelSelect.addEventListener('change', () => {
+    if (busy) return; // locked while the AI is responding
     if (conv) { conv.model = modelSelect.value; persist(); }
     updateModelChip();
   });
