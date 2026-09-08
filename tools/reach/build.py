@@ -83,6 +83,8 @@ def build_extension_manifest(plugin, assets):
     scripts.sort(key=lambda item: order.get(item["path"], 999))
     styles = [{"path": name, "sha256": sha256_bytes(data), "size": len(data)}
               for name, data in assets if name.endswith(".css")]
+    style_order = {name: index for index, name in enumerate(STYLE_SOURCES)}
+    styles.sort(key=lambda item: style_order.get(item["path"], 999))
     return json.dumps({
         "schema_version": SCHEMA_VERSION,
         "id": PLUGIN_ID,

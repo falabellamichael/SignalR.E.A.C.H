@@ -1,4 +1,5 @@
 """Offline unit tests for the SimpleREACH CLI (parser + grounding)."""
+import json
 import os
 import re
 import sys
@@ -112,6 +113,21 @@ class GroundingTests(unittest.TestCase):
             "What is Paris?", self.results, {}, rich="Paris is big.")
         self.assertIn("INSTANT ANSWER", messages[1]["content"])
         self.assertIn("Paris is big.", messages[1]["content"])
+
+
+class BuildManifestTests(unittest.TestCase):
+    def test_scripts_and_styles_sorted_by_declared_order(self):
+        from reach import SCRIPT_SOURCES, STYLE_SOURCES
+        from reach.build import build_extension_manifest
+
+        assets = [(name, b"x") for name in reversed(SCRIPT_SOURCES)]
+        assets += [(name, b"y") for name in reversed(STYLE_SOURCES)]
+        payload = json.loads(
+            build_extension_manifest({"version": "9.9.9"}, assets))
+        self.assertEqual(
+            [s["path"] for s in payload["scripts"]], SCRIPT_SOURCES)
+        self.assertEqual(
+            [s["path"] for s in payload["styles"]], STYLE_SOURCES)
 
 
 def time_placeholder_ok(system_prompt):
