@@ -28,6 +28,27 @@
     ];
 
     const registry = window.__reachPageRegistry;
+    if (!registry) {
+        const err = new Error('[signal-reach] MissingPageRegistryError: '
+            + 'window.__reachPageRegistry is undefined — the pages-<id>.js '
+            + 'renderers did not run before reach-pages.js. Check the script '
+            + 'load order (SCRIPT_SOURCES in tools/reach/__init__.py) or '
+            + 're-run the installer.');
+        err.name = 'MissingPageRegistryError';
+        throw err;
+    }
+
+    const missing = PAGE_DEFS
+        .filter((def) => typeof registry[def.id] !== 'function')
+        .map((def) => def.id);
+    if (missing.length) {
+        const err = new Error('[signal-reach] MissingPagesError: renderers '
+            + 'not registered for: ' + missing.join(', ')
+            + ' — the pages-<id>.js files must load before reach-pages.js. '
+            + 'Check SCRIPT_SOURCES in tools/reach/__init__.py.');
+        err.name = 'MissingPagesError';
+        throw err;
+    }
 
     window.__reachPages = Object.freeze({
         defs: PAGE_DEFS,

@@ -8,6 +8,8 @@ from pathlib import Path
 PLUGIN_ID = "signal-reach"
 SCHEMA_VERSION = 1
 SURFACES = ["advanced"]
+# JS load order — must stay in sync with PAGE_DEFS in src/reach-pages.js,
+# which asserts the full set at runtime (MissingPagesError on mismatch).
 SCRIPT_SOURCES = ["manifest.js", "reach-core.js", "pages-common.js",
                    "pages-dashboard.js", "pages-endpoint.js", "pages-models.js", "pages-usage.js", "pages-logs.js", "pages-settings.js", "pages-about.js", "reach-pages.js", "reach.js"]
 STYLE_SOURCES = ["reach.css", "reach-components.css", "reach-telemetry.css",
