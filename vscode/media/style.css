@@ -194,6 +194,7 @@ body {
   font-size: 12px;
 }
 .model-select:focus { outline: none; border-color: var(--reach-accent-border); }
+.model-select:disabled { opacity: 0.55; cursor: not-allowed; border-color: var(--reach-border); }
 
 .icon-btn {
   flex: 0 0 auto;
