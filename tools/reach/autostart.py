@@ -54,20 +54,22 @@ def register_autostart():
         lines.append("echo ngrok not found - run: winget install ngrok")
     lines.append("\"%s\" tools\\reach.py reassert" % resolve_interpreter())
 
-    # Copilot 365: shim (:21301) + Chrome/bridge (:9222/:21302). Appended only
-    # when the scripts are present, so a machine without them is unaffected.
+    # Copilot 365: shim (:21301) + the tray (supervises the invisible Electron
+    # browser + in-process bridge :21302). Appended only when present.
     hermes_scripts = (Path(os.environ.get("LOCALAPPDATA", ""))
                       / "hermes" / "scripts")
     shim_py = hermes_scripts / "copilot_shim.py"
-    launch_ps1 = hermes_scripts / "copilot_bridge_launch.ps1"
     if shim_py.is_file():
         lines.append("rem --- Copilot 365 shim (:21301) ---")
         lines.append("start \"\" /min \"%s\" \"%s\""
                      % (resolve_pythonw(), shim_py))
-    if launch_ps1.is_file():
-        lines.append("rem --- Copilot 365 Chrome + bridge (:9222/:21302) ---")
-        lines.append("powershell -NoProfile -ExecutionPolicy Bypass -File \"%s\""
-                     % launch_ps1)
+    tray_electron = (CONFIG_DIR / "copilot" / "tray" / "node_modules"
+                     / "electron" / "dist" / "electron.exe")
+    tray_main = CONFIG_DIR / "copilot" / "tray" / "main.js"
+    if tray_electron.is_file() and tray_main.is_file():
+        lines.append("rem --- Copilot 365 tray (invisible browser + bridge :21302) ---")
+        lines.append("start \"\" /min \"%s\" \"%s\""
+                     % (tray_electron, tray_main.parent))
 
     BAT_PATH.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     result = subprocess.run(
