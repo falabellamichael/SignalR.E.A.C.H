@@ -1,0 +1,35 @@
+# Rolls the version to <YY.MM.0> at the start of each month so
+# always-bump-patch releases stay calendar-shaped: 26.9.1, 26.9.2, …
+# then 26.10.0, 26.10.1, … The Release-As commit is picked up by
+# release-please on the next push to main.
+name: Monthly version roll
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  roll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (SHA-pinned)
+      - name: Emit Release-As commit when the month changed
+        run: |
+          VER=$(python3 -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")
+          YY=$(date -u +%y)
+          MM=$((10#$(date -u +%m)))
+          YYMM="$YY.$MM"
+          if [[ "$VER" == "$YYMM".* ]]; then
+            echo "Version $VER already matches $YYMM — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: release-as $YYMM.0
+
+          Release-As: $YYMM.0"
+          git push
