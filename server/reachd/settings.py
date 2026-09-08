@@ -1,13 +1,16 @@
 """Settings schema, defaults, validation and config persistence."""
 
+import ipaddress
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import sqlite3
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # ----------------------------------------------------------------------
 # Settings schema + defaults
@@ -118,6 +121,9 @@ DEFAULT_SETTINGS = {
     "system": {
         "allow_remote_admin": False,   # _reach/* beyond loopback (DANGER)
         "log_rotation_mb": 2,
+        # Per-install secret for the admin API. Minted on first load; a
+        # non-local /_reach/* request must present it as X-Reach-Admin.
+        "admin_token": "",
     },
 }
 
@@ -195,6 +201,46 @@ def _str(value, name, lo=0, hi=2000):
 def _opt_str(value, name, hi=2000):
     _expect(value is None or (isinstance(value, str) and len(value) <= hi),
             name + " must be null or a string (max %d)" % hi)
+
+
+def _host_is_local(host):
+    """True if host is loopback/localhost or resolves only to loopback or
+    RFC1918-private addresses. Used to keep the relay from carrying the
+    OmniRoute bearer token to a public server (SSRF/credential exfil)."""
+    if not host:
+        return False
+    host = host.strip("[]")  # bracketed IPv6 literal
+    if host.lower() == "localhost":
+        return True
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        # Unresolvable host: treat a bare IP literal directly, else reject.
+        try:
+            infos = [(None, None, None, None, (host, 0))]
+        except Exception:
+            return False
+    addrs = []
+    for info in infos:
+        sockaddr = info[4]
+        try:
+            addrs.append(ipaddress.ip_address(sockaddr[0]))
+        except ValueError:
+            return False
+    if not addrs:
+        return False
+    return all(a.is_loopback or a.is_private for a in addrs)
+
+
+def _require_local_url(value, name):
+    """Require an http(s) URL whose host is loopback or private (never public,
+    link-local, or reserved). Raises SettingsError otherwise."""
+    _str(value, name, 8, 500)
+    parts = urlsplit(value)
+    _expect(parts.scheme in ("http", "https"), name + " must be http(s)")
+    _expect(bool(parts.hostname), name + " must include a host")
+    _expect(_host_is_local(parts.hostname),
+            name + " host must be loopback or a private address")
 
 
 def _section_keys(cfg, section, allowed, path):
@@ -314,6 +360,22 @@ def generate_client_key(name="Default"):
     }
 
 
+def generate_admin_token():
+    """Per-install admin-API secret. 192 bits, mirrors generate_client_key."""
+    return "rt-" + secrets.token_hex(24)
+
+
+def public_key_view(k):
+    """Redacted copy of a client-key record: never carries the raw token.
+    Single masking path shared by settings_public and the /_reach/keys routes."""
+    raw = k.get("key", "")
+    view = dict(k)
+    view["masked_key"] = mask_key(raw)
+    view["preview"] = key_preview(raw)
+    view["key"] = view["masked_key"]
+    return view
+
+
 def restore_masked_client_keys(existing_access, access_patch):
     """When a settings patch carries access.keys whose entries hold masked
     or empty token strings (the panel round-trips the public view),
@@ -340,9 +402,7 @@ def validate_settings(cfg):
     allowed = set(DEFAULT_SETTINGS)
     unknown = sorted(set(cfg) - allowed)
     _expect(not unknown, "unknown settings key(s): " + ", ".join(unknown))
-    _expect(cfg.get("omniroute_url", "").startswith("http"),
-            "omniroute_url must start with http(s)")
-    _str(cfg.get("omniroute_url", ""), "omniroute_url", 8, 500)
+    _require_local_url(cfg.get("omniroute_url", ""), "omniroute_url")
     _str(cfg.get("omniroute_key", ""), "omniroute_key", 0, 500)
     _expect(cfg.get("host") in ("127.0.0.1", "localhost", "0.0.0.0"),
             "host must be 127.0.0.1, localhost or 0.0.0.0")
@@ -456,6 +516,7 @@ def validate_settings(cfg):
           "system.allow_remote_admin")
     _int(cfg["system"].get("log_rotation_mb", 2), 1, 100,
          "system.log_rotation_mb")
+    _str(cfg["system"].get("admin_token", ""), "system.admin_token", 0, 128)
 
 
 def merged_settings(base, patch):
@@ -492,15 +553,13 @@ def settings_public(cfg):
     shown = json.loads(json.dumps(cfg))
     if shown.get("omniroute_key"):
         shown["omniroute_key"] = "set (" + shown["omniroute_key"][:6] + "…)"
+    if shown.get("system", {}).get("admin_token"):
+        shown["system"]["admin_token"] = "set"
     access = shown.get("access") or {}
     if access.get("access_key"):
         access["access_key"] = "set (" + access["access_key"][:4] + "…)"
     if access.get("keys"):
-        for k in access["keys"]:
-            raw = k.get("key", "")
-            k["masked_key"] = mask_key(raw)
-            k["preview"] = key_preview(raw)
-            k["key"] = k["masked_key"]
+        access["keys"] = [public_key_view(k) for k in access["keys"]]
     return shown
 
 
@@ -568,6 +627,10 @@ def load_config(path):
                     cfg["omniroute_key"] = detected
                     dirty = True
 
+            if not cfg.setdefault("system", {}).get("admin_token"):
+                cfg["system"]["admin_token"] = generate_admin_token()
+                dirty = True
+
             if dirty:
                 try:
                     save_config(cfg, path)
@@ -585,6 +648,7 @@ def load_config(path):
     def_k = generate_client_key("Default")
     init_cfg["access"]["keys"] = [def_k]
     init_cfg["access"]["access_key"] = def_k["key"]
+    init_cfg["system"]["admin_token"] = generate_admin_token()
     detected = find_omniroute_key()
     if detected:
         init_cfg["omniroute_key"] = detected
