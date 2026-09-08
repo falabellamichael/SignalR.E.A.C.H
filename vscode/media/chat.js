@@ -161,6 +161,9 @@
         if (allOk) clean = clean.replace(m[0], '');
       } catch (e) { /* leave unparseable block in the text */ }
     }
+    // removing a block leaves its surrounding blank lines behind; pre-wrap
+    // would render each as vertical space — collapse runs of 3+ to one blank
+    clean = clean.replace(/\n{3,}/g, '\n\n');
     return { text: clean.trim(), edits };
   }
 
@@ -183,6 +186,7 @@
         }
       } catch (e) { /* leave unparseable block in the text */ }
     }
+    clean = clean.replace(/\n{3,}/g, '\n\n');
     return { text: clean.trim(), tools };
   }
 
@@ -413,7 +417,13 @@
         const code = nl >= 0 ? p.slice(nl + 1) : p;
         html += '<div class="md-code-wrap"><pre class="md-code">' + escapeHtml(code) + '</pre></div>';
       } else {
-        html += escapeHtml(p).split('\n').map(inlineMd).join('\n');
+        let t = escapeHtml(p).split('\n').map(inlineMd).join('\n');
+        // The code div is block-level (it breaks the line itself); under the
+        // body's white-space:pre-wrap, any newline adjacent to it renders as
+        // an EXTRA blank line — the big gaps around code blocks. Eat them.
+        if (idx > 0) t = t.replace(/^\n+/, '');
+        if (idx < parts.length - 1) t = t.replace(/\n+$/, '');
+        html += t;
       }
     });
     el.innerHTML = html;
