@@ -1127,6 +1127,22 @@
       case 'reload':
         post('fetchModels');
         break;
+      case 'startPrompt': {
+        const text = String(msg.text || '').slice(0, 20000);
+        if (!text) break;
+        if (busy) {
+          ensureConv();
+          conv.messages.push({ role: 'user', content: text });
+          setRich(bubble('user'), text);
+          persist();
+          followUpQueue.push(text);
+          hint(pickFun(QUEUE_LINES));
+          scrollBottom();
+          break;
+        }
+        startChat(text);
+        break;
+      }
       case 'editResult': {
         const rec = editCards[msg.uid];
         if (!rec) break;

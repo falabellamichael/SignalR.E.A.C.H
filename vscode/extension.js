@@ -669,6 +669,49 @@ function activate(context) {
       if (provider._view) provider._post('reload', {});
     }),
   );
+
+  /* ---- right-click selection actions (CodeGPT-style) ---- */
+
+  const postPrompt = (text) => {
+    vscode.commands.executeCommand('reach.chat.focus');
+    provider._post('startPrompt', { text });
+  };
+
+  const buildPrompt = (instruction) => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) {
+      vscode.window.showInformationMessage('REACH: open a file first.');
+      return null;
+    }
+    const sel = editor.selection;
+    const hasSel = !!(sel && !sel.isEmpty);
+    const code = hasSel ? editor.document.getText(sel) : editor.document.getText();
+    const rel = vscode.workspace.asRelativePath(editor.document.uri, false);
+    const lang = editor.document.languageId;
+    return 'File: ' + rel + ' (' + lang + ')\n'
+      + (hasSel ? 'Selected code' : 'File contents (no selection)') + ':\n'
+      + '```' + lang + '\n' + code.slice(0, 12000) + '\n```\n\n' + instruction;
+  };
+
+  const SELECTION_ACTIONS = {
+    explainSelection: 'Explain what this code does, clearly and concisely.',
+    refactorSelection: 'Refactor this code to be cleaner and more idiomatic while preserving behavior. If agent mode is on, propose the changes as edit blocks.',
+    fixSelection: 'Find and fix bugs in this code. Explain each issue; if agent mode is on, propose the fixes as edit blocks.',
+    commentSelection: 'Add clear, concise comments to this code. If agent mode is on, propose them as edit blocks.',
+    testSelection: 'Write focused unit tests for this code. If agent mode is on, propose them as edit blocks.',
+    optimizeSelection: 'Optimize this code for performance and explain the tradeoffs. If agent mode is on, propose the changes as edit blocks.',
+  };
+
+  for (const [cmd, instruction] of Object.entries(SELECTION_ACTIONS)) {
+    context.subscriptions.push(vscode.commands.registerCommand('simplereach.' + cmd, () => {
+      const prompt = buildPrompt(instruction);
+      if (prompt) postPrompt(prompt);
+    }));
+  }
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.askSelection', () => {
+    const prompt = buildPrompt('');
+    if (prompt) postPrompt(prompt);
+  }));
 }
 
 function deactivate() {}
