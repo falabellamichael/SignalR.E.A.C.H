@@ -26,6 +26,10 @@
   const statusDot = $('#status-dot');
   const agentCheck = $('#agent-check');
   const workspaceLine = $('#workspace-line');
+  const attachBtn = $('#attach-btn');
+  const attachClear = $('#attach-clear');
+  const attachMenu = $('#attach-menu');
+  const attachChips = $('#attach-chips');
 
   let conv = null;            // current conversation {id, model, ts, title, messages, thoughts}
   let busy = false;
@@ -50,6 +54,8 @@
   const MAX_AGENT_ROUNDS = 4;
   const followUpQueue = [];
   const appliedEdits = [];
+  const attachments = [];
+  const MAX_ATTACHMENTS = 6;
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
@@ -856,6 +862,7 @@
     if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
     if (conv && conv.messages.length) saveConv();
     conv = null;
+    clearAttachments();
     persist();
     renderMessages();
     renderHistory();
@@ -924,6 +931,61 @@
     }
   }
 
+  function buildRequestMessages() {
+    const msgs = conv.messages.slice();
+    if (!attachments.length) return msgs;
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === 'user') {
+      const imgs = attachments.filter((a) => a.kind === 'image' && a.dataUrl);
+      const texts = attachments.filter((a) => a.kind === 'text' && a.content);
+      const block = texts.length
+        ? '\n\nAttached files:\n' + texts.map((t) => '--- ' + t.name + ' ---\n' + t.content.slice(0, 30000)).join('\n\n')
+        : '';
+      if (imgs.length) {
+        msgs[msgs.length - 1] = Object.assign({}, last, {
+          content: [{ type: 'text', text: last.content + block }].concat(
+            imgs.map((i) => ({ type: 'image_url', image_url: { url: i.dataUrl } }))),
+        });
+      } else if (block) {
+        msgs[msgs.length - 1] = Object.assign({}, last, { content: last.content + block });
+      }
+    }
+    return msgs;
+  }
+
+  function renderChips() {
+    attachChips.innerHTML = '';
+    attachments.forEach((a, idx) => {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      if (a.kind === 'image' && a.dataUrl) {
+        const img = document.createElement('img');
+        img.className = 'chip-thumb';
+        img.src = a.dataUrl;
+        chip.appendChild(img);
+      }
+      const label = document.createElement('span');
+      label.className = 'chip-label';
+      label.textContent = (a.kind === 'image' ? '🖼 ' : '📎 ') + a.name
+        + (a.size ? ' (' + Math.max(1, Math.round(a.size / 1024)) + 'KB)' : '');
+      chip.appendChild(label);
+      const x = document.createElement('button');
+      x.className = 'chip-x';
+      x.textContent = '✕';
+      x.title = 'Remove ' + a.name;
+      x.addEventListener('click', () => { attachments.splice(idx, 1); renderChips(); });
+      chip.appendChild(x);
+      attachChips.appendChild(chip);
+    });
+    attachChips.hidden = !attachments.length;
+    attachClear.hidden = !attachments.length;
+  }
+
+  function clearAttachments() {
+    attachments.length = 0;
+    renderChips();
+  }
+
   function launchChat() {
     pendingBubble = bubble('assistant');
     const pendingDiv = pendingBubble.parentElement;
@@ -939,7 +1001,7 @@
     persist();
     agentRounds = 0;
     pendingEdits = [];
-    const msgs = conv.messages.slice();
+    const msgs = buildRequestMessages();
     if (appliedEdits.length) {
       msgs.unshift({
         role: 'system',
@@ -962,12 +1024,12 @@
     scrollBottom();
   }
 
-  function startChat(text, queued) {
+  function startChat(text, queued, displaySuffix) {
     ensureConv();
     if (!queued) {
       if (!conv.title) conv.title = text.slice(0, 48);
       conv.messages.push({ role: 'user', content: text });
-      setRich(bubble('user'), text);
+      setRich(bubble('user'), text + (displaySuffix || ''));
       persist();
     }
     launchChat();
@@ -988,7 +1050,11 @@
       scrollBottom();
       return;
     }
-    startChat(text);
+    const suffix = attachments.length
+      ? '  ' + attachments.map((a) => (a.kind === 'image' ? '🖼' : '📎')).join(' ')
+      : '';
+    startChat(text, false, suffix);
+    clearAttachments();
   }
 
   /* ---------- extension-host messages ---------- */
@@ -1127,6 +1193,14 @@
       case 'reload':
         post('fetchModels');
         break;
+      case 'pickedFiles': {
+        const errs = (msg.items || []).filter((i) => i.error);
+        const ok = (msg.items || []).filter((i) => !i.error);
+        ok.forEach((i) => { if (attachments.length < MAX_ATTACHMENTS) attachments.push(i); });
+        renderChips();
+        if (errs.length) hint('⚠ ' + errs.map((e) => e.name + ': ' + e.error).join(' · '));
+        break;
+      }
       case 'editResult': {
         const rec = editCards[msg.uid];
         if (!rec) break;
@@ -1167,6 +1241,38 @@
   $('#stop').addEventListener('click', () => {
     if (busy) post('abort');
   });
+  attachBtn.addEventListener('click', () => {
+    attachMenu.hidden = !attachMenu.hidden;
+  });
+  attachBtn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      attachMenu.hidden = !attachMenu.hidden;
+    }
+  });
+  attachClear.addEventListener('click', clearAttachments);
+  attachClear.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      clearAttachments();
+    }
+  });
+  [attachBtn, attachClear].forEach((el) => {
+    el.addEventListener('mousedown', (e) => e.preventDefault());
+  });
+  attachMenu.querySelectorAll('.attach-item').forEach((b) => {
+    b.addEventListener('click', () => {
+      attachMenu.hidden = true;
+      post('pickFiles', { kind: b.dataset.kind });
+    });
+  });
+  attachChips.addEventListener('wheel', (e) => {
+    if (attachChips.scrollWidth <= attachChips.clientWidth + 1) return;
+    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+      e.preventDefault();
+      attachChips.scrollLeft += e.deltaY;
+    }
+  }, { passive: false });
   $('#refresh').addEventListener('click', () => post('fetchModels'));
   wsCheck.addEventListener('change', () => {
     includeWorkspace = wsCheck.checked;
@@ -1211,6 +1317,9 @@
     }
     if (!historyPanel.hidden && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) {
       historyPanel.hidden = true;
+    }
+    if (!attachMenu.hidden && !attachMenu.contains(e.target) && !attachBtn.contains(e.target)) {
+      attachMenu.hidden = true;
     }
   });
   searchInput.addEventListener('input', () => {

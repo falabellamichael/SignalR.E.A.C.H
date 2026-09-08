@@ -294,6 +294,54 @@ class ReachChatViewProvider {
           term.sendText(code);
           break;
         }
+        case 'pickFiles': {
+          const wantImages = msg.kind === 'images';
+          const uris = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            openLabel: wantImages ? 'Attach Images' : 'Attach Files',
+            filters: wantImages
+              ? { Images: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'] }
+              : undefined,
+          });
+          if (!uris || !uris.length) break;
+          const items = [];
+          for (const u of uris) {
+            try {
+              const stat = await vscode.workspace.fs.stat(u);
+              const ext = (u.path.split('.').pop() || '').toLowerCase();
+              const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].includes(ext);
+              const name = vscode.workspace.asRelativePath(u, false).split(/[\\/]/).pop()
+                || u.path.split(/[\\/]/).pop() || 'file';
+              const bytes = await vscode.workspace.fs.readFile(u);
+              if (isImage) {
+                if (stat.size > 5 * 1024 * 1024) {
+                  items.push({ name, error: 'image too large (>5MB)' });
+                  continue;
+                }
+                const mime = 'image/' + (ext === 'jpg' ? 'jpeg' : ext);
+                items.push({
+                  name, size: stat.size, kind: 'image', mime,
+                  dataUrl: 'data:' + mime + ';base64,' + Buffer.from(bytes).toString('base64'),
+                });
+              } else {
+                if (stat.size > 200 * 1024) {
+                  items.push({ name, error: 'text file too large (>200KB)' });
+                  continue;
+                }
+                const text = Buffer.from(bytes).toString('utf8');
+                if (text.indexOf('\uFFFD') !== -1) {
+                  items.push({ name, error: 'binary file — not attachable' });
+                  continue;
+                }
+                items.push({ name, size: stat.size, kind: 'text', content: text.slice(0, 200 * 1024) });
+              }
+            } catch (e) {
+              items.push({ name: u.path.split(/[\\/]/).pop() || 'file', error: String((e && e.message) || e) });
+            }
+          }
+          this._post('pickedFiles', { items });
+          break;
+        }
         default:
           break;
       }

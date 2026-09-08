@@ -41,6 +41,7 @@
   </main>
 
   <footer id="composer">
+    <div id="attach-chips" class="attach-chips" hidden></div>
     <div class="row">
       <select id="model" class="model-select" title="Model"></select>
       <button id="history-btn" class="icon-btn" title="Chat history" aria-label="Chat history">
@@ -54,7 +55,15 @@
       </button>
     </div>
     <div class="row">
-      <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+      <div class="input-wrap">
+        <span id="attach-btn" class="attach-plus" role="button" tabindex="0" title="Attach files or images as context" aria-label="Attach">+</span>
+        <span id="attach-clear" class="attach-minus" role="button" tabindex="0" title="Remove all attachments" aria-label="Remove all attachments" hidden>-</span>
+        <div id="attach-menu" class="attach-menu" hidden>
+          <button class="attach-item" data-kind="all">📄 Attach files…</button>
+          <button class="attach-item" data-kind="images">🖼 Attach images…</button>
+        </div>
+        <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+      </div>
       <div class="send-col">
         <button id="send" class="send-btn" title="Send">➤</button>
         <button id="stop" class="stop-btn" title="Stop generating" aria-label="Stop generating" disabled>■</button>
