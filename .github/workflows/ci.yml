@@ -44,17 +44,26 @@ jobs:
           - os: windows-latest
             python: '3.13'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (SHA-pinned)
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5 (SHA-pinned)
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest tests.test_reachd tests.test_reach_cli -v
 
   lint:
+    # SECURITY NOTE: the compileall / python -c steps below run with the repo
+    # root at sys.path[0], so a PR adding a root-level `json.py` or
+    # `compileall.py` could shadow the stdlib during these steps. Not
+    # exploitable today: the runner is ephemeral, the token is read-only,
+    # no secrets are in scope, and the `test` job on the same trigger already
+    # executes PR-authored code by design. If this job ever gains secrets, a
+    # write token, pull_request_target, or a self-hosted runner, isolate it
+    # (run from a non-root cwd or a pinned container) before it becomes
+    # a real attack surface.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (SHA-pinned)
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5 (SHA-pinned)
         with:
           python-version: '3.13'
       - name: Byte-compile Python
