@@ -16,7 +16,13 @@ from reachd.const import (
     VERSION,
 )
 from reachd.limits import CounterGate, RateLimiter
-from reachd.settings import DEFAULT_SETTINGS, config_dir, find_omniroute_key
+from reachd.settings import (
+    DEFAULT_SETTINGS,
+    _host_is_local,
+    config_dir,
+    find_omniroute_key,
+)
+from urllib.parse import urlsplit
 
 
 class RelayState:
@@ -40,7 +46,18 @@ class RelayState:
 
     @property
     def omniroute_url(self):
-        return self.cfg.get("omniroute_url", DEFAULT_SETTINGS["omniroute_url"])
+        # Last-line guard against SSRF/credential exfil: load_config's
+        # validation is non-fatal, so a hand-edited config.json could carry a
+        # public upstream. Refuse to attach the bearer token to a non-local
+        # host — fall back to the loopback default instead.
+        url = self.cfg.get("omniroute_url", DEFAULT_SETTINGS["omniroute_url"])
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            host = None
+        if not host or not _host_is_local(host):
+            return DEFAULT_SETTINGS["omniroute_url"]
+        return url
 
     @property
     def key(self):

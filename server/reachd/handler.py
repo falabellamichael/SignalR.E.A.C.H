@@ -2,6 +2,7 @@
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import time
 import urllib.error
@@ -16,14 +17,44 @@ from reachd.settings import (
     DEFAULT_SETTINGS,
     SettingsError,
     generate_client_key,
-    key_preview,
-    mask_key,
     merged_settings,
+    public_key_view,
     restore_masked_client_keys,
     save_config,
     settings_public,
     validate_settings,
 )
+
+# Headers a reverse proxy / tunnel (ngrok, cloudflared) injects. Their
+# presence means the request was forwarded, not made by a genuine local
+# client, so it must never qualify for the loopback-only admin surface.
+_FORWARD_HEADERS = (
+    "X-Forwarded-For",
+    "X-Forwarded-Proto",
+    "X-Forwarded-Host",
+    "Forwarded",
+    "Cf-Connecting-Ip",
+)
+
+
+def _ip_in_list(ip, entries):
+    """Match a client IP against allow/block entries, each of which may be a
+    plain address or a CIDR range. Parsing both sides as ipaddress objects
+    means formatting differences can't dodge a match; unparseable entries fall
+    back to exact string equality so a hostname-ish entry still works."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip in entries
+    for entry in entries:
+        entry = (entry or "").strip()
+        try:
+            if addr in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            if ip == entry:
+                return True
+    return False
 
 
 class RelayHandler(BaseHTTPRequestHandler):
@@ -74,23 +105,51 @@ class RelayHandler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def _client_ip(self):
+        # The tunnel/proxy sets the trustworthy client IP; an attacker can only
+        # PREPEND to X-Forwarded-For, so take the value the proxy itself added:
+        # Cf-Connecting-Ip (cloudflared) or the LAST X-Forwarded-For hop, never
+        # the first (finding: block/allow lists were bypassable via a spoofed
+        # first XFF entry). Falls back to the socket peer for direct clients.
+        cf = self.headers.get("Cf-Connecting-Ip")
+        if cf:
+            return cf.strip()[:64]
         forwarded = self.headers.get("X-Forwarded-For")
         if forwarded:
-            return forwarded.split(",")[0].strip()[:64]
+            return forwarded.split(",")[-1].strip()[:64]
         return (self.client_address[0] if self.client_address else "?")[:64]
 
     def _is_loopback(self):
         return self.client_address and self.client_address[0] in ("127.0.0.1", "::1")
 
-    def _require_admin(self):
-        """Admin surface is loopback-only unless system.allow_remote_admin."""
-        if not self._is_loopback() \
-                and not core.STATE.cfg.get("system", {}).get("allow_remote_admin"):
-            self._json(403, {"error": {"message": "admin API is local-only "
-                                                  "(system.allow_remote_admin=false)",
-                                       "type": "forbidden"}})
+    def _admin_local(self):
+        """A genuine local admin client: connected over loopback AND carrying
+        no proxy/forwarding headers. Tunnels (ngrok, cloudflared) always inject
+        those headers and an attacker cannot strip them, so a tunnel-forwarded
+        request — which also arrives from 127.0.0.1 — is correctly rejected."""
+        if not self._is_loopback():
             return False
-        return True
+        return not any(self.headers.get(h) for h in _FORWARD_HEADERS)
+
+    def _admin_token_ok(self):
+        """Constant-time check of the X-Reach-Admin header against the
+        per-install admin token. Only satisfiable when a token is set."""
+        token = (core.STATE.cfg.get("system", {}) or {}).get("admin_token") or ""
+        if not token:
+            return False
+        presented = (self.headers.get("X-Reach-Admin") or "").strip()
+        return bool(presented) and hmac.compare_digest(presented, token)
+
+    def _require_admin(self):
+        """Gate on /_reach/*: a genuine local client, OR a valid admin token.
+        The token is the only way a non-local (remote-admin) request passes —
+        peer address alone is never sufficient, because the tunnel makes every
+        forwarded request look like loopback."""
+        if self._admin_local() or self._admin_token_ok():
+            return True
+        self._json(403, {"error": {"message": "admin API requires a local client "
+                                              "or a valid X-Reach-Admin token",
+                                   "type": "forbidden"}})
+        return False
 
     def _check_access(self):
         access = core.STATE.cfg.get("access", {})
@@ -132,16 +191,19 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def _check_ip_lists(self):
         access = core.STATE.cfg.get("access", {})
-        ip = self._client_ip()
-        if self._is_loopback():
+        # Exempt only genuine local clients — NOT all loopback traffic, since
+        # tunnel-forwarded requests also arrive from 127.0.0.1 (that blanket
+        # exemption made the lists inert for every public request).
+        if self._admin_local():
             return True
+        ip = self._client_ip()
         allowlist = access.get("ip_allowlist") or []
         blocklist = access.get("ip_blocklist") or []
-        if allowlist and ip not in allowlist:
+        if allowlist and not _ip_in_list(ip, allowlist):
             self._json(403, {"error": {"message": "IP not allowed",
                                        "type": "forbidden", "code": "ip_denied"}})
             return False
-        if blocklist and ip in blocklist:
+        if blocklist and _ip_in_list(ip, blocklist):
             self._json(403, {"error": {"message": "IP blocked",
                                        "type": "forbidden", "code": "ip_denied"}})
             return False
@@ -208,13 +270,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 keys = (core.STATE.cfg.get("access") or {}).get("keys", [])
-                safe_keys = []
-                for k in keys:
-                    sk = dict(k)
-                    raw_k = sk.get("key", "")
-                    sk["masked_key"] = mask_key(raw_k)
-                    sk["preview"] = key_preview(raw_k)
-                    safe_keys.append(sk)
+                safe_keys = [public_key_view(k) for k in keys]
                 self._json(200, {"keys": safe_keys})
             elif path == "/_reach/stats":
                 if not self._require_admin():
@@ -327,9 +383,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                             break
                     if found:
                         save_config(core.STATE.cfg, core.STATE.cfg_path)
-                        safe_f = dict(found)
-                        safe_f["masked_key"] = mask_key(safe_f.get("key", ""))
-                        self._json(200, {"updated": True, "key": safe_f})
+                        self._json(200, {"updated": True, "key": public_key_view(found)})
                     else:
                         self._json(404, {"error": {"message": "Key not found", "type": "not_found"}})
             else:
@@ -431,7 +485,9 @@ class RelayHandler(BaseHTTPRequestHandler):
         if patch.get("reset") is True:
             keep = {"omniroute_key": core.STATE.cfg.get("omniroute_key", ""),
                     "access": {"access_key": (core.STATE.cfg.get("access") or {})
-                               .get("access_key", "")}}
+                               .get("access_key", "")},
+                    "system": {"admin_token": (core.STATE.cfg.get("system") or {})
+                               .get("admin_token", "")}}
             patch = {**keep}
         if "omniroute_key" in patch and not patch.get("omniroute_key"):
             patch.pop("omniroute_key")  # blank means keep the existing key
@@ -462,7 +518,9 @@ class RelayHandler(BaseHTTPRequestHandler):
     def handle_reset(self):
         keep = {"omniroute_key": core.STATE.cfg.get("omniroute_key", ""),
                 "access": {"access_key": (core.STATE.cfg.get("access") or {})
-                           .get("access_key", "")}}
+                           .get("access_key", "")},
+                "system": {"admin_token": (core.STATE.cfg.get("system") or {})
+                           .get("admin_token", "")}}
         next_cfg = merged_settings(DEFAULT_SETTINGS, keep)
         save_config(next_cfg, core.STATE.cfg_path)
         core.STATE.cfg = next_cfg
@@ -529,14 +587,25 @@ class RelayHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": {"message": "invalid JSON",
                                               "type": "invalid_request"}})
         url = (data.get("public_url") or "").strip()
+        # Validate a candidate copy BEFORE mutating live config, and never
+        # swallow a rejected value (finding: an invalid override slipped through
+        # the bare `except: pass` and was published to the discovery gist).
+        candidate = {**core.STATE.cfg}
         if url:
-            core.STATE.cfg["public_url_override"] = url
-            try:
-                save_config(core.STATE.cfg, core.STATE.cfg_path)
-            except (OSError, SettingsError):
-                pass
+            candidate["public_url_override"] = url
         else:
-            core.STATE.cfg.pop("public_url_override", None)
+            candidate.pop("public_url_override", None)
+        try:
+            validate_settings(candidate)
+        except SettingsError as exc:
+            return self._json(400, {"error": {"message": str(exc),
+                                              "type": "invalid_settings"}})
+        try:
+            save_config(candidate, core.STATE.cfg_path)
+        except OSError as exc:
+            return self._json(500, {"error": {"message": "could not persist: %s" % exc,
+                                              "type": "server_error"}})
+        core.STATE.cfg = candidate
         core.STATE.poll_public_url()
         self._json(200, {"public_url": core.STATE.public_url,
                          "source": core.STATE.public_url_source})

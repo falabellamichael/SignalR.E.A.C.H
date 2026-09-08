@@ -63,7 +63,7 @@ def chat_execute(h):
             },
         }, rl_headers)
         return
-    if not spec.get("public", True) and not h._is_loopback():
+    if not spec.get("public", True) and not h._admin_local():
         h._json(404, {
             "error": {"message": "Unknown model %r." % requested,
                       "type": "invalid_request_error", "param": "model",
