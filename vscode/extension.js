@@ -950,8 +950,12 @@ const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
   + '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0';
 
 async function fetchPageHtml(rawUrl, timeoutMs = 15000) {
-  const url = String(rawUrl || '').trim();
-  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'Enter an http(s) URL.' };
+  let url = String(rawUrl || '').trim();
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)
+    && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(url)) {
+    url = 'http://' + url;
+  }
+  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'Enter an http(s) or localhost URL.' };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

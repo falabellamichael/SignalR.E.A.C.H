@@ -1,10 +1,14 @@
 /* REACH Browser — webview script.
- * Shows fetched pages (scripts disabled), with a custom right-click menu:
- * "Add element to chat (REACH)" captures the element under the cursor and
- * sends it to the REACH chat panel. Talks to the extension host via postMessage. */
+ * Renders fetched pages inside a sandboxed, same-origin iframe so the page runs
+ * fully (scripts, styles, navigation). A capture script is injected into the
+ * page so right-clicking any element still gives "Add element to chat (REACH)".
+ * Talks to the extension host exclusively via postMessage. */
 (function () {
   const vscode = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null;
   if (!vscode) return;
+  // Page scripts run in a same-origin iframe; remove the API surface so page
+  // scripts can never reach the extension host.
+  try { window.acquireVsCodeApi = undefined; } catch (e) { /* ignore */ }
 
   const $ = (s) => document.querySelector(s);
   const page = $('#page');
@@ -25,7 +29,7 @@
   let currentUrl = '';
   let currentTitle = '';
   let hasPage = false;
-  let engineOk = true;   // confirmed by the host's 'state' message
+  let frame = null;
   let installing = false;
 
   // Remember the last URL/view across reloads (VS Code webview state).
@@ -34,149 +38,98 @@
 
   const post = (type, data) => vscode.postMessage(Object.assign({ type }, data || {}));
 
-  /* ------------------------- sanitize fetched HTML ------------------------ */
+  /* ---------------------------- URL normalization -------------------------- */
 
-  function sanitize(html) {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    doc.querySelectorAll('script,iframe,object,embed,noscript,base,meta,link,style[type="text/x-template"]').forEach((n) => n.remove());
-    // Page <style> is fine (CSP allows inline styles); remove only the
-    // elements that could run code or escape our sandbox.
-    doc.querySelectorAll('*').forEach((el) => {
-      for (const attr of Array.from(el.attributes || [])) {
-        const name = attr.name.toLowerCase();
-        if (name.startsWith('on')) el.removeAttribute(attr.name);
-        if ((name === 'href' || name === 'src' || name === 'action')
-          && /^javascript:/i.test(attr.value)) el.setAttribute(attr.name, '');
-        if (name === 'srcdoc') el.removeAttribute(attr.name);
-      }
-    });
-    return doc.body ? doc.body.innerHTML : '';
-  }
-
-  /* ---------------------------- element capture --------------------------- */
-
-  function describeElement(el) {
-    if (!el || el.nodeType !== 1) return '';
-    const tag = el.tagName ? el.tagName.toLowerCase() : '';
-    let text = (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim();
-    if (!text) {
-      text = (el.getAttribute('alt') || el.getAttribute('aria-label')
-        || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+  function normalizeUrl(raw) {
+    let u = String(raw || '').trim();
+    if (!u) return '';
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) {
+      if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u)) u = 'http://' + u;
+      else if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(u)) u = 'https://' + u;
+      else return '';
     }
-    if (!text && tag === 'img') text = 'image: ' + (el.getAttribute('src') || '');
-    if (!text && tag === 'a') text = 'link: ' + (el.getAttribute('href') || '');
-    text = text.slice(0, 4000);
-    const parts = [];
-    if (tag) parts.push('<' + tag + '>');
-    if (text) parts.push(text);
-    const href = (el.getAttribute && el.getAttribute('href')) || '';
-    if (tag === 'a' && href) parts.push('(href: ' + href.slice(0, 300) + ')');
-    return parts.join(' — ').slice(0, 4500);
+    return /^https?:\/\//i.test(u) ? u : '';
   }
 
-  function flash(el) {
-    if (!el) return;
-    el.classList.add('reach-flash');
-    setTimeout(() => el.classList.remove('reach-flash'), 900);
-  }
+  /* ------------------------- page frame (sandboxed) ------------------------ */
 
-  function pickElement(x, y) {
-    // elementFromPoint is viewport-based; the page container fills the viewport.
-    const el = document.elementFromPoint(x, y);
-    if (!el || !page.contains(el) || el === page || el === welcome || el === ctxMenu) return null;
-    return el;
-  }
-
-  /* ----------------------------- context menu ----------------------------- */
-
-  function hideMenu() {
-    ctxMenu.hidden = true;
-    ctxMenu.innerHTML = '';
-  }
-
-  function showMenu(x, y, el, selText) {
-    if (!hasPage) return;
-    const items = [];
-
-    const addEl = () => {
-      const text = describeElement(el);
-      if (!text) return;
+  const CAPTURE_JS = `(function () {
+    if (window.__reachCapture) return; window.__reachCapture = true;
+    function post(type, data) {
+      try { window.parent.postMessage(Object.assign({ __reach: true, type: type }, data || {}), '*'); } catch (e) {}
+    }
+    function describe(el) {
+      if (!el || el.nodeType !== 1) return '';
+      var tag = el.tagName ? el.tagName.toLowerCase() : '';
+      var text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
+      if (!text) text = (el.getAttribute('alt') || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim();
+      if (!text && tag === 'img') text = 'image: ' + (el.getAttribute('src') || '');
+      if (!text && tag === 'a') text = 'link: ' + (el.getAttribute('href') || '');
+      text = String(text || '').slice(0, 4000);
+      var parts = [];
+      if (tag) parts.push('<' + tag + '>');
+      if (text) parts.push(text);
+      var href = el.getAttribute ? (el.getAttribute('href') || '') : '';
+      if (tag === 'a' && href) parts.push('(href: ' + String(href).slice(0, 300) + ')');
+      return parts.join(' — ').slice(0, 4500);
+    }
+    function flash(el) {
+      if (!el || !el.style) return;
+      try {
+        el.style.outline = '2px solid #d4af37';
+        setTimeout(function () { el.style.outline = ''; }, 900);
+      } catch (e) {}
+    }
+    document.addEventListener('contextmenu', function (e) {
+      var el = e.target && e.target.nodeType === 1 ? e.target : null;
       flash(el);
-      post('addElement', { url: currentUrl, title: currentTitle, text });
-      hideMenu();
-    };
-    items.push({ label: 'Add element to chat', sub: 'REACH', fn: addEl });
+      var href = '';
+      try {
+        var a = el && el.closest ? el.closest('a[href]') : null;
+        if (a) href = a.href || a.getAttribute('href') || '';
+      } catch (err) {}
+      var sel = '';
+      try { sel = (window.getSelection() || '').toString ? String(window.getSelection()) : ''; } catch (err) {}
+      post('ctx', { x: e.clientX, y: e.clientY, text: describe(el), sel: sel, href: href, tag: el ? el.tagName.toLowerCase() : '' });
+    }, true);
+    document.addEventListener('click', function (e) {
+      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      var href = '';
+      try { href = a.href || a.getAttribute('href') || ''; } catch (err) {}
+      if (/^https?:\\/\\//i.test(href)) { e.preventDefault(); post('nav', { url: href }); }
+    }, true);
+  })();`;
 
-    const sel = (selText || '').replace(/\s+/g, ' ').trim();
-    if (sel) {
-      items.push({
-        label: 'Add selected text to chat', sub: 'REACH',
-        fn: () => { post('addElement', { url: currentUrl, title: currentTitle, text: sel.slice(0, 8000) }); hideMenu(); },
-      });
-    }
-    const link = el && el.closest ? el.closest('a[href]') : null;
-    if (link) {
-      items.push({ sep: true });
-      items.push({
-        label: 'Open link in external browser',
-        fn: () => { post('openExternal', { url: resolveUrl(link.getAttribute('href')) }); hideMenu(); },
-      });
-    }
-
-    ctxMenu.innerHTML = '';
-    items.forEach((it) => {
-      if (it.sep) {
-        const s = document.createElement('div');
-        s.className = 'ctx-sep';
-        ctxMenu.appendChild(s);
-        return;
-      }
-      const b = document.createElement('button');
-      b.className = 'ctx-item';
-      b.innerHTML = '';
-      b.appendChild(document.createTextNode(it.label));
-      if (it.sub) {
-        const s = document.createElement('span');
-        s.className = 'ctx-sub';
-        s.textContent = '(' + it.sub + ')';
-        b.appendChild(s);
-      }
-      b.addEventListener('click', it.fn);
-      ctxMenu.appendChild(b);
-    });
-
-    ctxMenu.hidden = false;
-    const rect = ctxMenu.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-    const px = Math.min(x, vw - rect.width - 8);
-    const py = Math.min(y, vh - rect.height - 8);
-    ctxMenu.style.left = Math.max(4, px) + 'px';
-    ctxMenu.style.top = Math.max(4, py) + 'px';
+  function stripPageCsp(html) {
+    // The page's own CSP would block our injected capture script.
+    return String(html || '').replace(
+      /<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi, '');
   }
 
-  page.addEventListener('contextmenu', (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const el = pickElement(e.clientX, e.clientY);
-    const sel = window.getSelection() ? window.getSelection().toString() : '';
-    showMenu(e.clientX, e.clientY, el, sel);
-  });
+  function buildDoc(html, url) {
+    let out = stripPageCsp(html);
+    // First <base> wins — prepend ours so relative URLs resolve against the page URL.
+    const base = '<base href="' + String(url).replace(/"/g, '&quot;') + '">';
+    if (/<head[^>]*>/i.test(out)) {
+      out = out.replace(/<head[^>]*>/i, (m) => m + base);
+    } else {
+      out = '<head>' + base + '</head>' + out;
+    }
+    const captureTag = '<script>' + CAPTURE_JS + '</scr' + 'ipt>';
+    if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, captureTag + '</body>');
+    else out += captureTag;
+    return out;
+  }
 
-  document.addEventListener('click', (e) => {
-    if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) hideMenu();
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideMenu();
-  });
-  page.addEventListener('scroll', hideMenu, { passive: true });
-
-  /* ----------------------------- rendering -------------------------------- */
-
-  function resolveUrl(href) {
-    if (!href) return '';
-    try { return new URL(href, currentUrl || address.value || 'https://example.com').toString(); }
-    catch (e) { return ''; }
+  function ensureFrame() {
+    if (frame && frame.isConnected) return frame;
+    frame = document.createElement('iframe');
+    frame.className = 'browser-frame';
+    frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads');
+    frame.setAttribute('title', 'page');
+    page.appendChild(frame);
+    return frame;
   }
 
   function renderPage(data) {
@@ -187,13 +140,15 @@
     errorBox.hidden = true;
     welcome.hidden = true;
     statusEl.textContent = currentTitle ? currentTitle.slice(0, 60) : currentUrl.slice(0, 60);
-    page.innerHTML = sanitize(data.html || '');
-    page.scrollTop = 0;
+    const fr = ensureFrame();
+    fr.srcdoc = buildDoc(data.html || '', currentUrl);
     if (vscode.setState) vscode.setState({ url: currentUrl });
     applyState(data);
   }
 
   function renderError(data) {
+    if (frame) { frame.remove(); frame = null; }
+    hasPage = false;
     errorBox.hidden = false;
     errorBox.textContent = 'Could not load ' + (data.url || 'page') + ' — ' + (data.error || 'unknown error');
     statusEl.textContent = 'error';
@@ -202,7 +157,6 @@
   function applyState(data) {
     if (typeof data.canBack === 'boolean') backBtn.disabled = !data.canBack;
     if (typeof data.canForward === 'boolean') fwdBtn.disabled = !data.canForward;
-    if (data.url && !hasPage) { address.value = data.url; }
     if (data.title) statusEl.textContent = data.title.slice(0, 60);
     if (typeof data.engine === 'boolean') setEngine(data.engine);
   }
@@ -210,8 +164,7 @@
   /* ------------------------- engine one-click install -------------------- */
 
   function setEngine(ok) {
-    engineOk = !!ok;
-    if (engineOk) {
+    if (ok) {
       engineBanner.hidden = true;
       engineReady.hidden = false;
       engineProgress.hidden = true;
@@ -240,31 +193,102 @@
     post('installBrowser', {});
   });
 
-  // Follow in-panel links (they are plain anchors; page JS is disabled).
-  page.addEventListener('click', (e) => {
-    const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-    if (!a) return;
-    e.preventDefault();
-    const url = resolveUrl(a.getAttribute('href'));
-    if (/^https?:\/\//i.test(url)) {
-      post('navigate', { url, push: true });
-      statusEl.textContent = 'Loading…';
+  /* ----------------------------- context menu ----------------------------- */
+
+  function hideMenu() {
+    ctxMenu.hidden = true;
+    ctxMenu.innerHTML = '';
+  }
+
+  function showMenu(px, py, info) {
+    if (!hasPage) return;
+    const items = [];
+    const text = String(info.text || '').trim();
+    const sel = String(info.sel || '').replace(/\s+/g, ' ').trim();
+    const href = String(info.href || '').trim();
+
+    if (text) {
+      items.push({
+        label: 'Add element to chat', sub: 'REACH',
+        fn: () => { post('addElement', { url: currentUrl, title: currentTitle, text }); hideMenu(); },
+      });
     }
+    if (sel) {
+      items.push({
+        label: 'Add selected text to chat', sub: 'REACH',
+        fn: () => { post('addElement', { url: currentUrl, title: currentTitle, text: sel.slice(0, 8000) }); hideMenu(); },
+      });
+    }
+    if (href && /^https?:\/\//i.test(href)) {
+      items.push({ sep: true });
+      items.push({
+        label: 'Open link in external browser',
+        fn: () => { post('openExternal', { url: href }); hideMenu(); },
+      });
+    }
+    if (!items.length) return;
+
+    ctxMenu.innerHTML = '';
+    items.forEach((it) => {
+      if (it.sep) {
+        const s = document.createElement('div');
+        s.className = 'ctx-sep';
+        ctxMenu.appendChild(s);
+        return;
+      }
+      const b = document.createElement('button');
+      b.className = 'ctx-item';
+      b.appendChild(document.createTextNode(it.label));
+      if (it.sub) {
+        const s = document.createElement('span');
+        s.className = 'ctx-sub';
+        s.textContent = '(' + it.sub + ')';
+        b.appendChild(s);
+      }
+      b.addEventListener('click', it.fn);
+      ctxMenu.appendChild(b);
+    });
+
+    ctxMenu.hidden = false;
+    const rect = ctxMenu.getBoundingClientRect();
+    const x = Math.min(px, window.innerWidth - rect.width - 8);
+    const y = Math.min(py, window.innerHeight - rect.height - 8);
+    ctxMenu.style.left = Math.max(4, x) + 'px';
+    ctxMenu.style.top = Math.max(4, y) + 'px';
+  }
+
+  // Capture messages sent by the injected page script.
+  window.addEventListener('message', (e) => {
+    if (!frame || e.source !== frame.contentWindow) return;
+    const d = e.data || {};
+    if (!d.__reach) return;
+    if (d.type === 'ctx') {
+      const r = frame.getBoundingClientRect();
+      showMenu(r.left + Math.max(0, Number(d.x) || 0), r.top + Math.max(0, Number(d.y) || 0), d);
+    } else if (d.type === 'nav') {
+      const url = normalizeUrl(d.url);
+      if (url) { statusEl.textContent = 'Loading…'; post('navigate', { url, push: true }); }
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) hideMenu();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideMenu();
   });
 
   /* ------------------------------- controls ------------------------------- */
 
   address.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    const url = address.value.trim();
-    if (!/^https?:\/\//i.test(url) && /^[\w.-]+\.[a-z]{2,}/i.test(url)) {
-      address.value = 'https://' + url;
-    }
-    if (/^https?:\/\//i.test(address.value.trim())) {
-      post('navigate', { url: address.value.trim(), push: true });
+    const url = normalizeUrl(address.value);
+    if (url) {
+      address.value = url;
       statusEl.textContent = 'Loading…';
+      post('navigate', { url, push: true });
     } else {
-      statusEl.textContent = 'Enter an http(s) URL';
+      statusEl.textContent = 'Enter an http(s) or localhost URL';
     }
   });
 
@@ -278,6 +302,8 @@
   /* ------------------------------- messages ------------------------------- */
 
   window.addEventListener('message', (e) => {
+    // Host messages only — ignore anything posted by the page iframe.
+    if (frame && e.source === frame.contentWindow) return;
     const msg = e.data || {};
     switch (msg.type) {
       case 'page':
