@@ -20,16 +20,17 @@ const {
     ipcMain, nativeImage, screen, session, shell
 } = require('electron');
 const http = require('node:http');
+const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const BRIDGE_PORT = 21302;
-const COPILOT_URL = 'https://copilot.cloud.microsoft/';
+const COPILOT_URL = 'https://m365.cloud.microsoft/chat';
 const PARTITION = 'persist:copilot365';
 const REPLY_TIMEOUT_MS = 180000;
 const POLL_MS = 2000;
-const PANEL_WIDTH = 330;
-const PANEL_HEIGHT = 470;
+const PANEL_WIDTH = 360;
+const PANEL_HEIGHT = 520;
 // Microsoft hosts that are part of the auth flow — never navigate AWAY from
 // these while the user is signing in (that was the "keeps refreshing" loop).
 const AUTH_HOSTS = [
@@ -562,6 +563,129 @@ function createTray() {
     log('tray created');
 }
 
+/* --------------------------------- web search ------------------------------- */
+/* In-process DuckDuckGo HTML search + page-text fetch (no relay round-trip,
+ * no new deps). Same SSRF hygiene as tools/reach_cli/websearch.py: only
+ * public http(s) hosts, re-validated on every redirect. */
+
+function _hostIsPublic(host) {
+    if (!host) return Promise.resolve(false);
+    host = String(host).replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === 'localhost') return Promise.resolve(false);
+    return new Promise((resolve) => {
+        require('node:dns').lookup(host, { all: true }, (err, addrs) => {
+            if (err || !addrs || !addrs.length) return resolve(false);
+            const ip = require('node:net').isIP;
+            for (const a of addrs) {
+                const v = a.address;
+                if (/^(10\.|127\.|169\.254\.|192\.168\.|0\.|::1$|fc|fd|fe80)/i.test(v)) return resolve(false);
+                if (/^172\.(1[6-9]|2\d|3[01])\./.test(v)) return resolve(false);
+                if (ip(v) === 0) return resolve(false);
+            }
+            resolve(true);
+        });
+    });
+}
+
+function _fetchText(url, redirects, resolve, reject) {
+    let u;
+    try { u = new URL(url); } catch (_) { return reject(new Error('bad url')); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return reject(new Error('scheme'));
+    _hostIsPublic(u.hostname).then((ok) => {
+        if (!ok) return reject(new Error('unsafe host'));
+        const lib = u.protocol === 'https:' ? https : http;
+        const req = lib.get({
+            hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+            path: u.pathname + u.search, method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9'
+            },
+            timeout: 12000
+        }, (res) => {
+            const loc = res.headers.location;
+            if (loc && res.statusCode >= 300 && res.statusCode < 400) {
+                res.resume();
+                if (redirects >= 5) return reject(new Error('too many redirects'));
+                let next;
+                try { next = new URL(loc, url).toString(); } catch (_) { return reject(new Error('bad redirect')); }
+                return _fetchText(next, redirects + 1, resolve, reject);
+            }
+            const ct = String(res.headers['content-type'] || '');
+            if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) { res.resume(); return resolve(''); }
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (c) => { body += c; if (body.length > 400000) req.destroy(); });
+            res.on('end', () => resolve(body));
+        });
+        req.on('timeout', () => { req.destroy(new Error('timeout')); });
+        req.on('error', (e) => reject(e));
+    }).catch(reject);
+}
+
+function fetchPage(url) {
+    return new Promise((resolve, reject) => _fetchText(url, 0, resolve, reject));
+}
+
+function stripTags(html) {
+    return String(html || '')
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ').trim();
+}
+
+function _parseDdg(html, count) {
+    const results = [];
+    const push = (href, title) => {
+        if (results.length >= count) return;
+        const um = /[?&]uddg=([^&]+)/.exec(href);
+        if (um) { try { href = decodeURIComponent(um[1]); } catch (_) { /* keep */ } }
+        else if (href.startsWith('//')) href = 'https:' + href;
+        let u;
+        try { u = new URL(href); } catch (_) { return; }
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
+        const host = u.hostname.toLowerCase();
+        if (/duckduckgo\.com$/.test(host)) return;      // skip DDG internal links
+        const t = stripTags(title).slice(0, 140);
+        if (!t) return;
+        if (results.some((r) => r.url === href)) return; // dedupe
+        results.push({ title: t, url: href.slice(0, 500) });
+    };
+    // Primary: html.duckduckgo.com result links
+    let m;
+    const reA = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+    while ((m = reA.exec(html)) && results.length < count) push(m[1], m[2]);
+    // Fallback: any redirect link carrying uddg= (lite + variant layouts)
+    if (!results.length) {
+        const reU = /<a[^>]*href="([^"]*uddg=[^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
+        while ((m = reU.exec(html)) && results.length < count) push(m[1], m[2]);
+    }
+    return results;
+}
+
+async function webSearch(query, count) {
+    count = Math.max(1, Math.min(6, count || 4));
+    // Try the full HTML endpoint first, then the lite endpoint — DDG rate-limits
+    // and varies markup, so a single endpoint/selector is brittle.
+    const endpoints = [
+        'https://duckduckgo.com/html/?q=',
+        'https://lite.duckduckgo.com/lite/?q=',
+        'https://html.duckduckgo.com/html/?q='
+    ];
+    for (const ep of endpoints) {
+        try {
+            const html = await fetchPage(ep + encodeURIComponent(query));
+            const results = _parseDdg(html, count);
+            if (results.length) return results;
+        } catch (_) { /* try next endpoint */ }
+    }
+    return [];
+}
+
 /* ----------------------------------- IPC ----------------------------------- */
 
 function installIpc() {
@@ -588,12 +712,82 @@ function installIpc() {
             return { ok: false, error: e.message, ms: Date.now() - t0 };
         }
     });
+    // MiniChat: chat + web search only (improved on SimpleRAG's minichat).
+    // When webSearch is on, ground the question with live DDG results + the
+    // text of the top pages before asking Copilot — answer comes back with
+    // the sources attached.
+    ipcMain.handle('tray-chat', async (_ev, payload) => {
+        const p = payload || {};
+        const message = String(p.message || '').slice(0, 4000).trim();
+        if (!message) return { ok: false, error: 'empty message' };
+        const history = Array.isArray(p.history) ? p.history.slice(-12) : [];
+        const wantSearch = p.webSearch !== false;
+        const t0 = Date.now();
+        try {
+            let sources = [];
+            let searchNote = '';
+            let grounding = '';
+            if (wantSearch) {
+                try {
+                    sources = await webSearch(message, 4);
+                } catch (e) {
+                    searchNote = 'Web search unavailable (' + e.message + ')';
+                }
+                if (sources.length) {
+                    // pull text from the top 2 pages for grounding
+                    const pages = [];
+                    for (const s of sources.slice(0, 2)) {
+                        try {
+                            const html = await fetchPage(s.url);
+                            const txt = stripTags(html).slice(0, 2500);
+                            if (txt.length > 120) pages.push('SOURCE [' + s.title + '] (' + s.url + '):\n' + txt);
+                        } catch (_) { /* page unfetchable — link still listed */ }
+                    }
+                    grounding =
+                        'Live web results for this question follow. Answer using them ' +
+                        'and cite sources as [1], [2], etc. matching the list order.\n\n' +
+                        sources.map((s, i) => '[' + (i + 1) + '] ' + s.title + ' — ' + s.url).join('\n') +
+                        (pages.length ? '\n\n' + pages.join('\n\n') : '');
+                    searchNote = 'Searched the web (' + sources.length + ' sources' +
+                        (pages.length ? ', ' + pages.length + ' read' : '') + ')';
+                } else if (!searchNote) {
+                    searchNote = 'Web search returned no sources';
+                }
+            }
+            const historyText = history
+                .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
+                .map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + String(m.content).slice(0, 1200))
+                .join('\n');
+            const prompt =
+                (grounding ? grounding + '\n\n---\n\n' : '') +
+                (historyText ? historyText + '\n' : '') +
+                'User: ' + message;
+            const content = await copilotSend(prompt);
+            return {
+                ok: true,
+                content,
+                sources,
+                webSearch: wantSearch,
+                searchNote,
+                ms: Date.now() - t0
+            };
+        } catch (e) {
+            lastError = e.message;
+            return { ok: false, error: e.message, ms: Date.now() - t0 };
+        }
+    });
     ipcMain.on('show-browser', showBrowser);
     ipcMain.on('hide-browser', hideBrowser);
     ipcMain.on('reload-browser', reloadBrowser);
     ipcMain.on('refresh-page', () => {
         const win = ensureBrowser();
         win.webContents.reload();
+    });
+    ipcMain.on('open-external', (_e, url) => {
+        try {
+            const u = new URL(String(url));
+            if (u.protocol === 'http:' || u.protocol === 'https:') shell.openExternal(u.toString());
+        } catch (_) { /* ignore bad url */ }
     });
     ipcMain.on('sign-out', () => { void signOutBrowser(); });
     ipcMain.on('quit', () => app.quit());

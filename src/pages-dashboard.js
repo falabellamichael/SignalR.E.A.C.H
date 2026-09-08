@@ -12,7 +12,7 @@
         console.error('[signal-reach] reach-core.js missing — re-run install.');
         return;
     }
-    const { el, toast } = core;
+    const { el, esc, toast } = core;
     const { pageHeader, statTile, chip, kv, publishNow } =
         window.__reachPageWidgets;
 
