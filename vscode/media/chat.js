@@ -446,7 +446,14 @@
   }
 
   function maskFenced(text) {
-    return String(text || '').replace(/```(?:edit|tool)[\s\S]*?(?:```|$)/g, '…');
+    let out = String(text || '').replace(/```(?:edit|tool)[\s\S]*?(?:```|$)/g, '…');
+    // Adjacent masked blocks separated by ONLY whitespace collapse to a single
+    // ellipsis — otherwise a run of ```tool blocks streams as a full-height
+    // wall of "…" rows (pre-wrap renders the blank lines between them). Real
+    // prose between blocks is preserved (\s* won't match across it).
+    while (/…\s*…/.test(out)) out = out.replace(/…\s*…/g, '…');
+    out = out.replace(/\n{3,}/g, '\n\n');
+    return out.trim();
   }
 
   /* ---------- Cursor-style step tracker (real steps + funny filler) ---------- */
