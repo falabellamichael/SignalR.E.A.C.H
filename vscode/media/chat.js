@@ -39,6 +39,11 @@
   let pendingBubble = null;
   let thinkRow = null;
   let pendingText = '';
+  // Frame-batched streaming render: deltas accumulate instantly, but the
+  // bubble re-renders at most once per animation frame. Re-rendering per
+  // delta can fire 100+ full markdown re-parses per second and makes the
+  // stream look jerky.
+  let rafPending = false;
   let clearArmed = false;
   let clearTimer = null;
   let includeWorkspace = true;
@@ -1367,10 +1372,21 @@
         }
         if (!pendingText) hideThinking();
         pendingText += msg.text;
-        setRich(pendingBubble, maskFenced(pendingText));
-        scrollBottom();
+        if (!rafPending) {
+          rafPending = true;
+          requestAnimationFrame(() => {
+            rafPending = false;
+            if (!pendingBubble) return;
+            setRich(pendingBubble, maskFenced(pendingText));
+            scrollBottom();
+          });
+        }
         break;
       case 'done': {
+        if (rafPending && pendingBubble) {
+          rafPending = false;
+          setRich(pendingBubble, maskFenced(pendingText));
+        }
         if (pendingBubble && msg.full !== undefined) {
           pendingText = msg.full;
           setRich(pendingBubble, maskFenced(pendingText));
