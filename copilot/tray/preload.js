@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('copilotTray', {
     chat: (payload) => ipcRenderer.invoke('tray-chat', payload),
     showBrowser: () => ipcRenderer.send('show-browser'),
     hideBrowser: () => ipcRenderer.send('hide-browser'),
+    toggleBrowser: () => ipcRenderer.send('toggle-browser'),
     reloadBrowser: () => ipcRenderer.send('reload-browser'),
     refreshPage: () => ipcRenderer.send('refresh-page'),
     openExternal: (url) => ipcRenderer.send('open-external', url),

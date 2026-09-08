@@ -163,6 +163,7 @@ function showBrowser() {
     win.show();
     win.focus();
     injectPageControls();
+    if (tray) tray.setContextMenu(buildTrayMenu());
 }
 
 // Floating control bar injected into the sign-in window so the user can
@@ -209,6 +210,7 @@ async function injectPageControls() {
 
 function hideBrowser() {
     if (browserWin && !browserWin.isDestroyed()) browserWin.hide();
+    if (tray) tray.setContextMenu(buildTrayMenu());
 }
 
 function reloadBrowser() {
@@ -525,9 +527,16 @@ async function togglePanel() {
 }
 
 function buildTrayMenu() {
+    const visible = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
     return Menu.buildFromTemplate([
-        { label: 'Show Copilot Window (sign in / verify)', click: showBrowser },
-        { label: 'Hide Copilot Window', click: hideBrowser },
+        {
+            label: visible ? 'Hide Copilot Window' : 'Show Copilot Window (sign in / verify)',
+            click: () => {
+                if (browserWin && !browserWin.isDestroyed() && browserWin.isVisible()) hideBrowser();
+                else showBrowser();
+                setTimeout(() => { if (tray) tray.setContextMenu(buildTrayMenu()); }, 100);
+            }
+        },
         { type: 'separator' },
         { label: 'Refresh Page  ⟳', click: () => {
             const win = ensureBrowser();
@@ -778,6 +787,15 @@ function installIpc() {
     });
     ipcMain.on('show-browser', showBrowser);
     ipcMain.on('hide-browser', hideBrowser);
+    // toggle: if the window is already open, hide it (panel buttons are
+    // one-button show/hide so the user never has to hunt for the other action)
+    ipcMain.on('toggle-browser', () => {
+        if (browserWin && !browserWin.isDestroyed() && browserWin.isVisible()) {
+            hideBrowser();
+        } else {
+            showBrowser();
+        }
+    });
     ipcMain.on('reload-browser', reloadBrowser);
     ipcMain.on('refresh-page', () => {
         const win = ensureBrowser();
