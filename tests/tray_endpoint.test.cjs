@@ -45,10 +45,12 @@ test('Copilot bridge supports legacy, JSON and SSE clients with full conversatio
  const models=await (await fetch(base+'/v1/models')).json();
  assert.equal(models.data[0].id,'copilot-chat');
  const send=body=>fetch(base+'/v1/chat/completions',{method:'POST',body:JSON.stringify(body)});
- const messages=[{role:'system',content:'Explain code'},{role:'user',content:'Hi'}];
+ const messages=[{role:'system',content:'Explain code'},{role:'developer',content:'Read the source'},{role:'tool',content:'SOURCE_END'},{role:'user',content:'Hi'}];
  const json=await (await send({model:'copilot-chat',messages,stream:false})).json();
  assert.equal(json.choices[0].message.content,'COPILOT OK');
  assert.match(calls[0],/system: Explain code/);
+ assert.match(calls[0],/developer: Read the source/);
+ assert.match(calls[0],/tool: SOURCE_END/);
  const stream=await send({model:'copilot-chat',messages,stream:true});
  assert.match(stream.headers.get('content-type'),/event-stream/);
  const body=await stream.text();assert.match(body,/COPILOT OK/);assert.match(body,/data: \[DONE\]/);

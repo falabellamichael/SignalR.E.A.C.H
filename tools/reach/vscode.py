@@ -45,7 +45,7 @@ def install(repo_root, quiet=False, with_playwright=False):
     dst = root / FOLDER
     try:
         dst.mkdir(parents=True, exist_ok=True)
-        for name in ("package.json", "extension.js", "connection.js", "search.js"):
+        for name in ("package.json", "extension.js", "connection.js", "search.js", "edits.js", "context.js"):
             if (src / name).is_file():
                 shutil.copy2(src / name, dst / name)
         media_src = src / "media"

@@ -503,9 +503,17 @@ body {
   background: rgba(190, 17, 0, 0.18);
 }
 
-/* ---- agentic edit cards (Cursor-style) ---- */
+/* ---- proposed edits ---- */
+.edit-batch { flex: 0 0 auto; min-width: 0; display: grid; gap: 8px; }
+.edit-batch-title { flex: 1 0 100%; font-size: 12px; }
+.edit-preview summary { cursor: pointer; padding: 8px 10px; font-size: 11px; color: var(--reach-muted); }
+.edit-preview summary:focus-visible, .edit-btn:focus-visible { outline: 2px solid var(--reach-accent); outline-offset: -2px; }
+.edit-card.rejected, .edit-card.applied { border-left-color: var(--reach-border); }
+.edit-card.rejected .edit-kind { color: var(--reach-muted); }
+
 .edit-card {
-  margin: 2px 0;
+  flex: 0 0 auto;
+  min-width: 0;
   border: 1px solid var(--reach-border);
   border-left: 3px solid var(--reach-accent);
   border-radius: 8px;
@@ -552,14 +560,16 @@ body {
 .edit-line.del { color: #ff8f7a; background: rgba(255, 90, 70, 0.09); }
 .edit-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
   border-top: 1px solid var(--reach-border);
 }
 .edit-btn {
-  font-size: 11px;
-  padding: 3px 10px;
+  font-size: 12px;
+  min-height: 28px;
+  padding: 4px 10px;
   border-radius: 5px;
   border: 1px solid var(--reach-border);
   background: transparent;
@@ -572,39 +582,44 @@ body {
   color: var(--reach-accent-light);
   font-weight: 600;
 }
+.edit-btn.reject:not(:disabled):hover { border-color: var(--reach-error); color: var(--reach-error); }
 .edit-btn:disabled { opacity: 0.45; cursor: default; }
 .edit-status { margin-left: auto; font-size: 11px; color: var(--reach-muted); }
 .edit-status.ok { color: #7fd68b; }
-.edit-status.err { color: var(--reach-error); }
+.edit-status:empty { display: none; }
+.edit-status.err { color: var(--reach-error); flex-basis: 100%; overflow-wrap: anywhere; }
 .edit-allbar {
   display: flex;
-  padding: 2px 0 6px;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0;
 }
 .browse-snap { margin: 4px 0; }
 .browse-snap .browse-cap { font-size: 10px; color: var(--reach-muted); margin-bottom: 3px; }
 .browse-snap img { max-width: 100%; border: 1px solid var(--reach-border); border-radius: 6px; display: block; }
 
-/* ---- Copilot-style work log (narrated step stack) ---- */
-.steps { padding: 2px 2px 8px; }
-.step-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--reach-muted);
-  padding: 1px 2px 6px;
-}
-.step-line .mini-spin {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  border: 1.5px solid color-mix(in srgb, var(--reach-accent) 25%, transparent);
-  border-top-color: var(--reach-accent);
-  animation: think-spin 0.8s linear infinite;
-  flex: 0 0 auto;
-}
-.step-line.done { color: var(--reach-accent-light); }
-.step-line.done .mini-spin { animation: none; border-color: var(--reach-accent); }
+/* ---- persistent agent activity ---- */
+.steps { flex: 0 0 auto; min-width: 0; padding: 4px 0 8px; }
+.steps-title { font-size: 12px; font-weight: 600; color: var(--reach-muted); margin: 0 0 10px; }
+.step-line { border-left: 2px solid var(--reach-border); margin-left: 5px; padding: 0 0 14px 12px; min-width: 0; }
+.step-head { position: relative; display: flex; align-items: baseline; gap: 7px; color: var(--reach-text); }
+.step-text { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 12px; font-weight: 600; }
+.step-state { flex: none; font-size: 10px; color: var(--reach-muted); }
+.step-line .mini-spin { position: absolute; left: -18px; top: 4px; box-sizing: border-box;
+  width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--reach-border);
+  background: var(--reach-panel); border-top-color: var(--reach-accent); animation: think-spin 0.8s linear infinite; }
+.step-line.completed .mini-spin, .step-line.error .mini-spin, .step-line.cancelled .mini-spin { animation: none; }
+.step-line.completed .mini-spin { border-color: var(--reach-accent); background: var(--reach-accent); }
+.step-line.error .mini-spin { border-color: var(--reach-error); }
+.step-line.error .step-state { color: var(--reach-error); }
+.step-output { margin: 6px 0 0; color: var(--reach-muted); font-size: 11px; }
+.step-result { margin: 0; padding: 8px; border: 1px solid var(--reach-border); border-radius: 6px;
+  background: var(--reach-surface); color: var(--reach-text); font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 210px; overflow: auto; }
+.step-details { margin-top: 6px; }
+.step-details summary { cursor: pointer; padding: 3px 0; color: var(--reach-accent-light); }
+.step-details .step-result { max-height: 420px; }
+.step-preview-note { margin-top: 5px; font-size: 10px; }
 
 /* ---- LaTeX + markdown rendering ---- */
 .tex sup, .tex sub { font-size: 0.75em; line-height: 0; }

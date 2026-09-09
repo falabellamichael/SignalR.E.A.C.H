@@ -30,7 +30,15 @@
             const card = el('section', 'reach-card');
             card.appendChild(el('header', 'reach-card-head', 'Served aliases'));
             if (!cfg || !cfg.models) {
-                card.appendChild(emptyNote('Relay offline — cannot read the model table.'));
+                const snap = core.store.local;
+                if (snap && snap.connection_mode === 'hosted') {
+                    card.appendChild(emptyNote('Available SignalREACH models. Aliases are managed on the host.'));
+                    const list = el('ul');
+                    (snap.models || []).forEach(model => list.appendChild(el('li', null, model)));
+                    card.appendChild(list);
+                } else {
+                    card.appendChild(emptyNote('Relay offline — cannot read the model table.'));
+                }
                 body.appendChild(card);
                 return;
             }

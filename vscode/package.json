@@ -175,12 +175,12 @@
         "simplereach.workspaceContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on \u2014 toggle it in the sidebar)."
+          "markdownDescription": "Include workspace source as context with every chat; Agent mode also selects and reads relevant closed files (default on \u2014 toggle it in the sidebar)."
         },
         "simplereach.contextMaxKb": {
           "type": "number",
           "default": 120,
-          "markdownDescription": "Max total workspace-context size (KB) sent per request. Open files are truncated to fit."
+          "markdownDescription": "Workspace source budget (KB) per request. Complete files are included when they fit; omitted files are listed and can be read with the read tool."
         },
         "simplereach.think": {
           "type": "boolean",
