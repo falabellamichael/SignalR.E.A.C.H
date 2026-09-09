@@ -23,6 +23,12 @@ const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
+// Keep the existing Copilot session directory across source and packaged launches.
+app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
+const { createEndpointClient } = require('./endpoint');
+const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'));
+let clickTimer = null;
+let isQuitting = false;
 
 const BRIDGE_PORT = 21302;
 const COPILOT_URL = 'https://m365.cloud.microsoft/chat';
@@ -61,7 +67,7 @@ let browserWin = null;
 let bridgeServer = null;
 let lastReplyAt = 0;
 let lastError = '';
-let queue = Promise.resolve();
+
 
 /* --------------------------------- logging -------------------------------- */
 
@@ -95,7 +101,7 @@ function ensureBrowser() {
     // force a re-auth redirect loop (the "keeps refreshing" the user hit).
     const ses = session.fromPartition(PARTITION);
     ses.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
+        `Mozilla/5.0 (${process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : process.platform === 'linux' ? 'X11; Linux x86_64' : 'Windows NT 10.0; Win64; x64'}) AppleWebKit/537.36 ` +
         '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36');
 
     browserWin = new BrowserWindow({
@@ -135,6 +141,9 @@ function ensureBrowser() {
         log('navigated: ' + url.slice(0, 100));
         if (isAppHost(url)) maybeAutoHideAfterSignIn();
     });
+    browserWin.on('close', (event) => {
+        if (!isQuitting) { event.preventDefault(); hideBrowser(); }
+    });
     browserWin.on('closed', () => { browserWin = null; });
     browserWin.loadURL(COPILOT_URL);
     log('invisible browser created (partition ' + PARTITION + ')');
@@ -163,7 +172,7 @@ function showBrowser() {
     win.show();
     win.focus();
     injectPageControls();
-    if (tray) tray.setContextMenu(buildTrayMenu());
+    refreshNativeMenus();
 }
 
 // Floating control bar injected into the sign-in window so the user can
@@ -210,7 +219,7 @@ async function injectPageControls() {
 
 function hideBrowser() {
     if (browserWin && !browserWin.isDestroyed()) browserWin.hide();
-    if (tray) tray.setContextMenu(buildTrayMenu());
+    refreshNativeMenus();
 }
 
 function reloadBrowser() {
@@ -339,7 +348,18 @@ async function clickSendButton() {
     return true;
 }
 
+let copilotQueue = Promise.resolve();
+function sendCopilotQueued(text) {
+    const result = copilotQueue.then(() => copilotSend(text));
+    copilotQueue = result.catch(() => {});
+    return result;
+}
+
 async function copilotSend(text) {
+    if (!browserWin || browserWin.isDestroyed()) {
+        showBrowser();
+        throw new Error('Open the Microsoft 365 session in the Copilot window, then retry.');
+    }
     const auth = await checkSignedIn();
     if (!auth.ok) throw new Error(auth.why + ' — use tray menu: Show Copilot window');
 
@@ -406,53 +426,12 @@ async function copilotSend(text) {
 
 function startBridge() {
     if (bridgeServer) return;
-    bridgeServer = http.createServer((req, res) => {
-        const send = (code, obj) => {
-            const body = JSON.stringify(obj);
-            res.writeHead(code, {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            });
-            res.end(body);
-        };
-        if (req.method === 'GET' && (req.url === '/health' || req.url === '/status')) {
-            return send(200, {
-                ok: true, service: 'copilot-tray', bridge: BRIDGE_PORT,
-                signedIn: null, lastReplyAt, lastError,
-                browserVisible: !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible())
-            });
-        }
-        if (req.method !== 'POST' || (req.url !== '/' && req.url !== '/send')) {
-            return send(404, { ok: false, error: 'not found' });
-        }
-        let raw = '';
-        req.on('data', (c) => { raw += c; if (raw.length > 2e6) req.destroy(); });
-        req.on('end', () => {
-            let text = '';
-            try {
-                const body = JSON.parse(raw || '{}');
-                const msgs = body.messages || [];
-                const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-                text = String((lastUser && lastUser.content) || body.text || '').slice(0, 8000);
-            } catch (e) {
-                return send(400, { ok: false, error: 'bad json: ' + e.message });
-            }
-            if (!text.trim()) return send(400, { ok: false, error: 'empty message' });
-            // serialize: one conversation turn at a time
-            queue = queue.then(async () => {
-                const t0 = Date.now();
-                try {
-                    const content = await copilotSend(text);
-                    log('reply ok (' + (Date.now() - t0) + 'ms, ' + content.length + ' chars)');
-                    send(200, { ok: true, content, ms: Date.now() - t0 });
-                } catch (e) {
-                    lastError = e.message;
-                    log('reply FAILED: ' + e.message);
-                    send(502, { ok: false, error: e.message });
-                }
-            });
-        });
-    });
+    const { createBridgeHandler } = require('./bridge');
+    bridgeServer = http.createServer(createBridgeHandler(sendCopilotQueued, () => ({
+        ok: true, service: 'signalreach-tray', bridge: BRIDGE_PORT,
+        lastReplyAt, lastError,
+        browserVisible: !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible())
+    })));
     bridgeServer.on('error', (e) => {
         log('bridge bind error: ' + e.message);
         bridgeServer = null;
@@ -468,6 +447,7 @@ function startBridge() {
 function panelWindow() {
     if (panel && !panel.isDestroyed()) return panel;
     panel = new BrowserWindow({
+        ...(process.platform === 'darwin' ? { type: 'panel' } : {}),
         width: PANEL_WIDTH,
         height: PANEL_HEIGHT,
         frame: false,
@@ -478,7 +458,7 @@ function panelWindow() {
         skipTaskbar: true,
         show: false,
         alwaysOnTop: true,
-        title: 'SignalR.E.A.C.H Copilot',
+        title: 'SignalREACH',
         icon: path.join(__dirname, 'tray-icon.png'),
         backgroundColor: '#1b1b1f',
         webPreferences: {
@@ -489,6 +469,7 @@ function panelWindow() {
         }
     });
     const ref = panel;
+    if (process.platform === 'darwin') panel.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     panel.on('blur', () => {
         if (ref && !ref.isDestroyed()) ref.hide();
     });
@@ -502,15 +483,17 @@ function positionPanelNearTray() {
     const win = panelWindow();
     let anchor = null;
     try { anchor = tray ? tray.getBounds() : null; } catch (_) { anchor = null; }
+    if (anchor && (anchor.width <= 0 || anchor.height <= 0)) anchor = null;
     const display = anchor
         ? screen.getDisplayNearestPoint({ x: anchor.x, y: anchor.y })
-        : screen.getPrimaryDisplay();
+        : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
     const area = display.workArea;
     let x = anchor
         ? Math.round(anchor.x + anchor.width / 2 - PANEL_WIDTH / 2)
         : Math.round(area.x + area.width - PANEL_WIDTH - 16);
     let y = Math.round(area.y + area.height - PANEL_HEIGHT - 8);
-    if (anchor && anchor.y + anchor.height <= area.y + 2) y = anchor.y + 8;
+    if (process.platform === 'darwin') y = Math.max(area.y, anchor ? anchor.y + anchor.height : area.y) + 8;
+    else if (anchor && anchor.y + anchor.height <= area.y + 2) y = area.y + 8;
     x = Math.max(area.x + 8, Math.min(x, area.x + area.width - PANEL_WIDTH - 8));
     y = Math.max(area.y + 8, Math.min(y, area.y + area.height - PANEL_HEIGHT - 8));
     win.setBounds({ x, y, width: PANEL_WIDTH, height: PANEL_HEIGHT });
@@ -519,22 +502,33 @@ function positionPanelNearTray() {
 async function togglePanel() {
     const win = panelWindow();
     if (win.isVisible()) { win.hide(); return; }
+    await showPanel();
+}
+
+async function showPanel() {
+    const win = panelWindow();
     if (panelReady) await panelReady;
     if (win.isDestroyed()) return;
     positionPanelNearTray();
-    win.showInactive();
+    if (process.platform === 'darwin') win.show();
+    else win.showInactive();
     win.focus();
 }
 
 function buildTrayMenu() {
     const visible = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
     return Menu.buildFromTemplate([
+        { label: 'Free model endpoints', type: 'radio', checked: endpoints.getSettings().provider === 'endpoint',
+          click: () => { saveTraySettings({ provider: 'endpoint' }); openPanel(); } },
+        { label: 'Microsoft 365 Copilot', type: 'radio', checked: endpoints.getSettings().provider === 'copilot',
+          click: () => { saveTraySettings({ provider: 'copilot' }); openPanel(); } },
+        { type: 'separator' },
         {
             label: visible ? 'Hide Copilot Window' : 'Show Copilot Window (sign in / verify)',
             click: () => {
                 if (browserWin && !browserWin.isDestroyed() && browserWin.isVisible()) hideBrowser();
                 else showBrowser();
-                setTimeout(() => { if (tray) tray.setContextMenu(buildTrayMenu()); }, 100);
+                setTimeout(() => { refreshNativeMenus(); }, 100);
             }
         },
         { type: 'separator' },
@@ -547,27 +541,55 @@ function buildTrayMenu() {
         { type: 'separator' },
         {
             label: 'Open Tray Panel',
-            click: () => { void togglePanel(); }
+            click: openPanel
         },
-        { label: 'Quit Copilot Bridge', click: () => app.quit() }
+        { label: 'Quit SignalREACH', click: () => app.quit() }
     ]);
+}
+
+function openPanel() {
+    void showPanel().catch(error => log('Panel failed: ' + error.message));
+}
+
+function saveTraySettings(value) {
+    const saved = endpoints.saveSettings(value);
+    refreshNativeMenus();
+    if (saved.provider === 'copilot') ensureBrowser();
+    if (panel && !panel.isDestroyed()) panel.webContents.send('settings-changed');
+    return saved;
+}
+
+function refreshNativeMenus() {
+    if (!tray) return;
+    // On macOS an attached context menu consumes the status item's mouse-up.
+    // Open it explicitly on right-click so left-click can open our panel.
+    if (process.platform !== 'darwin') tray.setContextMenu(buildTrayMenu());
+    if (process.platform === 'darwin' && app.dock) app.dock.setMenu(buildTrayMenu());
 }
 
 function createTray() {
     const iconPath = path.join(__dirname, 'tray-icon.png');
     let image = nativeImage.createFromPath(iconPath);
-    if (image.isEmpty()) {
-        // fallback: 16x16 gold dot so the tray is never invisible
-        image = nativeImage.createEmpty();
-    }
+    if (image.isEmpty()) throw new Error('SignalREACH tray-icon.png is missing.');
+    if (process.platform === 'darwin') image = image.resize({ width: 18, height: 18 });
     tray = new Tray(image);
-    tray.setToolTip('SignalR.E.A.C.H — Copilot bridge (invisible browser)');
-    tray.setContextMenu(buildTrayMenu());
-    let clickTimer = null;
+    tray.setToolTip('SignalREACH — free endpoints and Microsoft 365 Copilot');
+    refreshNativeMenus();
+    if (process.platform === 'darwin') {
+        tray.setIgnoreDoubleClickEvents(true);
+        tray.on('right-click', () => tray.popUpContextMenu(buildTrayMenu()));
+        Menu.setApplicationMenu(Menu.buildFromTemplate([
+            { label: 'SignalREACH', submenu: [{ label: 'Open Tray Panel', accelerator: 'CmdOrCtrl+Shift+T', click: openPanel }, { role: 'quit' }] },
+            { role: 'editMenu' }, { role: 'windowMenu' }
+        ]));
+    }
     tray.on('click', () => {
-        // single click: panel; double click: show the browser window
+        if (process.platform === 'darwin' || process.platform === 'linux') {
+            void togglePanel().catch(error => log('Panel failed: ' + error.message));
+            return;
+        }
         if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; showBrowser(); return; }
-        clickTimer = setTimeout(() => { clickTimer = null; void togglePanel(); }, 220);
+        clickTimer = setTimeout(() => { clickTimer = null; void togglePanel().catch(error => log(error.message)); }, 220);
     });
     log('tray created');
 }
@@ -596,11 +618,12 @@ function _hostIsPublic(host) {
     });
 }
 
-function _fetchText(url, redirects, resolve, reject) {
+function _fetchText(url, redirects, resolve, reject, signal) {
     let u;
     try { u = new URL(url); } catch (_) { return reject(new Error('bad url')); }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return reject(new Error('scheme'));
     _hostIsPublic(u.hostname).then((ok) => {
+        if (signal.aborted) return reject(new Error('Web request timed out.'));
         if (!ok) return reject(new Error('unsafe host'));
         const lib = u.protocol === 'https:' ? https : http;
         const req = lib.get({
@@ -611,7 +634,7 @@ function _fetchText(url, redirects, resolve, reject) {
                 'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9'
             },
-            timeout: 12000
+            timeout: 12000, signal
         }, (res) => {
             const loc = res.headers.location;
             if (loc && res.statusCode >= 300 && res.statusCode < 400) {
@@ -619,13 +642,17 @@ function _fetchText(url, redirects, resolve, reject) {
                 if (redirects >= 5) return reject(new Error('too many redirects'));
                 let next;
                 try { next = new URL(loc, url).toString(); } catch (_) { return reject(new Error('bad redirect')); }
-                return _fetchText(next, redirects + 1, resolve, reject);
+                return _fetchText(next, redirects + 1, resolve, reject, signal);
             }
             const ct = String(res.headers['content-type'] || '');
             if (!/text\/html|text\/plain|application\/xhtml/i.test(ct)) { res.resume(); return resolve(''); }
             let body = '';
             res.setEncoding('utf8');
-            res.on('data', (c) => { body += c; if (body.length > 400000) req.destroy(); });
+            res.on('data', (c) => {
+                body += c;
+                if (body.length > 400000) { resolve(body.slice(0, 400000)); req.destroy(); }
+            });
+            res.on('error', reject);
             res.on('end', () => resolve(body));
         });
         req.on('timeout', () => { req.destroy(new Error('timeout')); });
@@ -633,8 +660,16 @@ function _fetchText(url, redirects, resolve, reject) {
     }).catch(reject);
 }
 
-function fetchPage(url) {
-    return new Promise((resolve, reject) => _fetchText(url, 0, resolve, reject));
+function fetchPage(url, timeoutMs = 12000) {
+    const controller = new AbortController();
+    let timer;
+    return new Promise((resolve, reject) => {
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error('Web request timed out.'));
+        }, timeoutMs);
+        _fetchText(url, 0, resolve, reject, controller.signal);
+    }).finally(() => clearTimeout(timer));
 }
 
 function stripTags(html) {
@@ -695,27 +730,59 @@ async function webSearch(query, count) {
     return [];
 }
 
+async function sendChatMessages(config, messages) {
+    const content = config.provider === 'endpoint'
+        ? await endpoints.chat(config, messages)
+        : await sendCopilotQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
+    lastReplyAt = Date.now();
+    lastError = '';
+    return content;
+}
+
 /* ----------------------------------- IPC ----------------------------------- */
 
 function installIpc() {
-    ipcMain.handle('tray-status', async () => {
-        const auth = await checkSignedIn().catch((e) => ({ ok: false, why: e.message }));
+    // Only the local, sandboxed panel can invoke tray commands. The remote
+    // Microsoft browser has no access to this settings/chat surface.
+    const trusted = event => {
+        if (!panel || panel.isDestroyed() || event.sender !== panel.webContents || event.senderFrame !== panel.webContents.mainFrame) {
+            throw new Error('This command is only available from the SignalREACH tray panel.');
+        }
+    };
+    const handle = (name, fn) => ipcMain.handle(name, (event, ...args) => { trusted(event); return fn(event, ...args); });
+    const listen = (name, fn) => ipcMain.on(name, (event, ...args) => {
+        try { trusted(event); fn(event, ...args); } catch (error) { log('Tray command failed: ' + error.message); }
+    });
+    handle('tray-settings', () => endpoints.getSettings());
+    handle('tray-save-settings', (_event, value) => saveTraySettings(value));
+    handle('tray-models', async () => endpoints.discover(endpoints.getSettings(), true));
+    listen('hide-panel', () => { if (panel) panel.hide(); });
+    handle('tray-status', async () => {
+        const config = endpoints.getSettings();
+        let auth;
+        let models = [];
+        let base = '';
+        if (config.provider === 'endpoint') {
+            try {
+                const state = await endpoints.discover(config);
+                models = state.models;
+                base = state.base;
+                auth = { ok: !config.model || models.includes(config.model), why: 'Choose an available model in Controls.' };
+            } catch (error) { auth = { ok: false, why: error.message }; }
+        } else auth = await checkSignedIn().catch(error => ({ ok: false, why: error.message }));
         return {
-            signedIn: !!auth.ok,
-            why: auth.why || '',
-            bridgePort: BRIDGE_PORT,
-            bridgeUp: !!bridgeServer,
+            ...config, models, base,
+            signedIn: !!auth.ok, why: auth.ok ? '' : auth.why || '',
+            bridgePort: BRIDGE_PORT, bridgeUp: !!bridgeServer,
             browserVisible: !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible()),
-            lastReplyAt,
-            lastError,
-            url: (browserWin && !browserWin.isDestroyed())
-                ? browserWin.webContents.getURL().slice(0, 120) : ''
+            lastReplyAt, lastError,
+            url: config.provider === 'endpoint' ? base : (browserWin && !browserWin.isDestroyed() ? browserWin.webContents.getURL().slice(0, 120) : '')
         };
     });
-    ipcMain.handle('tray-test', async (_ev, text) => {
+    handle('tray-test', async (_ev, text) => {
         const t0 = Date.now();
         try {
-            const content = await copilotSend(String(text || 'Say OK').slice(0, 500));
+            const content = await sendChatMessages(endpoints.getSettings(), [{ role: 'user', content: String(text || 'Say OK').slice(0, 500) }]);
             return { ok: true, content, ms: Date.now() - t0 };
         } catch (e) {
             return { ok: false, error: e.message, ms: Date.now() - t0 };
@@ -725,7 +792,8 @@ function installIpc() {
     // When webSearch is on, ground the question with live DDG results + the
     // text of the top pages before asking Copilot — answer comes back with
     // the sources attached.
-    ipcMain.handle('tray-chat', async (_ev, payload) => {
+    handle('tray-chat', async (_ev, payload) => {
+        const config = endpoints.getSettings();
         const p = payload || {};
         const message = String(p.message || '').slice(0, 4000).trim();
         if (!message) return { ok: false, error: 'empty message' };
@@ -763,15 +831,14 @@ function installIpc() {
                     searchNote = 'Web search returned no sources';
                 }
             }
-            const historyText = history
-                .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
-                .map((m) => (m.role === 'user' ? 'User: ' : 'Assistant: ') + String(m.content).slice(0, 1200))
-                .join('\n');
-            const prompt =
-                (grounding ? grounding + '\n\n---\n\n' : '') +
-                (historyText ? historyText + '\n' : '') +
-                'User: ' + message;
-            const content = await copilotSend(prompt);
+            if (panel && !panel.isDestroyed()) panel.webContents.send('chat-progress', { requestId: p.requestId, hint: 'Thinking…' });
+            const chatMessages = [
+                ...(grounding ? [{ role: 'system', content: grounding }] : []),
+                ...history.filter(m => m && ['user', 'assistant'].includes(m.role) && m.content)
+                    .map(m => ({ role: m.role, content: String(m.content).slice(0, 1200) })),
+                { role: 'user', content: message }
+            ];
+            const content = await sendChatMessages(config, chatMessages);
             return {
                 ok: true,
                 content,
@@ -785,30 +852,30 @@ function installIpc() {
             return { ok: false, error: e.message, ms: Date.now() - t0 };
         }
     });
-    ipcMain.on('show-browser', showBrowser);
-    ipcMain.on('hide-browser', hideBrowser);
+    listen('show-browser', showBrowser);
+    listen('hide-browser', hideBrowser);
     // toggle: if the window is already open, hide it (panel buttons are
     // one-button show/hide so the user never has to hunt for the other action)
-    ipcMain.on('toggle-browser', () => {
+    listen('toggle-browser', () => {
         if (browserWin && !browserWin.isDestroyed() && browserWin.isVisible()) {
             hideBrowser();
         } else {
             showBrowser();
         }
     });
-    ipcMain.on('reload-browser', reloadBrowser);
-    ipcMain.on('refresh-page', () => {
+    listen('reload-browser', reloadBrowser);
+    listen('refresh-page', () => {
         const win = ensureBrowser();
         win.webContents.reload();
     });
-    ipcMain.on('open-external', (_e, url) => {
+    listen('open-external', (_e, url) => {
         try {
             const u = new URL(String(url));
             if (u.protocol === 'http:' || u.protocol === 'https:') shell.openExternal(u.toString());
         } catch (_) { /* ignore bad url */ }
     });
-    ipcMain.on('sign-out', () => { void signOutBrowser(); });
-    ipcMain.on('quit', () => app.quit());
+    listen('sign-out', () => { void signOutBrowser(); });
+    listen('quit', () => app.quit());
 }
 
 /* ---------------------------------- boot ---------------------------------- */
@@ -816,24 +883,27 @@ function installIpc() {
 if (!app.requestSingleInstanceLock()) {
     app.quit();
 } else {
-    app.on('second-instance', () => { void togglePanel(); });
+    app.on('second-instance', openPanel);
+    app.on('activate', () => { if (app.isReady()) openPanel(); });
 
     app.whenReady().then(() => {
         log('=== Copilot tray starting (pid ' + process.pid + ') ===');
         installIpc();
         startBridge();
-        ensureBrowser();
         createTray();
+        openPanel();
+        if (endpoints.getSettings().provider === 'copilot') ensureBrowser();
         // sign-in check: if the session is dead, surface the window once so the
         // user can sign in (only at startup, never while running invisibly)
         setTimeout(async () => {
-            const auth = await checkSignedIn();
+            if (endpoints.getSettings().provider !== 'copilot') return;
+            const auth = await checkSignedIn().catch(error => ({ ok: false, why: error.message }));
             if (!auth.ok) {
                 log('startup: ' + auth.why + ' — showing browser for sign-in');
                 showBrowser();
                 try {
                     new Notification({
-                        title: 'SignalR.E.A.C.H Copilot',
+                        title: 'SignalREACH',
                         body: 'Sign in to Microsoft 365 in the opened window — ' +
                               'then it runs invisibly from the tray.'
                     }).show();
@@ -848,6 +918,10 @@ if (!app.requestSingleInstanceLock()) {
     app.on('window-all-closed', (e) => { /* do NOT quit */ });
 
     app.on('before-quit', () => {
+        isQuitting = true;
+        clearTimeout(clickTimer);
+        clearTimeout(autoHideTimer);
+        if (tray) { tray.destroy(); tray = null; }
         try { if (bridgeServer) bridgeServer.close(); } catch (_) { /* noop */ }
         log('=== Copilot tray quitting ===');
     });

@@ -1,8 +1,8 @@
 {
   "name": "simplereach",
   "displayName": "SimpleREACH",
-  "description": "Chat with your SimpleREACH models (gpt-4o, claude-opus-4.6, gemini, deepseek…) directly inside VS Code. Zero config — points at your local REACH endpoint.",
-  "version": "1.0.0",
+  "description": "Chat with your free SignalREACH endpoints or Microsoft 365 Copilot, with a desktop tray on macOS, Windows, and Linux.",
+  "version": "1.1.0",
   "publisher": "simplereach",
   "license": "MIT",
   "engines": {
@@ -146,13 +146,21 @@
       "properties": {
         "simplereach.endpoint": {
           "type": "string",
-          "default": "http://127.0.0.1:20777/v1",
-          "markdownDescription": "REACH OpenAI-compatible base URL (your local relay or the public pointer URL + `/v1`)."
+          "default": "https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt",
+          "markdownDescription": "Free endpoint base URL or the published endpoint-pointer URL. Used when Provider is Free endpoints."
+        },
+        "simplereach.additionalEndpoints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Additional endpoint base URLs or pointer URLs, listed under Other providers. Selecting one loads its models and routes chat to it. The access key applies to the selected provider."
         },
         "simplereach.accessKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Optional shared access key (set in the REACH panel → Settings → Access)."
+          "markdownDescription": "Access key for the original Free endpoints connection. Added endpoints use their own keys."
         },
         "simplereach.model": {
           "type": "string",
@@ -167,7 +175,7 @@
         "simplereach.workspaceContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on — toggle it in the sidebar)."
+          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on \u2014 toggle it in the sidebar)."
         },
         "simplereach.contextMaxKb": {
           "type": "number",
@@ -177,7 +185,7 @@
         "simplereach.think": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "WhisperThink — the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the 💭 chip on a reply to peek). Toggle in the sidebar."
+          "markdownDescription": "WhisperThink \u2014 the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the \ud83d\udcad chip on a reply to peek). Toggle in the sidebar."
         },
         "simplereach.thinkModel": {
           "type": "string",
@@ -192,7 +200,7 @@
         "simplereach.webSearch": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Web search — the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
+          "markdownDescription": "Web search \u2014 the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
         },
         "simplereach.searchResults": {
           "type": "number",
@@ -207,7 +215,38 @@
         "simplereach.agentic": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Agentic mode — the model can propose file edits (shown as accept/reject diffs in the chat) using your workspace tree + open files as context."
+          "markdownDescription": "Agentic mode \u2014 the model can propose file edits (shown as accept/reject diffs in the chat) using your workspace tree + open files as context."
+        },
+        "simplereach.provider": {
+          "type": "string",
+          "enum": [
+            "endpoint",
+            "copilot"
+          ],
+          "enumDescriptions": [
+            "Your free OpenAI-compatible endpoints",
+            "The local Microsoft 365 Copilot tray bridge"
+          ],
+          "default": "endpoint",
+          "description": "Provider used by the REACH chat."
+        },
+        "simplereach.trayExecutable": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to the installed SignalREACH executable or AppImage. Leave blank for automatic discovery."
+        },
+        "simplereach.selectedEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "Endpoint chosen under Other providers. Empty selects the original Free endpoints connection."
+        },
+        "simplereach.endpointAccessKeys": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "markdownDescription": "Access keys for added endpoints, indexed by their exact URL. Set each key using the key button beside its endpoint in REACH Settings."
         }
       }
     }

@@ -3,11 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:">
-<title>SignalR.E.A.C.H Copilot</title>
+<title>SignalREACH</title>
 <link rel="stylesheet" href="panel.css">
 </head>
 <body>
 <div id="app">
+  <div class="provider-bar">
+    <label for="provider">Provider</label>
+    <select id="provider"><option value="endpoint">Free model endpoints</option><option value="copilot">Microsoft 365 Copilot</option></select>
+    <label for="endpoint-model" id="model-label">Model</label>
+    <select id="endpoint-model"><option value="">Automatic</option></select>
+  </div>
 
   <!-- shared SVG icon sprites: one consistent stroke style, perfectly aligned -->
   <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -31,19 +37,20 @@
       <div class="mark" aria-hidden="true"></div>
       <div class="home-title">
         <h1>Signal<span>R.E.A.C.H</span></h1>
-        <p>Copilot · invisible browser bridge</p>
+        <p>Free endpoints + Microsoft 365 Copilot</p>
       </div>
       <div id="pill"><span class="dot"></span><span id="pill-text">checking…</span></div>
     </header>
 
     <main class="home-main">
       <div class="card status-card">
-        <div class="kv"><b>Session</b><span id="st-session">—</span></div>
-        <div class="kv"><b>Bridge</b><span id="st-port">—</span></div>
+        <div class="kv"><b>Provider</b><span id="st-session">—</span></div>
+        <div class="kv"><b>Copilot bridge</b><span id="st-port">—</span></div>
         <div class="kv"><b>Window</b><span id="st-visible">—</span></div>
         <div class="kv"><b>Last reply</b><span id="st-last">—</span></div>
       </div>
 
+      <p id="connection-error" role="status"></p>
       <nav class="home-nav">
         <button class="nav-tile" data-goto="chat">
           <span class="tile-ico"><svg><use href="#i-chat"/></svg></span>
@@ -53,7 +60,7 @@
         <button class="nav-tile" data-goto="controls">
           <span class="tile-ico"><svg><use href="#i-sliders"/></svg></span>
           <span class="tile-label">Controls</span>
-          <span class="tile-sub">window · session · test</span>
+          <span class="tile-sub">endpoint · session · test</span>
         </button>
         <button class="nav-tile" id="tile-show-window">
           <span class="tile-ico"><svg><use href="#i-window"/></svg></span>
@@ -70,7 +77,7 @@
 
     <footer>
       <span>home · minichat · controls</span>
-      <a id="btn-quit-home">Quit bridge</a>
+      <a id="btn-quit-home">Quit SignalREACH</a>
     </footer>
   </section>
 
@@ -102,6 +109,13 @@
       <span class="sub-header-spacer"></span>
     </header>
     <main class="controls-main">
+      <div class="card" id="endpoint-settings">
+        <h3>Free model endpoint</h3>
+        <label for="endpoint-url">Base URL or endpoint pointer</label>
+        <input id="endpoint-url" type="url" placeholder="https://your-endpoint/v1" spellcheck="false">
+        <div class="btn-row"><button id="endpoint-save" class="gold">Save and load models</button></div>
+        <p id="endpoint-feedback" role="status"></p>
+      </div>
       <div class="card">
         <h3>Window</h3>
         <div class="btn-row">
@@ -123,7 +137,7 @@
 
       <div class="card">
         <h3>Quick test</h3>
-        <input id="test-input" type="text" value="Reply with exactly: TRAY OK" placeholder="Ask Copilot…">
+        <input id="test-input" type="text" value="Reply with exactly: TRAY OK" placeholder="Ask the selected provider…">
         <div class="btn-row"><button id="btn-test" class="gold"><svg><use href="#i-zap"/></svg><span class="btn-label">Send test</span></button></div>
         <div id="test-out"></div>
       </div>
@@ -134,8 +148,8 @@
       </div>
     </main>
     <footer>
-      <span>invisible browser · tray supervisor</span>
-      <a id="btn-quit">Quit bridge</a>
+      <span>free endpoints · Copilot bridge</span>
+      <a id="btn-quit">Quit SignalREACH</a>
     </footer>
   </section>
 

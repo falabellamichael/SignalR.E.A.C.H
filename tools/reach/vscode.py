@@ -12,7 +12,7 @@ from pathlib import Path
 
 EXT_PUBLISHER = "simplereach"
 EXT_NAME = "simplereach"
-EXT_VERSION = "1.0.0"
+EXT_VERSION = "1.1.0"
 
 EXT_ID = "%s.%s" % (EXT_PUBLISHER, EXT_NAME)
 FOLDER = "%s-%s" % (EXT_ID, EXT_VERSION)
@@ -45,7 +45,7 @@ def install(repo_root, quiet=False, with_playwright=False):
     dst = root / FOLDER
     try:
         dst.mkdir(parents=True, exist_ok=True)
-        for name in ("package.json", "extension.js", "search.js"):
+        for name in ("package.json", "extension.js", "connection.js", "search.js"):
             if (src / name).is_file():
                 shutil.copy2(src / name, dst / name)
         media_src = src / "media"
@@ -108,8 +108,8 @@ def configure_defaults(quiet=False):
                         settings = {}
                 except (OSError, json.JSONDecodeError):
                     settings = {}
-            settings["simplereach.endpoint"] = endpoint
-            settings["simplereach.model"] = "gpt-4o-mini"
+            settings.setdefault("simplereach.endpoint", endpoint)
+            settings.setdefault("simplereach.model", "gpt-4o-mini")
             sp.parent.mkdir(parents=True, exist_ok=True)
             sp.write_text(json.dumps(settings, indent=4), encoding="utf-8")
             if not quiet:

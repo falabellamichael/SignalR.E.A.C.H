@@ -8,6 +8,7 @@
   const log = $('#log');
   const input = $('#input');
   const modelSelect = $('#model');
+  const providerSelect = $('#provider');
   const endpointLine = $('#endpoint');
   const historyPanel = $('#history-panel');
   const historyBtn = $('#history-btn');
@@ -1003,8 +1004,6 @@
   }
 
   const SETTING_FIELDS = [
-    { key: 'endpoint', label: 'Endpoint', type: 'text' },
-    { key: 'accessKey', label: 'Access key', type: 'password' },
     { key: 'model', label: 'Default model', type: 'text' },
     { key: 'maxTokens', label: 'Max tokens', type: 'number', min: 1 },
     { key: 'workspaceContext', label: 'Workspace context', type: 'check' },
@@ -1017,9 +1016,118 @@
     { key: 'playwright', label: 'Playwright fetch', type: 'check' },
   ];
 
+  function updateProviderOptions(cfg) {
+    providerSelect.replaceChildren(new Option('Free endpoints', 'endpoint'));
+    const others = document.createElement('optgroup');
+    others.label = 'Other providers';
+    for (const endpoint of new Set(cfg.additionalEndpoints || [])) {
+      if (endpoint.trim()) others.appendChild(new Option(endpoint, 'endpoint:' + endpoint));
+    }
+    others.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
+    providerSelect.appendChild(others);
+    providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
+  }
+
   function renderSettings() {
     const cfg = configCache || {};
     settingsPanel.innerHTML = '';
+    const endpoints = document.createElement('div');
+    endpoints.className = 'setting-endpoints';
+    const endpointLabel = document.createElement('label');
+    endpointLabel.htmlFor = 'set-endpoint';
+    endpointLabel.textContent = 'Endpoint';
+    endpoints.appendChild(endpointLabel);
+    const endpointRows = document.createElement('div');
+    endpointRows.className = 'endpoint-rows';
+    endpoints.appendChild(endpointRows);
+    let nextEndpointId = 0;
+    const saveAdditional = () => post('setConfig', {
+      key: 'additionalEndpoints',
+      value: Array.from(endpointRows.querySelectorAll('.endpoint-url')).slice(1).map(input => input.value.trim()),
+    });
+    function addEndpoint(value, first = false) {
+      const entry = document.createElement('div');
+      entry.className = 'endpoint-entry';
+      const row = document.createElement('div');
+      row.className = 'setting-row endpoint-row';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'endpoint-url';
+      input.value = value;
+      input.placeholder = 'https://your-endpoint/v1';
+      input.spellcheck = false;
+      input.setAttribute('aria-label', first ? 'Endpoint' : 'Additional endpoint');
+      if (first) {
+        input.id = 'set-endpoint';
+        input.readOnly = true;
+        input.title = 'Free endpoints — locked';
+      }
+      const keyPanel = document.createElement('div');
+      keyPanel.className = 'setting-row endpoint-key-panel';
+      keyPanel.id = 'endpoint-key-panel-' + nextEndpointId++;
+      keyPanel.hidden = true;
+      const keyInput = document.createElement('input');
+      keyInput.type = 'password';
+      keyInput.id = keyPanel.id + '-input';
+      keyInput.autocomplete = 'off';
+      keyInput.spellcheck = false;
+      keyInput.placeholder = 'Access key (optional)';
+      const readKey = () => first ? (configCache?.freeAccessKey || '')
+        : (configCache?.endpointAccessKeys?.[input.value.trim()] || '');
+      keyInput.value = readKey();
+      const keyLabel = document.createElement('label');
+      keyLabel.htmlFor = keyInput.id;
+      keyLabel.textContent = 'Access key';
+      keyInput.addEventListener('change', () => {
+        if (!input.value.trim()) return;
+        post('setConfig', { key: 'endpointAccessKey', endpoint: input.value.trim(), value: keyInput.value });
+      });
+      keyPanel.append(keyLabel, keyInput);
+      const keyButton = document.createElement('button');
+      keyButton.type = 'button';
+      keyButton.className = 'icon-btn endpoint-action endpoint-key-toggle';
+      keyButton.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.5 9.5a4 4 0 1 1 3-3L8 8l1.5 1.5L8 11 6.5 9.5 5 11v2H3v2H1v-3l5.5-5.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="11" cy="3" r=".8" fill="currentColor"/></svg>';
+      keyButton.title = 'Show access key';
+      keyButton.setAttribute('aria-label', 'Show access key');
+      keyButton.setAttribute('aria-expanded', 'false');
+      keyButton.setAttribute('aria-controls', keyPanel.id);
+      keyButton.addEventListener('click', () => {
+        keyPanel.hidden = !keyPanel.hidden;
+        keyInput.type = keyPanel.hidden ? 'password' : 'text';
+        keyButton.title = keyPanel.hidden ? 'Show access key' : 'Hide access key';
+        keyButton.setAttribute('aria-label', keyButton.title);
+        keyButton.setAttribute('aria-expanded', String(!keyPanel.hidden));
+        if (!keyPanel.hidden) keyInput.focus();
+      });
+      if (!first) input.addEventListener('change', () => {
+        // Keys belong to URLs; editing a URL must not send its old key to a new provider.
+        keyInput.value = readKey();
+        saveAdditional();
+      });
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'icon-btn endpoint-action';
+      button.textContent = first ? '+' : '−';
+      button.title = first ? 'Add endpoint' : 'Remove endpoint';
+      button.setAttribute('aria-label', button.title);
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (first) addEndpoint('').focus();
+        else {
+          const next = entry.nextElementSibling || entry.previousElementSibling;
+          entry.remove();
+          saveAdditional();
+          next.querySelector('.endpoint-url').focus();
+        }
+      });
+      row.append(keyButton, input, button);
+      entry.append(row, keyPanel);
+      endpointRows.appendChild(entry);
+      return input;
+    }
+    addEndpoint(cfg.freeEndpoint || cfg.endpoint || '', true);
+    (cfg.additionalEndpoints || []).forEach(value => addEndpoint(value));
+    settingsPanel.appendChild(endpoints);
     SETTING_FIELDS.forEach((f) => {
       const row = document.createElement('div');
       row.className = 'setting-row' + (f.type === 'check' ? ' check' : '');
@@ -1104,8 +1212,8 @@
     renderHistory();
   }
 
-  function clearChat() {
-    if (!clearArmed) {
+  function clearChat(force = false) {
+    if (force !== true && !clearArmed) {
       clearArmed = true;
       clearBtn.classList.add('armed');
       clearBtn.title = 'Click again to confirm';
@@ -1185,6 +1293,7 @@
     }
     busy = false;
     modelSelect.disabled = false;
+    providerSelect.disabled = false;
     modelSelect.title = 'Model';
     $('#send').disabled = false;
     $('#stop').disabled = true;
@@ -1274,6 +1383,7 @@
     startSteps();
     busy = true;
     modelSelect.disabled = true;
+    providerSelect.disabled = true;
     modelSelect.title = 'Model is locked while the AI is responding';
     $('#stop').disabled = false;
     persist();
@@ -1346,6 +1456,7 @@
     switch (msg.type) {
       case 'config':
         configCache = msg;
+        updateProviderOptions(msg);
         if (msg.model) {
           const opt = document.createElement('option');
           opt.value = msg.model;
@@ -1357,13 +1468,19 @@
         setStatus('checking');
         if (msg.endpoint) post('fetchModels');
         break;
-      case 'configSaved':
+      case 'configSaved': {
+        const previousSelection = configCache?.providerSelection || configCache?.provider || 'endpoint';
         configCache = msg.config || configCache;
+        updateProviderOptions(configCache);
+        if (msg.key === 'provider' || previousSelection !== providerSelect.value) { clearChat(true); post('getConfig'); }
         if (msg.config && msg.config.endpoint) endpointLine.textContent = msg.config.endpoint;
         break;
+      }
       case 'models':
+        if ((msg.providerSelection || msg.provider) !== providerSelect.value) break;
         endpointLine.textContent = msg.endpoint || endpointLine.textContent;
         setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null);
+        if (conv && !msg.models.includes(conv.model)) { conv.model = modelSelect.value; persist(); updateModelChip(); }
         break;
       case 'delta':
         if (!pendingBubble) {
@@ -1707,6 +1824,9 @@
     }
   });
   clearBtn.addEventListener('click', clearChat);
+  providerSelect.addEventListener('change', () => {
+    if (!busy) post('setConfig', { key: 'provider', value: providerSelect.value });
+  });
   modelSelect.addEventListener('change', () => {
     if (busy) return; // locked while the AI is responding
     if (conv) { conv.model = modelSelect.value; persist(); }

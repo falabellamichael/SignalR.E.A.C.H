@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .config import BAT_PATH, CONFIG_DIR
 from .publish import find_gh
+from .tray import electron_binary, tray_dir
 from .runtime import (
     no_window_kwargs,
     resolve_interpreter,
@@ -63,9 +64,8 @@ def register_autostart():
         lines.append("rem --- Copilot 365 shim (:21301) ---")
         lines.append("start \"\" /min \"%s\" \"%s\""
                      % (resolve_pythonw(), shim_py))
-    tray_electron = (CONFIG_DIR / "copilot" / "tray" / "node_modules"
-                     / "electron" / "dist" / "electron.exe")
-    tray_main = CONFIG_DIR / "copilot" / "tray" / "main.js"
+    tray_electron = electron_binary(tray_dir())
+    tray_main = tray_dir() / "main.js"
     if tray_electron.is_file() and tray_main.is_file():
         lines.append("rem --- Copilot 365 tray (invisible browser + bridge :21302) ---")
         lines.append("start \"\" /min \"%s\" \"%s\""

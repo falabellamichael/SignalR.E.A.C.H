@@ -1,17 +1,53 @@
 {
   "name": "signalreach-copilot-tray",
-  "version": "1.0.0",
-  "description": "SignalR.E.A.C.H Copilot tray — invisible browser + system tray supervisor for the M365 Copilot bridge",
+  "version": "1.1.0",
+  "description": "SignalREACH desktop tray for free model endpoints and Microsoft 365 Copilot",
   "main": "main.js",
   "private": true,
   "scripts": {
     "start": "electron .",
-    "gen-icon": "node gen-icon.mjs"
+    "gen-icon": "node gen-icon.mjs",
+    "dist": "electron-builder --publish never"
   },
   "devDependencies": {
-    "electron": "30.5.1"
+    "electron": "30.5.1",
+    "electron-builder": "26.15.3"
   },
   "allowScripts": {
     "electron@30.5.1": true
+  },
+  "build": {
+    "appId": "com.signalreach.tray",
+    "productName": "SignalREACH",
+    "files": [
+      "main.js",
+      "endpoint.js",
+      "bridge.js",
+      "preload.js",
+      "panel.html",
+      "panel.js",
+      "panel.css",
+      "tray-icon.png",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "notarize": false
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility"
+    }
   }
 }
