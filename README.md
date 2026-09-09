@@ -4,7 +4,7 @@
 
 A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint with **unlimited gpt-4o for everyone**. No API key, no quotas, no signup. Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
 
-The plugin installs a full **control panel** into SimpleRAG's app bar — a menu panel with seven pages: **Dashboard, Endpoint, Models, Usage, Logs, Settings, About** — plus a dependency-free relay server, hosting tunnel, and a pointer URL that always resolves the live endpoint.
+The plugin installs a full **control panel** into SimpleRAG's app bar — a menu panel with eight pages: **Dashboard, Browser, Endpoint, Models, Usage, Logs, Settings, About** — plus a dependency-free relay server, hosting tunnel, and a pointer URL that always resolves the live endpoint.
 
 | | |
 |---|---|
@@ -13,7 +13,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
-| **Version** | 26.9.1 <!-- x-release-please-version --> |
+| **Version** | 26.9.2 <!-- x-release-please-version --> |
 
 ## Use the endpoint
 
@@ -165,12 +165,29 @@ and `python -m unittest discover -s tests` from the repository root.
 | Page | What it does |
 |---|---|
 | **Dashboard** | Live health: requests/tokens/errors today, avg + p95 latency, public URL, relay + upstream status, circuit state, quick actions (publish, clear log, refresh) |
+| **Browser** | Interactive webpages and a separate Reader, up to eight research tabs, back/forward history, bookmarks, find, saved excerpts with source links, and context added to the SimpleRAG chat draft |
 | **Endpoint** | Base URL, one-click **Add to SimpleRAG**, route table, curl/Python/JS/SimpleRAG snippets (auto-filled with the live URL) |
 | **Models** | Alias table (public → upstream), enable/disable toggles, add/remove aliases — applied instantly |
 | **Usage** | 24h request + token charts, by-model breakdown, top clients, error rate — auto-refreshes |
 | **Logs** | Recent request log (IP, model, status, latency, tokens, error), filters, clear |
 | **Settings** | The full endpoint suite — ten sections: Relay, Upstream & failover, Request handling, **Models (per-alias editors)**, Rate limits, Access & security, Caching, Observability, Hosting, System. Export/import/reset included. |
 | **About** | Backronym, architecture, facts, privacy notes |
+
+### Research browser
+
+Open **SimpleRAG → Advanced → REACH → Browser** to browse public HTTP/HTTPS pages alongside your workspace. **Browser** mode runs a separate Chromium browser using the Electron runtime already bundled with SignalREACH. Websites can run JavaScript, render their normal images and styles, and respond to typing, clicks, and scrolling. The extension displays the locally rendered page and forwards your input through the local relay; website code runs in the separate browser process, outside the SimpleRAG page. The compact toolbar and fixed browser pane keep wide and long pages scrolling inside the webpage. Research starts collapsed and has its own scrolling area when opened.
+
+**Reader** remains available as a separate, script-free reading view. Its pages are fetched through `POST /_reach/browser/fetch`; supported images and stylesheets use `POST /_reach/browser/resource`, with public-address, redirect, size, and type checks. Save excerpts with their source links and add context to the existing SimpleRAG chat draft. Adding context preserves your draft and leaves it for you to review and send. The interactive browser uses its own browser session rather than your external browser's signed-in sessions. Private/local network URLs remain unavailable.
+
+The engine is packaged under `%LOCALAPPDATA%\SignalREACH\server\browser-engine\` and reuses `%LOCALAPPDATA%\SignalREACH\copilot\tray\node_modules\electron\dist\electron.exe`; there is no additional browser download when that bundled runtime is installed. To update only the SimpleRAG extension and relay while preserving the existing tray, relay settings, VS Code extension, tunnel, and published endpoint, run:
+
+```powershell
+python tools/reach.py install --extension-only
+```
+
+This scoped upgrade checks that the existing relay configuration and bundled Electron runtime are present before changing the installation. A normal full installation deploys the runtime from `copilot/tray` when it is available in the checkout. If Electron is missing there, run `npm install` in `copilot/tray` before the full installation. All browser files belong to SignalREACH; SimpleRAG source files are not modified.
+
+To test the Browser without installing or changing SimpleRAG, run `python -B tests/browser_preview.py` from this repository and open `http://127.0.0.1:21887`. Browser mode uses the real engine and public websites; Reader mode also offers the clearly labeled fixture URLs for navigation, page isolation, saved excerpts, and the draft-only chat handoff. Backend regression tests: `python -B -m unittest tests.test_browser -v`.
 
 ### Per-model settings (the Models section)
 
@@ -184,6 +201,7 @@ Every alias carries its own spec: upstream id, enabled/public visibility, descri
 
 ```bash
 python tools/reach.py install [--no-start] [--no-restart] [--tunnel ngrok|cloudflared|none]
+python tools/reach.py install --extension-only # existing install: preserve other components/settings
 python tools/reach.py status                 # relay + tunnel + public URL
 python tools/reach.py start|stop|restart     # manage relay + tunnel
 python tools/reach.py publish                # push current URL to the pointer gist

@@ -1,0 +1,88 @@
+/* Browser styles remain inside REACH; iframe documents own their page styles. */
+#settings-container:has(.reach-browser) { overflow: hidden; min-height: 0; }
+.reach-page.reach-panel3:has(> .reach-browser-host) { padding: 0; min-height: 0; overflow: hidden; }
+.reach-content.reach-browser-host { padding: 0 !important; max-height: none; min-height: 0; overflow: hidden !important; }
+.reach-browser { container-type: inline-size; display: flex; flex-direction: column; height: calc(100dvh - 160px); width: 100%; min-width: 0; min-height: 0; overflow: hidden; --browser-line: rgba(128,128,128,.25); --browser-panel-bg: #1c242e; }
+.reach-browser button, .reach-browser input, .reach-browser textarea { font: inherit; color: inherit; }
+.reach-browser button { border: 1px solid transparent; border-radius: 6px; background: transparent; cursor: pointer; padding: 6px 9px; font-size: 12px; line-height: 1.4; }
+.reach-browser button:hover:not(:disabled) { background: var(--reach-accent-bg); }
+.reach-browser button:disabled { opacity: .4; cursor: default; }
+.reach-browser :is(button,input,textarea):focus-visible { outline: 2px solid var(--reach-accent); outline-offset: 2px; }
+.reach-browser-heading { display: flex; flex: 0 0 24px; align-items: center; justify-content: space-between; padding: 0 7px 3px; gap: 8px; }
+.reach-browser-eyebrow { display: none; }
+.reach-browser-heading h1 { margin: 0; font-size: 12px; letter-spacing: 0; line-height: 1.15; }
+.reach-browser-heading-note { font-size: 11px; opacity: .65; }
+.reach-browser-chrome { flex: 0 0 auto; border: 1px solid var(--browser-line); border-radius: 7px 7px 0 0; overflow: hidden; background: rgba(128,128,128,.055); }
+.reach-browser-tabrow { display: flex; height: 30px; align-items: center; padding: 2px 4px 0; background: rgba(128,128,128,.08); gap: 3px; }
+.reach-browser-tabrow > button { flex: 0 0 30px; font-size: 19px; }
+.reach-browser-tabs { display: flex; flex: 1; min-width: 0; overflow-x: auto; gap: 4px; scrollbar-width: thin; }
+.reach-browser-tab { display: flex; align-items: center; min-width: 110px; max-width: 200px; border-radius: 7px 7px 0 0; border: 1px solid transparent; border-bottom: 0; }
+.reach-browser-tab.is-active { background: var(--reach-accent-bg); border-color: var(--reach-accent-border); box-shadow: inset 0 2px var(--reach-accent); }
+.reach-browser-tab > [role=tab] { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; flex: 1; padding: 5px 8px; font-size: 11px; }
+.reach-browser .reach-browser-close-tab { font-size: 16px; padding: 3px 7px; }
+.reach-browser-toolbar { display: flex; align-items: center; gap: 3px; padding: 4px 6px; margin: 0; }
+.reach-browser-toolbar > button { flex: 0 0 auto; font-size: 17px; min-width: 29px; }
+.reach-browser-toolbar .reach-browser-go { font-size: 11px; font-weight: 700; }
+.reach-browser .reach-browser-address { flex: 1; min-width: 40px; width: 0; height: 28px; padding: 4px 8px; border: 1px solid var(--browser-line); background: rgba(128,128,128,.07); border-radius: 5px; font-size: 12px; }
+.reach-browser-bookmarks { display: flex; align-items: center; gap: 4px; overflow-x: auto; padding: 0 8px 3px; min-height: 22px; max-height: 32px; scrollbar-width: thin; }
+.reach-browser-bookmarks:not(:has(.reach-browser-bookmark)) { display: none; }
+.reach-browser-bookmarks > span { font-size: 10px; opacity: .6; }
+.reach-browser-bookmarks > .reach-browser-bookmark { display: inline-flex; flex: 0 0 auto; opacity: 1; gap: 1px; }
+.reach-browser-bookmarks button { white-space: nowrap; max-width: 180px; text-overflow: ellipsis; overflow: hidden; font-size: 10px; padding: 3px 7px; border-color: var(--browser-line); }
+.reach-browser-viewbar { display: flex; align-items: center; gap: 4px; padding: 2px 6px; border-top: 1px solid var(--browser-line); }
+.reach-browser-viewbar button { font-size: 10px; }
+.reach-browser-viewmodes { display: flex; gap: 2px; margin-right: auto; }
+.reach-browser-viewmodes button[aria-pressed=true] { background: var(--reach-accent-bg); color: var(--reach-accent); border-color: var(--reach-accent-border); }
+.reach-browser [data-count=clips] { padding: 1px 5px; border-radius: 4px; background: rgba(128,128,128,.17); margin-left: 3px; }
+.reach-browser-status { padding: 2px 8px; font-size: 10px; opacity: .75; border-top: 1px solid var(--browser-line); white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.reach-browser-find { display: flex; align-items: center; gap: 5px; padding: 5px 12px 8px; }
+.reach-browser-find input { min-width: 60px; flex: 1; max-width: 260px; border: 1px solid var(--browser-line); border-radius: 5px; background: transparent; padding: 5px 8px; font-size: 12px; }
+.reach-browser-match { font-size: 10px; margin-right: auto; white-space: nowrap; }
+.reach-browser-body { position: relative; flex: 1 1 0%; display: grid; grid-template-columns: minmax(0,1fr) 240px; grid-template-rows: minmax(0,1fr); min-height: 0; border: 1px solid var(--browser-line); border-top: 0; border-radius: 0 0 7px 7px; overflow: hidden; }
+.reach-browser-document { min-width: 0; min-height: 0; overflow: hidden; position: relative; background: rgba(128,128,128,.025); }
+.reach-browser-frame { width: 100%; height: 100%; min-height: 0; border: 0; display: block; }
+.reach-browser-live { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; outline-offset: -2px; }
+.reach-browser-live[hidden] { display: none; }
+.reach-browser-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; padding: 20px; min-height: 0; overflow: auto; }
+.reach-browser-empty-icon { display: grid; place-items: center; width: 56px; height: 56px; font-size: 34px; border-radius: 16px; color: var(--reach-accent); background: var(--reach-accent-bg); border: 1px solid var(--reach-accent-border); }
+.reach-browser-empty h2 { font-size: 20px; letter-spacing: -.025em; font-weight: 650; max-width: 340px; margin: 22px 0 9px; }
+.reach-browser-empty p { font-size: 12px; line-height: 1.7; opacity: .65; max-width: 310px; margin: 0 0 17px; overflow-wrap: anywhere; }
+.reach-browser-research { padding: 12px; border-left: 1px solid var(--browser-line); background: rgba(128,128,128,.035); min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.reach-browser-research-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.reach-browser-research h2 { font-size: 14px; margin: 0; }
+.reach-browser-local { font-size: 9px; opacity: .6; white-space: nowrap; }
+.reach-browser-research h3 { font-size: 12px; margin: 0; font-weight: 650; }
+.reach-browser-research p { font-size: 11px; line-height: 1.6; opacity: .65; margin: 7px 0 10px; }
+.reach-browser-context { display: flex; flex-direction: column; gap: 5px; }
+.reach-browser-context textarea { resize: vertical; min-height: 78px; max-height: 260px; width: 100%; padding: 10px; border-radius: 7px; border: 1px solid var(--browser-line); font-size: 12px; line-height: 1.5; background: rgba(128,128,128,.045); }
+.reach-browser .reach-browser-primary { background: var(--reach-accent); color: var(--reach-accent-text); font-weight: 700; border-color: var(--reach-accent); padding: 8px 12px; }
+.reach-browser .reach-browser-primary:hover:not(:disabled) { background: var(--reach-accent-hover); }
+.reach-browser-clips-section { margin-top: 20px; border-top: 1px solid var(--browser-line); padding-top: 15px; }
+.reach-browser-clips-head { display: flex; align-items: center; justify-content: space-between; gap: 5px; }
+.reach-browser-clips-head button { font-size: 10px; padding: 3px 5px; }
+.reach-browser [data-action=clip] { border: 1px solid var(--browser-line); width: 100%; font-size: 11px; }
+.reach-browser-clips { display: flex; flex-direction: column; gap: 9px; margin-top: 13px; }
+.reach-browser-clip { padding: 10px; border: 1px solid var(--browser-line); border-radius: 7px; background: rgba(128,128,128,.045); }
+.reach-browser-clip blockquote { margin: 0 0 9px; font-size: 11px; line-height: 1.6; max-height: 160px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.reach-browser .reach-browser-clip-source { padding: 0; color: var(--reach-accent); font-size: 10px; text-align: left; overflow-wrap: anywhere; }
+.reach-browser-clip-actions { display: flex; gap: 6px; margin-top: 7px; }
+.reach-browser-clip-actions button { font-size: 9px; padding: 2px 5px; border-color: var(--browser-line); }
+.reach-browser-research-hidden .reach-browser-body { grid-template-columns: minmax(0,1fr); }
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-browser :is(.reach-browser-eyebrow,.reach-browser-clip-source,.reach-browser-viewmodes button[aria-pressed=true]) {
+    color: #825600;
+    color: color-mix(in srgb, var(--reach-accent) 45%, #172433);
+}
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-browser { --browser-panel-bg: #f4eee4; }
+@container (max-width: 740px) {
+    .reach-browser-body { grid-template-columns: minmax(0,1fr); }
+    .reach-browser-research { position: absolute; inset: 0 0 0 auto; z-index: 2; width: min(280px,88%); background: var(--browser-panel-bg); box-shadow: -6px 0 20px #0002; }
+}
+@container (max-width: 440px) {
+    .reach-browser-heading-note { display: none; }
+    .reach-browser-toolbar { flex-wrap: wrap; gap: 1px; padding: 7px 4px; }
+    .reach-browser-toolbar > button { min-width: 25px; padding: 4px 5px; }
+    .reach-browser-viewbar { flex-wrap: wrap; padding: 5px; }
+    .reach-browser-viewbar button { padding: 5px; }
+    .reach-browser-empty { padding: 28px 18px; }
+    .reach-browser-empty h2 { font-size: 19px; }
+}

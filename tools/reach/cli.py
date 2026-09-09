@@ -141,6 +141,17 @@ def cmd_install(args):
                          "checkout (src/ missing)")
     print("SignalR.E.A.C.H installer — REACH: RAG Endpoint & AI Chat Host")
     print("repo: " + REPO_URL)
+    extension_only = getattr(args, "extension_only", False)
+    installed_electron = (CONFIG_DIR / "copilot" / "tray" / "node_modules"
+                          / "electron" / "dist" / "electron.exe")
+    engine_src = REPO_ROOT / "server" / "browser-engine"
+    if not (engine_src / "main.cjs").is_file():
+        raise SystemExit("error: browser engine missing from checkout")
+    if extension_only and (not installed_electron.is_file()
+                           or not CONFIG_PATH.is_file()):
+        raise SystemExit("error: --extension-only requires an existing relay "
+                         "installation and its bundled Electron runtime; "
+                         "run a full install first")
     # 1. plugin page -> local-extension registry (never touches SimpleRAG files)
     plugin = load_plugin_manifest()
     version = plugin["version"]
@@ -183,36 +194,44 @@ def cmd_install(args):
     shutil.copytree(REPO_ROOT / "server" / "reachd",
                     CONFIG_DIR / "server" / "reachd",
                     dirs_exist_ok=True, ignore=ignore)
+    shutil.copytree(engine_src, CONFIG_DIR / "server" / "browser-engine",
+                    dirs_exist_ok=True, ignore=ignore)
     shutil.copy2(REPO_ROOT / "tools" / "reach.py",
                  CONFIG_DIR / "tools" / "reach.py")
     shutil.copytree(REPO_ROOT / "tools" / "reach",
                     CONFIG_DIR / "tools" / "reach",
                     dirs_exist_ok=True, ignore=ignore)
-    cfg = load_config()
-    if not cfg.get("omniroute_key"):
-        key = find_omniroute_key()
-        if key:
-            cfg["omniroute_key"] = key
-            print("  OmniRoute key auto-detected (%s)" % mask_key(key))
-        else:
-            print("  warning: no OmniRoute key found in ~/.omniroute — add "
-                  "omniroute_key to config.json manually")
-    cfg.setdefault("omniroute_url", "http://127.0.0.1:20128/v1")
-    cfg.setdefault("port", DEFAULT_PORT)
-    cfg.setdefault("host", "127.0.0.1")
-    cfg.setdefault("tunnel", args.tunnel if args.tunnel != "none" else "ngrok")
-    save_config(cfg)
+    if not extension_only:
+        cfg = load_config()
+        if not cfg.get("omniroute_key"):
+            key = find_omniroute_key()
+            if key:
+                cfg["omniroute_key"] = key
+                print("  OmniRoute key auto-detected (%s)" % mask_key(key))
+            else:
+                print("  warning: no OmniRoute key found in ~/.omniroute — add "
+                      "omniroute_key to config.json manually")
+        cfg.setdefault("omniroute_url", "http://127.0.0.1:20128/v1")
+        cfg.setdefault("port", DEFAULT_PORT)
+        cfg.setdefault("host", "127.0.0.1")
+        cfg.setdefault("tunnel", args.tunnel if args.tunnel != "none" else "ngrok")
+        save_config(cfg)
     print("  runtime + config -> " + str(CONFIG_DIR))
 
     # The runtime layout differs between Electron's three desktop platforms.
     tray_source = REPO_ROOT / 'copilot' / 'tray'
-    if electron_binary(tray_source).is_file():
+    if not extension_only and electron_binary(tray_source).is_file():
         install_tray(REPO_ROOT)
-    elif tray_source.is_dir():
+    elif not extension_only and tray_source.is_dir():
         print('  Tray optional: cd copilot/tray && npm install; then run python tools/reach.py tray install')
+    if installed_electron.is_file():
+        print("  interactive browser engine ready (bundled Electron)")
+    else:
+        print("  note: interactive browsing needs the bundled Electron runtime; "
+              "Reader remains available")
 
     # 2.5 VS Code extension (side-load; skipped with --no-vscode)
-    if not getattr(args, "no_vscode", False):
+    if not extension_only and not getattr(args, "no_vscode", False):
         vscode_install(REPO_ROOT)
 
     # 3. (re)start + host + publish
@@ -222,16 +241,17 @@ def cmd_install(args):
             stop_server()
             time.sleep(1)
         start_server()
-        if args.tunnel != "none":
+        if not extension_only and args.tunnel != "none":
             start_tunnel(args.tunnel, runtime_port())
-        if not args.no_publish:
+        if not extension_only and not args.no_publish:
             publish()
     print()
     print("Done. Local endpoint: http://127.0.0.1:%d/v1" % runtime_port())
     print("Endpoint pointer:  " + GIST_RAW)
     print("Plugin page: open SimpleRAG -> Advanced -> REACH (app bar).")
-    print("VS Code: reload the window (Ctrl+Shift+P -> Reload Window), "
-          "then click the REACH icon in the Activity Bar.")
+    if not extension_only and not getattr(args, "no_vscode", False):
+        print("VS Code: reload the window (Ctrl+Shift+P -> Reload Window), "
+              "then click the REACH icon in the Activity Bar.")
     print("Run `python tools/reach.py register-autostart` to survive reboots.")
 
 
@@ -474,6 +494,10 @@ def main():
     p_install.add_argument("--no-publish", action="store_true")
     p_install.add_argument("--no-vscode", action="store_true",
                            help="skip the VS Code extension install")
+    p_install.add_argument("--extension-only", action="store_true",
+                           help="update the SimpleRAG extension and relay only; "
+                           "reuse Electron and preserve settings, tray, VS Code, "
+                           "tunnel, and publication")
     p_install.add_argument("--extension-home", default=None)
     p_install.set_defaults(func=cmd_install, restart=True)
 

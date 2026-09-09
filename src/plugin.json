@@ -3,7 +3,7 @@
   "id": "signal-reach",
   "name": "SignalR.E.A.C.H",
   "version": "26.9.1",
-  "description": "REACH — RAG Endpoint & AI Chat Host. A full control panel for the hosted OpenAI-compatible endpoint (unlimited gpt-4o, no key): live dashboard, endpoint docs with one-click SimpleRAG hookup, model aliases with per-model tuning, usage analytics, request logs, and a complete settings suite — relay, request policy, per-model editors, rate limits, access lists, caching, failover, observability, hosting, system.",
+  "description": "REACH — RAG Endpoint & AI Chat Host. A full control panel for the hosted OpenAI-compatible endpoint (unlimited gpt-4o, no key): live dashboard, research browser with tabs and saved excerpts, endpoint docs with one-click SimpleRAG hookup, model aliases with per-model tuning, usage analytics, request logs, and a complete settings suite — relay, request policy, per-model editors, rate limits, access lists, caching, failover, observability, hosting, system.",
   "publisher": {
     "name": "Michael Anthony Falabella"
   },
@@ -11,7 +11,7 @@
   "permissions": [
     {
       "id": "ui.page",
-      "reason": "Contributes one dedicated app-bar page with a menu panel: Dashboard, Endpoint, Models, Usage, Logs, Settings, About.",
+      "reason": "Contributes one dedicated app-bar page with a menu panel: Dashboard, Browser, Endpoint, Models, Usage, Logs, Settings, About.",
       "required": true
     }
   ],

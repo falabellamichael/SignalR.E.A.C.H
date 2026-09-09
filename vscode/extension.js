@@ -10,6 +10,7 @@ const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { webSearchDdg, searchAndFetch, pageText, browsePage, disposeBrowser, refreshPlaywright, hasPlaywright } = require('./search');
+const { startPageProxy, pageProxyUrl, stopPageProxy } = require('./browser-proxy');
 
 const { locateEdit, repairWindow } = require('./edits');
 const { compactMessages, contextChars } = require('./context');
@@ -1512,20 +1513,26 @@ function activate(context) {
   };
 
   const browserGo = async (url, push) => {
-    const res = await fetchPageHtml(url);
     if (!browserPanel) return;
-    if (!res.ok) {
-      browserPost('pageError', { url, error: res.error });
+    // Serve the page through the local same-origin proxy so module scripts and
+    // API calls work; the proxy injects the capture script that keeps the
+    // right-click "Add element to chat (REACH)" working on real pages.
+    let proxyUrl = '';
+    try {
+      await startPageProxy();
+      proxyUrl = pageProxyUrl(url);
+    } catch (e) {
+      browserPost('pageError', { url, error: 'page proxy failed: ' + String((e && e.message) || e) });
       return;
     }
     if (push) {
       browserState.history = browserState.history.slice(0, browserState.index + 1);
-      browserState.history.push({ url: res.url, title: res.title });
+      browserState.history.push({ url, title: url });
       browserState.index = browserState.history.length - 1;
     }
-    browserPanel.title = 'REACH Browser — ' + res.title.slice(0, 40);
+    browserPanel.title = 'REACH Browser — ' + String(url).slice(0, 40);
     browserPost('page', {
-      url: res.url, title: res.title, html: res.html,
+      url, proxyUrl, title: url,
       canBack: browserState.index > 0,
       canForward: browserState.index < browserState.history.length - 1,
     });
@@ -1589,6 +1596,11 @@ function activate(context) {
         case 'addElement':
           reachBrowserAddElement(msg);
           break;
+        case 'pageTitle':
+          if (browserPanel && msg && String(msg.title || '').trim()) {
+            browserPanel.title = 'REACH Browser ΓÇö ' + String(msg.title).slice(0, 40);
+          }
+          break;
         case 'installBrowser':
           browserPost('installProgress', { stage: 'npm', line: 'Starting…' });
           {
@@ -1636,8 +1648,10 @@ function activate(context) {
 }
 
 function deactivate() {
-  // Close the shared headless browser so no Chromium lingers after reload.
+  // Close the shared headless browser and the page proxy so no Chromium or
+  // proxy listener lingers after reload.
   disposeBrowser().catch(() => {});
+  stopPageProxy();
 }
 
 module.exports = { activate, deactivate };

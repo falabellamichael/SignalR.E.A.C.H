@@ -1,6 +1,6 @@
 /*
- * SimpleREACH pages — assembly of the seven REACH panel renderers.
- * Exposes window.__reachPages: {dashboard, endpoint, models, usage, logs,
+ * SimpleREACH pages — assembly of the eight REACH panel renderers.
+ * Exposes window.__reachPages: {dashboard, browser, endpoint, models, usage, logs,
  * settings, about}. Each render(container) returns a cleanup function.
  *
  * Renderers live in one file per page (pages-<id>.js) and register
@@ -19,6 +19,7 @@
 
     const PAGE_DEFS = [
         { id: 'dashboard', icon: 'fa-gauge-high', label: 'Dashboard' },
+        { id: 'browser', icon: 'fa-globe', label: 'Browser' },
         { id: 'endpoint', icon: 'fa-link', label: 'Endpoint' },
         { id: 'models', icon: 'fa-cubes', label: 'Models' },
         { id: 'usage', icon: 'fa-chart-column', label: 'Usage' },
@@ -53,6 +54,7 @@
     window.__reachPages = Object.freeze({
         defs: PAGE_DEFS,
         dashboard: registry.dashboard,
+        browser: registry.browser,
         endpoint: registry.endpoint,
         models: registry.models,
         usage: registry.usage,
