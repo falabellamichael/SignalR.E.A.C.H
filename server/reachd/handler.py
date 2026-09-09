@@ -5,6 +5,8 @@ import hmac
 import ipaddress
 import json
 import os
+import re
+import secrets
 import socket
 import subprocess
 import time
@@ -14,6 +16,8 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import reachd.core as core  # core.STATE is read at call time (cycle-safe)
+from reachd.browser import BrowserError, fetch_page
+from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
 from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
 from reachd.publish import publish_url
@@ -410,7 +414,16 @@ class RelayHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         try:
-            if path == "/_reach/public-url":
+            if path == "/_reach/browser/engine":
+                self.handle_browser_engine()
+            elif path in ("/_reach/browser/fetch", "/_reach/browser/resource"):
+                # This network capability is local-only, even with a valid
+                # remote admin token. Tunnel requests carry forwarding headers.
+                if not self._admin_local():
+                    return self._json(403, {"error": {"message": "The browser requires a direct local connection.",
+                                                      "type": "forbidden"}})
+                self.handle_browser_fetch(resource=path.endswith("/resource"))
+            elif path == "/_reach/public-url":
                 if not self._require_admin():
                     return
                 self.handle_public_url_override()
@@ -465,6 +478,108 @@ class RelayHandler(BaseHTTPRequestHandler):
                 pass
 
     # ------------------------------------------------------------- admin routes
+    def handle_browser_engine(self):
+        headers = {"Cache-Control": "no-store"}
+        if not self._admin_local() or not allowed_origin(self.headers.get("Origin")):
+            self.close_connection = True
+            return self._json(403, {"error": {"message": "The interactive browser requires a direct local application connection.",
+                                              "type": "forbidden", "code": "engine_forbidden"}}, headers)
+        if (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower() != "application/json":
+            self.close_connection = True
+            return self._json(415, {"error": {"message": "Send browser commands as application/json.",
+                                              "type": "browser_error", "code": "invalid_request"}}, headers)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if not 0 < length <= BROWSER_ENGINE_MAX_BODY:
+                self.close_connection = True
+                raise BrowserError("Browser command is empty or too large.", code="invalid_request")
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            result = BROWSER_ENGINE.request(body)
+        except BrowserError as exc:
+            return self._json(exc.status, {"error": {"message": str(exc), "type": "browser_error", "code": exc.code}}, headers)
+        except (ValueError, UnicodeError):
+            self.close_connection = True
+            return self._json(400, {"error": {"message": "Send a valid JSON browser command.",
+                                              "type": "browser_error", "code": "invalid_request"}}, headers)
+        self._json(200, result, headers)
+
+    @staticmethod
+    def _looks_script_shell(result):
+        """JS-rendered pages come back as bare shells from a script-free fetch
+        (Vite/React: <div id=root> + <script type=module>), which the Reader
+        would show blank. Rendering them with the engine fixes that."""
+        html = (result or {}).get("html") or ""
+        text = ((result or {}).get("text") or "").strip()
+        if len(text) < 200:
+            return True
+        return bool(re.search(r'<script[^>]+type\s*=\s*["\']module', html, re.I))
+
+    def _browser_engine_render(self, url, timeout_ms=15000):
+        """One-shot: load `url` in the interactive engine and return a rendered
+        DOM snapshot (html + text) so script-heavy pages aren't blank."""
+        session = BROWSER_ENGINE.request({"action": "session"})
+        token = session["token"]
+        tab = secrets.token_hex(8)
+        try:
+            BROWSER_ENGINE.request({"action": "create", "tab": tab, "token": token,
+                                    "url": url, "width": 1280, "height": 900})
+            deadline = time.monotonic() + timeout_ms / 1000.0
+            while time.monotonic() < deadline:
+                state = BROWSER_ENGINE.request({"action": "frame", "tab": tab,
+                                                "token": token, "since": 0})
+                if not state.get("loading"):
+                    break
+                time.sleep(0.25)
+            snap = BROWSER_ENGINE.request({"action": "snapshot", "tab": tab, "token": token})
+            rendered_url = snap.get("url") or url
+            html = snap.get("html") or ""
+            text = (snap.get("text") or "").strip()
+            return {"url": rendered_url,
+                    "title": (snap.get("title") or rendered_url)[:200],
+                    "html": html[:2_000_000],
+                    "text": text[:160_000],
+                    "content_type": "text/html",
+                    "truncated": False,
+                    "rendered": True}
+        finally:
+            try:
+                BROWSER_ENGINE.request({"action": "close", "tab": tab, "token": token})
+            except BrowserError:
+                pass
+
+    def handle_browser_fetch(self, resource=False):
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0 or length > 16 * 1024:
+                self.close_connection = True
+                raise BrowserError("Send a JSON object containing a page URL (maximum 16 KB).")
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(body, dict):
+                raise BrowserError("Send a JSON object containing a page URL.")
+            if resource:
+                if body.get("kind") not in ("image", "style"):
+                    raise BrowserError("Request an image or stylesheet.")
+                result = fetch_page(body.get("url"), kind=body["kind"])
+            else:
+                result = fetch_page(body.get("url"))
+                # Script-rendered pages (Vite/React/etc.) come back as bare
+                # shells; render them with the engine so the Reader shows the
+                # real page instead of a blank frame.
+                if self._looks_script_shell(result):
+                    try:
+                        rendered = self._browser_engine_render(body.get("url"))
+                        if rendered and (rendered.get("text") or "").strip():
+                            result = rendered
+                    except (BrowserError, Exception):
+                        pass  # keep the raw snapshot; the page still opens
+        except BrowserError as exc:
+            return self._json(exc.status, {"error": {"message": str(exc),
+                                                    "type": "browser_error", "code": exc.code}})
+        except (ValueError, UnicodeError):
+            return self._json(400, {"error": {"message": "Send valid JSON containing a page URL.",
+                                            "type": "browser_error", "code": "invalid_request"}})
+        self._json(200, result, {"Cache-Control": "no-store"})
+
     def handle_create_key(self):
         raw = self._read_body()
         try:

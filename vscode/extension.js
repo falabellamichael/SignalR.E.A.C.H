@@ -4,12 +4,17 @@
  * the webview only renders. Streaming is relayed as postMessage deltas.
  */
 const vscode = require('vscode');
+const { attachAgentBridge } = require('./agent-bridge');
+const { isSensitivePath } = require('./ide-context');
+const excludeAutoContext = uri => isSensitivePath(uri.fsPath || uri.path)
+  || /(?:^|[\\/])(?:settings\.json|[^\\/]+\.code-workspace)$|[\\/]\.git[\\/]config$/i.test(uri.fsPath || uri.path);
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
 const { webSearchDdg, searchAndFetch, pageText, browsePage, disposeBrowser, refreshPlaywright, hasPlaywright } = require('./search');
+const { startPageProxy, pageProxyUrl, stopPageProxy } = require('./browser-proxy');
 
 const { locateEdit, repairWindow } = require('./edits');
 const { compactMessages, contextChars } = require('./context');
@@ -233,6 +238,8 @@ function config() {
 /* ---------- workspace context gathering ---------- */
 
 const TREE_EXCLUDES = [
+  '**/.env', '**/.env.*', '**/.npmrc', '**/.pypirc', '**/.netrc', '**/*.{pem,key,pfx,p12,keystore}',
+  '**/.ssh/**', '**/.aws/**', '**/credentials*', '**/secrets*', '**/settings.json', '**/*.code-workspace',
   '**/node_modules/**', '**/.git/**', '**/dist/**', '**/out/**',
   '**/build/**', '**/.next/**', '**/.venv/**', '**/venv/**',
   '**/__pycache__/**', '**/*.min.js', '**/*.map', '**/*.lock',
@@ -262,7 +269,7 @@ function openTextDocuments() {
   const seen = new Set();
   const active = vscode.window.activeTextEditor
     && vscode.window.activeTextEditor.document;
-  if (active && !active.isUntitled) {
+  if (active && !active.isUntitled && !excludeAutoContext(active.uri)) {
     docs.push(active);
     seen.add(active.uri.toString());
   }
@@ -271,7 +278,7 @@ function openTextDocuments() {
       if (!(tab.input instanceof vscode.TabInputText)) continue;
       const doc = tab.input.uri && vscode.workspace.textDocuments.find(
         (d) => d.uri.toString() === tab.input.uri.toString());
-      if (doc && !doc.isUntitled && !seen.has(doc.uri.toString())) {
+      if (doc && !doc.isUntitled && !excludeAutoContext(doc.uri) && !seen.has(doc.uri.toString())) {
         docs.push(doc);
         seen.add(doc.uri.toString());
       }
@@ -418,6 +425,7 @@ class ReachChatViewProvider {
           this._workspaceState();
           break;
         case 'abort':
+          if (this._idePreparing) this._idePreparing.cancelled = true;
           if (this._controller) this._controller.abort();
           break;
         case 'openSettings':
@@ -562,6 +570,15 @@ class ReachChatViewProvider {
         }
         case 'toolReq': {
           const uid = String(msg.uid || '');
+          if (this._ideBridge.handles(msg.action)) {
+            try {
+              const result = await this._ideBridge.run(msg);
+              this._post('toolResult', { uid, ok: true, result });
+            } catch (error) {
+              this._post('toolResult', { uid, ok: false, error: String(error.message || error) });
+            }
+            break;
+          }
           const action = String(msg.action || '');
           const rel = String(msg.path || '').replace(/\\/g, '/');
           const pattern = String(msg.pattern || '').slice(0, 200);
@@ -951,7 +968,7 @@ class ReachChatViewProvider {
       + 'what matters most, which of the open files are relevant, what structure the '
       + 'reply should take, and any pitfalls. Be terse — a few short lines, no filler. '
       + 'Your output is NEVER shown to the user; it only guides the final answer.';
-    if (includeWorkspace) {
+    if (includeWorkspace && config().workspaceContext && vscode.workspace.isTrusted) {
       const docs = openTextDocuments();
       const treeLines = await buildTreeLines();
       system += '\n\n' + buildContextBlock(docs, treeLines).slice(0, contextMaxKb * 512);
@@ -993,7 +1010,7 @@ class ReachChatViewProvider {
         headers: this._authHeaders({}, connection),
         body: encodeChatPayload({
           model,
-          max_tokens: 30,
+          max_tokens: 512,
           stream: false,
           messages: [
             { role: 'system', content: 'Convert the user question into ONE short web search query (max 8 words). Reply with the query only.' },
@@ -1003,11 +1020,21 @@ class ReachChatViewProvider {
       });
       if (!resp.ok) throw new Error('bad status');
       const data = await resp.json();
-      const q = data && data.choices && data.choices[0]
-        && data.choices[0].message && data.choices[0].message.content;
-      if (q && q.trim().length >= 3) return q.replace(/^["']+|["']+$/g, '').trim().slice(0, 120);
+      const choice = data && data.choices && data.choices[0];
+      const q = choice && choice.message && choice.message.content;
+      // Some relays return output-limit warnings as ordinary assistant text.
+      // Never turn an incomplete response or provider diagnostic into a search.
+      const complete = data && !data.error && data.status !== 'incomplete'
+        && data.status !== 'failed' && !data.incomplete_details
+        && choice && (!choice.finish_reason || choice.finish_reason === 'stop');
+      if (complete && typeof q === 'string') {
+        const query = q.replace(/^["']+|["']+$/g, '').trim();
+        const diagnostic = /output limit reached|maximum output tokens|response (?:may be|is) incomplete|^\[?\s*(?:⚠|error\s*:)/i.test(query);
+        if (!diagnostic && query.length >= 3 && query.length <= 120
+            && !/[\r\n]/.test(query) && query.split(/\s+/).length <= 16) return query;
+      }
     } catch (e) { /* fall through to heuristic */ }
-    return clean.replace(/[^\w\s-]/g, ' ').split(/\s+/).slice(0, 10).join(' ');
+    return clean.split(/\s+/).slice(0, 16).join(' ').slice(0, 120);
   }
 
   // Pre-read source even when a provider answers without emitting fenced tool calls.
@@ -1162,7 +1189,7 @@ class ReachChatViewProvider {
         }
       }
       // ---- workspace context injection ----
-      if (body.includeWorkspace && workspaceContext) {
+      if (body.includeWorkspace && workspaceContext && vscode.workspace.isTrusted) {
         const { block: contextBlock, files } = await this._prepareWorkspaceContext(
           messages, body.model, body.agentic && agentic, contextMaxKb * 1024);
         const contextMsg = {
@@ -1378,36 +1405,6 @@ class ReachChatViewProvider {
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0';
 
-async function fetchPageHtml(rawUrl, timeoutMs = 15000) {
-  let url = String(rawUrl || '').trim();
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)
-    && /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(url)) {
-    url = 'http://' + url;
-  }
-  if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'Enter an http(s) or localhost URL.' };
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: { 'User-Agent': BROWSER_UA, 'Accept-Language': 'en-US,en;q=0.9' },
-    });
-    if (!resp.ok) return { ok: false, error: 'HTTP ' + resp.status };
-    let html = await resp.text();
-    if (html.length > 2.5 * 1024 * 1024) html = html.slice(0, 2.5 * 1024 * 1024);
-    const titleM = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html);
-    const title = titleM
-      ? String(titleM[1]).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
-      : url;
-    return { ok: true, url: resp.url || url, title: title.slice(0, 120), html };
-  } catch (e) {
-    return { ok: false, error: String((e && e.message) || e) };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function browserHtml(extensionUri, webview) {
   const nonce = getNonce();
   const mediaUri = (name) => webview.asWebviewUri(
@@ -1423,6 +1420,13 @@ function browserHtml(extensionUri, webview) {
 
 function activate(context) {
   const provider = new ReachChatViewProvider(context.extensionUri);
+  const ideBridge = attachAgentBridge(provider, vscode);
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.inspectContext', async () => {
+    const snapshot = await ideBridge.snapshot();
+    const document = await vscode.workspace.openTextDocument({ language: 'json', content: JSON.stringify(snapshot, null, 2) });
+    await vscode.window.showTextDocument(document, { preview: true });
+    return snapshot;
+  }));
   context.subscriptions.push(
     vscode.workspace.registerTextDocumentContentProvider(PROPOSED_SCHEME, proposedProvider),
     vscode.window.registerWebviewViewProvider('reach.chat', provider, {
@@ -1512,20 +1516,22 @@ function activate(context) {
   };
 
   const browserGo = async (url, push) => {
-    const res = await fetchPageHtml(url);
-    if (!browserPanel) return;
-    if (!res.ok) {
-      browserPost('pageError', { url, error: res.error });
+    let proxyUrl = '';
+    try {
+      await startPageProxy();
+      proxyUrl = pageProxyUrl(url);
+    } catch (e) {
+      if (browserPanel) browserPost('pageError', { url, error: 'page proxy failed: ' + String((e && e.message) || e) });
       return;
     }
     if (push) {
       browserState.history = browserState.history.slice(0, browserState.index + 1);
-      browserState.history.push({ url: res.url, title: res.title });
+      browserState.history.push({ url, title: url });
       browserState.index = browserState.history.length - 1;
     }
-    browserPanel.title = 'REACH Browser — ' + res.title.slice(0, 40);
+    browserPanel.title = 'REACH Browser — ' + String(url).slice(0, 40);
     browserPost('page', {
-      url: res.url, title: res.title, html: res.html,
+      url, proxyUrl, title: url,
       canBack: browserState.index > 0,
       canForward: browserState.index < browserState.history.length - 1,
     });
@@ -1543,7 +1549,13 @@ function activate(context) {
   };
 
   const openReachBrowser = () => {
-    if (browserPanel) { browserPanel.reveal(); return; }
+    if (browserPanel) {
+      // Re-read the panel files from disk so updated code (fixes) always show
+      // up — re-opening an existing panel would otherwise keep stale HTML.
+      browserPanel.webview.html = browserHtml(context.extensionUri, browserPanel.webview);
+      browserPanel.reveal();
+      return;
+    }
     browserPanel = vscode.window.createWebviewPanel(
       'reach.browser', 'REACH Browser',
       { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
@@ -1588,6 +1600,11 @@ function activate(context) {
           break;
         case 'addElement':
           reachBrowserAddElement(msg);
+          break;
+        case 'pageTitle':
+          if (browserPanel && msg && String(msg.title || '').trim()) {
+            browserPanel.title = 'REACH Browser — ' + String(msg.title).slice(0, 40);
+          }
           break;
         case 'installBrowser':
           browserPost('installProgress', { stage: 'npm', line: 'Starting…' });
@@ -1636,8 +1653,10 @@ function activate(context) {
 }
 
 function deactivate() {
-  // Close the shared headless browser so no Chromium lingers after reload.
+  // Close the shared headless browser and the page proxy so nothing lingers
+  // after reload.
   disposeBrowser().catch(() => {});
+  stopPageProxy();
 }
 
 module.exports = { activate, deactivate };
