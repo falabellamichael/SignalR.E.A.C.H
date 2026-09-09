@@ -1,13 +1,13 @@
 /* REACH Browser — webview script.
- * Renders fetched pages inside a sandboxed, same-origin iframe so the page runs
- * fully (scripts, styles, navigation). A capture script is injected into the
- * page so right-clicking any element still gives "Add element to chat (REACH)".
- * Talks to the extension host exclusively via postMessage. */
+ * Pages load through the local page proxy (same origin as the iframe) so
+ * module scripts and API calls work — but the proxy injects a capture script
+ * into the page, so right-clicking any element still gives
+ * "Add element to chat (REACH)". Talks to the extension host via postMessage. */
 (function () {
   const vscode = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null;
   if (!vscode) return;
-  // Page scripts run in a same-origin iframe; remove the API surface so page
-  // scripts can never reach the extension host.
+  // Page scripts run in the iframe; remove the API surface so they can never
+  // reach the extension host.
   try { window.acquireVsCodeApi = undefined; } catch (e) { /* ignore */ }
 
   const $ = (s) => document.querySelector(s);
@@ -38,94 +38,21 @@
 
   const post = (type, data) => vscode.postMessage(Object.assign({ type }, data || {}));
 
-  /* ---------------------------- URL normalization -------------------------- */
+  /* ---------------------------- URL handling ------------------------------ */
 
   function normalizeUrl(raw) {
     let u = String(raw || '').trim();
     if (!u) return '';
-    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) {
-      if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u)) u = 'http://' + u;
-      else if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(u)) u = 'https://' + u;
-      else return '';
-    }
-    return /^https?:\/\//i.test(u) ? u : '';
+    if (/^https?:\/\//i.test(u)) return u;
+    if (/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u)) return 'http://' + u;
+    if (/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(u)) return 'https://' + u;
+    // Bare words: search (DuckDuckGo HTML — Google answers embedded/localhost
+    // clients with a reCAPTCHA wall: "Localhost is not in the list of
+    // supported domains for this site key", and "unusual traffic" checks).
+    return 'https://duckduckgo.com/html/?q=' + encodeURIComponent(u);
   }
 
-  /* ------------------------- page frame (sandboxed) ------------------------ */
-
-  const CAPTURE_JS = `(function () {
-    if (window.__reachCapture) return; window.__reachCapture = true;
-    function post(type, data) {
-      try { window.parent.postMessage(Object.assign({ __reach: true, type: type }, data || {}), '*'); } catch (e) {}
-    }
-    function describe(el) {
-      if (!el || el.nodeType !== 1) return '';
-      var tag = el.tagName ? el.tagName.toLowerCase() : '';
-      var text = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-      if (!text) text = (el.getAttribute('alt') || el.getAttribute('aria-label') || el.getAttribute('title') || '').replace(/\\s+/g, ' ').trim();
-      if (!text && tag === 'img') text = 'image: ' + (el.getAttribute('src') || '');
-      if (!text && tag === 'a') text = 'link: ' + (el.getAttribute('href') || '');
-      text = String(text || '').slice(0, 4000);
-      var parts = [];
-      if (tag) parts.push('<' + tag + '>');
-      if (text) parts.push(text);
-      var href = el.getAttribute ? (el.getAttribute('href') || '') : '';
-      if (tag === 'a' && href) parts.push('(href: ' + String(href).slice(0, 300) + ')');
-      return parts.join(' — ').slice(0, 4500);
-    }
-    function flash(el) {
-      if (!el || !el.style) return;
-      try {
-        el.style.outline = '2px solid #d4af37';
-        setTimeout(function () { el.style.outline = ''; }, 900);
-      } catch (e) {}
-    }
-    document.addEventListener('contextmenu', function (e) {
-      var el = e.target && e.target.nodeType === 1 ? e.target : null;
-      flash(el);
-      var href = '';
-      try {
-        var a = el && el.closest ? el.closest('a[href]') : null;
-        if (a) href = a.href || a.getAttribute('href') || '';
-      } catch (err) {}
-      var sel = '';
-      try { sel = (window.getSelection() || '').toString ? String(window.getSelection()) : ''; } catch (err) {}
-      post('ctx', { x: e.clientX, y: e.clientY, text: describe(el), sel: sel, href: href, tag: el ? el.tagName.toLowerCase() : '' });
-    }, true);
-    document.addEventListener('click', function (e) {
-      post('click', {});
-      var a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-      if (!a) return;
-      var href = '';
-      try { href = a.href || a.getAttribute('href') || ''; } catch (err) {}
-      if (/^https?:\\/\\//i.test(href)) { e.preventDefault(); post('nav', { url: href }); }
-    }, true);
-    document.addEventListener('scroll', function () { post('scroll', {}); }, true);
-    document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') post('esc', {});
-    }, true);
-  })();`;
-
-  function stripPageCsp(html) {
-    // The page's own CSP would block our injected capture script.
-    return String(html || '').replace(
-      /<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi, '');
-  }
-
-  function buildDoc(html, url) {
-    let out = stripPageCsp(html);
-    // First <base> wins — prepend ours so relative URLs resolve against the page URL.
-    const base = '<base href="' + String(url).replace(/"/g, '&quot;') + '">';
-    if (/<head[^>]*>/i.test(out)) {
-      out = out.replace(/<head[^>]*>/i, (m) => m + base);
-    } else {
-      out = '<head>' + base + '</head>' + out;
-    }
-    const captureTag = '<script>' + CAPTURE_JS + '</scr' + 'ipt>';
-    if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, captureTag + '</body>');
-    else out += captureTag;
-    return out;
-  }
+  /* ----------------------------- page frame ------------------------------- */
 
   function ensureFrame() {
     if (frame && frame.isConnected) return frame;
@@ -139,15 +66,18 @@
 
   function renderPage(data) {
     currentUrl = data.url || '';
-    currentTitle = data.title || '';
+    currentTitle = data.title || currentUrl;
     address.value = currentUrl;
     hasPage = true;
     errorBox.hidden = true;
     welcome.hidden = true;
     hideMenu();
-    statusEl.textContent = currentTitle ? currentTitle.slice(0, 60) : currentUrl.slice(0, 60);
+    statusEl.textContent = (currentTitle || currentUrl).slice(0, 60);
     const fr = ensureFrame();
-    fr.srcdoc = buildDoc(data.html || '', currentUrl);
+    // The proxy serves the page from the same origin as this iframe, so
+    // module scripts + API calls work; the injected capture script reports
+    // the real page title/URL back to us.
+    fr.src = String(data.proxyUrl || '');
     if (vscode.setState) vscode.setState({ url: currentUrl });
     applyState(data);
   }
@@ -164,7 +94,7 @@
   function applyState(data) {
     if (typeof data.canBack === 'boolean') backBtn.disabled = !data.canBack;
     if (typeof data.canForward === 'boolean') fwdBtn.disabled = !data.canForward;
-    if (data.title) statusEl.textContent = data.title.slice(0, 60);
+    if (data.title) statusEl.textContent = String(data.title).slice(0, 60);
     if (typeof data.engine === 'boolean') setEngine(data.engine);
   }
 
@@ -264,7 +194,7 @@
     ctxMenu.style.top = Math.max(4, y) + 'px';
   }
 
-  // Capture messages sent by the injected page script.
+  // Capture messages sent by the proxy-injected page script.
   window.addEventListener('message', (e) => {
     if (!frame || e.source !== frame.contentWindow) return;
     const d = e.data || {};
@@ -275,9 +205,13 @@
     } else if (d.type === 'nav') {
       const url = normalizeUrl(d.url);
       if (url) { statusEl.textContent = 'Loading…'; post('navigate', { url, push: true }); }
+    } else if (d.type === 'title') {
+      if (String(d.title || '').trim()) {
+        currentTitle = String(d.title).slice(0, 120);
+        statusEl.textContent = currentTitle.slice(0, 60);
+        post('pageTitle', { title: currentTitle });
+      }
     } else if (d.type === 'click' || d.type === 'scroll' || d.type === 'esc') {
-      // Interactions inside the iframe don't reach the parent document's
-      // listeners — the capture script forwards them so the menu closes.
       hideMenu();
     }
   });

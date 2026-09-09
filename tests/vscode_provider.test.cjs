@@ -12,11 +12,12 @@ function host(values, response, workspace = {}, api = {}) {
  const config={provider:'endpoint',endpoint:'https://free.example/v1',model:'my/free-model',accessKey:'free-only-key',...values};
  const req=createRequire(extensionPath);
  const context={module:{exports:{}},console,process,Buffer,URL,AbortController,AbortSignal,TextDecoder,setTimeout,clearTimeout,
- require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:req(name),
+ require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{isTrusted:true,getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:req(name),
  fetch:async(url,options)=>{calls.push({url,options});return response(url,options);}
  };
  vm.runInNewContext(source+'\nmodule.exports.TestProvider=ReachChatViewProvider; module.exports.testConfig=config;',context,{filename:extensionPath});
  const provider=new context.module.exports.TestProvider({fsPath:'/extension'});
+ provider._ideBridge={handles:()=>false}; // Legacy provider tests; bridge activation is covered separately.
  provider._post=(type,payload)=>posts.push({type,...payload});
  let receive;
  provider._html=()=>'';
@@ -153,7 +154,7 @@ test('Copilot receives complete files beyond the old read limits, including unsa
  const file='first line\n'+'x'.repeat(70000)+'\nUNSAVED_END_SENTINEL';
  const h=host({provider:'copilot'},()=>new Response(JSON.stringify({choices:[{message:{content:'Read the end.'}}]})),{
   workspaceFolders:[{uri:{fsPath:'/workspace'}}],
-  openTextDocument:async uri=>{assert.equal(uri.fsPath,'/workspace/large.js');return {getText:()=>file,isDirty:true};}
+  openTextDocument:async uri=>{assert.equal(uri.fsPath,path.join('/workspace','large.js'));return {getText:()=>file,isDirty:true};}
  });
  await h.receive({type:'toolReq',uid:'full',action:'read',path:'large.js'});
  const result=h.posts.find(p=>p.type==='toolResult');

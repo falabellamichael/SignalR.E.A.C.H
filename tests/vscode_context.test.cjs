@@ -44,7 +44,7 @@ const fs=require('node:fs'),vm=require('node:vm');
 const ui=fs.readFileSync(require('node:path').join(__dirname,'../vscode/media/chat.js'),'utf8');
 test('compacted context survives tool rounds and later turns without changing visible history',()=>{
  const history=[{role:'user',content:'OLDER_VISIBLE_MESSAGE'},{role:'assistant',content:'Older answer'},{role:'user',content:'Current goal'}];
- const ctx={busy:true,conv:{id:42,messages:history.slice()},agentMessages:[],activeRequestLength:3,activeRequestConvId:42,
+ const ctx={includeWorkspace:true,busy:true,conv:{id:42,messages:history.slice()},agentMessages:[],activeRequestLength:3,activeRequestConvId:42,
   contextRevision:0,activeContextRevision:0,persist(){},saveConv(){},showStep(){},attachments:[],
   contTools:[{action:'read',path:'file.js',result:'FRESH_EXACT_SOURCE'}],pendingText:'Reading',agentRounds:0,pendingBubble:null,
   pickVoice:()=>({text:''}),post:(type,payload)=>{ctx.sent=payload.body.messages;}};

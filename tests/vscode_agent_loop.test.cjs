@@ -5,7 +5,7 @@ const source = fs.readFileSync(path.join(__dirname, '../vscode/media/chat.js'), 
 const doneCase = source.slice(source.indexOf("      case 'done': {"), source.indexOf("      case 'toolResult': {"));
 function host() {
  const calls=[],steps=[];
- const ctx={busy:true,rafPending:false,stopRequested:false,agenticEnabled:true,pendingEdits:[],pendingText:'',pendingBubble:{},
+ const ctx={includeWorkspace:true,busy:true,rafPending:false,stopRequested:false,agenticEnabled:true,pendingEdits:[],pendingText:'',pendingBubble:{},
   agentRounds:0,continuationRetries:0,MAX_AGENT_ROUNDS:40,activeResponseStep:null,
   conv:{id:1,model:'test',messages:[{role:'user',content:'Clean up the CLI modules and tests.'}]},
   agentMessages:[{role:'user',content:'Clean up the CLI modules and tests.'}],contTools:[],

@@ -378,6 +378,30 @@ body {
 .endpoint-key-panel { margin: 0 32px; }
 .endpoint-key-panel label { flex-basis: 58px; font-size: 10px; }
 .endpoint-key-toggle[aria-expanded="true"] { color: var(--reach-accent-light); }
+.setting-secret { position: relative; display: flex; flex: 1; min-width: 0; }
+.setting-row .setting-secret input { width: 100%; padding-right: 32px; }
+.setting-secret input::-ms-reveal,
+.setting-secret input::-ms-clear { display: none; }
+.secret-toggle {
+  position: absolute;
+  right: 2px;
+  top: 2px;
+  bottom: 2px;
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--reach-muted);
+  cursor: pointer;
+}
+.secret-toggle:hover,
+.secret-toggle[aria-pressed="true"] { color: var(--reach-accent-light); }
+.secret-toggle:focus-visible { outline: 1px solid var(--reach-accent-border); }
+.secret-toggle[aria-pressed="false"] .eye-slash { display: none; }
 .settings-link {
   font-size: 11px;
   color: var(--reach-accent-light);

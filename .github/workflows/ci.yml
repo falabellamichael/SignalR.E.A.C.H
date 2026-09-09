@@ -48,7 +48,7 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5 (SHA-pinned)
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m unittest tests.test_reachd tests.test_reach_cli -v
+      - run: python -m unittest discover -s tests -v
 
   lint:
     # SECURITY NOTE: the compileall / python -c steps below run with the repo
@@ -71,6 +71,8 @@ jobs:
       - name: Parse JavaScript
         run: for f in src/*.js vscode/*.js vscode/media/*.js copilot/tray/*.js; do node --check "$f"; done
       - name: Test desktop tray and VS Code providers
+        run: node --test tests/*.test.cjs
+      - name: Run JavaScript tests
         run: node --test tests/*.test.cjs
       - name: Parse JSON
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
