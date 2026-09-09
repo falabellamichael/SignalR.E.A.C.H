@@ -176,7 +176,7 @@ class BrowserFetchTests(unittest.TestCase):
 
     def test_dns_timeout_is_reported_and_dns_queue_is_bounded(self):
         future = Mock()
-        future.result.side_effect = TimeoutError()
+        future.result.side_effect = browser.concurrent.futures.TimeoutError()
         with patch.object(browser, "_DNS_POOL") as pool, patch.object(browser, "_DNS_SLOTS") as slots:
             slots.acquire.return_value = True
             pool.submit.return_value = future
