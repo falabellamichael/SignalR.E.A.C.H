@@ -12,6 +12,7 @@ const { spawn } = require('child_process');
 const { webSearchDdg, searchAndFetch, pageText, browsePage, disposeBrowser, refreshPlaywright, hasPlaywright } = require('./search');
 
 const CONFIG_SECTION = 'simplereach';
+const { resolveEndpoint, trayDirectory, trayBinary, DEFAULT_ENDPOINT } = require('./connection');
 
 const PROPOSED_SCHEME = 'reach-proposed';
 const proposedDocs = new Map();
@@ -46,11 +47,6 @@ function getNonce() {
 
 const TRAY_PORT = 21302;
 
-function trayDir() {
-  const base = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(base, 'SignalREACH', 'copilot', 'tray');
-}
-
 function trayHealth(timeoutMs) {
   return new Promise((resolve) => {
     const req = http.get({ host: '127.0.0.1', port: TRAY_PORT, path: '/health', timeout: timeoutMs || 700 }, (res) => {
@@ -64,21 +60,30 @@ function trayHealth(timeoutMs) {
 
 /* 'running' | 'starting' | 'missing' | 'error'. The tray holds a
  * single-instance lock, so a redundant spawn simply exits. */
-async function startTray() {
-  if (await trayHealth()) return 'running';
-  const dir = trayDir();
-  const electron = path.join(dir, 'node_modules', 'electron', 'dist', 'electron.exe');
-  if (!fs.existsSync(electron) || !fs.existsSync(path.join(dir, 'main.js'))) return 'missing';
-  try {
-    const child = spawn(electron, [dir], {
-      detached: true, stdio: 'ignore', windowsHide: true, cwd: dir,
+async function startTray(show = false) {
+  if (!show && await trayHealth()) return 'running';
+  const dir = trayDirectory();
+  const explicit = vscode.workspace.getConfiguration(CONFIG_SECTION).get('trayExecutable');
+  const candidates = [
+    ...(explicit ? [{ executable: explicit, args: [] }] : []),
+    ...(process.platform === 'darwin' ? [
+      { executable: '/Applications/SignalREACH.app/Contents/MacOS/SignalREACH', args: [] },
+      { executable: path.join(os.homedir(), 'Applications/SignalREACH.app/Contents/MacOS/SignalREACH'), args: [] }
+    ] : []),
+    { executable: trayBinary(dir), args: [dir] },
+    { executable: trayBinary(path.join(os.homedir(), 'AppData/Local/SignalREACH/copilot/tray')), args: [path.join(os.homedir(), 'AppData/Local/SignalREACH/copilot/tray')] }
+  ];
+  const launch = candidates.find(candidate => fs.existsSync(candidate.executable));
+  if (!launch) return 'missing';
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  return new Promise(resolve => {
+    const child = spawn(launch.executable, launch.args, {
+      detached: true, stdio: 'ignore', windowsHide: true, env,
     });
-    child.on('error', () => {});
-    child.unref();
-    return 'starting';
-  } catch (e) {
-    return 'error';
-  }
+    child.once('error', () => resolve('error'));
+    child.once('spawn', () => { child.unref(); resolve('starting'); });
+  });
 }
 
 /* ---- browser engine one-click installer (REACH Browser page) ---------- */
@@ -178,10 +183,26 @@ async function installBrowserEngine(extRoot, onProgress) {
 
 function config() {
   const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
+  const provider = cfg.get('provider') === 'copilot' ? 'copilot' : 'endpoint';
+  const freeEndpoint = String(cfg.get('endpoint') || DEFAULT_ENDPOINT).replace(/\/+$/, '');
+  const additionalEndpoints = (Array.isArray(cfg.get('additionalEndpoints')) ? cfg.get('additionalEndpoints') : [])
+    .filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean);
+  const selectedEndpoint = additionalEndpoints.includes(cfg.get('selectedEndpoint')) ? cfg.get('selectedEndpoint') : '';
+  const storedKeys = cfg.get('endpointAccessKeys');
+  const endpointAccessKeys = Object.fromEntries(additionalEndpoints.map(endpoint =>
+    [endpoint, storedKeys && typeof storedKeys[endpoint] === 'string' ? storedKeys[endpoint] : '']));
+  const freeAccessKey = String(cfg.get('accessKey') || '');
   return {
-    endpoint: String(cfg.get('endpoint') || 'http://127.0.0.1:20777/v1').replace(/\/+$/, ''),
-    accessKey: String(cfg.get('accessKey') || ''),
-    model: String(cfg.get('model') || 'gpt-4o-mini'),
+    provider,
+    providerSelection: provider === 'copilot' ? 'copilot' : selectedEndpoint ? 'endpoint:' + selectedEndpoint : 'endpoint',
+    selectedEndpoint,
+    endpoint: provider === 'copilot' ? 'http://127.0.0.1:21302/v1' : selectedEndpoint || freeEndpoint,
+    freeEndpoint,
+    additionalEndpoints,
+    freeAccessKey,
+    endpointAccessKeys,
+    accessKey: provider === 'copilot' ? '' : selectedEndpoint ? endpointAccessKeys[selectedEndpoint] : freeAccessKey,
+    model: provider === 'copilot' ? 'copilot-chat' : String(cfg.get('model') || 'gpt-4o-mini'),
     maxTokens: Number(cfg.get('maxTokens') || 2048),
     workspaceContext: cfg.get('workspaceContext') !== false,
     contextMaxKb: Math.max(8, Number(cfg.get('contextMaxKb') || 120)),
@@ -319,6 +340,15 @@ class ReachChatViewProvider {
     wv.html = this._html(wv);
     wv.onDidReceiveMessage(async (msg) => {
       switch (msg && msg.type) {
+        case 'trayStatus':
+          this._post('trayState', { status: await trayHealth() ? 'running' : 'stopped' });
+          break;
+        case 'trayStart': {
+          const status = await startTray(true);
+          this._post('trayState', { status });
+          if (status === 'missing') this._post('error', { message: 'Install SignalREACH.app, or run: python tools/reach.py tray install. On Windows/Linux you can also set REACH: Tray Executable.' });
+          break;
+        }
         case 'getConfig':
           this._post('config', config());
           break;
@@ -345,19 +375,58 @@ class ReachChatViewProvider {
           break;
         case 'setConfig': {
           const key = String(msg.key || '');
-          const allowed = ['endpoint', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright'];
+          if (key === 'endpointAccessKey') {
+            const connection = config();
+            const endpoint = String(msg.endpoint || '').trim();
+            if (typeof msg.value !== 'string' ||
+                (endpoint !== connection.freeEndpoint && !connection.additionalEndpoints.includes(endpoint))) break;
+            const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
+            try {
+              if (endpoint === connection.freeEndpoint) {
+                await cfg.update('accessKey', msg.value.trim(), vscode.ConfigurationTarget.Global);
+              } else {
+                await cfg.update('endpointAccessKeys', { ...connection.endpointAccessKeys, [endpoint]: msg.value.trim() }, vscode.ConfigurationTarget.Global);
+              }
+              this._post('configSaved', { key, config: config() });
+              if (connection.provider !== 'copilot' && endpoint === (connection.selectedEndpoint || connection.freeEndpoint)) await this._fetchModels();
+            } catch (error) {
+              this._post('error', { message: 'Could not save the endpoint access key.' });
+            }
+            break;
+          }
+          const allowed = ['provider', 'additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright'];
           if (!allowed.includes(key)) break;
           const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
           const current = cfg.get(key);
           let value = msg.value;
-          if (typeof current === 'number') value = Number(value);
+          if (key === 'additionalEndpoints') {
+            if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) break;
+            value = [...new Set(value.map(item => item.trim()).filter(Boolean))];
+          } else if (typeof current === 'number') value = Number(value);
           else if (typeof current === 'boolean') value = value === true || value === 'true';
           else value = String(value == null ? '' : value);
           try {
+            if (key === 'provider') {
+              if (!['endpoint', 'copilot'].includes(value) &&
+                  !(value.startsWith('endpoint:') && config().additionalEndpoints.includes(value.slice(9)))) break;
+              await cfg.update('selectedEndpoint', value.startsWith('endpoint:') ? value.slice(9) : '', vscode.ConfigurationTarget.Global);
+              value = value === 'copilot' ? 'copilot' : 'endpoint';
+            }
             await cfg.update(key, value, vscode.ConfigurationTarget.Global);
+            if (key === 'additionalEndpoints') {
+              const storedKeys = cfg.get('endpointAccessKeys') || {};
+              const keptKeys = Object.fromEntries(Object.entries(storedKeys).filter(([endpoint]) => value.includes(endpoint)));
+              await cfg.update('endpointAccessKeys', keptKeys, vscode.ConfigurationTarget.Global);
+            }
+            if (key === 'additionalEndpoints' && !value.includes(cfg.get('selectedEndpoint'))) {
+              await cfg.update('selectedEndpoint', '', vscode.ConfigurationTarget.Global);
+            }
           } catch (e) { break; }
           this._post('configSaved', { key, value, config: config() });
-          if (key === 'endpoint') await this._fetchModels();
+          if (['additionalEndpoints', 'accessKey', 'provider'].includes(key)) {
+            if (config().provider === 'copilot') await startTray();
+            await this._fetchModels();
+          }
           break;
         }
         case 'applyEdit': {
@@ -644,40 +713,75 @@ class ReachChatViewProvider {
     return out.length ? out.join('\n') : '(empty directory)';
   }
 
-  _authHeaders(extra) {
-    const headers = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
-    const { accessKey } = config();
-    if (accessKey) headers.Authorization = `Bearer ${accessKey}`;
+  _authHeaders(extra, connection = config()) {
+    const headers = Object.assign({ 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' }, extra || {});
+    const { accessKey } = connection;
+    if (accessKey && connection.provider !== 'copilot') headers.Authorization = `Bearer ${accessKey}`;
     return headers;
   }
 
   async _fetchModels() {
-    const { endpoint } = config();
+    const connection = config();
+    const { endpoint } = connection;
     try {
-      const resp = await fetch(`${endpoint}/models`, { headers: this._authHeaders() });
-      if (!resp.ok) {
-        this._post('error', { message: `HTTP ${resp.status} loading models — is the REACH relay running?` });
-        return;
+      if (connection.provider === 'copilot' && !await trayHealth()) {
+        const state = await startTray();
+        if (state === 'missing' || state === 'error') throw new Error('Start the SignalREACH tray to use Microsoft 365 Copilot.');
+        for (let attempt = 0; attempt < 20 && !await trayHealth(); attempt++) await new Promise(resolve => setTimeout(resolve, 250));
       }
-      const data = await resp.json();
-      const ids = (data && data.data || []).map((m) => m.id);
-      if (!ids.length) {
-        this._post('error', { message: 'Endpoint returned no models.' });
-        return;
-      }
-      // Prefer SimpleREACH-owned aliases (unprefixed ids); fall back to the full list.
-      const reachIds = ids.filter((id) => !id.includes('/'));
-      this._post('models', { models: reachIds.length ? reachIds : ids, endpoint });
+      const catalog = await this._discoverModels(connection);
+      if (this._endpointKey(connection) !== this._endpointKey(config())) return;
+      this._post('models', { models: [...catalog.routes.keys()], endpoint: catalog.bases.join(' · '), provider: connection.provider, providerSelection: connection.providerSelection });
+      if (catalog.errors.length) this._post('error', { message: 'Some endpoints could not load: ' + catalog.errors.join('; ') });
     } catch (err) {
+      if (this._endpointKey(connection) !== this._endpointKey(config())) return;
       this._post('error', { message: `Could not reach ${endpoint}: ${err.message}` });
     }
+  }
+
+  _endpointKey(connection) {
+    return JSON.stringify([connection.providerSelection, connection.endpoint, connection.accessKey]);
+  }
+
+  async _discoverModels(connection) {
+    const endpoints = [connection.endpoint];
+    const results = await Promise.allSettled(endpoints.map(async endpoint => {
+      const base = await resolveEndpoint(endpoint);
+      const resp = await fetch(`${base}/models`, { headers: this._authHeaders({}, connection), signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const models = (Array.isArray(data?.data) ? data.data : []).map(m => m?.id).filter(id => typeof id === 'string' && id);
+      if (!models.length) throw new Error('Endpoint returned no models.');
+      return { base, models };
+    }));
+    const routes = new Map();
+    const errors = [];
+    const bases = [];
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') errors.push(`${endpoints[index]}: ${result.reason.message}`);
+      else {
+        bases.push(result.value.base);
+        result.value.models.forEach(model => {
+          if (!routes.has(model)) routes.set(model, endpoints[index]);
+        });
+      }
+    });
+    const catalog = { key: this._endpointKey(connection), routes, errors, bases: [...new Set(bases)] };
+    this._modelCatalog = catalog;
+    if (!routes.size) throw new Error(errors.join('; '));
+    return catalog;
+  }
+
+  async _modelEndpoint(connection, model) {
+    return resolveEndpoint(connection.endpoint);
   }
 
   /* WhisperThink: a private reasoning pass whose output is never shown in
    * the chat flow — it only steers the final answer. Returns text or null. */
   async _think(prompt, includeWorkspace, chatModel) {
-    const { endpoint, thinkModel, thinkMaxTokens, contextMaxKb } = config();
-    const model = thinkModel || chatModel || 'gpt-4o-mini';
+    const connection = config();
+    const { thinkModel, thinkMaxTokens, contextMaxKb } = connection;
+    const model = connection.provider === 'copilot' ? 'copilot-chat' : thinkModel || chatModel || 'gpt-4o-mini';
     let system = 'You are SimpleREACH — the private reasoning engine of the REACH coding assistant inside VS Code. '
       + 'The user just asked a question. Think step-by-step about the best answer: '
       + 'what matters most, which of the open files are relevant, what structure the '
@@ -698,9 +802,9 @@ class ReachChatViewProvider {
       ],
     };
     try {
-      const resp = await fetch(`${endpoint}/chat/completions`, {
+      const resp = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
         method: 'POST',
-        headers: this._authHeaders(),
+        headers: this._authHeaders({}, connection),
         body: JSON.stringify(payload),
       });
       if (!resp.ok) return null;
@@ -716,14 +820,15 @@ class ReachChatViewProvider {
   /* Turn a user question into a short web-search query (model-assisted with
    * a heuristic fallback — must never block the request). */
   async _deriveQuery(prompt, chatModel) {
-    const { endpoint } = config();
+    const connection = config();
+    const model = connection.provider === 'copilot' ? 'copilot-chat' : chatModel || connection.model;
     const clean = prompt.replace(/\s+/g, ' ').trim().slice(0, 500);
     try {
-      const resp = await fetch(`${endpoint}/chat/completions`, {
+      const resp = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
         method: 'POST',
-        headers: this._authHeaders(),
+        headers: this._authHeaders({}, connection),
         body: JSON.stringify({
-          model: chatModel || 'gpt-4o-mini',
+          model,
           max_tokens: 30,
           stream: false,
           messages: [
@@ -742,7 +847,8 @@ class ReachChatViewProvider {
   }
 
   async _chat(body) {
-    const { endpoint, maxTokens, workspaceContext, contextMaxKb, think, webSearch, searchResults, playwright, agentic } = config();
+    const connection = config();
+    const { maxTokens, workspaceContext, contextMaxKb, think, webSearch, searchResults, playwright, agentic } = connection;
     const messages = Array.isArray(body.messages) ? body.messages.slice() : [];
     // ---- WhisperThink: private reasoning before the answer ----
     let thought = null;
@@ -871,15 +977,16 @@ class ReachChatViewProvider {
     }
     const payload = Object.assign({}, body, {
       max_tokens: maxTokens || 2048,
+      model: connection.provider === 'copilot' ? 'copilot-chat' : body.model || connection.model,
       messages,
     });
-    const url = `${endpoint}/chat/completions`;
+    // Resolve the live pointer inside the error handler below.
     const controller = new AbortController();
     this._controller = controller;
     try {
-      const resp = await fetch(url, {
+      const resp = await fetch(`${await this._modelEndpoint(connection, payload.model)}/chat/completions`, {
         method: 'POST',
-        headers: this._authHeaders(),
+        headers: this._authHeaders({}, connection),
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
@@ -906,6 +1013,7 @@ class ReachChatViewProvider {
             if (chunk === '[DONE]') continue;
             try {
               const parsed = JSON.parse(chunk);
+              if (parsed.error) { this._post('error', { message: parsed.error.message || 'Provider request failed.' }); continue; }
               const delta = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
               const text = delta && (delta.content || delta.reasoning_content);
               if (text) this._post('delta', { text });
@@ -1208,7 +1316,7 @@ function activate(context) {
 
   // The Copilot system tray starts with the extension (no-op when it is
   // already running); the chat panel's tray icon reflects the live state.
-  startTray().catch(() => {});
+  if (config().provider === 'copilot') startTray().catch(() => {});
 }
 
 function deactivate() {

@@ -45,6 +45,7 @@ from . import (
     REPO_URL,
 )
 from .autostart import register_autostart, remove_autostart
+from .tray import cmd_tray, electron_binary, install_tray
 from .vscode import (
     FOLDER as VSCODE_FOLDER,
     installed as vscode_installed,
@@ -203,21 +204,12 @@ def cmd_install(args):
     save_config(cfg)
     print("  runtime + config -> " + str(CONFIG_DIR))
 
-    # 2.4 Copilot 365 tray (invisible Electron browser + bridge). Deploy only
-    #     if the tray's Electron binary is present in the repo checkout —
-    #     install Electron first with: cd copilot/tray && npm install
-    tray_src = REPO_ROOT / "copilot"
-    tray_electron = (tray_src / "tray" / "node_modules" / "electron"
-                     / "dist" / "electron.exe")
-    if tray_src.is_dir() and tray_electron.is_file():
-        shutil.copytree(tray_src, CONFIG_DIR / "copilot",
-                        dirs_exist_ok=True,
-                        ignore=shutil.ignore_patterns("__pycache__", "*.log"))
-        print("  Copilot tray deployed -> " + str(CONFIG_DIR / "copilot"))
-    elif tray_src.is_dir():
-        print("  note: copilot/ present but Electron not installed — run "
-              "'cd copilot/tray && npm install' then re-run install to enable "
-              "the tray at logon")
+    # The runtime layout differs between Electron's three desktop platforms.
+    tray_source = REPO_ROOT / 'copilot' / 'tray'
+    if electron_binary(tray_source).is_file():
+        install_tray(REPO_ROOT)
+    elif tray_source.is_dir():
+        print('  Tray optional: cd copilot/tray && npm install; then run python tools/reach.py tray install')
 
     # 2.5 VS Code extension (side-load; skipped with --no-vscode)
     if not getattr(args, "no_vscode", False):
@@ -489,6 +481,11 @@ def main():
     p_un.add_argument("--all", action="store_true",
                       help="also stop relay/tunnel and remove autostart")
     p_un.set_defaults(func=cmd_uninstall)
+
+    p_tray = sub.add_parser('tray', help='install or open the tray on macOS, Windows, or Linux')
+    tray_sub = p_tray.add_subparsers(dest='tray_cmd', required=True)
+    for action in ('install', 'start'):
+        tray_sub.add_parser(action).set_defaults(func=cmd_tray)
 
     p_vscode = sub.add_parser("vscode",
                               help="manage the VS Code chat extension")

@@ -9,6 +9,9 @@ copilot/tray/package-lock.json
 # VS Code extension optional runtime dep (Playwright headless browser)
 vscode/node_modules/
 vscode/package-lock.json
+*.vsix
 
 # logs
 copilot/tray/*.log
+
+copilot/tray/dist/

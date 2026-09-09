@@ -4,6 +4,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('copilotTray', {
+    settings: () => ipcRenderer.invoke('tray-settings'),
+    saveSettings: value => ipcRenderer.invoke('tray-save-settings', value),
+    models: () => ipcRenderer.invoke('tray-models'),
+    hide: () => ipcRenderer.send('hide-panel'),
+    onChatProgress: callback => { ipcRenderer.on('chat-progress', (_event, value) => callback(value)); },
+    onSettingsChanged: callback => { ipcRenderer.on('settings-changed', () => callback()); },
     status: () => ipcRenderer.invoke('tray-status'),
     test: (text) => ipcRenderer.invoke('tray-test', text),
     chat: (payload) => ipcRenderer.invoke('tray-chat', payload),

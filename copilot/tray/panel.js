@@ -32,16 +32,24 @@ function setLabel(btn, text) {
     span.textContent = text;
 }
 
+let refreshSequence = 0;
+let activeSettings = null;
 async function refresh() {
+    const sequence = ++refreshSequence;
     try {
         const st = await window.copilotTray.status();
+        if (sequence !== refreshSequence) return;
+        const isEndpoint = st.provider === 'endpoint';
+        updateModelOptions(st.models || [], st.model);
         const pill = $('#pill');
         pill.classList.toggle('ok', !!st.signedIn);
         pill.classList.toggle('bad', !st.signedIn);
-        $('#pill-text').textContent = st.signedIn ? 'signed in' : (st.why || 'not ready');
-        $('#st-session').textContent = st.signedIn ? 'Microsoft 365 ✓' : (st.why || '—');
+        $('#pill-text').textContent = st.signedIn ? (isEndpoint ? 'online' : 'signed in') : 'not ready';
+        $('#connection-error').textContent = st.why || '';
+        pill.title = st.why || '';
+        $('#st-session').textContent = isEndpoint ? (st.model || st.models?.[0] || 'Free endpoints') : 'Microsoft 365 Copilot';
         $('#st-port').textContent = st.bridgeUp ? (st.bridgePort + ' listening') : 'DOWN';
-        $('#st-visible').textContent = st.browserVisible ? 'visible' : 'invisible';
+        $('#st-visible').textContent = st.browserVisible ? 'visible' : 'hidden';
         $('#st-last').textContent = ago(st.lastReplyAt);
         const err = $('#st-error'); if (err) err.textContent = st.lastError || '—';
         const url = $('#st-url'); if (url) url.textContent = (st.url || '—').replace(/^https?:\/\//, '').slice(0, 40);
@@ -54,7 +62,8 @@ async function refresh() {
             tileSub.textContent = st.browserVisible ? 'running — click to hide' : 'sign in / verify';
         }
     } catch (e) {
-        $('#pill-text').textContent = 'panel error';
+        $('#pill-text').textContent = 'not ready';
+        $('#connection-error').textContent = e.message || 'Unable to check status.';
     }
 }
 
@@ -96,6 +105,9 @@ function renderChat() {
         }).join('');
     }
     listEl.scrollTop = listEl.scrollHeight;
+    $('#provider').disabled = pending;
+    $('#endpoint-model').disabled = pending;
+    $('#endpoint-save').disabled = pending;
     inputEl.disabled = pending;
     webEl.disabled = pending;
     sendEl.disabled = pending;
@@ -136,7 +148,7 @@ async function sendChat() {
     renderChat();
     const reply = messages.find((m) => m.rid === rid);
     try {
-        const r = await window.copilotTray.chat({ message: text, history, webSearch });
+        const r = await window.copilotTray.chat({ message: text, history, webSearch, requestId: rid });
         if (reply !== messages.find((m) => m.rid === rid)) return; // cleared meanwhile
         if (!r || r.ok === false) {
             Object.assign(reply, { thinking: false, content: (r && r.error) || 'Could not complete that reply.', error: true });
@@ -212,7 +224,7 @@ $('#tile-show-window').addEventListener('click', () => {
     window.copilotTray.toggleBrowser();
     setTimeout(refresh, 600);
 });
-$('#tile-refresh').addEventListener('click', () => { refresh(); window.copilotTray.refreshPage(); });
+$('#tile-refresh').addEventListener('click', () => { refresh(); });
 
 // quit (both footers)
 const quit = () => window.copilotTray.quit();
@@ -220,6 +232,60 @@ $('#btn-quit').addEventListener('click', quit);
 $('#btn-quit-home').addEventListener('click', quit);
 
 /* ---------------------------------- boot ----------------------------------- */
+loadSettings();
 renderChat();
-refresh();
 setInterval(refresh, 15000);
+
+
+function updateModelOptions(models, selected) {
+    const select = $('#endpoint-model');
+    const key = JSON.stringify([models, selected]);
+    if (select.dataset.models === key) return;
+    select.dataset.models = key;
+    select.replaceChildren(new Option('Automatic', ''));
+    for (const model of models) select.add(new Option(model, model));
+    if (selected && !models.includes(selected)) select.add(new Option(selected + ' (unavailable)', selected));
+    select.value = selected || '';
+}
+
+async function loadSettings() {
+    try {
+        const config = await window.copilotTray.settings();
+        if (activeSettings && JSON.stringify(config) !== JSON.stringify(activeSettings)) {
+            messages = []; renderChat();
+        }
+        activeSettings = config;
+        $('#provider').value = config.provider;
+        $('#endpoint-url').value = config.endpoint;
+        $('#endpoint-model').hidden = $('#model-label').hidden = config.provider !== 'endpoint';
+        $('#endpoint-settings').hidden = config.provider !== 'endpoint';
+        await refresh();
+    } catch (error) { $('#connection-error').textContent = error.message; }
+}
+
+async function saveSettings(value) {
+    try {
+        await window.copilotTray.saveSettings(value);
+        await loadSettings();
+        return true;
+    } catch (error) { $('#endpoint-feedback').textContent = error.message; return false; }
+}
+$('#provider').addEventListener('change', () => saveSettings({ provider: $('#provider').value }));
+$('#endpoint-model').addEventListener('change', () => saveSettings({ model: $('#endpoint-model').value }));
+$('#endpoint-save').addEventListener('click', async () => {
+    $('#endpoint-feedback').textContent = 'Connecting…';
+    if (await saveSettings({ endpoint: $('#endpoint-url').value, model: '' })) {
+        $('#endpoint-feedback').textContent = $('#connection-error').textContent || 'Saved. Models are ready.';
+    }
+});
+window.copilotTray.onSettingsChanged(loadSettings);
+document.addEventListener('keydown', event => {
+    if (event.key !== 'Escape') return;
+    if (!$('#view-home').classList.contains('active')) show('home');
+    else window.copilotTray.hide();
+});
+
+window.copilotTray.onChatProgress(progress => {
+    const reply = messages.find(message => message.rid === progress.requestId && message.thinking);
+    if (reply) { reply.hint = progress.hint; renderChat(); }
+});

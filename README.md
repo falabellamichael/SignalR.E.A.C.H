@@ -71,8 +71,50 @@ python tools/reach.py install
 The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
 
 - **Activity Bar icon** opens the REACH chat — model dropdown, streaming replies, conversation history.
-- **Zero config by default** — points at `http://127.0.0.1:20777/v1` and loads the model list from the relay. Override via Settings → Extensions → SimpleREACH (`simplereach.endpoint` also accepts the public pointer URL, e.g. `https://<pointer>/v1`).
+- **Zero config by default** — follows the published endpoint pointer and loads its models. Existing `simplereach.endpoint` settings are preserved; additional providers can be added in the REACH settings panel.
 - Installed automatically by `install` / `install.ps1`; standalone: `python tools/reach.py vscode install` (copy-based side-load, no vsce/npm build step).
+
+## Desktop tray: macOS, Windows, and Linux
+
+The tray and VS Code extension both offer **Free endpoints** and **Microsoft 365 Copilot**.
+Free endpoints follow the published URL pointer and load the available models. In the tray,
+open **Controls** to set another endpoint. In VS Code, **Settings** keeps the original
+**Free endpoints** URL locked; use **+** to add URLs and **−** to remove them.
+Added URLs appear under **Other providers** in the provider selector. Selecting one
+loads its own models and routes chat to that endpoint.
+
+Each VS Code endpoint has a key button on its left. Click it to show or hide that
+endpoint's access-key field. Keys save independently; changing an endpoint URL does
+not copy its old key to the new address. The original endpoint keeps its existing
+`simplereach.accessKey`; added keys are stored in `simplereach.endpointAccessKeys`.
+Removing the selected endpoint returns the selector to **Free endpoints**.
+
+```bash
+cd copilot/tray
+npm install
+cd ../..
+python tools/reach.py tray install
+python tools/reach.py tray start
+```
+
+On macOS, click the menu-bar icon, use the Dock menu, or press Command+Shift+T
+while SignalREACH is active. On Windows, left-click the tray icon for the panel;
+on Linux, use the tray menu's **Open Tray Panel** if the desktop consumes clicks.
+Linux desktops must provide an AppIndicator/StatusNotifier tray host.
+
+For Copilot, use **Copilot window** to sign in to Microsoft 365. Closing that window
+keeps its session available to the bridge. VS Code talks directly to the tray at
+`http://127.0.0.1:21302/v1` using `copilot-chat`; a separate Python shim is optional.
+The Copilot bridge accepts text and returns JSON or SSE (the completed answer arrives
+as a single content event). Free endpoints use their normal OpenAI-compatible API.
+
+VS Code's tray button opens/starts the tray on all three platforms. For a standalone
+Windows executable or Linux AppImage, set `simplereach.trayExecutable` to its path.
+Source installs are discovered automatically, as are macOS apps in Applications.
+
+Build an installer on its target OS with `cd copilot/tray && npm run dist` (DMG,
+NSIS, or AppImage). For tests, run `node --test tests/*.test.cjs`
+and `python -m unittest discover -s tests` from the repository root.
 
 ## The panel
 

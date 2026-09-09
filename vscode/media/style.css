@@ -370,6 +370,14 @@ body {
 .setting-row input:focus { outline: none; border-color: var(--reach-accent-border); }
 .setting-row input::placeholder { color: var(--reach-muted); }
 .setting-row input[type="checkbox"] { accent-color: var(--reach-accent); flex: 0 0 auto; }
+.setting-endpoints, .endpoint-rows { display: flex; flex-direction: column; gap: 6px; }
+.setting-endpoints > label { font-size: 11px; color: var(--reach-text); }
+.endpoint-action { flex: 0 0 26px; height: 26px; font-size: 18px; }
+.endpoint-action:focus-visible { outline: 1px solid var(--reach-accent-border); outline-offset: 1px; }
+.endpoint-entry { display: flex; flex-direction: column; gap: 5px; }
+.endpoint-key-panel { margin: 0 32px; }
+.endpoint-key-panel label { flex-basis: 58px; font-size: 10px; }
+.endpoint-key-toggle[aria-expanded="true"] { color: var(--reach-accent-light); }
 .settings-link {
   font-size: 11px;
   color: var(--reach-accent-light);

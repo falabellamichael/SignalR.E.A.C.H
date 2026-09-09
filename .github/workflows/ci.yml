@@ -69,6 +69,8 @@ jobs:
       - name: Byte-compile Python
         run: python -m compileall -q server tools tests
       - name: Parse JavaScript
-        run: for f in src/*.js vscode/*.js; do node --check "$f"; done
+        run: for f in src/*.js vscode/*.js vscode/media/*.js copilot/tray/*.js; do node --check "$f"; done
+      - name: Test desktop tray and VS Code providers
+        run: node --test tests/*.test.cjs
       - name: Parse JSON
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
