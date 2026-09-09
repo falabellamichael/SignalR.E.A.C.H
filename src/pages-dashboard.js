@@ -182,7 +182,7 @@
                 });
                 wrap.appendChild(jumpGrid);
 
-                const actRow = el('div', 'reach-actions');
+                const actRow = el('div', 'reach-actions reach-host-actions');
                 actRow.style.marginTop = '6px';
                 actRow.appendChild(actionBtn('fa-cloud-arrow-up', 'Publish pointer URL',
                     () => publishNow().then(() => toast('Published ✓', 'ok'))));
@@ -214,6 +214,13 @@
 
         function update() {
             const snap = core.store.local;
+            if (!snap && !core.store.localChecked) {
+                if (!body.querySelector('.reach-connecting')) {
+                    body.innerHTML = '';
+                    body.appendChild(el('div', 'reach-banner reach-connecting', 'Connecting to SignalREACH…'));
+                }
+                return;
+            }
             if (!snap) {
                 if (!body.querySelector('.reach-banner-off')) {
                     body.innerHTML = '';
@@ -233,6 +240,10 @@
                 buildDashboardDOM();
             }
 
+            body.querySelectorAll('.reach-host-actions button').forEach(button => {
+                button.disabled = snap.connection_mode === 'hosted';
+                button.title = button.disabled ? 'Managed on the SignalREACH host' : '';
+            });
             const today = snap.today || {};
 
             // Patch tiles in-place without flicker
@@ -308,6 +319,7 @@
         }
 
         update();
+        core.refreshLocal().then(update);
         timer = setInterval(() => core.refreshLocal().then(update), 8000);
         return () => { if (timer) clearInterval(timer); };
     }

@@ -26,7 +26,7 @@ function createBridgeHandler(sendCopilot, health) {
                 body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
                 const messages = Array.isArray(body.messages) ? body.messages : [];
                 if (messages.some(m => Array.isArray(m.content))) throw new Error('The Copilot bridge accepts text only. Remove image attachments and retry.');
-                text = messages.length ? messages.filter(m => ['system', 'user', 'assistant'].includes(m.role) && typeof m.content === 'string')
+                text = messages.length ? messages.filter(m => ['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role) && typeof m.content === 'string')
                     .map(m => `${m.role}: ${m.content}`).join('\n\n') : String(body.text || '');
                 if (!text.trim()) throw new Error('Message is empty.');
                 if (openai && body.model && body.model !== 'copilot-chat') throw new Error('This bridge serves copilot-chat.');

@@ -335,7 +335,7 @@
         const c1Status = core.el('div', 'reach-stat-status-row');
         const dot = core.el('span', 'reach-dot reach-dot-off');
         dot.id = 'reach-stat-dot';
-        const title = core.el('span', 'reach-stat-status-title', 'Relay Offline');
+        const title = core.el('span', 'reach-stat-status-title', 'Connecting…');
         title.id = 'reach-stat-title';
         c1Status.appendChild(dot);
         c1Status.appendChild(title);
@@ -693,8 +693,10 @@
 
         if (snap) {
             if (dot) dot.className = 'reach-dot ' + (snap.upstream_ok ? 'reach-dot-on' : 'reach-dot-warn');
-            if (title) title.textContent = snap.upstream_ok ? 'Relay Active' : 'Relay Active (Upstream Issue)';
-            if (port) port.textContent = ':' + (snap.port || 20777);
+            if (title) title.textContent = snap.connection_mode === 'hosted'
+                ? (snap.upstream_ok ? 'SignalREACH Online' : 'SignalREACH Upstream Issue')
+                : (snap.upstream_ok ? 'Relay Active' : 'Relay Active (Upstream Issue)');
+            if (port) port.textContent = snap.connection_mode === 'hosted' ? 'Hosted' : ':' + (snap.port || 20777);
             if (uptime) uptime.textContent = 'Uptime: ' + core.fmtUptime(snap.uptime_s || 0);
             if (upstreamBadge) {
                 upstreamBadge.className = 'reach-badge ' + (snap.upstream_ok ? 'reach-badge-live' : 'reach-badge-off');
@@ -718,6 +720,16 @@
                 upstreamBadge.textContent = 'Offline';
             }
         }
+
+        const hostingUnavailable = !snap || snap.connection_mode === 'hosted';
+        ['reach-stat-restart-btn', 'reach-stat-save-settings-btn', 'reach-stat-rate-limit-toggle',
+            'reach-stat-rpm-input', 'reach-stat-concurrency-input'].forEach(id => {
+            const control = panel.querySelector('#' + id);
+            if (control) {
+                control.disabled = hostingUnavailable;
+                control.title = hostingUnavailable ? 'Managed on the SignalREACH host' : '';
+            }
+        });
 
         if (urlBox) {
             urlBox.textContent = core.store.pointerUrl
@@ -850,7 +862,7 @@
         if (!label || !dot) return;
         if (core.store.local) {
             dot.className = 'reach-dot reach-dot-on';
-            label.textContent = 'relay up · :' + (core.store.local.port || 20777)
+            label.textContent = (core.store.local.connection_mode === 'hosted' ? 'SignalREACH online' : 'relay up · :' + (core.store.local.port || 20777))
                 + (core.store.local.upstream_ok ? '' : ' · upstream DOWN');
             if (!core.store.local.upstream_ok) dot.className = 'reach-dot reach-dot-warn';
         } else {

@@ -58,12 +58,21 @@
   let stepsEl = null;        // Copilot-style work-log container (step stack)
   let stepRows = [];         // visible narration rows
   let rowByUid = {};         // tool uid -> row, so results can tick their own line
-  const MAX_STEP_ROWS = 5;
-  let stepTimer = null;
+  let activeTrace = null;
+  let activeTraceConvId = null;
+  let activeResponseStep = null;
+
   let contTools = [];
   let contResolved = 0;
   let agentRounds = 0;
-  const MAX_AGENT_ROUNDS = 4;
+  let continuationRetries = 0;
+  let stopRequested = false;
+  let agentMessages = [];
+  let activeRequestLength = 0;
+  let activeRequestConvId = null;
+  let contextRevision = 0;
+  let activeContextRevision = 0;
+  const MAX_AGENT_ROUNDS = 40;
   const followUpQueue = [];
   const appliedEdits = [];
   const attachments = [];
@@ -113,8 +122,7 @@
     if (thinkRow) { thinkRow.remove(); thinkRow = null; }
     if (pendingBubble && pendingBubble.parentElement) pendingBubble.parentElement.classList.remove('thinking');
     topThink.hidden = true;
-    // keep the work log visible while the answer streams; freeze the active line
-    if (stepRows.length) closeStep(stepRows[stepRows.length - 1]);
+
   }
 
   function thoughtIcon(title) {
@@ -189,16 +197,20 @@
   function extractTools(text) {
     const tools = [];
     let clean = text || '';
-    const re = /```tool\s*\n?([\s\S]*?)```/g;
+    // Providers use both fenced tool blocks and XML wrappers. Only explicit,
+    // complete wrappers are executable; ordinary JSON remains chat content.
+    const re = /```tool\s*\n?([\s\S]*?)```|<tool\s*>([\s\S]*?)<\/tool\s*>/gi;
     let m;
     while ((m = re.exec(text || ''))) {
       try {
-        const it = JSON.parse(repairJson(m[1].trim()));
+        const it = JSON.parse(repairJson((m[1] === undefined ? m[2] : m[1]).trim()));
         const allowedTool = ['read', 'search', 'list', 'shell', 'browse', 'websearch'];
         if (it && allowedTool.includes(it.action)) {
           tools.push({
             action: it.action,
             path: String(it.path || '').replace(/\\/g, '/'),
+            startLine: it.startLine ?? it.start_line,
+            endLine: it.endLine ?? it.end_line,
             pattern: String(it.pattern || '').slice(0, 200),
             command: String(it.command || '').slice(0, 1000),
             url: String(it.url || '').slice(0, 800),
@@ -249,99 +261,139 @@
   }
 
   function renderEditCards(afterEl, edits) {
-    const cards = [];
+    const batch = document.createElement('section');
+    batch.className = 'edit-batch';
+    batch.setAttribute('aria-label', 'Proposed edits');
+    const bar = document.createElement('div');
+    bar.className = 'edit-allbar';
+    const title = document.createElement('strong');
+    title.className = 'edit-batch-title';
+    bar.appendChild(title);
+    const records = [];
+    let applyingBatch = false;
+    const button = (label, kind, handler) => {
+      const el = document.createElement('button');
+      el.type = 'button'; el.className = 'edit-btn ' + kind; el.textContent = label;
+      el.addEventListener('click', handler);
+      return el;
+    };
+    const allReview = button('Review all', 'review', () => {
+      records.filter(r => r.state === 'pending').forEach(r => r.review());
+    });
+    const allApply = button('Apply all', 'apply', async () => {
+      if (applyingBatch) return;
+      applyingBatch = true; updateBatch();
+      for (const rec of records) {
+        if (rec.state === 'pending' && !await rec.apply()) break;
+      }
+      applyingBatch = false; updateBatch();
+    });
+    const allReject = button('Reject all', 'reject', () => {
+      records.forEach(r => r.reject());
+    });
+    allReject.title = 'Reject edits that have not been applied';
+    bar.append(allReview, allApply, allReject);
+    batch.appendChild(bar);
+    function updateBatch() {
+      const pending = records.filter(r => r.state === 'pending').length;
+      const rejected = records.filter(r => r.state === 'rejected').length;
+      const applied = records.filter(r => r.state === 'applied').length;
+      const failed = records.filter(r => r.state === 'failed').length;
+      const inFlight = records.some(r => r.state === 'applying');
+      records.filter(r => r.state === 'pending').forEach(r => { r.applyButton.disabled = inFlight || applyingBatch; });
+      title.textContent = pending ? pending + ' proposed edit' + (pending === 1 ? '' : 's')
+        : records.some(r => r.state === 'applying') ? 'Applying edits…'
+        : failed ? failed + ' failed edit' + (failed === 1 ? '' : 's') : 'Edits resolved';
+      title.title = applied + ' applied, ' + rejected + ' rejected';
+      allReview.disabled = !pending;
+      allApply.disabled = !pending || applyingBatch || inFlight;
+      allReject.disabled = !records.some(r => r.state === 'pending' || r.state === 'failed');
+      allApply.textContent = applyingBatch ? 'Applying…' : 'Apply all';
+    }
     edits.forEach((ed, idx) => {
       const card = document.createElement('div');
       card.className = 'edit-card';
       const head = document.createElement('div');
       head.className = 'edit-head';
       const fname = document.createElement('span');
-      fname.className = 'edit-path';
-      fname.textContent = '📄 ' + ed.path;
-      fname.title = ed.path;
+      fname.className = 'edit-path'; fname.textContent = ed.path; fname.title = ed.path;
       const kind = document.createElement('span');
-      kind.className = 'edit-kind';
-      kind.textContent = ed.search === '' ? 'new file' : 'edit';
-      head.appendChild(fname);
-      head.appendChild(kind);
-      card.appendChild(head);
+      kind.className = 'edit-kind'; kind.textContent = ed.search === '' ? 'New file' : 'Edit';
+      head.append(fname, kind); card.appendChild(head);
+      const preview = document.createElement('details');
+      preview.className = 'edit-preview';
+      const summary = document.createElement('summary');
+      const lines = ed.search === '' ? ed.replace.split('\n').map(s => ({ t: 'add', s }))
+        : diffLines(ed.search.split('\n'), ed.replace.split('\n'));
+      summary.textContent = 'Changes · +' + lines.filter(l => l.t === 'add').length
+        + ' / −' + lines.filter(l => l.t === 'del').length;
+      preview.appendChild(summary);
       const diff = document.createElement('div');
       diff.className = 'edit-diff';
-      const isNew = ed.search === '';
-      const lines = isNew
-        ? ed.replace.split('\n').map((s) => ({ t: 'add', s }))
-        : diffLines(ed.search.split('\n'), ed.replace.split('\n'));
-      lines.forEach((l) => {
+      lines.forEach(l => {
         const row = document.createElement('div');
-        row.className = 'edit-line ' + (l.t === 'add' ? 'add' : l.t === 'del' ? 'del' : 'ctx');
-        row.textContent = l.t === 'skip' ? '…' : ((l.t === 'add' ? '+ ' : l.t === 'del' ? '- ' : '  ') + l.s);
+        row.className = 'edit-line ' + (l.t === 'skip' ? 'ctx' : l.t);
+        row.textContent = l.t === 'skip' ? '…' : (l.t === 'add' ? '+ ' : l.t === 'del' ? '- ' : '  ') + l.s;
         diff.appendChild(row);
       });
-      card.appendChild(diff);
-      const actions = document.createElement('div');
-      actions.className = 'edit-actions';
-      const review = document.createElement('button');
-      review.className = 'edit-btn review';
-      review.textContent = '🩺 Review in diff';
-      const apply = document.createElement('button');
-      apply.className = 'edit-btn apply';
-      apply.textContent = '✓ Apply';
-      const discard = document.createElement('button');
-      discard.className = 'edit-btn';
-      discard.textContent = '✕ Discard';
-      const status = document.createElement('span');
-      status.className = 'edit-status';
-      const uid = Date.now().toString(36) + '-' + idx;
-      editCards[uid] = {
-        card,
-        path: ed.path,
-        status,
-        disable: () => { review.disabled = true; apply.disabled = true; discard.disabled = true; },
+      preview.appendChild(diff); card.appendChild(preview);
+      const actions = document.createElement('div'); actions.className = 'edit-actions';
+      const status = document.createElement('span'); status.className = 'edit-status';
+      status.setAttribute('role', 'status');
+      const uid = Date.now().toString(36) + '-' + idx + '-' + Math.random().toString(36).slice(2, 7);
+      let resolveApply;
+      const rec = {
+        card, path: ed.path, status, state: 'pending',
+        disable: () => { review.disabled = true; apply.disabled = true; reject.disabled = true; refresh.disabled = true; },
+        showRefresh: () => { refresh.hidden = false; refresh.disabled = false; },
+        review: () => {
+          if (rec.state !== 'pending') return;
+          post('reviewEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
+        },
+        apply: () => {
+          if (rec.state !== 'pending') return Promise.resolve(false);
+          rec.state = 'applying'; rec.disable();
+          status.textContent = 'Applying…'; updateBatch();
+          const done = new Promise(resolve => { resolveApply = resolve; });
+          post('applyEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
+          return done;
+        },
+        reject: () => {
+          if (!['pending', 'failed'].includes(rec.state)) return;
+          rec.state = 'rejected'; rec.disable(); preview.open = false;
+          card.classList.add('rejected');
+          status.textContent = 'Rejected'; status.className = 'edit-status';
+          const retry = actions.querySelector('.repropose');
+          if (retry) retry.remove();
+          updateBatch();
+        },
+        finish: ok => {
+          rec.state = ok ? 'applied' : 'failed'; rec.disable();
+          if (!ok) reject.disabled = false;
+          else { preview.open = false; card.classList.add('applied'); }
+          updateBatch();
+          if (resolveApply) { resolveApply(ok); resolveApply = null; }
+        },
       };
-      review.addEventListener('click', () => {
-        startSteps();
-        showStep('🩺 Opening diff for ' + ed.path + '…');
-        post('reviewEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
+      const review = button('Review', 'review', rec.review);
+      const apply = button('Apply', 'apply', rec.apply);
+      const reject = button('Reject', 'reject', rec.reject);
+      const refresh = button('Refresh edit', 'refresh', () => {
+        if (rec.state === 'rejected' || rec.state === 'applied') return;
+        refresh.disabled = true;
+        status.textContent = 'Reading current source…'; status.className = 'edit-status';
+        post('refreshEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace, model: conv && conv.model });
       });
-      apply.addEventListener('click', () => {
-        const v = pickVoice('apply', ed.path);
-        showStep(v.text, false, v.title);
-        post('applyEdit', { uid, path: ed.path, search: ed.search, replace: ed.replace });
-      });
-      discard.addEventListener('click', () => card.remove());
-      actions.appendChild(review);
-      actions.appendChild(apply);
-      actions.appendChild(discard);
-      actions.appendChild(status);
-      card.appendChild(actions);
-      log.insertBefore(card, afterEl.nextSibling);
-      cards.push(card);
+      refresh.hidden = true;
+      review.setAttribute('aria-label', 'Review ' + ed.path);
+      apply.setAttribute('aria-label', 'Apply ' + ed.path);
+      reject.setAttribute('aria-label', 'Reject ' + ed.path);
+      rec.applyButton = apply;
+      actions.append(review, apply, reject, refresh, status); card.appendChild(actions);
+      editCards[uid] = rec; records.push(rec); batch.appendChild(card);
     });
-    if (cards.length > 1) {
-      const bar = document.createElement('div');
-      bar.className = 'edit-allbar';
-      const allReview = document.createElement('button');
-      allReview.className = 'edit-btn review';
-      allReview.textContent = '🩺 Review all (' + cards.length + ')';
-      allReview.addEventListener('click', () => {
-        cards.forEach((c) => {
-          const rb = c.querySelector('.edit-btn.review');
-          if (rb && !rb.disabled) rb.click();
-        });
-      });
-      const all = document.createElement('button');
-      all.className = 'edit-btn apply';
-      all.textContent = '⚡ Apply all (' + cards.length + ')';
-      all.addEventListener('click', () => {
-        cards.forEach((c) => {
-          const ab = c.querySelector('.edit-btn.apply');
-          if (ab && !ab.disabled) ab.click();
-        });
-      });
-      bar.appendChild(allReview);
-      bar.appendChild(all);
-      log.insertBefore(bar, cards[0]);
-    }
+    updateBatch();
+    log.insertBefore(batch, afterEl.nextSibling);
     scrollBottom();
   }
 
@@ -487,7 +539,9 @@
   }
 
   function maskFenced(text) {
-    let out = String(text || '').replace(/```(?:edit|tool)[\s\S]*?(?:```|$)/g, '…');
+    let out = String(text || '')
+      .replace(/```(?:edit|tool)[\s\S]*?(?:```|$)/gi, '…')
+      .replace(/<tool\s*>[\s\S]*?(?:<\/tool\s*>|$)/gi, '…');
     // Adjacent masked blocks separated by ONLY whitespace collapse to a single
     // ellipsis — otherwise a run of ```tool blocks streams as a full-height
     // wall of "…" rows (pre-wrap renders the blank lines between them). Real
@@ -499,212 +553,137 @@
 
   /* ---------- Cursor-style step tracker (real steps + funny filler) ---------- */
 
-  const FUN_STEPS = [
-    'Reading your files… 📂',
-    'Searching the codebase… 🔎',
-    'Untangling the spaghetti… 🍝',
-    'Consulting the rubber duck… 🦆',
-    'Asking the model nicely… 🙏',
-    'Summoning the compute hamsters… 🐹',
-    'Polishing the reply… ✨',
-    'Adding semicolons for luck… ;)',
-    'Making the magic happen… 🪄',
-    'Waiting for the GPU to sneeze… 🤧',
-    'Bribing the tokens with gold stars… ⭐',
-    'Negotiating with the language model… 🤝',
-    'Blowing on the CPU to keep it cool… 🌬️',
-    'Reciting the codebase from memory… 📚',
-    'Convincing the model it can do this… 💪',
-    'Herding the tokens back into line… 🐑',
-    'Interpreting the ancient scrolls… 📜',
-    'Distilling pure gold from the reply… 🏺',
-    'Defragmenting the thought process… 🧩',
-    'Sending a carrier pigeon to the API… 🐦',
-    'Jiggling the context window… 🪟',
-    'Counting tokens like Scrooge McDuck… 🪙',
-    'Warming up the matrix… 🟩',
-    'Teaching the model table manners… 🍽️',
-    'Fluffing the embedding pillows… 🛏️',
-    'Aligning the stars and the API… 🌌',
-    'Whispering sweet nothings to the parser… 💌',
-    'Doing interpretive dance for the compiler… 💃',
-    'Sacrificing a rubber chicken to the CI gods… 🐔',
-    'Reinflating the context window… 🎈',
-    'Polishing each token individually… 🧼',
-    'Consulting the oracle of the stack trace… 🔮',
-    'Performing percussive maintenance… 🔨',
-    'Sending thoughts and prayers to the GPU… 📿',
-    'Brewing a fresh pot of context… ☕',
-    'Politely disagreeing with the linter… 🧐',
-    'Flipping bits until they align… 🎛️',
-    'Gently waking the sleeping thread… 😴',
-    'Marinating the response in intelligence… 🍖',
-    'Checking if it compiles by sheer willpower… 🧘',
-  ];
-
-  const FUN_APPLIED = [
-    '✓ Applied — the code gods are pleased. ⚡',
-    '✓ Applied — file updated, confetti optional. 🎉',
-    '✓ Applied — another one bites the diff. 🦈',
-    '✓ Applied — the bytes have been rearranged. 🧬',
-    '✓ Applied — no bytes were harmed. 🐣',
-    '✓ Applied — it compiles in spirit. 🙏',
-  ];
-
-  const ABORT_LINES = [
-    '(stopped — the hamster needed a break 🐹)',
-    '(stopped — mid-thought, but okay 🧠)',
-    '(stopped — it was just getting to the good part… 📺)',
-    '(stopped — the tokens have been returned to the wild 🦜)',
-    '(stopped)',
-  ];
-
-  const QUEUE_LINES = [
-    '(queued — will send after this reply)',
-    '(queued — patiently waiting its turn ⏳)',
-    '(queued — holding that thought for you 📌)',
-  ];
+  const ABORT_LINES = ['Stopped.'];
+  const QUEUE_LINES = ['Queued — will send after this reply.'];
 
   function pickFun(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
   }
 
-  /* Narrative voice for real work events — Copilot-chat style ("Let me see this…"). */
-  const VOICE = {
-    read: [
-      ['Let me see this…', 'Reading {d}'],
-      ['Let me take a look…', 'Reading {d}'],
-      ['Opening it up…', 'Reading {d}'],
-    ],
-    search: [
-      ['Scanning for clues…', 'Searching for "{d}"'],
-      ['Hunting through the code…', 'Searching for "{d}"'],
-      ['Searching high and low…', 'Searching for "{d}"'],
-    ],
-    list: [
-      ['Getting the lay of the land…', 'Listing {d}'],
-      ['Mapping this out…', 'Listing {d}'],
-      ['Taking inventory…', 'Listing {d}'],
-    ],
-    run: [
-      ['Let me try something…', 'Running: {d}'],
-      ['Running a little experiment…', 'Running: {d}'],
-    ],
-    think: [
-      ['Let me think about this…', 'WhisperThink — reasoning privately'],
-      ['Mulling it over…', 'WhisperThink — reasoning privately'],
-    ],
-    websearch: [
-      ['Let me ask the internet…', 'Searching the web for "{d}"'],
-      ['Checking the web…', 'Searching the web for "{d}"'],
-    ],
-    browse: [
-      ['Opening the page…', 'Browsing {d}'],
-      ['Taking a peek at the web…', 'Browsing {d}'],
-    ],
-    workspace: [
-      ['Getting oriented in your project…', 'Reading workspace context'],
-      ['Getting to know the codebase…', 'Reading workspace context'],
-    ],
-    continue: [
-      ['Continuing with what I found…', ''],
-      ['Putting the pieces together…', ''],
-    ],
-    apply: [
-      ['Applying that change…', '{d}'],
-      ['Writing it to disk…', '{d}'],
-    ],
-  };
+  function createTimeline(trace, beforeEl) {
+    const region = document.createElement('section');
+    region.className = 'steps'; region.setAttribute('aria-label', 'Agent activity');
+    const title = document.createElement('div'); title.className = 'steps-title'; title.textContent = 'Agent activity';
+    region.appendChild(title);
+    log.insertBefore(region, beforeEl || null);
+    return region;
+  }
 
-  function pickVoice(action, detail) {
-    const arr = VOICE[action] || [];
-    if (!arr.length) return { text: detail || '', title: '' };
-    const p = arr[Math.floor(Math.random() * arr.length)];
-    return { text: p[0], title: p[1] ? p[1].replace('{d}', detail || '') : '' };
+  function paintStep(region, record, fullResult) {
+    const el = document.createElement('article'); el.className = 'step-line';
+    const head = document.createElement('div'); head.className = 'step-head';
+    const spin = document.createElement('span'); spin.className = 'mini-spin'; spin.setAttribute('aria-hidden', 'true');
+    const text = document.createElement('span'); text.className = 'step-text'; text.textContent = record.title;
+    const state = document.createElement('span'); state.className = 'step-state';
+    head.append(spin, text, state); el.appendChild(head);
+    const output = document.createElement('div'); output.className = 'step-output'; el.appendChild(output);
+    region.appendChild(el);
+    const row = { el, textEl: text, stateEl: state, outputEl: output, record, real: true,
+      closed: record.status !== 'running', uid: record.uid || null };
+    updateStep(row, record.status, fullResult === undefined ? record.result : fullResult, false);
+    return row;
+  }
+
+  function saveSteps() {
+    if (conv && activeTrace && conv.id === activeTraceConvId) { persist(); saveConv(); }
   }
 
   function startSteps() {
-    if (stepsEl) return;                 // one work log per request
-    stepsEl = document.createElement('div');
-    stepsEl.className = 'steps';
-    log.appendChild(stepsEl);
-    addStepRow();                        // idle row the fun filler rotates on
-    if (!stepTimer) stepTimer = setInterval(tickFiller, 2800);
+    if (stepsEl) return;
+    activeTrace = { before: busy ? activeRequestLength : (conv ? conv.messages.length : 0), steps: [] };
+    activeTraceConvId = conv && conv.id;
+    if (conv) { if (!conv.activity) conv.activity = []; conv.activity.push(activeTrace); }
+    stepsEl = createTimeline(activeTrace, pendingBubble && pendingBubble.parentElement);
   }
 
   function addStepRow(uid, text, title) {
-    const el = document.createElement('div');
-    el.className = 'step-line';
-    const spin = document.createElement('span');
-    spin.className = 'mini-spin';
-    const txt = document.createElement('span');
-    txt.className = 'step-text';
-    el.appendChild(spin);
-    el.appendChild(txt);
-    stepsEl.appendChild(el);
-    const row = { el, textEl: txt, real: false, closed: false, uid: uid || null };
-    if (row.uid) rowByUid[row.uid] = row;
-    stepRows.push(row);
-    if (text !== undefined) {
-      row.real = true;
-      row.textEl.textContent = text;
-      if (title) el.title = title;
-    }
-    while (stepRows.length > MAX_STEP_ROWS) {
-      const old = stepRows.shift();
-      if (old.uid) delete rowByUid[old.uid];
-      old.el.remove();
-    }
-    scrollBottom();
-    return row;
-  }
-
-  function tickFiller() {
-    if (!stepRows.length) return;
-    const row = stepRows[stepRows.length - 1];
-    if (row.closed || row.real) return;
-    let pick = FUN_STEPS[Math.floor(Math.random() * FUN_STEPS.length)];
-    if (pick === row.textEl.textContent) pick = FUN_STEPS[(FUN_STEPS.indexOf(pick) + 1) % FUN_STEPS.length];
-    row.textEl.textContent = pick;
-  }
-
-  function closeStep(row) {
-    if (!row || row.closed) return;
-    row.closed = true;
-    row.el.classList.add('done');
-  }
-
-  function showStep(text, done, title) {
     if (!stepsEl) startSteps();
-    let row = stepRows.length ? stepRows[stepRows.length - 1] : null;
-    if (row && !row.closed && row.real) { closeStep(row); row = null; }
-    if (!row || row.closed) row = addStepRow(null, text, title);
-    else {
-      row.real = true;
-      row.textEl.textContent = text;
-      if (title) row.el.title = title;
-    }
-    if (done) closeStep(row);
+    const record = { uid: uid || null, title: title || text || 'Preparing request', status: 'running', result: '' };
+    activeTrace.steps.push(record);
+    const row = paintStep(stepsEl, record);
+    if (uid) rowByUid[uid] = row;
+    stepRows.push(row); saveSteps(); scrollBottom();
     return row;
   }
 
-  function endStep() {
-    if (stepTimer) { clearInterval(stepTimer); stepTimer = null; }
-    if (stepsEl) { stepsEl.remove(); stepsEl = null; }
-    stepRows = [];
-    rowByUid = {};
+  function updateStep(row, status, result, save = true) {
+    if (!row) return;
+    row.record.status = status || 'completed'; row.closed = row.record.status !== 'running';
+    row.el.className = 'step-line ' + row.record.status;
+    row.stateEl.textContent = { running: 'Running', completed: 'Done', error: 'Failed', cancelled: 'Stopped' }[row.record.status] || row.record.status;
+    row.outputEl.replaceChildren();
+    const text = String(result || '');
+    if (save) { row.record.result = text.slice(0, 12000); row.record.resultChars = text.length; }
+    const total = Math.max(text.length, row.record.resultChars || 0);
+    if (text) {
+      const preview = document.createElement('pre'); preview.className = 'step-result';
+      preview.textContent = text.length > 1200 ? text.slice(0, 1200) + '\n…' : text;
+      row.outputEl.appendChild(preview);
+      if (text.length > 1200) {
+        const details = document.createElement('details'); details.className = 'step-details';
+        const label = document.createElement('summary');
+        label.textContent = text.length < total ? 'Expand saved output preview' : 'Show full result (' + total.toLocaleString() + ' characters)';
+        details.appendChild(label);
+        details.addEventListener('toggle', () => {
+          if (details.open && !details.querySelector('pre')) {
+            const full = document.createElement('pre'); full.className = 'step-result'; full.textContent = text; details.appendChild(full);
+          }
+        });
+        row.outputEl.appendChild(details);
+      }
+      if (text.length < total) {
+        const note = document.createElement('div'); note.className = 'step-preview-note';
+        note.textContent = 'Saved first ' + text.length.toLocaleString() + ' of ' + total.toLocaleString() + ' characters.';
+        row.outputEl.appendChild(note);
+      }
+    } else if (status === 'running') {
+      row.outputEl.textContent = 'Waiting for result…';
+    }
+    if (save) saveSteps();
+  }
+
+  function closeStep(row, result, status = 'completed') {
+    if (!row) return;
+    updateStep(row, status, result === undefined ? (row.record.result || 'Completed.') : result);
+  }
+
+  function showStep(text, done, title, result) {
+    if (!stepsEl) startSteps();
+    const previous = stepRows[stepRows.length - 1];
+    if (previous && !previous.closed && !previous.uid) closeStep(previous);
+    const row = addStepRow(null, text, title);
+    if (done) closeStep(row, result || text);
+    return row;
+  }
+
+  function endStep(status = 'completed') {
+    stepRows.filter(row => !row.closed).forEach(row => closeStep(row,
+      status === 'cancelled' ? 'Stopped before a result was returned.' : status === 'error' ? 'The request ended with an error.' : 'Completed.', status));
+    saveSteps();
+    // Keep the rendered timeline and saved records; detach only active handles.
+    stepsEl = null; activeTrace = null; stepRows = []; rowByUid = {}; activeResponseStep = null;
+  }
+
+  function restoreTimelines(before) {
+    for (const trace of (conv && conv.activity) || []) {
+      if (trace.before !== before) continue;
+      const region = createTimeline(trace);
+      for (const record of trace.steps) {
+        const saved = record.status === 'running' ? { ...record, status: 'cancelled', result: 'Interrupted before a result was saved.' } : record;
+        paintStep(region, saved);
+      }
+    }
   }
 
   function beginToolRound(tools) {
     startSteps();
-    // freeze the idle filler row so the tool list reads as a clean work log
-    const idle = stepRows[stepRows.length - 1];
-    if (idle && !idle.closed && !idle.real) closeStep(idle);
+
     contTools = tools.map((t) => Object.assign({}, t, {
       uid: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
       result: null,
     }));
     contResolved = 0;
+    if (pendingBubble) { pendingBubble.textContent = ''; showThinking(); }
     contTools.forEach((t) => {
       const detail = t.action === 'read'
         ? t.path
@@ -717,25 +696,34 @@
               : t.action === 'websearch'
                 ? t.query
                 : t.command;
-      const v = pickVoice(t.action, detail);
-      addStepRow(t.uid, v.text, v.title);
-      post('toolReq', { uid: t.uid, action: t.action, path: t.path, pattern: t.pattern, command: t.command, url: t.url, query: t.query });
+      const label = {read:'Read',search:'Search',list:'List',shell:'Run command',browse:'Browse',websearch:'Web search'}[t.action] || t.action;
+      addStepRow(t.uid, label + ': ' + detail);
+      post('toolReq', { uid: t.uid, action: t.action, path: t.path, startLine: t.startLine, endLine: t.endLine, pattern: t.pattern, command: t.command, url: t.url, query: t.query });
     });
   }
 
-  function continueAgent() {
+  function isUnfinishedUpdate(text) {
+    const prose = String(text || '').replace(/```[\s\S]*?(?:```|$)/g, '').trim();
+    // Recover clear promises of immediate work, not offers, questions, or
+    // explanations that describe what somebody else could do.
+    if (!prose || prose.length > 1800 || /\?|\b(?:if you|would you|let me know|need your|awaiting|approval|permission|blocked|cannot|can't)\b/i.test(prose)) return false;
+    return /(?:^|[.!…\n]\s*)(?:(?:first|next|now|then)[,:]?\s+)?I(?:['’]ll| will|['’]m going to| am going to)\s+(?:continue|scan|inspect|read|search|check|review|investigate|fix|update|implement|patch|run|test|look|start|work|make|clean|refactor)\b/i.test(prose);
+  }
+
+  function continueAgent(instruction) {
     if (!conv) return;
     const resultsText = contTools
       .map((t) => '[' + t.action + ' ' + (t.path || t.pattern || t.command || t.url || t.query) + ']\n' + t.result)
       .join('\n\n');
-    const follow = (conv.messages || []).concat([
+    const follow = agentMessages.concat([
       { role: 'assistant', content: pendingText },
-      { role: 'user', content: 'TOOL RESULTS (you asked for these — continue from where you stopped, '
+      { role: 'user', content: instruction || 'TOOL RESULTS (you asked for these — continue from where you stopped, '
         + 'then finish your reply; propose file changes as ```edit blocks):\n\n' + resultsText },
     ]);
+    agentMessages = follow;
+    pendingText = '';
     agentRounds += 1;
-    const v = pickVoice('continue');
-    showStep(v.text);
+    if (pendingBubble) { pendingBubble.textContent = ''; showThinking(); }
     post('chat', {
       body: {
         model: conv.model,
@@ -805,9 +793,11 @@
     if (busy) { hint('Wait for the current reply to finish.'); return; }
     const role = conv.messages[index] && conv.messages[index].role;
     if (!role) return;
-    conv.messages = role === 'assistant'
-      ? conv.messages.slice(0, index)
-      : conv.messages.slice(0, index + 1);
+    const end = role === 'assistant' ? index : index + 1;
+    if (conv.requestContext && conv.requestContext.through > end) delete conv.requestContext;
+    contextRevision++;
+    conv.messages = conv.messages.slice(0, end);
+    conv.activity = (conv.activity || []).filter(t => t.before < end);
     persist();
     renderMessages();
     launchChat();
@@ -818,7 +808,9 @@
     const t = conv.thoughts || {};
     const thoughtsArr = [];
     conv.messages.forEach((m, i) => { if (t[i] != null) thoughtsArr[i] = t[i]; });
+    delete conv.requestContext; contextRevision++;
     conv.messages.splice(index, 1);
+    conv.activity = (conv.activity || []).filter(t => t.before !== index + 1).map(t => ({ ...t, before: t.before > index ? t.before - 1 : t.before }));
     thoughtsArr.splice(index, 1);
     conv.thoughts = {};
     thoughtsArr.forEach((th, i) => { if (th != null) conv.thoughts[i] = th; });
@@ -858,7 +850,9 @@
     const done = (apply) => {
       if (apply) {
         const next = editor.value;
+        delete conv.requestContext; contextRevision++;
         conv.messages[index].content = next;
+        conv.activity = (conv.activity || []).filter(t => t.before <= index);
         persist();
         saveConv();
       }
@@ -884,6 +878,7 @@
       return;
     }
     msgs.forEach((m, idx) => {
+      restoreTimelines(idx);
       const body = bubble(m.role);
       setRich(body, m.content);
       if (m.role === 'assistant' && conv.thoughts && conv.thoughts[idx]) {
@@ -891,6 +886,7 @@
       }
       addMessageButtons(m.role, body, idx);
     });
+    restoreTimelines(msgs.length);
     scrollBottom();
   }
 
@@ -1180,8 +1176,8 @@
     const hist = state().history.filter((h) => h.id !== conv.id);
     const entry = {
       id: conv.id, model: conv.model, ts: conv.ts,
-      title: conv.title, messages: conv.messages.slice(),
-      thoughts: Object.assign({}, conv.thoughts || {}),
+      title: conv.title, messages: conv.messages.slice(), requestContext: conv.requestContext,
+      thoughts: Object.assign({}, conv.thoughts || {}), activity: conv.activity || [],
     };
     hist.push(entry);
     vscode.setState({ history: hist, conv });
@@ -1191,7 +1187,7 @@
     const item = state().history.find((h) => h.id === id);
     if (!item) return;
     if (conv && conv.messages.length) saveConv();
-    conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice(), thoughts: Object.assign({}, item.thoughts || {}) };
+    conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice(), requestContext: item.requestContext, activity: item.activity || [], thoughts: Object.assign({}, item.thoughts || {}) };
     modelSelect.value = item.model || 'gpt-4o-mini';
     persist();
     renderMessages();
@@ -1267,7 +1263,7 @@
         : kind === 'checking' ? 'Checking relay…' : 'Relay status unknown';
   }
 
-  function finishBubble() {
+  function finishBubble(outcome = 'completed') {
     let cardsAfter = null;
     if (pendingBubble) {
       cardsAfter = pendingBubble.parentElement;
@@ -1285,6 +1281,11 @@
       }
       pendingBubble = null;
     }
+    if (conv && conv.id === activeRequestConvId && contextRevision === activeContextRevision
+        && (conv.requestContext || agentRounds > 0)) {
+      conv.requestContext = { messages: agentMessages.slice(), through: activeRequestLength };
+      persist(); saveConv();
+    }
     pendingText = '';
     pendingThought = '';
     if (cardsAfter && pendingEdits.length) {
@@ -1298,15 +1299,18 @@
     $('#send').disabled = false;
     $('#stop').disabled = true;
     scrollBottom();
-    endStep(); // work log retires with the reply
-    if (followUpQueue.length) {
+    endStep(outcome);
+    if (outcome === 'completed' && followUpQueue.length) {
       const next = followUpQueue.shift();
       startChat(next, true);
     }
   }
 
   function buildRequestMessages() {
-    const msgs = conv.messages.slice();
+    const checkpoint = conv.requestContext;
+    const msgs = checkpoint && checkpoint.through <= conv.messages.length
+      ? checkpoint.messages.concat(conv.messages.slice(checkpoint.through))
+      : conv.messages.slice();
     if (!attachments.length) return msgs;
     const last = msgs[msgs.length - 1];
     if (last && last.role === 'user') {
@@ -1374,6 +1378,11 @@
   }
 
   function launchChat() {
+    if (stepsEl) endStep();
+    activeRequestLength = conv.messages.length;
+    activeRequestConvId = conv.id;
+    activeContextRevision = contextRevision;
+    busy = true;
     pendingBubble = bubble('assistant');
     const pendingDiv = pendingBubble.parentElement;
     pendingDiv.classList.add('pending');
@@ -1381,13 +1390,16 @@
     showThinking();
     topThink.hidden = false;
     startSteps();
-    busy = true;
     modelSelect.disabled = true;
     providerSelect.disabled = true;
     modelSelect.title = 'Model is locked while the AI is responding';
     $('#stop').disabled = false;
     persist();
     agentRounds = 0;
+    continuationRetries = 0;
+    stopRequested = false;
+    contTools = [];
+    contResolved = 0;
     pendingEdits = [];
     const msgs = buildRequestMessages();
     if (appliedEdits.length) {
@@ -1398,6 +1410,7 @@
       });
       appliedEdits.length = 0;
     }
+    agentMessages = msgs.slice();
     post('chat', {
       body: {
         model: conv.model,
@@ -1483,6 +1496,7 @@
         if (conv && !msg.models.includes(conv.model)) { conv.model = modelSelect.value; persist(); updateModelChip(); }
         break;
       case 'delta':
+        if (!busy || stopRequested) break;
         if (!pendingBubble) {
           pendingBubble = bubble('assistant');
           pendingBubble.parentElement.classList.add('pending');
@@ -1500,6 +1514,8 @@
         }
         break;
       case 'done': {
+        if (!busy) break;
+        const aborted = msg.aborted || stopRequested;
         if (rafPending && pendingBubble) {
           rafPending = false;
           setRich(pendingBubble, maskFenced(pendingText));
@@ -1519,28 +1535,50 @@
             if (pendingBubble) setRich(pendingBubble, pendingText);
           }
         }
-        if (tools.length && agentRounds < MAX_AGENT_ROUNDS) {
+        if (!aborted && tools.length && agentRounds < MAX_AGENT_ROUNDS) {
+          continuationRetries = 0;
+          if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText || 'Requested ' + tools.length + ' workspace action(s).');
+          else if (pendingText) showStep('Assistant update', true, '', pendingText);
           beginToolRound(tools);
           break;
         }
-        if (tools.length) hint('(agent tool limit reached)');
+        const unfinished = agenticEnabled && !tools.length && !pendingEdits.length && isUnfinishedUpdate(pendingText);
+        if (!aborted && unfinished && continuationRetries < 2 && agentRounds < MAX_AGENT_ROUNDS) {
+          if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText);
+          else showStep('Assistant update', true, '', pendingText);
+          continuationRetries += 1;
+          showStep('Continue unfinished work', true, '', 'The reply announced a next step without requesting an action. Asking the agent to perform it.');
+          continueAgent('Continue the work you just announced now. Emit the required tool blocks or proposed edit blocks in this reply. '
+            + 'Do not stop at another promise or plan. If the task is complete, provide the result; if blocked or waiting for user input, explain exactly what is needed.');
+          break;
+        }
+        const paused = !aborted && (tools.length || unfinished);
+        if (paused) {
+          const reason = agentRounds >= MAX_AGENT_ROUNDS
+            ? 'Paused after ' + MAX_AGENT_ROUNDS + ' agent rounds. Send “continue” to resume with the saved context.'
+            : 'Paused because the model repeated a plan without taking action. Send “continue” to retry with the saved context.';
+          pendingText = (pendingText ? pendingText + '\n\n' : '') + reason;
+          if (pendingBubble) setRich(pendingBubble, pendingText);
+          showStep('Agent paused', true, '', reason);
+        }
+        if (activeResponseStep) closeStep(rowByUid[activeResponseStep], aborted ? 'Stopped.' : 'Response shown below.', aborted ? 'cancelled' : 'completed');
         if (pendingText && pendingBubble && conv) {
           conv.messages.push({ role: 'assistant', content: pendingText });
           conv.ts = Date.now();
           saveConv();
         }
-        finishBubble();
-        if (msg.aborted) hint(pickFun(ABORT_LINES));
+        finishBubble(aborted || paused ? 'cancelled' : 'completed');
+        if (aborted) hint(pickFun(ABORT_LINES));
         break;
       }
       case 'toolResult': {
-        if (!busy) break;
+        if (!busy || stopRequested) break;
         const t = contTools.find((x) => x.uid === msg.uid);
-        if (!t) break;
+        if (!t || t.result !== null) break;
         t.result = msg.ok ? msg.result : 'ERROR: ' + (msg.error || 'failed');
         contResolved += 1;
         const row = rowByUid[msg.uid];
-        if (row) closeStep(row); // tick the narrated line that was waiting on this tool
+        if (row) closeStep(row, t.result, msg.ok ? 'completed' : 'error'); // tick the narrated line that was waiting on this tool
         if (msg.image) {
           const snap = document.createElement('div');
           snap.className = 'browse-snap';
@@ -1560,7 +1598,8 @@
       }
       case 'error':
         setStatus('offline');
-        finishBubble();
+        stepRows.filter(row => !row.closed).forEach(row => closeStep(row, msg.message || 'Request failed.', 'error'));
+        finishBubble('error');
         const err = document.createElement('div');
         err.className = 'bubble error';
         err.textContent = '⚠ ' + (msg.message || 'error');
@@ -1570,17 +1609,18 @@
       case 'thinking':
         if (pendingBubble && !thinkRow && !pendingText) showThinking();
         {
-          const v = pickVoice('think');
-          showStep(v.text, false, v.title);
+          addStepRow('planning', 'Prepare response plan');
         }
         break;
+      case 'planningComplete':
+        closeStep(rowByUid.planning, msg.ok ? 'Plan prepared.' : 'Planning was unavailable; continuing with the direct response.');
+        break;
       case 'thought':
+        closeStep(rowByUid.planning, 'Plan prepared.');
         pendingThought = (msg.text || '').trim();
         if (thinkRow) thinkRow.title = 'Private reasoning:\n\n' + pendingThought;
         break;
       case 'searchInfo': {
-        const v = pickVoice('websearch', msg.query);
-        showStep(v.text, !!msg.results, msg.query ? v.title : '');
         webCount.textContent = msg.results
           ? `Web · ${msg.results} hits${msg.pages ? ' + ' + msg.pages + ' pages' : ''}`
           : 'Web';
@@ -1589,10 +1629,29 @@
           : '';
         break;
       }
+      case 'agentStep': {
+        if (!busy || !conv || conv.id !== activeRequestConvId) break;
+        let row = rowByUid[msg.uid];
+        if (!row) row = addStepRow(msg.uid, msg.title);
+        if (msg.kind === 'response') activeResponseStep = msg.uid;
+        if (msg.status && msg.status !== 'running') closeStep(row, msg.result || 'Completed.', msg.status);
+        break;
+      }
+      case 'contextCompacted': {
+        if (!busy || !conv || conv.id !== activeRequestConvId || contextRevision !== activeContextRevision) break;
+        agentMessages = msg.messages.slice();
+        conv.requestContext = { messages: msg.messages, through: activeRequestLength };
+        persist(); saveConv();
+        const detail = Math.round(msg.before / 1000) + 'K → ' + Math.round(msg.after / 1000) + 'K characters';
+        showStep('Context compressed · ' + detail, true, 'Older context summarized; recent source retained');
+        break;
+      }
+      case 'contextProgress':
+        showStep(msg.text, true, msg.text);
+        break;
       case 'contextInfo': {
-        const v = pickVoice('workspace');
-        showStep(v.text, true, v.title + ' — ' + msg.files + ' file' + (msg.files === 1 ? '' : 's')
-          + ', ~' + Math.round((msg.chars || 0) / 1024) + 'KB');
+        if (msg.context) agentMessages.unshift({ role: 'system', content: msg.context });
+        showStep('Workspace context ready', true, '', msg.files + ' file(s), ' + Math.round((msg.chars || 0) / 1024) + ' KB supplied to the model.');
         wsCount.textContent = msg.files
           ? `Workspace · ${msg.files} file${msg.files === 1 ? '' : 's'}`
           : 'Workspace';
@@ -1668,44 +1727,45 @@
         input.focus();
         break;
       }
+      case 'editRefreshed': {
+        const rec = editCards[msg.uid];
+        if (!rec || ['rejected', 'applied'].includes(rec.state)) break;
+        if (msg.error) {
+          rec.status.textContent = msg.error; rec.status.className = 'edit-status err'; rec.showRefresh();
+        } else if (msg.edit) {
+          rec.reject(); rec.status.textContent = 'Replaced by refreshed proposal';
+          renderEditCards(rec.card.closest('.edit-batch'), [msg.edit]);
+        }
+        break;
+      }
       case 'editResult': {
         const rec = editCards[msg.uid];
-        if (!rec) break;
+        if (!rec || rec.state === 'rejected' || rec.state === 'applied') break;
         if (msg.reviewed) {
-          endStep();
+          if (rec.state !== 'pending') break;
           if (msg.ok) {
             rec.status.textContent = '✓ opened in VS Code diff';
             rec.status.className = 'edit-status ok';
           } else {
             rec.status.textContent = '⚠ ' + (msg.error || 'failed');
             rec.status.className = 'edit-status err';
+            rec.showRefresh();
           }
           break;
         }
         if (msg.ok) {
-          if (Math.random() < 0.5) showStep(pickFun(FUN_APPLIED), true);
-          else showStep('✓ Applied ' + msg.path, true);
-          if (!busy) setTimeout(endStep, 2500);
+          showStep('Apply: ' + msg.path, true, '', msg.unsaved ? 'Updated the editor buffer; changes remain unsaved.' : 'Applied and saved.');
+          if (!busy) endStep();
           if (!appliedEdits.includes(msg.path)) appliedEdits.push(msg.path);
-          rec.status.textContent = '✓ applied';
+          rec.status.textContent = msg.unsaved ? 'Applied · unsaved' : '✓ applied';
           rec.status.className = 'edit-status ok';
         } else {
           if (!busy) endStep();
           rec.status.textContent = '⚠ ' + (msg.error || 'failed');
           rec.status.className = 'edit-status err';
-          rec.disable();
-          const rb = document.createElement('button');
-          rb.className = 'edit-btn';
-          rb.textContent = '↻ Re-propose';
-          rb.addEventListener('click', () => {
-            rb.disabled = true;
-            startChat('Your proposed edit to "' + (msg.path || rec.path) + '" failed: '
-              + (msg.error || 'error') + '. Re-propose the edit with corrected "search" text in a new ```edit block.');
-          });
-          const acts = rec.card.querySelector('.edit-actions');
-          if (acts) acts.insertBefore(rb, rec.status);
         }
-        rec.disable();
+        rec.finish(!!msg.ok);
+        if (!msg.ok) rec.showRefresh();
         break;
       }
       default:
@@ -1717,7 +1777,11 @@
 
   $('#send').addEventListener('click', send);
   $('#stop').addEventListener('click', () => {
-    if (busy) post('abort');
+    if (!busy) return;
+    stopRequested = true;
+    post('abort');
+    // Tool rounds can be waiting without an active model request to abort.
+    if (contTools.some(t => t.result === null)) finishBubble('cancelled');
   });
   attachBtn.addEventListener('click', () => {
     attachMenu.hidden = !attachMenu.hidden;

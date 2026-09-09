@@ -16,6 +16,7 @@
     const store = {
         local: null,            // relay /status snapshot (or null when offline)
         localAt: 0,
+        localChecked: false,
         pointerUrl: null,
         pointerAt: 0,
         settings: null,         // relay /_reach/settings (masked)
@@ -63,11 +64,13 @@
                 return res.json();
             })
             .then(snap => {
+                store.localChecked = true;
                 store.local = snap;
                 store.localAt = Date.now();
                 return snap;
             })
             .catch(() => {
+                store.localChecked = true;
                 store.local = null;
                 return null;
             });

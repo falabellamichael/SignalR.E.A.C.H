@@ -127,7 +127,7 @@ def copilot_chat(messages, max_tokens=None, timeout=300):
     user_messages = [{"role": m.get("role", "user"),
                       "content": flatten_content(m.get("content", ""))}
                      for m in messages
-                     if m.get("role") in ("user", "assistant")]
+                     if m.get("role") in ("system", "developer", "user", "assistant", "tool")]
     if not user_messages:
         user_messages = [{"role": "user", "content": "Hello"}]
     request = urllib.request.Request(
