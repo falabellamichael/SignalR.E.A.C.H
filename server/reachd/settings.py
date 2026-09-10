@@ -89,11 +89,13 @@ DEFAULT_SETTINGS = {
             "upstream": "codegpt/codegpt-gpt-4o-mini",
             "description": "Cheaper, faster gpt-4o-mini",
         },
-        "chatgpt-chat": {
-            **MODEL_SPEC_DEFAULTS,
-            "upstream": "copilot/chatgpt-chat",
-            "description": "ChatGPT via the local Copilot bridge (free, shared)",
-        },
+        # NOTE: there is deliberately no `chatgpt-chat` alias here. That id is a
+        # TRAY BRIDGE model, served by the Electron tray on 127.0.0.1:21302 —
+        # not by OmniRoute. Routing it through the relay made /v1/models
+        # advertise a model the relay could never serve (the "copilot/" prefix
+        # is not an OmniRoute provider), so every call to it failed. Clients
+        # that want it must select the ChatGPT provider and talk to the bridge
+        # directly. Add one here by hand only against a real OmniRoute upstream.
         "gemini-2.5-flash": {
             **MODEL_SPEC_DEFAULTS,
             "upstream": "codegpt/codegpt-gemini-2.5-flash",

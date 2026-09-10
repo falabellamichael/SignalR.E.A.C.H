@@ -10,7 +10,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 |---|---|
 | **Endpoint pointer (always current URL)** | <https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt> |
 | **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`, fully tunable per alias) |
-| **CodeGPT economy models** | `deepseek-v4-flash`, `deepseek-v4.1-flash`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `ox-alpha` — see [CodeGPT economy models](#codegpt-economy-models) |
+| **CodeGPT economy models** | `deepseek-v4.1-flash`, `ox-alpha`, `gemini-3.8-flash`, `gpt-5.6-luna`, `glm-5.2`, `MiniMax-M3` — see [CodeGPT economy models](#codegpt-economy-models) |
 | **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
@@ -70,11 +70,26 @@ Verified against the live API, so this does not get re-litigated:
 - The agent page's own model menu lists **premium models only** ("… – pro model"),
   so economy models are not selectable there.
 
-The tray still opens the page's `AI Model …` menu, clicks the requested economy
-model when it is offered, and **reads the trigger back to confirm** — it never
-reports a model it did not actually select. Each request logs the model it asked
-for, the model the app's own API says answered, and the full menu when a model is
-missing, so an entitlement problem looks like one instead of like a hang.
+### Working local route (REACH and SignalREACH)
+
+Keep VS Code with CodeGPT running and signed in. In REACH or the SignalREACH tray,
+choose **CodeGPT economy models** and select a model. The tray serves them at
+`http://127.0.0.1:21302/v1` using `codegpt-eco-<id>` model IDs. The bare
+`codegpt-eco` (and legacy `codegpt-eco-gpt-4o-mini`) selects the first economy
+entry rather than an arbitrary page default.
+
+The tray opens `http://localhost:54112/54113/`: **54112 is the Next web server;
+54113 in the path is the CodeGPT extension API port**. Using `/54112/` renders
+the UI but sends chat to the wrong backend, producing HTML instead of JSON.
+The tray confirms the requested model in the local picker, submits once, and
+captures `/api/runs` NDJSON. Only the final assistant answer is returned, without
+reasoning blocks, progress labels, or the old response-length truncation.
+A failed model switch is an error, never a silent fallback. Invalid responses,
+approval-required runs, and requests exceeding 180 seconds fail explicitly.
+
+The separately hosted public endpoint needs the updated tray on its own host;
+updating a client machine does not update that host. Its relay uses the existing
+`bridge/codegpt-eco-<id>` aliases described above.
 
 
 ## Use the endpoint

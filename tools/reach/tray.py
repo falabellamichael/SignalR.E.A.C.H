@@ -30,8 +30,20 @@ def install_tray(repo_root):
     if not electron_binary(source).is_file():
         raise SystemExit('Install the tray runtime first: cd copilot/tray && npm install')
     destination = tray_dir()
-    shutil.copytree(source, destination, dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns('*.log', 'dist', '__pycache__'))
+    destination.mkdir(parents=True, exist_ok=True)
+    # Copy tray source files fast; only copy node_modules if not already installed
+    files = ['bridge.js', 'economy-models.js', 'endpoint.js', 'main.js', 'package.json',
+             'package-lock.json', 'panel.css', 'panel.html', 'panel.js',
+             'preload.js', 'tray-icon.png']
+    for fname in files:
+        src_file = source / fname
+        if src_file.is_file():
+            shutil.copy2(src_file, destination / fname)
+    if not electron_binary(destination).is_file():
+        src_nm = source / 'node_modules'
+        dst_nm = destination / 'node_modules'
+        if src_nm.is_dir():
+            shutil.copytree(src_nm, dst_nm, dirs_exist_ok=True, symlinks=True)
     print('  SignalREACH tray installed -> ' + str(destination))
     _update_packaged_app(source)
     return destination
@@ -53,7 +65,7 @@ def _update_packaged_app(source):
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         staging = Path(tmpdir)
-        files = ['bridge.js', 'endpoint.js', 'main.js', 'package.json',
+        files = ['bridge.js', 'economy-models.js', 'endpoint.js', 'main.js', 'package.json',
                  'panel.css', 'panel.html', 'panel.js', 'preload.js', 'tray-icon.png']
         for fname in files:
             src_file = source / fname

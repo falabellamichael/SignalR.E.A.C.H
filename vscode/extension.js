@@ -132,6 +132,17 @@ function agentSystemPrompt(connection) {
 
 const TRAY_PROVIDERS = ['copilot', 'chatgpt', 'codegpt'];
 
+// The local CodeGPT bridge, served by the SignalREACH tray. Economy models
+// (`codegpt-eco` / `codegpt-eco-<id>`) live only behind the signed-in CodeGPT
+// session this bridge holds, so they are always routed here — even when the
+// selected provider is Free endpoints. See _modelEndpoint.
+const TRAY_BRIDGE_ENDPOINT = 'http://127.0.0.1:21302/v1';
+
+/** True for any CodeGPT economy id — bare `codegpt-eco` or `codegpt-eco-<id>`. */
+function isEconomyModel(model) {
+  return typeof model === 'string' && model.startsWith('codegpt-eco');
+}
+
 /* Parse "Name: value" lines into a headers object.
  *
  * One header per line, the first colon separates name from value (so a value
@@ -327,7 +338,7 @@ function config() {
     endpointAccessKeys,
     accessKey: isTrayBridge ? '' : selectedEndpoint ? endpointAccessKeys[selectedEndpoint] : freeAccessKey,
     model: provider === 'copilot' ? 'copilot-chat' : provider === 'chatgpt' ? 'chatgpt-chat'
-      : provider === 'codegpt' ? (String(cfg.get('model') || '').startsWith('codegpt-eco') ? String(cfg.get('model')) : 'codegpt-eco')
+      : provider === 'codegpt' ? (isEconomyModel(cfg.get('model')) ? String(cfg.get('model')) : 'codegpt-eco')
       : String(cfg.get('model') || 'gpt-4o-mini'),
     maxTokens: Number(cfg.get('maxTokens') || 2048),
     workspaceContext: cfg.get('workspaceContext') !== false,
@@ -666,7 +677,7 @@ class ReachChatViewProvider {
               + 'return {"error":"brief explanation"}. This is a proposal only; nothing will be applied.\nOriginal proposal: '
               + original + '\nCURRENT SOURCE (' + rel + ', may be a window):\n' + source;
             if (prompt.length > 7000) throw new Error('This proposal is too large to refresh safely. Request a smaller edit.');
-            const response = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
+            const response = await this._fetchRetry(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
               method: 'POST', headers: this._authHeaders({}, connection),
               ...(this._controller ? { signal: this._controller.signal } : {}),
               body: encodeChatPayload({ model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: 1500 }),
@@ -896,10 +907,15 @@ class ReachChatViewProvider {
     return out.length ? out.join('\n') : '(empty directory)';
   }
 
-  _authHeaders(extra, connection = config()) {
+  /* `model`, when given, lets auth follow the DESTINATION rather than the
+   * configured provider: an economy id is served by the local bridge, which
+   * never wants the free endpoint's access key (and must not receive it). */
+  _authHeaders(extra, connection = config(), model = null) {
     const headers = Object.assign({ 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' }, extra || {});
     const { accessKey } = connection;
-    if (accessKey && !TRAY_PROVIDERS.includes(connection.provider)) headers.Authorization = `Bearer ${accessKey}`;
+    const toBridge = TRAY_PROVIDERS.includes(connection.provider)
+      || (model !== null && isEconomyModel(model));
+    if (accessKey && !toBridge) headers.Authorization = `Bearer ${accessKey}`;
     // User-supplied headers, applied last so they can override a default (for
     // example pointing at a gateway that wants its own auth header). Parsed
     // once per call from config; a malformed value is skipped, never fatal.
@@ -911,20 +927,47 @@ class ReachChatViewProvider {
   async _fetchModels() {
     const connection = config();
     const { endpoint } = connection;
+    let trayDown = false;
     try {
-      if (TRAY_PROVIDERS.includes(connection.provider) && !await trayHealth()) {
+      // Tray providers cannot work at all without the bridge. Free endpoints
+      // can — the economy group is just omitted — so a missing tray is a note
+      // there, never a failure of the whole refresh.
+      if (!await trayHealth()) {
         const state = await startTray();
-        if (state === 'missing' || state === 'error') {
+        const missing = state === 'missing' || state === 'error';
+        if (missing && TRAY_PROVIDERS.includes(connection.provider)) {
           const name = connection.provider === 'chatgpt' ? 'ChatGPT'
             : connection.provider === 'codegpt' ? 'CodeGPT economy models' : 'Microsoft 365 Copilot';
           throw new Error(`Start the SignalREACH tray to use ${name}.`);
         }
-        for (let attempt = 0; attempt < 20 && !await trayHealth(); attempt++) await new Promise(resolve => setTimeout(resolve, 250));
+        if (!missing) {
+          for (let attempt = 0; attempt < 20 && !await trayHealth(); attempt++) await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        trayDown = missing || !await trayHealth();
       }
       const catalog = await this._discoverModels(connection);
       if (this._endpointKey(connection) !== this._endpointKey(config())) return;
-      this._post('models', { models: [...catalog.routes.keys()], endpoint: catalog.bases.join(' · '), provider: connection.provider, providerSelection: connection.providerSelection });
+      // Grouped for the picker: a "CodeGPT economy" section is listed beside
+      // the ordinary free aliases, so it is obvious which ids the bridge serves
+      // (and which ones therefore keep working when the endpoint does not).
+      const all = [...catalog.routes.keys()];
+      const economy = all.filter(isEconomyModel);
+      const regular = all.filter(id => !isEconomyModel(id));
+      this._post('models', {
+        models: all,
+        groups: [
+          ...(regular.length ? [{ label: connection.provider === 'codegpt' ? 'Models' : 'Free models', models: regular }] : []),
+          ...(economy.length ? [{ label: 'CodeGPT economy', models: economy }] : []),
+        ],
+        endpoint: catalog.bases.join(' · '),
+        provider: connection.provider,
+        providerSelection: connection.providerSelection,
+      });
       if (catalog.errors.length) this._post('error', { message: 'Some endpoints could not load: ' + catalog.errors.join('; ') });
+      if (!economy.length && (catalog.bridgeError || trayDown)) {
+        this._post('error', { message: 'CodeGPT economy models are unavailable — start the SignalREACH tray and sign in to CodeGPT.'
+          + (catalog.bridgeError ? ' (' + catalog.bridgeError + ')' : '') });
+      }
     } catch (err) {
       if (this._endpointKey(connection) !== this._endpointKey(config())) return;
       this._post('error', { message: `Could not reach ${endpoint}: ${err.message}` });
@@ -935,32 +978,64 @@ class ReachChatViewProvider {
     return JSON.stringify([connection.providerSelection, connection.endpoint, connection.accessKey]);
   }
 
+  /* Discover the selectable models. Two sources:
+   *
+   *   1. the configured endpoint(s) — the ordinary free aliases; and
+   *   2. for Free endpoints, ALSO the local CodeGPT bridge, so the economy
+   *      tier is selectable there. Those ids are routed back to the bridge at
+   *      request time by _modelEndpoint, so they work even though the endpoint
+   *      they were listed from is not the one that serves them.
+   *
+   * The bridge is best-effort: when the tray is not running the economy group
+   * is simply absent (with a note) rather than failing the whole refresh — the
+   * free aliases must keep working. */
   async _discoverModels(connection) {
     const endpoints = [connection.endpoint];
-    const results = await Promise.allSettled(endpoints.map(async endpoint => {
+    const isTray = TRAY_PROVIDERS.includes(connection.provider);
+    // Free endpoints also pulls the economy group from the local bridge.
+    if (!isTray) endpoints.push(TRAY_BRIDGE_ENDPOINT);
+    const results = await Promise.allSettled(endpoints.map(async (endpoint, index) => {
+      const fromBridge = !isTray && index > 0;
       const base = await resolveEndpoint(endpoint);
-      const resp = await fetch(`${base}/models`, { headers: this._authHeaders({}, connection) });
+      const resp = await this._fetchRetry(`${base}/models`, { headers: this._authHeaders({}, connection, fromBridge ? 'codegpt-eco' : null) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
-      const models = (Array.isArray(data?.data) ? data.data : []).map(m => m?.id)
-        .filter(id => typeof id === 'string' && id)
-        .filter(id => connection.provider !== 'codegpt' || id === 'codegpt-eco' || id.startsWith('codegpt-eco-'));
-      if (!models.length) throw new Error('Endpoint returned no models.');
-      return { base, models };
+      let models = (Array.isArray(data?.data) ? data.data : []).map(m => m?.id)
+        .filter(id => typeof id === 'string' && id);
+      if (connection.provider === 'codegpt' || fromBridge) {
+        // A tray provider, and the bridge leg of a Free-endpoints refresh,
+        // serve ONLY economy ids. The bridge also answers `copilot-chat` and
+        // `chatgpt-chat`, which belong to their own providers and must not leak
+        // into the Free endpoints list.
+        models = models.filter(id => isEconomyModel(id));
+      } else {
+        // The configured endpoint must not advertise economy ids: they are
+        // served by the bridge, and a remote endpoint listing them would offer
+        // models it cannot actually answer (the 503 this grouping fixes).
+        models = models.filter(id => !isEconomyModel(id));
+      }
+      if (!models.length) throw new Error(fromBridge ? 'No CodeGPT economy models (is the tray running?)' : 'Endpoint returned no models.');
+      return { base, models, fromBridge };
     }));
     const routes = new Map();
     const errors = [];
     const bases = [];
+    // A dead bridge is NOT an endpoint error: Free endpoints still work, only
+    // the economy group is missing. Report it separately so the chat says which
+    // is which instead of a generic "some endpoints could not load".
+    let bridgeError = '';
     results.forEach((result, index) => {
-      if (result.status === 'rejected') errors.push(`${endpoints[index]}: ${result.reason.message}`);
-      else {
-        bases.push(result.value.base);
+      if (result.status === 'rejected') {
+        if (!isTray && index > 0) bridgeError = String(result.reason.message || result.reason);
+        else errors.push(`${endpoints[index]}: ${result.reason.message}`);
+      } else {
+        if (!result.value.fromBridge) bases.push(result.value.base);
         result.value.models.forEach(model => {
           if (!routes.has(model)) routes.set(model, endpoints[index]);
         });
       }
     });
-    const catalog = { key: this._endpointKey(connection), routes, errors, bases: [...new Set(bases)] };
+    const catalog = { key: this._endpointKey(connection), routes, errors, bridgeError, bases: [...new Set(bases)] };
     this._modelCatalog = catalog;
     if (!routes.size) throw new Error(errors.join('; '));
     return catalog;
@@ -991,6 +1066,23 @@ class ReachChatViewProvider {
     this._post('agentStep', { uid, status, result });
   }
 
+  /* A gateway 502/503/504 is a transient relay/upstream failure, not a problem
+   * with the request itself, so it is worth a couple of retries. Applies to every
+   * provider — the free endpoints, added endpoints and the tray bridge all reach
+   * their upstream through the same relay. Non-transient statuses (400, 401, 413…)
+   * fail immediately so nothing is retried pointlessly. Honors the user's Stop
+   * between attempts. */
+  async _fetchRetry(url, options, activity) {
+    const transient = new Set([502, 503, 504]);
+    for (let attempt = 0; ; attempt++) {
+      const response = await fetch(url, options);
+      if (response.ok || !transient.has(response.status) || attempt >= 2) return response;
+      if (activity) this._finishActivity(activity, `Request attempt ${attempt + 1} failed (HTTP ${response.status}); retrying.`, 'error');
+      await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      this._controller?.signal.throwIfAborted();
+    }
+  }
+
   async _compactContext(messages, model, options) {
     return compactMessages(messages, async archived => {
       const connection = config();
@@ -1010,13 +1102,16 @@ class ReachChatViewProvider {
           + 'Do not invent source text or mark unfinished work complete. Return only the updated memory, no more than '
           + noteLimit + ' characters.\nPrior memory:\n' + memory + `\nSegment ${i + 1}/${parts}:\n`
           + transcript.slice(i * chunkSize, (i + 1) * chunkSize);
-        const response = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
+        const body = encodeChatPayload({ model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: copilot ? 350 : 2400 });
+        const endpoint = `${await this._modelEndpoint(connection, model)}/chat/completions`;
+        // No fetch timeout: compressing the conversation is agent work and can
+        // legitimately outrun any fixed budget. Only the user's Stop aborts it.
+        // Transient gateway failures are retried by _fetchRetry.
+        const response = await this._fetchRetry(endpoint, {
           method: 'POST', headers: this._authHeaders({}, connection),
-          // No timeout: compressing the conversation is agent work and can
-          // legitimately outrun any fixed budget. Only the user's Stop aborts it.
           ...(this._controller ? { signal: this._controller.signal } : {}),
-          body: encodeChatPayload({ model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: copilot ? 350 : 2400 }),
-        });
+          body,
+        }, activity);
         if (!response.ok) throw new Error('Context compression failed (HTTP ' + response.status + '). The original conversation is intact.');
         const data = await response.json();
         const notes = data.choices?.[0]?.message?.content;
@@ -1069,12 +1164,12 @@ class ReachChatViewProvider {
         + 'Return ONLY concise notes, at most 1200 characters.\nRequest: ' + question
         + '\nPrevious notes: ' + notes + `\nPart ${i + 1}/${parts}:\n`
         + transcript.slice(i * 3500, (i + 1) * 3500);
-      const response = await fetch(`${await this._modelEndpoint(connection, payload.model)}/chat/completions`, {
+      const response = await this._fetchRetry(`${await this._modelEndpoint(connection, payload.model)}/chat/completions`, {
         // No timeout: reading long context is agent work. Stop is the only abort.
         method: 'POST', headers: this._authHeaders({}, connection),
         ...(this._controller ? { signal: this._controller.signal } : {}),
         body: JSON.stringify({ model: payload.model, messages: [{ role: 'user', content }], stream: false, max_tokens: 400 }),
-      });
+      }, activity);
       if (!response.ok) throw new Error(`Copilot could not read part ${i + 1}/${parts} (HTTP ${response.status}).`);
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
@@ -1096,7 +1191,25 @@ class ReachChatViewProvider {
       + '\nLatest request: ' + question + `\nReading notes from all ${parts} parts (condensed):\n` + notes }] });
   }
 
+  /* The routing chokepoint for every request.
+   *
+   * CodeGPT economy models are served by the local tray bridge, which holds the
+   * signed-in CodeGPT session — the only place that tier exists. When the user
+   * picks Free endpoints and then selects one of those models, the request must
+   * still go to the bridge, not to the free endpoint. A remote endpoint can
+   * never serve them: its `bridge/` alias resolves to ITS OWN 127.0.0.1:21302,
+   * which is not this machine, so every such call failed with a 503 while the
+   * model was nevertheless listed.
+   *
+   * So: economy ids always target the bridge, whichever provider is selected.
+   * Everything else keeps using the configured endpoint. */
   async _modelEndpoint(connection, model) {
+    if (isEconomyModel(model)) {
+      // Reuse the provider's own bridge base so port/token handling stays in
+      // one place (`config()` already returns it for tray providers).
+      if (TRAY_PROVIDERS.includes(connection.provider)) return resolveEndpoint(connection.endpoint);
+      return resolveEndpoint(TRAY_BRIDGE_ENDPOINT);
+    }
     return resolveEndpoint(connection.endpoint);
   }
 
@@ -1205,8 +1318,8 @@ class ReachChatViewProvider {
 
       const connection = config();
       try {
-        const response = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
-          method: 'POST', headers: this._authHeaders({}, connection),
+        const response = await this._fetchRetry(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
+          method: 'POST', headers: this._authHeaders({}, connection, model),
           signal: this._controller ? this._controller.signal : undefined,
           body: await this._encodePayload({
             model: connection.provider === 'copilot' ? 'copilot-chat' : connection.provider === 'chatgpt' ? 'chatgpt-chat' : model || connection.model,
@@ -1431,9 +1544,9 @@ class ReachChatViewProvider {
       const sendPayload = async request => {
         const encoded = await this._encodePayload(request);
         responseActivity = this._beginActivity('Generate response', 'response');
-        return fetch(`${await this._modelEndpoint(connection, request.model)}/chat/completions`, {
-          method: 'POST', headers: this._authHeaders({}, connection), body: encoded, signal: controller.signal,
-        });
+        return this._fetchRetry(`${await this._modelEndpoint(connection, request.model)}/chat/completions`, {
+          method: 'POST', headers: this._authHeaders({}, connection, request.model), body: encoded, signal: controller.signal,
+        }, responseActivity);
       };
       let resp = await sendPayload(payload);
       let responseError = null;

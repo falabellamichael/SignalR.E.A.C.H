@@ -234,12 +234,19 @@ def chat_execute(h):
                                                       "OmniRoute key).",
                                           "type": "server_error"}}, rl_headers)
         return None
-    if core.STATE.circuit_open():
-        h._json(503, {"error": {"message": "Upstream is in a "
-                                                      "failure cool-down — "
-                                                      "retry shortly.",
-                                          "type": "server_error",
-                                          "code": "upstream_cooling_down"}},
+    # The breaker is PER UPSTREAM. A failing OmniRoute must not 503 the
+    # CodeGPT economy aliases: they are served by the local tray bridge, a
+    # different process on a different port, and share no connection with the
+    # free upstream. Gating both on one global flag took every economy model
+    # down whenever the free tier hiccuped.
+    circuit = "bridge" if use_bridge else "omniroute"
+    if core.STATE.circuit_open(circuit):
+        h._json(503, {"error": {"message":
+                                "The CodeGPT bridge is in a failure cool-down — retry shortly."
+                                if use_bridge else
+                                "Upstream is in a failure cool-down — retry shortly.",
+                                "type": "server_error",
+                                "code": "upstream_cooling_down"}},
                           rl_headers)
         return None
 
@@ -355,7 +362,7 @@ def chat_execute(h):
                     last_error = exc
         if upstream is None:
             if isinstance(last_error, urllib.error.HTTPError):
-                core.STATE.note_failure()
+                core.STATE.note_failure(circuit)
                 h._log_chat(model=requested, upstream_model=upstream_model,
                                ip=ip,
                                user_agent=h.headers.get("User-Agent"),
@@ -368,7 +375,7 @@ def chat_execute(h):
                     "CodeGPT bridge rejected the request" if use_bridge
                     else "OmniRoute rejected the request")
                 return None
-            core.STATE.note_failure()
+            core.STATE.note_failure(circuit)
             h._log_chat(model=requested, upstream_model=upstream_model,
                            ip=ip, user_agent=h.headers.get("User-Agent"),
                            status=502, error="upstream_unreachable",
@@ -390,6 +397,9 @@ def chat_execute(h):
         "request_body": request_body, "fallback_used": fallback_used,
         "cache_cfg": cache_cfg, "cache_key": cache_key,
         "url": url, "payload": payload, "models": models,
+        # Which breaker this request belongs to, so finalize/cancel clear the
+        # same one that a failure would have tripped.
+        "circuit": circuit,
     }
     return upstream, ctx
 
@@ -408,6 +418,10 @@ def chat_finalize(h, upstream, ctx):
     cache_cfg = ctx["cache_cfg"]
     cache_key = ctx["cache_key"]
     content_type = upstream.headers.get("Content-Type", "application/json")
+    # Clear the breaker for the upstream that actually answered — not a global
+    # one, or a working bridge reply would mask a broken OmniRoute (and the
+    # other way round).
+    circuit = ctx.get("circuit", "omniroute")
     if stream:
         # Pre-read the upstream until the first real content token BEFORE
         # committing the 200: some routes (Gemini via OmniRoute) answer 200
@@ -473,7 +487,7 @@ def chat_finalize(h, upstream, ctx):
                 except Exception:
                     upstream = None
             if upstream is None:
-                core.STATE.note_failure()
+                core.STATE.note_failure(circuit)
                 h._log_chat(model=requested, upstream_model=upstream_model,
                                ip=ip, user_agent=h.headers.get("User-Agent"),
                                status=502, error="upstream_timeout",
@@ -694,7 +708,7 @@ def chat_finalize(h, upstream, ctx):
                         h._write_chunk(b"")
                     except Exception:
                         pass
-            core.STATE.note_success()
+            core.STATE.note_success(circuit)
             h._log_chat(model=requested, upstream_model=upstream_model,
                            ip=ip, user_agent=h.headers.get("User-Agent"),
                            status=200, error=None,
@@ -779,7 +793,7 @@ def chat_finalize(h, upstream, ctx):
 
     if core.STATE.cfg.get("data", {}).get("log_bodies"):
         response_body = data[:2048].decode("utf-8", "replace")
-    core.STATE.note_success()
+    core.STATE.note_success(circuit)
     with core.STATE._lock:
         core.STATE.latencies.append(latency_ms)
 

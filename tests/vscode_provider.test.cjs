@@ -43,7 +43,11 @@ test('added providers are saved and selected independently from the locked Free 
  assert.deepEqual(Array.from(h.config.additionalEndpoints),['https://second.example/v1']);
  assert.equal(h.readConfig().endpoint,'https://free.example/v1');
  assert.deepEqual(Array.from(h.posts.find(p=>p.type==='models').models),['my/free-model','shared']);
- assert.ok(h.calls.every(call=>call.url.startsWith('https://free.example/')));
+ // Free endpoints also probes the LOCAL tray bridge for the economy group, so
+ // every call is either the free endpoint or 127.0.0.1:21302 — never a third
+ // party. (The bridge probe is best-effort and adds no models when the tray is
+ // not running, which is the case here.)
+ assert.ok(h.calls.every(call=>call.url.startsWith('https://free.example/')||call.url.startsWith('http://127.0.0.1:21302/')),'unexpected destination: '+h.calls.map(c=>c.url).join(', '));
  await h.receive({type:'setConfig',key:'provider',value:'endpoint:https://second.example/v1'});
  assert.equal(h.readConfig().providerSelection,'endpoint:https://second.example/v1');
  assert.equal(h.config.selectedEndpoint,'https://second.example/v1');
@@ -73,7 +77,9 @@ test('an unavailable selected provider reports its error without using a differe
  await h.provider._fetchModels();
  assert.equal(h.posts.some(p=>p.type==='models'),false);
  assert.match(h.posts.find(p=>p.type==='error').message,/second.example.*503/);
- assert.ok(h.calls.every(call=>call.url.startsWith('https://second.example/')));
+ // The failure must be reported without falling back to another endpoint. The
+ // local bridge probe is expected and does not count as a fallback.
+ assert.ok(h.calls.every(call=>call.url.startsWith('https://second.example/')||call.url.startsWith('http://127.0.0.1:21302/')),'unexpected destination: '+h.calls.map(c=>c.url).join(', '));
 });
 
 test('Copilot ignores additional free endpoints during model discovery',async()=>{
@@ -112,26 +118,30 @@ test('endpoint keys save independently and only authenticate their own provider'
  assert.equal(h.config.endpointAccessKeys[second],'second-key');
  assert.equal(h.config.accessKey,'free-only-key');
  await h.receive({type:'setConfig',key:'provider',value:'endpoint:'+second});
- assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer second-key');
+ // Discovery also probes the local bridge; assert on the calls that actually
+ // target the selected endpoint, not simply the most recent one.
+ const toSecond=()=>h.calls.filter(c=>c.url.startsWith('https://second.example/')).at(-1);
+ assert.equal(toSecond().options.headers.Authorization,'Bearer second-key');
  await h.provider._chat({messages:[],model:'shared',stream:false});
- assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer second-key');
+ assert.equal(toSecond().options.headers.Authorization,'Bearer second-key');
  await h.provider._think('hi',false,'shared');
- assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer second-key');
+ assert.equal(toSecond().options.headers.Authorization,'Bearer second-key');
  await h.provider._deriveQuery('hi','shared');
- assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer second-key');
+ assert.equal(toSecond().options.headers.Authorization,'Bearer second-key');
  await h.receive({type:'setConfig',key:'endpointAccessKey',endpoint:second,value:''});
- assert.equal(h.calls.at(-1).options.headers.Authorization,undefined,'a cleared key must not fall back to the free key');
+ assert.equal(toSecond().options.headers.Authorization,undefined,'a cleared key must not fall back to the free key');
  await h.receive({type:'setConfig',key:'endpointAccessKey',endpoint:'https://unknown.example',value:'ignore'});
  assert.equal(h.config.endpointAccessKeys['https://unknown.example'],undefined);
  await h.receive({type:'setConfig',key:'provider',value:'endpoint'});
- assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer free-only-key');
+ const toFree=()=>h.calls.filter(c=>c.url.startsWith('https://free.example/')).at(-1);
+ assert.equal(toFree().options.headers.Authorization,'Bearer free-only-key');
  await h.receive({type:'setConfig',key:'endpointAccessKey',endpoint:'https://free.example/v1',value:'updated-free-key'});
- assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer updated-free-key');
+ assert.equal(toFree().options.headers.Authorization,'Bearer updated-free-key');
  await h.receive({type:'setConfig',key:'endpointAccessKey',endpoint:second,value:'second-key'});
  await h.receive({type:'setConfig',key:'additionalEndpoints',value:['https://replacement.example/v1']});
  assert.equal(h.config.endpointAccessKeys[second],undefined);
  await h.receive({type:'setConfig',key:'provider',value:'endpoint:https://replacement.example/v1'});
- assert.equal(h.calls.at(-1).options.headers.Authorization,undefined,'editing a URL must not copy its key');
+ assert.equal(h.calls.filter(c=>c.url.startsWith('https://replacement.example/')).at(-1).options.headers.Authorization,undefined,'editing a URL must not copy its key');
 });
 
 test('Think and final chat retain prior turns when answering a follow-up', async()=>{
@@ -337,4 +347,99 @@ test('a lower advertised character budget triggers one compressed retry',async()
  });
  await h.provider._chat({messages:[{role:'assistant',content:'x'.repeat(65000)},{role:'user',content:'Continue.'}],stream:false});
  assert.equal(answers,2);assert.equal(h.posts.find(p=>p.type==='done').full,'RETRY_OK');
+});
+
+test('REACH CodeGPT discovers only economy models and preserves model, history and stream', async()=>{
+ const model='codegpt-eco-deepseek-v4.1-flash';
+ const h=host({provider:'codegpt',model},url=>{
+  if(url.endsWith('/models')) {
+   const data=['copilot-chat','chatgpt-chat','codegpt-eco',model].map(id=>({id}));
+   return new Response(JSON.stringify({data}));
+  }
+  return new Response('data: '+JSON.stringify({choices:[{delta:{content:'ECONOMY OK'}}]})+'\n\ndata: [DONE]\n\n');
+ });
+ const catalog=await h.provider._discoverModels(h.readConfig());
+ assert.deepEqual(Array.from(catalog.routes.keys()),['codegpt-eco',model]);
+ const messages=[{role:'user',content:'My name is Mira.'},{role:'assistant',content:'Hi Mira'},{role:'user',content:'My name?'}];
+ await h.provider._chat({messages,model,stream:true});
+ const call=h.calls.at(-1), body=JSON.parse(call.options.body);
+ assert.equal(call.url,'http://127.0.0.1:21302/v1/chat/completions');
+ assert.equal(call.options.headers.Authorization,undefined);
+ assert.equal(body.model,model);
+ assert.equal(body.stream,true);
+ for(const message of messages) assert.ok(body.messages.some(m=>m.role===message.role && m.content===message.content));
+ assert.equal(h.posts.filter(p=>p.type==='delta').map(p=>p.text).join(''),'ECONOMY OK');
+ assert.ok(h.posts.some(p=>p.type==='done'));
+});
+test('a transient gateway 502 on the free endpoint is retried until it succeeds',async()=>{
+ let attempts=0;
+ const h=host({},()=>{
+  attempts++;
+  if(attempts<3)return new Response('Bad Gateway',{status:502});
+  return new Response(JSON.stringify({choices:[{message:{content:'RECOVERED OK'}}]}));
+ });
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'my/free-model',stream:false});
+ assert.equal(attempts,3,'502 must be retried');
+ assert.equal(h.calls.length,3);
+ assert.equal(h.calls[0].url,'https://free.example/v1/chat/completions');
+ assert.equal(h.posts.find(p=>p.type==='done').full,'RECOVERED OK');
+});
+
+test('a non-transient status on the free endpoint fails immediately without retrying',async()=>{
+ let attempts=0;
+ const h=host({},()=>{attempts++;return new Response('nope',{status:401});});
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'my/free-model',stream:false});
+ assert.equal(attempts,1,'401 must not be retried');
+ assert.match(h.posts.find(p=>p.type==='error').message,/401/);
+});
+test('Free endpoints groups the CodeGPT economy models and routes them to the local bridge',async()=>{
+ // A Free-endpoints refresh probes BOTH the configured endpoint and the local
+ // tray bridge. Economy ids come only from the bridge; they are grouped for
+ // the picker and, at request time, routed to the bridge even though the
+ // selected provider is Free endpoints (a remote endpoint cannot serve them —
+ // its own 127.0.0.1:21302 is not this machine, which is the 503 this fixes).
+ const h=host({},url=>new Response(JSON.stringify(url.endsWith('/models')
+   ? (url.startsWith('http://127.0.0.1:21302')
+      ? {data:[{id:'codegpt-eco'},{id:'codegpt-eco-ox-alpha'},{id:'copilot-chat'}]}
+      : {data:[{id:'my/free-model'}]})
+   : {choices:[{message:{content:'OK'}}]})));
+ await h.provider._fetchModels();
+ const models=h.posts.find(p=>p.type==='models');
+ assert.deepEqual(Array.from(models.models),['my/free-model','codegpt-eco','codegpt-eco-ox-alpha']);
+ // copilot-chat belongs to its own provider and must not leak into this list.
+ assert.equal(models.models.includes('copilot-chat'),false);
+ // Cross-realm arrays: compare structurally via JSON, not deepEqual.
+ const groups=JSON.parse(JSON.stringify(models.groups.map(g=>({label:g.label,models:Array.from(g.models)}))));
+ assert.deepEqual(groups,[
+   {label:'Free models',models:['my/free-model']},
+   {label:'CodeGPT economy',models:['codegpt-eco','codegpt-eco-ox-alpha']},
+ ]);
+ // An economy model selected under Free endpoints goes to the BRIDGE...
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'codegpt-eco-ox-alpha',stream:false});
+ const econ=h.calls.at(-1);
+ assert.equal(econ.url,'http://127.0.0.1:21302/v1/chat/completions');
+ // ...without the free endpoint's access key.
+ assert.equal(econ.options.headers.Authorization,undefined,'the bridge must never receive the free endpoint key');
+ // A free alias still goes to the configured endpoint, WITH its key.
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'my/free-model',stream:false});
+ const free=h.calls.at(-1);
+ assert.equal(free.url,'https://free.example/v1/chat/completions');
+ assert.equal(free.options.headers.Authorization,'Bearer free-only-key');
+});
+
+test('a tray that is not running drops the economy group without failing Free endpoints',async()=>{
+ // The bridge leg rejects; the free aliases must still load, with a note.
+ const h=host({},url=>url.startsWith('http://127.0.0.1:21302')
+   ? Promise.reject(new Error('ECONNREFUSED'))
+   : new Response(JSON.stringify(url.endsWith('/models')
+      ? {data:[{id:'my/free-model'}]} : {choices:[{message:{content:'OK'}}]})));
+ await h.provider._fetchModels();
+ const models=h.posts.find(p=>p.type==='models');
+ assert.deepEqual(Array.from(models.models),['my/free-model']);
+ assert.equal(models.groups.length,1);
+ assert.equal(models.groups[0].label,'Free models');
+ // The bridge failure is reported as an economy-group note, not as a generic
+ // endpoint error, so the cause is obvious from the chat.
+ const msgs=h.posts.filter(p=>p.type==='error').map(p=>p.message).join(' | ');
+ assert.match(msgs,/CodeGPT economy models/);
 });

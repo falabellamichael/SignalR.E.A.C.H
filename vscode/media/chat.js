@@ -1489,14 +1489,25 @@
 
   /* ---------- sending ---------- */
 
-  function setModelOptions(models, current) {
+  /* `groups` is the optional sectioned form: [{label, models}]. When present
+   * it renders as <optgroup>s so the CodeGPT economy models are a distinct
+   * section under Free endpoints. Falls back to a flat list when absent, so an
+   * older host that only sends `models` still works. */
+  function setModelOptions(models, current, groups) {
     modelSelect.innerHTML = '';
-    models.forEach((m) => {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
-      if (m === current) opt.selected = true;
-      modelSelect.appendChild(opt);
+    const sectioned = Array.isArray(groups) && groups.some((g) => g && g.models && g.models.length);
+    const sources = sectioned ? groups.filter((g) => g && g.models && g.models.length) : [{ label: '', models }];
+    sources.forEach((group) => {
+      const target = group.label ? document.createElement('optgroup') : modelSelect;
+      if (group.label) target.label = group.label;
+      group.models.forEach((m) => {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = m;
+        if (m === current) opt.selected = true;
+        target.appendChild(opt);
+      });
+      if (group.label) modelSelect.appendChild(target);
     });
     if (!modelSelect.value && models.length) modelSelect.value = models[0];
     updateModelChip();
@@ -1748,7 +1759,7 @@
       case 'models':
         if ((msg.providerSelection || msg.provider) !== providerSelect.value) break;
         endpointLine.textContent = msg.endpoint || endpointLine.textContent;
-        setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null);
+        setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null, msg.groups);
         if (conv && !msg.models.includes(conv.model)) { conv.model = modelSelect.value; persist(); updateModelChip(); }
         break;
       case 'delta':

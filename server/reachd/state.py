@@ -40,8 +40,12 @@ class RelayState:
         self.started_at = time.time()
         self.upstream_ok = None
         self.upstream_checked = 0.0
-        self.circuit_open_until = 0.0
-        self.consecutive_failures = 0
+        # Two INDEPENDENT breakers: "omniroute" (the free upstream) and
+        # "bridge" (the local CodeGPT economy bridge). They are separate
+        # processes on separate ports, so one being down says nothing about the
+        # other. A single shared breaker meant an OmniRoute outage answered 503
+        # for every economy alias too, even though those never touch OmniRoute.
+        self._circuits = {}
         # Requests currently being relayed, keyed by id(record). A request that
         # runs long is visible here (and in /status) instead of being a silence.
         self.in_flight = {}
@@ -104,23 +108,36 @@ class RelayState:
             self.upstream_checked = time.time()
         return ok
 
-    def note_failure(self):
+    def _circuit(self, upstream):
+        # The breaker record for one upstream ("omniroute" or "bridge").
+        return self._circuits.setdefault(
+            upstream, {"failures": 0, "open_until": 0.0})
+
+    def note_failure(self, upstream="omniroute"):
+        # Record a failed call to one upstream, opening its breaker once the
+        # configured consecutive-failure threshold is reached.
         threshold = int(self.cfg.get("circuit_threshold", 5))
         cooldown = int(self.cfg.get("circuit_cooldown_s", 30))
         with self._lock:
-            self.consecutive_failures += 1
-            if self.consecutive_failures >= threshold:
-                self.circuit_open_until = time.time() + cooldown
-                self.consecutive_failures = 0
-
-    def note_success(self):
+            state = self._circuit(upstream)
+            state["failures"] += 1
+            if state["failures"] >= threshold:
+                state["open_until"] = time.time() + cooldown
+                state["failures"] = 0
+    def note_success(self, upstream="omniroute"):
+        # Clear one upstream's breaker after a completed call.
         with self._lock:
-            self.consecutive_failures = 0
-            self.circuit_open_until = 0.0
-
-    def circuit_open(self):
+            state = self._circuit(upstream)
+            state["failures"] = 0
+            state["open_until"] = 0.0
+    def circuit_open(self, upstream="omniroute"):
+        # True while the named upstream is cooling down after failures.
+        # Callers that serve one upstream must pass its name: a bridge request
+        # is unaffected by an OmniRoute outage, and vice versa.
         with self._lock:
-            return time.time() < self.circuit_open_until
+            state = self._circuits.get(upstream)
+            return bool(state) and time.time() < state["open_until"]
+
 
     def discover_public_url(self):
         if self.cfg.get("tunnel", "ngrok") != "ngrok":
@@ -219,7 +236,15 @@ class RelayState:
                 "port": core.PORT,
                 "upstream": self.omniroute_url,
                 "upstream_ok": self.upstream_alive(),
-                "circuit_open": self.circuit_open(),
+                "bridge_url": self.bridge_url,
+                # Reported per upstream so the dashboard can tell a free-upstream
+                # outage apart from the local bridge being down. `circuit_open`
+                # stays as the OmniRoute flag for older panel builds.
+                "circuit_open": self.circuit_open("omniroute"),
+                "circuits": {
+                    "omniroute": self.circuit_open("omniroute"),
+                    "bridge": self.circuit_open("bridge"),
+                },
                 "models": list(self.public_models()),
                 "model_count": len(self.cfg.get("models", {})),
                 "public_url": self.public_url,
