@@ -172,6 +172,23 @@ def chat_execute(h):
     elif spec.get("max_tokens") is not None:
         payload["max_tokens"] = int(spec["max_tokens"])
 
+    # ---- reasoning-model floor: models with long reasoning preambles
+    # (Gemini 3.x) need headroom or upstream quality validation rejects the
+    # reply as "reasoning consumed N/N tokens — no content output".
+    min_out = int(spec.get("min_output_tokens", 0) or 0)
+    if min_out:
+        if "max_tokens" in payload and isinstance(payload["max_tokens"], int):
+            payload["max_tokens"] = max(payload["max_tokens"], min_out)
+        elif "max_completion_tokens" in payload \
+                and isinstance(payload["max_completion_tokens"], int):
+            payload["max_completion_tokens"] = max(payload["max_completion_tokens"], min_out)
+        elif spec.get("max_tokens") is None:
+            payload["max_tokens"] = min_out
+        if effective_cap:
+            for key in ("max_tokens", "max_completion_tokens"):
+                if key in payload and isinstance(payload[key], int):
+                    payload[key] = min(payload[key], effective_cap)
+
     # ---- stream ----
     stream = payload.get("stream")
     if stream is None:
@@ -673,7 +690,20 @@ def chat_finalize(h, upstream, ctx):
     if isinstance(parsed, dict):
         choices = parsed.get("choices") or []
         if choices and isinstance(choices[0], dict):
-            content_text = (choices[0].get("message") or {}).get("content") or ""
+            msg = choices[0].get("message") or {}
+            content_text = msg.get("content") or ""
+            # Reasoning models (Gemini 3.x) may spend the whole token budget on
+            # reasoning_content and leave content empty; surface the reasoning
+            # text as the visible answer so clients don't render an empty reply.
+            if not (isinstance(content_text, str) and content_text.strip()):
+                reason = msg.get("reasoning_content")
+                if isinstance(reason, str) and reason.strip():
+                    msg["content"] = reason
+                    content_text = reason
+                    try:
+                        parsed["choices"][0]["message"] = msg
+                    except Exception:
+                        pass
 
     if tokens_out is None or tokens_out == 0:
         tokens_out = count_tokens(content_text) if content_text else 1
