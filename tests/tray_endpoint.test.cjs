@@ -41,7 +41,7 @@ test('free endpoint: pointer, prefixed models, persisted settings, and chat rout
 
 test('Copilot bridge supports legacy, JSON and SSE clients with full conversation context', async t => {
  const calls=[];
- const base=await serve(t,createBridgeHandler(async text=>{calls.push(text);return 'COPILOT OK';},()=>({ok:true})));
+ const base=await serve(t,createBridgeHandler(async text=>{calls.push(text);return 'COPILOT OK';},null,()=>({ok:true})));
  const models=await (await fetch(base+'/v1/models')).json();
  assert.equal(models.data[0].id,'copilot-chat');
  const send=body=>fetch(base+'/v1/chat/completions',{method:'POST',body:JSON.stringify(body)});
@@ -60,7 +60,7 @@ test('Copilot bridge supports legacy, JSON and SSE clients with full conversatio
 });
 
 test('Copilot failures remain visible to both JSON and streaming VS Code clients',async t=>{
- const base=await serve(t,createBridgeHandler(async()=>{throw new Error('Sign in to Microsoft 365');},()=>({ok:true})));
+ const base=await serve(t,createBridgeHandler(async()=>{throw new Error('Sign in to Microsoft 365');},null,()=>({ok:true})));
  for(const stream of [false,true]){
  const response=await fetch(base+'/v1/chat/completions',{method:'POST',body:JSON.stringify({messages:[{role:'user',content:'Hi'}],stream})});
  assert.equal(response.status,stream?200:502);assert.match(await response.text(),/Sign in to Microsoft 365/);
@@ -68,9 +68,9 @@ test('Copilot failures remain visible to both JSON and streaming VS Code clients
 });
 
 test('tray runtime launch paths cover macOS, Windows and Linux',()=>{
- assert.match(trayBinary('/tray','darwin').replace(/\\/g, '/'),/Electron\.app\/Contents\/MacOS\/Electron$/);
+ assert.match(trayBinary('/tray','darwin').replace(/\\/g,'/'),/Electron\.app\/Contents\/MacOS\/Electron$/);
  assert.match(trayBinary('/tray','win32'),/electron\.exe$/);
- assert.match(trayBinary('/tray','linux').replace(/\\/g, '/'),/dist\/electron$/);
+ assert.match(trayBinary('/tray','linux').replace(/\\/g,'/'),/dist\/electron$/);
  assert.equal(trayDirectory('darwin',{},'/home/u').replace(/\\/g, '/'),'/home/u/Library/Application Support/SignalREACH/copilot/tray');
  assert.equal(trayDirectory('linux',{XDG_CONFIG_HOME:'/config'},'/home/u').replace(/\\/g, '/'),'/config/SignalREACH/copilot/tray');
  assert.equal(trayDirectory('win32',{LOCALAPPDATA:'/local'},'/home/u').replace(/\\/g, '/'),'/local/SignalREACH/copilot/tray');

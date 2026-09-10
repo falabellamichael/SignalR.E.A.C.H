@@ -190,7 +190,7 @@
         "simplereach.think": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "WhisperThink — the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the 💭 chip on a reply to peek). Toggle in the sidebar."
+          "markdownDescription": "WhisperThink \u2014 the model runs a private reasoning pass before answering. The reasoning is never shown in the chat flow (hover the \ud83d\udcad chip on a reply to peek). Toggle in the sidebar."
         },
         "simplereach.thinkModel": {
           "type": "string",
@@ -205,7 +205,7 @@
         "simplereach.webSearch": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Web search — the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
+          "markdownDescription": "Web search \u2014 the model's question is turned into a search query, fresh results + page excerpts are injected before answering (DuckDuckGo; Playwright used for page fetching when installed)."
         },
         "simplereach.searchResults": {
           "type": "number",
@@ -226,11 +226,13 @@
           "type": "string",
           "enum": [
             "endpoint",
-            "copilot"
+            "copilot",
+            "chatgpt"
           ],
           "enumDescriptions": [
             "Your free OpenAI-compatible endpoints",
-            "The local Microsoft 365 Copilot tray bridge"
+            "The local Microsoft 365 Copilot tray bridge",
+            "The local ChatGPT tray bridge"
           ],
           "default": "endpoint",
           "description": "Provider used by the REACH chat."

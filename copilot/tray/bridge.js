@@ -2,8 +2,8 @@
 
 // The Copilot bridge keeps its own provider, regardless of the tray's current
 // MiniChat selection. VS Code uses this OpenAI-compatible surface directly.
-function createBridgeHandler(sendCopilot, health) {
-    let queue = Promise.resolve();
+function createBridgeHandler(sendCopilot, sendChatgpt, health) {
+    const queues = { copilot: Promise.resolve(), chatgpt: Promise.resolve() };
     return (req, res) => {
         const json = (code, data) => {
             res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -12,7 +12,10 @@ function createBridgeHandler(sendCopilot, health) {
         if (req.headers.origin) return json(403, { error: { message: 'Use the local extension host to access this bridge.' } });
         if (req.method === 'GET' && ['/health', '/status'].includes(req.url)) return json(200, health());
         if (req.method === 'GET' && req.url === '/v1/models') {
-            return json(200, { object: 'list', data: [{ id: 'copilot-chat', object: 'model', owned_by: 'microsoft-365' }] });
+            return json(200, { object: 'list', data: [
+                { id: 'copilot-chat', object: 'model', owned_by: 'microsoft-365' },
+                { id: 'chatgpt-chat', object: 'model', owned_by: 'openai' }
+            ] });
         }
         const openai = req.url === '/v1/chat/completions';
         if (req.method !== 'POST' || ![ '/', '/send', '/v1/chat/completions' ].includes(req.url)) return json(404, { error: { message: 'Not found' } });
@@ -29,23 +32,31 @@ function createBridgeHandler(sendCopilot, health) {
                 text = messages.length ? messages.filter(m => ['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role) && typeof m.content === 'string')
                     .map(m => `${m.role}: ${m.content}`).join('\n\n') : String(body.text || '');
                 if (!text.trim()) throw new Error('Message is empty.');
-                if (openai && body.model && body.model !== 'copilot-chat') throw new Error('This bridge serves copilot-chat.');
+                const validModels = ['copilot-chat', 'chatgpt-chat'];
+                const requestedModel = (openai && body.model) ? body.model : 'copilot-chat';
+                if (openai && body.model && !validModels.includes(body.model)) throw new Error('This bridge serves copilot-chat and chatgpt-chat.');
             } catch (error) { return json(400, { error: { message: error.message } }); }
-            queue = queue.then(async () => {
+            const useChatgpt = (openai && body.model === 'chatgpt-chat');
+            const provider = useChatgpt ? 'chatgpt' : 'copilot';
+            const controller = new AbortController();
+            res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+            queues[provider] = queues[provider].then(async () => {
                 if (res.destroyed) return;
                 const start = Date.now();
                 let keepalive;
                 const stream = openai && body.stream === true;
                 const id = 'chatcmpl-reach-' + start;
-                const base = { id, created: Math.floor(start / 1000), model: 'copilot-chat' };
+                const activeModel = useChatgpt ? 'chatgpt-chat' : 'copilot-chat';
+                const base = { id, created: Math.floor(start / 1000), model: activeModel };
                 const event = data => { if (!res.destroyed) res.write('data: ' + JSON.stringify(data) + '\n\n'); };
                 try {
                     if (stream) {
                         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
                         res.flushHeaders();
-                        keepalive = setInterval(() => { if (!res.destroyed) res.write(': waiting for Copilot\n\n'); }, 10000);
+                        keepalive = setInterval(() => { if (!res.destroyed) res.write(': waiting for browser provider\n\n'); }, 10000);
                     }
-                    const content = await sendCopilot(text);
+                    const sender = useChatgpt ? sendChatgpt : sendCopilot;
+                    const content = await sender(text, { signal: controller.signal });
                     if (res.destroyed) return;
                     if (!openai) return json(200, { ok: true, content, ms: Date.now() - start });
                     if (!stream) return json(200, { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });

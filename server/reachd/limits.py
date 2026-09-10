@@ -93,14 +93,14 @@ class CounterGate:
         self._lock = threading.Lock()
         self._active = 0
 
-    def acquire(self, limit, timeout_s):
-        deadline = time.time() + timeout_s
+    def acquire(self, limit, timeout_s=None):
+        deadline = (time.time() + timeout_s) if timeout_s is not None else None
         while True:
             with self._lock:
                 if self._active < limit:
                     self._active += 1
                     return True
-            if time.time() >= deadline:
+            if deadline is not None and time.time() >= deadline:
                 return False
             time.sleep(0.05)
 

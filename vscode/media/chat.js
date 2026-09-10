@@ -39,6 +39,8 @@
   let busy = false;
   let pendingBubble = null;
   let thinkRow = null;
+  let answerNowBtn = null;
+  let answeringNow = false;
   let pendingText = '';
   // Frame-batched streaming render: deltas accumulate instantly, but the
   // bubble re-renders at most once per animation frame. Re-rendering per
@@ -110,19 +112,60 @@
   }
 
   function showThinking() {
-    if (!pendingBubble || thinkRow) return;
+    if (!pendingBubble || typeof pendingBubble.prepend !== 'function') return;
+    if (thinkRow && typeof pendingBubble.contains === 'function' && !pendingBubble.contains(thinkRow)) thinkRow = null;
+    if (answerNowBtn && typeof pendingBubble.contains === 'function' && !pendingBubble.contains(answerNowBtn)) answerNowBtn = null;
+    if (thinkRow) return;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'pending-status';
+
     const spinner = document.createElement('span');
     spinner.className = 'think-spinner';
     spinner.setAttribute('aria-label', 'thinking');
-    pendingBubble.prepend(spinner);
+    wrap.appendChild(spinner);
     thinkRow = spinner;
+
+    if (!answeringNow) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'answer-now-btn';
+      btn.setAttribute('aria-label', 'Answer now');
+      btn.title = 'Answer now using the context gathered so far';
+      btn.innerHTML = '<svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M9.5 1.5L3 9.5h4.5L6.5 14.5 13 6.5H8.5l1-5z" fill="currentColor"/></svg><span>Answer now</span>';
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        answerNow();
+      });
+      wrap.appendChild(btn);
+      answerNowBtn = btn;
+    } else {
+      const label = document.createElement('span');
+      label.className = 'answering-label';
+      label.textContent = 'Answering now…';
+      wrap.appendChild(label);
+    }
+
+    pendingBubble.prepend(wrap);
   }
 
   function hideThinking() {
-    if (thinkRow) { thinkRow.remove(); thinkRow = null; }
-    if (pendingBubble && pendingBubble.parentElement) pendingBubble.parentElement.classList.remove('thinking');
-    topThink.hidden = true;
-
+    if (answerNowBtn) {
+      if (typeof answerNowBtn.remove === 'function') answerNowBtn.remove();
+      answerNowBtn = null;
+    }
+    if (thinkRow) {
+      if (typeof thinkRow.remove === 'function') thinkRow.remove();
+      thinkRow = null;
+    }
+    if (pendingBubble && typeof pendingBubble.querySelector === 'function') {
+      const statusWrap = pendingBubble.querySelector('.pending-status');
+      if (statusWrap && typeof statusWrap.remove === 'function') statusWrap.remove();
+    }
+    if (pendingBubble && pendingBubble.parentElement && pendingBubble.parentElement.classList) {
+      pendingBubble.parentElement.classList.remove('thinking');
+    }
+    if (typeof topThink !== 'undefined' && topThink) topThink.hidden = true;
   }
 
   function thoughtIcon(title) {
@@ -756,6 +799,70 @@
     });
   }
 
+  function answerNow() {
+    if (!busy || stopRequested || answeringNow || !conv) return;
+    answeringNow = true;
+
+    if (answerNowBtn) {
+      answerNowBtn.disabled = true;
+      answerNowBtn.textContent = 'Answering…';
+    }
+
+    const readyTools = contTools.filter((t) => t.result !== null && !String(t.result).startsWith('Cancelled by Answer now'));
+    const pendingActionTools = contTools.filter((t) => t.result === null);
+
+    pendingActionTools.forEach((t) => {
+      t.result = 'Cancelled by Answer now.';
+      const row = rowByUid[t.uid];
+      if (row && !row.closed) closeStep(row, 'Skipped — Answer now requested.', 'cancelled');
+    });
+    contTools = [];
+    contResolved = 0;
+
+    stepRows.filter((row) => !row.closed).forEach((row) => {
+      closeStep(row, 'Skipped — Answer now requested.', 'completed');
+    });
+    showStep('Answer now', true, 'Answering now with available context');
+
+    let instruction = 'Answer the user request now using the context currently available. Provide a direct, concise and complete answer immediately without requesting additional tools or actions.';
+    if (readyTools.length) {
+      const resultsText = readyTools
+        .map((t) => '[' + t.action + ' ' + (t.path || t.pattern || t.command || t.url || t.query) + ']\n' + t.result)
+        .join('\n\n');
+      instruction = 'TOOL RESULTS (results gathered before answering):\n\n' + resultsText
+        + '\n\nAnswer the user request now using the context and results gathered above. Provide a direct, concise and complete answer immediately without requesting additional tools or actions.';
+    }
+
+    const cleanPending = typeof maskFenced === 'function'
+      ? maskFenced(pendingText).replace(/…/g, '').trim()
+      : String(pendingText || '').replace(/…/g, '').trim();
+    const follow = agentMessages.concat([
+      ...(cleanPending ? [{ role: 'assistant', content: cleanPending }] : []),
+      { role: 'user', content: instruction },
+    ]);
+    agentMessages = follow;
+    pendingText = '';
+    agentRounds += 1;
+
+    if (pendingBubble) {
+      pendingBubble.textContent = '';
+      showThinking();
+    }
+
+    post('chat', {
+      body: {
+        model: conv.model,
+        stream: true,
+        messages: follow,
+        includeWorkspace: false,
+        think: false,
+        webSearch: false,
+        agentic: false,
+        quickAnswer: true,
+      },
+    });
+  }
+
   /* ---------- per-message actions (Copy / Retry / Delete / Edit) ---------- */
 
   function copyText(text) {
@@ -1105,6 +1212,7 @@
       if (endpoint.trim()) others.appendChild(new Option(endpoint, 'endpoint:' + endpoint));
     }
     others.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
+    others.appendChild(new Option('ChatGPT', 'chatgpt'));
     providerSelect.appendChild(others);
     providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
   }
@@ -1350,6 +1458,7 @@
 
   function finishBubble(outcome = 'completed') {
     let cardsAfter = null;
+    answeringNow = false;
     if (pendingBubble) {
       cardsAfter = pendingBubble.parentElement;
       hideThinking();
@@ -1454,7 +1563,7 @@
     trayBtn.classList.toggle('tray-busy', status === 'starting');
     trayBtn.classList.toggle('tray-err', status === 'error' || status === 'missing');
     trayBtn.title = status === 'running'
-      ? 'System tray running (Copilot bridge :21302)'
+      ? 'System tray running (Copilot & ChatGPT bridge :21302)'
       : status === 'starting'
         ? 'System tray starting…'
         : status === 'error' || status === 'missing'
@@ -1468,6 +1577,7 @@
     activeRequestConvId = conv.id;
     activeContextRevision = contextRevision;
     busy = true;
+    answeringNow = false;
     pendingBubble = bubble('assistant');
     const pendingDiv = pendingBubble.parentElement;
     pendingDiv.classList.add('pending');
@@ -1600,7 +1710,8 @@
         break;
       case 'done': {
         if (!busy) break;
-        const aborted = msg.aborted || stopRequested;
+        const isAnsweringNow = typeof answeringNow !== 'undefined' && Boolean(answeringNow);
+        const aborted = (msg.aborted && !isAnsweringNow) || stopRequested;
         if (rafPending && pendingBubble) {
           rafPending = false;
           setRich(pendingBubble, maskFenced(pendingText));
@@ -1613,21 +1724,23 @@
         if (agenticEnabled) {
           const parsedE = extractEdits(pendingText);
           if (parsedE.edits.length) pendingEdits = pendingEdits.concat(parsedE.edits);
-          const parsedT = extractTools(parsedE.text);
-          tools = parsedT.tools;
-          if (parsedT.text !== pendingText) {
-            pendingText = parsedT.text;
-            if (pendingBubble) setRich(pendingBubble, pendingText);
+          if (!isAnsweringNow) {
+            const parsedT = extractTools(parsedE.text);
+            tools = parsedT.tools;
+            if (parsedT.text !== pendingText) {
+              pendingText = parsedT.text;
+              if (pendingBubble) setRich(pendingBubble, pendingText);
+            }
           }
         }
-        if (!aborted && tools.length && agentRounds < MAX_AGENT_ROUNDS) {
+        if (!aborted && !isAnsweringNow && tools.length && agentRounds < MAX_AGENT_ROUNDS) {
           continuationRetries = 0;
           if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText || 'Requested ' + tools.length + ' workspace action(s).');
           else if (pendingText) showStep('Assistant update', true, '', pendingText);
           beginToolRound(tools);
           break;
         }
-        const unfinished = agenticEnabled && !tools.length && !pendingEdits.length && isUnfinishedUpdate(pendingText);
+        const unfinished = !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length && isUnfinishedUpdate(pendingText);
         if (!aborted && unfinished && continuationRetries < 2 && agentRounds < MAX_AGENT_ROUNDS) {
           if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText);
           else showStep('Assistant update', true, '', pendingText);
@@ -1653,6 +1766,7 @@
           saveConv();
         }
         finishBubble(aborted || paused ? 'cancelled' : 'completed');
+        if (typeof answeringNow !== 'undefined') answeringNow = false;
         if (aborted) hint(pickFun(ABORT_LINES));
         break;
       }
@@ -1682,6 +1796,7 @@
         break;
       }
       case 'error':
+        answeringNow = false;
         setStatus('offline');
         stepRows.filter(row => !row.closed).forEach(row => closeStep(row, msg.message || 'Request failed.', 'error'));
         finishBubble('error');
@@ -1763,6 +1878,8 @@
         }
         if (!msg.workspaceFolders) {
           wsCount.title = 'No workspace folder open — only open-file contents are included.';
+        } else {
+          wsCount.title = 'Open folder: ' + msg.roots.join(', ') + ' — Agent mode includes full folder contents.';
         }
         break;
       case 'reload':
@@ -1869,6 +1986,7 @@
   $('#send').addEventListener('click', send);
   $('#stop').addEventListener('click', () => {
     if (!busy) return;
+    answeringNow = false;
     stopRequested = true;
     post('abort');
     // Tool rounds can be waiting without an active model request to abort.

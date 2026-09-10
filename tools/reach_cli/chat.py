@@ -98,6 +98,11 @@ def apply_edit(workpath, path, search, replace):
             with open(target, "w", encoding="utf-8") as handle:
                 handle.write(replace)
             return True, None
+        if search == "":
+            return (
+                False,
+                rel + " already exists (empty search only allowed when creating a file)",
+            )
         with open(target, "r", encoding="utf-8") as handle:
             current = handle.read()
         idx = current.find(search)

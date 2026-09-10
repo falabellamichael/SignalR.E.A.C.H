@@ -797,6 +797,50 @@ body {
 }
 
 /* thinking indicator: small spinning gold ring at the start of the response */
+.pending-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  min-height: 22px;
+}
+.answering-label {
+  font-size: 11px;
+  color: var(--reach-muted);
+  font-style: italic;
+}
+.answer-now-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  line-height: 1;
+  font-family: inherit;
+  font-weight: 500;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--reach-accent-border);
+  background: var(--reach-accent-bg);
+  color: var(--reach-accent-light);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.answer-now-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--reach-accent) 26%, transparent);
+  border-color: var(--reach-accent);
+  color: var(--reach-text);
+  box-shadow: 0 0 6px var(--reach-accent-glow);
+}
+.answer-now-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.answer-now-btn svg {
+  flex: 0 0 11px;
+  height: 11px;
+  width: 11px;
+}
 .think-spinner {
   display: inline-block;
   width: 11px;

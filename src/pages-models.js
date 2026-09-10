@@ -53,7 +53,7 @@
                 const aliasTd = document.createElement('td');
                 const aliasStrong = el('strong', null, alias);
                 aliasTd.appendChild(aliasStrong);
-                if (alias === 'copilot-chat') {
+                if (alias === 'copilot-chat' || alias === 'chatgpt-chat') {
                     const noteWrap = el('span', 'reach-note-wrap');
                     noteWrap.title = 'shared usage, shared responses';
                     noteWrap.appendChild(el('span', 'reach-note-badge', 'ⓘ'));

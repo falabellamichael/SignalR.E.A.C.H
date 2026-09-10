@@ -80,7 +80,7 @@ def refresh_token():
                  "Content-Type": "application/json",
                  "x-client": "copilot"})
     try:
-        with urllib.request.urlopen(request, timeout=30) as resp:
+        with urllib.request.urlopen(request) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
         new_token = data.get("token") or data.get("access_token") \
             or (data.get("data") or {}).get("token")
@@ -121,7 +121,7 @@ def flatten_content(content):
 BRIDGE_URL = "http://127.0.0.1:21302"
 
 
-def copilot_chat(messages, max_tokens=None, timeout=300):
+def copilot_chat(messages, max_tokens=None, timeout=None):
     """Call Copilot through the local bridge (browser-context fetch).
     Returns (status, [content deltas], error)."""
     user_messages = [{"role": m.get("role", "user"),
@@ -154,7 +154,7 @@ def copilot_chat(messages, max_tokens=None, timeout=300):
     return 200, [content], None
 
 
-def _legacy_copilot_chat(messages, max_tokens=None, timeout=240):
+def _legacy_copilot_chat(messages, max_tokens=None, timeout=None):
     """Direct backend call (Cloudflare-blocked for non-browser clients; kept
     for reference — the bridge path is the live one)."""
     ensure_fresh_token()

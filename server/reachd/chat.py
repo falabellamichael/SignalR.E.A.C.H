@@ -363,13 +363,12 @@ def chat_finalize(h, upstream, ctx):
         pending_prefix = []
         saw_content = False
         raw_sock = None
-        deadline = time.time() + int(core.STATE.cfg.get("stream_timeout_s", 300))
         try:
             sock = getattr(upstream, "fp", None)
             raw_sock = getattr(sock, "raw", None) or getattr(sock, "_sock", None)
             if raw_sock and hasattr(raw_sock, "settimeout"):
-                raw_sock.settimeout(8.0)
-            while time.time() < deadline:
+                raw_sock.settimeout(None)
+            while True:
                 line = upstream.readline()
                 if not line:
                     break
@@ -396,8 +395,7 @@ def chat_finalize(h, upstream, ctx):
             pass
         if raw_sock and hasattr(raw_sock, "settimeout"):
             try:
-                raw_sock.settimeout(
-                    int(core.STATE.cfg.get("stream_timeout_s", 300)))
+                raw_sock.settimeout(None)
             except Exception:
                 pass
         if not saw_content:
