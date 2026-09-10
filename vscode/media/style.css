@@ -1007,3 +1007,51 @@ body {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
 }
+
+/* ---------- slash-command menu (typed "/" above the composer) ---------- */
+/* Mirrors .ctx-menu/.ctx-item so it reads as the same surface as the
+   existing right-click menu: same raised background, border, radius. */
+.slash-menu {
+  position: absolute;
+  left: 8px; right: 8px; bottom: calc(100% + 6px);
+  z-index: 90; max-height: 216px; overflow-y: auto;
+  background: var(--reach-raised); border: 1px solid var(--reach-border);
+  border-radius: 8px; box-shadow: 0 8px 24px var(--reach-shadow);
+  padding: 4px; display: flex; flex-direction: column; gap: 1px;
+}
+.slash-item {
+  display: flex; align-items: baseline; gap: 8px;
+  background: transparent; border: none; color: var(--reach-text);
+  font-size: 12px; text-align: left; cursor: pointer;
+  padding: 6px 10px; border-radius: 5px; width: 100%;
+}
+.slash-item:hover,
+.slash-item.active { background: var(--reach-accent-bg); color: var(--reach-accent-light); }
+.slash-cmd {
+  font-family: var(--reach-mono, monospace); font-weight: 600;
+  color: var(--reach-accent-light); flex: 0 0 auto;
+}
+.slash-item.active .slash-cmd { color: inherit; }
+.slash-desc {
+  color: var(--reach-muted); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.slash-empty {
+  padding: 8px 10px; font-size: 11px; color: var(--reach-muted);
+}
+
+/* ---------- agent instructions textarea (Settings) ---------- */
+/* Same surface as the other setting inputs; only the height differs because
+   this one holds free text rather than a single value. */
+.agent-template {
+  width: 100%; resize: vertical; min-height: 84px;
+  background: var(--reach-input-bg, var(--reach-raised));
+  color: var(--reach-text);
+  border: 1px solid var(--reach-border); border-radius: 6px;
+  padding: 6px 8px; font-size: 12px;
+  font-family: var(--reach-mono, monospace);
+  line-height: 1.45;
+}
+.agent-template:focus { outline: none; border-color: var(--reach-accent); }
+.agent-row { flex-direction: column; align-items: stretch; gap: 4px; }
+.settings-hint { font-size: 11px; color: var(--reach-muted); }

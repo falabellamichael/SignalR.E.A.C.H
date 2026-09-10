@@ -7,6 +7,7 @@
   const $ = (sel) => document.querySelector(sel);
   const log = $('#log');
   const input = $('#input');
+  const slashMenu = $('#slash-menu');
   const modelSelect = $('#model');
   const providerSelect = $('#provider');
   const endpointLine = $('#endpoint');
@@ -1226,6 +1227,8 @@
   const SETTING_FIELDS = [
     { key: 'model', label: 'Default model', type: 'text' },
     { key: 'maxTokens', label: 'Max tokens', type: 'number', min: 1 },
+    { key: 'temperature', label: 'Temperature (blank = provider default)', type: 'text' },
+    { key: 'additionalHeaders', label: 'Extra headers (one Name: value per line)', type: 'text' },
     { key: 'workspaceContext', label: 'Workspace context', type: 'check' },
     { key: 'contextMaxKb', label: 'Context max KB', type: 'number', min: 8 },
     { key: 'think', label: 'WhisperThink', type: 'check' },
@@ -1245,6 +1248,7 @@
     }
     others.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
     others.appendChild(new Option('ChatGPT', 'chatgpt'));
+    others.appendChild(new Option('CodeGPT economy models', 'codegpt'));
     providerSelect.appendChild(others);
     providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
   }
@@ -1380,6 +1384,31 @@
       }
       settingsPanel.appendChild(row);
     });
+
+    /* Agent instructions — a NEW card appended after the existing fields.
+     * Nothing above is reflowed. Empty means "use the built-in agent prompt",
+     * so leaving it blank preserves today's behaviour exactly. */
+    const agentRow = document.createElement('div');
+    agentRow.className = 'setting-row agent-row';
+    const agentLabel = document.createElement('label');
+    agentLabel.htmlFor = 'set-agentTemplate';
+    agentLabel.textContent = 'Agent instructions (blank = built-in)';
+    const agentInput = document.createElement('textarea');
+    agentInput.id = 'set-agentTemplate';
+    agentInput.rows = 5;
+    agentInput.className = 'agent-template';
+    agentInput.spellcheck = false;
+    agentInput.placeholder = 'Leave blank to use the built-in agent prompt.\nVariables: {{workspace}}, {{model}}, {{provider}}';
+    agentInput.value = (cfg && cfg.agentTemplate) || '';
+    agentInput.addEventListener('change', () => post('setConfig', { key: 'agentTemplate', value: agentInput.value }));
+    const agentHint = document.createElement('div');
+    agentHint.className = 'settings-hint';
+    agentHint.textContent = 'The fenced ```edit / ```tool format is always appended, so edits keep working.';
+    agentRow.appendChild(agentLabel);
+    agentRow.appendChild(agentInput);
+    agentRow.appendChild(agentHint);
+    settingsPanel.appendChild(agentRow);
+
     const link = document.createElement('div');
     link.className = 'settings-link';
     link.textContent = 'Edit in VS Code settings…';
@@ -2137,7 +2166,164 @@
     if (conv) { conv.model = modelSelect.value; persist(); }
     updateModelChip();
   });
+  /* ---------- slash commands (typed "/" -> filtered menu) ----------
+   *
+   * Typing "/" as the first character of the composer opens a filtered list of
+   * commands, exactly like a normal IDE. Filtering by what follows the slash,
+   * Arrow Up/Down (or Ctrl+Click-free hover) moves the selection, Enter runs
+   * the highlighted one, Tab completes it, Escape closes. Clicking an item and
+   * typing its name are the same path: both call runSlash().
+   *
+   * A command is a prompt template. Expanding it fills the composer rather than
+   * sending immediately, so the user can add context first — except commands
+   * marked send:true, which dispatch at once.
+   */
+  const SLASH_COMMANDS = [
+    { name: '/review', desc: 'Review the current selection or open file',
+      prompt: 'Review this code for correctness, edge cases and clarity. Point out concrete problems with file and line, then propose fixes.\n\n' },
+    { name: '/explain', desc: 'Explain what the selected code does',
+      prompt: 'Explain what this code does, step by step, then note anything surprising or risky.\n\n' },
+    { name: '/fix', desc: 'Find and fix a bug in the selection',
+      prompt: 'Find the bug in this code, explain the root cause briefly, then emit the corrected code as an ```edit block.\n\n' },
+    { name: '/test', desc: 'Write tests for the selection',
+      prompt: 'Write focused tests for this code, covering the happy path and the edge cases that matter. Emit new files as ```edit blocks.\n\n' },
+    { name: '/commit', desc: 'Draft a commit message for the staged changes',
+      prompt: 'Draft a conventional-commit message for the current staged and unstaged changes. Inspect the diff first with the shell or read tools if you need to. Output only the message.',
+      send: true },
+    { name: '/read', desc: 'Read a file into the conversation',
+      prompt: 'Read the file I name next and summarise its structure.\n\n' },
+    { name: '/search', desc: 'Search the workspace for a pattern',
+      prompt: 'Search the workspace for the pattern I name next and report every meaningful hit with file and line.\n\n' },
+    { name: '/help', desc: 'Show what REACH can do',
+      prompt: 'Briefly list what you can do here: agentic code edits as diffs, workspace reading and search, running approved shell commands, web search and browsing. Keep it short.',
+      send: true },
+  ];
+
+  let slashItems = [];        // currently filtered commands
+  let slashIndex = 0;         // highlighted item
+  let slashOpen = false;
+  // The range of the typed query (the "/word" at the caret), so expansion can
+  // replace exactly that text rather than the whole box.
+  let slashQueryStart = -1;
+
+  function slashQuery() {
+    const value = input.value;
+    const caret = input.selectionStart;
+    if (caret === null) return null;
+    // Only when the slash sits at the very start of the composer, which keeps
+    // this from firing on a stray "and/or" mid-sentence.
+    if (value[0] !== '/') return null;
+    const upto = value.slice(0, caret);
+    const m = /^\/([^\s]*)$/.exec(upto);
+    if (!m) return null;
+    return { word: m[1], start: 0, end: caret };
+  }
+
+  function hideSlash() {
+    slashOpen = false;
+    slashMenu.hidden = true;
+    slashMenu.innerHTML = '';
+    slashItems = [];
+    slashIndex = 0;
+  }
+
+  function renderSlash() {
+    slashMenu.innerHTML = '';
+    if (!slashItems.length) {
+      const empty = document.createElement('div');
+      empty.className = 'slash-empty';
+      empty.textContent = 'No matching commands';
+      slashMenu.appendChild(empty);
+      return;
+    }
+    slashItems.forEach((cmd, i) => {
+      const b = document.createElement('button');
+      b.className = 'slash-item' + (i === slashIndex ? ' active' : '');
+      b.type = 'button';
+      b.setAttribute('role', 'option');
+      b.setAttribute('aria-selected', i === slashIndex ? 'true' : 'false');
+      const name = document.createElement('span');
+      name.className = 'slash-cmd';
+      name.textContent = cmd.name;
+      const desc = document.createElement('span');
+      desc.className = 'slash-desc';
+      desc.textContent = cmd.desc;
+      b.appendChild(name);
+      b.appendChild(desc);
+      // Mouse and keyboard share runSlash, so clicking and typing agree.
+      b.addEventListener('mousedown', (e) => { e.preventDefault(); runSlash(i); });
+      b.addEventListener('mouseenter', () => { slashIndex = i; renderSlash(); });
+      slashMenu.appendChild(b);
+    });
+  }
+
+  function openSlash(query) {
+    const q = query.word.toLowerCase();
+    slashItems = SLASH_COMMANDS.filter((c) =>
+      c.name.slice(1).toLowerCase().startsWith(q)
+      || c.desc.toLowerCase().includes(q));
+    if (!slashItems.length && !q) slashItems = SLASH_COMMANDS.slice();
+    slashIndex = 0;
+    slashQueryStart = query.start;
+    slashOpen = true;
+    slashMenu.hidden = false;
+    renderSlash();
+  }
+
+  function runSlash(index) {
+    const cmd = slashItems[index];
+    if (!cmd) return;
+    // Replace just the typed "/word", keeping any text the user added after it.
+    const value = input.value;
+    const query = slashQuery();
+    const upto = query ? query.end : 0;
+    const rest = value.slice(upto);
+    hideSlash();
+    if (cmd.send) {
+      input.value = cmd.prompt;
+      send();
+      return;
+    }
+    input.value = cmd.prompt + rest.replace(/^\s+/, '');
+    input.focus();
+    // Put the caret where the user should start typing their own words.
+    input.selectionStart = input.selectionEnd = cmd.prompt.length;
+  }
+
+  // Keep the menu in step with what is typed. This runs on every input event,
+  // including paste and programmatic changes, so the menu never goes stale.
+  function syncSlash() {
+    const query = slashQuery();
+    if (!query) { if (slashOpen) hideSlash(); return; }
+    openSlash(query);
+  }
+
+  input.addEventListener('input', syncSlash);
+  input.addEventListener('click', syncSlash);
+  input.addEventListener('blur', () => { if (slashOpen) hideSlash(); });
+
+  function moveSlash(delta) {
+    if (!slashItems.length) return;
+    slashIndex = (slashIndex + delta + slashItems.length) % slashItems.length;
+    renderSlash();
+    const active = slashMenu.querySelector('.slash-item.active');
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+  }
+
   input.addEventListener('keydown', (e) => {
+    // The slash menu intercepts navigation and Enter *only while it is open*,
+    // so a normal message is never hijacked.
+    if (slashOpen) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); moveSlash(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); moveSlash(-1); return; }
+      if (e.key === 'Escape') { e.preventDefault(); hideSlash(); return; }
+      if (e.key === 'Tab') { e.preventDefault(); runSlash(slashIndex); return; }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        runSlash(slashIndex);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       send();

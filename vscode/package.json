@@ -222,6 +222,21 @@
           "default": true,
           "markdownDescription": "Agentic mode — the model can propose file edits (shown as accept/reject diffs in the chat) using your workspace tree + open files as context."
         },
+        "simplereach.temperature": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Sampling temperature, 0–2. Leave blank to omit the parameter entirely and use the provider's own default."
+        },
+        "simplereach.additionalHeaders": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Extra HTTP headers sent with every request, one `Name: value` per line. Applied after the built-in headers, so they can override defaults."
+        },
+        "simplereach.agentTemplate": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Override the built-in agent instructions. Supports `{{workspace}}`, `{{model}}` and `{{provider}}`. Leave blank to use the built-in prompt. The fenced ```edit / ```tool output format is always appended so edits keep working."
+        },
         "simplereach.provider": {
           "type": "string",
           "enum": [

@@ -59,7 +59,104 @@ const TRAY_PORT = 21302;
 // models (unlimited tier of a paid CodeGPT plan — the tray drives the signed-in
 // CodeGPT session, because CodeGPT's public API only binds agents to legacy,
 // credit-metered models).
+/* The agentic system prompt.
+ *
+ * The built-in text below is the long-standing behaviour and stays the default.
+ * A user can override it in Settings ("Agent instructions"); the override is
+ * used verbatim, with {{workspace}}, {{model}} and {{provider}} substituted so
+ * a template can refer to the live request. An empty override = built-in.
+ */
+const DEFAULT_AGENT_PROMPT = 'You are SimpleREACH, an agentic coding assistant inside VS Code with live workspace access. '
+  + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
+  + 'in the workspace context above. When the user asks you to change or create files, act '
+  + 'like an agent: briefly explain what you will do, then emit each file change as a fenced '
+  + 'JSON block — one ```edit block per file, like this:\n'
+  + '```edit\n{"path": "relative/path/in/workspace", "search": "exact existing text", "replace": "new text"}\n```\n'
+  + 'Rules: path is relative to the workspace root, forward slashes. "search" must be a small '
+  + 'exact snippet of the current file; use "" as search to create a brand-new file with the '
+  + 'full content in "replace". Emit multiple blocks for multiple edits. Only emit blocks when '
+  + 'the change is clear — otherwise ask. The user sees each block as a diff and can accept or '
+  + 'reject it, so never claim a file was already changed; you only propose edits.\n'
+  + 'For reviews and code questions, read the relevant source before drawing conclusions. '
+  + 'If needed files are missing, request them; do not stop at the directory tree or ask the user to paste files. '
+  + 'Inspect the workspace by emitting tool blocks and then STOPPING — the '
+  + 'tool results are handed back to you and you continue from there:\n'
+  + 'Keep working until the user request is handled or you need concrete user input. '
+  + 'A progress update such as "I will inspect the files" must include the tool requests '
+  + 'for that next step in the same reply. Do not finish with a promise to act later. '
+  + 'After results arrive, perform the next needed action or provide the completed result. '
+  + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
+  + 'The read tool returns the complete text file, including unsaved editor changes. Open-file '
+  + 'context may omit files: use read before answering or editing unless the needed file is already marked complete. '
+  + 'For files larger than one read, use inclusive 1-based line ranges and read every needed range:\n'
+  + '```tool\n{"action": "read", "path": "relative/path", "startLine": 1, "endLine": 200}\n```\n'
+  + 'Never claim to have read the full file if you only received a preview or some ranges.\n'
+  + '```tool\n{"action": "search", "pattern": "text to find"}\n```\n'
+  + '```tool\n{"action": "list", "path": ""}\n```\n'
+  + '```tool\n{"action": "shell", "command": "npm test"}\n```\n'
+  + '```tool\n{"action": "browse", "url": "https://example.com"}\n```\n'
+  + '```tool\n{"action": "websearch", "query": "latest news"}\n```\n'
+  + 'Actions: "read" reads one file, "search" greps the whole workspace for a pattern, "list" '
+  + 'prints a directory tree (empty path = workspace root), "shell" runs a command in the '
+  + 'integrated terminal (the user must approve it first — you cannot see its output), "browse" '
+  + 'opens a web page in a browser (reads its text and shows a snapshot), "websearch" searches the '
+  + 'web and reads the top pages. Use them '
+  + 'when you need to see files that are not already in the context, then answer the question or emit edit '
+  + 'blocks for the actual changes.';
+
+/* Apply {{variable}} substitutions to a user-supplied prompt template. */
+function expandAgentTemplate(template, connection) {
+  const workspace = vscode.workspace.workspaceFolders
+    ? vscode.workspace.workspaceFolders.map((f) => f.name).join(', ') : '';
+  return String(template)
+    .replace(/\{\{workspace\}\}/g, workspace)
+    .replace(/\{\{model\}\}/g, (connection && connection.model) || '')
+    .replace(/\{\{provider\}\}/g, (connection && connection.provider) || 'endpoint');
+}
+
+/* The system prompt for an agentic request: the user's template if set, else
+ * the built-in text. The fenced-block contract is appended to a custom
+ * template too, because the client side only understands ```edit / ```tool
+ * blocks — dropping it would silently break every edit. */
+function agentSystemPrompt(connection) {
+  const custom = (connection && connection.agentTemplate || '').trim();
+  if (!custom) return DEFAULT_AGENT_PROMPT;
+  const expanded = expandAgentTemplate(custom, connection);
+  // Already contains the contract (the user pasted the full text): use as-is.
+  if (expanded.includes('```edit') || expanded.includes('```tool')) return expanded;
+  return expanded + '\n\nOutput format for this session:\n'
+    + '```edit\n{"path": "relative/path", "search": "exact existing text", "replace": "new text"}\n```\n'
+    + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
+    + 'Emit edit blocks for file changes; the user applies them as diffs.';
+}
+
 const TRAY_PROVIDERS = ['copilot', 'chatgpt', 'codegpt'];
+
+/* Parse "Name: value" lines into a headers object.
+ *
+ * One header per line, the first colon separates name from value (so a value
+ * may itself contain colons, as a URL or a JWT does). Blank lines and lines
+ * without a colon are ignored rather than throwing: a typo in a settings box
+ * must never break every request. Header names that would override something
+ * we rely on for framing are refused.
+ */
+function parseHeaderLines(text) {
+  const out = {};
+  const blocked = ['content-length', 'host'];
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf(':');
+    if (idx <= 0) continue;
+    const name = line.slice(0, idx).trim();
+    const value = line.slice(idx + 1).trim();
+    if (!name || !value) continue;
+    if (blocked.includes(name.toLowerCase())) continue;
+    if (!/^[A-Za-z0-9-_]+$/.test(name)) continue;
+    out[name] = value;
+  }
+  return out;
+}
 
 function trayHealth(timeoutMs) {
   return new Promise((resolve) => {
@@ -242,6 +339,17 @@ function config() {
     searchResults: Math.max(1, Math.min(10, Number(cfg.get('searchResults') || 5))),
     playwright: cfg.get('playwright') !== false,
     agentic: cfg.get('agentic') !== false,
+    // Sampling controls. null means "do not send the field at all", so a
+    // provider that rejects an unknown parameter is never sent one — the
+    // previous behaviour (no parameter) is the default.
+    temperature: Number.isFinite(Number(cfg.get('temperature')))
+      && cfg.get('temperature') !== '' && cfg.get('temperature') !== null
+      ? Math.max(0, Math.min(2, Number(cfg.get('temperature')))) : null,
+    // Extra request headers, one "Name: value" per line, as a single string.
+    additionalHeaders: String(cfg.get('additionalHeaders') || ''),
+    // Optional override for the agentic system prompt. Empty = use the built-in
+    // text, so the existing behaviour is untouched unless the user writes here.
+    agentTemplate: String(cfg.get('agentTemplate') || ''),
   };
 }
 
@@ -465,7 +573,7 @@ class ReachChatViewProvider {
             }
             break;
           }
-          const allowed = ['provider', 'additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright'];
+          const allowed = ['provider', 'additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright', 'agentic', 'temperature', 'additionalHeaders', 'agentTemplate'];
           if (!allowed.includes(key)) break;
           const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
           const current = cfg.get(key);
@@ -792,6 +900,11 @@ class ReachChatViewProvider {
     const headers = Object.assign({ 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' }, extra || {});
     const { accessKey } = connection;
     if (accessKey && !TRAY_PROVIDERS.includes(connection.provider)) headers.Authorization = `Bearer ${accessKey}`;
+    // User-supplied headers, applied last so they can override a default (for
+    // example pointing at a gateway that wants its own auth header). Parsed
+    // once per call from config; a malformed value is skipped, never fatal.
+    const custom = parseHeaderLines(connection.additionalHeaders);
+    for (const key of Object.keys(custom)) headers[key] = custom[key];
     return headers;
   }
 
@@ -829,7 +942,9 @@ class ReachChatViewProvider {
       const resp = await fetch(`${base}/models`, { headers: this._authHeaders({}, connection) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
-      const models = (Array.isArray(data?.data) ? data.data : []).map(m => m?.id).filter(id => typeof id === 'string' && id);
+      const models = (Array.isArray(data?.data) ? data.data : []).map(m => m?.id)
+        .filter(id => typeof id === 'string' && id)
+        .filter(id => connection.provider !== 'codegpt' || id === 'codegpt-eco' || id.startsWith('codegpt-eco-'));
       if (!models.length) throw new Error('Endpoint returned no models.');
       return { base, models };
     }));
@@ -1280,43 +1395,7 @@ class ReachChatViewProvider {
       if (body.agentic && agentic) {
         messages.unshift({
           role: 'system',
-          content: 'You are SimpleREACH, an agentic coding assistant inside VS Code with live workspace access. '
-            + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
-            + 'in the workspace context above. When the user asks you to change or create files, act '
-            + 'like an agent: briefly explain what you will do, then emit each file change as a fenced '
-            + 'JSON block — one ```edit block per file, like this:\n'
-            + '```edit\n{"path": "relative/path/in/workspace", "search": "exact existing text", "replace": "new text"}\n```\n'
-            + 'Rules: path is relative to the workspace root, forward slashes. "search" must be a small '
-            + 'exact snippet of the current file; use "" as search to create a brand-new file with the '
-            + 'full content in "replace". Emit multiple blocks for multiple edits. Only emit blocks when '
-            + 'the change is clear — otherwise ask. The user sees each block as a diff and can accept or '
-            + 'reject it, so never claim a file was already changed; you only propose edits.\n'
-            + 'For reviews and code questions, read the relevant source before drawing conclusions. '
-            + 'If needed files are missing, request them; do not stop at the directory tree or ask the user to paste files. '
-            + 'Inspect the workspace by emitting tool blocks and then STOPPING — the '
-            + 'tool results are handed back to you and you continue from there:\n'
-            + 'Keep working until the user request is handled or you need concrete user input. '
-            + 'A progress update such as "I will inspect the files" must include the tool requests '
-            + 'for that next step in the same reply. Do not finish with a promise to act later. '
-            + 'After results arrive, perform the next needed action or provide the completed result. '
-            + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
-            + 'The read tool returns the complete text file, including unsaved editor changes. Open-file '
-            + 'context may omit files: use read before answering or editing unless the needed file is already marked complete. '
-            + 'For files larger than one read, use inclusive 1-based line ranges and read every needed range:\n'
-            + '```tool\n{"action": "read", "path": "relative/path", "startLine": 1, "endLine": 200}\n```\n'
-            + 'Never claim to have read the full file if you only received a preview or some ranges.\n'
-            + '```tool\n{"action": "search", "pattern": "text to find"}\n```\n'
-            + '```tool\n{"action": "list", "path": ""}\n```\n'
-            + '```tool\n{"action": "shell", "command": "npm test"}\n```\n'
-            + '```tool\n{"action": "browse", "url": "https://example.com"}\n```\n'
-            + '```tool\n{"action": "websearch", "query": "latest news"}\n```\n'
-            + 'Actions: "read" reads one file, "search" greps the whole workspace for a pattern, "list" '
-            + 'prints a directory tree (empty path = workspace root), "shell" runs a command in the '
-            + 'integrated terminal (the user must approve it first — you cannot see its output), "browse" '
-            + 'opens a web page in a browser (reads its text and shows a snapshot), "websearch" searches the '
-            + 'web and reads the top pages. Use them '
-            + 'when you need to see files that are not already in the context, then answer the question or emit edit '
-            + 'blocks for the actual changes.',
+          content: agentSystemPrompt(connection),
         });
       }
       // ---- private reasoning steering (hidden from the visible flow) ----
@@ -1342,6 +1421,11 @@ class ReachChatViewProvider {
         model: connection.provider === 'copilot' ? 'copilot-chat' : connection.provider === 'chatgpt' ? 'chatgpt-chat' : body.model || connection.model,
         messages,
       };
+      // Only sent when the user set a value: some providers reject an unknown
+      // parameter, so the default stays "omit entirely" (previous behaviour).
+      if (connection.temperature !== null && connection.temperature !== undefined) {
+        payload.temperature = connection.temperature;
+      }
       controller.signal.throwIfAborted();
       let responseActivity;
       const sendPayload = async request => {
