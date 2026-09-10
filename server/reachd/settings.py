@@ -155,19 +155,19 @@ DEFAULT_SETTINGS = {
 # ----------------------------------------------------------------------
 # CodeGPT economy models
 # ----------------------------------------------------------------------
-# The unlimited tier of the host's CodeGPT plan, read from CodeGPT's own
-# published catalog (`"economy": true` in the CodeGPT VS Code extension's
-# standalone/config/remote-data/model-catalog.json). These are served by the
-# local tray bridge — copilot/tray/economy-models.js owns the matching bridge
-# ids — because CodeGPT's public API refuses to bind these models: create and
+# The unlimited tier of the host's CodeGPT plan, mirroring the LIVE credits menu
+# CodeGPT itself serves (each entry with `pro: false`; see
+# copilot/tray/economy-models.js, which discovers that menu from the CodeGPT
+# sidecar and owns the matching bridge ids). These are served by the local tray
+# bridge because CodeGPT's public API refuses to bind these models: create and
 # patch both reject anything outside a legacy, credit-metered enum.
 CODEGPT_ECONOMY_MODELS = [
-    ("deepseek-v4-flash", "DeepSeek V4 Flash"),
     ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
-    ("gemini-3.6-flash", "Gemini 3.6 Flash"),
-    ("gemini-3.7-flash", "Gemini 3.7 Flash"),
+    ("ox-alpha", "GLM 5.3 Flash"),
     ("gemini-3.8-flash", "Gemini 3.8 Flash"),
-    ("ox-alpha", "Ox Alpha"),
+    ("gpt-5.6-luna", "GPT 5.6 Luna"),
+    ("glm-5.2", "GLM 5.2"),
+    ("MiniMax-M3", "MiniMax M3"),
 ]
 
 DEFAULT_SETTINGS["models"].update({

@@ -26,7 +26,7 @@ const path = require('node:path');
 // Keep the existing Copilot session directory across source and packaged launches.
 app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
 const { createEndpointClient } = require('./endpoint');
-const { economyModelFor, economyBridgeIds, ECONOMY_PREFIX } = require('./economy-models');
+const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX } = require('./economy-models');
 const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'));
 let clickTimer = null;
 let isQuitting = false;
@@ -902,48 +902,80 @@ async function codegptSelectModel(engine) {
             .replace(/\\s+/g, ' ').trim().toLowerCase();
         const hit = (t) => !!t && want.some((w) => t.includes(w));
         const trigger = () => [...document.querySelectorAll('button, [role="button"], [aria-haspopup]')]
-            .filter(vis).find((e) => label(e).startsWith('ai model'));`;
+            .filter(vis).find((e) => label(e).startsWith('ai model'));
+        // Menu rows are the entries that name a model. The trigger itself
+        // ("ai model <current> – pro model") is excluded, as is page chrome.
+        const modelish = /(gpt|claude|gemini|deepseek|glm|ox-|flash|sonnet|opus|mistral|grok|llama)/i;
+        const rows = () => [...document.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
+            .filter(vis).map((e) => ({ el: e, text: label(e) }))
+            .filter((row) => row.text && !row.text.startsWith('ai model') && modelish.test(row.text));`;
+    const exec = (js) => codegptWin.webContents.executeJavaScript(js)
+        .catch((error) => ({ error: error.message }));
     try {
-        const opened = await codegptWin.webContents.executeJavaScript(`(() => {
-            ${helpers}
-            const el = trigger();
-            if (!el) return 'no model menu on this page';
-            el.click();
-            return 'opened';
-        })()`).catch((error) => 'error: ' + error.message);
-        if (opened !== 'opened') {
-            log('codegpt model switch failed: ' + opened);
-            return false;
-        }
-        await sleep(1200);
-        const clicked = await codegptWin.webContents.executeJavaScript(`(() => {
-            ${helpers}
-            const candidates = [...document.querySelectorAll('[role="option"], [role="menuitem"], li, button')]
-                .filter(vis).map((e) => label(e)).filter((t) => t && t !== 'send');
-            const option = [...document.querySelectorAll('[role="option"], [role="menuitem"], li, button')]
-                .filter(vis).find((e) => hit(label(e)));
-            if (!option) {
-                // Report what the menu does offer — the app's display names are
-                // not always the catalog labels, and a silent miss would look
-                // like a model that simply does not exist.
-                return 'model not in the menu [' + candidates.slice(-14).join(' | ').slice(0, 600) + ']';
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            const box = await exec(`(() => {
+                ${helpers}
+                const el = trigger();
+                if (!el) return { error: 'no model menu on this page' };
+                const rect = el.getBoundingClientRect();
+                return { x: Math.round(rect.x + rect.width / 2),
+                         y: Math.round(rect.y + rect.height / 2) };
+            })()`);
+            if (!box || box.error) {
+                log('codegpt model switch failed: ' + ((box && box.error) || 'no trigger'));
+                return false;
             }
-            option.click();
-            return 'clicked';
-        })()`).catch((error) => 'error: ' + error.message);
-        await sleep(600);
-        if (clicked !== 'clicked') {
-            log('codegpt model switch failed: ' + clicked);
-            return false;
+            // Exactly ONE interaction per attempt: this control toggles, so a
+            // synthetic click followed by a trusted one would open then close it.
+            // Attempt 1 uses real input (this app honours it), attempt 2 the
+            // synthetic click, attempt 3 real input again.
+            if (attempt % 2 === 1) {
+                const wc = codegptWin.webContents;
+                wc.sendInputEvent({ type: 'mouseDown', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+                wc.sendInputEvent({ type: 'mouseUp', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+            } else {
+                await exec(`(() => { ${helpers} const el = trigger(); if (el) el.click(); return true; })()`);
+            }
+
+            // The list animates in; poll for real rows instead of guessing a delay.
+            let entries = [];
+            for (let wait = 0; wait < 12 && entries.length < 2; wait += 1) {
+                await sleep(250);
+                const found = await exec(`(() => { ${helpers} return rows().map((row) => row.text); })()`);
+                if (Array.isArray(found) && found.length > entries.length) entries = found;
+            }
+            if (entries.length < 2) {
+                log('codegpt model menu shows ' + entries.length + ' model row(s) after attempt '
+                    + attempt + ' — retrying');
+                await sleep(600);
+                continue;
+            }
+
+            const picked = await exec(`(() => {
+                ${helpers}
+                const target = rows().find((row) => hit(row.text));
+                if (!target) return null;
+                target.el.click();
+                return target.text;
+            })()`);
+            if (!picked) {
+                // Everything the menu really offers, so a mislabelled model is
+                // diagnosable instead of looking like one that does not exist.
+                log('codegpt model not in the menu [' + entries.length + ' rows: '
+                    + entries.join(' | ').slice(0, 3000) + ']');
+                await exec(`(() => { ${helpers} const el = trigger(); if (el) el.click(); return true; })()`);
+                await sleep(500);
+                continue;
+            }
+
+            await sleep(600);
+            const confirmed = await exec(`(() => { ${helpers} const el = trigger(); return el ? label(el) : ''; })()`);
+            const ok = typeof confirmed === 'string' && hit(confirmed);
+            log('codegpt model switch ' + (ok ? 'confirmed: ' : 'unconfirmed: ')
+                + String(picked).slice(0, 60) + ' -> ' + String(confirmed).slice(0, 80));
+            if (ok) return true;
         }
-        const confirmed = await codegptWin.webContents.executeJavaScript(`(() => {
-            ${helpers}
-            const el = trigger();
-            const t = el ? label(el) : '';
-            return (hit(t) ? 'confirmed: ' : 'unconfirmed: ') + t;
-        })()`).catch(() => 'unconfirmed: ');
-        log('codegpt model switch ' + confirmed.slice(0, 120));
-        return confirmed.startsWith('confirmed:');
+        return false;
     } catch (error) {
         log('codegpt model switch error: ' + error.message);
         return false;
@@ -2146,6 +2178,17 @@ if (!app.requestSingleInstanceLock()) {
         startBridge();
         createTray();
         openPanel();
+        // The economy list is CodeGPT's own live credits menu, so it is read
+        // from the CodeGPT sidecar at startup and kept fresh — a model added or
+        // retired on the plan shows up here without a code change.
+        refreshEconomyModels().then((info) => {
+            log('economy models: ' + info.count + ' from ' + info.source);
+        }).catch(() => {});
+        setInterval(() => {
+            refreshEconomyModels({ force: true })
+                .then((info) => log('economy models refreshed: ' + info.count + ' from ' + info.source))
+                .catch(() => {});
+        }, 5 * 60 * 1000);
         const startProvider = endpoints.getSettings().provider;
         if (startProvider === 'copilot') ensureBrowser();
         if (startProvider === 'chatgpt') ensureChatgpt();

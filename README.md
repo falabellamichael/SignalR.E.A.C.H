@@ -18,31 +18,37 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 
 ## CodeGPT economy models
 
-CodeGPT's paid plans include an **economy tier** that costs no credits — the models
-flagged `"economy": true` in CodeGPT's own published catalog (shipped in the CodeGPT
-VS Code extension at `standalone/config/remote-data/model-catalog.json`):
+CodeGPT's paid plans include an **economy tier** that costs no credits. The list is
+**discovered live**, never hardcoded: the CodeGPT extension keeps a local sidecar
+(`127.0.0.1:54112`) whose `/api/fetch-data/catalog` serves the same credits menu its
+own model picker renders, and every entry carries a `pro` flag — the whole
+economy/premium split is `pro ? 'premium' : 'economy'`. At the time of writing that
+menu answers with:
 
-| alias | model | CodeGPT route |
+| id | model | badge |
 |---|---|---|
-| `deepseek-v4-flash` | DeepSeek V4 Flash | openrouter |
-| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | openrouter |
-| `gemini-3.6-flash` | Gemini 3.6 Flash | vertex |
-| `gemini-3.7-flash` | Gemini 3.7 Flash | vertex |
-| `gemini-3.8-flash` | Gemini 3.8 Flash | vertex |
-| `ox-alpha` | Ox Alpha | openrouter (`z-ai/glm-5.3-flash`) |
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | New! |
+| `ox-alpha` | GLM 5.3 Flash | Economy |
+| `gemini-3.8-flash` | Gemini 3.8 Flash | Economy |
+| `gpt-5.6-luna` | GPT 5.6 Luna | Economy |
+| `glm-5.2` | GLM 5.2 | Economy |
+| `MiniMax-M3` | MiniMax M3 | Economy |
+
+`copilot/tray/economy-models.js` reads that menu every five minutes (falling back to
+the last known good list when the sidecar is down) and exposes one bridge model per
+entry as `codegpt-eco-<id>`. A bundled catalog also ships inside the extension, but
+it drifts — it still flags `deepseek-v4-flash` and `gemini-3.6/3.7-flash` as economy
+while the live menu offers `gpt-5.6-luna`, `glm-5.2` and `MiniMax-M3` instead, which
+is why the sidecar wins whenever it answers.
 
 They are served **through the local tray bridge**, not OmniRoute: an alias whose
 upstream is prefixed `bridge/` (e.g. `bridge/codegpt-eco-ox-alpha`) is posted to
 `bridge_url` (default `http://127.0.0.1:21302/v1`) without the OmniRoute bearer
 token, because the bridge answers them from the host's own signed-in CodeGPT
-session — the only place the economy tier exists. `copilot/tray/economy-models.js`
-owns the bridge-side ids; `server/reachd/settings.py` (`CODEGPT_ECONOMY_MODELS`)
-owns the public aliases, and both lists must stay in step.
-
-An alias that is **already routed keeps its own upstream**: `gemini-3.7-flash`
-points at `gemini/gemini-3.7-flash` through OmniRoute, and the economy defaults
-deliberately do not steal the name. Its economy variant is still served by the
-bridge as `codegpt-eco-gemini-3.7-flash` if you want an alias for it.
+session — the only place the economy tier exists. `server/reachd/settings.py`
+(`CODEGPT_ECONOMY_MODELS`) owns the public aliases and mirrors that live menu; an
+alias that is **already routed keeps its own upstream**, so the economy defaults
+never steal a name that main already points somewhere else.
 
 ### Why not through CodeGPT's API
 
@@ -55,17 +61,20 @@ Verified against the live API, so this does not get re-litigated:
   `gpt-4-turbo`, `claude-3.5-sonnet[-google]`, `gemini-1.5-flash`,
   `gemini-1.5-pro-latest`, `claude-3-haiku`, `mistral-large-2`). Agents bound to
   newer models exist, but only the web app can create them.
-- An API-key request against the playground endpoint returns
-  `404 {"code":"plan_not_found"}` — the key's org has no plan; only the signed-in
-  web session carries the subscription.
+- `/api/v1/chat/completion` (the extension's own commit-message route) is legacy
+  too — `gpt-3.5-turbo`…`gpt-4o`, and even those now answer
+  `OpenAI completion via Azure not available: Azure provider removed`.
+- `/api/v1/chat/playground` answers `404 {"code":"plan_not_found"}` for both the API
+  key and the sidecar's session token, whose signed identity carries
+  `planName: "Free"`.
 - The agent page's own model menu lists **premium models only** ("… – pro model"),
   so economy models are not selectable there.
 
-The tray therefore opens the page's `AI Model …` menu, clicks the requested
-economy model when it is offered, and **reads the trigger back to confirm** — it
-never reports a model it did not actually select. Each request logs the model it
-asked for and the model the app's own API says answered, so a miss is visible in
-`%LOCALAPPDATA%\SignalREACH\copilot-tray.log` instead of passing silently.
+The tray still opens the page's `AI Model …` menu, clicks the requested economy
+model when it is offered, and **reads the trigger back to confirm** — it never
+reports a model it did not actually select. Each request logs the model it asked
+for, the model the app's own API says answered, and the full menu when a model is
+missing, so an entitlement problem looks like one instead of like a hang.
 
 
 ## Use the endpoint

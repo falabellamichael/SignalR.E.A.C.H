@@ -77,8 +77,8 @@ test('CodeGPT economy models are listed by id and routed to the CodeGPT sender',
  assert.ok(ids.includes('copilot-chat') && ids.includes('chatgpt-chat'));
  // Every economy model is addressable on its own, so a client can ask for one
  // without a second setting, and the legacy aliased id still resolves.
- for (const id of ['deepseek-v4-flash', 'deepseek-v4.1-flash', 'gemini-3.6-flash',
-   'gemini-3.7-flash', 'gemini-3.8-flash', 'ox-alpha']) {
+ for (const id of ['deepseek-v4.1-flash', 'ox-alpha', 'gemini-3.8-flash',
+   'gpt-5.6-luna', 'glm-5.2', 'MiniMax-M3']) {
    assert.ok(ids.includes('codegpt-eco-' + id), id + ' missing from /v1/models');
  }
  assert.ok(ids.includes('codegpt-eco-gpt-4o-mini'), 'legacy id removed');
@@ -87,8 +87,7 @@ test('CodeGPT economy models are listed by id and routed to the CodeGPT sender',
  assert.equal(ok.choices[0].message.content, 'ECO OK');
  assert.equal(ok.model, 'codegpt-eco-deepseek-v4.1-flash');
  assert.equal(seen[0].model, 'codegpt-eco-deepseek-v4.1-flash');
- assert.equal(seen[0].label, 'DeepSeek V4.1 Flash');
- // The bare id keeps meaning "whatever the open agent page serves".
+ assert.equal(seen[0].label, 'DeepSeek V4.1 Flash'); // The bare id keeps meaning "whatever the open agent page serves".
  await send({ model: 'codegpt-eco', messages: [{ role: 'user', content: 'hi' }] });
  assert.equal(seen[1].model, 'codegpt-eco');
  assert.equal(seen[1].label, '');
