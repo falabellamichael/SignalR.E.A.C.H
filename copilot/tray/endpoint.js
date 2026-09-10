@@ -17,7 +17,7 @@ function endpointUrl(value) {
     return url;
 }
 
-function request(url, { body, timeout = 15000, redirects = 3 } = {}) {
+function request(url, { body, timeout = 0, redirects = 3 } = {}) {
     url = endpointUrl(url);
     return new Promise((resolve, reject) => {
         const payload = body === undefined ? null : JSON.stringify(body);
@@ -50,8 +50,12 @@ function request(url, { body, timeout = 15000, redirects = 3 } = {}) {
                 } else resolve(text);
             });
         });
-        const timer = setTimeout(() => req.destroy(new Error('Endpoint request timed out.')), timeout);
-        req.on('close', () => clearTimeout(timer));
+        // timeout 0 (the default) means no timer at all: a model reply is not
+        // something to cut off. Callers that must not hang pass a value.
+        const timer = timeout > 0
+            ? setTimeout(() => req.destroy(new Error('Endpoint request timed out.')), timeout)
+            : null;
+        req.on('close', () => { if (timer) clearTimeout(timer); });
         req.on('error', reject);
         req.end(payload);
     });
@@ -67,7 +71,7 @@ function createEndpointClient(settingsPath) {
     let inFlight = null;
 
     function validate(value) {
-        if (!['endpoint', 'copilot', 'chatgpt'].includes(value.provider)) throw new Error('Choose Free endpoints, Microsoft 365 Copilot, or ChatGPT.');
+        if (!['endpoint', 'copilot', 'chatgpt', 'codegpt'].includes(value.provider)) throw new Error('Choose Free endpoints, Microsoft 365 Copilot, ChatGPT, or CodeGPT economy models.');
         const endpoint = endpointUrl(value.endpoint || DEFAULT_POINTER).toString();
         return { provider: value.provider, endpoint, model: String(value.model || '').trim().slice(0, 200) };
     }
@@ -89,13 +93,15 @@ function createEndpointClient(settingsPath) {
         const promise = (async () => {
             let url = endpointUrl(config.endpoint);
             // The published pointer follows tunnel changes without manual edits.
+            // Discovery is a metadata probe, so it keeps a bounded wait — only
+            // model generation runs without a timeout.
             if (url.hostname === 'gist.githubusercontent.com' || url.pathname.endsWith('.txt')) {
-                url = endpointUrl((await request(url)).trim());
+                url = endpointUrl((await request(url, { timeout: 15000 })).trim());
             }
             url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
             url.search = '';
             const base = url.toString().replace(/\/$/, '');
-            const data = JSON.parse(await request(base + '/models'));
+            const data = JSON.parse(await request(base + '/models', { timeout: 15000 }));
             const models = [...new Set((data.data || []).map(m => m?.id).filter(id => typeof id === 'string' && id))];
             if (!models.length) throw new Error('This endpoint returned no models.');
             const value = { base, models };
@@ -109,8 +115,9 @@ function createEndpointClient(settingsPath) {
         const { base, models } = await discover(config);
         const model = config.model || models[0];
         if (!models.includes(model)) throw new Error(`Model ${model} is no longer available. Choose a model in Controls.`);
+        // No timeout: this is a model reply, not a metadata probe.
         const data = JSON.parse(await request(base + '/chat/completions', {
-            body: { model, messages, stream: false }, timeout: 180000
+            body: { model, messages, stream: false }
         }));
         const content = data.choices?.[0]?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new Error('The endpoint returned an empty reply.');

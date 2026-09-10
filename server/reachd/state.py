@@ -42,6 +42,9 @@ class RelayState:
         self.upstream_checked = 0.0
         self.circuit_open_until = 0.0
         self.consecutive_failures = 0
+        # Requests currently being relayed, keyed by id(record). A request that
+        # runs long is visible here (and in /status) instead of being a silence.
+        self.in_flight = {}
         self._lock = threading.RLock()
 
     @property
@@ -57,6 +60,20 @@ class RelayState:
             host = None
         if not host or not _host_is_local(host):
             return DEFAULT_SETTINGS["omniroute_url"]
+        return url
+
+    @property
+    def bridge_url(self):
+        """The local tray bridge (CodeGPT economy models). Same loopback guard
+        as omniroute_url: a hand-edited config.json must not turn the relay into
+        a proxy for an arbitrary upstream."""
+        url = self.cfg.get("bridge_url", DEFAULT_SETTINGS["bridge_url"])
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            host = None
+        if not host or not _host_is_local(host):
+            return DEFAULT_SETTINGS["bridge_url"]
         return url
 
     @property
@@ -130,6 +147,36 @@ class RelayState:
             with self._lock:
                 self.public_url, self.public_url_source = url, source
 
+    # ---- in-flight requests ----
+
+    def begin_request(self):
+        """Register a relayed request; returns the record the caller enriches
+        (model/upstream/stream) and passes back to end_request."""
+        record = {"started": time.time(), "model": "", "upstream": "",
+                  "stream": False, "ip": ""}
+        with self._lock:
+            self.in_flight[id(record)] = record
+        return record
+
+    def end_request(self, record):
+        """Drop a request from the in-flight table; returns how long it ran."""
+        if not isinstance(record, dict):
+            return 0.0
+        with self._lock:
+            self.in_flight.pop(id(record), None)
+        return max(0.0, time.time() - record.get("started", time.time()))
+
+    def in_flight_snapshot(self):
+        with self._lock:
+            records = list(self.in_flight.values())
+        now = time.time()
+        return [{"model": r.get("model") or "(resolving)",
+                 "upstream": r.get("upstream", ""),
+                 "stream": bool(r.get("stream")),
+                 "ip": r.get("ip", ""),
+                 "elapsed_s": round(now - r.get("started", now), 1)}
+                for r in records]
+
     def enabled_models(self):
         return {alias: spec["upstream"] for alias, spec
                 in self.cfg.get("models", {}).items() if spec.get("enabled")}
@@ -164,6 +211,7 @@ class RelayState:
             speed = self.current_speed() or today.get("tokens_per_sec", 0.0)
             today["tokens_per_sec"] = speed
             today["live_tps"] = speed
+            in_flight = self.in_flight_snapshot()
             return {
                 "service": SERVICE,
                 "version": VERSION,
@@ -187,6 +235,12 @@ class RelayState:
                 },
                 "access_required": bool(self.cfg.get("access", {})
                                        .get("key_required")),
+                # Live work: a long generation shows up here while it runs, so
+                # "still waiting" is something you can look up, not guess.
+                "in_flight": in_flight,
+                "in_flight_count": len(in_flight),
+                "in_flight_oldest_s": max((item["elapsed_s"] for item in in_flight),
+                                          default=0.0),
                 "config_error": self.cfg.get("_last_config_error"),
             }
 

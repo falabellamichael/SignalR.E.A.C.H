@@ -107,13 +107,15 @@ test('status refresh failures retain labeled cached state without returning raw 
   assert.doesNotMatch(JSON.stringify(result), /SECRET|token@example/);
 });
 
-test('Git activation and status waits are bounded', async () => {
+test('Git failures are reported without cutting the operation short', async () => {
+  // Agent tool work runs without a timeout: a slow activation or status read
+  // waits. Only a real rejection is reported, and it must stay labeled.
   const h = host([repository()]);
-  h.extension.activate = () => new Promise(() => {});
-  const context = new GitContext(h.vscode, { timeoutMs: 5 });
+  h.extension.activate = () => Promise.reject(new Error('activating'));
+  const context = new GitContext(h.vscode);
   assert.equal((await context.snapshot()).status, 'unavailable');
   h.extension.isActive = true;
-  h.extension.exports.getAPI(1).repositories[0].status = () => new Promise(() => {});
+  h.extension.exports.getAPI(1).repositories[0].status = () => Promise.reject(new Error('status failed'));
   assert.equal((await context.inspect()).freshness, 'cachedAfterRefreshFailure');
 });
 
@@ -169,7 +171,7 @@ test('focused diffs contain paths to the selected repository and preserve staged
   assert.equal(calls.length, 2, 'invalid paths must not reach Git');
 });
 
-test('PR lookup uses bounded read-only CLI arguments and current branch metadata', async () => {
+test('PR lookup uses read-only CLI arguments and current branch metadata', async () => {
   const repo = repository();
   const calls = [];
   const context = new GitContext(host([repo]).vscode, {
@@ -193,7 +195,9 @@ test('PR lookup uses bounded read-only CLI arguments and current branch metadata
   assert.ok(calls[0].args.includes('--repo=github.com/team/app'));
   assert.equal(calls[0].options.shell, undefined);
   assert.equal(calls[0].options.windowsHide, true);
-  assert.equal(calls[0].options.timeout, 10000);
+  // No imposed timeout: a slow gh invocation waits rather than reporting a
+  // timeout the agent never asked for.
+  assert.equal(calls[0].options.timeout, undefined);
   assert.equal(calls[0].options.maxBuffer, 256 * 1024);
   assert.doesNotMatch(JSON.stringify(result), /TOKEN|bad\.example|SECRET/);
 });

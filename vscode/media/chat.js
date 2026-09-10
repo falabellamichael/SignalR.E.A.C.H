@@ -662,13 +662,45 @@
     const record = { uid: uid || null, title: title || text || 'Preparing request', status: 'running', result: '' };
     activeTrace.steps.push(record);
     const row = paintStep(stepsEl, record);
+    row.startedAt = Date.now();
     if (uid) rowByUid[uid] = row;
     stepRows.push(row); saveSteps(); scrollBottom();
     return row;
   }
 
+  const runningTickers = new WeakMap();   // row element -> interval id
+
+  function stopRunningTicker(row) {
+    const id = runningTickers.get(row.el);
+    if (id) { clearInterval(id); runningTickers.delete(row.el); }
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds < 60) return seconds + 's';
+    const minutes = Math.floor(seconds / 60);
+    return minutes + 'm ' + String(seconds % 60).padStart(2, '0') + 's';
+  }
+
+  // A running step counts up instead of only saying "waiting". Nothing here
+  // aborts anything: there are no timeouts, so the elapsed figure is the way to
+  // tell a live request from a stalled one.
+  function startRunningTicker(row) {
+    stopRunningTicker(row);
+    const startedAt = row.startedAt || Date.now();
+    const paint = () => {
+      if (row.closed) { stopRunningTicker(row); return; }
+      const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      if (seconds < 5) { row.outputEl.textContent = 'Waiting for result…'; return; }
+      const patience = seconds >= 45 ? ' — still connected, nothing is being cut off' : '';
+      row.outputEl.textContent = 'Still working · ' + fmtDuration(seconds) + ' elapsed' + patience;
+    };
+    paint();
+    runningTickers.set(row.el, setInterval(paint, 1000));
+  }
+
   function updateStep(row, status, result, save = true) {
     if (!row) return;
+    stopRunningTicker(row);
     row.record.status = status || 'completed'; row.closed = row.record.status !== 'running';
     row.el.className = 'step-line ' + row.record.status;
     row.stateEl.textContent = { running: 'Running', completed: 'Done', error: 'Failed', cancelled: 'Stopped' }[row.record.status] || row.record.status;
@@ -698,7 +730,7 @@
         row.outputEl.appendChild(note);
       }
     } else if (status === 'running') {
-      row.outputEl.textContent = 'Waiting for result…';
+      startRunningTicker(row);
     }
     if (save) saveSteps();
   }

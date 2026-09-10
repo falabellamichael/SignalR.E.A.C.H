@@ -41,6 +41,7 @@ async function refresh() {
         if (sequence !== refreshSequence) return;
         const isEndpoint = st.provider === 'endpoint';
         const isChatgpt = st.provider === 'chatgpt';
+        const isCodegpt = st.provider === 'codegpt';
         updateModelOptions(st.models || [], st.model);
         const pill = $('#pill');
         pill.classList.toggle('ok', !!st.signedIn);
@@ -50,7 +51,7 @@ async function refresh() {
         pill.title = st.why || '';
         $('#st-session').textContent = isEndpoint
             ? (st.model || st.models?.[0] || 'Free endpoints')
-            : isChatgpt ? 'ChatGPT' : 'Microsoft 365 Copilot';
+            : isChatgpt ? 'ChatGPT' : isCodegpt ? (st.model || 'CodeGPT economy') : 'Microsoft 365 Copilot';
         $('#st-port').textContent = st.bridgeUp ? (st.bridgePort + ' listening') : 'DOWN';
         $('#st-visible').textContent = st.browserVisible ? 'visible' : 'hidden';
         $('#st-last').textContent = ago(st.lastReplyAt);
@@ -62,7 +63,7 @@ async function refresh() {
         const tileSub = $('#tile-window-sub');
         if (tileLabel && tileSub) {
             tileLabel.textContent = st.browserVisible ? 'Hide Browser' : 'Browser';
-            const providerName = isEndpoint ? 'Endpoint' : isChatgpt ? 'ChatGPT' : 'Copilot';
+            const providerName = isEndpoint ? 'Endpoint' : isChatgpt ? 'ChatGPT' : isCodegpt ? 'CodeGPT' : 'Copilot';
             tileSub.textContent = st.browserVisible ? providerName + ' — running — click to hide' : providerName + ' — sign in / verify';
         }
     } catch (e) {
@@ -218,7 +219,7 @@ $('#btn-refresh-page').addEventListener('click', () => window.copilotTray.refres
 $('#btn-home').addEventListener('click', () => window.copilotTray.reloadBrowser());
 $('#btn-signout').addEventListener('click', () => {
     const prov = $('#provider').value;
-    const label = prov === 'chatgpt' ? 'ChatGPT' : 'Microsoft 365';
+    const label = prov === 'chatgpt' ? 'ChatGPT' : prov === 'codegpt' ? 'CodeGPT' : 'Microsoft 365';
     if (confirm('Clear the ' + label + ' session? You will need to sign in again.')) {
         window.copilotTray.signOut();
         setTimeout(refresh, 3000);
@@ -263,15 +264,20 @@ async function loadSettings() {
         activeSettings = config;
         $('#provider').value = config.provider;
         $('#endpoint-url').value = config.endpoint;
-        $('#endpoint-model').hidden = $('#model-label').hidden = config.provider !== 'endpoint';
+        // Model picker: free endpoints choose one of theirs, CodeGPT picks one
+        // of the economy models (both are plain /v1/models lists).
+        const pickModel = config.provider === 'endpoint' || config.provider === 'codegpt';
+        $('#endpoint-model').hidden = $('#model-label').hidden = !pickModel;
         $('#endpoint-settings').hidden = config.provider !== 'endpoint';
-        // Copilot/ChatGPT home button label
+        // Copilot/ChatGPT/CodeGPT home button label
         const homeBtn = $('#btn-home');
         if (homeBtn) {
             const svg = homeBtn.querySelector('svg');
             homeBtn.textContent = '';
             if (svg) homeBtn.appendChild(svg);
-            homeBtn.appendChild(document.createTextNode(config.provider === 'chatgpt' ? 'ChatGPT home' : 'Copilot home'));
+            const homeLabel = config.provider === 'chatgpt' ? 'ChatGPT home'
+                : config.provider === 'codegpt' ? 'CodeGPT home' : 'Copilot home';
+            homeBtn.appendChild(document.createTextNode(homeLabel));
         }
         await refresh();
     } catch (error) { $('#connection-error').textContent = error.message; }

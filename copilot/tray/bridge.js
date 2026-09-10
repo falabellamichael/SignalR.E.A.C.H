@@ -1,5 +1,19 @@
 'use strict';
 
+const { ECONOMY_MODELS, economyBridgeId, economyBridgeIds, isEconomyModel } = require('./economy-models');
+
+// Everything this bridge can serve. The bare `codegpt-eco` (and the legacy
+// `codegpt-eco-gpt-4o-mini` id) both mean "the open CodeGPT agent page";
+// `codegpt-eco-<economy id>` names one specific economy model.
+const BRIDGE_MODELS = [
+    { id: 'copilot-chat', owned_by: 'microsoft-365' },
+    { id: 'chatgpt-chat', owned_by: 'openai' },
+    ...economyBridgeIds().map((id) => ({ id, owned_by: 'codegpt-eco' })),
+    { id: 'codegpt-eco-gpt-4o-mini', owned_by: 'codegpt-eco', legacy: true },
+];
+const VALID_MODELS = BRIDGE_MODELS.map((model) => model.id);
+const MODEL_LABELS = new Map(ECONOMY_MODELS.map((model) => [economyBridgeId(model.id), model.label]));
+
 // The Copilot bridge keeps its own provider, regardless of the tray's current
 // MiniChat selection. VS Code uses this OpenAI-compatible surface directly.
 function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debugCodegptDom) {
@@ -17,12 +31,7 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                 .catch(err => json(500, { error: err.message }));
         }
         if (req.method === 'GET' && req.url === '/v1/models') {
-            return json(200, { object: 'list', data: [
-                { id: 'copilot-chat', object: 'model', owned_by: 'microsoft-365' },
-                { id: 'chatgpt-chat', object: 'model', owned_by: 'openai' },
-                { id: 'codegpt-eco', object: 'model', owned_by: 'codegpt-eco' },
-                { id: 'codegpt-eco-gpt-4o-mini', object: 'model', owned_by: 'codegpt-eco' }
-            ] });
+            return json(200, { object: 'list', data: BRIDGE_MODELS.map((model) => ({ ...model, object: 'model' })) });
         }
         const openai = req.url === '/v1/chat/completions';
         if (req.method !== 'POST' || ![ '/', '/send', '/v1/chat/completions' ].includes(req.url)) return json(404, { error: { message: 'Not found' } });
@@ -39,13 +48,11 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                 text = messages.length ? messages.filter(m => ['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role) && typeof m.content === 'string')
                     .map(m => `${m.role}: ${m.content}`).join('\n\n') : String(body.text || '');
                 if (!text.trim()) throw new Error('Message is empty.');
-                const validModels = ['copilot-chat', 'chatgpt-chat', 'codegpt-eco', 'codegpt-eco-gpt-4o-mini'];
-                const requestedModel = (openai && body.model) ? body.model : 'copilot-chat';
-                if (openai && body.model && !validModels.includes(body.model)) throw new Error('This bridge serves copilot-chat, chatgpt-chat, and the codegpt-eco models.');
+                if (openai && body.model && !VALID_MODELS.includes(body.model)) throw new Error('This bridge serves copilot-chat, chatgpt-chat, and the codegpt-eco models.');
             } catch (error) { return json(400, { error: { message: error.message } }); }
             const model = openai ? String(body.model || 'copilot-chat') : 'copilot-chat';
             const useChatgpt = model === 'chatgpt-chat';
-            const useCodegpt = !useChatgpt && model.startsWith('codegpt-eco');
+            const useCodegpt = !useChatgpt && isEconomyModel(model);
             const provider = useCodegpt ? 'codegpt' : useChatgpt ? 'chatgpt' : 'copilot';
             const controller = new AbortController();
             res.on('close', () => { if (!res.writableEnded) controller.abort(); });
@@ -65,7 +72,9 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                         keepalive = setInterval(() => { if (!res.destroyed) res.write(': waiting for browser provider\n\n'); }, 10000);
                     }
                     const sender = provider === 'codegpt' ? sendCodegpt : provider === 'chatgpt' ? sendChatgpt : sendCopilot;
-                    const content = await sender(text, { signal: controller.signal });
+                    // The requested model rides along so the CodeGPT sender can
+                    // pick that economy model out of the signed-in session.
+                    const content = await sender(text, { signal: controller.signal, model, label: MODEL_LABELS.get(model) || '' });
                     if (res.destroyed) return;
                     if (!openai) return json(200, { ok: true, content, ms: Date.now() - start });
                     if (!stream) return json(200, { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });

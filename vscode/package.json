@@ -227,12 +227,14 @@
           "enum": [
             "endpoint",
             "copilot",
-            "chatgpt"
+            "chatgpt",
+            "codegpt"
           ],
           "enumDescriptions": [
             "Your free OpenAI-compatible endpoints",
             "The local Microsoft 365 Copilot tray bridge",
-            "The local ChatGPT tray bridge"
+            "The local ChatGPT tray bridge",
+            "CodeGPT economy models (unlimited on a paid CodeGPT plan) through the local tray bridge"
           ],
           "default": "endpoint",
           "description": "Provider used by the REACH chat."

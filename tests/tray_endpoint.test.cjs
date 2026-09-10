@@ -67,6 +67,35 @@ test('Copilot failures remain visible to both JSON and streaming VS Code clients
  }
 });
 
+test('CodeGPT economy models are listed by id and routed to the CodeGPT sender', async t => {
+ const seen = [];
+ const base = await serve(t, createBridgeHandler(async () => 'COPILOT', null,
+   async (text, options) => { seen.push(options); return 'ECO OK'; }, () => ({ ok: true })));
+ const models = await (await fetch(base + '/v1/models')).json();
+ const ids = models.data.map(m => m.id);
+ assert.ok(ids.includes('codegpt-eco'), 'bare codegpt-eco must stay served');
+ assert.ok(ids.includes('copilot-chat') && ids.includes('chatgpt-chat'));
+ // Every economy model is addressable on its own, so a client can ask for one
+ // without a second setting, and the legacy aliased id still resolves.
+ for (const id of ['deepseek-v4-flash', 'deepseek-v4.1-flash', 'gemini-3.6-flash',
+   'gemini-3.7-flash', 'gemini-3.8-flash', 'ox-alpha']) {
+   assert.ok(ids.includes('codegpt-eco-' + id), id + ' missing from /v1/models');
+ }
+ assert.ok(ids.includes('codegpt-eco-gpt-4o-mini'), 'legacy id removed');
+ const send = body => fetch(base + '/v1/chat/completions', { method: 'POST', body: JSON.stringify(body) });
+ const ok = await (await send({ model: 'codegpt-eco-deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hi' }] })).json();
+ assert.equal(ok.choices[0].message.content, 'ECO OK');
+ assert.equal(ok.model, 'codegpt-eco-deepseek-v4.1-flash');
+ assert.equal(seen[0].model, 'codegpt-eco-deepseek-v4.1-flash');
+ assert.equal(seen[0].label, 'DeepSeek V4.1 Flash');
+ // The bare id keeps meaning "whatever the open agent page serves".
+ await send({ model: 'codegpt-eco', messages: [{ role: 'user', content: 'hi' }] });
+ assert.equal(seen[1].model, 'codegpt-eco');
+ assert.equal(seen[1].label, '');
+ // A model that does not exist is still refused rather than quietly retargeted.
+ assert.equal((await send({ model: 'codegpt-eco-nope', messages: [{ role: 'user', content: 'hi' }] })).status, 400);
+});
+
 test('tray runtime launch paths cover macOS, Windows and Linux',()=>{
  assert.match(trayBinary('/tray','darwin').replace(/\\/g,'/'),/Electron\.app\/Contents\/MacOS\/Electron$/);
  assert.match(trayBinary('/tray','win32'),/electron\.exe$/);

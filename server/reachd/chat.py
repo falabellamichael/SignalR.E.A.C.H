@@ -215,7 +215,20 @@ def chat_execute(h):
 
     # ---- upstream model + circuit + key ----
     upstream_model = spec["upstream"]
-    if not core.STATE.key:
+    # "bridge/<model>" is served by the local tray bridge (the CodeGPT economy
+    # models). It authenticates through the host's signed-in CodeGPT session,
+    # so it needs no OmniRoute key — and must never be handed one.
+    use_bridge = upstream_model.startswith("bridge/")
+    # Publish what this request is doing while it runs (see /status in_flight).
+    record = getattr(h, "_reach_request", None)
+    if isinstance(record, dict):
+        record.update({"model": requested, "upstream": upstream_model,
+                       "stream": bool(stream), "ip": ip})
+    h._reach_request = record
+    h._reach_log("chat start model=%s upstream=%s stream=%s ip=%s"
+                 % (requested, upstream_model,
+                    "yes" if stream else "no", ip))
+    if not use_bridge and not core.STATE.key:
         h._json(503, {"error": {"message": "SignalR.E.A.C.H is not "
                                                       "configured yet (no "
                                                       "OmniRoute key).",
@@ -265,8 +278,15 @@ def chat_execute(h):
                                           "code": "overloaded"}}, rl_headers)
         return None
     try:
-        url = core.STATE.omniroute_url.rstrip("/") + "/chat/completions"
-        payload["model"] = upstream_model
+        url = (core.STATE.bridge_url if use_bridge
+               else core.STATE.omniroute_url).rstrip("/") + "/chat/completions"
+        # The bridge names models itself ("codegpt-eco-<model>"); OmniRoute gets
+        # the full provider-prefixed id.
+        payload["model"] = upstream_model[len("bridge/"):] if use_bridge \
+            else upstream_model
+        auth_headers = {"Content-Type": "application/json"}
+        if not use_bridge:
+            auth_headers["Authorization"] = "Bearer " + core.STATE.key
         encoded = json.dumps(payload).encode("utf-8")
         if core.STATE.cfg.get("data", {}).get("log_bodies"):
             request_body = body[:2048].decode("utf-8", "replace")
@@ -280,8 +300,7 @@ def chat_execute(h):
             try:
                 req = urllib.request.Request(
                     url, data=encoded, method="POST",
-                    headers={"Content-Type": "application/json",
-                             "Authorization": "Bearer " + core.STATE.key})
+                    headers=auth_headers)
                 upstream = urllib.request.urlopen(
                     req,
                     timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)
@@ -299,6 +318,11 @@ def chat_execute(h):
                 if attempt == attempts - 1:
                     break
                 time.sleep(retry_delay)
+        if upstream is not None:
+            # Reaching this point IS the first response: whatever the model does
+            # next, the log now shows the upstream answered the call.
+            h._reach_log("chat upstream connected %s after %.1fs"
+                         % (upstream_model, time.time() - started))
         # fallback alias on total failure (streaming or non-streaming)
         if upstream is None:
             fallback_alias = spec.get("fallback")
@@ -307,12 +331,20 @@ def chat_execute(h):
                 fb_upstream = models[fallback_alias]["upstream"]
                 try:
                     fb_payload = dict(payload)
-                    fb_payload["model"] = fb_upstream
+                    # The fallback alias may itself be a bridge alias, so it
+                    # routes by its own prefix rather than reusing `url`.
+                    fb_bridge = fb_upstream.startswith("bridge/")
+                    fb_payload["model"] = fb_upstream[len("bridge/"):] \
+                        if fb_bridge else fb_upstream
+                    fb_headers = {"Content-Type": "application/json"}
+                    if not fb_bridge:
+                        fb_headers["Authorization"] = "Bearer " + core.STATE.key
+                    fb_url = (core.STATE.bridge_url if fb_bridge
+                              else core.STATE.omniroute_url).rstrip("/") \
+                        + "/chat/completions"
                     fb_req = urllib.request.Request(
-                        url, data=json.dumps(fb_payload).encode("utf-8"),
-                        method="POST",
-                        headers={"Content-Type": "application/json",
-                                 "Authorization": "Bearer " + core.STATE.key})
+                        fb_url, data=json.dumps(fb_payload).encode("utf-8"),
+                        method="POST", headers=fb_headers)
                     upstream = urllib.request.urlopen(
                         fb_req,
                         timeout=int(core.STATE.cfg.get("upstream_timeout_s", 600)))
@@ -332,7 +364,9 @@ def chat_execute(h):
                                tokens_in=0, tokens_out=0, stream=stream,
                                request_body=request_body)
                 h._relay_upstream_error(
-                    last_error, "OmniRoute rejected the request")
+                    last_error,
+                    "CodeGPT bridge rejected the request" if use_bridge
+                    else "OmniRoute rejected the request")
                 return None
             core.STATE.note_failure()
             h._log_chat(model=requested, upstream_model=upstream_model,
@@ -342,7 +376,9 @@ def chat_execute(h):
                            tokens_in=0, tokens_out=0, stream=stream,
                            request_body=request_body)
             h._relay_upstream_error(
-                last_error, "OmniRoute unreachable")
+                last_error,
+                "CodeGPT bridge unreachable (is the SignalREACH tray running?)"
+                if use_bridge else "OmniRoute unreachable")
             return None
     finally:
         if not stream:
