@@ -918,20 +918,83 @@ async function codegptSendEnter() {
 }
 
 async function codegptClickSend() {
-    // Discovered live: the send control is a plain button whose visible text
-    // is exactly "Send" (no aria-label/title/type=submit hints).
-    const box = await codegptWin.webContents.executeJavaScript(`(() => {
-        const b = [...document.querySelectorAll('button, [role="button"]')]
-            .filter(e => e.offsetWidth && !e.disabled)
-            .find(e => (e.innerText || '').trim() === 'Send');
-        if (!b) return null;
-        const r = b.getBoundingClientRect();
+    // The send control is icon-only: its visible text is exactly "Send" and it
+    // carries no aria-label/title/type=submit. Matching is layered because this
+    // UI has changed shape more than once:
+    //   1. exact visible text "Send"                    (current local app)
+    //   2. aria-label/title mentioning send|submit      (accessibility passes)
+    //   3. last enabled button in the composer's row    (icon-only fallback)
+    // The click is verified afterwards: a coordinate click that lands on a
+    // stale overlay must not report success while the text stays put.
+    //
+    // NOTE: the injected source below deliberately avoids regex literals. It is
+    // itself embedded in a template literal, and whitespace-collapsing via
+    // split/filter/join needs no escape sequences, so nothing can be mangled
+    // in transit through the template.
+    const FINDER = `(() => {
+        const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
+        const labelOf = (e) => ((e.innerText || e.getAttribute('aria-label') || e.title || '') + ' ')
+            .split(' ').filter(Boolean).join(' ').trim();
+        const all = [...document.querySelectorAll('button, [role="button"]')]
+            .filter((e) => vis(e) && !e.disabled);
+        // 1. exact visible text
+        let btn = all.find((e) => labelOf(e) === 'Send');
+        // 2. explicit send/submit affordance
+        if (!btn) btn = all.find((e) => {
+            const t = (e.getAttribute('aria-label') || '') + (e.title || '');
+            return t.toLowerCase().indexOf('send') >= 0 || t.toLowerCase().indexOf('submit') >= 0;
+        });
+        // 3. icon-only fallback: last enabled button in the composer's row.
+        if (!btn) {
+            const composer = document.querySelector(${JSON.stringify(CODEGPT_COMPOSER_SELECTOR)});
+            const row = composer && (composer.closest('form') || composer.parentElement);
+            if (row) {
+                const inRow = [...row.querySelectorAll('button, [role="button"]')]
+                    .filter((e) => vis(e) && !e.disabled);
+                if (inRow.length) btn = inRow[inRow.length - 1];
+            }
+        }
+        if (!btn) return null;
+        const r = btn.getBoundingClientRect();
         return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    })()`);
-    if (!box) return false;
+    })()`;
     const wc = codegptWin.webContents;
+    const box = await wc.executeJavaScript(FINDER).catch(() => null);
+    if (!box) return false;
+    // Real input first: this app ignores some synthetic clicks.
     wc.sendInputEvent({ type: 'mouseDown', x: box.x, y: box.y, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    await sleep(250);
+    // Did it take? The composer must have emptied. If a stale overlay swallowed
+    // the coordinate click, retry by clicking the element itself in-page.
+    const stillFilled = await wc.executeJavaScript(`(() => {
+        const ta = document.querySelector(${JSON.stringify(CODEGPT_COMPOSER_SELECTOR)});
+        return !!ta && (ta.value || ta.innerText || '').trim().length > 0;
+    })()`).catch(() => false);
+    if (!stillFilled) return true;
+    await wc.executeJavaScript(`(() => {
+        const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
+        const labelOf = (e) => ((e.innerText || e.getAttribute('aria-label') || e.title || '') + ' ')
+            .split(' ').filter(Boolean).join(' ').trim();
+        const all = [...document.querySelectorAll('button, [role="button"]')]
+            .filter((e) => vis(e) && !e.disabled);
+        let btn = all.find((e) => labelOf(e) === 'Send');
+        if (!btn) btn = all.find((e) => {
+            const t = (e.getAttribute('aria-label') || '') + (e.title || '');
+            return t.toLowerCase().indexOf('send') >= 0 || t.toLowerCase().indexOf('submit') >= 0;
+        });
+        if (!btn) {
+            const composer = document.querySelector(${JSON.stringify(CODEGPT_COMPOSER_SELECTOR)});
+            const row = composer && (composer.closest('form') || composer.parentElement);
+            if (row) {
+                const inRow = [...row.querySelectorAll('button, [role="button"]')]
+                    .filter((e) => vis(e) && !e.disabled);
+                if (inRow.length) btn = inRow[inRow.length - 1];
+            }
+        }
+        if (btn) btn.click();
+        return !!btn;
+    })()`).catch(() => false);
     return true;
 }
 
