@@ -344,16 +344,34 @@ def cmd_host(args):
 
     if action == "status":
         machine = hostid.raw_machine_id()
+        # Report what is actually ON DISK, not the unsealed view this CLI
+        # loads: the whole point of the check is whether the stored form is
+        # ciphertext, and the unsealed reader would always say "plaintext".
+        import json as _json
+        on_disk = {}
+        if (CONFIG_DIR / "config.json").is_file():
+            try:
+                on_disk = _json.loads(
+                    (CONFIG_DIR / "config.json").read_text(encoding="utf-8"))
+            except Exception:
+                on_disk = {}
+        disk_system = (on_disk.get("system") or {})
+        disk_keys = ((on_disk.get("access") or {}).get("keys") or [])
+
+        def _state(value):
+            if hostid.is_sealed(value):
+                return "yes"
+            return "no (plaintext)" if value else "empty"
+
         print("SignalR.E.A.C.H host binding")
         print("  host bind:     %s" % ("on" if system.get("host_bind", True) else "OFF"))
         print("  machine id:    %s" % (machine[:8] + "…" if machine else "(unavailable)"))
         if machine and salt:
             print("  fingerprint:   %s" % hostid.fingerprint(salt)[:32])
-        print("  sealed:        omniroute_key=%s admin_token=%s" % (
-            "yes" if hostid.is_sealed(cfg.get("omniroute_key")) else
-            ("n/a (plaintext legacy)" if cfg.get("omniroute_key") else "empty"),
-            "yes" if hostid.is_sealed(system.get("admin_token")) else
-            ("n/a (plaintext legacy)" if system.get("admin_token") else "empty")))
+        print("  sealed:        omniroute_key=%s admin_token=%s client_key=%s" % (
+            _state(on_disk.get("omniroute_key")),
+            _state(disk_system.get("admin_token")),
+            _state(disk_keys[0].get("key") if disk_keys else "")))
         recovery = CONFIG_DIR / "host-recovery.json"
         print("  recovery file: %s" % (recovery if recovery.is_file()
                                         else "(none — run `reach.py host rekey`)"))
