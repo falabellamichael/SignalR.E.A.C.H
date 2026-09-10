@@ -17,3 +17,5 @@ copilot/tray/*.log
 copilot/tray/dist/
 
 .vscode/
+# Isolated local browser runtime state (never publish browsing data)
+/browser-profile/

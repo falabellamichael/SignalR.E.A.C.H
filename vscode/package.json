@@ -75,6 +75,11 @@
         "command": "simplereach.openBrowser",
         "title": "REACH: Open Browser",
         "icon": "$(globe)"
+      },
+      {
+        "command": "simplereach.inspectContext",
+        "title": "REACH: Inspect VS Code Context",
+        "icon": "$(inspect)"
       }
     ],
     "viewsContainers": {
@@ -175,7 +180,7 @@
         "simplereach.workspaceContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Include workspace source as context with every chat; Agent mode reads the full open folder contents (default on \u2014 toggle it in the sidebar)."
+          "markdownDescription": "Include workspace source as context with every chat; Agent mode also selects and reads relevant closed files (default on — toggle it in the sidebar)."
         },
         "simplereach.contextMaxKb": {
           "type": "number",
@@ -215,7 +220,7 @@
         "simplereach.agentic": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Agentic mode \u2014 the model can propose file edits (shown as accept/reject diffs in the chat) using the full open folder contents as context."
+          "markdownDescription": "Agentic mode — the model can propose file edits (shown as accept/reject diffs in the chat) using your workspace tree + open files as context."
         },
         "simplereach.provider": {
           "type": "string",
@@ -249,6 +254,11 @@
             "type": "string"
           },
           "markdownDescription": "Access keys for added endpoints, indexed by their exact URL. Set each key using the key button beside its endpoint in REACH Settings."
+        },
+        "simplereach.ideContext": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Include live VS Code editor, Git repository and installed-extension metadata when Workspace context is enabled. Adds on-demand diagnostics, PR, extension, task and language-navigation tools. Credentials, environment variables and other extensions’ private state are not collected. Review with **REACH: Inspect VS Code Context**."
         }
       }
     }

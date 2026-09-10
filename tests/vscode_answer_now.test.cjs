@@ -181,6 +181,7 @@ test('quick answer completion prevents further tool extraction even if agentic i
     busy: true,
     stopRequested: false,
     answeringNow: true,
+    rafPending: false,
     agenticEnabled: true,
     pendingEdits: [],
     pendingText: 'Here is the answer based on package.json:\n<tool>{"action":"read","path":"unused.js"}</tool>',

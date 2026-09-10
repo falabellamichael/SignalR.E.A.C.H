@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src * data: blob:; script-src 'unsafe-inline' 'unsafe-eval' * data: blob:; style-src 'unsafe-inline' * data:; img-src * data: blob:; font-src * data:; connect-src * data: blob:; frame-src * data: blob: about:; worker-src * blob:; media-src * data: blob:;">
+        content="default-src * data: blob:; script-src {{cspSource}} 'unsafe-inline' 'unsafe-eval' * data: blob:; style-src {{cspSource}} 'unsafe-inline' * data:; img-src * data: blob:; font-src * data:; connect-src * data: blob:; frame-src * 'self' data: blob: about:; worker-src * blob:; media-src * data: blob:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="stylesheet" href="{{styleUri}}">
   <title>REACH Browser</title>
@@ -52,6 +52,6 @@
   </main>
 
   <div id="ctx-menu" class="ctx-menu" hidden></div>
-  <script nonce="{{nonce}}" src="{{scriptUri}}"></script>
+  <script src="{{scriptUri}}"></script>
 </body>
 </html>

@@ -9,7 +9,7 @@ function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } =
   async function resolveEndpoint() {
     if (endpoint && now() < expires) return endpoint;
     if (!resolving) resolving = (async () => {
-      const response = await fetchImpl(pointer);
+      const response = await fetchImpl(pointer, { signal: AbortSignal.timeout(15000) });
       if (!response.ok) throw new Error('Endpoint pointer HTTP ' + response.status);
       const url = new URL((await response.text()).trim());
       if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
@@ -45,7 +45,7 @@ function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } =
     }
     const abort = new AbortController();
     res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-    const timer = isChat ? null : setTimeout(() => abort.abort(), 60000);
+    const timer = setTimeout(() => abort.abort(), isChat ? 300000 : 60000);
     try {
       const base = await resolveEndpoint();
       if (isPointer) { json(res, 200, { public_url: base, source: 'published endpoint' }); return; }
@@ -90,7 +90,7 @@ function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } =
     } catch (error) {
       if (!res.headersSent && !res.destroyed) json(res, 502, { error: { message: String(error.message || error) } });
       else res.destroy();
-    } finally { if (timer) clearTimeout(timer); }
+    } finally { clearTimeout(timer); }
   });
 }
 

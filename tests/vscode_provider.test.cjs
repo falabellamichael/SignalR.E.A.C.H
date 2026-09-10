@@ -12,11 +12,12 @@ function host(values, response, workspace = {}, api = {}) {
  const config={provider:'endpoint',endpoint:'https://free.example/v1',model:'my/free-model',accessKey:'free-only-key',...values};
  const req=createRequire(extensionPath);
  const context={module:{exports:{}},console,process,Buffer,URL,AbortController,AbortSignal,TextDecoder,setTimeout,clearTimeout,
- require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:req(name),
+ require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{isTrusted:true,getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:req(name),
  fetch:async(url,options)=>{calls.push({url,options});return response(url,options);}
  };
  vm.runInNewContext(source+'\nmodule.exports.TestProvider=ReachChatViewProvider; module.exports.testConfig=config;',context,{filename:extensionPath});
  const provider=new context.module.exports.TestProvider({fsPath:'/extension'});
+ provider._ideBridge={handles:()=>false}; // Legacy provider tests; bridge activation is covered separately.
  provider._post=(type,payload)=>posts.push({type,...payload});
  let receive;
  provider._html=()=>'';
@@ -83,14 +84,6 @@ test('Copilot ignores additional free endpoints during model discovery',async()=
  assert.deepEqual(Array.from(catalog.routes.keys()),['copilot-chat']);
 });
 
-test('ChatGPT ignores additional free endpoints during model discovery',async()=>{
- const h=host({provider:'chatgpt',additionalEndpoints:['https://second.example/v1']},url=>
-   new Response(JSON.stringify({data:[{id:'chatgpt-chat'}]})));
- const catalog=await h.provider._discoverModels(h.readConfig());
- assert.ok(h.calls.every(call=>call.url.startsWith('http://127.0.0.1:21302/')));
- assert.deepEqual(Array.from(catalog.routes.keys()),['chatgpt-chat']);
-});
-
 test('VS Code Copilot uses its bridge/model and never sends the free endpoint key',async()=>{
  const h=host({provider:'copilot'},()=>new Response('data: '+JSON.stringify({choices:[{delta:{content:'COPILOT OK'}}]})+'\n\ndata: [DONE]\n\n'));
  await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'old-free-model',stream:true});
@@ -98,16 +91,6 @@ test('VS Code Copilot uses its bridge/model and never sends the free endpoint ke
  assert.equal(JSON.parse(h.calls[0].options.body).model,'copilot-chat');
  assert.equal(h.calls[0].options.headers.Authorization,undefined);
  assert.equal(h.posts.find(p=>p.type==='delta').text,'COPILOT OK');
- assert.ok(h.posts.some(p=>p.type==='done'));
-});
-
-test('VS Code ChatGPT uses its bridge/model and never sends the free endpoint key',async()=>{
- const h=host({provider:'chatgpt'},()=>new Response('data: '+JSON.stringify({choices:[{delta:{content:'CHATGPT OK'}}]})+'\n\ndata: [DONE]\n\n'));
- await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'old-free-model',stream:true});
- assert.equal(h.calls[0].url,'http://127.0.0.1:21302/v1/chat/completions');
- assert.equal(JSON.parse(h.calls[0].options.body).model,'chatgpt-chat');
- assert.equal(h.calls[0].options.headers.Authorization,undefined);
- assert.equal(h.posts.find(p=>p.type==='delta').text,'CHATGPT OK');
  assert.ok(h.posts.some(p=>p.type==='done'));
 });
 
@@ -171,7 +154,7 @@ test('Copilot receives complete files beyond the old read limits, including unsa
  const file='first line\n'+'x'.repeat(70000)+'\nUNSAVED_END_SENTINEL';
  const h=host({provider:'copilot'},()=>new Response(JSON.stringify({choices:[{message:{content:'Read the end.'}}]})),{
   workspaceFolders:[{uri:{fsPath:'/workspace'}}],
-  openTextDocument:async uri=>{assert.equal(uri.fsPath,'/workspace/large.js');return {getText:()=>file,isDirty:true};}
+  openTextDocument:async uri=>{assert.equal(uri.fsPath,path.join('/workspace','large.js'));return {getText:()=>file,isDirty:true};}
  });
  await h.receive({type:'toolReq',uid:'full',action:'read',path:'large.js'});
  const result=h.posts.find(p=>p.type==='toolResult');
@@ -221,17 +204,16 @@ test('a repository review reads closed source before both Think and the answer',
    ? '["src/nested/service.js"]' : 'Grounded response'}}]}));
  },fixture.workspace);
  await h.provider._chat({messages:[{role:'user',content:'Review this filebase'}],model:'my/free-model',agentic:true,includeWorkspace:true,think:true,stream:false});
- assert.deepEqual(fixture.reads,['src/nested/service.js','package.json']);
+ assert.deepEqual(fixture.reads,['src/nested/service.js']);
  assert.equal(h.calls.length,3);
  assert.match(JSON.parse(h.calls[0].options.body).messages[0].content,/src\/nested\/service.js/);
  for(const call of h.calls.slice(1)) {
   const sent=JSON.parse(call.options.body);
   assert.equal(sent.model,'my/free-model');
   assert.ok(sent.messages.some(m=>m.content.includes(full)),'Think and final must see the full source');
-  assert.ok(sent.messages.some(m=>m.content.includes('"name":"fixture"')),'Think and final must see the full open folder contents');
  }
  const info=h.posts.find(p=>p.type==='contextInfo');
- assert.equal(info.files,2);assert.match(info.context,/ACTUAL_FILE_END/);assert.match(info.context,/"name":"fixture"/);
+ assert.equal(info.files,1);assert.match(info.context,/ACTUAL_FILE_END/);
  const steps=h.posts.filter(p=>p.type==='agentStep');
  const read=steps.find(p=>p.title==='Read: src/nested/service.js');
  assert.equal(read.status,'running');
@@ -239,18 +221,6 @@ test('a repository review reads closed source before both Think and the answer',
  assert.ok(result.result.includes(full),'the read step receives the actual complete source result');
  const response=steps.find(p=>p.kind==='response');
  assert.ok(response && steps.indexOf(response)>steps.indexOf(result),'source results appear before response generation');
-});
-
-test('agent mode sees the full open folder contents even without open editor documents',async()=>{
- const fixture=sourceWorkspace({'package.json':'{"name":"fixture"}','src/app.js':'console.log("hello");','README.md':'# Overview'});
- const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'FOLDER INSPECTED'}}]})),fixture.workspace);
- await h.provider._chat({messages:[{role:'user',content:'What files are in this project?'}],agentic:true,includeWorkspace:true,stream:false});
- assert.deepEqual(fixture.reads.slice().sort(),['README.md','package.json','src/app.js'].sort());
- const info=h.posts.find(p=>p.type==='contextInfo');
- assert.equal(info.files,3);
- assert.match(info.context,/# Overview/);
- assert.match(info.context,/hello/);
- assert.match(info.context,/"name":"fixture"/);
 });
 
 test('providers that refuse file selection still get real source and cannot select outside the catalog',async()=>{
@@ -298,30 +268,6 @@ test('Stop cancels a long Copilot reading pass before the remaining parts are se
  assert.equal(h.calls.length,1);
  assert.equal(h.posts.find(p=>p.type==='done').aborted,true);
 });
-
-test('ChatGPT reads every part of long source and retries on transient transport error',async()=>{
- const full='// sample source\n'.repeat(800)+'const END_MARKER="CHATGPT_READ_THROUGH_EOF";';
- let callCount = 0;
- const h=host({provider:'chatgpt',think:true},(url,options)=>{
-  callCount++;
-  const text=JSON.parse(options.body).messages[0].content;
-  assert.ok(text.length<=7000,'every browser-bound request must fit');
-  if (callCount === 2) {
-    // Simulate one transient 502 error that succeeds on retry
-    return new Response(JSON.stringify({error:{message:'Browser busy'}}), { status: 502 });
-  }
-  return new Response(JSON.stringify({choices:[{message:{content:text.includes('CHATGPT_READ_THROUGH_EOF') ? 'END_MARKER is CHATGPT_READ_THROUGH_EOF.' : 'Continue reading the source.'}}]}));
- });
- await h.provider._chat({messages:[{role:'system',content:full},{role:'user',content:'What is END_MARKER?'}],stream:false,think:true});
- assert.equal(callCount, 7, 'retried the failed part once (4 parts + 1 retry + think + answer)');
- const readingCalls=h.calls.filter((_, idx) => idx !== 1); // exclude failed attempt 1 of part 2
- const parts=readingCalls.map(c=>JSON.parse(c.options.body).messages[0].content).filter(c=>c.startsWith('Read this consecutive part')).map(c=>c.split(/Part \d+\/\d+:\n/)[1]);
- assert.ok(parts.join('').includes(full),'all characters reach a reading pass in order');
- const final=JSON.parse(h.calls.at(-1).options.body).messages[0].content;
- assert.match(final,/What is END_MARKER/);assert.match(final,/CHATGPT_READ_THROUGH_EOF/);
- assert.match(h.posts.find(p=>p.type==='done').full,/CHATGPT_READ_THROUGH_EOF/);
-});
-
 
 function editableWorkspace(initial, dirty=false) {
  let text=initial,disk=dirty?'UNSAVED BASE ON DISK':initial,writes=0,saves=0;

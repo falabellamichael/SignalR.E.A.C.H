@@ -6,7 +6,7 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname,'../vscode/media/chat.js'),'utf8');
 
 function toolParser() {
- const ctx = {};
+ const ctx = { includeWorkspace: true };
  vm.runInNewContext(source.slice(source.indexOf('  function repairJson('), source.indexOf('  function diffLines('))
    + source.slice(source.indexOf('  function maskFenced('), source.indexOf('  /* ---------- Cursor-style step tracker')), ctx);
  return ctx;
@@ -16,7 +16,7 @@ test('XML tool requests from the reported reply execute a read with the requeste
  const ctx = toolParser();
  ctx.pendingText = '<tool>\n{"action": "read", "path": "README.md", "start_line": 1, "end_line": 260}\n</tool>';
  const calls = [];
- Object.assign(ctx, { busy: true, stopRequested: false, agenticEnabled: true, pendingEdits: [], agentRounds: 0, MAX_AGENT_ROUNDS: 40,
+ Object.assign(ctx, { busy: true, rafPending: false, stopRequested: false, agenticEnabled: true, pendingEdits: [], agentRounds: 0, MAX_AGENT_ROUNDS: 40,
    pendingBubble: {}, activeResponseStep: null, setRich() {}, startSteps() {}, showThinking() {},
    addStepRow() {}, post: (type, payload) => calls.push({type, ...payload}) });
  vm.runInNewContext(source.slice(source.indexOf('  function beginToolRound('), source.indexOf('  function continueAgent(')), ctx);
@@ -57,7 +57,7 @@ test('later tool rounds retain earlier file contents and line ranges reach the h
  const continuation=source.slice(source.indexOf('  function continueAgent('),source.indexOf('  /* ---------- per-message actions'));
  const calls=[];
  const workspaceCase=source.slice(source.indexOf("      case 'contextInfo': {"),source.indexOf("        showStep('Workspace context ready'",source.indexOf("      case 'contextInfo': {")));
- const ctx={conv:{model:'copilot-chat'},agentMessages:[{role:'user',content:'Read both complete files.'}],
+ const ctx={includeWorkspace:true,conv:{model:'copilot-chat'},agentMessages:[{role:'user',content:'Read both complete files.'}],
   contTools:[{action:'read',path:'one.js',result:'FIRST_FILE_END'}],pendingText:'Reading one.js',agentRounds:0,pendingBubble:null,
   repairJson:x=>x,post:(type,payload)=>calls.push(payload),pickVoice:()=>({text:''}),showStep:()=>{}};
  vm.runInNewContext(workspaceCase.replace("      case 'contextInfo': {",'')+'\n', {...ctx,msg:{context:'AUTO_READ_FILE_END'}});

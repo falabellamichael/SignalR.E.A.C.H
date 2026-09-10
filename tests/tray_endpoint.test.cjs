@@ -68,10 +68,10 @@ test('Copilot failures remain visible to both JSON and streaming VS Code clients
 });
 
 test('tray runtime launch paths cover macOS, Windows and Linux',()=>{
- assert.match(trayBinary('/tray','darwin'),/Electron\.app\/Contents\/MacOS\/Electron$/);
+ assert.match(trayBinary('/tray','darwin').replace(/\\/g,'/'),/Electron\.app\/Contents\/MacOS\/Electron$/);
  assert.match(trayBinary('/tray','win32'),/electron\.exe$/);
- assert.match(trayBinary('/tray','linux'),/dist\/electron$/);
- assert.equal(trayDirectory('darwin',{},'/home/u'),'/home/u/Library/Application Support/SignalREACH/copilot/tray');
- assert.equal(trayDirectory('linux',{XDG_CONFIG_HOME:'/config'},'/home/u'),'/config/SignalREACH/copilot/tray');
- assert.equal(trayDirectory('win32',{LOCALAPPDATA:'/local'},'/home/u'),'/local/SignalREACH/copilot/tray');
+ assert.match(trayBinary('/tray','linux').replace(/\\/g,'/'),/dist\/electron$/);
+ assert.equal(trayDirectory('darwin',{},'/home/u').replace(/\\/g, '/'),'/home/u/Library/Application Support/SignalREACH/copilot/tray');
+ assert.equal(trayDirectory('linux',{XDG_CONFIG_HOME:'/config'},'/home/u').replace(/\\/g, '/'),'/config/SignalREACH/copilot/tray');
+ assert.equal(trayDirectory('win32',{LOCALAPPDATA:'/local'},'/home/u').replace(/\\/g, '/'),'/local/SignalREACH/copilot/tray');
 });

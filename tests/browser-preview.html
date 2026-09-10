@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>REACH Browser — local test preview</title>
+<link rel="stylesheet" href="/src/reach.css"><link rel="stylesheet" href="/src/reach-theme.css"><link rel="stylesheet" href="/src/reach-browser.css">
+<style>body{margin:0;padding:18px;background:#121922;color:#e3e8ef;font:13px system-ui}body.light{background:#f6f7f9;color:#233046}header.test-controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:12px;font-size:11px}.test-controls button{padding:5px 10px}#workspace{max-width:1180px;margin:auto}.reach-page{max-width:none}#test-chat{margin:15px 0}#chat-input{box-sizing:border-box;width:100%;min-height:100px;background:transparent;color:inherit;border:1px solid #667085;padding:10px}</style></head>
+<body><div id="workspace"><header class="test-controls"><b>Local extension preview</b>
+<span>Browser: open a public website. Reader fixtures: https://fixture.example/search, /overflow, /article, /next, /slow or /error.</span>
+<button id="test-theme">Toggle light theme</button><button id="test-remount">Leave and reopen Browser</button></header>
+<div class="reach-page"><main id="preview" class="reach-content"></main></div>
+<form id="test-chat" hidden><label for="chat-input">SimpleRAG composer fixture (draft only)</label><textarea id="chat-input">Existing draft — preserve this.</textarea><output id="test-submit">No submission</output></form></div>
+<script src="/src/reach-core.js"></script><script src="/src/pages-common.js"></script>
+<script>window.__reachCore=Object.freeze(Object.assign({},window.__reachCore,{RELAY:location.origin}));</script>
+<script src="/src/browser-engine.js"></script><script src="/src/pages-browser.js"></script>
+<script>
+let cleanup=window.__reachPageRegistry.browser(document.getElementById('preview'));
+window.openAiSidebar=async function(){const panel=document.getElementById('test-chat');panel.hidden=false;panel.style.cssText='position:fixed;right:20px;bottom:20px;width:350px;background:#202a36;padding:15px;z-index:5;';};
+document.getElementById('test-remount').onclick=function(){cleanup();document.getElementById('preview').replaceChildren();cleanup=window.__reachPageRegistry.browser(document.getElementById('preview'));};
+document.getElementById('test-theme').onclick=function(){const light=document.body.classList.toggle('light');document.documentElement.dataset.workspaceColorScheme=light?'light':'dark';};
+document.getElementById('test-chat').onsubmit=function(e){e.preventDefault();document.getElementById('test-submit').textContent='UNEXPECTED SUBMISSION';};
+</script></body></html>

@@ -11,6 +11,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
@@ -300,8 +301,9 @@ class ResponseCacheTests(unittest.TestCase):
 
     def test_expiry(self):
         cache = reachd.ResponseCache()
-        cache.put("a", b"1", ttl_s=0, max_entries=10)
-        self.assertIsNone(cache.get("a"))
+        with patch("reachd.cache.time.time", return_value=1000):
+            cache.put("a", b"1", ttl_s=0, max_entries=10)
+            self.assertIsNone(cache.get("a"))
 
     def test_cache_key_deterministic_and_temperature_aware(self):
         payload = {"model": "gpt-4o",

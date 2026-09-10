@@ -6,17 +6,54 @@ directory there directly. Re-running prunes older versions of our extension
 (and never touches third-party extensions).
 """
 
+import json
 import os
+import re
 import shutil
-import sys
 from pathlib import Path
 
-EXT_PUBLISHER = "simplereach"
-EXT_NAME = "simplereach"
-EXT_VERSION = "1.1.0"
+def _version_key(version):
+    """Comparable SemVer key (build metadata does not affect precedence)."""
+    match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", version)
+    if not match:
+        raise ValueError("invalid extension version")
+    prerelease = match.group(4)
+    parts = prerelease.split(".") if prerelease else []
+    if any(p.isdigit() and len(p) > 1 and p.startswith("0") for p in parts):
+        raise ValueError("invalid extension prerelease version")
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            not prerelease,
+            tuple((0, int(p)) if p.isdigit() else (1, p) for p in parts))
+
+
+def _manifest_identity(src):
+    manifest = json.loads((src / "package.json").read_text(encoding="utf-8"))
+    if not isinstance(manifest, dict):
+        raise ValueError("extension manifest must be an object")
+    for field in ("publisher", "name"):
+        if not isinstance(manifest.get(field), str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9-]*", manifest[field]):
+            raise ValueError("invalid extension " + field)
+    version = manifest.get("version")
+    if not isinstance(version, str):
+        raise ValueError("missing extension version")
+    _version_key(version)
+    return manifest["publisher"], manifest["name"], version
+
+
+# Keep these exports for the CLI's display path, without a second version value
+# that can drift away from package.json. Minimal relay copies may omit vscode/.
+try:
+    EXT_PUBLISHER, EXT_NAME, EXT_VERSION = _manifest_identity(
+        Path(__file__).resolve().parents[2] / "vscode")
+except (OSError, ValueError):
+    EXT_PUBLISHER, EXT_NAME, EXT_VERSION = "simplereach", "simplereach", ""
 
 EXT_ID = "%s.%s" % (EXT_PUBLISHER, EXT_NAME)
-FOLDER = "%s-%s" % (EXT_ID, EXT_VERSION)
+FOLDER = "%s-%s" % (EXT_ID, EXT_VERSION) if EXT_VERSION else EXT_ID
 
 
 def vscode_extensions_dir():
@@ -27,8 +64,24 @@ def vscode_extensions_dir():
     return Path(base) / ".vscode" / "extensions"
 
 
-def _is_ours(path):
-    return path.is_dir() and path.name.startswith(EXT_ID + "-")
+def _is_ours(path, extension_id=EXT_ID):
+    return path.is_dir() and path.name.startswith(extension_id + "-")
+
+
+def _installed_versions(root, extension_id):
+    versions = []
+    if root.is_dir():
+        for path in root.iterdir():
+            # Never copy or recursively remove a linked folder outside this root.
+            if _is_ours(path, extension_id) and path.resolve().parent == root.resolve():
+                try:
+                    publisher, name, version = _manifest_identity(path)
+                    if ("%s.%s" % (publisher, name) == extension_id and
+                            path.name == "%s-%s" % (extension_id, version)):
+                        versions.append((_version_key(version), path))
+                except (OSError, ValueError):
+                    continue
+    return sorted(versions, key=lambda entry: entry[0], reverse=True)
 
 
 def installed():
@@ -42,38 +95,57 @@ def install(repo_root, quiet=False, with_playwright=False):
     if not (src / "package.json").is_file():
         print("  vscode/: extension sources missing from checkout — skipped")
         return False
-    root = vscode_extensions_dir()
-    dst = root / FOLDER
     try:
-        if dst.is_dir():
-            shutil.rmtree(dst, ignore_errors=True)
+        publisher, name, version = _manifest_identity(src)
+        extension_id = "%s.%s" % (publisher, name)
+        folder = "%s-%s" % (extension_id, version)
+        root = vscode_extensions_dir()
+        previous = _installed_versions(root, extension_id)
+        if previous and previous[0][0] > _version_key(version):
+            print("  VS Code extension install skipped: %s is newer than checkout %s"
+                  % (previous[0][1].name, version))
+            return False
+        dst = root / folder
+        if dst.resolve().parent != root.resolve():
+            raise ValueError("extension destination resolves outside the extensions directory")
         dst.mkdir(parents=True, exist_ok=True)
-        for name in ("package.json", "extension.js", "connection.js", "search.js", "edits.js", "context.js"):
-            if (src / name).is_file():
-                shutil.copy2(src / name, dst / name)
+        shutil.copy2(src / "package.json", dst / "package.json")
+        # Runtime modules are deliberately root-only: never copy the checkout's
+        # node_modules, lockfiles, test directories or build artifacts.
+        for module in src.glob("*.js"):
+            if module.is_file():
+                shutil.copy2(module, dst / module.name)
         media_src = src / "media"
         media_dst = dst / "media"
-        media_dst.mkdir(exist_ok=True)
-        for name in media_src.iterdir():
-            if name.is_file():
-                shutil.copy2(name, media_dst / name.name)
-    except OSError as exc:
+        if media_src.is_dir():
+            shutil.copytree(media_src, media_dst, dirs_exist_ok=True)
+        # A versioned upgrade must carry forward the optional browser runtime
+        # before deleting its old directory. Same-version installs keep it intact.
+        if not (dst / "node_modules").exists():
+            for _, old in previous:
+                dependencies = old / "node_modules"
+                if old != dst and dependencies.is_dir():
+                    shutil.copytree(dependencies, dst / "node_modules", symlinks=True)
+                    break
+    except (OSError, ValueError) as exc:
         print("  VS Code extension install failed: %s" % exc)
         return False
     # prune older versions of OUR extension only
-    for entry in root.iterdir():
-        if _is_ours(entry) and entry.name != FOLDER:
+    for key, entry in previous:
+        if key < _version_key(version) and entry != dst:
             shutil.rmtree(entry, ignore_errors=True)
             if not quiet:
                 print("  pruned old VS Code extension %s" % entry.name)
     # default route: gpt-4o-mini through the REACH relay
-    configure_defaults(quiet=quiet)
+    if not previous:
+        configure_defaults(quiet=quiet)
     # optional Playwright (headless Chromium page fetching)
     if with_playwright:
         _install_playwright(dst)
     if not quiet:
         print("  VS Code extension installed -> " + str(dst))
-        print("  default model: gpt-4o-mini (change in Settings -> simplereach.model)")
+        if not previous:
+            print("  default model: gpt-4o-mini (change in Settings -> simplereach.model)")
         print("  (reload VS Code: Ctrl+Shift+P -> Developer: Reload Window)")
     return True
 
@@ -100,18 +172,6 @@ def configure_defaults(quiet=False):
         settings_paths += [
             Path(appdata) / "Code" / "User" / "settings.json",
             Path(appdata) / "Code - Insiders" / "User" / "settings.json",
-        ]
-    if sys.platform == "darwin":
-        base_support = Path.home() / "Library" / "Application Support"
-        settings_paths += [
-            base_support / "Code" / "User" / "settings.json",
-            base_support / "Code - Insiders" / "User" / "settings.json",
-        ]
-    elif sys.platform.startswith("linux"):
-        base_cfg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        settings_paths += [
-            base_cfg / "Code" / "User" / "settings.json",
-            base_cfg / "Code - Insiders" / "User" / "settings.json",
         ]
     for sp in settings_paths:
         try:

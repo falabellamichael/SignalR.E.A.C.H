@@ -22,7 +22,7 @@ class ResponseCache:
                 self.misses += 1
                 return None
             expires, body = entry
-            if time.time() > expires:
+            if time.time() >= expires:
                 self._entries.pop(key, None)
                 self.misses += 1
                 return None

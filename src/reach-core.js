@@ -23,7 +23,7 @@
         page: 'dashboard',
         dirty: false,
         toastTimer: null,
-        version: '26.9.1' // x-release-please-version
+        version: '26.9.2' // x-release-please-version
     };
 
     function prefsGet(key, fallback) {

@@ -42,6 +42,11 @@
   let answerNowBtn = null;
   let answeringNow = false;
   let pendingText = '';
+  // Frame-batched streaming render: deltas accumulate instantly, but the
+  // bubble re-renders at most once per animation frame. Re-rendering per
+  // delta can fire 100+ full markdown re-parses per second and makes the
+  // stream look jerky.
+  let rafPending = false;
   let clearArmed = false;
   let clearTimer = null;
   let includeWorkspace = true;
@@ -242,10 +247,28 @@
     while ((m = re.exec(text || ''))) {
       try {
         const it = JSON.parse(repairJson((m[1] === undefined ? m[2] : m[1]).trim()));
-        const allowedTool = ['read', 'search', 'list', 'shell', 'browse', 'websearch'];
+        const allowedTool = ['read', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand'];
         if (it && allowedTool.includes(it.action)) {
           tools.push({
             action: it.action,
+            topic: String(it.topic || '').slice(0, 80),
+            remote: String(it.remote || '').slice(0, 200),
+            lookup: it.lookup,
+            state: it.state === undefined ? undefined : String(it.state).slice(0, 40),
+            maxChars: it.maxChars,
+            maxChanges: it.maxChanges,
+            severity: String(it.severity || '').slice(0, 40),
+            key: String(it.key || '').slice(0, 200),
+            details: it.details === true,
+            operation: String(it.operation || 'status').slice(0, 40),
+            repository: typeof it.repository === 'number' ? it.repository : String(it.repository ?? '').slice(0, 1000),
+            workspace: typeof it.workspace === 'number' ? it.workspace : (it.workspace === undefined ? undefined : String(it.workspace).slice(0, 1000)),
+            extensionId: String(it.extensionId || '').slice(0, 200),
+            name: String(it.name || '').slice(0, 200),
+            line: it.line,
+            column: it.column,
+            limit: it.limit,
+            staged: it.staged === true,
             path: String(it.path || '').replace(/\\/g, '/'),
             startLine: it.startLine ?? it.start_line,
             endLine: it.endLine ?? it.end_line,
@@ -733,10 +756,10 @@
               ? t.url
               : t.action === 'websearch'
                 ? t.query
-                : t.command;
+                : (t.topic || t.name || t.command || t.operation || t.action);
       const label = {read:'Read',search:'Search',list:'List',shell:'Run command',browse:'Browse',websearch:'Web search'}[t.action] || t.action;
       addStepRow(t.uid, label + ': ' + detail);
-      post('toolReq', { uid: t.uid, action: t.action, path: t.path, startLine: t.startLine, endLine: t.endLine, pattern: t.pattern, command: t.command, url: t.url, query: t.query });
+      post('toolReq', Object.assign({}, t, { allowIdeContext: includeWorkspace }));
     });
   }
 
@@ -751,7 +774,7 @@
   function continueAgent(instruction) {
     if (!conv) return;
     const resultsText = contTools
-      .map((t) => '[' + t.action + ' ' + (t.path || t.pattern || t.command || t.url || t.query) + ']\n' + t.result)
+      .map((t) => '[' + t.action + ' ' + (t.path || t.topic || t.name || t.command || t.pattern || t.url || t.query || t.operation || t.action) + ']\n' + t.result)
       .join('\n\n');
     const follow = agentMessages.concat([
       { role: 'assistant', content: pendingText },
@@ -768,6 +791,7 @@
         stream: true,
         messages: follow,
         includeWorkspace: false,
+        includeIdeContext: includeWorkspace,
         think: false,
         webSearch: false,
         agentic: true,
@@ -1101,6 +1125,72 @@
     });
   }
 
+  function setKeyVisibility(control, visible) {
+    const field = control.querySelector('input');
+    const button = control.querySelector('button');
+    field.type = visible ? 'text' : 'password';
+    button.title = visible ? 'Hide access key' : 'Show access key';
+    button.setAttribute('aria-label', button.title);
+    button.setAttribute('aria-pressed', String(visible));
+  }
+
+  function hideAccessKeys(except) {
+    settingsPanel.querySelectorAll('.setting-secret').forEach(control => {
+      if (!except || !control.contains(except)) setKeyVisibility(control, false);
+    });
+  }
+
+  function accessKeyControl(field, onCommit) {
+    const control = document.createElement('span');
+    control.className = 'setting-secret';
+    field.autocomplete = 'off';
+    field.spellcheck = false;
+    field.setAttribute('autocapitalize', 'off');
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secret-toggle';
+    button.setAttribute('aria-controls', field.id);
+    button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path class="eye-slash" d="m3 3 18 18"/></svg>';
+    control.append(field, button);
+    setKeyVisibility(control, false);
+    // Changing an input's type can reset Chromium's native change tracking.
+    // Commit on blur too, while keeping Enter/change to a single save.
+    let committedValue = field.value;
+    const commit = () => {
+      if (field.value === committedValue) return;
+      committedValue = field.value;
+      onCommit();
+    };
+    field.addEventListener('focus', () => { committedValue = field.value; });
+    field.addEventListener('change', commit);
+    field.addEventListener('blur', commit);
+    // Keep pointer clicks on the eye from committing the field through blur.
+    button.addEventListener('pointerdown', event => event.preventDefault());
+    button.addEventListener('click', () => {
+      const visible = field.type === 'password';
+      field.focus();
+      setKeyVisibility(control, visible);
+    });
+    control.addEventListener('focusout', event => {
+      if (!control.contains(event.relatedTarget)) setKeyVisibility(control, false);
+    });
+    control.addEventListener('keydown', event => {
+      if (event.isComposing || (event.key !== 'Escape'
+        && (event.key !== 'Enter' || event.target !== field))) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setKeyVisibility(control, false);
+      if (control.contains(document.activeElement)) document.activeElement.blur();
+    });
+    return control;
+  }
+
+  document.addEventListener('pointerdown', event => hideAccessKeys(event.target));
+  window.addEventListener('blur', () => hideAccessKeys());
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hideAccessKeys();
+  });
+
   const SETTING_FIELDS = [
     { key: 'model', label: 'Default model', type: 'text' },
     { key: 'maxTokens', label: 'Max tokens', type: 'number', min: 1 },
@@ -1177,23 +1267,23 @@
       const keyLabel = document.createElement('label');
       keyLabel.htmlFor = keyInput.id;
       keyLabel.textContent = 'Access key';
-      keyInput.addEventListener('change', () => {
+      const saveKey = () => {
         if (!input.value.trim()) return;
         post('setConfig', { key: 'endpointAccessKey', endpoint: input.value.trim(), value: keyInput.value });
-      });
-      keyPanel.append(keyLabel, keyInput);
+      };
+      keyPanel.append(keyLabel, accessKeyControl(keyInput, saveKey));
       const keyButton = document.createElement('button');
       keyButton.type = 'button';
       keyButton.className = 'icon-btn endpoint-action endpoint-key-toggle';
       keyButton.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.5 9.5a4 4 0 1 1 3-3L8 8l1.5 1.5L8 11 6.5 9.5 5 11v2H3v2H1v-3l5.5-5.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="11" cy="3" r=".8" fill="currentColor"/></svg>';
-      keyButton.title = 'Show access key';
-      keyButton.setAttribute('aria-label', 'Show access key');
+      keyButton.title = 'Edit access key';
+      keyButton.setAttribute('aria-label', 'Edit access key');
       keyButton.setAttribute('aria-expanded', 'false');
       keyButton.setAttribute('aria-controls', keyPanel.id);
       keyButton.addEventListener('click', () => {
         keyPanel.hidden = !keyPanel.hidden;
-        keyInput.type = keyPanel.hidden ? 'password' : 'text';
-        keyButton.title = keyPanel.hidden ? 'Show access key' : 'Hide access key';
+        hideAccessKeys();
+        keyButton.title = keyPanel.hidden ? 'Edit access key' : 'Close access key';
         keyButton.setAttribute('aria-label', keyButton.title);
         keyButton.setAttribute('aria-expanded', String(!keyPanel.hidden));
         if (!keyPanel.hidden) keyInput.focus();
@@ -1608,13 +1698,24 @@
         }
         if (!pendingText) hideThinking();
         pendingText += msg.text;
-        setRich(pendingBubble, maskFenced(pendingText));
-        scrollBottom();
+        if (!rafPending) {
+          rafPending = true;
+          requestAnimationFrame(() => {
+            rafPending = false;
+            if (!pendingBubble) return;
+            setRich(pendingBubble, maskFenced(pendingText));
+            scrollBottom();
+          });
+        }
         break;
       case 'done': {
         if (!busy) break;
         const isAnsweringNow = typeof answeringNow !== 'undefined' && Boolean(answeringNow);
         const aborted = (msg.aborted && !isAnsweringNow) || stopRequested;
+        if (rafPending && pendingBubble) {
+          rafPending = false;
+          setRich(pendingBubble, maskFenced(pendingText));
+        }
         if (pendingBubble && msg.full !== undefined) {
           pendingText = msg.full;
           setRich(pendingBubble, maskFenced(pendingText));
@@ -1748,6 +1849,12 @@
       case 'contextProgress':
         showStep(msg.text, true, msg.text);
         break;
+      case 'ideContextInfo': {
+        const label = msg.available ? 'VS Code context ready' : 'VS Code context unavailable';
+        showStep(label, true, label + ' — editor, Git and extension metadata', msg.context || '');
+        wsCount.title = label + '. Run REACH: Inspect VS Code Context to review the live snapshot.';
+        break;
+      }
       case 'contextInfo': {
         if (msg.context) agentMessages.unshift({ role: 'system', content: msg.context });
         showStep('Workspace context ready', true, '', msg.files + ' file(s), ' + Math.round((msg.chars || 0) / 1024) + ' KB supplied to the model.');
