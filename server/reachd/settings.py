@@ -91,7 +91,7 @@ DEFAULT_SETTINGS = {
             **MODEL_SPEC_DEFAULTS,
             "upstream": "codegpt/codegpt-gemini-2.5-flash",
             "description": "Google Gemini 2.5 Flash (CodeGPT free tier)",
-            "fallback": "gemini-3.7-flash",
+            "fallback": "gpt-5",
             "min_output_tokens": 1024,
         },
         "gemini-3.7-flash": {
