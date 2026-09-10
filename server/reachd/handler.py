@@ -720,17 +720,26 @@ class RelayHandler(BaseHTTPRequestHandler):
         if not models:
             return self._json(503, {"ok": False,
                                     "error": "no enabled models configured"})
-        upstream_model = sorted(models.values())[0]
-        payload = {"model": upstream_model,
+        # Prefer an OmniRoute alias — this is the OmniRoute connectivity probe.
+        # Only when nothing but bridge aliases exists does it test the bridge.
+        upstreams = sorted(models.values())
+        upstream_model = next((u for u in upstreams
+                               if not u.startswith("bridge/")), upstreams[0])
+        use_bridge = upstream_model.startswith("bridge/")
+        payload = {"model": upstream_model[len("bridge/"):] if use_bridge
+                   else upstream_model,
                    "messages": [{"role": "user",
                                  "content": "Reply with exactly: REACH OK"}],
                    "max_tokens": 16}
         try:
-            url = core.STATE.omniroute_url.rstrip("/") + "/chat/completions"
+            url = (core.STATE.bridge_url if use_bridge
+                   else core.STATE.omniroute_url).rstrip("/") + "/chat/completions"
+            headers = {"Content-Type": "application/json"}
+            if not use_bridge:
+                headers["Authorization"] = "Bearer " + core.STATE.key
             req = urllib.request.Request(
                 url, data=json.dumps(payload).encode("utf-8"), method="POST",
-                headers={"Content-Type": "application/json",
-                         "Authorization": "Bearer " + core.STATE.key})
+                headers=headers)
             with urllib.request.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8", "replace"))
             reply = (data.get("choices") or [{}])[0].get("message", {}).get("content")
@@ -802,10 +811,35 @@ class RelayHandler(BaseHTTPRequestHandler):
         core.STATE.analytics.log_request(**fields)
 
     def handle_chat(self):
-        upstream, ctx = chat_execute(self)
-        if upstream is None:
-            return
-        chat_finalize(self, upstream, ctx)
+        # One record per request, live for as long as it runs: /status shows it
+        # and the log line at each end says how long it took. There is no
+        # timeout — a slow generation is meant to be watched, not killed.
+        record = core.STATE.begin_request()
+        self._reach_request = record
+        try:
+            upstream, ctx = chat_execute(self)
+            if upstream is None:
+                return
+            chat_finalize(self, upstream, ctx)
+        finally:
+            elapsed = core.STATE.end_request(record)
+            model = record.get("model") or "(unresolved)"
+            if core.STATE.cfg.get("data", {}).get("log_level") != "none":
+                self._reach_log("chat end model=%s upstream=%s %.1fs stream=%s"
+                                % (model, record.get("upstream") or "-", elapsed,
+                                   "yes" if record.get("stream") else "no"))
+
+    @staticmethod
+    def _reach_log(line):
+        """Relay timeline on stdout, which the runtime redirects into
+        reach.log — so an in-progress request is observable while it runs."""
+        try:
+            print("[reach] " + line, flush=True)
+        except Exception:
+            pass
+
+    def handle_chat_placeholder(self):
+        return None
 
     @staticmethod
     def _cache_key(payload, cache_cfg):

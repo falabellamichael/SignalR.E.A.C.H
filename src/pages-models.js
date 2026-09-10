@@ -19,7 +19,7 @@
     /* ---------------------------------------------------------------- MODELS */
     function renderModels(container) {
         container.appendChild(pageHeader('fa-cubes', 'Models',
-            'Public aliases and their upstream codegpt targets. Toggles apply instantly.'));
+            'Public aliases and their upstream targets — codegpt via OmniRoute, or the local CodeGPT economy bridge. Toggles apply instantly.'));
         const body = el('div', 'reach-stack');
         container.appendChild(body);
         let timer = null;
@@ -201,7 +201,7 @@
             aliasInput.placeholder = 'public alias (e.g. gpt-4o-mini)';
             aliasInput.className = 'reach-input';
             const upstreamInput = document.createElement('input');
-            upstreamInput.placeholder = 'upstream (e.g. codegpt/codegpt-gpt-4o-mini)';
+            upstreamInput.placeholder = 'upstream (e.g. codegpt/codegpt-gpt-4o-mini, or bridge/codegpt-eco-ox-alpha)';
             upstreamInput.className = 'reach-input';
             row.appendChild(aliasInput);
             row.appendChild(upstreamInput);

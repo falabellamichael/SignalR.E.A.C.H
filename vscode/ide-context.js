@@ -6,7 +6,6 @@ const fs = require('fs');
 const path = require('path');
 
 const MAX_ITEMS = 100;
-const PROVIDER_TIMEOUT_MS = 5000;
 const SAFE_SETTINGS = Object.freeze([
   'editor.tabSize', 'editor.insertSpaces', 'editor.detectIndentation',
   'editor.wordWrap', 'editor.formatOnSave', 'editor.formatOnPaste',
@@ -51,7 +50,12 @@ function scopedPath(root, target) {
   const relative = path.relative(root, target);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
-async function bounded(operation, timeoutMs = PROVIDER_TIMEOUT_MS) {
+// Agent context probes run without a timeout: a language provider that is slow
+// to answer is still worth waiting for, and cutting it off silently drops
+// context the model asked for. An explicit budget is still honoured if a caller
+// passes one.
+async function bounded(operation, timeoutMs = 0) {
+  if (!(timeoutMs > 0)) return operation();
   let timer;
   try {
     return await Promise.race([

@@ -15,6 +15,9 @@ class Element {
 function host(){
  const log=new Element('main'),answer=new Element('div');log.appendChild(answer);
  const ctx={document:{createElement:t=>new Element(t)},log,stepsEl:null,stepRows:[],rowByUid:{},activeTrace:null,activeTraceConvId:null,activeResponseStep:null,
+  // The webview has timers; the running-step ticker uses them (time is never
+  // advanced here, so the stubs just need to exist).
+  setInterval:()=>0,clearInterval:()=>{},Date,
   busy:true,activeRequestLength:1,conv:{id:9,messages:[{role:'user',content:'Inspect these files'}]},pendingBubble:{parentElement:answer},persist(){},saveConv(){},scrollBottom(){}};
  vm.runInNewContext(source.slice(source.indexOf('  function createTimeline('),source.indexOf('  function beginToolRound(')),ctx);
  return {ctx,log,answer};

@@ -94,13 +94,6 @@ function remoteLocation(raw, head = {}) {
   return { url: sanitized, provider, links };
 }
 
-function withTimeout(promise, milliseconds) {
-  let timer;
-  return Promise.race([Promise.resolve(promise), new Promise((_, reject) => {
-    timer = setTimeout(() => reject(Object.assign(new Error('Git operation timed out.'), { code: 'ETIMEDOUT' })), milliseconds);
-  })]).finally(() => clearTimeout(timer));
-}
-
 function changeSummary(repo, maxChanges) {
   const state = repo.state || {};
   const root = repo.rootUri.fsPath;
@@ -193,7 +186,6 @@ class GitContext {
   constructor(vscode, options = {}) {
     this.vscode = vscode;
     this.execFile = options.execFile || execFile;
-    this.timeoutMs = limit(options.timeoutMs, 5000, 15000);
   }
 
   async _repositories() {
@@ -201,7 +193,9 @@ class GitContext {
     const extension = this.vscode.extensions.getExtension('vscode.git');
     if (!extension) return { status: 'unavailable', message: 'The built-in VS Code Git extension is unavailable.', repositories: [] };
     try {
-      const git = extension.isActive ? extension.exports : await withTimeout(extension.activate(), this.timeoutMs);
+      // No timeout: VS Code's Git extension may still be initializing, and a
+      // slow start is not a failure. Pressing Stop is the only cancellation.
+      const git = extension.isActive ? extension.exports : await extension.activate();
       if (!git || git.enabled === false || typeof git.getAPI !== 'function') return { status: 'disabled', message: 'VS Code Git is disabled.', repositories: [] };
       const api = git.getAPI(1);
       return { status: api.repositories.length ? 'ok' : 'noRepositories', repositories: api.repositories };
@@ -230,7 +224,7 @@ class GitContext {
 
   async _refresh(repo) {
     if (typeof repo.status !== 'function') return 'cached';
-    try { await withTimeout(repo.status(), this.timeoutMs); return 'refreshed'; }
+    try { await repo.status(); return 'refreshed'; }
     catch { return 'cachedAfterRefreshFailure'; }
   }
 
@@ -266,12 +260,12 @@ class GitContext {
         // https://github.com/microsoft/vscode/blob/main/extensions/git/src/git.ts
         const method = file ? (request.staged === true ? 'diffIndexWithHEAD' : 'diffWithHEAD') : 'diff';
         if (typeof repo[method] !== 'function') return { status: 'unsupportedOperation', message: 'This version of VS Code Git does not expose the requested diff operation.' };
-        const result = await withTimeout(repo[method](file ? file.absolute : request.staged === true), this.timeoutMs);
+        const result = await repo[method](file ? file.absolute : request.staged === true);
         return { status: 'ok', repository: summary.root, path: file ? file.relative : undefined, staged: request.staged === true, freshness, ...safeDiff(result, limit(request.maxChars, 16000, 32000)) };
       }
       if (operation === 'log') {
         if (typeof repo.log !== 'function') return { status: 'unsupportedOperation', message: 'This version of VS Code Git does not expose log.' };
-        const commits = await withTimeout(repo.log({ maxEntries: limit(request.limit, 10, 50) }), this.timeoutMs);
+        const commits = await repo.log({ maxEntries: limit(request.limit, 10, 50) });
         return { status: 'ok', repository: summary.root, commits: commits.slice(0, limit(request.limit, 10, 50)).map(commit => ({
           hash: text(commit.hash, 64), message: text(commit.message, 1500),
           author: text(commit.authorName, 200), date: commit.commitDate || commit.authorDate || null,
@@ -311,7 +305,7 @@ class GitContext {
     try {
       const output = await new Promise((resolve, reject) => {
         this.execFile('gh', args, {
-          cwd: repo.rootUri.fsPath, encoding: 'utf8', timeout: 10000,
+          cwd: repo.rootUri.fsPath, encoding: 'utf8',
           maxBuffer: 256 * 1024, windowsHide: true,
           env: { ...process.env, GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0', GH_NO_UPDATE_NOTIFIER: '1' },
         }, (error, stdout, stderr) => {

@@ -10,10 +10,72 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 |---|---|
 | **Endpoint pointer (always current URL)** | <https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt> |
 | **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`, fully tunable per alias) |
+| **CodeGPT economy models** | `deepseek-v4-flash`, `deepseek-v4.1-flash`, `gemini-3.6-flash`, `gemini-3.7-flash`, `gemini-3.8-flash`, `ox-alpha` — see [CodeGPT economy models](#codegpt-economy-models) |
 | **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
 | **Version** | 26.9.2 <!-- x-release-please-version --> |
+
+## CodeGPT economy models
+
+CodeGPT's paid plans include an **economy tier** that costs no credits. The list is
+**discovered live**, never hardcoded: the CodeGPT extension keeps a local sidecar
+(`127.0.0.1:54112`) whose `/api/fetch-data/catalog` serves the same credits menu its
+own model picker renders, and every entry carries a `pro` flag — the whole
+economy/premium split is `pro ? 'premium' : 'economy'`. At the time of writing that
+menu answers with:
+
+| id | model | badge |
+|---|---|---|
+| `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | New! |
+| `ox-alpha` | GLM 5.3 Flash | Economy |
+| `gemini-3.8-flash` | Gemini 3.8 Flash | Economy |
+| `gpt-5.6-luna` | GPT 5.6 Luna | Economy |
+| `glm-5.2` | GLM 5.2 | Economy |
+| `MiniMax-M3` | MiniMax M3 | Economy |
+
+`copilot/tray/economy-models.js` reads that menu every five minutes (falling back to
+the last known good list when the sidecar is down) and exposes one bridge model per
+entry as `codegpt-eco-<id>`. A bundled catalog also ships inside the extension, but
+it drifts — it still flags `deepseek-v4-flash` and `gemini-3.6/3.7-flash` as economy
+while the live menu offers `gpt-5.6-luna`, `glm-5.2` and `MiniMax-M3` instead, which
+is why the sidecar wins whenever it answers.
+
+They are served **through the local tray bridge**, not OmniRoute: an alias whose
+upstream is prefixed `bridge/` (e.g. `bridge/codegpt-eco-ox-alpha`) is posted to
+`bridge_url` (default `http://127.0.0.1:21302/v1`) without the OmniRoute bearer
+token, because the bridge answers them from the host's own signed-in CodeGPT
+session — the only place the economy tier exists. `server/reachd/settings.py`
+(`CODEGPT_ECONOMY_MODELS`) owns the public aliases and mirrors that live menu; an
+alias that is **already routed keeps its own upstream**, so the economy defaults
+never steal a name that main already points somewhere else.
+
+### Why not through CodeGPT's API
+
+Verified against the live API, so this does not get re-litigated:
+
+- `POST /api/v1/chat/completions` is **agent-bound**. A `model` field is accepted
+  and ignored; the agent's own model answers.
+- `POST /api/v1/agent` and `PATCH /api/v1/agent/{id}` both reject economy ids with
+  `invalid_enum_value`; their enum is legacy-only (`gpt-4o`, `gpt-4o-mini`,
+  `gpt-4-turbo`, `claude-3.5-sonnet[-google]`, `gemini-1.5-flash`,
+  `gemini-1.5-pro-latest`, `claude-3-haiku`, `mistral-large-2`). Agents bound to
+  newer models exist, but only the web app can create them.
+- `/api/v1/chat/completion` (the extension's own commit-message route) is legacy
+  too — `gpt-3.5-turbo`…`gpt-4o`, and even those now answer
+  `OpenAI completion via Azure not available: Azure provider removed`.
+- `/api/v1/chat/playground` answers `404 {"code":"plan_not_found"}` for both the API
+  key and the sidecar's session token, whose signed identity carries
+  `planName: "Free"`.
+- The agent page's own model menu lists **premium models only** ("… – pro model"),
+  so economy models are not selectable there.
+
+The tray still opens the page's `AI Model …` menu, clicks the requested economy
+model when it is offered, and **reads the trigger back to confirm** — it never
+reports a model it did not actually select. Each request logs the model it asked
+for, the model the app's own API says answered, and the full menu when a model is
+missing, so an entitlement problem looks like one instead of like a hang.
+
 
 ## Use the endpoint
 

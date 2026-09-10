@@ -44,6 +44,12 @@ DEFAULT_SETTINGS = {
     # ---- relay core / upstream ----
     "omniroute_url": "http://127.0.0.1:20128/v1",
     "omniroute_key": "",
+    # Local tray bridge. Serves the CodeGPT economy models through the host's
+    # own signed-in CodeGPT session — the only place CodeGPT's unlimited tier
+    # exists (its public API binds agents to legacy, credit-metered models
+    # only). An alias whose upstream starts with "bridge/" is sent here instead
+    # of OmniRoute and never carries the OmniRoute bearer token.
+    "bridge_url": "http://127.0.0.1:21302/v1",
     "port": 20777,
     "host": "127.0.0.1",
     "upstream_timeout_s": 600,
@@ -145,6 +151,39 @@ DEFAULT_SETTINGS = {
         "admin_token": "",
     },
 }
+
+# ----------------------------------------------------------------------
+# CodeGPT economy models
+# ----------------------------------------------------------------------
+# The unlimited tier of the host's CodeGPT plan, mirroring the LIVE credits menu
+# CodeGPT itself serves (each entry with `pro: false`; see
+# copilot/tray/economy-models.js, which discovers that menu from the CodeGPT
+# sidecar and owns the matching bridge ids). These are served by the local tray
+# bridge because CodeGPT's public API refuses to bind these models: create and
+# patch both reject anything outside a legacy, credit-metered enum.
+CODEGPT_ECONOMY_MODELS = [
+    ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
+    ("ox-alpha", "GLM 5.3 Flash"),
+    ("gemini-3.8-flash", "Gemini 3.8 Flash"),
+    ("gpt-5.6-luna", "GPT 5.6 Luna"),
+    ("glm-5.2", "GLM 5.2"),
+    ("MiniMax-M3", "MiniMax M3"),
+]
+
+DEFAULT_SETTINGS["models"].update({
+    alias: {
+        **MODEL_SPEC_DEFAULTS,
+        "upstream": "bridge/codegpt-eco-" + alias,
+        "description": label + " — CodeGPT economy (unlimited on the host's plan)",
+    }
+    for alias, label in CODEGPT_ECONOMY_MODELS
+    # Only fill in aliases that are not already routed. `gemini-3.7-flash` is
+    # defined above against OmniRoute, and silently re-pointing an existing
+    # alias at the bridge would change behaviour for everyone who uses it.
+    # The bridge still serves that model's economy variant, addressable as
+    # `codegpt-eco-gemini-3.7-flash` if you add an alias for it by hand.
+    if alias not in DEFAULT_SETTINGS["models"]
+})
 
 NUMERIC_FIELDS = {
     "port": (1024, 65535),
@@ -424,6 +463,8 @@ def validate_settings(cfg):
     unknown = sorted(set(cfg) - allowed - {k for k in cfg if str(k).startswith("_")})
     _expect(not unknown, "unknown settings key(s): " + ", ".join(unknown))
     _require_local_url(cfg.get("omniroute_url", ""), "omniroute_url")
+    _require_local_url(cfg.get("bridge_url", DEFAULT_SETTINGS["bridge_url"]),
+                       "bridge_url")
     _str(cfg.get("omniroute_key", ""), "omniroute_key", 0, 500)
     _expect(cfg.get("host") in ("127.0.0.1", "localhost", "0.0.0.0"),
             "host must be 127.0.0.1, localhost or 0.0.0.0")
@@ -550,17 +591,26 @@ def merged_settings(base, patch):
             result[key] = value
             continue
         if key == "models" and isinstance(value, dict):
+            removed = list(result.get("_removed_models") or [])
             for alias, spec in value.items():
                 if spec is None:
                     result["models"].pop(alias, None)
+                    # Remember the removal, or the default alias would be
+                    # merged straight back in on the next load.
+                    if alias not in removed:
+                        removed.append(alias)
                 elif isinstance(spec, dict):
                     existing = result["models"].get(alias, {})
                     if not isinstance(existing, dict):
                         existing = dict(MODEL_SPEC_DEFAULTS)
                     result["models"][alias] = {**MODEL_SPEC_DEFAULTS,
                                                **existing, **spec}
+                    if alias in removed:
+                        removed.remove(alias)
                 else:
                     result["models"][alias] = spec
+            if removed:
+                result["_removed_models"] = removed
             continue
         if isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = {**result[key], **value}
@@ -624,11 +674,26 @@ def load_config(path):
                 cfg[section] = {**DEFAULT_SETTINGS[section],
                                 **(raw.get(section) or {})}
             raw_models = raw.get("models") or {}
-            cfg["models"] = {
+            saved_models = {
                 alias: {**MODEL_SPEC_DEFAULTS,
                         **(spec if isinstance(spec, dict) else {})}
                 for alias, spec in raw_models.items()
-            } or dict(DEFAULT_SETTINGS["models"])
+            }
+            # Default aliases are ADDITIVE: a saved config predates any alias
+            # added since it was written, and letting the saved list replace the
+            # defaults wholesale would hide new models (the CodeGPT economy
+            # set) from every existing install. A saved alias still wins, and an
+            # alias the user deleted stays deleted via _removed_models.
+            removed_models = {alias for alias in (raw.get("_removed_models") or [])
+                              if isinstance(alias, str)}
+            cfg["models"] = {
+                alias: spec
+                for alias, spec in DEFAULT_SETTINGS["models"].items()
+                if alias not in saved_models and alias not in removed_models
+            }
+            cfg["models"].update(saved_models)
+            if not cfg["models"]:
+                cfg["models"] = dict(DEFAULT_SETTINGS["models"])
 
             access = cfg.setdefault("access", {})
             keys = list(access.get("keys") or [])

@@ -122,6 +122,63 @@ class SettingsTests(unittest.TestCase):
             reachd.validate_settings(cfg)
 
 
+class CodegptEconomyTests(unittest.TestCase):
+    """The endpoint's CodeGPT economy aliases.
+
+    CodeGPT only serves its unlimited ("economy") tier through a signed-in
+    session, and its public API rejects those model ids outright, so every
+    economy alias must be pinned to the local tray bridge instead of OmniRoute.
+    """
+
+    def test_economy_aliases_are_public_and_pinned_to_the_bridge(self):
+        models = reachd.DEFAULT_SETTINGS["models"]
+        bridged = 0
+        for alias, label in reachd.CODEGPT_ECONOMY_MODELS:
+            spec = models.get(alias)
+            self.assertIsNotNone(spec, alias + " alias missing")
+            upstream = spec["upstream"]
+            if not upstream.startswith("bridge/"):
+                # An alias that already exists keeps its own route; only
+                # gemini-3.7-flash is in that position today.
+                continue
+            bridged += 1
+            self.assertEqual(upstream, "bridge/codegpt-eco-" + alias)
+            self.assertTrue(spec["enabled"], alias + " must be enabled")
+            self.assertTrue(spec["public"], alias + " must be listed in /v1/models")
+            self.assertIn(label, spec["description"])
+        self.assertGreaterEqual(bridged, 1, "no economy alias reached the bridge")
+
+    def test_economy_merge_never_repoints_an_existing_alias(self):
+        """gemini-3.7-flash was routed through OmniRoute before this work; the
+        economy defaults must not silently steal the name."""
+        spec = reachd.DEFAULT_SETTINGS["models"]["gemini-3.7-flash"]
+        self.assertEqual(spec["upstream"], "gemini/gemini-3.7-flash")
+        self.assertEqual(spec["min_output_tokens"], 1024)
+
+    def test_bridge_url_must_stay_local(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        reachd.validate_settings(cfg)  # loopback default is fine
+        cfg["bridge_url"] = "https://public.example/v1"
+        with self.assertRaises(reachd.SettingsError):
+            reachd.validate_settings(cfg)
+
+    def test_economy_upstream_prefix_survives_alias_validation(self):
+        # A "bridge/..." upstream must pass UPSTREAM_PATTERN; if the pattern ever
+        # tightens, the economy aliases would silently fail validation.
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["models"]["ox-alpha"]["upstream"] = "bridge/codegpt-eco-ox-alpha"
+        reachd.validate_settings(cfg)
+
+    def test_bridge_aliases_never_carry_the_omniroute_key(self):
+        """The tray bridge authenticates through its own signed-in session, so a
+        bridge route must not inherit the OmniRoute bearer token."""
+        source = (Path(__file__).resolve().parents[1]
+                  / "server" / "reachd" / "chat.py").read_text(encoding="utf-8")
+        self.assertIn('use_bridge = upstream_model.startswith("bridge/")', source)
+        self.assertIn('if not use_bridge and not core.STATE.key:', source)
+        self.assertIn('if not use_bridge:\n            auth_headers["Authorization"]', source)
+
+
 class MergeTests(unittest.TestCase):
     def test_scalar_replace(self):
         cfg = reachd.merged_settings(reachd.DEFAULT_SETTINGS, {"port": 20888})

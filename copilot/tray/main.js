@@ -26,6 +26,7 @@ const path = require('node:path');
 // Keep the existing Copilot session directory across source and packaged launches.
 app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
 const { createEndpointClient } = require('./endpoint');
+const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX } = require('./economy-models');
 const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'));
 let clickTimer = null;
 let isQuitting = false;
@@ -64,16 +65,22 @@ const CHATGPT_APP_HOSTS = [
 
 // CodeGPT (interactive economy models) — app + auth hosts
 const CODEGPT_URL = 'https://app.codegpt.co/';
-// Economy agent page (gpt-4o-mini, the user's "x" agent). Economy models are
-// unlimited for Professional members in the interactive web session.
-const CODEGPT_CHAT_URL = 'https://app.codegpt.co/en/agents/f7c7024e-76b1-4b56-a259-d3c3ef237c70';
+// The signed-in chat lives in the extension's LOCAL sidecar app (Next server
+// on 54112). Its picker carries the full catalog including the unlimited
+// economy rows (DeepSeek V4.1 Flash, GLM 5.3 Flash, Gemini 3.8 Flash, GPT 5.6
+// Luna, ...), which the hosted web app does not offer. Drive the local page.
+const CODEGPT_CHAT_URL = 'http://localhost:54112/54112/';
 const CODEGPT_PARTITION = 'persist:codegpt';
+// Pinned DOM contract (local app, discovered live 2026-09-10): the chat
+// composer; kept alongside the hosted-app shapes so either page can load.
+const CODEGPT_COMPOSER_SELECTOR = 'textarea#inputMessage, textarea[placeholder="Enter your message"], textarea.mentions';
 const CODEGPT_AUTH_HOSTS = [
     'accounts.google.com', 'accounts.youtube.com', 'myaccount.google.com',
     'github.com', 'appleid.apple.com', 'login.microsoftonline.com'
 ];
 const CODEGPT_APP_HOSTS = [
-    'app.codegpt.co', 'www.codegpt.co', 'codegpt.co'
+    'app.codegpt.co', 'www.codegpt.co', 'codegpt.co',
+    'localhost', '127.0.0.1' // the extension's local sidecar chat page
 ];
 const LOG_FILE = process.platform === 'darwin'
     ? path.join(app.getPath('appData'), 'SignalREACH', 'copilot-tray.log')
@@ -101,6 +108,10 @@ let codegptWin = null;
 let bridgeServer = null;
 let lastReplyAt = 0;
 let lastError = '';
+// Which economy model the last CodeGPT request asked for, and which one the
+// app's own API actually answered with (read off the intercepted response).
+let lastCodegptRequested = '';
+let lastCodegptServed = '';
 
 
 /* --------------------------------- logging -------------------------------- */
@@ -443,9 +454,10 @@ async function signOutChatgpt() {
 
 /* ======================== CodeGPT invisible browser ======================== */
 /* Interactive CodeGPT session (economy models — unlimited for Professional
- * members, but ONLY for interactive web-session use, which is exactly what
- * this window provides). DOM contract is discovered at runtime; debug it via
- * GET http://127.0.0.1:21302/debug/dom once the user has signed in. */
+ * members). The window drives the extension's LOCAL sidecar chat page
+ * (http://localhost:54112/<port>/), which is the only place that offers the
+ * economy model rows; the hosted web app does not list them. DOM contract is
+ * pinned at runtime; debug it via GET http://127.0.0.1:21302/debug/dom. */
 
 function isCodegptAuthHost(url) {
     const h = hostOf(url);
@@ -486,6 +498,44 @@ function ensureCodegpt() {
         log('codegpt navigated: ' + url.slice(0, 100));
         if (isCodegptAppHost(url)) maybeAutoHideCodegpt();
     });
+    // Request logger (diagnostic): watch the app's own API traffic so failed
+    // sends are visible server-side instead of guessing from the DOM.
+    try {
+        if (!ses.__reqLogHooked) {
+            ses.__reqLogHooked = true;
+            ses.webRequest.onBeforeRequest({ urls: ['*://api.codegpt.co/*', '*://*.codegpt.co/api/*'] }, (details, callback) => {
+                if (details.method === 'POST') log('codegpt api POST ' + details.url.slice(0, 120));
+                callback({ cancel: false });
+            });
+            ses.webRequest.onCompleted({ urls: ['*://api.codegpt.co/*', '*://*.codegpt.co/api/*'] }, (details) => {
+                if (details.method === 'POST' && String(details.url).includes('playground')) {
+                    log('codegpt api playground -> ' + details.statusCode + ' (' + details.url.slice(0, 90) + ')');
+                } else if (details.method === 'POST' && details.statusCode >= 400) {
+                    log('codegpt api POST failed ' + details.statusCode + ' ' + details.url.slice(0, 120));
+                }
+            });
+        }
+    } catch (_) { /* logger is best-effort */ }
+    // CDP debugger: capture the playground stream's buffered response body.
+    try {
+        const dbg = codegptWin.webContents.debugger;
+        if (!dbg.isAttached()) {
+            dbg.attach('1.3');
+            dbg.sendCommand('Network.enable');
+            dbg.on('message', (_e, method, params) => {
+                if (method === 'Network.responseReceived' && params.response
+                        && String(params.response.url).includes('playground')) {
+                    const rid = params.requestId;
+                    setTimeout(() => {
+                        dbg.sendCommand('Network.getResponseBody', { requestId: rid })
+                            .then(r => { global.__cgPlaygroundBody = String(r.body || '').slice(0, 4000); })
+                            .catch(() => { global.__cgPlaygroundBody = '(body unavailable yet)'; });
+                    }, 2500);
+                }
+            });
+            log('codegpt CDP network capture attached');
+        }
+    } catch (_) { /* best effort */ }
     codegptWin.on('close', (event) => {
         if (!isQuitting) { event.preventDefault(); hideCodegpt(); }
     });
@@ -496,7 +546,9 @@ function ensureCodegpt() {
 }
 
 let codegptAutoHideTimer = null;
+let codegptKeepVisible = process.env.REACH_CODEGPT_VISIBLE === '1';   // diagnostic: keep the window visible to test streaming
 function maybeAutoHideCodegpt() {
+    if (codegptKeepVisible) return;
     if (!codegptWin || codegptWin.isDestroyed() || !codegptWin.isVisible()) return;
     if (codegptAutoHideTimer) clearTimeout(codegptAutoHideTimer);
     codegptAutoHideTimer = setTimeout(async () => {
@@ -587,25 +639,101 @@ async function signOutCodegpt() {
 
 /* ---------------------- CodeGPT page driving (discovery) ---------------------- */
 
+// In-page hook: wrap fetch + XHR to capture the chat/playground response
+// body into window.__reachCg — the assistant reply, verbatim.
+const CODEGPT_HOOK_JS = `(() => {
+    if (window.__reachHook) return 'already';
+    window.__reachHook = true;
+    const grab = (url, status, body) => {
+        if (String(url || '').includes('chat/playground') || String(url || '').includes('playground')) {
+            try {
+                window.__reachCg = { status: status, body: String(body).slice(0, 6000), ts: Date.now() };
+            } catch (_) {}
+        }
+    };
+    const of = window.fetch;
+    window.fetch = async (...args) => {
+        const res = await of(...args);
+        const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+        if (String(url).includes('playground')) {
+            try {
+                const clone = res.clone();
+                clone.text().then(t => grab(url, res.status, t)).catch(() => {});
+            } catch (_) {}
+        }
+        return res;
+    };
+    const OXHR = window.XMLHttpRequest;
+    window.XMLHttpRequest = class extends OXHR {
+        constructor() { super(); this.__url = ''; }
+        open(...a) { this.__url = String(a[1] || ''); return super.open(...a); }
+        send(...a) {
+            this.addEventListener('load', () => {
+                grab(this.__url, this.status, this.responseText);
+            });
+            return super.send(...a);
+        }
+    };
+    return 'hooked';
+})()`;
+
 const CODEGPT_SNAPSHOT_JS = `(() => {
     const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
     try {
         const editableSel = 'textarea, [contenteditable="true"], [role="textbox"]';
         const ed = [...document.querySelectorAll(editableSel)].filter(vis);
-        // The chat composer is normally the LAST visible editable element.
-        const composerEl = ed.length ? ed[ed.length - 1] : null;
+        // Pinned composer first; fall back to the last visible editable.
+        const composerEl = document.querySelector(${JSON.stringify(CODEGPT_COMPOSER_SELECTOR)})
+            || (ed.length ? ed[ed.length - 1] : null);
         const msgSel = '[class*="message" i], [class*="bubble" i], [class*="answer" i], ' +
-            '[class*="response" i], [class*="markdown" i], [class*="prose" i], [class*="chat-result" i]';
-        const msgs = [...document.querySelectorAll(msgSel)].filter(vis);
+            '[class*="response" i], [class*="markdown" i], [class*="prose" i], [class*="chat-result" i], ' +
+            '[class*="conversation" i], [class*="whitespace-pre-wrap"], [data-testid*="message" i], [data-testid*="chat" i]';
+        // The LOCAL app renders one div.message-block per message with an
+        // explicit role class (div.message.user / div.message.assistant); the
+        // hosted app uses looser containers. Prefer role-aware blocks.
+        const roleBlocks = [...document.querySelectorAll('[class*="message-block" i]')].filter(vis);
+        const roleAware = roleBlocks.length > 0;
+        const roleOf = (m) => {
+            const nodes = [m].concat([...m.querySelectorAll('*')].slice(0, 60));
+            for (const n of nodes) {
+                const cls = ' ' + String(n.className || '') + ' ';
+                if (/\\sassistant\\s/.test(cls)) return 'assistant';
+                if (/\\suser\\s/.test(cls)) return 'user';
+            }
+            return '';
+        };
+        let msgs;
+        if (roleAware) {
+            msgs = roleBlocks;
+        } else {
+            msgs = [...document.querySelectorAll(msgSel)].filter(vis)
+                .filter(m => !m.querySelector('textarea, [contenteditable="true"]') && !m.closest('textarea, [contenteditable="true"]'));
+        }
+        const assistantMsgs = roleAware ? msgs.filter((m) => roleOf(m) === 'assistant') : msgs;
         const last = msgs.length ? msgs[msgs.length - 1] : null;
-        const text = last ? (last.innerText || '').trim().slice(0, 12000) : '';
+        // Prefer the LAST assistant container even while it is still empty —
+        // that emptiness is "thinking", not "no reply yet". On pages without
+        // role classes keep the old heuristic (user bubbles carry "user:").
+        const nonEmpty = roleAware
+            ? (assistantMsgs[assistantMsgs.length - 1] || null)
+            : [...msgs].reverse().find(m => {
+                const t = (m.innerText || '').trim();
+                return t && !/^user:\\s/i.test(t);
+            });
+        let text = (nonEmpty ? nonEmpty.innerText : '').trim().slice(0, 12000);
+        text = text.replace(/^assistant:\\s*/i, '');
         const stopBtn = [...document.querySelectorAll('button')].filter(vis)
             .some(b => /stop|halt|square/i.test((b.getAttribute('aria-label') || b.title || b.innerText || '')));
         const signIn = !composerEl && /Sign in|Log in|Continue with Google/i.test((document.body.innerText || '').slice(0, 3000));
         return JSON.stringify({
+            snapVer: 9,
             text: text,
+            textHead: text.slice(0, 40),
             count: msgs.length,
+            assistantCount: assistantMsgs.length,
+            roleAware: roleAware,
             composer: !!composerEl,
+            apiReply: window.__reachCg || null,
             composerInfo: composerEl ? {
                 tag: composerEl.tagName,
                 cls: (composerEl.className || '').toString().slice(0, 80),
@@ -626,7 +754,46 @@ const CODEGPT_SNAPSHOT_JS = `(() => {
             generating: stopBtn,
             signIn: signIn,
             url: location.href.slice(0, 140),
-            bodyHead: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300)
+            bodyHead: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300),
+            sendButtons: [...document.querySelectorAll('button, [role="button"]')].filter(vis)
+                .map(b => ({
+                    tag: b.tagName,
+                    cls: (b.className || '').toString().slice(0, 60),
+                    text: (b.innerText || '').replace(/\\s+/g, ' ').slice(0, 30),
+                    aria: b.getAttribute('aria-label') || '',
+                    title: b.title || '',
+                    type: b.getAttribute('type') || '',
+                    disabled: !!b.disabled
+                })).slice(0, 30),
+            composerParent: composerEl ? (composerEl.closest('form') || composerEl.parentElement || { outerHTML: '' }).outerHTML.slice(0, 800) : '',
+            chatDump: (() => {
+                const nodes = [...document.querySelectorAll('*')].filter(e => {
+                    const first = e.childNodes[0];
+                    return first && first.nodeType === 3 && /user:/i.test(first.textContent || '');
+                });
+                if (!nodes.length) return '';
+                const p = nodes[0].parentElement;
+                return (p ? p.innerHTML : '').slice(0, 1800);
+            })(),
+            msgDump: msgs.slice(-6).map(m => ({
+                cls: (m.className || '').toString().slice(0, 60),
+                html: (m.innerHTML || '').replace(/\\s+/g, ' ').slice(0, 350)
+            })),
+            fiberKeys: (() => {
+                let node = composerEl;
+                const keys = [];
+                for (let i = 0; i < 10 && node; i++) {
+                    const fk = Object.keys(node).find(k => k.startsWith('__reactFiber$') || k.startsWith('__reactProps$'));
+                    if (fk) {
+                        const f = node[fk];
+                        const props = f && (f.memoizedProps || f.props || {});
+                        keys.push({ level: i, tag: node.tagName, cls: (node.className || '').toString().slice(0, 50),
+                            propKeys: Object.keys(props || {}).filter(k => /change|value|enter|send|submit|key/i.test(k)).slice(0, 12) });
+                    }
+                    node = node.parentElement;
+                }
+                return keys;
+            })()
         });
     } catch (err) {
         return JSON.stringify({
@@ -642,9 +809,50 @@ async function codegptSnapshot() {
     return JSON.parse(raw);
 }
 
+// Pull the assistant text out of the intercepted playground response.
+function extractCodegptApiReply(body) {
+    if (!body) return '';
+    try {
+        const data = JSON.parse(body);
+        for (const ch of (data.choices || [])) {
+            const c = ch.message && ch.message.content;
+            if (typeof c === 'string' && c.trim()) return c.trim();
+        }
+        if (typeof data.content === 'string' && data.content.trim()) return data.content.trim();
+        if (Array.isArray(data)) {
+            for (const part of data) {
+                if (typeof part === 'string') return part.trim();
+            }
+        }
+        return '';
+    } catch (_) { /* not JSON — SSE or plain text */ }
+    // SSE-style: collect data: payloads, join their delta/content fields
+    // (split on LF only; strip a trailing CR — see CRLF patch-tool pitfall)
+    const lines = String(body).split('\n');
+    const parts = [];
+    for (let line of lines) {
+        line = line.endsWith('\u000d') ? line.slice(0, -1) : line;
+        const s = line.trim();
+        if (!s.startsWith('data:')) continue;
+        const payload = s.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+            const d = JSON.parse(payload);
+            for (const ch of (d.choices || [])) {
+                const delta = ch.delta || ch.message || {};
+                const c = delta.content;
+                if (typeof c === 'string') parts.push(c);
+            }
+        } catch (_) { parts.push(payload); }
+    }
+    const joined = parts.join('');
+    return joined.trim() || String(body).slice(0, 4000).trim();
+}
+
 async function debugCodegptDom() {
     if (!codegptWin || codegptWin.isDestroyed()) return { error: 'codegpt window not available' };
-    return codegptSnapshot();
+    const snap = await codegptSnapshot();
+    return { ...snap, cdpBody: global.__cgPlaygroundBody || null };
 }
 
 async function checkCodegptSignedIn() {
@@ -653,7 +861,19 @@ async function checkCodegptSignedIn() {
         if (snap.composer) return { ok: true };
         if (isCodegptAuthHost(snap.url)) return { ok: false, why: 'signing in (auth in progress)' };
         if (snap.signIn) return { ok: false, why: 'not signed in' };
-        if (isCodegptAppHost(snap.url)) return { ok: false, why: 'chat loading' };
+        if (isCodegptAppHost(snap.url)) {
+            // Right page, composer not mounted yet — give it a bounded moment
+            // instead of failing the send on a slow first paint.
+            for (let wait = 0; wait < 20; wait += 1) {
+                await sleep(800);
+                try {
+                    const s2 = await codegptSnapshot();
+                    if (s2.composer) return { ok: true };
+                    if (s2.signIn) return { ok: false, why: 'not signed in' };
+                } catch (_) { /* page mid-navigation */ }
+            }
+            return { ok: false, why: 'chat page never finished loading' };
+        }
         codegptWin.webContents.loadURL(CODEGPT_CHAT_URL);
         await sleep(5000);
         const snap2 = await codegptSnapshot();
@@ -672,9 +892,12 @@ async function codegptSendEnter() {
 }
 
 async function codegptClickSend() {
+    // Discovered live: the send control is a plain button whose visible text
+    // is exactly "Send" (no aria-label/title/type=submit hints).
     const box = await codegptWin.webContents.executeJavaScript(`(() => {
-        const sel = 'button[type="submit"], button[aria-label*="send" i], button[title*="send" i], [role="button"][aria-label*="send" i]';
-        const b = [...document.querySelectorAll(sel)].find(e => e.offsetWidth && !e.disabled);
+        const b = [...document.querySelectorAll('button, [role="button"]')]
+            .filter(e => e.offsetWidth && !e.disabled)
+            .find(e => (e.innerText || '').trim() === 'Send');
         if (!b) return null;
         try { b.click(); } catch (_) {}
         const r = b.getBoundingClientRect();
@@ -697,15 +920,172 @@ function sendCodegptQueued(text, options = {}) {
     return result;
 }
 
-async function codegptSend(text, { signal } = {}) {
+/* Switch to one economy model inside the signed-in CodeGPT app.
+ *
+ * Local sidecar app: the composer's model button carries
+ * data-model-dropdown-trigger="true" and the open menu lists rows like
+ * "GPT 5.6 Luna" (some behind "Show all N models"). The hosted web app uses
+ * an "AI Model <current>" trigger instead; both shapes are handled.
+ * We open that menu, click the entry for the requested model, then read the
+ * trigger back to confirm the switch actually happened — a request never
+ * silently passes as a model it is not. Every step is defensive: a UI change
+ * makes this return false (and the request proceeds on the current model)
+ * rather than throwing, so the picker can never break chat itself.
+ */
+async function codegptSelectModel(engine) {
+    if (!codegptWin || codegptWin.isDestroyed()) return false;
+    const wanted = [engine.label, engine.id]
+        .filter((value) => typeof value === 'string' && value.trim())
+        .map((value) => value.toLowerCase());
+    const helpers = `
+        const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
+        const want = ${JSON.stringify(wanted)};
+        const label = (e) => ((e.innerText || e.getAttribute('aria-label') || e.title || '') + ' ')
+            .replace(/\\s+/g, ' ').trim().toLowerCase();
+        const hit = (t) => !!t && want.some((w) => t.includes(w));
+        // Trigger: the local app pins a data attribute on the composer's model
+        // button; the hosted app labels its trigger "AI Model <current>".
+        const trigger = () => {
+            const local = [...document.querySelectorAll('button[data-model-dropdown-trigger="true"]')].filter(vis)[0];
+            if (local) return local;
+            return [...document.querySelectorAll('button, [role="button"], [aria-haspopup]')]
+                .filter(vis).find((e) => label(e).startsWith('ai model'));
+        };
+        // Rows live inside the open menu when there is one; otherwise scan
+        // the whole page (the hosted app keeps its rows loose).
+        const menuEl = () => {
+            const menus = [...document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')]
+                .filter(vis);
+            return menus.length ? menus[menus.length - 1] : null;
+        };
+        // Rows are the entries that name a model; page chrome does not count.
+        const modelish = /(gpt|claude|gemini|deepseek|glm|ox-|flash|sonnet|opus|mistral|grok|llama|minimax)/i;
+        const rows = () => {
+            const scope = menuEl() || document;
+            return [...scope.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
+                .filter(vis).map((e) => ({ el: e, text: label(e) }))
+                .filter((row) => row.text && !row.text.startsWith('ai model') && row.text.length < 200
+                    && modelish.test(row.text)
+                    && !/show all|manage models|approval|full access/.test(row.text));
+        };
+        // Some models sit behind the "Show all N models" expander.
+        const expandAll = () => {
+            const scope = menuEl() || document;
+            const more = [...scope.querySelectorAll('button, [role="menuitem"], li')].filter(vis)
+                .find((e) => /show all \\d+ models/i.test(label(e)));
+            if (!more) return '';
+            more.click();
+            return label(more);
+        };`;
+    const exec = (js) => codegptWin.webContents.executeJavaScript(js)
+        .catch((error) => ({ error: error.message }));
+    try {
+        for (let attempt = 1; attempt <= 3; attempt += 1) {
+            const box = await exec(`(() => {
+                ${helpers}
+                const el = trigger();
+                if (!el) return { error: 'no model menu on this page' };
+                const rect = el.getBoundingClientRect();
+                return { x: Math.round(rect.x + rect.width / 2),
+                         y: Math.round(rect.y + rect.height / 2) };
+            })()`);
+            if (!box || box.error) {
+                log('codegpt model switch failed: ' + ((box && box.error) || 'no trigger'));
+                return false;
+            }
+            // Exactly ONE interaction per attempt: this control toggles, so a
+            // synthetic click followed by a trusted one would open then close it.
+            // Attempt 1 uses real input (this app honours it), attempt 2 the
+            // synthetic click, attempt 3 real input again.
+            if (attempt % 2 === 1) {
+                const wc = codegptWin.webContents;
+                wc.sendInputEvent({ type: 'mouseDown', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+                wc.sendInputEvent({ type: 'mouseUp', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+            } else {
+                await exec(`(() => { ${helpers} const el = trigger(); if (el) el.click(); return true; })()`);
+            }
+
+            // The list animates in; poll for real rows instead of guessing a delay.
+            let entries = [];
+            for (let wait = 0; wait < 12 && entries.length < 2; wait += 1) {
+                await sleep(250);
+                const found = await exec(`(() => { ${helpers} return rows().map((row) => row.text); })()`);
+                if (Array.isArray(found) && found.length > entries.length) entries = found;
+            }
+            if (entries.length < 2) {
+                log('codegpt model menu shows ' + entries.length + ' model row(s) after attempt '
+                    + attempt + ' — retrying');
+                await sleep(600);
+                continue;
+            }
+
+            const pick = `(() => {
+                ${helpers}
+                const target = rows().find((row) => hit(row.text));
+                if (!target) return null;
+                target.el.click();
+                return target.text;
+            })()`;
+            let picked = await exec(pick);
+            if (!picked) {
+                // Maybe the row hides behind "Show all N models" — expand, re-scan.
+                const expanded = await exec(`(() => { ${helpers} return expandAll(); })()`);
+                if (expanded) {
+                    await sleep(800);
+                    const found = await exec(`(() => { ${helpers} return rows().map((row) => row.text); })()`);
+                    if (Array.isArray(found) && found.length > entries.length) entries = found;
+                    picked = await exec(pick);
+                }
+            }
+            if (!picked) {
+                // Everything the menu really offers, so a mislabelled model is
+                // diagnosable instead of looking like one that does not exist.
+                log('codegpt model not in the menu [' + entries.length + ' rows: '
+                    + entries.join(' | ').slice(0, 3000) + ']');
+                await exec(`(() => { ${helpers} const el = trigger(); if (el) el.click(); return true; })()`);
+                await sleep(500);
+                continue;
+            }
+
+            await sleep(600);
+            const confirmed = await exec(`(() => { ${helpers} const el = trigger(); return el ? label(el) : ''; })()`);
+            // `hit` exists only inside the injected page helpers — confirm in
+            // the main process against the wanted labels instead.
+            const ok = typeof confirmed === 'string'
+                && wanted.some((value) => confirmed.includes(value));
+            log('codegpt model switch ' + (ok ? 'confirmed: ' : 'unconfirmed: ')
+                + String(picked).slice(0, 60) + ' -> ' + String(confirmed).slice(0, 80));
+            if (ok) return true;
+        }
+        return false;
+    } catch (error) {
+        log('codegpt model switch error: ' + error.message);
+        return false;
+    }
+}
+
+// The model name the app's own API reports for the answer it just produced.
+function codegptReplyModel(body) {
+    try {
+        const data = JSON.parse(String(body || ''));
+        const value = data && (data.model || (data.data && data.data.model));
+        return typeof value === 'string' ? value : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+async function codegptSend(text, { signal, model, label } = {}) {
     if (!codegptWin || codegptWin.isDestroyed()) {
         showCodegpt();
         throw new Error('Opening the CodeGPT window. Please complete sign in and retry.');
     }
     const started = Date.now();
-    log('codegpt request started (' + text.length + ' chars)');
+    const engine = economyModelFor(model);
+    log('codegpt request started (' + text.length + ' chars' +
+        (engine ? ', model=' + engine.id : ', default agent page') + ')');
     try {
-        return await codegptSendRequest(text, signal);
+        return await codegptSendRequest(text, signal, engine, label);
     } catch (error) {
         if (codegptWin && !codegptWin.isDestroyed()) {
             codegptWin.webContents.executeJavaScript(`(() => {
@@ -721,13 +1101,29 @@ async function codegptSend(text, { signal } = {}) {
     }
 }
 
-async function codegptSendRequest(text, signal) {
+async function codegptSendRequest(text, signal, engine, label) {
     const auth = await checkCodegptSignedIn();
     if (!auth.ok) {
         showCodegpt();
         throw new Error(auth.why + ' — opening the CodeGPT window. Please complete sign in and retry.');
     }
 
+    // Economy models live behind the app's own model menu: the signed-in
+    // session is the only place they are unlimited, and the public API refuses
+    // to bind them to an agent. Switch the page first, then send.
+    lastCodegptRequested = engine ? engine.id : '';
+    lastCodegptServed = '';
+    if (engine) {
+        const switched = await codegptSelectModel(engine);
+        log(switched
+            ? 'codegpt model switched to ' + engine.id + ' (' + (label || engine.label) + ')'
+            : 'codegpt model switch unavailable — answering with the page default (wanted ' + engine.id + ')');
+    }
+
+    // Intercept the app's own chat API response in-page: the assistant reply
+    // body is captured verbatim (fetch + XHR), sidestepping DOM guesswork.
+    await codegptWin.webContents.executeJavaScript(CODEGPT_HOOK_JS).catch(() => {});
+    const sendStart = Date.now();
     while (true) {
         signal?.throwIfAborted();
         let snap;
@@ -739,47 +1135,45 @@ async function codegptSendRequest(text, signal) {
     const before = await codegptSnapshot();
     const wc = codegptWin.webContents;
 
-    const focused = await wc.executeJavaScript(`(() => {
-        const ed = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
-            .filter(e => e.offsetWidth || e.offsetHeight);
-        const ta = ed.length ? ed[ed.length - 1] : null;
-        if (!ta) return false;
+    // React-controlled textarea: set the value through the native setter and
+    // dispatch a bubbling input event so React's onChange registers it
+    // (trusted insertText alone leaves React state empty and Send dead).
+    const setRes = await wc.executeJavaScript(`(() => {
+        const ta = document.querySelector(${JSON.stringify(CODEGPT_COMPOSER_SELECTOR)});
+        if (!ta) return 'no composer';
         ta.focus();
-        if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
-            ta.select();
-        } else {
-            const range = document.createRange();
-            range.selectNodeContents(ta);
-            const sel = window.getSelection();
-            if (sel) {
-                sel.removeAllRanges();
-                sel.addRange(range);
-            }
-        }
-        return document.activeElement === ta || ta.contains(document.activeElement);
-    })()`).catch(() => false);
-    if (!focused) throw new Error('CodeGPT composer not found/focusable');
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+        setter.call(ta, '');
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        setter.call(ta, ${JSON.stringify(text)});
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        return 'set';
+    })()`).catch(e => 'err: ' + e.message);
+    if (setRes !== 'set') throw new Error('CodeGPT composer unreachable: ' + setRes);
+    await sleep(500);
 
-    await wc.insertText(text);
-    await sleep(400);
-    await codegptSendEnter();
+    // Submit via the Send button (Enter alone proved unreliable on this app).
+    const sendRes = await codegptClickSend();
+    if (!sendRes) throw new Error('send failed — Send button not found/enabled after entering text');
     await sleep(1200);
 
-    const still = await wc.executeJavaScript(`(() => {
-        const ed = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
-            .filter(e => e.offsetWidth || e.offsetHeight);
-        const ta = ed.length ? ed[ed.length - 1] : null;
-        return ta ? (ta.innerText || ta.textContent || ta.value || '').trim() : '';
+    // Hard-fail instead of hanging forever when the message never left.
+    const still2 = await wc.executeJavaScript(`(() => {
+        const ta = document.querySelector(${JSON.stringify(CODEGPT_COMPOSER_SELECTOR)});
+        return ta ? (ta.value || ta.innerText || '').trim() : '';
     })()`).catch(() => '');
-    if (still.length > 0) {
-        log('codegpt: Enter did not submit — clicking send button');
-        await codegptClickSend().catch(() => false);
-        await sleep(800);
+    if (still2 && still2.includes(text.slice(0, 20))) {
+        throw new Error('send failed — composer still holds the message (is the Send button reachable?)');
     }
 
     let forming = null;
     let stable = 0;
     let completed = false;
+    // No deadline: a page that is slow to answer is still allowed to answer.
+    // Progress is logged instead, so a long wait can be watched instead of
+    // being guessed at (and a response that lands late is still recorded).
+    let lastProgress = Date.now();
+    let apiSeen = '';
     while (!completed) {
         signal?.throwIfAborted();
         await sleep(POLL_MS);
@@ -790,10 +1184,51 @@ async function codegptSendRequest(text, signal) {
             log('codegpt poll error: ' + e.message);
             continue;
         }
+        if (Date.now() - lastProgress >= 20000) {
+            lastProgress = Date.now();
+            log('codegpt still waiting (' + Math.round((Date.now() - sendStart) / 1000) + 's): '
+                + 'msgs=' + snap.count + ' generating=' + !!snap.generating
+                + ' apiReply=' + (snap.apiReply ? snap.apiReply.status : 'none')
+                + ' replyChars=' + ((snap.text || '').length));
+        }
         if (snap.signIn) throw new Error('signed out mid-conversation');
-        const isNew = snap.count > before.count ||
+        // Record which model really answered (the app's API names it), so a
+        // requested economy model that could not be switched shows up in the
+        // log instead of silently passing as the requested one.
+        if (snap.apiReply && snap.apiReply.ts >= sendStart - 500) {
+            const body = String(snap.apiReply.body || '');
+            // Log the app's API answering even when the body carries nothing
+            // useful — that difference ("replied with an error" vs "never
+            // replied") is the whole diagnosis when a wait drags on.
+            const seen = snap.apiReply.status + '/' + body.length;
+            if (seen !== apiSeen) {
+                apiSeen = seen;
+                log('codegpt api reply: status=' + snap.apiReply.status + ', ' + body.length
+                    + ' chars, model=' + (codegptReplyModel(body) || 'unreported')
+                    + (body ? ' — ' + body.slice(0, 160).replace(/\s+/g, ' ') : ''));
+            }
+            const served = codegptReplyModel(body);
+            if (served && served !== lastCodegptServed) {
+                lastCodegptServed = served;
+                log('codegpt served model: ' + served);
+            }
+        }
+        // API truth beats DOM heuristics — accept a fresh intercepted reply.
+        const apiText = (snap.apiReply && snap.apiReply.ts >= sendStart - 500)
+            ? extractCodegptApiReply(snap.apiReply.body) : '';
+        if (apiText) {
+            lastReplyAt = Date.now();
+            return apiText;
+        }
+        // Role-aware pages: only a new ASSISTANT container (or changed reply
+        // text) counts as progress — a freshly added user bubble must never
+        // read as the reply.
+        const isNew = (snap.roleAware
+            ? snap.assistantCount > before.assistantCount
+            : snap.count > before.count) ||
             (snap.text && snap.text !== before.text);
         if (!isNew) continue;
+        if (!snap.text) continue;   // new element, still empty (assistant thinking)
         if (!forming) {
             forming = snap.text;
             stable = 0;
@@ -1277,6 +1712,7 @@ function startBridge() {
         const eVis = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
         return {
             ok: true, service: 'signalreach-tray', bridge: BRIDGE_PORT,
+            codeVer: 'cg-bridge-12',
             provider: prov,
             copilotVisible: cVis,
             chatgptVisible: gVis,
@@ -1661,7 +2097,12 @@ function installIpc() {
         } else if (config.provider === 'chatgpt') {
             auth = await checkChatgptSignedIn().catch(error => ({ ok: false, why: error.message }));
         } else if (config.provider === 'codegpt') {
+            // The economy ids this bridge serves, so the panel can offer them.
+            models = economyBridgeIds();
             auth = await checkCodegptSignedIn().catch(error => ({ ok: false, why: error.message }));
+            if (auth.ok && config.model && !models.includes(config.model)) {
+                auth = { ok: false, why: 'Choose an available CodeGPT economy model.' };
+            }
         } else {
             auth = await checkSignedIn().catch(error => ({ ok: false, why: error.message }));
         }
@@ -1677,6 +2118,8 @@ function installIpc() {
             chatgptVisible: !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()),
             copilotVisible: !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible()),
             codegptVisible: !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()),
+            codegptRequested: lastCodegptRequested,
+            codegptServed: lastCodegptServed,
             lastReplyAt, lastError,
             url: config.provider === 'endpoint' ? base : (activeWin && !activeWin.isDestroyed() ? activeWin.webContents.getURL().slice(0, 120) : '')
         };
@@ -1822,6 +2265,17 @@ if (!app.requestSingleInstanceLock()) {
         startBridge();
         createTray();
         openPanel();
+        // The economy list is CodeGPT's own live credits menu, so it is read
+        // from the CodeGPT sidecar at startup and kept fresh — a model added or
+        // retired on the plan shows up here without a code change.
+        refreshEconomyModels().then((info) => {
+            log('economy models: ' + info.count + ' from ' + info.source);
+        }).catch(() => {});
+        setInterval(() => {
+            refreshEconomyModels({ force: true })
+                .then((info) => log('economy models refreshed: ' + info.count + ' from ' + info.source))
+                .catch(() => {});
+        }, 5 * 60 * 1000);
         const startProvider = endpoints.getSettings().provider;
         if (startProvider === 'copilot') ensureBrowser();
         if (startProvider === 'chatgpt') ensureChatgpt();

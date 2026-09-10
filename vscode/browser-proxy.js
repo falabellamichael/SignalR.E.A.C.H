@@ -21,7 +21,6 @@
 const http = require('http');
 const crypto = require('crypto');
 
-const FETCH_TIMEOUT_MS = 20000;
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const BROWSER_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -122,7 +121,6 @@ function makeOrigin(pageUrl) {
 
 async function fetchUpstream(target) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     const resp = await fetch(target, {
       redirect: 'follow',
@@ -133,13 +131,12 @@ async function fetchUpstream(target) {
     let size = 0;
     for await (const chunk of resp.body || []) {
       size += chunk.length;
+      // Size is the only limit: a slow page is not a failure. No timeout.
       if (size > MAX_BODY_BYTES) { controller.abort(); throw new Error('Page exceeds the 16 MiB limit'); }
       chunks.push(Buffer.from(chunk));
     }
     return { status: resp.status, headers: resp.headers, body: Buffer.concat(chunks) };
-  } finally {
-    clearTimeout(timer);
-  }
+  } finally { /* the request owns its own signal */ }
 }
 
 function upgradeHtml(body, targetRoot) {

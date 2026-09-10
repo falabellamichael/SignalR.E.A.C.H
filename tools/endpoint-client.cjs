@@ -44,8 +44,10 @@ function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } =
       return;
     }
     const abort = new AbortController();
+    // No timeout on chat: a real agent turn can run far longer than any fixed
+    // budget, and killing it mid-generation loses the whole response. The
+    // request is aborted only when the client goes away.
     res.on('close', () => { if (!res.writableEnded) abort.abort(); });
-    const timer = setTimeout(() => abort.abort(), isChat ? 300000 : 60000);
     try {
       const base = await resolveEndpoint();
       if (isPointer) { json(res, 200, { public_url: base, source: 'published endpoint' }); return; }
@@ -90,7 +92,7 @@ function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } =
     } catch (error) {
       if (!res.headersSent && !res.destroyed) json(res, 502, { error: { message: String(error.message || error) } });
       else res.destroy();
-    } finally { clearTimeout(timer); }
+    } finally { /* nothing to clear: the request owns the abort signal */ }
   });
 }
 

@@ -54,6 +54,12 @@ function getNonce() {
 /* ---- Copilot system tray supervisor (invisible browser + bridge :21302) ---- */
 
 const TRAY_PORT = 21302;
+// Providers served by the tray bridge (:21302) rather than a hosted endpoint:
+// the invisible-browser Copilot and ChatGPT sessions, and the CodeGPT economy
+// models (unlimited tier of a paid CodeGPT plan — the tray drives the signed-in
+// CodeGPT session, because CodeGPT's public API only binds agents to legacy,
+// credit-metered models).
+const TRAY_PROVIDERS = ['copilot', 'chatgpt', 'codegpt'];
 
 function trayHealth(timeoutMs) {
   return new Promise((resolve) => {
@@ -203,7 +209,7 @@ async function installBrowserEngine(extRoot, onProgress) {
 function config() {
   const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const rawProvider = cfg.get('provider');
-  const provider = (rawProvider === 'copilot' || rawProvider === 'chatgpt') ? rawProvider : 'endpoint';
+  const provider = TRAY_PROVIDERS.includes(rawProvider) ? rawProvider : 'endpoint';
   const freeEndpoint = String(cfg.get('endpoint') || DEFAULT_ENDPOINT).replace(/\/+$/, '');
   const additionalEndpoints = (Array.isArray(cfg.get('additionalEndpoints')) ? cfg.get('additionalEndpoints') : [])
     .filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean);
@@ -212,7 +218,7 @@ function config() {
   const endpointAccessKeys = Object.fromEntries(additionalEndpoints.map(endpoint =>
     [endpoint, storedKeys && typeof storedKeys[endpoint] === 'string' ? storedKeys[endpoint] : '']));
   const freeAccessKey = String(cfg.get('accessKey') || '');
-  const isTrayBridge = provider === 'copilot' || provider === 'chatgpt';
+  const isTrayBridge = TRAY_PROVIDERS.includes(provider);
   return {
     provider,
     providerSelection: isTrayBridge ? provider : selectedEndpoint ? 'endpoint:' + selectedEndpoint : 'endpoint',
@@ -223,7 +229,9 @@ function config() {
     freeAccessKey,
     endpointAccessKeys,
     accessKey: isTrayBridge ? '' : selectedEndpoint ? endpointAccessKeys[selectedEndpoint] : freeAccessKey,
-    model: provider === 'copilot' ? 'copilot-chat' : provider === 'chatgpt' ? 'chatgpt-chat' : String(cfg.get('model') || 'gpt-4o-mini'),
+    model: provider === 'copilot' ? 'copilot-chat' : provider === 'chatgpt' ? 'chatgpt-chat'
+      : provider === 'codegpt' ? (String(cfg.get('model') || '').startsWith('codegpt-eco') ? String(cfg.get('model')) : 'codegpt-eco')
+      : String(cfg.get('model') || 'gpt-4o-mini'),
     maxTokens: Number(cfg.get('maxTokens') || 2048),
     workspaceContext: cfg.get('workspaceContext') !== false,
     contextMaxKb: Math.max(8, Number(cfg.get('contextMaxKb') || 120)),
@@ -451,7 +459,7 @@ class ReachChatViewProvider {
                 await cfg.update('endpointAccessKeys', { ...connection.endpointAccessKeys, [endpoint]: msg.value.trim() }, vscode.ConfigurationTarget.Global);
               }
               this._post('configSaved', { key, config: config() });
-              if (!['copilot', 'chatgpt'].includes(connection.provider) && endpoint === (connection.selectedEndpoint || connection.freeEndpoint)) await this._fetchModels();
+              if (!TRAY_PROVIDERS.includes(connection.provider) && endpoint === (connection.selectedEndpoint || connection.freeEndpoint)) await this._fetchModels();
             } catch (error) {
               this._post('error', { message: 'Could not save the endpoint access key.' });
             }
@@ -470,10 +478,10 @@ class ReachChatViewProvider {
           else value = String(value == null ? '' : value);
           try {
             if (key === 'provider') {
-              if (!['endpoint', 'copilot', 'chatgpt'].includes(value) &&
+              if (!['endpoint', ...TRAY_PROVIDERS].includes(value) &&
                   !(value.startsWith('endpoint:') && config().additionalEndpoints.includes(value.slice(9)))) break;
               await cfg.update('selectedEndpoint', value.startsWith('endpoint:') ? value.slice(9) : '', vscode.ConfigurationTarget.Global);
-              value = ['copilot', 'chatgpt'].includes(value) ? value : 'endpoint';
+              value = TRAY_PROVIDERS.includes(value) ? value : 'endpoint';
             }
             await cfg.update(key, value, vscode.ConfigurationTarget.Global);
             if (key === 'additionalEndpoints') {
@@ -487,7 +495,7 @@ class ReachChatViewProvider {
           } catch (e) { break; }
           this._post('configSaved', { key, value, config: config() });
           if (['additionalEndpoints', 'accessKey', 'provider'].includes(key)) {
-            if (['copilot', 'chatgpt'].includes(config().provider)) await startTray();
+            if (TRAY_PROVIDERS.includes(config().provider)) await startTray();
             await this._fetchModels();
           }
           break;
@@ -551,7 +559,8 @@ class ReachChatViewProvider {
               + original + '\nCURRENT SOURCE (' + rel + ', may be a window):\n' + source;
             if (prompt.length > 7000) throw new Error('This proposal is too large to refresh safely. Request a smaller edit.');
             const response = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
-              method: 'POST', headers: this._authHeaders({}, connection), signal: AbortSignal.timeout(60000),
+              method: 'POST', headers: this._authHeaders({}, connection),
+              ...(this._controller ? { signal: this._controller.signal } : {}),
               body: encodeChatPayload({ model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: 1500 }),
             });
             if (!response.ok) throw new Error('Refresh failed (HTTP ' + response.status + ').');
@@ -587,27 +596,22 @@ class ReachChatViewProvider {
           const command = String(msg.command || '').slice(0, 1000);
           const folders = vscode.workspace.workspaceFolders || [];
           if (!folders.length) { this._post('toolResult', { uid, ok: false, error: 'No workspace folder is open.' }); break; }
-          const withTimeout = async (p) => {
-            let timer;
-            try {
-              return await Promise.race([p, new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error('tool timed out')), 15000);
-              })]);
-            } finally { clearTimeout(timer); }
-          };
+          // Tools run without a timeout: a large workspace search or a big file
+          // read is agent work, and cutting it off mid-turn helps nobody. Stop
+          // is the only thing that cancels a run.
           try {
             let result = '';
             let image = null;
             if (action === 'read') {
               if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) throw new Error('invalid path');
               const uri = vscode.Uri.joinPath(folders[0].uri, rel);
-              const doc = await withTimeout(vscode.workspace.openTextDocument(uri));
+              const doc = await vscode.workspace.openTextDocument(uri);
               result = fileReadResult(rel, doc.getText(), msg.startLine, msg.endLine, doc.isDirty);
             } else if (action === 'search') {
               if (!pattern) throw new Error('no search pattern');
-              result = await withTimeout(this._workspaceSearch(pattern));
+              result = await this._workspaceSearch(pattern);
             } else if (action === 'list') {
-              result = await withTimeout(this._workspaceList(rel));
+              result = await this._workspaceList(rel);
             } else if (action === 'shell') {
               if (!command) throw new Error('no command');
               const ok = await vscode.window.showWarningMessage(
@@ -787,7 +791,7 @@ class ReachChatViewProvider {
   _authHeaders(extra, connection = config()) {
     const headers = Object.assign({ 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' }, extra || {});
     const { accessKey } = connection;
-    if (accessKey && !['copilot', 'chatgpt'].includes(connection.provider)) headers.Authorization = `Bearer ${accessKey}`;
+    if (accessKey && !TRAY_PROVIDERS.includes(connection.provider)) headers.Authorization = `Bearer ${accessKey}`;
     return headers;
   }
 
@@ -795,10 +799,11 @@ class ReachChatViewProvider {
     const connection = config();
     const { endpoint } = connection;
     try {
-      if (['copilot', 'chatgpt'].includes(connection.provider) && !await trayHealth()) {
+      if (TRAY_PROVIDERS.includes(connection.provider) && !await trayHealth()) {
         const state = await startTray();
         if (state === 'missing' || state === 'error') {
-          const name = connection.provider === 'chatgpt' ? 'ChatGPT' : 'Microsoft 365 Copilot';
+          const name = connection.provider === 'chatgpt' ? 'ChatGPT'
+            : connection.provider === 'codegpt' ? 'CodeGPT economy models' : 'Microsoft 365 Copilot';
           throw new Error(`Start the SignalREACH tray to use ${name}.`);
         }
         for (let attempt = 0; attempt < 20 && !await trayHealth(); attempt++) await new Promise(resolve => setTimeout(resolve, 250));
@@ -821,7 +826,7 @@ class ReachChatViewProvider {
     const endpoints = [connection.endpoint];
     const results = await Promise.allSettled(endpoints.map(async endpoint => {
       const base = await resolveEndpoint(endpoint);
-      const resp = await fetch(`${base}/models`, { headers: this._authHeaders({}, connection), signal: AbortSignal.timeout(15000) });
+      const resp = await fetch(`${base}/models`, { headers: this._authHeaders({}, connection) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       const data = await resp.json();
       const models = (Array.isArray(data?.data) ? data.data : []).map(m => m?.id).filter(id => typeof id === 'string' && id);
@@ -892,7 +897,9 @@ class ReachChatViewProvider {
           + transcript.slice(i * chunkSize, (i + 1) * chunkSize);
         const response = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
           method: 'POST', headers: this._authHeaders({}, connection),
-          signal: AbortSignal.any([AbortSignal.timeout(90000), ...(this._controller ? [this._controller.signal] : [])]),
+          // No timeout: compressing the conversation is agent work and can
+          // legitimately outrun any fixed budget. Only the user's Stop aborts it.
+          ...(this._controller ? { signal: this._controller.signal } : {}),
           body: encodeChatPayload({ model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: copilot ? 350 : 2400 }),
         });
         if (!response.ok) throw new Error('Context compression failed (HTTP ' + response.status + '). The original conversation is intact.');
@@ -948,7 +955,9 @@ class ReachChatViewProvider {
         + '\nPrevious notes: ' + notes + `\nPart ${i + 1}/${parts}:\n`
         + transcript.slice(i * 3500, (i + 1) * 3500);
       const response = await fetch(`${await this._modelEndpoint(connection, payload.model)}/chat/completions`, {
-        method: 'POST', headers: this._authHeaders({}, connection), signal: AbortSignal.any([AbortSignal.timeout(60000), ...(this._controller ? [this._controller.signal] : [])]),
+        // No timeout: reading long context is agent work. Stop is the only abort.
+        method: 'POST', headers: this._authHeaders({}, connection),
+        ...(this._controller ? { signal: this._controller.signal } : {}),
         body: JSON.stringify({ model: payload.model, messages: [{ role: 'user', content }], stream: false, max_tokens: 400 }),
       });
       if (!response.ok) throw new Error(`Copilot could not read part ${i + 1}/${parts} (HTTP ${response.status}).`);
@@ -1704,7 +1713,7 @@ function activate(context) {
 
   // The Copilot system tray starts with the extension (no-op when it is
   // already running); the chat panel's tray icon reflects the live state.
-  if (['copilot', 'chatgpt'].includes(config().provider)) startTray().catch(() => {});
+  if (TRAY_PROVIDERS.includes(config().provider)) startTray().catch(() => {});
 }
 
 function deactivate() {

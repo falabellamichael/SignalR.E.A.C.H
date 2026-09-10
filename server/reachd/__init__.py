@@ -43,6 +43,7 @@ from reachd.handler import RelayHandler
 from reachd.limits import CounterGate, RateLimiter
 from reachd.publish import publish_url
 from reachd.settings import (
+    CODEGPT_ECONOMY_MODELS,
     DEFAULT_SETTINGS,
     MODEL_SPEC_DEFAULTS,
     SettingsError,
@@ -72,6 +73,7 @@ __all__ = [
     "GIST_ID",
     "GIST_FILE",
     "MODEL_SPEC_DEFAULTS",
+    "CODEGPT_ECONOMY_MODELS",
     "DEFAULT_SETTINGS",
     "SettingsError",
     "validate_settings",
