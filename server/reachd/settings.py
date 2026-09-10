@@ -86,6 +86,11 @@ DEFAULT_SETTINGS = {
             "upstream": "copilot/chatgpt-chat",
             "description": "ChatGPT via the local Copilot bridge (free, shared)",
         },
+        "gemini-2.5-flash": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "codegpt/codegpt-gemini-2.5-flash",
+            "description": "Google Gemini 2.5 Flash (CodeGPT free tier)",
+        },
     },
     # ---- rate limits ----
     "rate_limits": {
