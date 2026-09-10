@@ -28,6 +28,7 @@ MODEL_SPEC_DEFAULTS = {
     "temperature": None,            # default temperature (null = passthrough)
     "max_tokens": None,             # default max_tokens (null = passthrough)
     "max_tokens_cap": 16384,        # hard cap on requested max_tokens (0 = off)
+    "min_output_tokens": 0,         # floor for upstream max_tokens (reasoning models need headroom)
     "temperature_min": 0.0,         # clamp window
     "temperature_max": 2.0,
     "system_prompt": "",            # injected system message (model-level)
@@ -90,6 +91,14 @@ DEFAULT_SETTINGS = {
             **MODEL_SPEC_DEFAULTS,
             "upstream": "codegpt/codegpt-gemini-2.5-flash",
             "description": "Google Gemini 2.5 Flash (CodeGPT free tier)",
+            "fallback": "gemini-3.7-flash",
+            "min_output_tokens": 1024,
+        },
+        "gemini-3.7-flash": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "gemini/gemini-3.7-flash",
+            "description": "Google Gemini 3.7 Flash (via OmniRoute)",
+            "min_output_tokens": 1024,
         },
     },
     # ---- rate limits ----
@@ -289,6 +298,8 @@ def _validate_model_spec(alias, spec, all_aliases, errors):
         _int(max_tokens, 1, 1000000, path + ".max_tokens")
     _int(spec.get("max_tokens_cap", 16384), *MODEL_NUMERIC["max_tokens_cap"],
          path + ".max_tokens_cap")
+    _int(spec.get("min_output_tokens", 0), 0, 1000000,
+         path + ".min_output_tokens")
     _float(spec.get("temperature_min", 0.0), 0, 2, path + ".temperature_min")
     _float(spec.get("temperature_max", 2.0), 0, 2, path + ".temperature_max")
     _expect(spec.get("temperature_min", 0) <= spec.get("temperature_max", 2),
