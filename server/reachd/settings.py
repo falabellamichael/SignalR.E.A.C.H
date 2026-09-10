@@ -8,6 +8,7 @@ import secrets
 import shutil
 import socket
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
