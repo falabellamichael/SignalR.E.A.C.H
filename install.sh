@@ -4,8 +4,8 @@
 # Clones (or reuses) the repo, then runs: python3 tools/reach.py install
 set -eu
 
-REPO='https://github.com/falabellamichael/SimpleREACH.git'
-DIR="$PWD/SimpleREACH"
+REPO='https://github.com/falabellamichael/SignalR.E.A.C.H.git'
+DIR="$PWD/SignalR.E.A.C.H"
 
 # 1. Python (3.9+)
 if command -v python3 >/dev/null 2>&1; then
@@ -20,6 +20,9 @@ VER=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 echo "[SimpleREACH] using $PY ($VER)"
 
 # 2. Clone or refresh
+# The repo is PRIVATE, so this needs git credentials for an account that has
+# been granted access. If the clone fails with 403/404, ask the maintainer to
+# hand out access (or send you a source bundle instead).
 if [ -d "$DIR/.git" ]; then
     echo "[SimpleREACH] existing checkout at $DIR - pulling latest"
     git -C "$DIR" pull --ff-only

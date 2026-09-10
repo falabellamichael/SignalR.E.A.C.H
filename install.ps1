@@ -4,14 +4,14 @@
 # otherwise it clones (or refreshes) the repo next to the current folder.
 $ErrorActionPreference = 'Stop'
 
-$Repo = 'https://github.com/falabellamichael/SimpleREACH.git'
+$Repo = 'https://github.com/falabellamichael/SignalR.E.A.C.H.git'
 
-# 0. Use the current folder if it is already a SimpleREACH checkout
+# 0. Use the current folder if it is already a checkout
 if (Test-Path (Join-Path (Get-Location) 'tools\reach.py')) {
     $Dir = (Get-Location).Path
     Write-Host "[SimpleREACH] using current checkout: $Dir"
 } else {
-    $Dir = Join-Path (Get-Location) 'SimpleREACH'
+    $Dir = Join-Path (Get-Location) 'SignalR.E.A.C.H'
 }
 
 # 1. Python (3.9+)

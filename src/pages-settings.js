@@ -348,6 +348,124 @@
             document.body.appendChild(overlay);
         }
 
+        // One-click onboarding for a machine that is NOT this one. It mints a
+        // named client key, turns on access-key enforcement, and prints the
+        // ready-to-paste Base URL + key. Nothing account-bound ever leaves this
+        // host: the remote client only receives an address and a random token.
+        function showRemoteClientModal(info) {
+            const overlay = el('div', 'reach-modal-overlay');
+            const dialog = el('div', 'reach-modal-dialog');
+            const snippet =
+                'Base URL:  ' + info.baseUrl + '\n'
+                + 'API key:   ' + info.key + '\n'
+                + 'Model:     ' + info.model + '\n';
+            dialog.innerHTML = '<header class="reach-card-head">'
+                + '<h3 style="margin:0;font-size:15px;display:flex;align-items:center;gap:8px;">'
+                + '<i class="fa-solid fa-laptop-code" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+                + '<span>Remote Client Ready</span>'
+                + '</h3>'
+                + '</header>'
+                + '<div class="reach-card-body" style="padding:16px;">'
+                + '<p class="reach-copy" style="margin-top:0;">Give these three lines to <strong>' + esc(info.name || 'the client') + '</strong>. They reach only the models you marked public — never your CodeGPT session, your Google sign-in, or your OmniRoute key.</p>'
+                + '<div style="background:rgba(255, 176, 32, 0.12);border:1px solid rgba(255, 176, 32, 0.35);padding:10px 12px;border-radius:8px;margin-bottom:12px;">'
+                + '<p class="reach-copy" style="margin:0;font-size:12px;color:var(--reach-accent-light, #ffd37a);font-weight:600;">'
+                + '<i class="fa-solid fa-triangle-exclamation" style="margin-right:6px;"></i>Save the key now — it is not shown again. Revoke it any time from the key list.'
+                + '</p>'
+                + '</div>'
+                + '<pre class="reach-url" id="remote-client-snippet" style="white-space:pre-wrap;word-break:break-all;font-size:12.5px;user-select:all;margin:12px 0;">' + esc(snippet) + '</pre>'
+                + '<p class="reach-hint" style="margin-bottom:0;">Any OpenAI-compatible client works (Cursor, LibreChat, Postman, the VS Code extension). Streaming is supported.</p>'
+                + '</div>';
+            const foot = el('div', 'reach-card-foot');
+            const copyBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm');
+            copyBtn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy All';
+            copyBtn.addEventListener('click', () => {
+                copyText(snippet).then(ok => toast(ok ? 'Client details copied ✓' : 'Copy failed', ok ? 'ok' : 'error'));
+            });
+            // Revoke straight from here, so a key handed out by mistake can be
+            // killed without hunting for it in the list. Deletes server-side via
+            // DELETE /_reach/keys/<id>, then refreshes the list. The modal stays
+            // open showing the (now dead) details until dismissed.
+            const revokeBtn = el('button', 'reach-btn reach-btn-sm');
+            revokeBtn.innerHTML = '<i class="fa-solid fa-ban"></i> Revoke Key';
+            if (!info.id) revokeBtn.disabled = true;
+            revokeBtn.addEventListener('click', () => {
+                if (!info.id) return;
+                if (!confirm('Revoke this client key? \"' + (info.name || 'Remote PC') + '\" will lose access immediately.')) return;
+                revokeBtn.disabled = true;
+                core.relayFetch('/_reach/keys/' + encodeURIComponent(info.id), { method: 'DELETE' })
+                    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                    .then(({ ok, data }) => {
+                        if (!ok) throw new Error((data && data.error && data.error.message) || 'revoke failed');
+                        revokeBtn.innerHTML = '<i class="fa-solid fa-check"></i> Revoked';
+                        toast('Client key revoked ✓', 'ok');
+                        if (info.onRevoked) info.onRevoked();
+                    })
+                    .catch(err => { revokeBtn.disabled = false; toast('Error: ' + err.message, 'error'); });
+            });
+            const closeBtn = el('button', 'reach-btn reach-btn-sm', 'Done');
+            closeBtn.addEventListener('click', () => overlay.remove());
+            foot.appendChild(copyBtn);
+            foot.appendChild(revokeBtn);
+            foot.appendChild(closeBtn);
+            dialog.appendChild(foot);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+        }
+
+        // The one-click "Remote Client" flow. Resolves the reachable Base URL
+        // (pinned override, live tunnel, or loopback), mints a key server-side,
+        // and turns on key_required so that token is the only way in.
+        //
+        // The keys list is deliberately NOT patched back: /_reach/keys already
+        // persisted the new key, and GET masks existing tokens, so echoing the
+        // array would overwrite real keys with masked placeholders.
+        function addRemoteClient(btn, nameInput, firstModel, rerender) {
+            const name = (nameInput && nameInput.value.trim()) || 'Remote PC';
+            const snap = core.store.local || {};
+            const base = (draft.public_url_override || snap.public_url || '').trim()
+                || ('http://' + (core.store.host || '127.0.0.1') + ':' + (draft.port || 20777));
+            const baseUrl = base.replace(/\/+$/, '') + '/v1';
+            btn.disabled = true;
+            core.relayFetch('/_reach/keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name })
+            })
+                .then(res => res.json().then(data => ({ ok: res.ok, data })))
+                .then(({ ok, data }) => {
+                    if (!ok || !data.created || !data.key) {
+                        throw new Error((data && data.error && data.error.message) || 'could not create key');
+                    }
+                    draft.access = draft.access || {};
+                    // Enforce the key so the freshly minted token is required.
+                    // The key list is NOT echoed back: /_reach/keys already saved
+                    // it, and GET masks existing tokens — re-patching would
+                    // overwrite real keys with masked placeholders.
+                    draft.access.key_required = true;
+                    draft.access.cors_origins = draft.access.cors_origins || '*';
+                    if (rerender) rerender();
+                    const patch = { access: { key_required: true, cors_origins: draft.access.cors_origins || '*' } };
+                    return core.saveSettings(patch).then(({ ok: saved, data: sdata }) => {
+                        if (!saved) {
+                            throw new Error((sdata && sdata.error && sdata.error.message) || 'settings save failed');
+                        }
+                        markDirty(false);
+                        if (nameInput) nameInput.value = '';
+                        showRemoteClientModal({
+                            name: name,
+                            id: (data.key && data.key.id) || '',
+                            baseUrl: baseUrl,
+                            key: (data.key && data.key) || '',
+                            model: firstModel || 'gpt-4o',
+                            onRevoked: () => { if (rerender) rerender(); }
+                        });
+                        toast('Remote client ready ✓', 'ok');
+                    });
+                })
+                .catch(err => toast('Error: ' + err.message, 'error'))
+                .finally(() => { btn.disabled = false; });
+        }
+
         function draw() {
             body.innerHTML = '';
             if (!draft) {
@@ -601,6 +719,20 @@
 
             newKeyBar.appendChild(keyNameInput);
             newKeyBar.appendChild(createKeyBtn);
+            const remoteBtn = el('button', 'reach-btn reach-btn-sm');
+            remoteBtn.innerHTML = '<i class="fa-solid fa-share-nodes"></i> Add Remote Client';
+            remoteBtn.type = 'button';
+            remoteBtn.title = 'Mint a key, require it, and show the paste-ready Base URL for another PC.';
+            remoteBtn.addEventListener('click', () => {
+                const firstPublic = Object.keys(draft.models || {}).find(
+                    alias => draft.models[alias] && draft.models[alias].enabled
+                        && draft.models[alias].public !== false) || 'gpt-4o';
+                addRemoteClient(remoteBtn, keyNameInput, firstPublic, () => {
+                    renderKeysList();
+                    draw();
+                });
+            });
+            newKeyBar.appendChild(remoteBtn);
             keysCard.appendChild(newKeyBar);
             body.appendChild(keysCard);
 
