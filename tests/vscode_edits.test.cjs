@@ -4,16 +4,19 @@ const fs=require('node:fs');
 const vm=require('node:vm');
 const source=fs.readFileSync(require('node:path').join(__dirname,'../vscode/media/chat.js'),'utf8');
 class Element {
- constructor(tag){this.tag=tag;this.children=[];this.disabled=false;this.className='';this.handlers={};this.classList={add:c=>{this.className+=' '+c;}};}
+ constructor(tag){this.tag=tag;this.children=[];this.disabled=false;this.className='';this.hidden=false;this.handlers={};this.attrs={};
+  const has=c=>this.className.split(' ').includes(c);
+  this.classList={add:c=>{if(!has(c))this.className+=' '+c;},remove:c=>{this.className=this.className.split(' ').filter(x=>x&&x!==c).join(' ');},toggle:(c,on)=>{const want=on===undefined?!has(c):on;if(want&&!has(c))this.className+=' '+c;else if(!want)this.classList.remove(c);return want;},contains:has};}
  append(...nodes){nodes.forEach(n=>this.appendChild(n));}
  appendChild(n){this.children.push(n);n.parent=this;return n;}
  insertBefore(n,after){const idx=this.children.indexOf(after);if(idx<0)this.appendChild(n);else{this.children.splice(idx,0,n);n.parent=this;}}
- closest(cls){return this.className.split(' ').includes(cls.slice(1))?this:this.parent?.closest(cls);}
- setAttribute(){}
+ closest(cls){return this.classList.contains(cls.slice(1))?this:this.parent?.closest(cls);}
+ setAttribute(k,v){this.attrs[k]=v;}
+ getAttribute(k){return this.attrs[k];}
  addEventListener(type,handler){this.handlers[type]=handler;}
  click(){if(!this.disabled)return this.handlers.click?.();}
  remove(){this.parent.children=this.parent.children.filter(n=>n!==this);}
- querySelector(cls){return this.children.find(n=>n.className.split(' ').includes(cls.slice(1)))||this.children.map(n=>n.querySelector(cls)).find(Boolean);}
+ querySelector(cls){return this.children.find(n=>n.classList.contains(cls.slice(1)))||this.children.map(n=>n.querySelector(cls)).find(Boolean);}
 }
 function render(){
  const log=new Element('main'),anchor=new Element('div');log.appendChild(anchor);
@@ -22,8 +25,25 @@ function render(){
  vm.runInNewContext(code+'\nrenderEditCards(anchor,edits);',ctx);
  const handler=source.slice(source.indexOf("      case 'editRefreshed': {"),source.indexOf('      default:',source.indexOf("      case 'editRefreshed': {")));
  vm.runInNewContext('function deliver(msg){switch(msg.type){'+handler+'}}',ctx);
- return {ctx,calls,records:Object.values(ctx.editCards),bar:log.children[1].children[0],batch:log.children[1]};
+ const dropup=log.children[1];                 // .edit-dropup wrapper
+ const panel=dropup.querySelector('.edit-dropup-panel');
+ const batch=panel.querySelector('.edit-batch');
+ return {ctx,calls,records:Object.values(ctx.editCards),log,dropup,panel,batch,bar:batch.children[0]};
 }
+test('edits live in a collapsed drop-up that opens and closes on click',()=>{
+ const h=render();
+ const toggle=h.dropup.querySelector('.edit-dropup-toggle');
+ assert.ok(toggle,'a toggle bar is rendered');
+ assert.equal(h.panel.hidden,true,'panel starts collapsed so the answer is what you read');
+ assert.equal(toggle.getAttribute('aria-expanded'),'false');
+ toggle.click();
+ assert.equal(h.panel.hidden,false,'click opens the panel');
+ assert.equal(toggle.getAttribute('aria-expanded'),'true');
+ toggle.click();
+ assert.equal(h.panel.hidden,true,'clicking again closes it');
+ assert.equal(toggle.getAttribute('aria-expanded'),'false');
+});
+
 test('Reject prevents later Apply all and proposals keep their original order',async()=>{
  const h=render();
  assert.equal(h.batch.children[1],h.records[0].card);

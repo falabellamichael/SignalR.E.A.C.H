@@ -618,6 +618,45 @@ body {
   gap: 6px;
   padding: 4px 0;
 }
+
+/* ---- proposed edits: collapsible drop-up ---------------------------------
+ * Collapsed it is a single compact toggle bar; opened it reveals the edit
+ * cards upward in a scrollable block (same idea as Settings / History). The
+ * assistant's answer stays the last thing in the reading flow. */
+.edit-dropup { flex: 0 0 auto; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.edit-dropup-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  font-size: 11.5px;
+  min-height: 26px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--reach-border);
+  background: color-mix(in srgb, var(--reach-accent) 8%, transparent);
+  color: var(--reach-text);
+  cursor: pointer;
+}
+.edit-dropup-toggle:hover { border-color: var(--reach-accent-border); background: var(--reach-accent-bg); }
+.edit-dropup-toggle:focus-visible { outline: 2px solid var(--reach-accent); outline-offset: 1px; }
+.edit-dropup-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-dropup-caret { flex: 0 0 auto; font-size: 10px; color: var(--reach-muted); transition: transform 0.15s ease; }
+.edit-dropup.open .edit-dropup-caret { transform: rotate(180deg); }
+.edit-dropup-panel {
+  max-height: min(46vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px;
+  background: var(--reach-surface);
+  border: 1px solid var(--reach-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px var(--reach-shadow);
+}
+.edit-dropup-panel .edit-batch { gap: 8px; }
+.edit-dropup-panel .edit-preview { border-top: 1px solid var(--reach-border); }
+.edit-dropup-panel .edit-diff { max-height: 180px; }
 .browse-snap { margin: 4px 0; }
 .browse-snap .browse-cap { font-size: 10px; color: var(--reach-muted); margin-bottom: 3px; }
 .browse-snap img { max-width: 100%; border: 1px solid var(--reach-border); border-radius: 6px; display: block; }

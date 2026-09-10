@@ -472,16 +472,28 @@ def chat_finalize(h, upstream, ctx):
             if fallback_alias and fallback_alias in models                     and models[fallback_alias].get("enabled"):
                 try:
                     fb_payload = dict(ctx.get("payload") or {})
-                    fb_payload["model"] = models[fallback_alias]["upstream"]
+                    fb_upstream = models[fallback_alias]["upstream"]
+                    # The fallback alias may itself be a bridge alias, so it
+                    # routes by its own prefix rather than reusing the original
+                    # upstream's URL. Getting this wrong sent a bridge wire id
+                    # to OmniRoute, and leaked the OmniRoute bearer token to the
+                    # local tray bridge. Mirrors chat_execute's fallback path.
+                    fb_bridge = fb_upstream.startswith("bridge/")
+                    fb_payload["model"] = fb_upstream[len("bridge/"):] \
+                        if fb_bridge else fb_upstream
+                    fb_headers = {"Content-Type": "application/json"}
+                    if not fb_bridge:
+                        fb_headers["Authorization"] = "Bearer " + core.STATE.key
+                    fb_url = (core.STATE.bridge_url if fb_bridge
+                              else core.STATE.omniroute_url).rstrip("/") \
+                        + "/chat/completions"
                     fb_req = urllib.request.Request(
-                        ctx["url"], data=json.dumps(fb_payload).encode("utf-8"),
-                        method="POST",
-                        headers={"Content-Type": "application/json",
-                                 "Authorization": "Bearer " + core.STATE.key})
+                        fb_url, data=json.dumps(fb_payload).encode("utf-8"),
+                        method="POST", headers=fb_headers)
                     upstream = urllib.request.urlopen(
                         fb_req,
                         timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)))
-                    upstream_model = models[fallback_alias]["upstream"]
+                    upstream_model = fb_upstream
                     spec = models[fallback_alias]
                     fallback_used = True
                 except Exception:

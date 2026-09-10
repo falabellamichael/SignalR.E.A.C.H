@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -57,6 +58,33 @@ class SettingsTests(unittest.TestCase):
         cfg["public_url_override"] = "http://insecure.example"
         with self.assertRaises(reachd.SettingsError):
             reachd.validate_settings(cfg)
+
+    def test_breaker_reopens_after_cooldown_without_a_success(self):
+        # A breaker must re-trip after its cool-down even when the upstream
+        # never recovers. Pre-fix, note_failure() zeroed the counter as it
+        # opened the circuit, so the next failures started from zero and a
+        # permanently-dead upstream could fail forever without ever
+        # re-opening. Only note_success() should clear the counter.
+        state = reachd.RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
+                                 Path("/dev/null"))
+        for _ in range(state.cfg["circuit_threshold"]):
+            state.note_failure("bridge")
+        self.assertTrue(state.circuit_open("bridge"))
+        # Simulate the cool-down elapsing.
+        state._circuits["bridge"]["open_until"] = time.time() - 1
+        self.assertFalse(state.circuit_open("bridge"))
+        # One more failure must re-open it immediately (counter never reset).
+        state.note_failure("bridge")
+        self.assertTrue(state.circuit_open("bridge"))
+
+    def test_success_clears_the_breaker(self):
+        state = reachd.RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
+                                 Path("/dev/null"))
+        for _ in range(state.cfg["circuit_threshold"]):
+            state.note_failure("bridge")
+        self.assertTrue(state.circuit_open("bridge"))
+        state.note_success("bridge")
+        self.assertFalse(state.circuit_open("bridge"))
 
     def test_stream_timeout_validated(self):
         cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))

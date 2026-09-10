@@ -123,7 +123,10 @@ class RelayState:
             state["failures"] += 1
             if state["failures"] >= threshold:
                 state["open_until"] = time.time() + cooldown
-                state["failures"] = 0
+                # Deliberately NOT resetting `failures` here. Clearing it would
+                # let an upstream that never recovers re-arm from zero after
+                # every cool-down, so it could fail forever without the breaker
+                # ever re-tripping. Only note_success clears the counter.
     def note_success(self, upstream="omniroute"):
         # Clear one upstream's breaker after a completed call.
         with self._lock:

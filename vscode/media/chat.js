@@ -323,6 +323,37 @@
   }
 
   function renderEditCards(afterEl, edits) {
+    // Collapsible drop-up: collapsed it shows a single small toggle bar; opened
+    // it reveals the edit cards in a scrollable block (like Settings/History).
+    // This keeps the assistant's answer last in the reading flow — the edits
+    // only appear when you press the toggle.
+    const wrap = document.createElement('section');
+    wrap.className = 'edit-dropup';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'edit-dropup-toggle';
+    toggle.setAttribute('aria-expanded', 'false');
+    const caret = document.createElement('span');
+    caret.className = 'edit-dropup-caret';
+    caret.setAttribute('aria-hidden', 'true');
+    caret.textContent = '▴';
+    const toggleLabel = document.createElement('span');
+    toggleLabel.className = 'edit-dropup-label';
+    toggle.append(caret, toggleLabel);
+    const panel = document.createElement('div');
+    panel.className = 'edit-dropup-panel';
+    panel.hidden = true;
+    let open = false;
+    const setOpen = (next) => {
+      open = next;
+      panel.hidden = !open;
+      wrap.classList.toggle('open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+      if (open) scrollBottom();
+    };
+    toggle.addEventListener('click', () => setOpen(!open));
+    wrap.append(toggle, panel);
+
     const batch = document.createElement('section');
     batch.className = 'edit-batch';
     batch.setAttribute('aria-label', 'Proposed edits');
@@ -371,6 +402,13 @@
       allApply.disabled = !pending || applyingBatch || inFlight;
       allReject.disabled = !records.some(r => r.state === 'pending' || r.state === 'failed');
       allApply.textContent = applyingBatch ? 'Applying…' : 'Apply all';
+      // Keep the collapsed toggle honest about what is waiting inside.
+      const total = records.length;
+      const summary = pending ? pending + ' proposed edit' + (pending === 1 ? '' : 's')
+        : records.some(r => r.state === 'applying') ? 'Applying edits…'
+        : failed ? failed + ' failed edit' + (failed === 1 ? '' : 's') : 'Edits resolved';
+      toggleLabel.textContent = '📝 ' + summary + (total > 1 ? ' · ' + total : '');
+      toggle.title = summary + ' — click to ' + (open ? 'close' : 'open');
     }
     edits.forEach((ed, idx) => {
       const card = document.createElement('div');
@@ -454,8 +492,12 @@
       actions.append(review, apply, reject, refresh, status); card.appendChild(actions);
       editCards[uid] = rec; records.push(rec); batch.appendChild(card);
     });
+    panel.appendChild(batch);
     updateBatch();
-    log.insertBefore(batch, afterEl.nextSibling);
+    // afterEl may be a card's batch (nested inside an existing drop-up) — anchor
+    // on the top-level drop-up so insertBefore stays a direct child of the log.
+    const anchor = afterEl && afterEl.closest ? (afterEl.closest('.edit-dropup') || afterEl) : afterEl;
+    log.insertBefore(wrap, anchor ? anchor.nextSibling : null);
     scrollBottom();
   }
 
