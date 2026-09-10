@@ -40,6 +40,7 @@ async function refresh() {
         const st = await window.copilotTray.status();
         if (sequence !== refreshSequence) return;
         const isEndpoint = st.provider === 'endpoint';
+        const isChatgpt = st.provider === 'chatgpt';
         updateModelOptions(st.models || [], st.model);
         const pill = $('#pill');
         pill.classList.toggle('ok', !!st.signedIn);
@@ -47,19 +48,22 @@ async function refresh() {
         $('#pill-text').textContent = st.signedIn ? (isEndpoint ? 'online' : 'signed in') : 'not ready';
         $('#connection-error').textContent = st.why || '';
         pill.title = st.why || '';
-        $('#st-session').textContent = isEndpoint ? (st.model || st.models?.[0] || 'Free endpoints') : 'Microsoft 365 Copilot';
+        $('#st-session').textContent = isEndpoint
+            ? (st.model || st.models?.[0] || 'Free endpoints')
+            : isChatgpt ? 'ChatGPT' : 'Microsoft 365 Copilot';
         $('#st-port').textContent = st.bridgeUp ? (st.bridgePort + ' listening') : 'DOWN';
         $('#st-visible').textContent = st.browserVisible ? 'visible' : 'hidden';
         $('#st-last').textContent = ago(st.lastReplyAt);
         const err = $('#st-error'); if (err) err.textContent = st.lastError || '—';
         const url = $('#st-url'); if (url) url.textContent = (st.url || '—').replace(/^https?:\/\//, '').slice(0, 40);
-        // window-state labels: show/hide flips with visibility
-        setLabel($('#btn-toggle-window'), st.browserVisible ? 'Hide window' : 'Show window');
+        // window-state labels: generic Browser (renamed from Copilot window)
+        setLabel($('#btn-toggle-window'), st.browserVisible ? 'Hide Browser' : 'Show Browser');
         const tileLabel = $('#tile-window-label');
         const tileSub = $('#tile-window-sub');
         if (tileLabel && tileSub) {
-            tileLabel.textContent = st.browserVisible ? 'Hide window' : 'Copilot window';
-            tileSub.textContent = st.browserVisible ? 'running — click to hide' : 'sign in / verify';
+            tileLabel.textContent = st.browserVisible ? 'Hide Browser' : 'Browser';
+            const providerName = isEndpoint ? 'Endpoint' : isChatgpt ? 'ChatGPT' : 'Copilot';
+            tileSub.textContent = st.browserVisible ? providerName + ' — running — click to hide' : providerName + ' — sign in / verify';
         }
     } catch (e) {
         $('#pill-text').textContent = 'not ready';
@@ -213,7 +217,9 @@ $('#btn-toggle-window').addEventListener('click', () => {
 $('#btn-refresh-page').addEventListener('click', () => window.copilotTray.refreshPage());
 $('#btn-home').addEventListener('click', () => window.copilotTray.reloadBrowser());
 $('#btn-signout').addEventListener('click', () => {
-    if (confirm('Clear the Microsoft 365 session? You will need to sign in again.')) {
+    const prov = $('#provider').value;
+    const label = prov === 'chatgpt' ? 'ChatGPT' : 'Microsoft 365';
+    if (confirm('Clear the ' + label + ' session? You will need to sign in again.')) {
         window.copilotTray.signOut();
         setTimeout(refresh, 3000);
     }
@@ -259,6 +265,14 @@ async function loadSettings() {
         $('#endpoint-url').value = config.endpoint;
         $('#endpoint-model').hidden = $('#model-label').hidden = config.provider !== 'endpoint';
         $('#endpoint-settings').hidden = config.provider !== 'endpoint';
+        // Copilot/ChatGPT home button label
+        const homeBtn = $('#btn-home');
+        if (homeBtn) {
+            const svg = homeBtn.querySelector('svg');
+            homeBtn.textContent = '';
+            if (svg) homeBtn.appendChild(svg);
+            homeBtn.appendChild(document.createTextNode(config.provider === 'chatgpt' ? 'ChatGPT home' : 'Copilot home'));
+        }
         await refresh();
     } catch (error) { $('#connection-error').textContent = error.message; }
 }

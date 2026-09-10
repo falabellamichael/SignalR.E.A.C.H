@@ -11,7 +11,7 @@ async function resolveEndpoint(raw, request = fetch, depth = 0) {
     if (url.hostname === 'gist.githubusercontent.com' || /\.txt(?:\/v1)?\/?$/.test(url.pathname)) {
         if (pointerCache?.raw === raw && Date.now() - pointerCache.time < 15000) return pointerCache.base;
         url.pathname = url.pathname.replace(/\/v1\/?$/, '');
-        const response = await request(url.toString(), { signal: AbortSignal.timeout(15000) });
+        const response = await request(url.toString());
         if (!response.ok) throw new Error(`Endpoint pointer returned HTTP ${response.status}`);
         const target = (await response.text()).trim();
         const base = await resolveEndpoint(target, request, depth + 1);

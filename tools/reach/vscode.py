@@ -8,6 +8,7 @@ directory there directly. Re-running prunes older versions of our extension
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 EXT_PUBLISHER = "simplereach"
@@ -44,8 +45,10 @@ def install(repo_root, quiet=False, with_playwright=False):
     root = vscode_extensions_dir()
     dst = root / FOLDER
     try:
+        if dst.is_dir():
+            shutil.rmtree(dst, ignore_errors=True)
         dst.mkdir(parents=True, exist_ok=True)
-        for name in ("package.json", "extension.js", "connection.js", "search.js"):
+        for name in ("package.json", "extension.js", "connection.js", "search.js", "edits.js", "context.js"):
             if (src / name).is_file():
                 shutil.copy2(src / name, dst / name)
         media_src = src / "media"
@@ -97,6 +100,18 @@ def configure_defaults(quiet=False):
         settings_paths += [
             Path(appdata) / "Code" / "User" / "settings.json",
             Path(appdata) / "Code - Insiders" / "User" / "settings.json",
+        ]
+    if sys.platform == "darwin":
+        base_support = Path.home() / "Library" / "Application Support"
+        settings_paths += [
+            base_support / "Code" / "User" / "settings.json",
+            base_support / "Code - Insiders" / "User" / "settings.json",
+        ]
+    elif sys.platform.startswith("linux"):
+        base_cfg = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        settings_paths += [
+            base_cfg / "Code" / "User" / "settings.json",
+            base_cfg / "Code - Insiders" / "User" / "settings.json",
         ]
     for sp in settings_paths:
         try:

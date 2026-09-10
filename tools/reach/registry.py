@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import sys
 from pathlib import Path
 
 from . import PLUGIN_ID, SCHEMA_VERSION, SURFACES
@@ -18,8 +19,13 @@ def extension_home(override=None):
     runtime_home = os.environ.get("PYMU_RAG_HOME")
     if runtime_home:
         return Path(runtime_home).expanduser().resolve().parent / "extensions"
-    local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    return Path(local_app_data).expanduser().resolve() / "RAGWorkspace" / "extensions"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base.expanduser().resolve() / "RAGWorkspace" / "extensions"
 
 
 def package_dir(home, version):

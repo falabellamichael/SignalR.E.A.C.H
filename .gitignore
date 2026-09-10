@@ -15,3 +15,5 @@ vscode/package-lock.json
 copilot/tray/*.log
 
 copilot/tray/dist/
+
+.vscode/

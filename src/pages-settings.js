@@ -351,7 +351,9 @@
         function draw() {
             body.innerHTML = '';
             if (!draft) {
-                body.appendChild(emptyNote('Relay offline — settings cannot be loaded.'));
+                body.appendChild(emptyNote(core.store.local && core.store.local.connection_mode === 'hosted'
+                    ? 'SignalREACH is connected. Hosting settings are managed on the SignalREACH host.'
+                    : 'Relay offline — settings cannot be loaded.'));
                 saveBtn.disabled = true;
                 return;
             }

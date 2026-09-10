@@ -32,13 +32,17 @@ class ResponseCache:
 
     def put(self, key, body, ttl_s, max_entries):
         with self._lock:
-            while len(self._entries) >= max_entries:
+            while len(self._entries) > max_entries - 1:
                 self._entries.popitem(last=False)
             self._entries[key] = (time.time() + ttl_s, body)
 
     def clear(self):
         with self._lock:
             self._entries.clear()
+
+    def __len__(self):
+        with self._lock:
+            return len(self._entries)
 
     def snapshot(self):
         with self._lock:

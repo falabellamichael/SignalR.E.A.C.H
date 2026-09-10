@@ -185,6 +185,9 @@ def cmd_install(args):
                     dirs_exist_ok=True, ignore=ignore)
     shutil.copy2(REPO_ROOT / "tools" / "reach.py",
                  CONFIG_DIR / "tools" / "reach.py")
+    if (REPO_ROOT / "tools" / "endpoint-client.cjs").is_file():
+        shutil.copy2(REPO_ROOT / "tools" / "endpoint-client.cjs",
+                     CONFIG_DIR / "tools" / "endpoint-client.cjs")
     shutil.copytree(REPO_ROOT / "tools" / "reach",
                     CONFIG_DIR / "tools" / "reach",
                     dirs_exist_ok=True, ignore=ignore)

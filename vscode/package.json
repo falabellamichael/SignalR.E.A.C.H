@@ -175,12 +175,12 @@
         "simplereach.workspaceContext": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Include the files open in the VS Code editor as context with every chat (default on \u2014 toggle it in the sidebar)."
+          "markdownDescription": "Include workspace source as context with every chat; Agent mode reads the full open folder contents (default on \u2014 toggle it in the sidebar)."
         },
         "simplereach.contextMaxKb": {
           "type": "number",
           "default": 120,
-          "markdownDescription": "Max total workspace-context size (KB) sent per request. Open files are truncated to fit."
+          "markdownDescription": "Workspace source budget (KB) per request. Complete files are included when they fit; omitted files are listed and can be read with the read tool."
         },
         "simplereach.think": {
           "type": "boolean",
@@ -215,17 +215,19 @@
         "simplereach.agentic": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Agentic mode \u2014 the model can propose file edits (shown as accept/reject diffs in the chat) using your workspace tree + open files as context."
+          "markdownDescription": "Agentic mode \u2014 the model can propose file edits (shown as accept/reject diffs in the chat) using the full open folder contents as context."
         },
         "simplereach.provider": {
           "type": "string",
           "enum": [
             "endpoint",
-            "copilot"
+            "copilot",
+            "chatgpt"
           ],
           "enumDescriptions": [
             "Your free OpenAI-compatible endpoints",
-            "The local Microsoft 365 Copilot tray bridge"
+            "The local Microsoft 365 Copilot tray bridge",
+            "The local ChatGPT tray bridge"
           ],
           "default": "endpoint",
           "description": "Provider used by the REACH chat."

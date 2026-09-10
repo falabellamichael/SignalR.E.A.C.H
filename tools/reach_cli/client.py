@@ -27,6 +27,11 @@ class ReachApiError(RuntimeError):
 
 
 def _error_text(raw, base):
+    """Best-effort extraction of API error text."""
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "replace")
+    if not isinstance(raw, (bytes, bytearray)):
+        raw = b""
     try:
         payload = json.loads(raw.decode("utf-8", "replace"))
         error = payload.get("error") or {}
@@ -105,6 +110,8 @@ class ReachClient:
                     "endpoint error (HTTP %s): %s"
                     % (exc.code, _error_text(exc.read(), self.base))
                 ) from exc
+            except urllib.error.URLError as exc:
+                raise ReachApiError("endpoint unreachable: %s" % exc) from exc
             with response:
                 for raw in response:
                     line = raw.decode("utf-8", "replace").strip()
@@ -138,8 +145,18 @@ class ReachClient:
                 )
             self.usage = {"prompt": None, "completion": None}
             return
-        with urllib.request.urlopen(request, timeout=self.timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace"))
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            raise ReachApiError(
+                "endpoint error (HTTP %s): %s"
+                % (exc.code, _error_text(exc.read(), self.base))
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise ReachApiError("endpoint unreachable: %s" % exc) from exc
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ReachApiError("malformed endpoint response: %s" % exc) from exc
         self.last_latency_ms = (time.time() - started) * 1000
         usage = data.get("usage") or {}
         self.usage = {

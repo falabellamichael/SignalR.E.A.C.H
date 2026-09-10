@@ -112,14 +112,52 @@
       /<meta[^>]+http-equiv\s*=\s*["']?content-security-policy["']?[^>]*>/gi, '');
   }
 
+  // A sandboxed srcdoc has a different (opaque) origin from the fetched page.
+  // Proxy page fetches through the extension host so local apps whose APIs do
+  // not emit CORS headers (including SimpleRAG) still work inside the frame.
+  const PAGE_FETCH_BRIDGE = `(function () {
+    const nativeFetch = window.fetch.bind(window);
+    let sequence = 0;
+    const pending = new Map();
+    window.addEventListener('message', function (event) {
+      const data = event.data || {};
+      if (!data.__reach || data.type !== 'pageResponse') return;
+      const item = pending.get(data.id);
+      if (!item) return;
+      pending.delete(data.id);
+      const headers = new Headers(data.headers || {});
+      item.resolve(new Response(data.body || '', { status: data.status, statusText: data.statusText || '', headers }));
+    });
+    window.fetch = function (input, init) {
+      const request = input instanceof Request ? input : new Request(input, init);
+      const target = new URL(request.url, document.baseURI);
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') return nativeFetch(input, init);
+      const id = 'req-' + (++sequence);
+      return new Promise(async function (resolve, reject) {
+        pending.set(id, { resolve, reject });
+        const headers = {};
+        request.headers.forEach(function (value, key) { headers[key] = value; });
+        let body = null;
+        try {
+          body = request.method === 'GET' || request.method === 'HEAD' ? null : await request.clone().text();
+          window.parent.postMessage({ __reach: true, type: 'pageRequest', id,
+            url: target.href, method: request.method, headers, body }, '*');
+        } catch (error) {
+          pending.delete(id); reject(error); return;
+        }
+      });
+    };
+  })();`;
+
   function buildDoc(html, url) {
     let out = stripPageCsp(html);
     // First <base> wins — prepend ours so relative URLs resolve against the page URL.
     const base = '<base href="' + String(url).replace(/"/g, '&quot;') + '">';
+    const bridgeTag = '<script>' + PAGE_FETCH_BRIDGE + '</scr' + 'ipt>';
     if (/<head[^>]*>/i.test(out)) {
-      out = out.replace(/<head[^>]*>/i, (m) => m + base);
+      out = out.replace(/<head[^>]*>/i, (m) => m + base + bridgeTag);
     } else {
-      out = '<head>' + base + '</head>' + out;
+      out = '<head>' + base + bridgeTag + '</head>' + out;
     }
     const captureTag = '<script>' + CAPTURE_JS + '</scr' + 'ipt>';
     if (/<\/body>/i.test(out)) out = out.replace(/<\/body>/i, captureTag + '</body>');
@@ -269,6 +307,7 @@
     if (!frame || e.source !== frame.contentWindow) return;
     const d = e.data || {};
     if (!d.__reach) return;
+    if (d.type === 'pageResponse') return;
     if (d.type === 'ctx') {
       const r = frame.getBoundingClientRect();
       showMenu(r.left + Math.max(0, Number(d.x) || 0), r.top + Math.max(0, Number(d.y) || 0), d);
@@ -316,6 +355,10 @@
     // Host messages only — ignore anything posted by the page iframe.
     if (frame && e.source === frame.contentWindow) return;
     const msg = e.data || {};
+    if (msg.type === 'pageResponse' && frame) {
+      frame.contentWindow.postMessage(msg, '*');
+      return;
+    }
     switch (msg.type) {
       case 'page':
         renderPage(msg);

@@ -568,9 +568,20 @@ def settings_public(cfg):
 # ----------------------------------------------------------------------
 
 def config_dir():
-    base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    new_dir = Path(base) / "SignalREACH"
-    old_dir = Path(base) / "SimpleREACH"
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    new_dir = base / "SignalREACH"
+    old_dir = base / "SimpleREACH"
+    legacy_appdata = Path.home() / "AppData" / "Local" / "SignalREACH"
+    if not new_dir.exists() and legacy_appdata.exists():
+        try:
+            shutil.copytree(legacy_appdata, new_dir)
+        except Exception:
+            pass
     if not new_dir.exists() and old_dir.exists():
         try:
             shutil.copytree(old_dir, new_dir)

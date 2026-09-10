@@ -33,10 +33,52 @@ def install_tray(repo_root):
     shutil.copytree(source, destination, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns('*.log', 'dist', '__pycache__'))
     print('  SignalREACH tray installed -> ' + str(destination))
+    _update_packaged_app(source)
     return destination
 
 
+def _update_packaged_app(source):
+    if sys.platform != 'darwin':
+        return
+    asar_bin = source / 'node_modules' / '@electron' / 'asar' / 'bin' / 'asar.js'
+    if not asar_bin.is_file():
+        return
+    app_targets = [
+        Path('/Applications/SignalREACH.app/Contents/Resources/app.asar'),
+        Path.home() / 'Applications/SignalREACH.app/Contents/Resources/app.asar'
+    ]
+    targets = [p for p in app_targets if p.parent.is_dir()]
+    if not targets:
+        return
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        staging = Path(tmpdir)
+        files = ['bridge.js', 'endpoint.js', 'main.js', 'package.json',
+                 'panel.css', 'panel.html', 'panel.js', 'preload.js', 'tray-icon.png']
+        for fname in files:
+            src_file = source / fname
+            if src_file.is_file():
+                shutil.copy2(src_file, staging / fname)
+        for target in targets:
+            try:
+                subprocess.run(['node', str(asar_bin), 'pack', str(staging), str(target)],
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print('  Packaged app updated -> ' + str(target))
+            except Exception:
+                pass
+
+
+def stop_tray():
+    if sys.platform == 'darwin':
+        subprocess.run(['pkill', '-f', 'SignalREACH'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(['pkill', '-f', 'copilot/tray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(['pkill', '-f', 'signalreach-copilot-tray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def start_tray():
+    stop_tray()
+    import time
+    time.sleep(0.5)
     directory = tray_dir()
     binary = electron_binary(directory)
     if not binary.is_file() or not (directory / 'main.js').is_file():

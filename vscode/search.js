@@ -181,9 +181,9 @@ function extractLinks(html, baseUrl) {
   return links;
 }
 
-async function httpGet(url, timeoutMs = 10000) {
+async function httpGet(url, timeoutMs = 0) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
     const resp = await fetch(url, {
       signal: controller.signal,
@@ -194,7 +194,7 @@ async function httpGet(url, timeoutMs = 10000) {
   } catch (e) {
     return null;
   } finally {
-    clearTimeout(timer);
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -231,13 +231,13 @@ async function webSearchDdg(query, maxResults = 5) {
 
 /* ---- page text (searchAndFetch uses this) ----------------------------- */
 
-async function pageTextWithPlaywright(url, timeoutMs = 15000) {
+async function pageTextWithPlaywright(url, timeoutMs = 0) {
   if (!playwright) return null;
   try {
     return await withBrowseLock(async () => {
       const { context, page } = await newIsolatedPage();
       try {
-        const response = await page.goto(url, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
+        const response = await page.goto(url, { timeout: timeoutMs || 0, waitUntil: 'domcontentloaded' });
         if (response && response.status() >= 400) return 'HTTP ' + response.status();
         await settleAndScroll(page);
         return await extractMainText(page);
@@ -253,7 +253,7 @@ async function pageTextWithPlaywright(url, timeoutMs = 15000) {
   }
 }
 
-async function pageText(url, maxChars = 8000, timeoutMs = 15000) {
+async function pageText(url, maxChars = 8000, timeoutMs = 0) {
   const viaBrowser = await pageTextWithPlaywright(url, timeoutMs);
   if (viaBrowser) return viaBrowser.slice(0, maxChars);
   const html = await httpGet(url, timeoutMs);
@@ -277,13 +277,13 @@ async function searchAndFetch(query, maxResults = 5, pagesToRead = 2) {
 
 /* Render + screenshot one page with the shared browser. Returns
  * { ok, title, url, status, text, image, partial? } or { ok: false, error }. */
-async function browseOnce(url, timeoutMs) {
+async function browseOnce(url, timeoutMs = 0) {
   const { context, page } = await newIsolatedPage();
   try {
     let response = null;
     let navError = null;
     try {
-      response = await page.goto(url, { timeout: timeoutMs, waitUntil: 'domcontentloaded' });
+      response = await page.goto(url, { timeout: timeoutMs || 0, waitUntil: 'domcontentloaded' });
     } catch (e) {
       navError = e;
     }
@@ -310,7 +310,7 @@ async function browseOnce(url, timeoutMs) {
   }
 }
 
-async function browsePage(url, timeoutMs = 15000) {
+async function browsePage(url, timeoutMs = 0) {
   // Render with Playwright; fall back to plain HTTP text extraction when
   // Playwright or its Chromium binary isn't available.
   if (!playwright) return httpBrowse(url, timeoutMs);

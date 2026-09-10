@@ -191,8 +191,9 @@ class AgentEditTests(unittest.TestCase):
                              "goodbye world")
         self.assertTrue(ok, err)
         with open(self.existing, encoding="utf-8") as handle:
-            self.assertIn("goodbye world", handle.read())
-            self.assertNotIn("hello world", handle.read())
+            content = handle.read()
+        self.assertIn("goodbye world", content)
+        self.assertNotIn("hello world", content)
 
     def test_apply_edit_reports_missing_search_text(self):
         from reach_cli.chat import apply_edit

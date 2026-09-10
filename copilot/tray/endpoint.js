@@ -17,7 +17,7 @@ function endpointUrl(value) {
     return url;
 }
 
-function request(url, { body, timeout = 15000, redirects = 3 } = {}) {
+function request(url, { body, timeout = 0, redirects = 3 } = {}) {
     url = endpointUrl(url);
     return new Promise((resolve, reject) => {
         const payload = body === undefined ? null : JSON.stringify(body);
@@ -50,8 +50,8 @@ function request(url, { body, timeout = 15000, redirects = 3 } = {}) {
                 } else resolve(text);
             });
         });
-        const timer = setTimeout(() => req.destroy(new Error('Endpoint request timed out.')), timeout);
-        req.on('close', () => clearTimeout(timer));
+        const timer = timeout > 0 ? setTimeout(() => req.destroy(new Error('Endpoint request timed out.')), timeout) : null;
+        req.on('close', () => { if (timer) clearTimeout(timer); });
         req.on('error', reject);
         req.end(payload);
     });
@@ -67,7 +67,7 @@ function createEndpointClient(settingsPath) {
     let inFlight = null;
 
     function validate(value) {
-        if (!['endpoint', 'copilot'].includes(value.provider)) throw new Error('Choose Free endpoints or Microsoft 365 Copilot.');
+        if (!['endpoint', 'copilot', 'chatgpt'].includes(value.provider)) throw new Error('Choose Free endpoints, Microsoft 365 Copilot, or ChatGPT.');
         const endpoint = endpointUrl(value.endpoint || DEFAULT_POINTER).toString();
         return { provider: value.provider, endpoint, model: String(value.model || '').trim().slice(0, 200) };
     }
@@ -110,7 +110,7 @@ function createEndpointClient(settingsPath) {
         const model = config.model || models[0];
         if (!models.includes(model)) throw new Error(`Model ${model} is no longer available. Choose a model in Controls.`);
         const data = JSON.parse(await request(base + '/chat/completions', {
-            body: { model, messages, stream: false }, timeout: 180000
+            body: { model, messages, stream: false }, timeout: 0
         }));
         const content = data.choices?.[0]?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new Error('The endpoint returned an empty reply.');

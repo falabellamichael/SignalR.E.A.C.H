@@ -12,6 +12,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import reachd.core as core  # core.STATE is read at call time (cycle-safe)
 from reachd.chat import chat_execute, chat_finalize
@@ -487,10 +488,20 @@ class RelayHandler(BaseHTTPRequestHandler):
         holds a single-instance lock, so a redundant spawn simply exits."""
         if self._tray_running():
             return self._json(200, {"tray": "running", "started": False})
-        local = Path(os.environ.get("LOCALAPPDATA")
-                     or str(Path.home() / "AppData" / "Local"))
-        tray_dir = local / "SignalREACH" / "copilot" / "tray"
-        electron = tray_dir / "node_modules" / "electron" / "dist" / "electron.exe"
+        if sys.platform == "win32":
+            base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        elif sys.platform == "darwin":
+            base = Path.home() / "Library" / "Application Support"
+        else:
+            base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+        tray_dir = base / "SignalREACH" / "copilot" / "tray"
+        dist = tray_dir / "node_modules" / "electron" / "dist"
+        if sys.platform == "darwin":
+            electron = dist / "Electron.app" / "Contents" / "MacOS" / "Electron"
+        elif sys.platform == "win32":
+            electron = dist / "electron.exe"
+        else:
+            electron = dist / "electron"
         if not (electron.is_file() and (tray_dir / "main.js").is_file()):
             return self._json(404, {"tray": "missing", "started": False,
                                     "error": "tray not installed"})

@@ -66,6 +66,15 @@ python tools/reach.py install
 4. **VS Code extension** — side-loads the REACH chat extension into VS Code (`~/.vscode/extensions/`, no marketplace/vsce needed). Reload the window and click the **REACH icon** in the Activity Bar for a chat panel with model picker + streaming. Skip it with `--no-vscode`; manage it later with `python tools/reach.py vscode install|uninstall|status`.
 5. **Control panel** — open SimpleRAG → Advanced → **REACH** for the full menu panel.
 
+## Connect the SimpleRAG panel to the hosted endpoint
+
+On a client machine without OmniRoute, run `node tools/endpoint-client.cjs` (Node.js 22+).
+This loopback-only bridge serves the panel at `127.0.0.1:20777`, follows the published
+endpoint pointer, and forwards status, models, and streaming chat to SignalREACH.
+It does not start a public tunnel or publish a new endpoint. Hosting settings and
+administrative actions remain on the host. Stop any local hosting relay before
+starting this client bridge, since both use port 20777.
+
 ## VS Code
 
 The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
@@ -73,6 +82,41 @@ The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
 - **Activity Bar icon** opens the REACH chat — model dropdown, streaming replies, conversation history.
 - **Zero config by default** — follows the published endpoint pointer and loads its models. Existing `simplereach.endpoint` settings are preserved; additional providers can be added in the REACH settings panel.
 - Installed automatically by `install` / `install.ps1`; standalone: `python tools/reach.py vscode install` (copy-based side-load, no vsce/npm build step).
+
+Long agent conversations now compress automatically for every provider before
+reaching the relay request cap. Older turns and tool output become a reusable
+memory of the goal, constraints, decisions, and remaining work; recent source
+stays verbatim when it fits. Oversized single reads are summarized with explicitly
+labelled excerpts. The visible chat stays intact, and the memory carries across
+tool rounds, follow-up turns, and reloads. Earlier source must be reread before
+editing it. Compression progress appears in the chat; a lower advertised character
+limit triggers one smaller-context retry.
+
+The agent activity timeline keeps each action with its output underneath, including
+workspace reads, searches, compression, and public assistant updates between tool
+rounds. Failed and stopped actions remain visible. Large results expand during the
+session; conversation history saves an explicitly labelled preview of up to 12,000
+characters per result. Activity is stored separately from model context.
+Agent runs allow up to 40 rounds and retry clear unfinished progress updates twice
+when the model announces work without requesting an action. Repeated plans and the
+round limit produce an explicit pause; send “continue” to resume with saved context.
+Stop prevents another tool round or queued follow-up from starting automatically.
+
+With **Workspace** and **Agent** enabled, REACH selects and reads relevant source
+files, including closed files, before Think and the final answer. Complete files
+are included within the workspace context budget; omitted files are listed so
+further reads can retrieve them. The Workspace badge counts files actually read.
+Copilot requests also preserve this context through older hosted shims that drop
+system messages. Long Copilot requests are read in bounded parts to avoid the
+hosted browser input limit; the final answer uses condensed reading notes. The
+sidebar shows reading progress, and Stop cancels remaining parts.
+
+With **Agent** enabled, the `read` tool returns complete workspace text files,
+including unsaved editor changes. Open-file context is labelled when it is only
+a preview. Reads over 1 MiB return an explicit error instead of truncated text;
+the model can request inclusive `startLine` / `endLine` ranges. File results stay
+available across tool rounds within the current response. Provider context limits
+still apply.
 
 ## Desktop tray: macOS, Windows, and Linux
 
