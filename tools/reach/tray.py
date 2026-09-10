@@ -69,6 +69,14 @@ def _update_packaged_app(source):
 
 
 def stop_tray():
+    if sys.platform == 'win32':
+        ps = ("Get-CimInstance Win32_Process | Where-Object { "
+              "($_.Name -in 'electron.exe','node.exe') -and "
+              "($_.CommandLine -like '*copilot/tray*' -or $_.CommandLine -like '*signalreach-copilot*') } "
+              "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+        subprocess.run(['powershell', '-NoProfile', '-Command', ps],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
     if sys.platform == 'darwin':
         subprocess.run(['pkill', '-f', 'SignalREACH'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     subprocess.run(['pkill', '-f', 'copilot/tray'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
