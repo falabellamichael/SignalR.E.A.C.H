@@ -65,18 +65,22 @@ const CHATGPT_APP_HOSTS = [
 
 // CodeGPT (interactive economy models) — app + auth hosts
 const CODEGPT_URL = 'https://app.codegpt.co/';
-// Economy agent page (gpt-4o-mini, the user's "x" agent). Economy models are
-// unlimited for Professional members in the interactive web session.
-const CODEGPT_CHAT_URL = 'https://app.codegpt.co/en/agents/f7c7024e-76b1-4b56-a259-d3c3ef237c70';
+// The signed-in chat lives in the extension's LOCAL sidecar app (Next server
+// on 54112). Its picker carries the full catalog including the unlimited
+// economy rows (DeepSeek V4.1 Flash, GLM 5.3 Flash, Gemini 3.8 Flash, GPT 5.6
+// Luna, ...), which the hosted web app does not offer. Drive the local page.
+const CODEGPT_CHAT_URL = 'http://localhost:54112/54112/';
 const CODEGPT_PARTITION = 'persist:codegpt';
-// Pinned DOM contract (discovered live 2026-09-10): the agent chat composer.
-const CODEGPT_COMPOSER_SELECTOR = 'textarea#inputMessage, textarea[placeholder="Enter your message"]';
+// Pinned DOM contract (local app, discovered live 2026-09-10): the chat
+// composer; kept alongside the hosted-app shapes so either page can load.
+const CODEGPT_COMPOSER_SELECTOR = 'textarea#inputMessage, textarea[placeholder="Enter your message"], textarea.mentions';
 const CODEGPT_AUTH_HOSTS = [
     'accounts.google.com', 'accounts.youtube.com', 'myaccount.google.com',
     'github.com', 'appleid.apple.com', 'login.microsoftonline.com'
 ];
 const CODEGPT_APP_HOSTS = [
-    'app.codegpt.co', 'www.codegpt.co', 'codegpt.co'
+    'app.codegpt.co', 'www.codegpt.co', 'codegpt.co',
+    'localhost', '127.0.0.1' // the extension's local sidecar chat page
 ];
 const LOG_FILE = process.platform === 'darwin'
     ? path.join(app.getPath('appData'), 'SignalREACH', 'copilot-tray.log')
@@ -450,9 +454,10 @@ async function signOutChatgpt() {
 
 /* ======================== CodeGPT invisible browser ======================== */
 /* Interactive CodeGPT session (economy models — unlimited for Professional
- * members, but ONLY for interactive web-session use, which is exactly what
- * this window provides). DOM contract is discovered at runtime; debug it via
- * GET http://127.0.0.1:21302/debug/dom once the user has signed in. */
+ * members). The window drives the extension's LOCAL sidecar chat page
+ * (http://localhost:54112/<port>/), which is the only place that offers the
+ * economy model rows; the hosted web app does not list them. DOM contract is
+ * pinned at runtime; debug it via GET http://127.0.0.1:21302/debug/dom. */
 
 function isCodegptAuthHost(url) {
     const h = hostOf(url);
@@ -683,27 +688,50 @@ const CODEGPT_SNAPSHOT_JS = `(() => {
         const msgSel = '[class*="message" i], [class*="bubble" i], [class*="answer" i], ' +
             '[class*="response" i], [class*="markdown" i], [class*="prose" i], [class*="chat-result" i], ' +
             '[class*="conversation" i], [class*="whitespace-pre-wrap"], [data-testid*="message" i], [data-testid*="chat" i]';
-        const msgs = [...document.querySelectorAll(msgSel)].filter(vis)
-            .filter(m => !m.querySelector('textarea, [contenteditable="true"]') && !m.closest('textarea, [contenteditable="true"]'));
+        // The LOCAL app renders one div.message-block per message with an
+        // explicit role class (div.message.user / div.message.assistant); the
+        // hosted app uses looser containers. Prefer role-aware blocks.
+        const roleBlocks = [...document.querySelectorAll('[class*="message-block" i]')].filter(vis);
+        const roleAware = roleBlocks.length > 0;
+        const roleOf = (m) => {
+            const nodes = [m].concat([...m.querySelectorAll('*')].slice(0, 60));
+            for (const n of nodes) {
+                const cls = ' ' + String(n.className || '') + ' ';
+                if (/\\sassistant\\s/.test(cls)) return 'assistant';
+                if (/\\suser\\s/.test(cls)) return 'user';
+            }
+            return '';
+        };
+        let msgs;
+        if (roleAware) {
+            msgs = roleBlocks;
+        } else {
+            msgs = [...document.querySelectorAll(msgSel)].filter(vis)
+                .filter(m => !m.querySelector('textarea, [contenteditable="true"]') && !m.closest('textarea, [contenteditable="true"]'));
+        }
+        const assistantMsgs = roleAware ? msgs.filter((m) => roleOf(m) === 'assistant') : msgs;
         const last = msgs.length ? msgs[msgs.length - 1] : null;
-        // The freshest assistant container can render empty while the model
-        // thinks; user bubbles are marked with a "user:" prefix in their text.
-        // Take the last NON-empty candidate that is not a user message, so a
-        // newly-rendered user bubble never masquerades as the reply.
-        const nonEmpty = [...msgs].reverse().find(m => {
-            const t = (m.innerText || '').trim();
-            return t && !/^user:\\s/i.test(t);
-        });
+        // Prefer the LAST assistant container even while it is still empty —
+        // that emptiness is "thinking", not "no reply yet". On pages without
+        // role classes keep the old heuristic (user bubbles carry "user:").
+        const nonEmpty = roleAware
+            ? (assistantMsgs[assistantMsgs.length - 1] || null)
+            : [...msgs].reverse().find(m => {
+                const t = (m.innerText || '').trim();
+                return t && !/^user:\\s/i.test(t);
+            });
         let text = (nonEmpty ? nonEmpty.innerText : '').trim().slice(0, 12000);
         text = text.replace(/^assistant:\\s*/i, '');
         const stopBtn = [...document.querySelectorAll('button')].filter(vis)
             .some(b => /stop|halt|square/i.test((b.getAttribute('aria-label') || b.title || b.innerText || '')));
         const signIn = !composerEl && /Sign in|Log in|Continue with Google/i.test((document.body.innerText || '').slice(0, 3000));
         return JSON.stringify({
-            snapVer: 8,
+            snapVer: 9,
             text: text,
             textHead: text.slice(0, 40),
             count: msgs.length,
+            assistantCount: assistantMsgs.length,
+            roleAware: roleAware,
             composer: !!composerEl,
             apiReply: window.__reachCg || null,
             composerInfo: composerEl ? {
@@ -833,7 +861,19 @@ async function checkCodegptSignedIn() {
         if (snap.composer) return { ok: true };
         if (isCodegptAuthHost(snap.url)) return { ok: false, why: 'signing in (auth in progress)' };
         if (snap.signIn) return { ok: false, why: 'not signed in' };
-        if (isCodegptAppHost(snap.url)) return { ok: false, why: 'chat loading' };
+        if (isCodegptAppHost(snap.url)) {
+            // Right page, composer not mounted yet — give it a bounded moment
+            // instead of failing the send on a slow first paint.
+            for (let wait = 0; wait < 20; wait += 1) {
+                await sleep(800);
+                try {
+                    const s2 = await codegptSnapshot();
+                    if (s2.composer) return { ok: true };
+                    if (s2.signIn) return { ok: false, why: 'not signed in' };
+                } catch (_) { /* page mid-navigation */ }
+            }
+            return { ok: false, why: 'chat page never finished loading' };
+        }
         codegptWin.webContents.loadURL(CODEGPT_CHAT_URL);
         await sleep(5000);
         const snap2 = await codegptSnapshot();
@@ -882,8 +922,10 @@ function sendCodegptQueued(text, options = {}) {
 
 /* Switch to one economy model inside the signed-in CodeGPT app.
  *
- * The agent page shows a model menu whose trigger is labelled "AI Model
- * <current model>" (pinned from the live page: `AI Model Gpt 4o Mini Openai –`).
+ * Local sidecar app: the composer's model button carries
+ * data-model-dropdown-trigger="true" and the open menu lists rows like
+ * "GPT 5.6 Luna" (some behind "Show all N models"). The hosted web app uses
+ * an "AI Model <current>" trigger instead; both shapes are handled.
  * We open that menu, click the entry for the requested model, then read the
  * trigger back to confirm the switch actually happened — a request never
  * silently passes as a model it is not. Every step is defensive: a UI change
@@ -901,14 +943,40 @@ async function codegptSelectModel(engine) {
         const label = (e) => ((e.innerText || e.getAttribute('aria-label') || e.title || '') + ' ')
             .replace(/\\s+/g, ' ').trim().toLowerCase();
         const hit = (t) => !!t && want.some((w) => t.includes(w));
-        const trigger = () => [...document.querySelectorAll('button, [role="button"], [aria-haspopup]')]
-            .filter(vis).find((e) => label(e).startsWith('ai model'));
-        // Menu rows are the entries that name a model. The trigger itself
-        // ("ai model <current> – pro model") is excluded, as is page chrome.
-        const modelish = /(gpt|claude|gemini|deepseek|glm|ox-|flash|sonnet|opus|mistral|grok|llama)/i;
-        const rows = () => [...document.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
-            .filter(vis).map((e) => ({ el: e, text: label(e) }))
-            .filter((row) => row.text && !row.text.startsWith('ai model') && modelish.test(row.text));`;
+        // Trigger: the local app pins a data attribute on the composer's model
+        // button; the hosted app labels its trigger "AI Model <current>".
+        const trigger = () => {
+            const local = [...document.querySelectorAll('button[data-model-dropdown-trigger="true"]')].filter(vis)[0];
+            if (local) return local;
+            return [...document.querySelectorAll('button, [role="button"], [aria-haspopup]')]
+                .filter(vis).find((e) => label(e).startsWith('ai model'));
+        };
+        // Rows live inside the open menu when there is one; otherwise scan
+        // the whole page (the hosted app keeps its rows loose).
+        const menuEl = () => {
+            const menus = [...document.querySelectorAll('[role="menu"], [role="listbox"], [data-radix-popper-content-wrapper]')]
+                .filter(vis);
+            return menus.length ? menus[menus.length - 1] : null;
+        };
+        // Rows are the entries that name a model; page chrome does not count.
+        const modelish = /(gpt|claude|gemini|deepseek|glm|ox-|flash|sonnet|opus|mistral|grok|llama|minimax)/i;
+        const rows = () => {
+            const scope = menuEl() || document;
+            return [...scope.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
+                .filter(vis).map((e) => ({ el: e, text: label(e) }))
+                .filter((row) => row.text && !row.text.startsWith('ai model') && row.text.length < 200
+                    && modelish.test(row.text)
+                    && !/show all|manage models|approval|full access/.test(row.text));
+        };
+        // Some models sit behind the "Show all N models" expander.
+        const expandAll = () => {
+            const scope = menuEl() || document;
+            const more = [...scope.querySelectorAll('button, [role="menuitem"], li')].filter(vis)
+                .find((e) => /show all \\d+ models/i.test(label(e)));
+            if (!more) return '';
+            more.click();
+            return label(more);
+        };`;
     const exec = (js) => codegptWin.webContents.executeJavaScript(js)
         .catch((error) => ({ error: error.message }));
     try {
@@ -951,13 +1019,24 @@ async function codegptSelectModel(engine) {
                 continue;
             }
 
-            const picked = await exec(`(() => {
+            const pick = `(() => {
                 ${helpers}
                 const target = rows().find((row) => hit(row.text));
                 if (!target) return null;
                 target.el.click();
                 return target.text;
-            })()`);
+            })()`;
+            let picked = await exec(pick);
+            if (!picked) {
+                // Maybe the row hides behind "Show all N models" — expand, re-scan.
+                const expanded = await exec(`(() => { ${helpers} return expandAll(); })()`);
+                if (expanded) {
+                    await sleep(800);
+                    const found = await exec(`(() => { ${helpers} return rows().map((row) => row.text); })()`);
+                    if (Array.isArray(found) && found.length > entries.length) entries = found;
+                    picked = await exec(pick);
+                }
+            }
             if (!picked) {
                 // Everything the menu really offers, so a mislabelled model is
                 // diagnosable instead of looking like one that does not exist.
@@ -970,7 +1049,10 @@ async function codegptSelectModel(engine) {
 
             await sleep(600);
             const confirmed = await exec(`(() => { ${helpers} const el = trigger(); return el ? label(el) : ''; })()`);
-            const ok = typeof confirmed === 'string' && hit(confirmed);
+            // `hit` exists only inside the injected page helpers — confirm in
+            // the main process against the wanted labels instead.
+            const ok = typeof confirmed === 'string'
+                && wanted.some((value) => confirmed.includes(value));
             log('codegpt model switch ' + (ok ? 'confirmed: ' : 'unconfirmed: ')
                 + String(picked).slice(0, 60) + ' -> ' + String(confirmed).slice(0, 80));
             if (ok) return true;
@@ -1138,7 +1220,12 @@ async function codegptSendRequest(text, signal, engine, label) {
             lastReplyAt = Date.now();
             return apiText;
         }
-        const isNew = snap.count > before.count ||
+        // Role-aware pages: only a new ASSISTANT container (or changed reply
+        // text) counts as progress — a freshly added user bubble must never
+        // read as the reply.
+        const isNew = (snap.roleAware
+            ? snap.assistantCount > before.assistantCount
+            : snap.count > before.count) ||
             (snap.text && snap.text !== before.text);
         if (!isNew) continue;
         if (!snap.text) continue;   // new element, still empty (assistant thinking)
