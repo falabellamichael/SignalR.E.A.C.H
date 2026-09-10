@@ -81,6 +81,11 @@ DEFAULT_SETTINGS = {
             "upstream": "codegpt/codegpt-gpt-4o-mini",
             "description": "Cheaper, faster gpt-4o-mini",
         },
+        "chatgpt-chat": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "copilot/chatgpt-chat",
+            "description": "ChatGPT via the local Copilot bridge (free, shared)",
+        },
     },
     # ---- rate limits ----
     "rate_limits": {
@@ -401,7 +406,7 @@ def restore_masked_client_keys(existing_access, access_patch):
 def validate_settings(cfg):
     """Validate a FULL settings dict; raises SettingsError on the first issue."""
     allowed = set(DEFAULT_SETTINGS)
-    unknown = sorted(set(cfg) - allowed)
+    unknown = sorted(set(cfg) - allowed - {k for k in cfg if str(k).startswith("_")})
     _expect(not unknown, "unknown settings key(s): " + ", ".join(unknown))
     _require_local_url(cfg.get("omniroute_url", ""), "omniroute_url")
     _str(cfg.get("omniroute_key", ""), "omniroute_key", 0, 500)
