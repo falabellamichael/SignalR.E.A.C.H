@@ -13,8 +13,21 @@ from .runtime import (
     runtime_port,
 )
 def find_gh():
-    for cand in (shutil.which("gh"),
-                 str(Path(os.environ.get("PROGRAMFILES", "")) / "GitHub CLI" / "gh.exe")):
+    """Locate the GitHub CLI, including common per-user installs.
+
+    `gh` is often installed without a system package manager (a plain binary
+    in ~/.local/bin), which is not on the PATH a GUI-launched relay inherits.
+    Checking those locations means publishing works without the operator
+    having to export PATH by hand.
+    """
+    candidates = [
+        shutil.which("gh"),
+        str(Path.home() / ".local" / "bin" / "gh"),
+        "/opt/homebrew/bin/gh",
+        "/usr/local/bin/gh",
+        str(Path(os.environ.get("PROGRAMFILES", "")) / "GitHub CLI" / "gh.exe"),
+    ]
+    for cand in candidates:
         if cand and Path(cand).is_file():
             return str(Path(cand))
     return None

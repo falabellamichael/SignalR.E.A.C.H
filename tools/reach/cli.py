@@ -375,31 +375,62 @@ def cmd_host(args):
         # open here, which is exactly the case this command exists to fix.
         raw = _json.loads(path.read_text(encoding="utf-8"))
         old_salt = (raw.get("system") or {}).get("host_salt") or ""
+        opens_here = False
         if old_salt:
-            try:
-                hostid.open_sealed(raw.get("omniroute_key") or "",
-                                   machine + "\x00" + old_salt)
-            except hostid.HostIdentityError:
-                print("  note: existing secrets do not open on this machine.")
-                print("  They will be cleared; re-enter the OmniRoute key in "
-                      "Settings if needed.")
-        # Mint a fresh salt, wipe unopenable secrets, and let save_config
-        # re-seal whatever remains against this host.
-        raw.setdefault("system", {})["host_salt"] = hostid.new_salt()
+            # The test value decides the whole strategy: if anything opens here,
+            # the secrets still belong to this machine and must be PRESERVED;
+            # a rekey then only refreshes the recovery file. Only when nothing
+            # opens do we need a fresh salt (the install moved hosts).
+            probe = [raw.get("omniroute_key") or "",
+                     (raw.get("system") or {}).get("admin_token") or ""]
+            for entry in ((raw.get("access") or {}).get("keys") or []):
+                if isinstance(entry, dict):
+                    probe.append(entry.get("key") or "")
+            sealed_probe = [v for v in probe if hostid.is_sealed(v)]
+            if sealed_probe:
+                try:
+                    for value in sealed_probe:
+                        hostid.open_sealed(value, machine + "\x00" + old_salt)
+                    opens_here = True
+                except hostid.HostIdentityError:
+                    opens_here = False
+            else:
+                opens_here = True   # nothing sealed yet (legacy config)
+
+        if opens_here and old_salt:
+            salt = old_salt
+            print("  existing secrets open on this machine — preserving them.")
+        else:
+            salt = hostid.new_salt()
+            # Only wipe what genuinely cannot be read here. Dropping a key that
+            # still opens would silently break a working client.
+            for field in ("omniroute_key",):
+                if hostid.is_sealed(raw.get(field)):
+                    raw[field] = ""
+            for entry in ((raw.get("access") or {}).get("keys") or []):
+                if isinstance(entry, dict) and hostid.is_sealed(entry.get("key")):
+                    entry["key"] = ""
+            if raw.get("system", {}).get("admin_token") is not None \
+                    or hostid.is_sealed(raw.get("system", {}).get("admin_token")):
+                if hostid.is_sealed(raw["system"].get("admin_token")):
+                    raw["system"]["admin_token"] = ""
+            print("  existing secrets do not open here — they will be cleared.")
+            print("  Re-issue affected client keys in Settings after rekeying.")
+
+        raw.setdefault("system", {})["host_salt"] = salt
         raw["system"]["host_bind"] = True
-        for field in ("omniroute_key",):
-            if hostid.is_sealed(raw.get(field)):
-                raw[field] = ""
-        key_list = ((raw.get("access") or {}).get("keys") or [])
-        for entry in key_list:
-            if isinstance(entry, dict) and hostid.is_sealed(entry.get("key")):
-                entry["key"] = ""
+        hint = hostid.machine_hint()
+        if hint:
+            raw["system"]["host_machine_hint"] = hint
         cleaner = {k: v for k, v in raw.items() if not k.startswith("_")}
-        save_config(cleaner, CONFIG_PATH)
-        material = machine + "\x00" + cleaner["system"]["host_salt"]
-        hostid.write_recovery(CONFIG_DIR / "host-recovery.json", material,
-                              cleaner["system"]["host_salt"])
-        print("host binding rekeyed to this machine")
+        # Go through the reachd writer, NOT the installer's plain one: this is
+        # the call that re-seals the secrets against this machine.
+        from reachd import settings as _settings
+        _settings.save_config(cleaner, CONFIG_PATH)
+        material = machine + "\x00" + salt
+        hostid.write_recovery(CONFIG_DIR / "host-recovery.json", material, salt)
+        print("host binding %s for this machine" %
+              ("verified" if opens_here else "rekeyed"))
         print("  recovery file: " + str(CONFIG_DIR / "host-recovery.json"))
         print("  keep it safe — it is the only way to move this host later.")
         return

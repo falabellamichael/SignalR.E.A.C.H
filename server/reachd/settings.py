@@ -546,11 +546,18 @@ def validate_settings(cfg):
             "access.keys must be a list of at most 100 keys")
     for k in keys_list:
         _expect(isinstance(k, dict), "access.keys entries must be objects")
-        _expect(isinstance(k.get("key"), str) and len(k["key"]) >= 6,
-                "access.keys key must be at least 6 chars")
+        key_value = k.get("key")
+        # An empty key means "this entry's secret could not be recovered" (a
+        # host mismatch blanked it). It is kept as a visible placeholder so the
+        # operator can see and re-issue it, rather than silently vanishing.
+        _expect(key_value == "" or (isinstance(key_value, str)
+                                    and len(key_value) >= 6),
+                "access.keys key must be empty or at least 6 chars")
         _expect(isinstance(k.get("name", "Key"), str), "access.keys name must be string")
     if access.get("key_required"):
-        has_key = len(access.get("access_key", "")) >= 6 or any(k.get("enabled", True) for k in keys_list)
+        has_key = len(access.get("access_key", "") or "") >= 6 \
+            or any(k.get("enabled", True) and k.get("key")
+                   for k in keys_list)
         _expect(has_key,
                 "access_key or at least one active client key required when key_required is on")
     for key in ("ip_allowlist", "ip_blocklist"):
@@ -906,13 +913,20 @@ def load_config(path):
 
 
 def save_config(cfg, cfg_path):
-    validate_settings(cfg)
     cfg_dir = cfg_path.parent
     cfg_dir.mkdir(parents=True, exist_ok=True)
+    # Validate the UNSEALED view. A caller may hand us a config straight off
+    # disk (rekey does exactly this), where secrets are dict envelopes that
+    # the string validators would reject even though the values are fine.
+    material = _host_secret_material(cfg, cfg_path)
+    if material:
+        check, _err = _unseal_config(json.loads(json.dumps(cfg)), material, cfg_path)
+    else:
+        check = cfg
+    validate_settings(check)
     tmp = cfg_path.with_suffix(".tmp")
     # Seal host secrets on the way out. A copied config.json is then useless
     # on any other machine: the ciphertext only opens on this host.
-    material = _host_secret_material(cfg, cfg_path)
     persist = _seal_config(cfg, material) if material else cfg
     tmp.write_text(json.dumps(persist, indent=2), encoding="utf-8")
     os.replace(str(tmp), str(cfg_path))
