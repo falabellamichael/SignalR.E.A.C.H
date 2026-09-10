@@ -61,6 +61,20 @@ const CHATGPT_AUTH_HOSTS = [
 const CHATGPT_APP_HOSTS = [
     'chatgpt.com', 'chat.openai.com'
 ];
+
+// CodeGPT (interactive economy models) — app + auth hosts
+const CODEGPT_URL = 'https://app.codegpt.co/';
+// Economy agent page (gpt-4o-mini, the user's "x" agent). Economy models are
+// unlimited for Professional members in the interactive web session.
+const CODEGPT_CHAT_URL = 'https://app.codegpt.co/en/agents/f7c7024e-76b1-4b56-a259-d3c3ef237c70';
+const CODEGPT_PARTITION = 'persist:codegpt';
+const CODEGPT_AUTH_HOSTS = [
+    'accounts.google.com', 'accounts.youtube.com', 'myaccount.google.com',
+    'github.com', 'appleid.apple.com', 'login.microsoftonline.com'
+];
+const CODEGPT_APP_HOSTS = [
+    'app.codegpt.co', 'www.codegpt.co', 'codegpt.co'
+];
 const LOG_FILE = process.platform === 'darwin'
     ? path.join(app.getPath('appData'), 'SignalREACH', 'copilot-tray.log')
     : path.join(process.env.LOCALAPPDATA || app.getPath('userData'), 'SignalREACH', 'copilot-tray.log');
@@ -83,6 +97,7 @@ let panel = null;
 let panelReady = null;
 let browserWin = null;
 let chatgptWin = null;
+let codegptWin = null;
 let bridgeServer = null;
 let lastReplyAt = 0;
 let lastError = '';
@@ -424,6 +439,379 @@ async function signOutChatgpt() {
         log('chatgpt clearStorageData failed: ' + e.message);
     }
     ensureChatgpt();
+}
+
+/* ======================== CodeGPT invisible browser ======================== */
+/* Interactive CodeGPT session (economy models — unlimited for Professional
+ * members, but ONLY for interactive web-session use, which is exactly what
+ * this window provides). DOM contract is discovered at runtime; debug it via
+ * GET http://127.0.0.1:21302/debug/dom once the user has signed in. */
+
+function isCodegptAuthHost(url) {
+    const h = hostOf(url);
+    return CODEGPT_AUTH_HOSTS.some((a) => h === a || h.endsWith('.' + a));
+}
+function isCodegptAppHost(url) {
+    const h = hostOf(url);
+    return CODEGPT_APP_HOSTS.some((a) => h === a || h.endsWith('.' + a));
+}
+
+function ensureCodegpt() {
+    if (codegptWin && !codegptWin.isDestroyed()) return codegptWin;
+    const ses = session.fromPartition(CODEGPT_PARTITION);
+    configureSession(ses);
+
+    codegptWin = new BrowserWindow({
+        width: 1180, height: 860, show: false,
+        title: 'CodeGPT (SignalR.E.A.C.H)',
+        autoHideMenuBar: true,
+        webPreferences: {
+            partition: CODEGPT_PARTITION,
+            contextIsolation: true,
+            nodeIntegration: false,
+            backgroundThrottling: false
+        }
+    });
+
+    codegptWin.webContents.setWindowOpenHandler(({ url }) => {
+        if (isCodegptAuthHost(url) || isCodegptAppHost(url)) {
+            codegptWin.loadURL(url);
+            return { action: 'deny' };
+        }
+        shell.openExternal(url);
+        return { action: 'deny' };
+    });
+
+    codegptWin.webContents.on('did-navigate', (_e, url) => {
+        log('codegpt navigated: ' + url.slice(0, 100));
+        if (isCodegptAppHost(url)) maybeAutoHideCodegpt();
+    });
+    codegptWin.on('close', (event) => {
+        if (!isQuitting) { event.preventDefault(); hideCodegpt(); }
+    });
+    codegptWin.on('closed', () => { codegptWin = null; });
+    codegptWin.loadURL(CODEGPT_CHAT_URL);
+    log('codegpt invisible browser created (partition ' + CODEGPT_PARTITION + ')');
+    return codegptWin;
+}
+
+let codegptAutoHideTimer = null;
+function maybeAutoHideCodegpt() {
+    if (!codegptWin || codegptWin.isDestroyed() || !codegptWin.isVisible()) return;
+    if (codegptAutoHideTimer) clearTimeout(codegptAutoHideTimer);
+    codegptAutoHideTimer = setTimeout(async () => {
+        try {
+            const snap = await codegptSnapshot();
+            if (snap.composer && !snap.signIn) {
+                log('codegpt sign-in complete — hiding window');
+                hideCodegpt();
+            }
+        } catch (_) { /* not ready yet */ }
+    }, 6000);
+}
+
+function showCodegpt() {
+    const win = ensureCodegpt();
+    if (process.platform === 'darwin' && app.dock) {
+        try { app.dock.show(); } catch (_) {}
+    }
+    win.show();
+    win.focus();
+    injectCodegptControls();
+    refreshNativeMenus();
+}
+
+const CODEGPT_CONTROLS_JS = `(() => {
+    if (document.getElementById('__reachCtl')) return 'already';
+    const bar = document.createElement('div');
+    bar.id = '__reachCtl';
+    bar.style.cssText = 'position:fixed;top:10px;right:10px;z-index:2147483647;' +
+        'display:flex;gap:6px;background:rgba(27,27,31,.92);border:1px solid #3a3a44;' +
+        'border-radius:8px;padding:5px 6px;font-family:Segoe UI,system-ui,sans-serif;' +
+        'box-shadow:0 4px 14px rgba(0,0,0,.4);';
+    const mk = (label, title, fn) => {
+        const b = document.createElement('button');
+        b.textContent = label; b.title = title;
+        b.style.cssText = 'cursor:pointer;border:1px solid #44444e;background:#2b2b33;' +
+            'color:#e8e6e0;border-radius:6px;padding:5px 9px;font-size:13px;line-height:1;';
+        b.onmouseenter = () => b.style.borderColor = '#d4af37';
+        b.onmouseleave = () => b.style.borderColor = '#44444e';
+        b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+        return b;
+    };
+    bar.appendChild(mk('⟳', 'Reload this page', () => location.reload()));
+    bar.appendChild(mk('⌂', 'Back to CodeGPT chat', () => { location.href = ${JSON.stringify(CODEGPT_CHAT_URL)}; }));
+    (document.body || document.documentElement).appendChild(bar);
+    return 'injected';
+})()`;
+
+async function injectCodegptControls() {
+    if (!codegptWin || codegptWin.isDestroyed()) return;
+    try {
+        await codegptWin.webContents.executeJavaScript(CODEGPT_CONTROLS_JS);
+    } catch (_) { /* page not ready */ }
+    if (!codegptWin.__ctlHooked) {
+        codegptWin.__ctlHooked = true;
+        codegptWin.webContents.on('did-finish-load', () => {
+            if (codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()) {
+                codegptWin.webContents.executeJavaScript(CODEGPT_CONTROLS_JS).catch(() => {});
+            }
+        });
+    }
+}
+
+function hideCodegpt() {
+    if (codegptWin && !codegptWin.isDestroyed()) codegptWin.hide();
+    refreshNativeMenus();
+}
+
+function reloadCodegpt() {
+    const win = ensureCodegpt();
+    win.webContents.loadURL(CODEGPT_CHAT_URL);
+}
+
+async function signOutCodegpt() {
+    hideCodegpt();
+    if (codegptWin && !codegptWin.isDestroyed()) {
+        codegptWin.destroy();
+        codegptWin = null;
+    }
+    try {
+        await session.fromPartition(CODEGPT_PARTITION).clearStorageData();
+        log('codegpt session cleared (signed out)');
+    } catch (e) {
+        log('codegpt clearStorageData failed: ' + e.message);
+    }
+    ensureCodegpt();
+}
+
+/* ---------------------- CodeGPT page driving (discovery) ---------------------- */
+
+const CODEGPT_SNAPSHOT_JS = `(() => {
+    const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
+    try {
+        const editableSel = 'textarea, [contenteditable="true"], [role="textbox"]';
+        const ed = [...document.querySelectorAll(editableSel)].filter(vis);
+        // The chat composer is normally the LAST visible editable element.
+        const composerEl = ed.length ? ed[ed.length - 1] : null;
+        const msgSel = '[class*="message" i], [class*="bubble" i], [class*="answer" i], ' +
+            '[class*="response" i], [class*="markdown" i], [class*="prose" i], [class*="chat-result" i]';
+        const msgs = [...document.querySelectorAll(msgSel)].filter(vis);
+        const last = msgs.length ? msgs[msgs.length - 1] : null;
+        const text = last ? (last.innerText || '').trim().slice(0, 12000) : '';
+        const stopBtn = [...document.querySelectorAll('button')].filter(vis)
+            .some(b => /stop|halt|square/i.test((b.getAttribute('aria-label') || b.title || b.innerText || '')));
+        const signIn = !composerEl && /Sign in|Log in|Continue with Google/i.test((document.body.innerText || '').slice(0, 3000));
+        return JSON.stringify({
+            text: text,
+            count: msgs.length,
+            composer: !!composerEl,
+            composerInfo: composerEl ? {
+                tag: composerEl.tagName,
+                cls: (composerEl.className || '').toString().slice(0, 80),
+                id: composerEl.id || '',
+                ph: composerEl.getAttribute('placeholder') || composerEl.getAttribute('aria-label') || ''
+            } : null,
+            edList: ed.map(e => ({
+                tag: e.tagName,
+                cls: (e.className || '').toString().slice(0, 70),
+                id: e.id || '',
+                ph: e.getAttribute('placeholder') || e.getAttribute('aria-label') || ''
+            })),
+            lastMsg: last ? {
+                tag: last.tagName,
+                cls: (last.className || '').toString().slice(0, 80),
+                head: (last.innerText || '').replace(/\\s+/g, ' ').slice(0, 80)
+            } : null,
+            generating: stopBtn,
+            signIn: signIn,
+            url: location.href.slice(0, 140),
+            bodyHead: (document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 300)
+        });
+    } catch (err) {
+        return JSON.stringify({
+            error: err.message, text: '', count: 0, composer: false,
+            generating: false, signIn: false, url: location.href.slice(0, 140)
+        });
+    }
+})()`;
+
+async function codegptSnapshot() {
+    if (!codegptWin || codegptWin.isDestroyed()) throw new Error('codegpt browser closed');
+    const raw = await codegptWin.webContents.executeJavaScript(CODEGPT_SNAPSHOT_JS);
+    return JSON.parse(raw);
+}
+
+async function debugCodegptDom() {
+    if (!codegptWin || codegptWin.isDestroyed()) return { error: 'codegpt window not available' };
+    return codegptSnapshot();
+}
+
+async function checkCodegptSignedIn() {
+    try {
+        const snap = await codegptSnapshot();
+        if (snap.composer) return { ok: true };
+        if (isCodegptAuthHost(snap.url)) return { ok: false, why: 'signing in (auth in progress)' };
+        if (snap.signIn) return { ok: false, why: 'not signed in' };
+        if (isCodegptAppHost(snap.url)) return { ok: false, why: 'chat loading' };
+        codegptWin.webContents.loadURL(CODEGPT_CHAT_URL);
+        await sleep(5000);
+        const snap2 = await codegptSnapshot();
+        if (snap2.composer) return { ok: true };
+        return { ok: false, why: snap2.signIn ? 'not signed in' : 'no composer' };
+    } catch (e) {
+        return { ok: false, why: e.message };
+    }
+}
+
+async function codegptSendEnter() {
+    const wc = codegptWin.webContents;
+    wc.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' });
+    wc.sendInputEvent({ type: 'char', keyCode: '\r' });
+    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+}
+
+async function codegptClickSend() {
+    const box = await codegptWin.webContents.executeJavaScript(`(() => {
+        const sel = 'button[type="submit"], button[aria-label*="send" i], button[title*="send" i], [role="button"][aria-label*="send" i]';
+        const b = [...document.querySelectorAll(sel)].find(e => e.offsetWidth && !e.disabled);
+        if (!b) return null;
+        try { b.click(); } catch (_) {}
+        const r = b.getBoundingClientRect();
+        return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+    })()`);
+    if (!box) return false;
+    const wc = codegptWin.webContents;
+    wc.sendInputEvent({ type: 'mouseDown', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    wc.sendInputEvent({ type: 'mouseUp', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+    return true;
+}
+
+let codegptQueue = Promise.resolve();
+function sendCodegptQueued(text, options = {}) {
+    const result = codegptQueue.then(async () => {
+        options.signal?.throwIfAborted();
+        return codegptSend(text, options);
+    });
+    codegptQueue = result.then(() => sleep(1500), () => sleep(1000));
+    return result;
+}
+
+async function codegptSend(text, { signal } = {}) {
+    if (!codegptWin || codegptWin.isDestroyed()) {
+        showCodegpt();
+        throw new Error('Opening the CodeGPT window. Please complete sign in and retry.');
+    }
+    const started = Date.now();
+    log('codegpt request started (' + text.length + ' chars)');
+    try {
+        return await codegptSendRequest(text, signal);
+    } catch (error) {
+        if (codegptWin && !codegptWin.isDestroyed()) {
+            codegptWin.webContents.executeJavaScript(`(() => {
+                const stop = [...document.querySelectorAll('button')]
+                    .find(b => b.offsetWidth && /stop|halt|square/i.test((b.getAttribute('aria-label') || b.title || b.innerText || '')));
+                if (stop) stop.click();
+            })()`).catch(() => {});
+        }
+        log('codegpt request failed: ' + (signal?.aborted ? 'cancelled' : error.message));
+        throw error;
+    } finally {
+        log('codegpt request finished (' + Math.round((Date.now() - started) / 1000) + 's)');
+    }
+}
+
+async function codegptSendRequest(text, signal) {
+    const auth = await checkCodegptSignedIn();
+    if (!auth.ok) {
+        showCodegpt();
+        throw new Error(auth.why + ' — opening the CodeGPT window. Please complete sign in and retry.');
+    }
+
+    while (true) {
+        signal?.throwIfAborted();
+        let snap;
+        try { snap = await codegptSnapshot(); } catch (_) { snap = null; }
+        if (snap && snap.composer && !snap.generating) break;
+        await sleep(400);
+    }
+
+    const before = await codegptSnapshot();
+    const wc = codegptWin.webContents;
+
+    const focused = await wc.executeJavaScript(`(() => {
+        const ed = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+            .filter(e => e.offsetWidth || e.offsetHeight);
+        const ta = ed.length ? ed[ed.length - 1] : null;
+        if (!ta) return false;
+        ta.focus();
+        if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
+            ta.select();
+        } else {
+            const range = document.createRange();
+            range.selectNodeContents(ta);
+            const sel = window.getSelection();
+            if (sel) {
+                sel.removeAllRanges();
+                sel.addRange(range);
+            }
+        }
+        return document.activeElement === ta || ta.contains(document.activeElement);
+    })()`).catch(() => false);
+    if (!focused) throw new Error('CodeGPT composer not found/focusable');
+
+    await wc.insertText(text);
+    await sleep(400);
+    await codegptSendEnter();
+    await sleep(1200);
+
+    const still = await wc.executeJavaScript(`(() => {
+        const ed = [...document.querySelectorAll('textarea, [contenteditable="true"], [role="textbox"]')]
+            .filter(e => e.offsetWidth || e.offsetHeight);
+        const ta = ed.length ? ed[ed.length - 1] : null;
+        return ta ? (ta.innerText || ta.textContent || ta.value || '').trim() : '';
+    })()`).catch(() => '');
+    if (still.length > 0) {
+        log('codegpt: Enter did not submit — clicking send button');
+        await codegptClickSend().catch(() => false);
+        await sleep(800);
+    }
+
+    let forming = null;
+    let stable = 0;
+    let completed = false;
+    while (!completed) {
+        signal?.throwIfAborted();
+        await sleep(POLL_MS);
+        let snap;
+        try {
+            snap = await codegptSnapshot();
+        } catch (e) {
+            log('codegpt poll error: ' + e.message);
+            continue;
+        }
+        if (snap.signIn) throw new Error('signed out mid-conversation');
+        const isNew = snap.count > before.count ||
+            (snap.text && snap.text !== before.text);
+        if (!isNew) continue;
+        if (!forming) {
+            forming = snap.text;
+            stable = 0;
+            continue;
+        }
+        if (snap.text === forming) {
+            stable++;
+            if (stable >= 2 && forming.length > 0 && !snap.generating) {
+                completed = true;
+                break;
+            }
+        } else {
+            forming = snap.text;
+            stable = 0;
+        }
+    }
+    lastReplyAt = Date.now();
+    return forming;
 }
 
 /* ---------------------- ChatGPT page driving ---------------------- */
@@ -882,19 +1270,21 @@ async function copilotSend(text, options = {}) {
 function startBridge() {
     if (bridgeServer) return;
     const { createBridgeHandler } = require('./bridge');
-    bridgeServer = http.createServer(createBridgeHandler(sendCopilotQueued, sendChatgptQueued, () => {
+    bridgeServer = http.createServer(createBridgeHandler(sendCopilotQueued, sendChatgptQueued, sendCodegptQueued, () => {
         const prov = endpoints.getSettings().provider;
         const cVis = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
         const gVis = !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible());
+        const eVis = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
         return {
             ok: true, service: 'signalreach-tray', bridge: BRIDGE_PORT,
             provider: prov,
             copilotVisible: cVis,
             chatgptVisible: gVis,
-            browserVisible: prov === 'chatgpt' ? gVis : cVis,
+            codegptVisible: eVis,
+            browserVisible: prov === 'chatgpt' ? gVis : prov === 'codegpt' ? eVis : cVis,
             lastReplyAt, lastError
         };
-    }));
+    }, debugCodegptDom));
     bridgeServer.timeout = 0;
     bridgeServer.requestTimeout = 0;
     bridgeServer.headersTimeout = 0;
@@ -985,6 +1375,7 @@ async function showPanel() {
 function buildTrayMenu() {
     const visible = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
     const chatgptVisible = !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible());
+    const codegptVisible = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
     return Menu.buildFromTemplate([
         { label: 'Free model endpoints', type: 'radio', checked: endpoints.getSettings().provider === 'endpoint',
           click: () => { saveTraySettings({ provider: 'endpoint' }); openPanel(); } },
@@ -992,6 +1383,8 @@ function buildTrayMenu() {
           click: () => { saveTraySettings({ provider: 'copilot' }); openPanel(); } },
         { label: 'ChatGPT', type: 'radio', checked: endpoints.getSettings().provider === 'chatgpt',
           click: () => { saveTraySettings({ provider: 'chatgpt' }); openPanel(); } },
+        { label: 'CodeGPT (economy)', type: 'radio', checked: endpoints.getSettings().provider === 'codegpt',
+          click: () => { saveTraySettings({ provider: 'codegpt' }); openPanel(); } },
         { type: 'separator' },
         {
             label: visible ? 'Hide Browser \u2014 Copilot' : 'Show Browser \u2014 Copilot (sign in / verify)',
@@ -1006,6 +1399,14 @@ function buildTrayMenu() {
             click: () => {
                 if (chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()) hideChatgpt();
                 else showChatgpt();
+                setTimeout(() => { refreshNativeMenus(); }, 100);
+            }
+        },
+        {
+            label: codegptVisible ? 'Hide Browser \u2014 CodeGPT' : 'Show Browser \u2014 CodeGPT (sign in / verify)',
+            click: () => {
+                if (codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()) hideCodegpt();
+                else showCodegpt();
                 setTimeout(() => { refreshNativeMenus(); }, 100);
             }
         },
@@ -1034,6 +1435,7 @@ function saveTraySettings(value) {
     refreshNativeMenus();
     if (saved.provider === 'copilot') ensureBrowser();
     if (saved.provider === 'chatgpt') ensureChatgpt();
+    if (saved.provider === 'codegpt') ensureCodegpt();
     if (panel && !panel.isDestroyed()) panel.webContents.send('settings-changed');
     return saved;
 }
@@ -1216,6 +1618,8 @@ async function sendChatMessages(config, messages) {
         content = await endpoints.chat(config, messages);
     } else if (config.provider === 'chatgpt') {
         content = await sendChatgptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
+    } else if (config.provider === 'codegpt') {
+        content = await sendCodegptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
     } else {
         content = await sendCopilotQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
     }
@@ -1256,12 +1660,15 @@ function installIpc() {
             } catch (error) { auth = { ok: false, why: error.message }; }
         } else if (config.provider === 'chatgpt') {
             auth = await checkChatgptSignedIn().catch(error => ({ ok: false, why: error.message }));
+        } else if (config.provider === 'codegpt') {
+            auth = await checkCodegptSignedIn().catch(error => ({ ok: false, why: error.message }));
         } else {
             auth = await checkSignedIn().catch(error => ({ ok: false, why: error.message }));
         }
         const isChatgpt = config.provider === 'chatgpt';
         const isCopilot = config.provider === 'copilot';
-        const activeWin = isChatgpt ? chatgptWin : browserWin;
+        const isCodegpt = config.provider === 'codegpt';
+        const activeWin = isChatgpt ? chatgptWin : isCodegpt ? codegptWin : browserWin;
         return {
             ...config, models, base,
             signedIn: !!auth.ok, why: auth.ok ? '' : auth.why || '',
@@ -1269,6 +1676,7 @@ function installIpc() {
             browserVisible: !!(activeWin && !activeWin.isDestroyed() && activeWin.isVisible()),
             chatgptVisible: !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()),
             copilotVisible: !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible()),
+            codegptVisible: !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()),
             lastReplyAt, lastError,
             url: config.provider === 'endpoint' ? base : (activeWin && !activeWin.isDestroyed() ? activeWin.webContents.getURL().slice(0, 120) : '')
         };
@@ -1348,11 +1756,15 @@ function installIpc() {
     });
     listen('show-browser', () => {
         const p = endpoints.getSettings().provider;
-        if (p === 'chatgpt') showChatgpt(); else showBrowser();
+        if (p === 'chatgpt') showChatgpt();
+        else if (p === 'codegpt') showCodegpt();
+        else showBrowser();
     });
     listen('hide-browser', () => {
         const p = endpoints.getSettings().provider;
-        if (p === 'chatgpt') hideChatgpt(); else hideBrowser();
+        if (p === 'chatgpt') hideChatgpt();
+        else if (p === 'codegpt') hideCodegpt();
+        else hideBrowser();
     });
     // toggle: if the window is already open, hide it (panel buttons are
     // one-button show/hide so the user never has to hunt for the other action)
@@ -1361,6 +1773,9 @@ function installIpc() {
         if (p === 'chatgpt') {
             if (chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()) hideChatgpt();
             else showChatgpt();
+        } else if (p === 'codegpt') {
+            if (codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()) hideCodegpt();
+            else showCodegpt();
         } else {
             if (browserWin && !browserWin.isDestroyed() && browserWin.isVisible()) hideBrowser();
             else showBrowser();
@@ -1368,11 +1783,14 @@ function installIpc() {
     });
     listen('reload-browser', () => {
         const p = endpoints.getSettings().provider;
-        if (p === 'chatgpt') reloadChatgpt(); else reloadBrowser();
+        if (p === 'chatgpt') reloadChatgpt();
+        else if (p === 'codegpt') reloadCodegpt();
+        else reloadBrowser();
     });
     listen('refresh-page', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') { const win = ensureChatgpt(); win.webContents.reload(); }
+        else if (p === 'codegpt') { const win = ensureCodegpt(); win.webContents.reload(); }
         else { const win = ensureBrowser(); win.webContents.reload(); }
     });
     listen('open-external', (_e, url) => {
@@ -1383,7 +1801,9 @@ function installIpc() {
     });
     listen('sign-out', () => {
         const p = endpoints.getSettings().provider;
-        if (p === 'chatgpt') void signOutChatgpt(); else void signOutBrowser();
+        if (p === 'chatgpt') void signOutChatgpt();
+        else if (p === 'codegpt') void signOutCodegpt();
+        else void signOutBrowser();
     });
     listen('quit', () => app.quit());
 }
@@ -1405,6 +1825,7 @@ if (!app.requestSingleInstanceLock()) {
         const startProvider = endpoints.getSettings().provider;
         if (startProvider === 'copilot') ensureBrowser();
         if (startProvider === 'chatgpt') ensureChatgpt();
+        if (startProvider === 'codegpt') ensureCodegpt();
         // sign-in check: if the session is dead, surface the window once so the
         // user can sign in (only at startup, never while running invisibly)
         setTimeout(async () => {
@@ -1438,6 +1859,21 @@ if (!app.requestSingleInstanceLock()) {
                     } catch (_) { /* notifications optional */ }
                 } else {
                     log('startup: chatgpt signed in — staying invisible');
+                }
+            } else if (prov === 'codegpt') {
+                const auth = await checkCodegptSignedIn().catch(error => ({ ok: false, why: error.message }));
+                if (!auth.ok) {
+                    log('startup: codegpt ' + auth.why + ' — showing browser for sign-in');
+                    showCodegpt();
+                    try {
+                        new Notification({
+                            title: 'SignalREACH',
+                            body: 'Sign in to CodeGPT in the opened window — ' +
+                                  'then it runs invisibly from the tray.'
+                        }).show();
+                    } catch (_) { /* notifications optional */ }
+                } else {
+                    log('startup: codegpt signed in — staying invisible');
                 }
             }
         }, 8000);

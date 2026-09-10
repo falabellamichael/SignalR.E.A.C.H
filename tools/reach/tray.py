@@ -72,7 +72,7 @@ def stop_tray():
     if sys.platform == 'win32':
         ps = ("Get-CimInstance Win32_Process | Where-Object { "
               "($_.Name -in 'electron.exe','node.exe') -and "
-              "($_.CommandLine -like '*copilot/tray*' -or $_.CommandLine -like '*signalreach-copilot*') } "
+              "($_.CommandLine -match 'copilot[\\\\/]tray' -or $_.CommandLine -match 'signalreach-copilot') } "
               "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
         subprocess.run(['powershell', '-NoProfile', '-Command', ps],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
