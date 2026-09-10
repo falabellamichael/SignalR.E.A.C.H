@@ -69,7 +69,8 @@ const CODEGPT_URL = 'https://app.codegpt.co/';
 // on 54112). Its picker carries the full catalog including the unlimited
 // economy rows (DeepSeek V4.1 Flash, GLM 5.3 Flash, Gemini 3.8 Flash, GPT 5.6
 // Luna, ...), which the hosted web app does not offer. Drive the local page.
-const CODEGPT_CHAT_URL = 'http://localhost:54112/54112/';
+// The path is the EXTENSION API port, not the Next web-server port.
+const CODEGPT_CHAT_URL = 'http://localhost:54112/54113/';
 const CODEGPT_PARTITION = 'persist:codegpt';
 // Pinned DOM contract (local app, discovered live 2026-09-10): the chat
 // composer; kept alongside the hosted-app shapes so either page can load.
@@ -644,24 +645,27 @@ async function signOutCodegpt() {
 const CODEGPT_HOOK_JS = `(() => {
     if (window.__reachHook) return 'already';
     window.__reachHook = true;
+    const relevant = (url) => /playground|\\/api\\/runs(?:[/?]|$)/.test(String(url || ''));
     const grab = (url, status, body) => {
-        if (String(url || '').includes('chat/playground') || String(url || '').includes('playground')) {
-            try {
-                window.__reachCg = { status: status, body: String(body).slice(0, 6000), ts: Date.now() };
-            } catch (_) {}
+        if (relevant(url)) {
+            window.__reachCg = { status, body: String(body), ts: Date.now(), pending: false,
+                run: String(url).includes('/api/runs') };
         }
     };
     const of = window.fetch;
     window.fetch = async (...args) => {
-        const res = await of(...args);
         const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
-        if (String(url).includes('playground')) {
-            try {
-                const clone = res.clone();
-                clone.text().then(t => grab(url, res.status, t)).catch(() => {});
-            } catch (_) {}
+        const capture = relevant(url);
+        if (capture) window.__reachCg = { pending: true, ts: Date.now() };
+        try {
+            const res = await of(...args);
+            if (capture) res.clone().text().then(t => grab(url, res.status, t))
+                .catch(e => grab(url, 502, JSON.stringify({ error: e.message })));
+            return res;
+        } catch (e) {
+            if (capture) grab(url, 502, JSON.stringify({ error: e.message }));
+            throw e;
         }
-        return res;
     };
     const OXHR = window.XMLHttpRequest;
     window.XMLHttpRequest = class extends OXHR {
@@ -809,6 +813,28 @@ async function codegptSnapshot() {
     return JSON.parse(raw);
 }
 
+// Local /api/runs is NDJSON; only its final event is a completed reply.
+// Do not return progress, private reasoning, old turns, or server errors as text.
+function extractCodegptRunReply(body) {
+    const events = String(body || '').split('\n').filter(line => line.trim()).map(line => {
+        try { return JSON.parse(line); }
+        catch (_) { throw new Error('CodeGPT returned an invalid run response. Check the extension API port (54113).'); }
+    });
+    const failure = events.find(event => event.t === 'error' || event.error);
+    if (failure) throw new Error('CodeGPT: ' + (failure.message || failure.error?.message || failure.error || failure.text || 'run failed'));
+    const final = events.filter(event => event.t === 'final').pop();
+    if (!final || !final.done || final.pending || final.continueTurn) {
+        throw new Error('CodeGPT did not finish the chat request (it may require approval in the CodeGPT window).');
+    }
+    const messages = final.messages || [];
+    const lastUser = messages.map(message => message.role).lastIndexOf('user');
+    const reply = messages.slice(lastUser + 1).filter(message => message.role === 'assistant').pop();
+    const content = typeof reply?.content === 'string' ? reply.content : '';
+    const answer = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if (!answer || /<think>/i.test(answer)) throw new Error('CodeGPT completed without an assistant answer.');
+    return answer;
+}
+
 // Pull the assistant text out of the intercepted playground response.
 function extractCodegptApiReply(body) {
     if (!body) return '';
@@ -899,7 +925,6 @@ async function codegptClickSend() {
             .filter(e => e.offsetWidth && !e.disabled)
             .find(e => (e.innerText || '').trim() === 'Send');
         if (!b) return null;
-        try { b.click(); } catch (_) {}
         const r = b.getBoundingClientRect();
         return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
     })()`);
@@ -928,9 +953,8 @@ function sendCodegptQueued(text, options = {}) {
  * an "AI Model <current>" trigger instead; both shapes are handled.
  * We open that menu, click the entry for the requested model, then read the
  * trigger back to confirm the switch actually happened — a request never
- * silently passes as a model it is not. Every step is defensive: a UI change
- * makes this return false (and the request proceeds on the current model)
- * rather than throwing, so the picker can never break chat itself.
+ * silently passes as a model it is not. A UI change returns false; the caller
+ * must reject the request rather than silently using another model.
  */
 async function codegptSelectModel(engine) {
     if (!codegptWin || codegptWin.isDestroyed()) return false;
@@ -963,7 +987,7 @@ async function codegptSelectModel(engine) {
         const rows = () => {
             const scope = menuEl() || document;
             return [...scope.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
-                .filter(vis).map((e) => ({ el: e, text: label(e) }))
+                .filter(e => vis(e) && e !== trigger()).map((e) => ({ el: e, text: label(e) }))
                 .filter((row) => row.text && !row.text.startsWith('ai model') && row.text.length < 200
                     && modelish.test(row.text)
                     && !/show all|manage models|approval|full access/.test(row.text));
@@ -985,10 +1009,12 @@ async function codegptSelectModel(engine) {
                 ${helpers}
                 const el = trigger();
                 if (!el) return { error: 'no model menu on this page' };
+                if (hit(label(el))) return { selected: true };
                 const rect = el.getBoundingClientRect();
                 return { x: Math.round(rect.x + rect.width / 2),
                          y: Math.round(rect.y + rect.height / 2) };
             })()`);
+            if (box && box.selected) return true;
             if (!box || box.error) {
                 log('codegpt model switch failed: ' + ((box && box.error) || 'no trigger'));
                 return false;
@@ -1081,7 +1107,9 @@ async function codegptSend(text, { signal, model, label } = {}) {
         throw new Error('Opening the CodeGPT window. Please complete sign in and retry.');
     }
     const started = Date.now();
-    const engine = economyModelFor(model);
+    const defaultModel = !model || model === ECONOMY_PREFIX || model === ECONOMY_PREFIX + '-gpt-4o-mini';
+    const engine = economyModelFor(defaultModel ? economyBridgeIds()[1] : model);
+    if (!engine) throw new Error('Unknown CodeGPT economy model: ' + model + '. Refresh the model list.');
     log('codegpt request started (' + text.length + ' chars' +
         (engine ? ', model=' + engine.id : ', default agent page') + ')');
     try {
@@ -1115,9 +1143,8 @@ async function codegptSendRequest(text, signal, engine, label) {
     lastCodegptServed = '';
     if (engine) {
         const switched = await codegptSelectModel(engine);
-        log(switched
-            ? 'codegpt model switched to ' + engine.id + ' (' + (label || engine.label) + ')'
-            : 'codegpt model switch unavailable — answering with the page default (wanted ' + engine.id + ')');
+        if (!switched) throw new Error('CodeGPT could not select economy model ' + engine.id + '. No request was sent.');
+        log('codegpt model switched to ' + engine.id + ' (' + (label || engine.label) + ')');
     }
 
     // Intercept the app's own chat API response in-page: the assistant reply
@@ -1126,6 +1153,7 @@ async function codegptSendRequest(text, signal, engine, label) {
     const sendStart = Date.now();
     while (true) {
         signal?.throwIfAborted();
+        if (Date.now() - sendStart > 30000) throw new Error('CodeGPT composer did not become ready. Reload the CodeGPT window.');
         let snap;
         try { snap = await codegptSnapshot(); } catch (_) { snap = null; }
         if (snap && snap.composer && !snap.generating) break;
@@ -1169,13 +1197,13 @@ async function codegptSendRequest(text, signal, engine, label) {
     let forming = null;
     let stable = 0;
     let completed = false;
-    // No deadline: a page that is slow to answer is still allowed to answer.
-    // Progress is logged instead, so a long wait can be watched instead of
-    // being guessed at (and a response that lands late is still recorded).
+    // Bound a broken page/request so it cannot monopolize the shared queue.
+    // The captured run response, not DOM stability, determines completion.
     let lastProgress = Date.now();
     let apiSeen = '';
     while (!completed) {
         signal?.throwIfAborted();
+        if (Date.now() - sendStart > 180000) throw new Error('CodeGPT did not complete within 180 seconds. Check the CodeGPT window and extension connection.');
         await sleep(POLL_MS);
         let snap;
         try {
@@ -1192,6 +1220,15 @@ async function codegptSendRequest(text, signal, engine, label) {
                 + ' replyChars=' + ((snap.text || '').length));
         }
         if (snap.signIn) throw new Error('signed out mid-conversation');
+        if (snap.apiReply && snap.apiReply.ts >= sendStart) {
+            if (snap.apiReply.pending) continue; // never mistake a stream pause for completion
+            if (snap.apiReply.status >= 400) throw new Error('CodeGPT request failed (HTTP ' + snap.apiReply.status + ').');
+            if (snap.apiReply.run) {
+                const answer = extractCodegptRunReply(snap.apiReply.body);
+                lastReplyAt = Date.now();
+                return answer;
+            }
+        }
         // Record which model really answered (the app's API names it), so a
         // requested economy model that could not be switched shows up in the
         // log instead of silently passing as the requested one.
@@ -2253,7 +2290,44 @@ function installIpc() {
 
 /* ---------------------------------- boot ---------------------------------- */
 
-if (!app.requestSingleInstanceLock()) {
+// Host binding. The tray holds the signed-in CodeGPT session, so it must only
+// run on the machine it was installed on — a copied tray folder cannot serve
+// this account from someone else's PC. The Python side owns the authoritative
+// fingerprint; this reads the record it writes so both agree on one source of
+// truth instead of duplicating the machine-id logic.
+function hostBindBlocked() {
+    try {
+        const dir = path.join(app.getPath('appData'), 'SignalREACH');
+        const cfgPath = path.join(dir, 'config.json');
+        if (!fs.existsSync(cfgPath)) return null;   // not installed as a host yet
+        const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const system = (cfg && cfg.system) || {};
+        if (system.host_bind === false) return null;  // explicitly opted out
+        // A config still carrying sealed envelopes means the secrets are bound
+        // to some host. If our own machine id is present in the marker the
+        // install wrote, we are on that host.
+        const expect = system.host_machine_hint;
+        if (!expect) return null;   // legacy install, no binding recorded yet
+        const os = require('node:os');
+        const mine = (os.userInfo().username || '') + '@' + (os.hostname() || '');
+        if (mine.trim() !== String(expect).trim()) {
+            return 'This tray is bound to a different machine (' + expect + ').';
+        }
+    } catch (_e) { /* never block boot on a read error */ }
+    return null;
+}
+
+const hostBlock = hostBindBlocked();
+
+if (hostBlock) {
+    log('host binding refused: ' + hostBlock);
+    const { dialog } = require('electron');
+    app.whenReady().then(() => {
+        dialog.showErrorBox('SignalREACH — wrong machine',
+            hostBlock + '\n\nInstall the tray on that PC, or re-run the installer here to re-bind.');
+        app.exit(3);
+    });
+} else if (!app.requestSingleInstanceLock()) {
     app.quit();
 } else {
     app.on('second-instance', openPanel);

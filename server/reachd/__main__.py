@@ -19,11 +19,30 @@ def main():
     parser = argparse.ArgumentParser(description="SignalR.E.A.C.H relay server")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--config-dir", default=None)
+    parser.add_argument(
+        "--ignore-host-bind", action="store_true",
+        help="start even if this install is bound to a different machine "
+             "(diagnostics only)")
     args = parser.parse_args()
 
     base = Path(args.config_dir) if args.config_dir else config_dir()
     cfg_path = base / "config.json"
     cfg = load_config(cfg_path)
+
+    # Host binding gate. The relay owns the signed-in CodeGPT session and the
+    # upstream credentials, so it only runs on the machine it was installed on.
+    # A copied install fails here, loudly, instead of quietly serving another
+    # machine's traffic under this account.
+    _host_error = cfg.get("_host_error")
+    if _host_error and not args.ignore_host_bind:
+        print("SignalR.E.A.C.H: HOST MISMATCH", file=sys.stderr)
+        print("  " + _host_error, file=sys.stderr)
+        print("  This install is bound to a different machine. If you moved "
+              "to new hardware,", file=sys.stderr)
+        print("  recover with the code in host-recovery.json, or re-run the "
+              "installer here.", file=sys.stderr)
+        sys.exit(3)
+
     core.STATE = RelayState(cfg, cfg_path)
     core.PORT = args.port or int(cfg.get("port", DEFAULT_PORT))
     host = cfg.get("host", "127.0.0.1")

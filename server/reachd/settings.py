@@ -12,6 +12,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
+from reachd import hostid
 
 # ----------------------------------------------------------------------
 # Settings schema + defaults
@@ -149,6 +150,13 @@ DEFAULT_SETTINGS = {
         # Per-install secret for the admin API. Minted on first load; a
         # non-local /_reach/* request must present it as X-Reach-Admin.
         "admin_token": "",
+        # Host binding: seal host secrets against THIS machine. "host_salt"
+        # is a per-install random value minted on first load; it is what makes
+        # the derived key unique per install rather than per machine.
+        "host_bind": True,
+        "host_salt": "",
+        # Non-secret "who owns this install" marker the tray compares against.
+        "host_machine_hint": "",
     },
 }
 
@@ -465,7 +473,11 @@ def validate_settings(cfg):
     _require_local_url(cfg.get("omniroute_url", ""), "omniroute_url")
     _require_local_url(cfg.get("bridge_url", DEFAULT_SETTINGS["bridge_url"]),
                        "bridge_url")
-    _str(cfg.get("omniroute_key", ""), "omniroute_key", 0, 500)
+    # A sealed value is a dict envelope, so accept either shape: validation
+    # may see plaintext (in memory) or ciphertext (straight off disk).
+    _omniroute_key = cfg.get("omniroute_key", "")
+    if not hostid.is_sealed(_omniroute_key):
+        _str(_omniroute_key, "omniroute_key", 0, 500)
     _expect(cfg.get("host") in ("127.0.0.1", "localhost", "0.0.0.0"),
             "host must be 127.0.0.1, localhost or 0.0.0.0")
     _expect(cfg.get("tunnel") in ("ngrok", "cloudflared", "none"),
@@ -579,6 +591,10 @@ def validate_settings(cfg):
     _int(cfg["system"].get("log_rotation_mb", 2), 1, 100,
          "system.log_rotation_mb")
     _str(cfg["system"].get("admin_token", ""), "system.admin_token", 0, 128)
+    _bool(cfg["system"].get("host_bind", True), "system.host_bind")
+    _str(cfg["system"].get("host_salt", ""), "system.host_salt", 0, 64)
+    _str(cfg["system"].get("host_machine_hint", ""),
+         "system.host_machine_hint", 0, 200)
 
 
 def merged_settings(base, patch):
@@ -622,13 +638,22 @@ def merged_settings(base, patch):
 def settings_public(cfg):
     """Settings for display: never leak upstream/access keys."""
     shown = json.loads(json.dumps(cfg))
-    if shown.get("omniroute_key"):
-        shown["omniroute_key"] = "set (" + shown["omniroute_key"][:6] + "…)"
-    if shown.get("system", {}).get("admin_token"):
-        shown["system"]["admin_token"] = "set"
+    upstream = shown.get("omniroute_key")
+    if isinstance(upstream, str) and upstream:
+        shown["omniroute_key"] = "set (" + upstream[:6] + "…)"
+    elif hostid.is_sealed(upstream):
+        shown["omniroute_key"] = "set (sealed to this host)"
+    system = shown.setdefault("system", {})
+    if system.get("admin_token"):
+        system["admin_token"] = "set"
+    if system.get("host_salt"):
+        system["host_salt"] = "set"
     access = shown.get("access") or {}
-    if access.get("access_key"):
-        access["access_key"] = "set (" + access["access_key"][:4] + "…)"
+    legacy = access.get("access_key")
+    if isinstance(legacy, str) and legacy:
+        access["access_key"] = "set (" + legacy[:4] + "…)"
+    elif hostid.is_sealed(legacy):
+        access["access_key"] = "set (sealed to this host)"
     if access.get("keys"):
         access["keys"] = [public_key_view(k) for k in access["keys"]]
     return shown
@@ -660,6 +685,102 @@ def config_dir():
             pass
     return new_dir
 
+
+def _host_secret_material(cfg, path):
+    """The host-bound material that seals/unseals this install's secrets.
+
+    Returns ``None`` when host binding is off/unavailable, in which case
+    secrets are stored as plaintext (the pre-existing behaviour) so an
+    install never bricks itself just because a fingerprint could not be read.
+    """
+    system = cfg.get("system") or {}
+    if not system.get("host_bind", True):
+        return None
+    salt = system.get("host_salt")
+    if not salt:
+        return None
+    machine = hostid.raw_machine_id()
+    if not machine:
+        return None
+    return machine + "\x00" + salt
+# Secrets that belong to the host and must never sit in plaintext on disk.
+_SEALED_FIELDS = ("omniroute_key",)
+
+
+def _seal_config(cfg, material):
+    """Encrypt host secrets in a config copy. Returns the copy to persist."""
+    if not material:
+        return cfg
+    salt = (cfg.get("system") or {}).get("host_salt")
+    out = json.loads(json.dumps(cfg))
+    for field in _SEALED_FIELDS:
+        value = out.get(field)
+        if isinstance(value, str) and value and not hostid.is_sealed(value):
+            out[field] = hostid.seal(value, material, salt)
+    system = out.setdefault("system", {})
+    token = system.get("admin_token")
+    if isinstance(token, str) and token and not hostid.is_sealed(token):
+        system["admin_token"] = hostid.seal(token, material, salt)
+    access = out.setdefault("access", {})
+    legacy = access.get("access_key")
+    if isinstance(legacy, str) and legacy and not hostid.is_sealed(legacy):
+        access["access_key"] = hostid.seal(legacy, material, salt)
+    keys = access.get("keys")
+    if isinstance(keys, list):
+        for entry in keys:
+            if not isinstance(entry, dict):
+                continue
+            raw = entry.get("key")
+            if isinstance(raw, str) and raw and not hostid.is_sealed(raw):
+                entry["key"] = hostid.seal(raw, material, salt)
+    return out
+
+def _unseal_config(cfg, material, path):
+    """Decrypt host secrets in place. Returns ``(cfg, error_or_None)``.
+
+    A sealed value that will not open means this config was copied from
+    another host (or was tampered with). That is a hard stop for the secrets,
+    but NOT for the whole config: we blank them and report, so the panel still
+    loads and the operator sees a clear message instead of a dead relay.
+    """
+    if not material:
+        return cfg, None
+    def _open(value):
+        if hostid.is_sealed(value):
+            return hostid.open_sealed(value, material)
+        return value
+    try:
+        for field in _SEALED_FIELDS:
+            if field in cfg:
+                cfg[field] = _open(cfg[field])
+        system = cfg.setdefault("system", {})
+        if "admin_token" in system:
+            system["admin_token"] = _open(system["admin_token"])
+        access = cfg.setdefault("access", {})
+        if "access_key" in access:
+            access["access_key"] = _open(access["access_key"])
+        keys = access.get("keys")
+        if isinstance(keys, list):
+            for entry in keys:
+                if isinstance(entry, dict) and "key" in entry:
+                    entry["key"] = _open(entry["key"])
+    except hostid.HostIdentityError as exc:
+        # Copied to another host (or tampered with). Blank the unopenable
+        # secrets so nothing downstream can accidentally use ciphertext as a
+        # key, and leave the config loadable so the operator sees the reason.
+        for field in _SEALED_FIELDS:
+            cfg[field] = ""
+        system = cfg.setdefault("system", {})
+        system["admin_token"] = ""
+        access = cfg.setdefault("access", {})
+        access["access_key"] = ""
+        keys = access.get("keys")
+        if isinstance(keys, list):
+            for entry in keys:
+                if isinstance(entry, dict) and hostid.is_sealed(entry.get("key")):
+                    entry["key"] = ""
+        return cfg, str(exc)
+    return cfg, None
 
 def load_config(path):
     if path.is_file():
@@ -727,6 +848,21 @@ def load_config(path):
             if not cfg.setdefault("system", {}).get("admin_token"):
                 cfg["system"]["admin_token"] = generate_admin_token()
                 dirty = True
+            # Host binding: mint the per-install salt once. Every host secret
+            # is sealed against (machine id + this salt), so the salt is what
+            # makes two installs on the same machine independent.
+            system = cfg.setdefault("system", {})
+            if system.get("host_bind", True) and not system.get("host_salt"):
+                system["host_salt"] = hostid.new_salt()
+                dirty = True
+            # A non-secret marker the tray can compare against, so the tray and
+            # relay agree on which machine this install belongs to without
+            # duplicating the fingerprint logic in JavaScript.
+            if system.get("host_bind", True):
+                hint = hostid.machine_hint()
+                if hint and system.get("host_machine_hint") != hint:
+                    system["host_machine_hint"] = hint
+                    dirty = True
 
             if dirty:
                 try:
@@ -734,6 +870,16 @@ def load_config(path):
                 except Exception:
                     pass
 
+            # Unseal BEFORE validating: validators expect plain strings, and a
+            # config read straight off disk carries dict envelopes for its
+            # secrets. Unsealing first keeps every validator untouched.
+            cfg, unseal_error = _unseal_config(
+                cfg, _host_secret_material(cfg, path), path)
+            # Surface a host mismatch even if the blanked secrets then fail
+            # validation: the mismatch is the real cause and the operator needs
+            # to see it, not a downstream "key must be at least 6 chars".
+            if unseal_error:
+                cfg["_host_error"] = unseal_error
             try:
                 validate_settings(cfg)
                 return cfg
@@ -746,6 +892,13 @@ def load_config(path):
     init_cfg["access"]["keys"] = [def_k]
     init_cfg["access"]["access_key"] = def_k["key"]
     init_cfg["system"]["admin_token"] = generate_admin_token()
+    # Mint the host-binding salt here too: a brand-new install must seal its
+    # secrets on the FIRST save, not only after an existing config is touched.
+    if init_cfg["system"].get("host_bind", True):
+        init_cfg["system"]["host_salt"] = hostid.new_salt()
+        hint = hostid.machine_hint()
+        if hint:
+            init_cfg["system"]["host_machine_hint"] = hint
     detected = find_omniroute_key()
     if detected:
         init_cfg["omniroute_key"] = detected
@@ -757,5 +910,13 @@ def save_config(cfg, cfg_path):
     cfg_dir = cfg_path.parent
     cfg_dir.mkdir(parents=True, exist_ok=True)
     tmp = cfg_path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    # Seal host secrets on the way out. A copied config.json is then useless
+    # on any other machine: the ciphertext only opens on this host.
+    material = _host_secret_material(cfg, cfg_path)
+    persist = _seal_config(cfg, material) if material else cfg
+    tmp.write_text(json.dumps(persist, indent=2), encoding="utf-8")
     os.replace(str(tmp), str(cfg_path))
+    try:
+        os.chmod(cfg_path, 0o600)
+    except OSError:
+        pass

@@ -220,14 +220,21 @@ def cmd_install(args):
         save_config(cfg)
     print("  runtime + config -> " + str(CONFIG_DIR))
 
-    # Reuse an installed runtime for scoped extension upgrades.
+    # Tray is a SEPARATE component with its own installer: it holds the
+    # signed-in CodeGPT browser session, and a host-only box (a server, or a
+    # second machine) should not need Electron to serve the relay. Install it
+    # explicitly with `reach.py tray install`, or opt in here with --with-tray.
     tray_source = REPO_ROOT / 'copilot' / 'tray'
     if extension_only:
         print("  existing Electron runtime reused; tray and settings preserved")
-    elif electron_binary(tray_source).is_file():
+    elif getattr(args, "with_tray", False) and electron_binary(tray_source).is_file():
         install_tray(REPO_ROOT)
-    elif tray_source.is_dir():
-        print('  Tray optional: cd copilot/tray && npm install; then run python tools/reach.py tray install')
+    elif getattr(args, "with_tray", False) and tray_source.is_dir():
+        print('  Tray needs its runtime: cd copilot/tray && npm install, then '
+              'python tools/reach.py tray install')
+    else:
+        print("  tray not installed (separate component): "
+              "run `reach.py tray install` on the host that signs in to CodeGPT")
     if installed_electron.is_file():
         print("  interactive browser engine ready (bundled Electron)")
     else:
@@ -316,6 +323,96 @@ def cmd_status(_args):
     print("  pointer:    " + GIST_RAW)
     print("  config:     " + str(CONFIG_PATH))
     print("  key:        %s" % mask_key(cfg.get("omniroute_key")))
+
+
+def cmd_host(args):
+    """Report or repair this install's host binding.
+
+    The relay and tray are bound to one machine and their secrets are sealed
+    to it. This is the escape hatch for moving to new hardware.
+    """
+    import sys as _sys
+    # The CLI runs from the repo root, where `reachd` lives under server/.
+    server_dir = str(REPO_ROOT / "server")
+    if server_dir not in _sys.path:
+        _sys.path.insert(0, server_dir)
+    from reachd import hostid
+    cfg = load_config()
+    action = getattr(args, "host_cmd", "status")
+    system = cfg.get("system") or {}
+    salt = system.get("host_salt") or ""
+
+    if action == "status":
+        machine = hostid.raw_machine_id()
+        print("SignalR.E.A.C.H host binding")
+        print("  host bind:     %s" % ("on" if system.get("host_bind", True) else "OFF"))
+        print("  machine id:    %s" % (machine[:8] + "…" if machine else "(unavailable)"))
+        if machine and salt:
+            print("  fingerprint:   %s" % hostid.fingerprint(salt)[:32])
+        print("  sealed:        omniroute_key=%s admin_token=%s" % (
+            "yes" if hostid.is_sealed(cfg.get("omniroute_key")) else
+            ("n/a (plaintext legacy)" if cfg.get("omniroute_key") else "empty"),
+            "yes" if hostid.is_sealed(system.get("admin_token")) else
+            ("n/a (plaintext legacy)" if system.get("admin_token") else "empty")))
+        recovery = CONFIG_DIR / "host-recovery.json"
+        print("  recovery file: %s" % (recovery if recovery.is_file()
+                                        else "(none — run `reach.py host rekey`)"))
+        return
+    if action == "rekey":
+        # Re-seal every secret against THIS machine and write a fresh recovery
+        # file. This is what you run after restoring an install onto new
+        # hardware, or to recover from a lost/blown-away machine id.
+        machine = hostid.raw_machine_id()
+        if not machine:
+            print("error: no stable machine id available on this system")
+            return 1
+        import json as _json
+        path = CONFIG_DIR / "config.json"
+        if not path.is_file():
+            print("error: no config.json to rekey")
+            return 1
+        # Read the file that is on disk: it may carry sealed values that do not
+        # open here, which is exactly the case this command exists to fix.
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+        old_salt = (raw.get("system") or {}).get("host_salt") or ""
+        if old_salt:
+            try:
+                hostid.open_sealed(raw.get("omniroute_key") or "",
+                                   machine + "\x00" + old_salt)
+            except hostid.HostIdentityError:
+                print("  note: existing secrets do not open on this machine.")
+                print("  They will be cleared; re-enter the OmniRoute key in "
+                      "Settings if needed.")
+        # Mint a fresh salt, wipe unopenable secrets, and let save_config
+        # re-seal whatever remains against this host.
+        raw.setdefault("system", {})["host_salt"] = hostid.new_salt()
+        raw["system"]["host_bind"] = True
+        for field in ("omniroute_key",):
+            if hostid.is_sealed(raw.get(field)):
+                raw[field] = ""
+        key_list = ((raw.get("access") or {}).get("keys") or [])
+        for entry in key_list:
+            if isinstance(entry, dict) and hostid.is_sealed(entry.get("key")):
+                entry["key"] = ""
+        cleaner = {k: v for k, v in raw.items() if not k.startswith("_")}
+        save_config(cleaner, CONFIG_PATH)
+        material = machine + "\x00" + cleaner["system"]["host_salt"]
+        hostid.write_recovery(CONFIG_DIR / "host-recovery.json", material,
+                              cleaner["system"]["host_salt"])
+        print("host binding rekeyed to this machine")
+        print("  recovery file: " + str(CONFIG_DIR / "host-recovery.json"))
+        print("  keep it safe — it is the only way to move this host later.")
+        return
+    if action == "recovery-code":
+        recovery = CONFIG_DIR / "host-recovery.json"
+        if not recovery.is_file():
+            print("error: no recovery file; run `reach.py host rekey` first")
+            return 1
+        import json as _json
+        print(_json.loads(recovery.read_text(encoding="utf-8"))["code"])
+        return
+    print("unknown host action: %s" % action)
+    return 1
 
 
 def cmd_start(args):
@@ -497,6 +594,11 @@ def main():
     p_install.add_argument("--no-publish", action="store_true")
     p_install.add_argument("--no-vscode", action="store_true",
                            help="skip the VS Code extension install")
+    p_install.add_argument("--with-tray", action="store_true",
+                           help="also install the tray (signed-in CodeGPT "
+                                "browser). Off by default: the tray is a "
+                                "separate component, installed with "
+                                "`reach.py tray install`.")
     p_install.add_argument("--extension-only", action="store_true",
                            help="update the SimpleRAG extension and relay only; "
                            "reuse Electron and preserve settings, tray, VS Code, "
@@ -531,6 +633,19 @@ def main():
 
     sub.add_parser("status", help="show relay/tunnel/public-URL status") \
        .set_defaults(func=cmd_status)
+
+    p_host = sub.add_parser("host", help="host binding: status, rekey, recovery")
+    host_sub = p_host.add_subparsers(dest="host_cmd")
+    host_sub.add_parser("status", help="show which machine this host is bound to") \
+            .set_defaults(func=cmd_host)
+    host_sub.add_parser("rekey",
+                        help="re-seal secrets to THIS machine and write a "
+                             "fresh recovery file") \
+            .set_defaults(func=cmd_host)
+    host_sub.add_parser("recovery-code",
+                        help="print the recovery code from the recovery file") \
+            .set_defaults(func=cmd_host)
+    p_host.set_defaults(func=cmd_host, host_cmd="status")
 
     p_start = sub.add_parser("start", help="start relay + tunnel")
     p_start.add_argument("--tunnel", choices=["ngrok", "cloudflared", "none"],
