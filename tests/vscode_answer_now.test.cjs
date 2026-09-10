@@ -183,6 +183,7 @@ test('quick answer completion prevents further tool extraction even if agentic i
     answeringNow: true,
     agenticEnabled: true,
     pendingEdits: [],
+    rafPending: false,
     pendingText: 'Here is the answer based on package.json:\n<tool>{"action":"read","path":"unused.js"}</tool>',
     pendingBubble: {},
     agentRounds: 1,
