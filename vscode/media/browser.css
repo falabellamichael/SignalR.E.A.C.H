@@ -11,6 +11,7 @@
   --reach-accent-bg: rgba(212, 175, 55, 0.14);
   --reach-accent-border: rgba(212, 175, 55, 0.55);
   --reach-shadow: rgba(0, 0, 0, 0.45);
+  --reach-error: var(--vscode-errorForeground, #f48771);
 }
 
 * { box-sizing: border-box; }
@@ -31,6 +32,52 @@ html, body {
 
 body { display: flex; flex-direction: column; }
 
+/* ---- tab strip ---- */
+.tabstrip {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0;
+  background: var(--reach-panel);
+  border-bottom: 1px solid var(--reach-border);
+  flex: 0 0 auto;
+}
+.tabs { display: flex; align-items: stretch; gap: 2px; overflow-x: auto; flex: 1 1 auto; }
+.tabstrip .icon-btn { align-self: center; }
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  min-width: 96px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: var(--reach-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.tab:hover { background: var(--reach-accent-bg); }
+.tab.active {
+  background: var(--reach-surface);
+  border-color: var(--reach-border);
+  color: var(--reach-text);
+}
+.tab-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+.tab-close {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--reach-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  line-height: 0;
+  padding: 2px;
+}
+.tab-close:hover { background: rgba(255, 255, 255, 0.12); color: var(--reach-text); }
+
 /* ---- toolbar ---- */
 #toolbar {
   display: flex;
@@ -41,6 +88,55 @@ body { display: flex; flex-direction: column; }
   background: var(--reach-surface);
   flex: 0 0 auto;
 }
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--reach-border);
+  border-top-color: var(--reach-accent);
+  border-radius: 50%;
+  animation: reach-spin 0.7s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes reach-spin { to { transform: rotate(360deg); } }
+
+/* ---- bookmarks bar ---- */
+.bookmarks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--reach-border);
+  background: var(--reach-surface);
+  overflow-x: auto;
+  flex: 0 0 auto;
+}
+.bookmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 220px;
+  padding: 3px 8px;
+  border: 1px solid var(--reach-border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--reach-text);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bookmark:hover { background: var(--reach-accent-bg); color: var(--reach-accent-light); }
+.bookmark-label { overflow: hidden; text-overflow: ellipsis; }
+.bookmark-remove {
+  border: none;
+  background: transparent;
+  color: var(--reach-muted);
+  cursor: pointer;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+}
+.bookmark-remove:hover { color: var(--reach-error); }
 
 .icon-btn {
   background: transparent;
@@ -54,6 +150,7 @@ body { display: flex; flex-direction: column; }
 }
 .icon-btn:hover:not(:disabled) { background: var(--reach-accent-bg); color: var(--reach-accent-light); }
 .icon-btn:disabled { opacity: 0.35; cursor: default; }
+.icon-btn.active { color: var(--reach-accent); }
 
 .address-input {
   flex: 1 1 auto;

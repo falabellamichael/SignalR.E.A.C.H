@@ -257,9 +257,9 @@
     let clean = text || '';
     const allowed = (typeof window !== 'undefined' && Array.isArray(window.REACH_TOOL_NAMES) && window.REACH_TOOL_NAMES.length)
       ? window.REACH_TOOL_NAMES
-      : ['read', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand',
+      : ['read', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand',
         'todo_write', 'todo_read', 'tool_help',
-        'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_back', 'browser_console', 'browser_network', 'browser_screenshot', 'browser_close'];
+        'browser_open', 'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_back', 'browser_forward', 'browser_reload', 'browser_find', 'browser_console', 'browser_network', 'browser_screenshot', 'browser_close'];
     // Providers use several tool dialects. Only explicit, complete wrappers are
     // executable; ordinary JSON remains chat content. Accepted here:
     //   ```tool / <tool>      - REACH's own fenced contract
@@ -1108,7 +1108,7 @@
                 ? t.query
                 : (t.topic || t.name || t.command || t.operation || t.action);
       const label = {
-        read: 'Read', search: 'Search', list: 'List', shell: 'Run command', browse: 'Browse', websearch: 'Web search',
+        read: 'Read', glob: 'Find files', search: 'Search', list: 'List', shell: 'Run command', browse: 'Browse', websearch: 'Web search',
         browser_open: 'Browser: Open', browser_snapshot: 'Browser: Snapshot', browser_click: 'Browser: Click',
         browser_type: 'Browser: Type', browser_press: 'Browser: Press', browser_scroll: 'Browser: Scroll',
         browser_wait: 'Browser: Wait', browser_back: 'Browser: Back', browser_console: 'Browser: Console',
@@ -2598,7 +2598,7 @@
     { name: '/goal', desc: 'Turn this request into a measurable goal',
       prompt: 'Goal: ' },  // completed by buildSlashPrompt: fills in a goal-oriented template
     { name: '/plan', desc: 'Plan the work before touching code',
-      prompt: 'Plan the work for this request BEFORE changing any files. Inspect whatever you need with read/search/list first, then answer with:\n1. Goal and explicit acceptance criteria\n2. Files to change with the exact path and why\n3. Ordered steps, each independently verifiable\n4. Risks, unknowns and the assumptions you are making\n5. How the change will be verified (tests, commands)\nDo not emit edit blocks in this reply.\n\nRequest: ' },
+      prompt: 'Plan the work for this request BEFORE changing any files. Inspect whatever you need with read/glob/search/list first, then answer with:\n1. Goal and explicit acceptance criteria\n2. Files to change with the exact path and why\n3. Ordered steps, each independently verifiable\n4. Risks, unknowns and the assumptions you are making\n5. How the change will be verified (tests, commands)\nDo not emit edit blocks in this reply.\n\nRequest: ' },
     { name: '/implement', desc: 'Implement the plan and apply the edits',
       prompt: 'Implement this now, end to end. Read every file you change before you change it, emit ```edit blocks for each change, then state exactly how the result should be verified.\n\nImplement: ' },
     { name: '/debug', desc: 'Diagnose and fix the failure',

@@ -928,9 +928,16 @@ class ReachChatViewProvider {
               const uri = vscode.Uri.joinPath(folders[0].uri, rel);
               const doc = await vscode.workspace.openTextDocument(uri);
               result = fileReadResult(rel, doc.getText(), msg.startLine, msg.endLine, doc.isDirty);
+            } else if (action === 'glob') {
+              if (!pattern) throw new Error('no glob pattern');
+              result = await this._workspaceGlob(pattern, rel);
             } else if (action === 'search') {
               if (!pattern) throw new Error('no search pattern');
-              result = await this._workspaceSearch(pattern);
+              result = await this._workspaceSearch(pattern, {
+                regex: msg.regex === true,
+                caseSensitive: msg.caseSensitive === true,
+                include: String(msg.include || '').slice(0, 200),
+              });
             } else if (action === 'list') {
               result = await this._workspaceList(rel);
             } else if (action === 'shell') {
@@ -1091,25 +1098,66 @@ class ReachChatViewProvider {
     });
   }
 
-  async _workspaceSearch(pattern) {
+  /* Files matching a glob, the way the explorer would show them: a path/name
+   * search for the agent ("which test files exist?"). Contents live in
+   * _workspaceSearch. */
+  async _workspaceGlob(pattern, subPath) {
     const folders = vscode.workspace.workspaceFolders || [];
     if (!folders.length) return 'No workspace folder open.';
     const folder = folders[0];
+    const base = subPath ? vscode.Uri.joinPath(folder.uri, subPath) : folder.uri;
     const files = await vscode.workspace.findFiles(
-      new vscode.RelativePattern(folder, '**/*'), `{${TREE_EXCLUDES.join(',')}}`, 300);
-    const needle = pattern.toLowerCase();
+      new vscode.RelativePattern(base, pattern), `{${TREE_EXCLUDES.join(',')}}`, 500);
+    files.sort((a, b) => a.fsPath.localeCompare(b.fsPath));
+    const matches = files.map((f) => relativePath(f));
+    if (!matches.length) {
+      return 'No files match "' + pattern + '"'
+        + (subPath ? ' under ' + subPath : '') + '.';
+    }
+    const shown = matches.slice(0, 300);
+    if (matches.length > shown.length) shown.push('… (' + (matches.length - shown.length) + ' more)');
+    shown.push('(' + matches.length + ' file' + (matches.length === 1 ? '' : 's') + ')');
+    return shown.join('\n');
+  }
+
+  /* Content search across the workspace — text or regex, optional glob
+   * filter, case control. Generous scan limits: a big search is agent work,
+   * so only the result size is bounded (the tool-result budget trims it). */
+  async _workspaceSearch(pattern, options = {}) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (!folders.length) return 'No workspace folder open.';
+    const folder = folders[0];
+    const include = String(options.include || '').trim();
+    let matcher = null;
+    if (options.regex) {
+      try {
+        matcher = new RegExp(pattern, options.caseSensitive ? '' : 'i');
+      } catch (error) {
+        throw new Error('invalid regular expression: ' + error.message);
+      }
+    }
+    const needle = options.caseSensitive ? pattern : pattern.toLowerCase();
+    const files = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(folder, include || '**/*'), `{${TREE_EXCLUDES.join(',')}}`, 2000);
     const out = [];
     let scanned = 0;
     for (const f of files) {
-      if (scanned >= 120 || out.length >= 40) break;
+      if (scanned >= 800 || out.length >= 120) break;
       try {
-        const text = Buffer.from(await vscode.workspace.fs.readFile(f)).toString('utf8');
+        const bytes = Buffer.from(await vscode.workspace.fs.readFile(f));
         scanned += 1;
-        const lines = text.split('\n');
+        // Size/binary guards only, never effort: skip files that cannot be
+        // useful text and keep scanning the rest.
+        if (bytes.length > 1000000 || bytes.includes(0)) continue;
+        const lines = bytes.toString('utf8').split('\n');
         for (let idx = 0; idx < lines.length; idx += 1) {
-          if (lines[idx].toLowerCase().includes(needle)) {
-            out.push(relativePath(f) + ':' + (idx + 1) + ': ' + lines[idx].trim().slice(0, 160));
-            if (out.length >= 40) break;
+          const line = lines[idx];
+          const hit = matcher
+            ? matcher.test(line)
+            : (options.caseSensitive ? line.includes(pattern) : line.toLowerCase().includes(needle));
+          if (hit) {
+            out.push(relativePath(f) + ':' + (idx + 1) + ': ' + line.trim().slice(0, 200));
+            if (out.length >= 120) break;
           }
         }
       } catch (e) { /* skip unreadable files */ }
@@ -1428,9 +1476,16 @@ class ReachChatViewProvider {
       const data = await response.json();
       const text = data.choices?.[0]?.message?.content;
       if (typeof text !== 'string' || !text.trim()) throw new Error(`Copilot returned no reading notes for part ${i + 1}/${parts}.`);
-      if (text.length > 1800) throw new Error('Copilot exceeded the reading-note limit. Retry with a smaller file or line range.');
-      notes = text;
-      this._finishActivity(activity, 'Read this part and updated the working notes.');
+      // Overshooting the note budget is not a failure: models routinely exceed
+      // the requested "at most 1200 characters" (probed 2026-09-11 — a part
+      // returning ~2k chars killed the whole read). Trim and keep going; the
+      // trim is surfaced on the step so nothing is silently dropped.
+      const noteCap = 1800;
+      notes = text.length > noteCap
+        ? text.slice(0, noteCap).replace(/\s+\S*$/, '') + '\n[Notes trimmed to fit the reading budget.]'
+        : text;
+      this._finishActivity(activity, 'Read this part and updated the working notes'
+        + (notes.length < text.length ? ' (notes trimmed from ' + text.length + ' characters).' : '.'));
     }
     const instruction = purpose === 'think'
       ? 'Write a terse private plan for the latest request using the reading notes.'
@@ -2020,7 +2075,16 @@ function activate(context) {
 
   // ---- REACH Browser panel ----
   let browserPanel = null;
-  const browserState = { history: [], index: -1 };
+  // Per-tab history, keyed by the webview's tab id ('tab-1', 'tab-2', …).
+  const browserTabs = new Map();
+  const browserTabState = (id) => {
+    const key = String(id || 'tab-1');
+    if (!browserTabs.has(key)) browserTabs.set(key, { history: [], index: -1 });
+    return browserTabs.get(key);
+  };
+  // The tab the panel most recently acted on — the default for back/forward/
+  // reload when a message omits an explicit tab id.
+  let browserActiveTab = 'tab-1';
 
   // Elements picked in the REACH Browser (or via the Add Element command)
   // become chat ATTACHMENTS — context that rides along with the user's next
@@ -2050,69 +2114,80 @@ function activate(context) {
     if (browserPanel) browserPanel.webview.postMessage(Object.assign({ type }, payload || {}));
   };
 
-  const browserGo = async (url, push) => {
+  const browserGo = async (url, push, tabId) => {
+    const tab = String(tabId || browserActiveTab);
+    const state = browserTabState(tab);
     let proxyUrl = '';
     try {
       await startPageProxy();
       proxyUrl = pageProxyUrl(url);
     } catch (e) {
-      if (browserPanel) browserPost('pageError', { url, error: 'page proxy failed: ' + String((e && e.message) || e) });
+      if (browserPanel) browserPost('pageError', { tab, url, error: 'page proxy failed: ' + String((e && e.message) || e) });
       return;
     }
     if (push) {
-      browserState.history = browserState.history.slice(0, browserState.index + 1);
-      browserState.history.push({ url, title: url });
-      browserState.index = browserState.history.length - 1;
+      state.history = state.history.slice(0, state.index + 1);
+      state.history.push({ url, title: url });
+      state.index = state.history.length - 1;
     }
-    browserPanel.title = 'REACH Browser — ' + String(url).slice(0, 40);
+    browserActiveTab = tab;
+    if (browserPanel && tab === browserActiveTab) {
+      browserPanel.title = 'REACH Browser — ' + String(url).slice(0, 40);
+    }
     browserPost('page', {
-      url, proxyUrl, title: url,
-      canBack: browserState.index > 0,
-      canForward: browserState.index < browserState.history.length - 1,
+      tab, url, proxyUrl, title: url,
+      history: state.history.map((h) => ({ url: h.url, title: h.title })),
+      index: state.index,
+      canBack: state.index > 0,
+      canForward: state.index < state.history.length - 1,
     });
   };
 
-  const browserGoBack = () => {
-    if (browserState.index <= 0) return;
-    browserState.index -= 1;
-    browserGo(browserState.history[browserState.index].url, false);
+  const browserGoBack = (tabId) => {
+    const tab = String(tabId || browserActiveTab);
+    const state = browserTabState(tab);
+    if (state.index <= 0) return;
+    state.index -= 1;
+    browserGo(state.history[state.index].url, false, tab);
   };
-  const browserGoForward = () => {
-    if (browserState.index >= browserState.history.length - 1) return;
-    browserState.index += 1;
-    browserGo(browserState.history[browserState.index].url, false);
+  const browserGoForward = (tabId) => {
+    const tab = String(tabId || browserActiveTab);
+    const state = browserTabState(tab);
+    if (state.index >= state.history.length - 1) return;
+    state.index += 1;
+    browserGo(state.history[state.index].url, false, tab);
   };
 
-  const openReachBrowser = () => {
+  const openReachBrowser = (opts) => {
+    const options = opts || {};
+    const viewColumn = options.beside ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active;
     if (browserPanel) {
       // Re-read the panel files from disk so updated code (fixes) always show
       // up — re-opening an existing panel would otherwise keep stale HTML.
       browserPanel.webview.html = browserHtml(context.extensionUri, browserPanel.webview);
-      browserPanel.reveal();
+      browserPanel.reveal(viewColumn);
+      // Ask the panel to load this URL (reusing the active tab) when given one.
+      if (options.url) setTimeout(() => browserPost('hostNavigate', { url: options.url, newTab: !!options.newTab }), 60);
       return;
     }
     browserPanel = vscode.window.createWebviewPanel(
       'reach.browser', 'REACH Browser',
-      { viewColumn: vscode.ViewColumn.Active, preserveFocus: false },
+      { viewColumn, preserveFocus: false },
       {
         enableScripts: true,
         retainContextWhenHidden: true,
         localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')],
       });
     browserPanel.webview.html = browserHtml(context.extensionUri, browserPanel.webview);
-    browserPanel.onDidDispose(() => { browserPanel = null; });
-    browserState.history = [];
-    browserState.index = -1;
+    browserPanel.onDidDispose(() => { browserPanel = null; browserTabs.clear(); });
+    browserTabs.clear();
+    browserActiveTab = 'tab-1';
     browserPanel.webview.onDidReceiveMessage(async (msg) => {
       switch (msg && msg.type) {
         case 'ready':
           // Reply to the panel's ready ping — the earlier state post may have
           // fired before the webview script attached its listener.
-          browserPost('state', {
-            url: '', canBack: browserState.index > 0,
-            canForward: browserState.index < browserState.history.length - 1,
-            engine: hasPlaywright(),
-          });
+          browserPost('state', { engine: hasPlaywright(), url: '', canBack: false, canForward: false });
           break;
         case 'pageRequest': {
           const requestUrl = String(msg.url || '');
@@ -2136,19 +2211,21 @@ function activate(context) {
           break;
         }
         case 'navigate':
-          await browserGo(String(msg.url || ''), msg.push !== false);
+          await browserGo(String(msg.url || ''), msg.push !== false, msg.tab);
           break;
         case 'back':
-          browserGoBack();
+          browserGoBack(msg.tab);
           break;
         case 'forward':
-          browserGoForward();
+          browserGoForward(msg.tab);
           break;
-        case 'reload':
-          if (browserState.index >= 0) {
-            await browserGo(browserState.history[browserState.index].url, false);
+        case 'reload': {
+          const rstate = browserTabState(msg.tab);
+          if (rstate.index >= 0) {
+            await browserGo(rstate.history[rstate.index].url, false, msg.tab);
           }
           break;
+        }
         case 'openExternal':
           try {
             await vscode.env.openExternal(vscode.Uri.parse(String(msg.url || '')));
@@ -2157,8 +2234,34 @@ function activate(context) {
         case 'addElement':
           reachBrowserAddElement(msg);
           break;
+        case 'addPageToChat': {
+          // Pull the active tab's page text (already captured by the proxy's
+          // snapshot path) into chat as an attachment. Falls back to the URL
+          // when no body text is available.
+          const pageUrl = String(msg.url || '');
+          let body = '';
+          try {
+            const resp = await fetch(pageUrl, {
+              redirect: 'follow', headers: { 'User-Agent': BROWSER_UA },
+            });
+            const raw = await resp.text();
+            const drop = () => String();
+            const space = () => String.fromCharCode(32);
+            body = raw
+              .replace(/<script[\s\S]*?<\/script>/gi, drop)
+              .replace(/<style[\s\S]*?<\/style>/gi, drop)
+              .replace(/<[^>]+>/g, drop)
+              .replace(/\s+/g, space)
+              .trim();
+          } catch (e) { /* fall back below */ }
+          const text = body ? (pageUrl + '\n' + body.slice(0, 8000))
+            : (pageUrl + '\n(no page text captured — open the page in the REACH Browser and try again)');
+          reachBrowserAddElement({ url: pageUrl, title: msg.title, text });
+          break;
+        }
         case 'pageTitle':
-          if (browserPanel && msg && String(msg.title || '').trim()) {
+          if (browserPanel && msg && String(msg.title || '').trim()
+              && String(msg.tab || browserActiveTab) === browserActiveTab) {
             browserPanel.title = 'REACH Browser — ' + String(msg.title).slice(0, 40);
           }
           break;
@@ -2177,11 +2280,54 @@ function activate(context) {
       }
     });
     browserPost('state', { url: '', canBack: false, canForward: false, engine: hasPlaywright() });
+    // Load the requested URL once the panel is up (used by preview/commands).
+    if (options.url) setTimeout(() => browserPost('hostNavigate', { url: options.url, newTab: !!options.newTab }), 60);
   };
 
   context.subscriptions.push(
-    vscode.commands.registerCommand('simplereach.openBrowser', openReachBrowser),
+    vscode.commands.registerCommand('simplereach.openBrowser', () => openReachBrowser()),
   );
+
+  // Open a fresh tab in the REACH Browser panel (creating the panel if needed).
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.openBrowserTab', () => {
+    openReachBrowser();
+    setTimeout(() => browserPost('hostNewTab', {}), 60);
+  }));
+
+  const dappUrl = () => {
+    const raw = String(vscode.workspace.getConfiguration('simplereach').get('dappUrl') || '').trim();
+    return raw || 'http://localhost:3000';
+  };
+
+  // In-editor DApp preview: reuse the REACH Browser panel (proxy + tabs).
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.previewDApp', () => {
+    const url = dappUrl();
+    if (!/^https?:\/\//i.test(url)) {
+      vscode.window.showInformationMessage('REACH: set simplereach.dappUrl to an http(s) URL.');
+      return;
+    }
+    openReachBrowser({ url, beside: true, newTab: true });
+  }));
+
+  // Launch the same DApp URL in the system browser.
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.openDAppExternal', async () => {
+    const url = dappUrl();
+    if (!/^https?:\/\//i.test(url)) {
+      vscode.window.showInformationMessage('REACH: set simplereach.dappUrl to an http(s) URL.');
+      return;
+    }
+    try {
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+    } catch (error) {
+      vscode.window.showErrorMessage('REACH: could not open ' + url + ' — ' + String((error && error.message) || error));
+    }
+  }));
+
+  // Ask the panel's active tab to send its page text to the chat as context.
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.sendPageToChat', () => {
+    openReachBrowser();
+    setTimeout(() => browserPost('hostSendPageToChat', {}), 60);
+  }));
 
   // Right-click in the REACH Browser (or an external caller with a payload)
   // -> send the page element/selection to the REACH chat.

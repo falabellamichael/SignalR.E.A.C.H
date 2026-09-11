@@ -23,6 +23,7 @@ const { applyPatch, replaceLines } = require('../vscode/edits');
 test('tools registry exports all defined tools and categories', () => {
   const allowed = allowedNames();
   assert.ok(allowed.includes('read'));
+  assert.ok(allowed.includes('glob'));
   assert.ok(allowed.includes('search'));
   assert.ok(allowed.includes('list'));
   assert.ok(allowed.includes('shell'));
@@ -34,6 +35,15 @@ test('tools registry exports all defined tools and categories', () => {
   assert.ok(allowed.includes('browser_snapshot'));
   assert.ok(allowed.includes('browser_console'));
   assert.ok(allowed.includes('browser_network'));
+  assert.ok(allowed.includes('browser_navigate'));
+  assert.ok(allowed.includes('browser_find'));
+  assert.ok(allowed.includes('browser_forward'));
+  assert.ok(allowed.includes('browser_reload'));
+  for (const name of ['browser_navigate', 'browser_find', 'browser_forward', 'browser_reload']) {
+    assert.equal(TOOLS[name].class, 'browse', name + ' must be browse-class');
+    assert.equal(TOOLS[name].approval, false, name + ' must not require approval');
+    assert.equal(TOOLS[name].tier, 'browser');
+  }
 
   assert.equal(needsApproval('shell'), true);
   assert.equal(needsApproval('runTask'), true);

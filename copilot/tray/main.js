@@ -1067,15 +1067,44 @@ async function codegptSelectModel(engine) {
                 .filter(vis);
             return menus.length ? menus[menus.length - 1] : null;
         };
+        const localApp = () => !!document.querySelector('button[data-model-dropdown-trigger="true"]');
+        /* Radix opens on POINTERDOWN, and the app can sit under a hit-testing
+         * layer that swallows coordinate clicks (observed 2026-09-11: real
+         * input clicks did nothing at all, while a pointer sequence dispatched
+         * on the element itself opened the menu and switched models). */
+        const pressTrigger = (el) => {
+            const base = { bubbles: true, cancelable: true, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+            el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, base, { buttons: 1 })));
+            el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, base, { buttons: 0 })));
+            return true;
+        };
+        /* Menu rows and plain app buttons act on click, so they get the full
+         * sequence; the trigger must NOT (it toggles - the trailing click would
+         * close what the pointerdown just opened). */
+        const press = (el) => {
+            pressTrigger(el);
+            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+            return true;
+        };
+        // The trigger TOGGLES: close an open menu before opening a fresh one.
+        const dismissMenu = () => {
+            const el = trigger();
+            if (el && menuEl()) pressTrigger(el);
+            return true;
+        };
         // Rows are the entries that name a model; page chrome does not count.
         const modelish = /(gpt|claude|gemini|deepseek|glm|ox-|flash|sonnet|opus|mistral|grok|llama|minimax)/i;
         const rows = () => {
-            const scope = menuEl() || document;
+            // The local app renders rows inside the dropdown, so when no menu
+            // is open REPORT NOTHING: a document-wide scan once "picked" a
+            // chat message that merely mentioned a model name (2026-09-11).
+            const scope = menuEl() || (localApp() ? null : document);
+            if (!scope) return [];
             return [...scope.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
                 .filter(e => vis(e) && e !== trigger()).map((e) => ({ el: e, text: label(e) }))
                 .filter((row) => row.text && !row.text.startsWith('ai model') && row.text.length < 200
                     && modelish.test(row.text)
-                    && !/show all|manage models|approval|full access/.test(row.text));
+                    && !/show all|show fewer|manage models|\\+ add|approval|full access/.test(row.text));
         };
         // Some models sit behind the "Show all N models" expander.
         const expandAll = () => {
@@ -1083,7 +1112,7 @@ async function codegptSelectModel(engine) {
             const more = [...scope.querySelectorAll('button, [role="menuitem"], li')].filter(vis)
                 .find((e) => /show all \\d+ models/i.test(label(e)));
             if (!more) return '';
-            more.click();
+            press(more);
             return label(more);
         };`;
     const exec = (js) => codegptWin.webContents.executeJavaScript(js)
@@ -1104,16 +1133,21 @@ async function codegptSelectModel(engine) {
                 log('codegpt model switch failed: ' + ((box && box.error) || 'no trigger'));
                 return false;
             }
-            // Exactly ONE interaction per attempt: this control toggles, so a
-            // synthetic click followed by a trusted one would open then close it.
-            // Attempt 1 uses real input (this app honours it), attempt 2 the
-            // synthetic click, attempt 3 real input again.
+            // Exactly ONE open-interaction per attempt: this control toggles,
+            // so a second interaction would open then close it. A menu left
+            // open by an earlier attempt is dismissed first. Odd attempts
+            // dispatch the synthesized pointer sequence (the shape this app
+            // actually honours today); the even attempt falls back to real
+            // input, in case a future build stops trusting untrusted events —
+            // coordinate clicks cannot be relied on (see pressTrigger).
+            await exec(`(() => { ${helpers} return dismissMenu(); })()`);
+            await sleep(300);
             if (attempt % 2 === 1) {
+                await exec(`(() => { ${helpers} const el = trigger(); if (!el) return false; return pressTrigger(el); })()`);
+            } else {
                 const wc = codegptWin.webContents;
                 wc.sendInputEvent({ type: 'mouseDown', x: box.x, y: box.y, button: 'left', clickCount: 1 });
                 wc.sendInputEvent({ type: 'mouseUp', x: box.x, y: box.y, button: 'left', clickCount: 1 });
-            } else {
-                await exec(`(() => { ${helpers} const el = trigger(); if (el) el.click(); return true; })()`);
             }
 
             // The list animates in; poll for real rows instead of guessing a delay.
@@ -1134,7 +1168,7 @@ async function codegptSelectModel(engine) {
                 ${helpers}
                 const target = rows().find((row) => hit(row.text));
                 if (!target) return null;
-                target.el.click();
+                press(target.el);
                 return target.text;
             })()`;
             let picked = await exec(pick);
@@ -1153,7 +1187,7 @@ async function codegptSelectModel(engine) {
                 // diagnosable instead of looking like one that does not exist.
                 log('codegpt model not in the menu [' + entries.length + ' rows: '
                     + entries.join(' | ').slice(0, 3000) + ']');
-                await exec(`(() => { ${helpers} const el = trigger(); if (el) el.click(); return true; })()`);
+                await exec(`(() => { ${helpers} return dismissMenu(); })()`);
                 await sleep(500);
                 continue;
             }
@@ -1186,7 +1220,7 @@ function codegptReplyModel(body) {
     }
 }
 
-async function codegptSend(text, { signal, model, label } = {}) {
+async function codegptSend(text, { signal, model, label, onDelta } = {}) {
     if (!codegptWin || codegptWin.isDestroyed()) {
         showCodegpt();
         throw new Error('Opening the CodeGPT window. Please complete sign in and retry.');
@@ -1198,7 +1232,7 @@ async function codegptSend(text, { signal, model, label } = {}) {
     log('codegpt request started (' + text.length + ' chars' +
         (engine ? ', model=' + engine.id : ', default agent page') + ')');
     try {
-        return await codegptSendRequest(text, signal, engine, label);
+        return await codegptSendRequest(text, signal, engine, label, onDelta);
     } catch (error) {
         if (codegptWin && !codegptWin.isDestroyed()) {
             codegptWin.webContents.executeJavaScript(`(() => {
@@ -1214,7 +1248,7 @@ async function codegptSend(text, { signal, model, label } = {}) {
     }
 }
 
-async function codegptSendRequest(text, signal, engine, label) {
+async function codegptSendRequest(text, signal, engine, label, onDelta) {
     const auth = await checkCodegptSignedIn();
     if (!auth.ok) {
         showCodegpt();
@@ -1279,6 +1313,19 @@ async function codegptSendRequest(text, signal, engine, label) {
         throw new Error('send failed — composer still holds the message (is the Send button reachable?)');
     }
 
+    // Progressive streaming: the poll below already reads the growing reply
+    // text, so forward each new suffix to the caller while it forms. Only a
+    // suffix that extends what was already sent is forwarded — a late UI
+    // re-render that rewrites the text wholesale must not scramble the view.
+    let streamed = '';
+    const emitProgress = (value) => {
+        if (typeof onDelta !== 'function' || typeof value !== 'string' || !value) return;
+        if (!value.startsWith(streamed)) return;
+        const suffix = value.slice(streamed.length);
+        if (!suffix) return;
+        streamed = value;
+        try { onDelta(suffix); } catch (_) { /* the client is gone */ }
+    };
     let forming = null;
     let stable = 0;
     let completed = false;
@@ -1309,6 +1356,10 @@ async function codegptSendRequest(text, signal, engine, label) {
                 + ' replyChars=' + ((snap.text || '').length));
         }
         if (snap.signIn) throw new Error('signed out mid-conversation');
+        // Stream the reply as the page forms it — BEFORE the completion
+        // shortcuts below: the captured API reply only exists once the run has
+        // finished, so waiting for it would defeat the whole point.
+        if (snap.text && snap.text !== before.text) emitProgress(snap.text);
         if (snap.apiReply && snap.apiReply.ts >= sendStart) {
             if (snap.apiReply.pending) continue; // never mistake a stream pause for completion
             if (snap.apiReply.status >= 400) throw new Error('CodeGPT request failed (HTTP ' + snap.apiReply.status + ').');
@@ -1524,7 +1575,7 @@ function sendChatgptQueued(text, options = {}) {
     return result;
 }
 
-async function chatgptSend(text, { signal } = {}) {
+async function chatgptSend(text, { signal, onDelta } = {}) {
     if (!chatgptWin || chatgptWin.isDestroyed()) {
         showChatgpt();
         throw new Error('Opening the ChatGPT window. Please complete sign in and retry.');
@@ -1532,7 +1583,7 @@ async function chatgptSend(text, { signal } = {}) {
     const started = Date.now();
     log('chatgpt request started (' + text.length + ' chars)');
     try {
-        return await chatgptSendRequest(text, signal);
+        return await chatgptSendRequest(text, signal, onDelta);
     } catch (error) {
         if (chatgptWin && !chatgptWin.isDestroyed()) {
             chatgptWin.webContents.executeJavaScript(`(() => {
@@ -1547,7 +1598,7 @@ async function chatgptSend(text, { signal } = {}) {
     }
 }
 
-async function chatgptSendRequest(text, signal) {
+async function chatgptSendRequest(text, signal, onDelta) {
     const auth = await checkChatgptSignedIn();
     if (!auth.ok) {
         showChatgpt();
@@ -1606,6 +1657,16 @@ async function chatgptSendRequest(text, signal) {
     }
 
     // Wait for a NEW reply, then for it to stabilise
+    // Progressive streaming (same contract as codegptSendRequest).
+    let streamed = '';
+    const emitProgress = (value) => {
+        if (typeof onDelta !== 'function' || typeof value !== 'string' || !value) return;
+        if (!value.startsWith(streamed)) return;
+        const suffix = value.slice(streamed.length);
+        if (!suffix) return;
+        streamed = value;
+        try { onDelta(suffix); } catch (_) { /* the client is gone */ }
+    };
     let forming = null;
     let stable = 0;
     let completed = false;
@@ -1620,6 +1681,8 @@ async function chatgptSendRequest(text, signal) {
             continue;
         }
         if (snap.signIn) throw new Error('signed out mid-conversation');
+        // Stream the reply as the page forms it (see codegptSendRequest).
+        if (snap.text && snap.text !== before.text) emitProgress(snap.text);
         const isNew = snap.count > before.count ||
             (snap.text && snap.text !== before.text);
         if (!isNew) continue;
@@ -1761,6 +1824,7 @@ function sendCopilotQueued(text, options = {}) {
 
 async function copilotSend(text, options = {}) {
     const signal = options?.signal;
+    const onDelta = options?.onDelta;
     if (!browserWin || browserWin.isDestroyed()) {
         showBrowser();
         throw new Error('Open the Microsoft 365 session in the Copilot window, then retry.');
@@ -1797,6 +1861,16 @@ async function copilotSend(text, options = {}) {
     }
 
     // wait for a NEW reply, then for it to stop growing
+    // Progressive streaming (same contract as codegptSendRequest).
+    let streamed = '';
+    const emitProgress = (value) => {
+        if (typeof onDelta !== 'function' || typeof value !== 'string' || !value) return;
+        if (!value.startsWith(streamed)) return;
+        const suffix = value.slice(streamed.length);
+        if (!suffix) return;
+        streamed = value;
+        try { onDelta(suffix); } catch (_) { /* the client is gone */ }
+    };
     let forming = null;
     let stable = 0;
     while (true) {
@@ -1806,6 +1880,8 @@ async function copilotSend(text, options = {}) {
         try { snap = await snapshot(); } catch (e) { log('poll error: ' + e.message); continue; }
         if (snap.challenge) throw new Error('challenge page during reply');
         if (snap.signIn) throw new Error('signed out mid-conversation');
+        // Stream the reply as the page forms it (see codegptSendRequest).
+        if (snap.text && snap.text !== before.text) emitProgress(snap.text);
         const isNew = snap.count > before.count ||
             (snap.text && snap.text !== before.text);
         if (!isNew) continue;
@@ -2174,16 +2250,16 @@ async function webSearch(query, count) {
     return [];
 }
 
-async function sendChatMessages(config, messages) {
+async function sendChatMessages(config, messages, onDelta) {
     let content;
     if (config.provider === 'endpoint') {
-        content = await endpoints.chat(config, messages);
+        content = await endpoints.chat(config, messages, onDelta);
     } else if (config.provider === 'chatgpt') {
-        content = await sendChatgptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
+        content = await sendChatgptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'), { onDelta });
     } else if (config.provider === 'codegpt') {
-        content = await sendCodegptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
+        content = await sendCodegptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'), { onDelta });
     } else {
-        content = await sendCopilotQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
+        content = await sendCopilotQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'), { onDelta });
     }
     lastReplyAt = Date.now();
     lastError = '';
@@ -2303,13 +2379,21 @@ function installIpc() {
                 }
             }
             if (panel && !panel.isDestroyed()) panel.webContents.send('chat-progress', { requestId: p.requestId, hint: 'Thinking…' });
+            // Stream the reply into the panel while it forms: the senders
+            // forward page/endpoint deltas through onDelta, which lands in the
+            // renderer as chat-delta events (see panel.js).
+            const onDelta = (text) => {
+                if (panel && !panel.isDestroyed() && text) {
+                    panel.webContents.send('chat-delta', { requestId: p.requestId, text: String(text) });
+                }
+            };
             const chatMessages = [
                 ...(grounding ? [{ role: 'system', content: grounding }] : []),
                 ...history.filter(m => m && ['user', 'assistant'].includes(m.role) && m.content)
                     .map(m => ({ role: m.role, content: String(m.content).slice(0, 1200) })),
                 { role: 'user', content: message }
             ];
-            const content = await sendChatMessages(config, chatMessages);
+            const content = await sendChatMessages(config, chatMessages, onDelta);
             return {
                 ok: true,
                 content,

@@ -158,6 +158,12 @@ It does not start a public tunnel or publish a new endpoint. Hosting settings an
 administrative actions remain on the host. Stop any local hosting relay before
 starting this client bridge, since both use port 20777.
 
+**CachyOS / Arch + LazyVim testers:** `bash installer/cachyos-lazyvim/install.sh` does
+the whole client setup — installs `node`/`python` if needed, registers the endpoint
+client as a `systemd --user` service, puts the `reach` CLI in `~/.local/bin`, and adds
+LazyVim keymaps (`<leader>ac` chat, `<leader>af` file, `<leader>as` selection). See
+`installer/cachyos-lazyvim/README.md`.
+
 ## VS Code
 
 The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:

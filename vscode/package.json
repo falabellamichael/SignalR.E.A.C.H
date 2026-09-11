@@ -77,6 +77,24 @@
         "icon": "$(globe)"
       },
       {
+        "command": "simplereach.openBrowserTab",
+        "title": "REACH: Open Browser in New Tab"
+      },
+      {
+        "command": "simplereach.sendPageToChat",
+        "title": "REACH: Send Browser Page to Chat"
+      },
+      {
+        "command": "simplereach.previewDApp",
+        "title": "REACH: Preview DApp",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "simplereach.openDAppExternal",
+        "title": "REACH: Open DApp in Browser",
+        "icon": "$(link-external)"
+      },
+      {
         "command": "simplereach.inspectContext",
         "title": "REACH: Inspect VS Code Context",
         "icon": "$(inspect)"
@@ -119,6 +137,13 @@
           "when": "editorHasSelection"
         }
       ],
+      "editor/title": [
+        {
+          "command": "simplereach.previewDApp",
+          "group": "navigation@10",
+          "when": "resourceExtname == .rsh || resourceExtname == .tsx || resourceExtname == .jsx || resourceExtname == .vue || resourceExtname == .svelte || resourceExtname == .html"
+        }
+      ],
       "reach/selection": [
         {
           "command": "simplereach.explainSelection",
@@ -146,6 +171,18 @@
         }
       ]
     },
+    "keybindings": [
+      {
+        "command": "simplereach.previewDApp",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p"
+      },
+      {
+        "command": "simplereach.openBrowser",
+        "key": "ctrl+alt+b",
+        "mac": "cmd+alt+b"
+      }
+    ],
     "configuration": {
       "title": "SimpleREACH",
       "properties": {
@@ -286,6 +323,11 @@
             "type": "string"
           },
           "markdownDescription": "Access keys for added endpoints, indexed by their exact URL. Set each key using the key button beside its endpoint in REACH Settings."
+        },
+        "simplereach.dappUrl": {
+          "type": "string",
+          "default": "http://localhost:3000",
+          "markdownDescription": "URL of your DApp frontend. **REACH: Preview DApp** opens the REACH Browser panel here; **REACH: Open DApp in Browser** opens it in your system browser."
         },
         "simplereach.ideContext": {
           "type": "boolean",

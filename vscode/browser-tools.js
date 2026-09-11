@@ -238,6 +238,58 @@ async function browserWait(selector, timeoutMs) {
   throw new Error('Timed out after ' + Math.round((Date.now() - start) / 1000) + 's waiting for ' + selector + '.');
 }
 
+async function browserNavigate(url) {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url) || url.length > 8192) {
+    throw new Error('browser_navigate expects a public http(s) URL.');
+  }
+  if (!sessionToken) throw new Error('Open a browser page first with browser_open, then navigate it.');
+  const token = await ensureSession();
+  const result = await call({ action: 'navigate', token, tab: TAB, url });
+  const snap = await snapshotRefText();
+  return { state: result, ...snap };
+}
+
+async function browserFind(text, forward, findNext) {
+  if (typeof text !== 'string' || !text.trim() || text.length > 500) {
+    throw new Error('browser_find needs a search string of up to 500 characters.');
+  }
+  const token = await ensureSession();
+  // The engine returns its `find` state on the response, but Chromium delivers
+  // found-in-page updates asynchronously. Re-read state frames until the final
+  // update arrives so the model gets the real match count.
+  const first = await call({ action: 'find', token, tab: TAB, text, forward: forward !== false, findNext: findNext === true });
+  const deadline = Date.now() + 1500;
+  let state = first && first.find ? first.find : null;
+  let since = Number.isInteger(first && first.sequence) ? first.sequence : undefined;
+  while ((!state || state.finalUpdate !== true) && Date.now() < deadline) {
+    const fresh = await call({ action: 'frame', token, tab: TAB, ...(since !== undefined ? { since } : {}) });
+    if (Number.isInteger(fresh && fresh.sequence)) since = fresh.sequence;
+    if (fresh && fresh.find) {
+      state = fresh.find;
+      if (state.finalUpdate === true) break;
+    }
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  return {
+    text,
+    matches: state && typeof state.matches === 'number' ? state.matches : 0,
+    activeMatchOrdinal: state && typeof state.activeMatchOrdinal === 'number' ? state.activeMatchOrdinal : 0,
+    finalUpdate: !!(state && state.finalUpdate === true),
+  };
+}
+
+async function browserForward() {
+  const token = await ensureSession();
+  await call({ action: 'forward', token, tab: TAB });
+  return snapshotRefText();
+}
+
+async function browserReload() {
+  const token = await ensureSession();
+  await call({ action: 'reload', token, tab: TAB });
+  return snapshotRefText();
+}
+
 async function browserBack() {
   const token = await ensureSession();
   await call({ action: 'back', token, tab: TAB });
@@ -318,6 +370,10 @@ async function runBrowserAction(msg) {
     case 'browser_press': result = await browserPress(msg.browserKey || msg.key, msg.ref, msg.selector); break;
     case 'browser_scroll': result = await browserScroll(msg.x, msg.y); break;
     case 'browser_wait': result = await browserWait(msg.selector, msg.timeout); break;
+    case 'browser_navigate': result = await browserNavigate(msg.url); break;
+    case 'browser_find': result = await browserFind(msg.text, msg.forward, msg.findNext); break;
+    case 'browser_forward': result = await browserForward(); break;
+    case 'browser_reload': result = await browserReload(); break;
     case 'browser_back': result = await browserBack(); break;
     case 'browser_console': result = await browserConsole(); break;
     case 'browser_network': result = await browserNetwork(); break;
@@ -331,8 +387,8 @@ async function runBrowserAction(msg) {
 function renderForModel(action, result) {
   const lines = [];
   const text = (value, fallback) => String(value === undefined || value === null ? (fallback || '') : value);
-  if (action === 'browser_open') {
-    lines.push('Opened: ' + text(result.url));
+  if (action === 'browser_open' || action === 'browser_navigate') {
+    lines.push((action === 'browser_navigate' ? 'Navigated to: ' : 'Opened: ') + text(result.url));
     lines.push('Title: ' + text(result.title));
     lines.push('--- Page text ---');
     lines.push(text(result.text, '').slice(0, SNAPSHOT_BUDGET));
@@ -352,8 +408,21 @@ function renderForModel(action, result) {
     lines.push(JSON.stringify(result));
   } else if (action === 'browser_scroll') {
     lines.push('Scrolled ' + JSON.stringify(result.scrolled));
-  } else if (action === 'browser_back') {
-    lines.push('Back: ' + text(result.url));
+  } else if (action === 'browser_find') {
+    const matches = Number(result.matches) || 0;
+    const current = Number(result.activeMatchOrdinal) || 0;
+    if (matches > 0) {
+      lines.push('[Find "' + String(result.text || '') + '"] ' + matches + ' match(es) on the page; match ' + current + ' of ' + matches + ' is highlighted.');
+    } else {
+      lines.push('No matches on the page for "' + String(result.text || '') + '".');
+    }
+  } else if (action === 'browser_back' || action === 'browser_forward') {
+    lines.push((action === 'browser_forward' ? 'Forward: ' : 'Back: ') + text(result.url));
+    lines.push('Title: ' + text(result.title));
+    lines.push('--- Page text ---');
+    lines.push(text(result.text, '').slice(0, SNAPSHOT_BUDGET));
+  } else if (action === 'browser_reload') {
+    lines.push('Reloaded: ' + text(result.url));
     lines.push('Title: ' + text(result.title));
     lines.push('--- Page text ---');
     lines.push(text(result.text, '').slice(0, SNAPSHOT_BUDGET));
@@ -376,5 +445,6 @@ function __resetForTest() {
 module.exports = { runBrowserAction, __resetForTest,
   // exported for direct unit tests
   browserOpen, browserSnapshot, browserClick, browserType, browserPress,
-  browserScroll, browserWait, browserBack, browserConsole, browserNetwork,
+  browserScroll, browserWait, browserNavigate, browserFind, browserForward,
+  browserReload, browserBack, browserConsole, browserNetwork,
   browserScreenshot, browserClose, renderForModel, numberedRefs };

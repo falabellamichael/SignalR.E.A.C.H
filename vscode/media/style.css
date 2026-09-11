@@ -1173,9 +1173,11 @@ body {
 
 /* ---------- picked /command chip (sits above the textarea) ---------- */
 /* Same accent treatment as .slash-cmd, so a chosen command reads as the same
-   token the menu showed — but compact, and without the template in the box. */
+   token the menu showed — but compact, and without the template in the box.
+   No side padding: the chip lines up flush with the textarea border box and
+   the selects row above it, so the whole composer reads as one column. */
 .slash-chip-bar {
-  display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 4px;
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 4px;
 }
 .slash-chip {
   display: inline-flex; align-items: center; gap: 6px;
