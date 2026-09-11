@@ -602,5 +602,52 @@ class AdminGateTests(unittest.TestCase):
         self.assertNotIn(cfg["system"]["admin_token"], json.dumps(shown))
 
 
+class ConcurrencyGateTests(unittest.TestCase):
+    def test_gate_acquire_and_release(self):
+        gate = reachd.CounterGate()
+        self.assertTrue(gate.acquire(2, timeout_s=0.1))
+        self.assertTrue(gate.acquire(2, timeout_s=0.1))
+        self.assertFalse(gate.acquire(2, timeout_s=0.1))
+        gate.release()
+        self.assertTrue(gate.acquire(2, timeout_s=0.1))
+        gate.release()
+        gate.release()
+        self.assertEqual(gate._active, 0)
+
+    def test_streaming_upstream_failure_releases_gate(self):
+        from unittest.mock import MagicMock, patch
+        from reachd import core
+        from reachd.state import RelayState
+        from reachd.chat import chat_execute
+        import io
+
+        with tempfile.NamedTemporaryFile() as tf:
+            state = RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)), Path(tf.name))
+        state.cfg["models"]["gpt-4o"]["enabled"] = True
+
+        h = MagicMock()
+        h._client_ip.return_value = "127.0.0.1"
+        raw_bytes = json.dumps({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+        }).encode("utf-8")
+        h._read_body.return_value = raw_bytes
+        h.rfile = io.BytesIO(raw_bytes)
+        h.headers = {"Content-Length": str(len(raw_bytes))}
+        h._check_access.return_value = True
+
+        with patch.object(core, "STATE", state):
+            initial_active = state.gate._active
+            with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+                res = chat_execute(h)
+                self.assertIsNone(res)
+
+            # Gate slot MUST be released even on streaming request failure
+            self.assertEqual(state.gate._active, initial_active)
+
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

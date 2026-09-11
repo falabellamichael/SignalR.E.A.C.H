@@ -388,7 +388,7 @@ def chat_execute(h):
                 if use_bridge else "OmniRoute unreachable")
             return None
     finally:
-        if not stream:
+        if not stream or upstream is None:
             core.STATE.gate.release()
     ctx = {
         "started": started, "ip": ip, "rl_headers": rl_headers,
@@ -430,11 +430,12 @@ def chat_finalize(h, upstream, ctx):
         pending_prefix = []
         saw_content = False
         raw_sock = None
+        stream_timeout = int(core.STATE.cfg.get("stream_timeout_s", 300))
         try:
             sock = getattr(upstream, "fp", None)
             raw_sock = getattr(sock, "raw", None) or getattr(sock, "_sock", None)
             if raw_sock and hasattr(raw_sock, "settimeout"):
-                raw_sock.settimeout(None)
+                raw_sock.settimeout(stream_timeout)
             while True:
                 line = upstream.readline()
                 if not line:
@@ -462,7 +463,7 @@ def chat_finalize(h, upstream, ctx):
             pass
         if raw_sock and hasattr(raw_sock, "settimeout"):
             try:
-                raw_sock.settimeout(None)
+                raw_sock.settimeout(stream_timeout)
             except Exception:
                 pass
         if not saw_content:
