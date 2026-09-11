@@ -16,8 +16,14 @@ const { spawn } = require('child_process');
 const { webSearchDdg, searchAndFetch, pageText, browsePage, disposeBrowser, refreshPlaywright, hasPlaywright } = require('./search');
 const { startPageProxy, pageProxyUrl, stopPageProxy } = require('./browser-proxy');
 
-const { locateEdit, repairWindow } = require('./edits');
+const { locateEdit, repairWindow, applyPatch } = require('./edits');
 const { compactMessages, contextChars } = require('./context');
+const { runBrowserAction } = require('./browser-tools');
+const toolsModule = (() => { try { return require('./tools'); } catch (e) { return {}; } })();
+const toolHelp = toolsModule.toolHelp || (() => '');
+const allowedNames = toolsModule.allowedNames || (() => []);
+const needsApproval = toolsModule.needsApproval || (() => false);
+const budgetFor = toolsModule.budgetFor || ((_, fallback = 40000) => fallback);
 
 const CONFIG_SECTION = 'simplereach';
 const { resolveEndpoint, trayDirectory, trayBinary, DEFAULT_ENDPOINT } = require('./connection');
@@ -54,18 +60,7 @@ function getNonce() {
 /* ---- Copilot system tray supervisor (invisible browser + bridge :21302) ---- */
 
 const TRAY_PORT = 21302;
-// Providers served by the tray bridge (:21302) rather than a hosted endpoint:
-// the invisible-browser Copilot and ChatGPT sessions, and the CodeGPT economy
-// models (unlimited tier of a paid CodeGPT plan — the tray drives the signed-in
-// CodeGPT session, because CodeGPT's public API only binds agents to legacy,
-// credit-metered models).
-/* The agentic system prompt.
- *
- * The built-in text below is the long-standing behaviour and stays the default.
- * A user can override it in Settings ("Agent instructions"); the override is
- * used verbatim, with {{workspace}}, {{model}} and {{provider}} substituted so
- * a template can refer to the live request. An empty override = built-in.
- */
+
 const DEFAULT_AGENT_PROMPT = 'You are SimpleREACH, an agentic coding assistant inside VS Code with live workspace access. '
   + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
   + 'in the workspace context above. When the user asks you to change or create files, act '
@@ -84,24 +79,17 @@ const DEFAULT_AGENT_PROMPT = 'You are SimpleREACH, an agentic coding assistant i
   + 'Keep working until the user request is handled or you need concrete user input. '
   + 'A progress update such as "I will inspect the files" must include the tool requests '
   + 'for that next step in the same reply. Do not finish with a promise to act later. '
-  + 'After results arrive, perform the next needed action or provide the completed result. '
+  + 'After results arrive, perform the next needed action or provide the completed result.\n'
   + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
   + 'The read tool returns the complete text file, including unsaved editor changes. Open-file '
   + 'context may omit files: use read before answering or editing unless the needed file is already marked complete. '
   + 'For files larger than one read, use inclusive 1-based line ranges and read every needed range:\n'
   + '```tool\n{"action": "read", "path": "relative/path", "startLine": 1, "endLine": 200}\n```\n'
   + 'Never claim to have read the full file if you only received a preview or some ranges.\n'
-  + '```tool\n{"action": "search", "pattern": "text to find"}\n```\n'
-  + '```tool\n{"action": "list", "path": ""}\n```\n'
-  + '```tool\n{"action": "shell", "command": "npm test"}\n```\n'
-  + '```tool\n{"action": "browse", "url": "https://example.com"}\n```\n'
-  + '```tool\n{"action": "websearch", "query": "latest news"}\n```\n'
-  + 'Actions: "read" reads one file, "search" greps the whole workspace for a pattern, "list" '
-  + 'prints a directory tree (empty path = workspace root), "shell" runs a command in the '
-  + 'integrated terminal (the user must approve it first — you cannot see its output), "browse" '
-  + 'opens a web page in a browser (reads its text and shows a snapshot), "websearch" searches the '
-  + 'web and reads the top pages. Use them '
-  + 'when you need to see files that are not already in the context, then answer the question or emit edit '
+  + toolHelp('core') + '\n'
+  + 'Plan multi-step work with a todo list so progress survives a long run:\n'
+  + '```tool\n{"action": "todo_write", "todos": [{"text": "Read the parser", "status": "in_progress"}]}\n```\n'
+  + 'Use them when you need to see files that are not already in the context, then answer the question or emit edit '
   + 'blocks for the actual changes.';
 
 /* Apply {{variable}} substitutions to a user-supplied prompt template. */
@@ -490,6 +478,37 @@ function fileReadResult(rel, text, startLine, endLine, dirty = false) {
   return `--- ${rel} (${coverage}${dirty ? '; unsaved editor contents' : ''}) ---\n${content}\n--- End of ${rel} ---`;
 }
 
+/* ---- Todo state ----------------------------------------------------------
+ *
+ * A per-conversation checklist the model writes with the todo_write tool and
+ * reads back with todo_read. It is what makes the 40-round pause resumable:
+ * "continue" resumes from the list instead of from prose. Deliberately not
+ * persisted across a VS Code reload, so a stale checklist cannot outlive its
+ * task.
+ */
+const TODO_STATUSES = ['pending', 'in_progress', 'completed'];
+let todoState = [];
+
+function normalizeTodos(input) {
+  if (!Array.isArray(input)) throw new Error('todo_write expects a "todos" array.');
+  if (input.length > 50) throw new Error('Keep the todo list to 50 items or fewer.');
+  return input.map((item, i) => {
+    if (!item || typeof item !== 'object') throw new Error('Todo ' + (i + 1) + ' is not an object.');
+    const text = String(item.text || '').trim();
+    if (!text) throw new Error('Todo ' + (i + 1) + ' has no text.');
+    const status = TODO_STATUSES.includes(item.status) ? item.status : 'pending';
+    return { text: text.slice(0, 300), status };
+  });
+}
+
+function renderTodos(todos) {
+  if (!todos.length) return '(the todo list is empty)';
+  const mark = { pending: '[ ]', in_progress: '[~]', completed: '[x]' };
+  const done = todos.filter(t => t.status === 'completed').length;
+  const rows = todos.map(t => `${mark[t.status]} ${t.text}`).join('\n');
+  return `Todo list (${done}/${todos.length} completed):\n${rows}`;
+}
+
 // Copilot browser-backed routes may discard system messages or forward only
 // the last user turn. Send the complete text transcript in one user message;
 // ordinary OpenAI-compatible providers keep their native message roles.
@@ -651,7 +670,15 @@ class ReachChatViewProvider {
               // apply-and-save behavior. WorkspaceEdit also supports Undo.
               const saved = snapshot.dirty ? false : await doc.save().catch(() => false);
               await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: false }).then(() => {}, () => {});
-              this._post('editResult', { uid, ok: true, path: rel, unsaved: !saved });
+              // Post-edit verification: hand the changed region back so the
+              // model sees the file as it now stands instead of assuming its
+              // proposal landed verbatim. Cheap (one ranged read) and it
+              // catches a wrong-anchor edit before the model builds on it.
+              const applied = doc.getText();
+              const after = applied.slice(change.start, Math.min(applied.length, change.start + 1200));
+              const lineOf = applied.slice(0, change.start).split('\n').length;
+              this._post('editResult', { uid, ok: true, path: rel, unsaved: !saved,
+                verified: { line: lineOf, text: after } });
               break;
             }
             this._post('editResult', { uid, ok: true, path: rel, reviewed });
@@ -758,6 +785,28 @@ class ReachChatViewProvider {
                   + 'Open the REACH Browser (globe button in the chat header) and click '
                   + '“Install browser engine” for full rendering and page snapshots.)';
               }
+            } else if (action === 'todo_write') {
+              todoState = normalizeTodos(msg.todos);
+              result = renderTodos(todoState);
+              this._post('todos', { todos: todoState });
+            } else if (action === 'todo_read') {
+              result = renderTodos(todoState);
+            } else if (action === 'edit_patch') {
+              if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) throw new Error('invalid path');
+              const uri = vscode.Uri.joinPath(folders[0].uri, rel);
+              const doc = await vscode.workspace.openTextDocument(uri);
+              const current = doc.getText();
+              const hunks = msg.hunks;
+              const newText = applyPatch(current, hunks);
+              const edit = new vscode.WorkspaceEdit();
+              const fullRange = new vscode.Range(doc.positionAt(0), doc.positionAt(current.length));
+              edit.replace(uri, fullRange, newText);
+              if (!await vscode.workspace.applyEdit(edit)) throw new Error('The editor could not apply this patch.');
+              const saved = doc.isDirty ? false : await doc.save().catch(() => false);
+              result = `Patch applied to ${rel} (${hunks.length} hunks). File is now ${newText.split('\n').length} lines.`;
+            } else if (action === 'tool_help') {
+              const topic = String(msg.topic || 'browser').slice(0, 40);
+              result = toolHelp(topic === 'browser' ? 'browser' : 'core');
             } else if (action === 'websearch') {
               const query = String(msg.query || '').slice(0, 200);
               if (!query) throw new Error('no search query');
@@ -771,10 +820,15 @@ class ReachChatViewProvider {
                 out.push('\nExcerpt from ' + p.title + ' (' + p.url + '):\n' + String(p.text).slice(0, 4000));
               });
               result = out.join('\n') || '(no results)';
+            } else if (action.startsWith('browser_')) {
+              const br = await runBrowserAction(msg);
+              result = br.text;
+              image = br.image || null;
             } else {
               throw new Error('unknown action: ' + action);
             }
-            this._post('toolResult', { uid, ok: true, result: action === 'read' ? result : String(result).slice(0, 40000), image });
+            const budget = budgetFor(action, 40000);
+            this._post('toolResult', { uid, ok: true, result: action === 'read' ? result : String(result).slice(0, budget), image });
           } catch (e) {
             this._post('toolResult', { uid, ok: false, error: String((e && e.message) || e) });
           }
@@ -1630,7 +1684,10 @@ class ReachChatViewProvider {
       .replace(/\{\{cspSource\}\}/g, webview.cspSource)
       .replace(/\{\{nonce\}\}/g, nonce)
       .replace(/\{\{styleUri\}\}/g, mediaUri('style.css'))
-      .replace(/\{\{scriptUri\}\}/g, mediaUri('chat.js'));
+      .replace(/\{\{scriptUri\}\}/g, mediaUri('chat.js'))
+      // The parser's allow-list is generated from the tool registry, so the
+      // webview and the executor can never disagree about what is executable.
+      .replace(/\{\{toolNames\}\}/g, JSON.stringify(allowedNames()));
   }
 }
 

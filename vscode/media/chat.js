@@ -241,15 +241,29 @@
   function extractTools(text) {
     const tools = [];
     let clean = text || '';
-    // Providers use both fenced tool blocks and XML wrappers. Only explicit,
-    // complete wrappers are executable; ordinary JSON remains chat content.
-    const re = /```tool\s*\n?([\s\S]*?)```|<tool\s*>([\s\S]*?)<\/tool\s*>/gi;
+    const allowed = (typeof window !== 'undefined' && Array.isArray(window.REACH_TOOL_NAMES) && window.REACH_TOOL_NAMES.length)
+      ? window.REACH_TOOL_NAMES
+      : ['read', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand',
+        'todo_write', 'todo_read', 'tool_help',
+        'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_back', 'browser_console', 'browser_network', 'browser_screenshot', 'browser_close'];
+    // Providers use several tool dialects. Only explicit, complete wrappers are
+    // executable; ordinary JSON remains chat content. Accepted here:
+    //   ```tool / <tool>      - REACH's own fenced contract
+    //   <tool_call>/<invoke>  - Cline / Anthropic-style XML wrappers
+    const re = /```tool\s*\n?([\s\S]*?)```|<tool\s*>([\s\S]*?)<\/tool\s*>|<tool_call\s*>([\s\S]*?)<\/tool_call\s*>|<invoke\s*>([\s\S]*?)<\/invoke\s*>/gi;
     let m;
     while ((m = re.exec(text || ''))) {
       try {
-        const it = JSON.parse(repairJson((m[1] === undefined ? m[2] : m[1]).trim()));
-        const allowedTool = ['read', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand'];
-        if (it && allowedTool.includes(it.action)) {
+        const rawContent = (m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : m[4]))).trim();
+        let parsed = JSON.parse(repairJson(rawContent));
+        if (parsed && !parsed.action && parsed.name) {
+          const args = parsed.arguments ?? parsed.parameters ?? {};
+          parsed = Object.assign({}, typeof args === 'string'
+            ? (() => { try { return JSON.parse(args); } catch (e) { return {}; } })()
+            : args, { action: parsed.name });
+        }
+        const it = parsed;
+        if (it && allowed.includes(it.action)) {
           tools.push({
             action: it.action,
             topic: String(it.topic || '').slice(0, 80),
@@ -277,6 +291,21 @@
             command: String(it.command || '').slice(0, 1000),
             url: String(it.url || '').slice(0, 800),
             query: String(it.query || '').slice(0, 200),
+            // browser_* verbs
+            ref: it.ref === undefined ? undefined : String(it.ref).slice(0, 200),
+            selector: String(it.selector || '').slice(0, 300),
+            text: String(it.text || '').slice(0, 4000),
+            browserKey: String(it.browserKey || it.key || '').slice(0, 40),
+            x: it.x, y: it.y,
+            submit: it.submit === true,
+            timeout: it.timeout,
+            // todo_write / tool_help
+            todos: Array.isArray(it.todos) ? it.todos.slice(0, 50).map(t => ({
+              text: String((t && t.text) || '').slice(0, 300),
+              status: String((t && t.status) || 'pending').slice(0, 20),
+            })) : undefined,
+            // edit_patch
+            hunks: Array.isArray(it.hunks) ? it.hunks.slice(0, 40) : undefined,
           });
           clean = clean.replace(m[0], '');
         }
@@ -832,7 +861,14 @@
               : t.action === 'websearch'
                 ? t.query
                 : (t.topic || t.name || t.command || t.operation || t.action);
-      const label = {read:'Read',search:'Search',list:'List',shell:'Run command',browse:'Browse',websearch:'Web search'}[t.action] || t.action;
+      const label = {
+        read: 'Read', search: 'Search', list: 'List', shell: 'Run command', browse: 'Browse', websearch: 'Web search',
+        browser_open: 'Browser: Open', browser_snapshot: 'Browser: Snapshot', browser_click: 'Browser: Click',
+        browser_type: 'Browser: Type', browser_press: 'Browser: Press', browser_scroll: 'Browser: Scroll',
+        browser_wait: 'Browser: Wait', browser_back: 'Browser: Back', browser_console: 'Browser: Console',
+        browser_network: 'Browser: Network', browser_screenshot: 'Browser: Screenshot', browser_close: 'Browser: Close',
+        todo_write: 'Update Plan', todo_read: 'Read Plan', tool_help: 'Tool Help',
+      }[t.action] || t.action;
       addStepRow(t.uid, label + ': ' + detail);
       post('toolReq', Object.assign({}, t, { allowIdeContext: includeWorkspace }));
     });

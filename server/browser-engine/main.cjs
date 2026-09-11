@@ -245,11 +245,29 @@ async function startEngine() {
     const tab = { id: message.tab, win, width, height, sequence: 0, image: null,
       encodedSequence: -1, encodedImage: '', cursor: 'default', error: '',
       find: null, paused: false, contextText: '', pointer: { x: 0, y: 0 }, navigation: 0,
-      mutationQueue: Promise.resolve() };
+      mutationQueue: Promise.resolve(),
+      consoleRing: [], networkRing: [] };
     tabs.set(tab.id, tab);
     const contents = win.webContents;
     contents.setFrameRate(15);
     contents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
+    contents.on('console-message', (_event, level, text, line, sourceId) => {
+      const entry = { level, text: String(text || '').slice(0, 1000), line, source: String(sourceId || '').slice(0, 200), time: Date.now() };
+      tab.consoleRing.push(entry);
+      if (tab.consoleRing.length > 200) tab.consoleRing.shift();
+    });
+    contents.session.webRequest.onCompleted({ urls: ['<all_urls>'] }, details => {
+      if (details.webContentsId !== contents.id) return;
+      const entry = { url: details.url.slice(0, 500), method: details.method, status: details.statusCode, type: details.resourceType, time: Date.now() };
+      tab.networkRing.push(entry);
+      if (tab.networkRing.length > 100) tab.networkRing.shift();
+    });
+    contents.session.webRequest.onErrorOccurred({ urls: ['<all_urls>'] }, details => {
+      if (details.webContentsId !== contents.id) return;
+      const entry = { url: details.url.slice(0, 500), method: details.method, error: details.error, type: details.resourceType, time: Date.now() };
+      tab.networkRing.push(entry);
+      if (tab.networkRing.length > 100) tab.networkRing.shift();
+    });
     contents.on('paint', (_event, _dirty, image) => {
       if (!tab.paused && !image.isEmpty()) { tab.image = image; tab.sequence += 1; }
     });
@@ -369,6 +387,10 @@ async function startEngine() {
         return state(tab);
       case 'pause': tab.paused = true; contents.stopPainting(); return state(tab);
       case 'resume': tab.paused = false; contents.startPainting(); contents.invalidate(); return state(tab);
+      case 'console':
+        return { ok: true, logs: [...tab.consoleRing] };
+      case 'network':
+        return { ok: true, requests: [...tab.networkRing] };
       case 'close': tabs.delete(tab.id); tab.win.destroy(); return { ok: true };
       default: throw new Error('Unsupported browser command.');
     }

@@ -28,7 +28,8 @@ MAX_SESSIONS = 32
 MAX_TABS = 8
 _TAB = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _ACTIONS = {"create", "navigate", "frame", "input", "text", "snapshot", "find",
-            "close", "pause", "resume", "back", "forward", "reload", "stop"}
+            "close", "pause", "resume", "back", "forward", "reload", "stop",
+            "console", "network"}
 
 
 def allowed_origin(origin):

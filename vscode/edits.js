@@ -25,4 +25,55 @@ function repairWindow(current, search, limit = 3200) {
   const end = current.lastIndexOf('\n', start + limit);
   return current.slice(start, end > start ? end : start + limit);
 }
-module.exports = { locateEdit, repairWindow };
+/* A pure-insertion helper: replace the inclusive 1-based line range with the
+ * supplied text. Used by the edit_patch tool when the model gives line ranges
+ * instead of an exact search anchor. */
+function replaceLines(current, startLine, endLine, replacement) {
+  const lines = current.split('\n');
+  const start = startLine === undefined ? 1 : startLine;
+  const end = endLine === undefined ? start : endLine;
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start || start > lines.length) {
+    throw new Error('Use valid 1-based startLine/endLine values. File has ' + lines.length + ' lines.');
+  }
+  const eol = current.includes('\r\n') ? '\r\n' : '\n';
+  const text = String(replacement === undefined ? '' : replacement)
+    .replace(/\r\n/g, '\n').replace(/\n/g, eol);
+  const next = lines.slice(0, start - 1).concat(text === '' ? [] : text.split(eol)).concat(lines.slice(end));
+  return next.join('\n');
+}
+
+/* Apply an ordered set of hunks to the current text. Each hunk is either
+ * { search, replace } (resolved through locateEdit, so it keeps today's exact
+ * matching and uniqueness guarantees) or { startLine, endLine, replace }
+ * (a line range). Hunks are applied in the given order against the evolving
+ * text — an earlier hunk shifting line numbers is therefore the caller's
+ * problem, which is why search-anchored hunks are preferred.
+ *
+ * All-or-nothing: if any hunk fails, nothing is returned and the caller's
+ * original text is untouched, so a partially applied patch can never be
+ * written to disk. */
+function applyPatch(current, hunks) {
+  if (!Array.isArray(hunks) || !hunks.length) throw new Error('edit_patch expects a non-empty "hunks" array.');
+  if (hunks.length > 40) throw new Error('Keep an edit_patch to 40 hunks or fewer.');
+  let text = current;
+  hunks.forEach((hunk, i) => {
+    if (!hunk || typeof hunk !== 'object') throw new Error('Hunk ' + (i + 1) + ' is not an object.');
+    const label = 'Hunk ' + (i + 1) + ': ';
+    try {
+      if (typeof hunk.search === 'string' && hunk.search !== '') {
+        const found = locateEdit(text, hunk.search, String(hunk.replace === undefined ? '' : hunk.replace));
+        text = text.slice(0, found.start) + found.text + text.slice(found.end);
+      } else if (hunk.startLine !== undefined) {
+        text = replaceLines(text, hunk.startLine, hunk.endLine, hunk.replace);
+      } else {
+        throw new Error('needs either a non-empty "search" or a "startLine".');
+      }
+    } catch (e) {
+      throw new Error(label + String((e && e.message) || e));
+    }
+  });
+  if (text === current) throw new Error('This patch would not change the file. Check the hunks against the current source.');
+  return text;
+}
+
+module.exports = { locateEdit, repairWindow, replaceLines, applyPatch };
