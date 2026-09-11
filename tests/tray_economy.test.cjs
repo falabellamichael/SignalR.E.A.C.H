@@ -2,16 +2,52 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
+const economy = require('../copilot/tray/economy-models.js');
 const source = fs.readFileSync(path.join(__dirname, '../copilot/tray/main.js'), 'utf8');
 function section(start, end) { return source.slice(source.indexOf(start), source.indexOf(end)); }
 const parse = vm.runInNewContext(section('function extractCodegptRunReply(', '// Pull the assistant text') + '\nextractCodegptRunReply');
 const run = messages => JSON.stringify({ t: 'final', done: true, messages });
+function listen(handler) {
+ return new Promise((resolve) => {
+  const server = http.createServer(handler);
+  server.listen(0, '127.0.0.1', () => resolve(server));
+ });
+}
 
-test('economy chat uses the extension API port, not the Next port', () => {
- const url = new URL(source.match(/const CODEGPT_CHAT_URL = '([^']+)'/)[1]);
- assert.equal(url.port, '54112');
- assert.equal(url.pathname, '/54113/');
+// The CodeGPT extension allocates its driver port per activation, so the chat
+// page path must be resolved live. A pinned port is how the tray once drove a
+// page whose backend was gone (HTML instead of JSON, then an endless wait).
+test('the chat url carries the discovered driver port in the path', async () => {
+ const build = (port) => vm.runInNewContext(
+  section('const CODEGPT_SIDECAR_PORT', 'const CODEGPT_PARTITION') + '\ncodegptChatUrl',
+  { discoverCodegptApiPort: async () => port, log() {} });
+ assert.equal(await build(54114)(), 'http://localhost:54112/54114/');
+ assert.equal(await build(0)(), 'http://localhost:54112/54113/');
+});
+test('discovery probes live ports and never mistakes the sidecar for the driver', async () => {
+ const sidecar = await listen((req, res) => {  // Next sidecar: HTML on /version
+  res.writeHead(200, { 'Content-Type': 'text/html' }); res.end('<!DOCTYPE html><html></html>');
+ });
+ const driver = await listen((req, res) => {  // extension driver: plain version
+  res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('3.24.65');
+ });
+ try {
+  const sidecarPort = sidecar.address().port, driverPort = driver.address().port;
+  const first = Math.min(sidecarPort, driverPort), last = Math.max(sidecarPort, driverPort);
+  assert.equal(await economy.discoverCodegptApiPort({ force: true, first, last }), driverPort);
+  // Cached: the answer survives without probing again while the TTL holds.
+  await new Promise((resolve) => driver.close(resolve));
+  assert.equal(await economy.discoverCodegptApiPort({ first, last }), driverPort);
+  // Forced rescan after the driver went away reports "not found" (0).
+  assert.equal(await economy.discoverCodegptApiPort({ force: true, first, last }), 0);
+ } finally {
+  await new Promise((resolve) => sidecar.close(resolve));
+ }
+});
+test('no driver at all resolves to 0 so the fallback url is used', async () => {
+ assert.equal(await economy.discoverCodegptApiPort({ force: true, first: 64990, last: 64992 }), 0);
 });
 test('NDJSON returns the final answer without reasoning, history or progress', () => {
  const answer = '```js\n' + 'x'.repeat(14000) + '\n```';

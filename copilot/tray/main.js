@@ -26,7 +26,7 @@ const path = require('node:path');
 // Keep the existing Copilot session directory across source and packaged launches.
 app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
 const { createEndpointClient } = require('./endpoint');
-const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX } = require('./economy-models');
+const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX, discoverCodegptApiPort } = require('./economy-models');
 const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'));
 let clickTimer = null;
 let isQuitting = false;
@@ -69,8 +69,18 @@ const CODEGPT_URL = 'https://app.codegpt.co/';
 // on 54112). Its picker carries the full catalog including the unlimited
 // economy rows (DeepSeek V4.1 Flash, GLM 5.3 Flash, Gemini 3.8 Flash, GPT 5.6
 // Luna, ...), which the hosted web app does not offer. Drive the local page.
-// The path is the EXTENSION API port, not the Next web-server port.
-const CODEGPT_CHAT_URL = 'http://localhost:54112/54113/';
+// The path is the EXTENSION DRIVER port, not the Next web-server port — and
+// the extension re-allocates that driver port on every activation, so it is
+// discovered live (economy-models.js) instead of pinned: a pinned port is how
+// the page started answering with HTML instead of the chat backend.
+const CODEGPT_SIDECAR_PORT = 54112;
+const CODEGPT_CHAT_FALLBACK = 'http://localhost:54112/54113/';
+async function codegptChatUrl({ force = false } = {}) {
+    const driver = await discoverCodegptApiPort({ force });
+    if (driver) return 'http://localhost:' + CODEGPT_SIDECAR_PORT + '/' + driver + '/';
+    log('codegpt driver port not found — using fallback chat url');
+    return CODEGPT_CHAT_FALLBACK;
+}
 const CODEGPT_PARTITION = 'persist:codegpt';
 // Pinned DOM contract (local app, discovered live 2026-09-10): the chat
 // composer; kept alongside the hosted-app shapes so either page can load.
@@ -541,7 +551,12 @@ function ensureCodegpt() {
         if (!isQuitting) { event.preventDefault(); hideCodegpt(); }
     });
     codegptWin.on('closed', () => { codegptWin = null; });
-    codegptWin.loadURL(CODEGPT_CHAT_URL);
+    codegptChatUrl().then((url) => {
+        if (codegptWin && !codegptWin.isDestroyed()) {
+            log('codegpt chat url: ' + url);
+            codegptWin.webContents.loadURL(url);
+        }
+    }).catch(() => {});
     log('codegpt invisible browser created (partition ' + CODEGPT_PARTITION + ')');
     return codegptWin;
 }
@@ -574,7 +589,8 @@ function showCodegpt() {
     refreshNativeMenus();
 }
 
-const CODEGPT_CONTROLS_JS = `(() => {
+function codegptControlsJs(chatUrl) {
+    return `(() => {
     if (document.getElementById('__reachCtl')) return 'already';
     const bar = document.createElement('div');
     bar.id = '__reachCtl';
@@ -593,21 +609,23 @@ const CODEGPT_CONTROLS_JS = `(() => {
         return b;
     };
     bar.appendChild(mk('⟳', 'Reload this page', () => location.reload()));
-    bar.appendChild(mk('⌂', 'Back to CodeGPT chat', () => { location.href = ${JSON.stringify(CODEGPT_CHAT_URL)}; }));
+    bar.appendChild(mk('⌂', 'Back to CodeGPT chat', () => { location.href = ${JSON.stringify(chatUrl)}; }));
     (document.body || document.documentElement).appendChild(bar);
     return 'injected';
 })()`;
+}
 
 async function injectCodegptControls() {
     if (!codegptWin || codegptWin.isDestroyed()) return;
+    const js = codegptControlsJs(await codegptChatUrl());
     try {
-        await codegptWin.webContents.executeJavaScript(CODEGPT_CONTROLS_JS);
+        await codegptWin.webContents.executeJavaScript(js);
     } catch (_) { /* page not ready */ }
     if (!codegptWin.__ctlHooked) {
         codegptWin.__ctlHooked = true;
         codegptWin.webContents.on('did-finish-load', () => {
             if (codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()) {
-                codegptWin.webContents.executeJavaScript(CODEGPT_CONTROLS_JS).catch(() => {});
+                injectCodegptControls();
             }
         });
     }
@@ -620,7 +638,11 @@ function hideCodegpt() {
 
 function reloadCodegpt() {
     const win = ensureCodegpt();
-    win.webContents.loadURL(CODEGPT_CHAT_URL);
+    // An explicit reload is the retry path after a failed load, so rescan the
+    // driver port instead of trusting the cache.
+    codegptChatUrl({ force: true }).then((url) => {
+        if (win && !win.isDestroyed()) win.webContents.loadURL(url);
+    }).catch(() => {});
 }
 
 async function signOutCodegpt() {
@@ -900,7 +922,7 @@ async function checkCodegptSignedIn() {
             }
             return { ok: false, why: 'chat page never finished loading' };
         }
-        codegptWin.webContents.loadURL(CODEGPT_CHAT_URL);
+        codegptWin.webContents.loadURL(await codegptChatUrl({ force: true }));
         await sleep(5000);
         const snap2 = await codegptSnapshot();
         if (snap2.composer) return { ok: true };

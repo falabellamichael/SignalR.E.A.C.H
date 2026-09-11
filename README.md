@@ -78,14 +78,20 @@ choose **CodeGPT economy models** and select a model. The tray serves them at
 `codegpt-eco` (and legacy `codegpt-eco-gpt-4o-mini`) selects the first economy
 entry rather than an arbitrary page default.
 
-The tray opens `http://localhost:54112/54113/`: **54112 is the Next web server;
-54113 in the path is the CodeGPT extension API port**. Using `/54112/` renders
-the UI but sends chat to the wrong backend, producing HTML instead of JSON.
+The tray opens `http://localhost:54112/<driver>/`: **54112 is the Next web
+server; `<driver>` in the path is the CodeGPT extension's API port**. The
+extension re-allocates that port on every activation (it moved 54113 → 54114
+across reloads), so the tray **discovers it live** by probing each candidate's
+`/version` — the driver answers with its version string, the sidecar answers
+HTML and is ignored. That is why the port is never pinned: opening `/54112/`
+(or a stale driver port) renders the UI but sends chat to the wrong backend,
+producing HTML instead of JSON — or no reply at all.
 The tray confirms the requested model in the local picker, submits once, and
 captures `/api/runs` NDJSON. Only the final assistant answer is returned, without
 reasoning blocks, progress labels, or the old response-length truncation.
-A failed model switch is an error, never a silent fallback. Invalid responses,
-approval-required runs, and requests exceeding 180 seconds fail explicitly.
+A failed model switch is an error, never a silent fallback. Invalid responses
+and approval-required runs fail explicitly; a run that never answers is waited
+for, not cut off.
 
 The separately hosted public endpoint needs the updated tray on its own host;
 updating a client machine does not update that host. Its relay uses the existing
