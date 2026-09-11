@@ -75,7 +75,12 @@
   let activeRequestConvId = null;
   let contextRevision = 0;
   let activeContextRevision = 0;
-  const MAX_AGENT_ROUNDS = 40;
+  // Agent effort limits come from settings (simplereach.agentMaxRounds /
+  // simplereach.agentUnfinishedRetries); 0 there means "no limit" — the agent
+  // works until the task is done or the user presses Stop. These initial values
+  // are the fallback used until the first config message arrives.
+  let MAX_AGENT_ROUNDS = 40;
+  let UNFINISHED_RETRY_LIMIT = 2;
   const followUpQueue = [];
   const appliedEdits = [];
   const attachments = [];
@@ -83,6 +88,15 @@
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
+
+  /* Agent effort limits are user settings: 0 = no limit (unlimited rounds, and
+   * announced work is chased without pausing), a positive number caps it. */
+  function applyAgentLimits(cfg) {
+    const rounds = Number(cfg && cfg.agentMaxRounds);
+    MAX_AGENT_ROUNDS = Number.isFinite(rounds) && rounds > 0 ? Math.floor(rounds) : Infinity;
+    const retries = Number(cfg && cfg.agentUnfinishedRetries);
+    UNFINISHED_RETRY_LIMIT = Number.isFinite(retries) && retries > 0 ? Math.floor(retries) : Infinity;
+  }
 
   function post(type, payload) {
     vscode.postMessage(Object.assign({ type }, payload || {}));
@@ -243,9 +257,9 @@
     let clean = text || '';
     const allowed = (typeof window !== 'undefined' && Array.isArray(window.REACH_TOOL_NAMES) && window.REACH_TOOL_NAMES.length)
       ? window.REACH_TOOL_NAMES
-      : ['read', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand',
+      : ['read', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand',
         'todo_write', 'todo_read', 'tool_help',
-        'browser_open', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_back', 'browser_console', 'browser_network', 'browser_screenshot', 'browser_close'];
+        'browser_open', 'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_back', 'browser_forward', 'browser_reload', 'browser_find', 'browser_console', 'browser_network', 'browser_screenshot', 'browser_close'];
     // Providers use several tool dialects. Only explicit, complete wrappers are
     // executable; ordinary JSON remains chat content. Accepted here:
     //   ```tool / <tool>      - REACH's own fenced contract
@@ -693,26 +707,221 @@
     return arr[Math.floor(Math.random() * arr.length)];
   }
 
+  /* ---- step analysis: numbering, quips, plan groups, progress ---- */
+
+  let stepsHead = null;        // { region, chip, bar, fill } of the live timeline
+  let currentStepRow = null;   // the row the run is on right now
+  let lastTodos = [];          // latest Agent-plan list (todo_write); [] until then
+
+  const STEP_QUIPS = {
+    read: ['reading it like it owes me money', 'squinting at the source', 'cracking the file open', 'every line, all the way down'],
+    search: ['digging through the repo', 'shaking the file tree for answers', 'hunting for that one symbol', 'turning the workspace upside down'],
+    list: ['taking inventory', 'seeing what is in the drawer'],
+    browse: ['taking the web for a spin', 'peeking at the live page', 'driving the browser around the block'],
+    websearch: ['asking the internet nicely', 'consulting the hive mind', 'googling professionally'],
+    plan: ['sharpening the checklist', 'laying out the steps', 'making a list, checking it twice'],
+    compress: ['squashing old context into notes', 'doing some memory yoga', 'folding the history neatly'],
+    context: ['taking stock of the workspace', 'checking the map before the trip'],
+    generate: ['putting the answer together', 'assembling the reply', 'polishing the words'],
+    apply: ['patching it in carefully', 'landing the edit'],
+    shell: ['letting the terminal do the talking'],
+    think: ['thinking it through', 'weighing the options'],
+    other: ['working on it', 'making progress'],
+  };
+  const WAIT_QUIPS = [
+    'still going — it is a big one',
+    'no timeouts here, we wait it out',
+    'taking its sweet time, all good',
+    'still connected, still working',
+    'the model is being thorough',
+  ];
+
+  // Same step, same line: a reload or repaint must never reshuffle commentary.
+  function stepHash(text) {
+    const s = String(text || '');
+    let h = 0;
+    for (let i = 0; i < s.length; i += 1) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  }
+
+  function stepFamily(title) {
+    const t = String(title || '').toLowerCase();
+    if (t.startsWith('apply')) return 'apply';
+    if (t.includes('compress')) return 'compress';
+    if (t.includes('plan')) return 'plan';
+    if (t.includes('web search') || t.includes('search the web')) return 'websearch';
+    if (t.startsWith('read')) return 'read';
+    if (t.includes('browse') || t.includes('browser:')) return 'browse';
+    if (t.startsWith('search') || t.includes('find relevant') || t.includes('workspace files')) return 'search';
+    if (t.startsWith('list')) return 'list';
+    if (t.startsWith('run command') || t.startsWith('run:')) return 'shell';
+    if (t.includes('context')) return 'context';
+    if (t.includes('generate') || t.includes('answer')) return 'generate';
+    if (t.includes('think') || t.includes('unfinished') || t.includes('paused')) return 'think';
+    return 'other';
+  }
+
+  function quipFor(family, seed) {
+    const pool = STEP_QUIPS[family] || STEP_QUIPS.other;
+    return pool[stepHash(seed) % pool.length];
+  }
+
+  function planProgress(todos) {
+    const list = (Array.isArray(todos) ? todos : []).filter((t) => t && t.text);
+    const done = list.filter((t) => t.status === 'completed').length;
+    const currentIndex = list.findIndex((t) => t.status === 'in_progress');
+    return { total: list.length, done: done, currentIndex: currentIndex,
+      currentText: currentIndex >= 0 ? list[currentIndex].text : '' };
+  }
+
+  /* With an Agent plan, the plan items ARE the main steps: each new step is
+   * grouped under the item that is in progress when it starts. No plan, no
+   * groups — the header counter stands on its own. */
+  function phaseFor(title, todos) {
+    const plan = planProgress(todos);
+    if (!plan.total) return '';
+    if (plan.currentText) return 'Plan ' + (plan.currentIndex + 1) + '/' + plan.total + ' \u00b7 ' + plan.currentText;
+    return plan.done >= plan.total ? 'Plan complete \u00b7 ' + plan.total + '/' + plan.total
+      : 'Plan ' + Math.min(plan.total, plan.done + 1) + '/' + plan.total;
+  }
+
+  function rowClassName(row) {
+    return 'step-line ' + row.record.status + (row === currentStepRow ? ' current' : '');
+  }
+
+  function refreshCurrentRow() {
+    let running = null;
+    for (let i = stepRows.length - 1; i >= 0; i -= 1) {
+      if (!stepRows[i].closed) { running = stepRows[i]; break; }
+    }
+    currentStepRow = running;
+    stepRows.forEach((row) => { row.el.className = rowClassName(row); });
+  }
+
+  function updateStepsHead(trace, frozen) {
+    if (!stepsHead) return;
+    const steps = (trace && trace.steps) || [];
+    let running = null;
+    for (let i = steps.length - 1; i >= 0; i -= 1) {
+      if (steps[i].status === 'running') { running = steps[i]; break; }
+    }
+    const live = !!running;
+    const plan = frozen ? { total: 0, done: 0, currentIndex: -1 } : planProgress(lastTodos);
+    let chipText = '';
+    let fill = null;             // 0..1 determinate; null = unknown -> sheen
+    if (steps.length) {
+      if (plan.total) {
+        const reached = Math.min(plan.total, plan.done + (plan.currentIndex >= 0 ? 1 : 0));
+        chipText = 'Plan ' + reached + '/' + plan.total;
+        fill = reached / plan.total;
+      } else {
+        chipText = live ? 'Step ' + (running.index || steps.length)
+          : steps.length + (steps.length === 1 ? ' step' : ' steps');
+      }
+    }
+    stepsHead.chip.textContent = chipText;
+    stepsHead.region.className = 'steps' + (live ? ' running' : '');
+    stepsHead.bar.className = 'step-progress' + (live ? ' running' : '') + (fill !== null ? ' determinate' : '');
+    if (fill !== null && stepsHead.fill && stepsHead.fill.style) {
+      stepsHead.fill.style.width = Math.round(fill * 100) + '%';
+    }
+  }
+
   function createTimeline(trace, beforeEl) {
     const region = document.createElement('section');
     region.className = 'steps'; region.setAttribute('aria-label', 'Agent activity');
-    const title = document.createElement('div'); title.className = 'steps-title'; title.textContent = 'Agent activity';
-    region.appendChild(title);
+    const head = document.createElement('div'); head.className = 'steps-head';
+    const title = document.createElement('span'); title.className = 'steps-title'; title.textContent = 'Agent activity';
+    const chip = document.createElement('span'); chip.className = 'steps-chip'; chip.setAttribute('aria-live', 'polite');
+    const bar = document.createElement('div'); bar.className = 'step-progress';
+    const fill = document.createElement('i'); fill.className = 'step-progress-fill';
+    bar.appendChild(fill);
+    head.append(title, chip, bar);
+    region.appendChild(head);
+    stepsHead = { region: region, chip: chip, bar: bar, fill: fill };
+    updateStepsHead(trace);
     log.insertBefore(region, beforeEl || null);
     return region;
   }
 
+  /* The live plan the model maintains with todo_write. The host posts a
+   * `todos` message after every write, so this card is re-painted in place
+   * rather than appended per update — a plan that is rewritten five times
+   * should read as one checklist that changes, not five stacked copies. */
+  let todoCard = null;
+
+  function renderTodoCard(todos) {
+    const list = Array.isArray(todos) ? todos : [];
+    lastTodos = list;
+    if (!list.length) { if (todoCard) { todoCard.remove(); todoCard = null; } return; }
+    if (!todoCard || !todoCard.isConnected) {
+      const region = document.createElement('section');
+      region.className = 'todo-card';
+      region.setAttribute('aria-label', 'Agent plan');
+      const head = document.createElement('div');
+      head.className = 'todo-head';
+      const title = document.createElement('span');
+      title.className = 'todo-title';
+      title.textContent = 'Agent plan';
+      const count = document.createElement('span');
+      count.className = 'todo-count';
+      head.append(title, count);
+      region.appendChild(head);
+      const items = document.createElement('ul');
+      items.className = 'todo-items';
+      region.appendChild(items);
+      todoCard = region;
+      if (stepsEl) stepsEl.insertBefore(region, stepsEl.firstChild ? stepsEl.children[1] || null : null);
+      else log.insertBefore(region, pendingBubble && pendingBubble.parentElement);
+    }
+    const done = list.filter((t) => t && t.status === 'completed').length;
+    todoCard.querySelector('.todo-count').textContent = done + '/' + list.length + ' done';
+    const items = todoCard.querySelector('.todo-items');
+    items.textContent = '';
+    const mark = { pending: '\u25cb', in_progress: '\u25d0', completed: '\u2713' };
+    list.forEach((t) => {
+      const item = document.createElement('li');
+      const status = (t && t.status) || 'pending';
+      item.className = 'todo-item todo-' + status;
+      const glyph = document.createElement('span');
+      glyph.className = 'todo-glyph';
+      glyph.textContent = mark[status] || mark.pending;
+      glyph.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.className = 'todo-text';
+      label.textContent = String((t && t.text) || '');
+      item.append(glyph, label);
+      items.appendChild(item);
+    });
+    if (stepsEl && activeTrace) updateStepsHead(activeTrace);
+    scrollBottom();
+  }
+
   function paintStep(region, record, fullResult) {
+    if (record.index === undefined) record.index = (region.__count = (region.__count || 0) + 1);
+    if (!record.quip) record.quip = quipFor(stepFamily(record.title), record.uid || record.title + '#' + record.index);
+    if (record.phase === undefined) record.phase = phaseFor(record.title, lastTodos);
+    if (record.phase && region.__phase !== record.phase) {
+      region.__phase = record.phase;
+      const group = document.createElement('div');
+      group.className = 'step-group';
+      group.textContent = record.phase;
+      region.appendChild(group);
+    }
     const el = document.createElement('article'); el.className = 'step-line';
     const head = document.createElement('div'); head.className = 'step-head';
     const spin = document.createElement('span'); spin.className = 'mini-spin'; spin.setAttribute('aria-hidden', 'true');
+    const num = document.createElement('span'); num.className = 'step-num'; num.textContent = record.index + '.';
     const text = document.createElement('span'); text.className = 'step-text'; text.textContent = record.title;
     const state = document.createElement('span'); state.className = 'step-state';
-    head.append(spin, text, state); el.appendChild(head);
+    head.append(spin, num, text, state); el.appendChild(head);
+    const quip = document.createElement('div'); quip.className = 'step-quip'; quip.textContent = record.quip;
+    el.appendChild(quip);
     const output = document.createElement('div'); output.className = 'step-output'; el.appendChild(output);
     region.appendChild(el);
-    const row = { el, textEl: text, stateEl: state, outputEl: output, record, real: true,
-      closed: record.status !== 'running', uid: record.uid || null };
+    const row = { el, textEl: text, stateEl: state, outputEl: output, quipEl: quip,
+      record, real: true, closed: record.status !== 'running', uid: record.uid || null,
+      quipText: record.quip, openChoice: undefined };
     updateStep(row, record.status, fullResult === undefined ? record.result : fullResult, false);
     return row;
   }
@@ -732,11 +941,17 @@
   function addStepRow(uid, text, title) {
     if (!stepsEl) startSteps();
     const record = { uid: uid || null, title: title || text || 'Preparing request', status: 'running', result: '' };
+    record.index = activeTrace.steps.length + 1;
+    record.quip = quipFor(stepFamily(record.title), uid || (record.title + '#' + record.index));
+    record.phase = phaseFor(record.title, lastTodos);
     activeTrace.steps.push(record);
     const row = paintStep(stepsEl, record);
     row.startedAt = Date.now();
     if (uid) rowByUid[uid] = row;
-    stepRows.push(row); saveSteps(); scrollBottom();
+    stepRows.push(row);
+    refreshCurrentRow();
+    updateStepsHead(activeTrace);
+    saveSteps(); scrollBottom();
     return row;
   }
 
@@ -762,6 +977,10 @@
     const paint = () => {
       if (row.closed) { stopRunningTicker(row); return; }
       const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+      if (row.quipEl) {
+        const line = Math.floor(seconds / 12);
+        row.quipEl.textContent = line === 0 ? row.quipText : WAIT_QUIPS[line % WAIT_QUIPS.length];
+      }
       if (seconds < 5) { row.outputEl.textContent = 'Waiting for result…'; return; }
       const patience = seconds >= 45 ? ' — still connected, nothing is being cut off' : '';
       row.outputEl.textContent = 'Still working · ' + fmtDuration(seconds) + ' elapsed' + patience;
@@ -774,16 +993,21 @@
     if (!row) return;
     stopRunningTicker(row);
     row.record.status = status || 'completed'; row.closed = row.record.status !== 'running';
-    row.el.className = 'step-line ' + row.record.status;
-    row.stateEl.textContent = { running: 'Running', completed: 'Done', error: 'Failed', cancelled: 'Stopped' }[row.record.status] || row.record.status;
-    row.outputEl.replaceChildren();
     const text = String(result || '');
     if (save) { row.record.result = text.slice(0, 12000); row.record.resultChars = text.length; }
+    if (row.closed && !row.record.duration && row.startedAt) {
+      row.record.duration = Math.max(1, Math.round((Date.now() - row.startedAt) / 1000));
+    }
+    const statusText = { running: 'Running', completed: 'Done', error: 'Failed', cancelled: 'Stopped' }[row.record.status] || row.record.status;
+    row.stateEl.textContent = statusText + (row.closed && row.record.duration ? ' · ' + fmtDuration(row.record.duration) : '');
+    // Completed work folds to one line; the running step keeps its output open.
+    row.el.className = rowClassName(row);
+    row.outputEl.replaceChildren();
     const total = Math.max(text.length, row.record.resultChars || 0);
     if (text) {
       const preview = document.createElement('pre'); preview.className = 'step-result';
       preview.textContent = text.length > 1200 ? text.slice(0, 1200) + '\n…' : text;
-      row.outputEl.appendChild(preview);
+      const parts = [preview];
       if (text.length > 1200) {
         const details = document.createElement('details'); details.className = 'step-details';
         const label = document.createElement('summary');
@@ -794,16 +1018,34 @@
             const full = document.createElement('pre'); full.className = 'step-result'; full.textContent = text; details.appendChild(full);
           }
         });
-        row.outputEl.appendChild(details);
+        parts.push(details);
       }
       if (text.length < total) {
         const note = document.createElement('div'); note.className = 'step-preview-note';
         note.textContent = 'Saved first ' + text.length.toLocaleString() + ' of ' + total.toLocaleString() + ' characters.';
-        row.outputEl.appendChild(note);
+        parts.push(note);
+      }
+      if (row.closed) {
+        // The result is kept — as a dropdown — so a finished list stays
+        // scannable without hiding anything. Live steps are never folded:
+        // a running row renders its status inline, and a dropdown the user
+        // opened stays open and keeps updating when new data arrives.
+        const drop = document.createElement('details'); drop.className = 'step-drop';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Result · ' + total.toLocaleString() + (total === 1 ? ' character' : ' characters');
+        drop.open = row.openChoice === undefined ? row.record.status === 'error' : row.openChoice;
+        drop.addEventListener('toggle', () => { row.openChoice = drop.open; });
+        drop.appendChild(summary);
+        parts.forEach((node) => drop.appendChild(node));
+        row.outputEl.appendChild(drop);
+      } else {
+        parts.forEach((node) => row.outputEl.appendChild(node));
       }
     } else if (status === 'running') {
       startRunningTicker(row);
     }
+    refreshCurrentRow();
+    if (activeTrace) updateStepsHead(activeTrace);
     if (save) saveSteps();
   }
 
@@ -822,21 +1064,25 @@
   }
 
   function endStep(status = 'completed') {
+    const trace = activeTrace;
     stepRows.filter(row => !row.closed).forEach(row => closeStep(row,
       status === 'cancelled' ? 'Stopped before a result was returned.' : status === 'error' ? 'The request ended with an error.' : 'Completed.', status));
     saveSteps();
+    updateStepsHead(trace);
     // Keep the rendered timeline and saved records; detach only active handles.
-    stepsEl = null; activeTrace = null; stepRows = []; rowByUid = {}; activeResponseStep = null;
+    stepsEl = null; activeTrace = null; stepRows = []; rowByUid = {}; activeResponseStep = null; currentStepRow = null;
   }
 
   function restoreTimelines(before) {
     for (const trace of (conv && conv.activity) || []) {
       if (trace.before !== before) continue;
       const region = createTimeline(trace);
-      for (const record of trace.steps) {
+      trace.steps.forEach((record, i) => {
+        if (record.index === undefined) record.index = i + 1;
         const saved = record.status === 'running' ? { ...record, status: 'cancelled', result: 'Interrupted before a result was saved.' } : record;
         paintStep(region, saved);
-      }
+      });
+      updateStepsHead(trace, true);
     }
   }
 
@@ -862,7 +1108,7 @@
                 ? t.query
                 : (t.topic || t.name || t.command || t.operation || t.action);
       const label = {
-        read: 'Read', search: 'Search', list: 'List', shell: 'Run command', browse: 'Browse', websearch: 'Web search',
+        read: 'Read', glob: 'Find files', search: 'Search', list: 'List', shell: 'Run command', browse: 'Browse', websearch: 'Web search',
         browser_open: 'Browser: Open', browser_snapshot: 'Browser: Snapshot', browser_click: 'Browser: Click',
         browser_type: 'Browser: Type', browser_press: 'Browser: Press', browser_scroll: 'Browser: Scroll',
         browser_wait: 'Browser: Wait', browser_back: 'Browser: Back', browser_console: 'Browser: Console',
@@ -1784,9 +2030,20 @@
   }
 
   function send() {
-    const text = input.value.trim();
-    if (!text) return;
+    const typed = input.value.trim();
+    // A pending chip is expanded here, once, into the exact string the old
+    // filled-textarea path produced: buildSlashPrompt(cmd, rest). `typed` is
+    // that same `rest`. Callers without a chip (askAbout, the queue) are
+    // unaffected; the expansion is a no-op when pendingSlash is null.
+    const text = pendingSlash ? buildSlashPrompt(pendingSlash, typed) : typed;
+    // A chip with an empty box is still a complete request (e.g. /commit-style
+    // templates the user wants verbatim), but a plain empty box is not.
+    if (!text && !pendingSlash) return;
+    if (!pendingSlash && !typed) return;
+    pendingSlash = null;
+    renderSlashChip();
     input.value = '';
+    if (!text) return;
     if (busy) {
       // follow-up: fires the moment the current reply finishes
       ensureConv();
@@ -1814,6 +2071,7 @@
     switch (msg.type) {
       case 'config':
         configCache = msg;
+        applyAgentLimits(msg);
         updateProviderOptions(msg);
         if (msg.model) {
           const opt = document.createElement('option');
@@ -1829,6 +2087,7 @@
       case 'configSaved': {
         const previousSelection = configCache?.providerSelection || configCache?.provider || 'endpoint';
         configCache = msg.config || configCache;
+        applyAgentLimits(configCache);
         updateProviderOptions(configCache);
         if (msg.key === 'provider' || previousSelection !== providerSelect.value) { clearChat(true); post('getConfig'); }
         if (msg.config && msg.config.endpoint) endpointLine.textContent = msg.config.endpoint;
@@ -1870,6 +2129,21 @@
           pendingText = msg.full;
           setRich(pendingBubble, maskFenced(pendingText));
         }
+        // An empty, unaborted "done" is a failed round, not an answer: it used
+        // to close the response step as "Response shown below." over an empty
+        // bubble, hiding the real failure behind a green timeline (2026-09-10).
+        if (!aborted && !isAnsweringNow && !String(pendingText || '').trim() && !pendingEdits.length) {
+          const note = 'The provider returned an empty response — nothing was streamed. Retry, or check the tray / CodeGPT connection.';
+          if (activeResponseStep) closeStep(rowByUid[activeResponseStep], note, 'error');
+          else showStep('No reply', true, '', note);
+          finishBubble('error');
+          const emptyErr = document.createElement('div');
+          emptyErr.className = 'bubble error';
+          emptyErr.textContent = '⚠ ' + note;
+          log.appendChild(emptyErr);
+          scrollBottom();
+          break;
+        }
         let tools = [];
         if (agenticEnabled) {
           const parsedE = extractEdits(pendingText);
@@ -1891,7 +2165,7 @@
           break;
         }
         const unfinished = !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length && isUnfinishedUpdate(pendingText);
-        if (!aborted && unfinished && continuationRetries < 2 && agentRounds < MAX_AGENT_ROUNDS) {
+        if (!aborted && unfinished && continuationRetries < UNFINISHED_RETRY_LIMIT && agentRounds < MAX_AGENT_ROUNDS) {
           if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText);
           else showStep('Assistant update', true, '', pendingText);
           continuationRetries += 1;
@@ -1920,6 +2194,9 @@
         if (aborted) hint(pickFun(ABORT_LINES));
         break;
       }
+      case 'todos':
+        renderTodoCard(msg.todos);
+        break;
       case 'toolResult': {
         if (!busy || stopRequested) break;
         const t = contTools.find((x) => x.uid === msg.uid);
@@ -1970,6 +2247,28 @@
         pendingThought = (msg.text || '').trim();
         if (thinkRow) thinkRow.title = 'Private reasoning:\n\n' + pendingThought;
         break;
+      case 'localCommandResult': {
+        // /vram, /gpu, /ollama — local hardware facts, printed verbatim.
+        const node = pendingLocal[msg.uid];
+        if (node) { delete pendingLocal[msg.uid]; node.remove(); }
+        const card = document.createElement('div');
+        card.className = 'local-card';
+        const head = document.createElement('div');
+        head.className = 'local-head';
+        head.textContent = msg.title || msg.uid || 'local';
+        const pre = document.createElement('pre');
+        pre.className = 'local-body';
+        pre.textContent = String(msg.text || '(no output)');
+        card.append(head, pre);
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'local-copy';
+        copyBtn.textContent = 'Copy';
+        copyBtn.addEventListener('click', () => copyText(pre.textContent));
+        card.appendChild(copyBtn);
+        log.appendChild(card);
+        scrollBottom();
+        break;
+      }
       case 'searchInfo': {
         webCount.textContent = msg.results
           ? `Web · ${msg.results} hits${msg.pages ? ' + ' + msg.pages + ' pages' : ''}`
@@ -2112,11 +2411,19 @@
           break;
         }
         if (msg.ok) {
-          showStep('Apply: ' + msg.path, true, '', msg.unsaved ? 'Updated the editor buffer; changes remain unsaved.' : 'Applied and saved.');
-          if (!busy) endStep();
-          if (!appliedEdits.includes(msg.path)) appliedEdits.push(msg.path);
-          rec.status.textContent = msg.unsaved ? 'Applied · unsaved' : '✓ applied';
-          rec.status.className = 'edit-status ok';
+          if (msg.already) {
+            // The change is already in the file: the card is done — no error,
+            // and no "Apply:" timeline step for a no-op.
+            if (!busy) endStep();
+            rec.status.textContent = '✓ already applied — nothing left to change';
+            rec.status.className = 'edit-status ok';
+          } else {
+            showStep('Apply: ' + msg.path, true, '', msg.unsaved ? 'Updated the editor buffer; changes remain unsaved.' : 'Applied and saved.');
+            if (!busy) endStep();
+            if (!appliedEdits.includes(msg.path)) appliedEdits.push(msg.path);
+            rec.status.textContent = msg.unsaved ? 'Applied · unsaved' : '✓ applied';
+            rec.status.className = 'edit-status ok';
+          }
         } else {
           if (!busy) endStep();
           rec.status.textContent = '⚠ ' + (msg.error || 'failed');
@@ -2286,6 +2593,38 @@
     { name: '/help', desc: 'Show what REACH can do',
       prompt: 'Briefly list what you can do here: agentic code edits as diffs, workspace reading and search, running approved shell commands, web search and browsing. Keep it short.',
       send: true },
+
+    /* ---- planning + implementation ---- */
+    { name: '/goal', desc: 'Turn this request into a measurable goal',
+      prompt: 'Goal: ' },  // completed by buildSlashPrompt: fills in a goal-oriented template
+    { name: '/plan', desc: 'Plan the work before touching code',
+      prompt: 'Plan the work for this request BEFORE changing any files. Inspect whatever you need with read/glob/search/list first, then answer with:\n1. Goal and explicit acceptance criteria\n2. Files to change with the exact path and why\n3. Ordered steps, each independently verifiable\n4. Risks, unknowns and the assumptions you are making\n5. How the change will be verified (tests, commands)\nDo not emit edit blocks in this reply.\n\nRequest: ' },
+    { name: '/implement', desc: 'Implement the plan and apply the edits',
+      prompt: 'Implement this now, end to end. Read every file you change before you change it, emit ```edit blocks for each change, then state exactly how the result should be verified.\n\nImplement: ' },
+    { name: '/debug', desc: 'Diagnose and fix the failure',
+      prompt: 'Diagnose this failure: reproduce it from the code and tests you can read, state the root cause with evidence (file and line), then fix it and say how you verified the fix.\n\nProblem: ' },
+    { name: '/refactor', desc: 'Refactor without changing behaviour',
+      prompt: 'Refactor this to be smaller and clearer without changing behaviour. Call out anything that could still be observed differently, then emit the change as an ```edit block.\n\nRefactor: ' },
+    { name: '/docs', desc: 'Document the selection or project',
+      prompt: 'Write accurate documentation for this — what it does, its inputs and outputs, and its failure modes. Doc-comments in place; emit ```edit blocks.\n\nDocument: ' },
+
+    /* ---- workspace + subagents ---- */
+    { name: '/workspace', desc: 'Summarise the project structure',
+      prompt: 'List the project folders and describe the structure of this workspace: the top-level components, what each one is for, and how they connect. Cite the file that proves each claim. Then name the three files a newcomer should read first.',
+      send: true },
+    { name: '/agent', desc: 'Delegate this to a sub-agent',
+      prompt: 'Delegate this to a sub-agent. Give it a self-contained brief first — the goal, the files it owns, what it must not touch, and how it reports back — then, acting as that sub-agent, do the work and return the result.\n\nTask: ' },
+    { name: '/status', desc: 'Report state: git, tests, TODOs',
+      prompt: 'Report the current state of this workspace: git branch and outstanding changes, TODO/FIXME markers worth knowing about, and how to run the tests. Use the git tool and a workspace search; do not guess.',
+      send: true },
+    { name: '/todos', desc: 'Re-open the structured plan',
+      prompt: 'Read the current structured plan (todo_read), list it with the completed/total count, then propose the next concrete step.',
+      send: true },
+
+    /* ---- runtime / hardware (runs locally, no model call) ---- */
+    { name: '/vram', desc: 'Show GPU + VRAM usage (local)', local: true, action: 'vram' },
+    { name: '/gpu', desc: 'Show GPU: usage, memory, temperature (local)', local: true, action: 'gpu' },
+    { name: '/ollama', desc: 'Show local models and what they hold in VRAM (local)', local: true, action: 'ollama' },
   ];
 
   let slashItems = [];        // currently filtered commands
@@ -2359,6 +2698,75 @@
     renderSlash();
   }
 
+  /* A few commands are templates rather than fixed text: their real prompt
+   * depends on what the user typed after the name (e.g. "/goal ship v2"). */
+  function buildSlashPrompt(cmd, rest) {
+    const subject = rest || '';
+    if (cmd.name === '/goal') {
+      return 'Turn the following into one measurable goal, then work to it.\n\n'
+        + 'Goal: ' + subject + '\n\n'
+        + 'Restate it as: (a) the outcome in one sentence, (b) the acceptance criteria as a short checklist, '
+        + '(c) explicitly out of scope. Keep it to a compact block, then say what you will do first.\n';
+    }
+    return cmd.prompt + subject;
+  }
+
+  // name -> placeholder node, so a slow probe can be replaced by its result
+  // even if the webview re-renders while it runs.
+  const pendingLocal = {};
+
+  /* Local commands never reach the model: they run in the extension and print
+   * their output straight into the transcript. */
+  function runLocalSlash(cmd) {
+    const node = hint('⏳ ' + cmd.name + ' — collecting local GPU data…');
+    post('localCommand', { action: cmd.action, uid: cmd.name });
+    pendingLocal[cmd.name] = node;
+  }
+
+  /* A picked command is held here rather than pasted into the textarea as its
+   * full template. The composer shows a compact chip; the template is expanded
+   * at send time by the same buildSlashPrompt() the old path used, so the text
+   * that reaches the model is unchanged. Transient by design: never persisted,
+   * never written into conv.messages. */
+  let pendingSlash = null;
+
+  function renderSlashChip() {
+    const bar = document.getElementById('slash-chip-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+    bar.hidden = !pendingSlash;
+    if (!pendingSlash) return;
+    const chip = document.createElement('span');
+    chip.className = 'slash-chip';
+    const name = document.createElement('span');
+    name.className = 'slash-chip-cmd';
+    name.textContent = pendingSlash.name;
+    const desc = document.createElement('span');
+    desc.className = 'slash-chip-desc';
+    desc.textContent = pendingSlash.desc;
+    const clear = document.createElement('button');
+    clear.className = 'slash-chip-clear';
+    clear.type = 'button';
+    clear.setAttribute('aria-label', 'Remove ' + pendingSlash.name);
+    clear.title = 'Remove command (Backspace on an empty box) — the text is not sent';
+    clear.textContent = '\u00d7';
+    clear.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      pendingSlash = null;
+      renderSlashChip();
+      input.focus();
+    });
+    chip.append(name, desc, clear);
+    bar.appendChild(chip);
+  }
+
+  function clearSlashChip() {
+    if (!pendingSlash) return false;
+    pendingSlash = null;
+    renderSlashChip();
+    return true;
+  }
+
   function runSlash(index) {
     const cmd = slashItems[index];
     if (!cmd) return;
@@ -2366,17 +2774,22 @@
     const value = input.value;
     const query = slashQuery();
     const upto = query ? query.end : 0;
-    const rest = value.slice(upto);
+    const rest = value.slice(upto).replace(/^\s+/, '');
     hideSlash();
+    if (cmd.local) { runLocalSlash(cmd); return; }
     if (cmd.send) {
-      input.value = cmd.prompt;
+      // Dispatch-at-once commands keep their old behaviour exactly.
+      input.value = buildSlashPrompt(cmd, rest);
       send();
       return;
     }
-    input.value = cmd.prompt + rest.replace(/^\s+/, '');
+    // Template commands become a chip; the user's own words go in the box and
+    // arrive as `rest` at send time, exactly as if they had followed the name.
+    pendingSlash = cmd;
+    input.value = rest;
+    renderSlashChip();
     input.focus();
-    // Put the caret where the user should start typing their own words.
-    input.selectionStart = input.selectionEnd = cmd.prompt.length;
+    input.selectionStart = input.selectionEnd = input.value.length;
   }
 
   // Keep the menu in step with what is typed. This runs on every input event,
@@ -2412,6 +2825,18 @@
         runSlash(slashIndex);
         return;
       }
+    }
+    // With a chip pending, Backspace on an empty box removes it — the usual
+    // "delete the token to the left" gesture, applied to the command token.
+    if (e.key === 'Backspace' && pendingSlash && !input.value && !slashOpen) {
+      e.preventDefault();
+      clearSlashChip();
+      return;
+    }
+    if (e.key === 'Escape' && pendingSlash && !slashOpen) {
+      e.preventDefault();
+      clearSlashChip();
+      return;
     }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();

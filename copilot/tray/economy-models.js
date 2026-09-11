@@ -62,6 +62,82 @@ function economyCatalogInfo() {
     return { count: economyModels().length, source: cache.source, at: cache.at };
 }
 
+// ---- CodeGPT extension driver port -----------------------------------------
+//
+// The chat page the tray drives lives at `http://localhost:54112/<driver>/`,
+// where `<driver>` is the port the CodeGPT extension's own HTTP driver listens
+// on. The extension allocates that port per activation, so it MOVES
+// (observed 54113, then 54114 after a reload). Pinning it — or using the copy
+// the sidecar captured at spawn time — points the page at a backend that is
+// no longer there: the chat answers with HTML instead of JSON and then waits
+// forever. Ask each candidate for `/version` instead: the driver answers with
+// its extension version (e.g. "3.24.65"), while the Next sidecar answers HTML
+// there, so the sidecar can never be mistaken for the driver.
+const API_PORT_FIRST = 54113;
+const API_PORT_LAST = 54165;
+const API_PORT_CACHE_MS = 60 * 1000;
+let apiPortCache = { at: 0, port: 0 };
+
+function probeApiPort(port, timeoutMs = 300) {
+    return new Promise((resolve) => {
+        let settled = false;
+        const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+        const request = http.request(
+            { host: '127.0.0.1', port, path: '/version', method: 'GET', timeout: timeoutMs },
+            (response) => {
+                if (response.statusCode !== 200) { response.resume(); done(0); return; }
+                const chunks = [];
+                let size = 0;
+                response.on('data', (chunk) => {
+                    size += chunk.length;
+                    if (size <= 256) chunks.push(chunk);
+                });
+                response.on('error', () => done(0));
+                response.on('end', () => {
+                    const body = Buffer.concat(chunks).toString('utf8').trim();
+                    done(/^\d+\.\d+\.\d+/.test(body) && !/[<>]/.test(body) ? port : 0);
+                });
+            });
+        // Liveness probe only (not agent work): a few hundred milliseconds per
+        // candidate, so scanning the range can never stall opening the chat
+        // window. Nothing that is already running is cancelled — a port that
+        // does not answer in time is simply skipped.
+        request.on('timeout', () => { request.destroy(); done(0); });
+        request.on('error', () => done(0));
+        request.end();
+    });
+}
+
+/**
+ * The live CodeGPT extension driver port, or 0 when it cannot be found.
+ * Briefly cached: the port only changes when the extension host restarts.
+ * Pass `force` after a failed navigation to rescan immediately.
+ */
+async function discoverCodegptApiPort({ force = false, cacheMs = API_PORT_CACHE_MS,
+                                         first = API_PORT_FIRST, last = API_PORT_LAST } = {}) {
+    if (!force && apiPortCache.port && Date.now() - apiPortCache.at < cacheMs) {
+        return apiPortCache.port;
+    }
+    const candidates = [];
+    if (apiPortCache.port) candidates.push(apiPortCache.port);
+    for (let port = first; port <= last; port += 1) {
+        if (!candidates.includes(port)) candidates.push(port);
+    }
+    // Small batches: one window open should not wait on a serial scan of the
+    // whole range when the driver is not running at all.
+    for (let index = 0; index < candidates.length; index += 8) {
+        const batch = candidates.slice(index, index + 8);
+        const answers = await Promise.all(batch.map((port) => probeApiPort(port)));
+        const hit = answers.find((port) => port);
+        if (hit) {
+            apiPortCache = { at: Date.now(), port: hit };
+            return hit;
+        }
+    }
+    apiPortCache = { at: apiPortCache.at, port: 0 };
+    return 0;
+}
+
 // Node's own HTTP, not fetch: inside Electron's main process `fetch` goes
 // through Chromium's networking (and any configured proxy), which does not
 // reach a loopback sidecar reliably. Everything else in the tray talks to
@@ -156,6 +232,7 @@ function economyModelFor(model) {
 
 module.exports = {
     ECONOMY_PREFIX,
+    discoverCodegptApiPort,
     economyBridgeId,
     economyBridgeIds,
     economyCatalogInfo,

@@ -36,33 +36,56 @@ console / network / close`), reusing the already-shipped Electron engine in
 | Browser engine bridge | `server/reachd/browser_engine.py` `_ACTIONS` L30-31 | 14 actions, session TTL |
 | Agent `browse` tool | `vscode/search.js` `browsePage()` L313 | text + optional screenshot; stateless |
 
-## Gaps found
+## Status
+**Implemented and verified.** Every gap below is closed as of the registry
+work: the 12 browser verbs, `todo_write`/`todo_read`, `edit_patch` + `applyPatch()`,
+the dialect-tolerant parser, and the two-tier help block all exist and are covered
+by `tests/vscode_tools_registry.test.cjs`, `vscode_tool_parsing.test.cjs`,
+`vscode_edits_patch.test.cjs`, `vscode_browser_tools.test.cjs` and
+`vscode_todo.test.cjs`. This section is kept as the record of what was wrong, not
+as a to-do list.
 
+Two follow-ups closed during verification, worth noting because neither was in
+the original step list:
+
+- The webview had **no handler** for the `todos` message the host posts, so a
+  model-written plan was invisible. `chat.js` now paints a live checklist card
+  (re-painted in place, not appended per update) with matching `style.css` rules.
+- `vscode_browser_tools.test.cjs` pinned port 21301, which collides with a
+  running REACH tray / shim on any real machine. It now binds an ephemeral port.
+
+## Gaps found
 1. **No browser tool surface for the agent.** `browse` is one-shot
    (URL → text). The agent cannot click, type, press keys, scroll, wait for a
    selector, read console errors, or inspect network requests. The Electron
    engine already supports `input` / `frame` / `snapshot` / `find` — but only
-   the *human* panel reaches it, never the agent.
+   the *human* panel reaches it, never the agent. **[Closed]**
 2. **No todo / planning tool.** The agent announces a plan in prose only; there
    is no persisted task list the UI can render or the model can update. Round
-   limit is a blunt pause with no state.
+   limit is a blunt pause with no state. **[Closed — `todo_write`/`todo_read`,
+   rendered as a live checklist card.]**
 3. **Edits are search/replace only.** `vscode/edits.js` `locateEdit()` requires
    an exact unique match. No patch format, no multi-hunk, no
-   "apply then re-read to verify".
+   "apply then re-read to verify". **[Closed — `edit_patch` + `applyPatch()`;
+   the post-edit re-read remains an open nicety.]**
 4. **Tool parsing is brittle.** `extractTools` accepts exactly
    ```` ```tool ```` or `<tool>`; `repairJson` is the only tolerance. Models that
    emit `tool_calls` (native function calling) or `<tool_call>` / `<invoke>` XML
-   are silently ignored.
+   are silently ignored. **[Closed — `<tool_call>`, `<invoke>`, and
+   `name`+`arguments` are all parsed now.]**
 5. **No per-tool capability/approval model.** `shell` and VS Code
    `runTask`/`vscodeCommand` prompt; everything else is silent. There is no
-   declared read-only vs mutating class, no per-tool enable toggle.
+   declared read-only vs mutating class, no per-tool enable toggle. **[Class and
+   approval are declared in the registry; a per-tool enable toggle remains open.]**
 6. **No tool result budget policy per tool.** One `slice(0, 40000)` for all
    non-read actions (L777); large search results and network logs get flattened.
+   **[Closed — `budgetFor(name)` is per-tool.]**
 7. **No browser ↔ editor bridge.** The agent cannot screenshot a running dev
    server and connect a console error back to the source file that caused it.
 8. **No agent-visible test/verify loop.** `shell` sends text to a terminal the
    model explicitly "cannot read" (L745). There is no way to run a command and
-   get its output back.
+   get its output back. **[Still open — `shell` remains fire-and-forget; this is
+   the largest remaining gap in the original plan.]**
 
 ---
 

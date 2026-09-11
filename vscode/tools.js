@@ -26,13 +26,25 @@ const CORE_TOOLS = {
       + 'Optional inclusive 1-based startLine / endLine for a range.',
     example: { action: 'read', path: 'relative/path' },
   },
+  glob: {
+    class: 'read',
+    tier: 'core',
+    approval: false,
+    budget: 40000,
+    help: 'finds files by their path/name pattern, e.g. "**/*.test.cjs", "src/**/pages-*.js" '
+      + 'or "**/*{spec,test}*". Optional path scopes the search to a directory. '
+      + 'Use this to locate files; use search for their contents.',
+    example: { action: 'glob', pattern: '**/*.test.cjs' },
+  },
   search: {
     class: 'read',
     tier: 'core',
     approval: false,
     budget: 40000,
-    help: 'greps the whole workspace for a pattern.',
-    example: { action: 'search', pattern: 'text to find' },
+    help: 'greps file contents and returns "path:line: text" matches. Options: '
+      + 'regex: true for a regular expression, include: "src/**/*.js" to filter files, '
+      + 'caseSensitive: true for an exact-case search.',
+    example: { action: 'search', pattern: 'function\\s+\\w+', regex: true, include: 'src/**/*.js' },
   },
   list: {
     class: 'read',
@@ -47,7 +59,8 @@ const CORE_TOOLS = {
     tier: 'core',
     approval: true,
     budget: 40000,
-    help: 'runs a command in the integrated terminal (the user must approve it first).',
+    help: 'runs a command in the integrated terminal and returns its stdout, stderr and exit code '
+      + '(the user must approve it first). Use it to verify your own changes.',
     example: { action: 'shell', command: 'npm test' },
   },
   websearch: {
@@ -122,6 +135,11 @@ const BROWSER_TOOLS = {
       + 'Call this before any other browser_* tool.',
     example: { action: 'browser_open', url: 'http://127.0.0.1:21887' },
   },
+  browser_navigate: {
+    class: 'browse', tier: 'browser', approval: false, budget: 12000,
+    help: 'navigates the shared browser to a new URL without closing the session, and returns the new page snapshot.',
+    example: { action: 'browser_navigate', url: 'http://127.0.0.1:21887/docs' },
+  },
   browser_snapshot: {
     class: 'browse', tier: 'browser', approval: false, budget: 12000,
     help: 'returns the current page snapshot: title, url, and the visible text with interactive elements '
@@ -153,10 +171,46 @@ const BROWSER_TOOLS = {
     help: 'waits for a CSS selector to appear, or for a number of milliseconds.',
     example: { action: 'browser_wait', selector: '#results' },
   },
+  browser_find: {
+    class: 'browse', tier: 'browser', approval: false, budget: 8000,
+    help: 'searches the page text for a phrase and reports how many matches exist, highlighting the current one. '
+      + 'Set findNext: true to jump to the next match; forward: false to search upwards.',
+    example: { action: 'browser_find', text: 'release notes' },
+  },
+  browser_forward: {
+    class: 'browse', tier: 'browser', approval: false, budget: 12000,
+    help: 'goes forward in the browser history and returns the new snapshot.',
+    example: { action: 'browser_forward' },
+  },
+  browser_reload: {
+    class: 'browse', tier: 'browser', approval: false, budget: 12000,
+    help: 'reloads the current page and returns the refreshed snapshot. Use this to recover from a crashed or failed page.',
+    example: { action: 'browser_reload' },
+  },
   browser_back: {
     class: 'browse', tier: 'browser', approval: false, budget: 12000,
     help: 'goes back in the browser history and returns the new snapshot.',
     example: { action: 'browser_back' },
+  },
+  browser_forward: {
+    class: 'browse', tier: 'browser', approval: false, budget: 12000,
+    help: 'goes forward in the browser history and returns the new snapshot.',
+    example: { action: 'browser_forward' },
+  },
+  browser_reload: {
+    class: 'browse', tier: 'browser', approval: false, budget: 12000,
+    help: 'reloads the current page and returns the new snapshot. Use this to recover from a crashed or failed page.',
+    example: { action: 'browser_reload' },
+  },
+  browser_navigate: {
+    class: 'browse', tier: 'browser', approval: false, budget: 12000,
+    help: 'navigates the existing browser session to a new public http(s) URL and returns the snapshot. Use this to change pages without recreating the session.',
+    example: { action: 'browser_navigate', url: 'https://example.com' },
+  },
+  browser_find: {
+    class: 'browse', tier: 'browser', approval: false, budget: 8000,
+    help: 'searches the page for a text string and reports the match count plus which match is highlighted. Step through matches with findNext: true.',
+    example: { action: 'browser_find', text: 'search term' },
   },
   browser_console: {
     class: 'browse', tier: 'browser', approval: false, budget: 12000,
@@ -197,16 +251,17 @@ function namesByTier(tier) {
   return Object.keys(TOOLS).filter((name) => TOOLS[name].tier === tier);
 }
 
-/* One-line-per-tool help for the given tier(s). Browser verbs are omitted
- * unless asked for, so the common turn stays small. */
+/* One-line-per-tool help for the given tier(s), generated from the registry.
+ * Browser verbs are omitted unless asked for, so the common turn stays small. */
+const CORE_PROMPT_TOOLS = ['read', 'glob', 'search', 'list', 'shell', 'browse', 'websearch'];
+
 function toolHelp(tier = 'core') {
   const tiers = Array.isArray(tier) ? tier : [tier];
-  const lines = ['Actions: "read" reads one file, "search" greps the whole workspace for a pattern, '
-    + '"list" prints a directory tree, "shell" runs an approved command in the terminal, '
-    + '"browse" opens a web page and reads its text, "websearch" searches the web and reads the top pages.'];
-  for (const name of namesByTier('core')) {
-    if (!['read', 'search', 'list', 'shell', 'browse', 'websearch'].includes(name)) continue;
-    lines.push(JSON.stringify(TOOLS[name].example));
+  const lines = [];
+  for (const name of CORE_PROMPT_TOOLS) {
+    if (!TOOLS[name]) continue;
+    lines.push('- ' + name + ': ' + TOOLS[name].help);
+    lines.push('  ' + JSON.stringify(TOOLS[name].example));
   }
   if (tiers.includes('browser')) {
     lines.push('Browser tools (drive the shared REACH browser; call browser_open first):');
@@ -217,9 +272,7 @@ function toolHelp(tier = 'core') {
   } else {
     lines.push('More tools are available on request: emit '
       + JSON.stringify({ action: 'tool_help', topic: 'browser' })
-      + ' to receive the browser tool set (browser_open, browser_snapshot, browser_click, browser_type, '
-      + 'browser_press, browser_scroll, browser_wait, browser_back, browser_console, browser_network, '
-      + 'browser_screenshot, browser_close).');
+      + ' to receive the browser tool set (' + browserNames().join(', ') + ').');
   }
   return lines.join('\n');
 }

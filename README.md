@@ -78,14 +78,20 @@ choose **CodeGPT economy models** and select a model. The tray serves them at
 `codegpt-eco` (and legacy `codegpt-eco-gpt-4o-mini`) selects the first economy
 entry rather than an arbitrary page default.
 
-The tray opens `http://localhost:54112/54113/`: **54112 is the Next web server;
-54113 in the path is the CodeGPT extension API port**. Using `/54112/` renders
-the UI but sends chat to the wrong backend, producing HTML instead of JSON.
+The tray opens `http://localhost:54112/<driver>/`: **54112 is the Next web
+server; `<driver>` in the path is the CodeGPT extension's API port**. The
+extension re-allocates that port on every activation (it moved 54113 → 54114
+across reloads), so the tray **discovers it live** by probing each candidate's
+`/version` — the driver answers with its version string, the sidecar answers
+HTML and is ignored. That is why the port is never pinned: opening `/54112/`
+(or a stale driver port) renders the UI but sends chat to the wrong backend,
+producing HTML instead of JSON — or no reply at all.
 The tray confirms the requested model in the local picker, submits once, and
 captures `/api/runs` NDJSON. Only the final assistant answer is returned, without
 reasoning blocks, progress labels, or the old response-length truncation.
-A failed model switch is an error, never a silent fallback. Invalid responses,
-approval-required runs, and requests exceeding 180 seconds fail explicitly.
+A failed model switch is an error, never a silent fallback. Invalid responses
+and approval-required runs fail explicitly; a run that never answers is waited
+for, not cut off.
 
 The separately hosted public endpoint needs the updated tray on its own host;
 updating a client machine does not update that host. Its relay uses the existing
@@ -152,6 +158,12 @@ It does not start a public tunnel or publish a new endpoint. Hosting settings an
 administrative actions remain on the host. Stop any local hosting relay before
 starting this client bridge, since both use port 20777.
 
+**CachyOS / Arch + LazyVim testers:** `bash installer/cachyos-lazyvim/install.sh` does
+the whole client setup — installs `node`/`python` if needed, registers the endpoint
+client as a `systemd --user` service, puts the `reach` CLI in `~/.local/bin`, and adds
+LazyVim keymaps (`<leader>ac` chat, `<leader>af` file, `<leader>as` selection). See
+`installer/cachyos-lazyvim/README.md`.
+
 ## VS Code
 
 The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
@@ -174,10 +186,32 @@ workspace reads, searches, compression, and public assistant updates between too
 rounds. Failed and stopped actions remain visible. Large results expand during the
 session; conversation history saves an explicitly labelled preview of up to 12,000
 characters per result. Activity is stored separately from model context.
-Agent runs allow up to 40 rounds and retry clear unfinished progress updates twice
-when the model announces work without requesting an action. Repeated plans and the
-round limit produce an explicit pause; send “continue” to resume with saved context.
-Stop prevents another tool round or queued follow-up from starting automatically.
+
+Every step is numbered and carries a one-line quip; the step the run is currently
+on is highlighted, and the timeline header shows where the run is — "Step 5", or
+"Plan 2/5" when the model maintains an Agent-plan checklist — over a progress bar
+(determinate against the plan, indeterminate otherwise). With a plan, steps are
+grouped under the plan item they belong to ("Plan 2/5 · Run the tests"). A finished
+step keeps its result in a dropdown ("Result · N characters") beside its duration;
+running steps render live inline, a dropdown you open stays open and keeps updating
+as data arrives, and failures open on their own so the error is visible. Numbering,
+quips and groups are deterministic and survive a window reload.
+Agent runs have **no fixed limits**. Three settings decide the effort, all defaulting
+to **0 = no limit**:
+
+- `simplereach.agentMaxRounds` — model ↔ tool exchanges allowed per request. At 0 the
+  agent keeps working until the task is done or you press Stop; a positive number
+  pauses at that many rounds instead.
+- `simplereach.agentUnfinishedRetries` — extra rounds given when a reply announces
+  work it never starts. At 0 it keeps chasing the announced work; a positive number
+  pauses with “continue” after that many nudges.
+- `simplereach.toolResultBudgetKb` — how much of a tool result (KB) is kept in
+  context (`read` always keeps the complete result). At 0 complete results are kept
+  and automatic context compression protects the request size.
+
+If a limit is set and reached, the pause is explicit; send “continue” to resume with
+saved context. Stop prevents another tool round or queued follow-up from starting
+automatically.
 
 With **Workspace** and **Agent** enabled, REACH selects and reads relevant source
 files, including closed files, before Think and the final answer. Complete files
@@ -194,6 +228,37 @@ a preview. Reads over 1 MiB return an explicit error instead of truncated text;
 the model can request inclusive `startLine` / `endLine` ranges. File results stay
 available across tool rounds within the current response. Provider context limits
 still apply.
+
+### Agent tools
+Every agent tool is declared once in `vscode/tools.js` — its class, whether it
+needs approval, its result budget and its help line. The system prompt, the
+client-side parser allow-list and the executor all read from that one registry,
+so they cannot drift apart; `tests/vscode_tools_registry.test.cjs` fails if a
+registered tool has no executor branch, or the parser accepts an unregistered one.
+
+- **Planning.** `todo_write` replaces the structured checklist and `todo_read`
+  reads it back. The plan renders as a live card in the activity timeline that is
+  re-painted in place, and it is what "continue" resumes from after the 40-round
+  pause. It is deliberately not persisted across a reload, so a stale checklist
+  cannot outlive its task.
+- **Browser.** Twelve stateful verbs — `browser_open`, `browser_snapshot`,
+  `browser_click`, `browser_type`, `browser_press`, `browser_scroll`,
+  `browser_wait`, `browser_back`, `browser_console`, `browser_network`,
+  `browser_screenshot`, `browser_close` — drive the *same* Electron session the
+  REACH Browser panel shows, so you can watch what the agent does. Snapshots list
+  interactive elements as numbered refs. Console and network rings let the agent
+  diagnose a broken page instead of guessing. The existing SSRF/public-address
+  guards still apply.
+- **Edits.** `edit_patch` applies a multi-hunk patch through `applyPatch()`,
+  falling back to single-hunk search/replace so existing behaviour is unchanged.
+- **Opt-in help.** The browser verbs are not injected into every turn. Core tools
+  are always described; emit `tool_help` with `topic: "browser"` to receive the
+  browser set. A normal coding turn stays as cheap as it was.
+
+Tool dialects: the parser accepts REACH's own fenced ```tool blocks, `<tool>`, and
+`<tool_call>` / `<invoke>` wrappers (Cline / Anthropic style), plus a `name` +
+`arguments` object. Only explicit, complete wrappers execute — ordinary JSON in a
+reply stays chat content. That is a safety property, not a formatting detail.
 
 ## Desktop tray: macOS, Windows, and Linux
 

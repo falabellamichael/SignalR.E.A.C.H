@@ -1,0 +1,27 @@
+<!doctype html>
+<!-- Scratch harness: loads the real vscode/media files (chat.html + style.css +
+     chat.js) with a stub vscode API so the composer can be inspected in a
+     browser. Serve from the repo root, not the file system. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>REACH composer preview</title></head>
+<body>
+<script>
+fetch('../vscode/media/chat.html', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
+  const v = '?v=' + Date.now();
+  html = html
+    .replace(/<meta http-equiv="Content-Security-Policy"[\s\S]*?>/, '')
+    .replace('{{styleUri}}', '../vscode/media/style.css' + v)
+    .replace('<script nonce="{{nonce}}">window.REACH_TOOL_NAMES = {{toolNames}};<\/script>',
+      '<script>window.REACH_TOOL_NAMES = [];\n'
+      + 'window.acquireVsCodeApi = function () { return { getState: function () { return null; },'
+      + ' setState: function () {}, postMessage: function () {} }; };<\/script>')
+    .replace('<script nonce="{{nonce}}" src="{{scriptUri}}"><\/script>',
+      '<script src="../vscode/media/chat.js' + v + '"><\/script>');
+  document.open();
+  document.write(html);
+  document.close();
+  window.__previewReady = true;
+});
+</script>
+</body>
+</html>

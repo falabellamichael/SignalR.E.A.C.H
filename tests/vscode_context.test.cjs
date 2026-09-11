@@ -64,3 +64,18 @@ test('compacted context survives tool rounds and later turns without changing vi
  assert.equal(next.some(m=>m.content==='OLDER_VISIBLE_MESSAGE'),false);
  assert.equal(ctx.conv.messages[0].content,'OLDER_VISIBLE_MESSAGE');
 });
+
+test('metadata survives compaction and the summary records what it archived',async()=>{
+ const tagged={role:'user',content:'keep me',_reachMeta:{source:'open-file',path:'src/app.js'}};
+ const filler=Array.from({length:90},(_,i)=>({role:'user',content:'filler '+i+' '+'x'.repeat(4000)}));
+ const result=await compactMessages([{role:'system',content:'rules'},tagged,...filler],async()=> 'memory bullets',{trigger:20000,target:8000});
+ assert.equal(result.changed,true);
+ assert.ok(result.provenance&&result.provenance.chars>0,'provenance present');
+ assert.ok(Array.isArray(result.archivedMeta),'archivedMeta is an array');
+ assert.ok(result.archivedMeta.length>0,'archivedMeta is populated');
+ assert.ok(result.archivedMeta.every(e=>typeof e.chars==='number'),'each entry carries chars');
+ const memory=result.messages.find(m=>String(m.content).startsWith(MEMORY_PREFIX));
+ assert.ok(memory&&memory._reachMeta,'memory carries meta');
+ assert.equal(memory._reachMeta.source,'memory');
+ assert.ok(memory._reachMeta.archived>0,'memory records the archived count');
+});

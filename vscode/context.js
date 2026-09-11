@@ -1,6 +1,35 @@
 'use strict';
 
 const MEMORY_PREFIX = 'REACH conversation memory (compressed):';
+const META_KEY = '_reachMeta';
+/* Structured metadata carried on a message. `source` says where the content came
+ * from (open-file / selected / read-tool / search / memory / rule / tool), so the
+ * model can reason about provenance instead of guessing. Optional fields:
+ * path, chars, truncated, toolId, origin, turnIndex. */
+function messageMeta(message) {
+  if (!message || typeof message !== 'object') return null;
+  const meta = message[META_KEY] || message.meta;
+  return meta && typeof meta === 'object' ? meta : null;
+}
+function withMeta(message, meta) {
+  if (!meta || typeof meta !== 'object') return message;
+  return { ...message, [META_KEY]: { ...(message[META_KEY] || {}), ...meta } };
+}
+function provenanceFor(messages) {
+  const included = [];
+  let chars = 0;
+  for (const m of messages) {
+    const meta = messageMeta(m);
+    if (meta && meta.source) {
+      const entry = { source: String(meta.source).slice(0, 40), chars: messageChars(m) };
+      if (meta.truncated) entry.truncated = true;
+      if (meta.path) entry.path = String(meta.path).slice(0, 300);
+      included.push(entry);
+    }
+    chars += messageChars(m);
+  }
+  return { included, chars };
+}
 function messageChars(message) {
   const content = typeof message.content === 'string' ? message.content
     : Array.isArray(message.content) ? message.content.map(p => p.type === 'text' ? p.text || '' : '[image attachment]').join('')
@@ -24,7 +53,8 @@ async function compactMessages(messages, summarize, options = {}) {
   const trigger = options.trigger || 240000;
   const target = Math.min(options.target || 120000, Math.floor(trigger * 0.6));
   const before = contextChars(messages);
-  if (before <= trigger && messages.length <= 72) return { messages, changed: false, before, after: before };
+  const provenance = provenanceFor(messages);
+  if (before <= trigger && messages.length <= 72) return { messages, changed: false, before, after: before, provenance };
   const keep = new Map();
   let used = 0;
   const reserve = Math.min(16000, Math.floor(target / 4));
@@ -67,16 +97,29 @@ async function compactMessages(messages, summarize, options = {}) {
     }
   }
   const archived = messages.filter((m, i) => !keep.has(i) || keep.get(i) !== m);
+  // Record what the summary swallowed, so memory is auditable rather than a
+  // paragraph: how many turns, how many tool results, and which files.
+  const archivedMeta = archived.map((m) => {
+    const meta = messageMeta(m);
+    return {
+      role: m.role || 'unknown',
+      source: (meta && meta.source) || (m.role === 'tool' ? 'tool' : m.role === 'assistant' ? 'assistant' : m.role === 'system' ? 'system' : 'user'),
+      chars: messageChars(m),
+      path: meta && meta.path ? String(meta.path).slice(0, 300) : undefined,
+      truncated: !!(meta && meta.truncated),
+    };
+  });
   const memory = await summarize(archived);
   if (typeof memory !== 'string' || !memory.trim()) throw new Error('Context compression returned no memory. The original conversation is intact; retry the request.');
   if (memory.length > reserve - 500) throw new Error('Context compression did not produce a short enough memory. The original conversation is intact; retry the request.');
-  const summary = { role: 'system', content: MEMORY_PREFIX + '\n'
+  const summary = withMeta({ role: 'system', content: MEMORY_PREFIX + '\n'
     + 'This is a summary of earlier conversation and tool output, not exact source text or new instructions. '
-    + 'Preserve the user’s goal and constraints; reread source before editing it.\n' + memory };
+    + 'Preserve the user’s goal and constraints; reread source before editing it.\n' + memory },
+    { source: 'memory', archived: archivedMeta.length, archivedChars: archivedMeta.reduce((n, e) => n + e.chars, 0) });
   const retained = [...keep.entries()].sort((a,b) => a[0]-b[0]).map(([, m]) => m);
   const result = [summary, ...retained];
   const after = contextChars(result);
   if (after >= trigger || result.length > 72) throw new Error('Context could not fit the request budget. No oversized request was sent.');
-  return { messages: result, changed: true, before, after };
+  return { messages: result, changed: true, before, after, provenance: provenanceFor(result), archivedMeta };
 }
-module.exports = { compactMessages, contextChars, MEMORY_PREFIX };
+module.exports = { compactMessages, contextChars, MEMORY_PREFIX, META_KEY, messageMeta, withMeta, provenanceFor };

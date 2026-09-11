@@ -6,7 +6,7 @@ const doneCase = source.slice(source.indexOf("      case 'done': {"), source.ind
 function host() {
  const calls=[],steps=[];
  const ctx={includeWorkspace:true,busy:true,rafPending:false,stopRequested:false,agenticEnabled:true,pendingEdits:[],pendingText:'',pendingBubble:{},
-  agentRounds:0,continuationRetries:0,MAX_AGENT_ROUNDS:40,activeResponseStep:null,
+  agentRounds:0,continuationRetries:0,MAX_AGENT_ROUNDS:40,UNFINISHED_RETRY_LIMIT:2,activeResponseStep:null,
   conv:{id:1,model:'test',messages:[{role:'user',content:'Clean up the CLI modules and tests.'}]},
   agentMessages:[{role:'user',content:'Clean up the CLI modules and tests.'}],contTools:[],
   setRich(){},showThinking(){},showStep:(...args)=>steps.push(args),saveConv(){},hint(){},
@@ -26,6 +26,25 @@ test('announced next actions continue automatically, and repeated promises pause
  h.done(plan);assert.equal(h.calls.length,2);
  h.done(plan);assert.equal(h.calls.length,2);assert.equal(h.ctx.outcome,'cancelled');
  assert.match(h.ctx.conv.messages.at(-1).content,/Paused because the model repeated a plan/);
+});
+test('no configured limits: announced work keeps being chased instead of pausing',()=>{
+ const h=host();h.ctx.UNFINISHED_RETRY_LIMIT=Infinity;h.ctx.MAX_AGENT_ROUNDS=Infinity;
+ const plan='I’ll continue with a focused cleanup pass in the CLI modules and tests, then apply a few safe fixes.\n\nFirst I’ll scan for TODO/FIXME-style signals and then patch clear issues in tools/reach_cli + tests.';
+ for(let i=0;i<5;i+=1)h.done(plan);
+ assert.equal(h.calls.length,5,'each repeated promise gets another nudge');
+ assert.notEqual(h.ctx.outcome,'cancelled');
+});
+test('agent limits come from settings: 0 means no limit',()=>{
+ const start=source.indexOf('  function applyAgentLimits(');
+ const end=source.indexOf('\n  }',start);
+ const ctx={};
+ vm.runInNewContext(source.slice(start,end+'\n  }'.length),ctx);
+ ctx.applyAgentLimits({agentMaxRounds:0,agentUnfinishedRetries:0});
+ assert.equal(ctx.MAX_AGENT_ROUNDS,Infinity);
+ assert.equal(ctx.UNFINISHED_RETRY_LIMIT,Infinity);
+ ctx.applyAgentLimits({agentMaxRounds:12,agentUnfinishedRetries:3});
+ assert.equal(ctx.MAX_AGENT_ROUNDS,12);
+ assert.equal(ctx.UNFINISHED_RETRY_LIMIT,3);
 });
 test('finished answers, offers, questions, and approval requests do not trigger continuation',()=>{
  for(const text of ['Fixed the parser and tested the changes.', 'I can inspect more files if you want.',

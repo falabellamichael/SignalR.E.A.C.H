@@ -9,23 +9,42 @@
   <title>REACH Browser</title>
 </head>
 <body>
+  <div id="tabstrip" class="tabstrip">
+     <div id="tabs" class="tabs"></div>
+     <button id="newtab-btn" class="icon-btn" title="New tab (Ctrl+T)" aria-label="New tab">
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.4" fill="none"/></svg>
+     </button>
+  </div>
+
   <header id="toolbar">
-    <button id="back-btn" class="icon-btn" title="Back" aria-label="Back" disabled>
-      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M10.7 2.3L9.3 1 3 7.3 9.3 13.6 10.7 12.2 5.8 7.3z" fill="currentColor"/></svg>
-    </button>
-    <button id="fwd-btn" class="icon-btn" title="Forward" aria-label="Forward" disabled>
-      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M5.3 1 6.7 2.3 11.6 7.3 6.7 12.2 5.3 13.6 11.6 7.3z" fill="currentColor"/></svg>
-    </button>
-    <button id="reload-btn" class="icon-btn" title="Reload" aria-label="Reload">
-      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9l-1 1A4.5 4.5 0 1 0 12.5 8h1z" fill="currentColor"/><path d="M13.5 1.5v4h-4l1.3-1.3A6.5 6.5 0 1 1 1.5 8h1A5.5 5.5 0 1 0 11 2.8l2.5 2.5v-3.8h0z" fill="currentColor"/></svg>
-    </button>
-    <input id="address" class="address-input" type="text" spellcheck="false"
-           placeholder="Enter a URL (https://…)" title="Address">
-    <button id="open-ext-btn" class="icon-btn" title="Open in your real browser" aria-label="Open in browser">
-      <svg viewBox="0 0 16 16" width="14" height="14"><path d="M9.3 4.3l2.4 2.4 2.3-2.3A1.5 1.5 0 0 0 12 3l-2.3 2.3 2.4 2.4zM9.3 4.3l-3-3 .7-.7 3 3z" fill="currentColor"/><path d="M11.5 6.5l1.3 1.3a3.4 3.4 0 0 1 0 4.8l-2.1 2.1a3.4 3.4 0 0 1-4.8 0l-.8-.8.7-.7.8.8a2.4 2.4 0 0 0 3.4 0l2.1-2.1a2.4 2.4 0 0 0 0-3.4l-1.3-1.3zM4.5 9.5l-1.3-1.3a3.4 3.4 0 0 1 0-4.8l2.1-2.1a3.4 3.4 0 0 1 4.8 0l.8.8-.7.7-.8-.8a2.4 2.4 0 0 0-3.4 0L3.9 4.1a2.4 2.4 0 0 0 0 3.4l1.3 1.3z" fill="currentColor"/></svg>
-    </button>
-    <span id="status" class="status" title="Status"></span>
+     <button id="back-btn" class="icon-btn" title="Back (Alt+Left)" aria-label="Back" disabled>
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M10.7 2.3L9.3 1 3 7.3 9.3 13.6 10.7 12.2 5.8 7.3z" fill="currentColor"/></svg>
+     </button>
+     <button id="fwd-btn" class="icon-btn" title="Forward (Alt+Right)" aria-label="Forward" disabled>
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M5.3 1 6.7 2.3 11.6 7.3 6.7 12.2 5.3 13.6 11.6 7.3z" fill="currentColor"/></svg>
+     </button>
+     <button id="reload-btn" class="icon-btn" title="Reload (Ctrl+R)" aria-label="Reload">
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9l-1 1A4.5 4.5 0 1 0 12.5 8h1z" fill="currentColor"/><path d="M13.5 1.5v4h-4l1.3-1.3A6.5 6.5 0 1 1 1.5 8h1A5.5 5.5 0 1 0 11 2.8l2.5 2.5v-3.8h0z" fill="currentColor"/></svg>
+     </button>
+     <button id="home-btn" class="icon-btn" title="Home (docs.reach.sh)" aria-label="Home">
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1.5L1.5 7h1.8v6h3.3V9.4h2.8V13h3.3V7h1.8z" fill="currentColor"/></svg>
+     </button>
+     <input id="address" class="address-input" type="text" spellcheck="false"
+            placeholder="Enter a URL (https://…)" title="Address">
+     <button id="bookmark-btn" class="icon-btn" title="Bookmark this page" aria-label="Bookmark this page">
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3.5 1.5h9v13L8 11l-4.5 3.5z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+     </button>
+     <button id="page-to-chat-btn" class="icon-btn" title="Send this page to REACH chat" aria-label="Send page to chat">
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M2 2.5h12v8H6l-3 3z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
+     </button>
+     <button id="open-ext-btn" class="icon-btn" title="Open in your real browser" aria-label="Open in browser">
+       <svg viewBox="0 0 16 16" width="14" height="14"><path d="M9.3 4.3l2.4 2.4 2.3-2.3A1.5 1.5 0 0 0 12 3l-2.3 2.3 2.4 2.4zM9.3 4.3l-3-3 .7-.7 3 3z" fill="currentColor"/><path d="M11.5 6.5l1.3 1.3a3.4 3.4 0 0 1 0 4.8l-2.1 2.1a3.4 3.4 0 0 1-4.8 0l-.8-.8.7-.7.8.8a2.4 2.4 0 0 0 3.4 0l2.1-2.1a2.4 2.4 0 0 0 0-3.4l-1.3-1.3zM4.5 9.5l-1.3-1.3a3.4 3.4 0 0 1 0-4.8l2.1-2.1a3.4 3.4 0 0 1 4.8 0l.8.8-.7.7-.8-.8a2.4 2.4 0 0 0-3.4 0L3.9 4.1a2.4 2.4 0 0 0 0 3.4l1.3 1.3z" fill="currentColor"/></svg>
+     </button>
+     <span id="spinner" class="spinner" hidden></span>
+     <span id="status" class="status" title="Status"></span>
   </header>
+
+  <div id="bookmarks" class="bookmarks" hidden></div>
 
   <main id="page" class="page">
     <div id="welcome" class="welcome">

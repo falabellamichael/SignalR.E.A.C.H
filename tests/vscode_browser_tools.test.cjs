@@ -35,7 +35,8 @@ test('numberedRefs correctly extracts and numbers interactive elements', () => {
 });
 
 test('browser tools dispatch actions and handle engine mock server', async (t) => {
-  process.env.REACH_BROWSER_PORT = '21301';
+  // Bind an ephemeral port: a fixed one (21301) collides with a running REACH
+  // tray / shim, which made this test fail on any machine with REACH open.
   __resetForTest();
   const received = [];
   const server = http.createServer((req, res) => {
@@ -84,7 +85,8 @@ test('browser tools dispatch actions and handle engine mock server', async (t) =
     });
   });
 
-  await new Promise((r) => server.listen(21301, '127.0.0.1', r));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  process.env.REACH_BROWSER_PORT = String(server.address().port);
   t.after(() => {
     delete process.env.REACH_BROWSER_PORT;
     __resetForTest();
@@ -109,6 +111,19 @@ test('browser tools dispatch actions and handle engine mock server', async (t) =
 
   const scrollRes = await runBrowserAction({ action: 'browser_scroll', x: 0, y: 100 });
   assert.ok(scrollRes.text.includes('Scrolled'));
+
+  const navRes = await runBrowserAction({ action: 'browser_navigate', url: 'http://127.0.0.1:21887/other' });
+  assert.ok(navRes.text.includes('Navigated to:'));
+  assert.ok(navRes.text.includes('Title: Test Page'));
+
+  const fwdRes = await runBrowserAction({ action: 'browser_forward' });
+  assert.ok(fwdRes.text.includes('Forward: http://127.0.0.1:21887'));
+
+  const reloadRes = await runBrowserAction({ action: 'browser_reload' });
+  assert.ok(reloadRes.text.includes('Reloaded: http://127.0.0.1:21887'));
+
+  const findRes = await runBrowserAction({ action: 'browser_find', text: 'missing-term' });
+  assert.ok(findRes.text.includes('No matches on the page'));
 
   const consoleRes = await runBrowserAction({ action: 'browser_console' });
   assert.ok(consoleRes.text.includes('[error]:42 app.js Uncaught ReferenceError'));

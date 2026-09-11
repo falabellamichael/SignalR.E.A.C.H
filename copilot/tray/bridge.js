@@ -71,6 +71,17 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                 const activeModel = provider === 'chatgpt' ? 'chatgpt-chat' : provider === 'codegpt' ? model : 'copilot-chat';
                 const base = { id, created: Math.floor(start / 1000), model: activeModel };
                 const event = data => { if (!res.destroyed) res.write('data: ' + JSON.stringify(data) + '\n\n'); };
+                // The tray senders forward the reply while the page forms it
+                // (onDelta). Every delta goes out as its own SSE chunk, so CLI
+                // and extension clients render the answer as it is written.
+                let streamed = '';
+                let roleSent = false;
+                const onDelta = (delta) => {
+                    if (typeof delta !== 'string' || !delta) return;
+                    streamed += delta;
+                    event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: roleSent ? { content: delta } : { role: 'assistant', content: delta }, finish_reason: null }] });
+                    roleSent = true;
+                };
                 try {
                     if (stream) {
                         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -80,11 +91,17 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     const sender = provider === 'codegpt' ? sendCodegpt : provider === 'chatgpt' ? sendChatgpt : sendCopilot;
                     // The requested model rides along so the CodeGPT sender can
                     // pick that economy model out of the signed-in session.
-                    const content = await sender(text, { signal: controller.signal, model, label: modelLabel(model) });
+                    const content = await sender(text, { signal: controller.signal, model, label: modelLabel(model), onDelta: stream ? onDelta : undefined });
                     if (res.destroyed) return;
                     if (!openai) return json(200, { ok: true, content, ms: Date.now() - start });
                     if (!stream) return json(200, { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });
-                    event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content }, finish_reason: null }] });
+                    // Whatever the deltas did not carry (a sender without
+                    // partials, or a tail that only exists in the final text)
+                    // goes out here, so the accumulated stream is the answer.
+                    if (content && content.startsWith(streamed)) {
+                        const rest = content.slice(streamed.length);
+                        if (rest) onDelta(rest);
+                    }
                     event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
                     res.end('data: [DONE]\n\n');
                 } catch (error) {

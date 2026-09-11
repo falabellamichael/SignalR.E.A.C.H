@@ -94,6 +94,10 @@ function renderChat() {
     } else {
         listEl.innerHTML = messages.map((m) => {
             if (m.thinking) {
+                if (m.content) {
+                    // The reply is already streaming in — show it as it grows.
+                    return '<div class="msg assistant streaming">' + esc(m.content) + '</div>';
+                }
                 return '<div class="msg assistant thinking" role="status">' +
                     '<span class="think-orbit"><span class="think-brain">🧠</span></span>' +
                     '<span>' + esc(m.hint || 'Thinking…') + '</span></div>';
@@ -308,4 +312,16 @@ document.addEventListener('keydown', event => {
 window.copilotTray.onChatProgress(progress => {
     const reply = messages.find(message => message.rid === progress.requestId && message.thinking);
     if (reply) { reply.hint = progress.hint; renderChat(); }
+});
+
+// The reply streams in: append each delta to its message and re-render, so
+// MiniChat prints the answer while the model/page is still writing it. The
+// final result replaces the accumulated text, so any tail is never lost.
+window.copilotTray.onChatDelta(delta => {
+    if (!delta) return;
+    const reply = messages.find(message => message.rid === delta.requestId && message.thinking);
+    if (!reply) return;
+    reply.content = (reply.content || '') + String(delta.text || '');
+    reply.hint = '';
+    renderChat();
 });

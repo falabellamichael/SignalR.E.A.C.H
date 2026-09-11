@@ -189,6 +189,13 @@ footer a:hover { color: var(--gold); }
 }
 .msg .note { margin-top: 5px; font-size: 9.5px; color: var(--muted); }
 .msg.thinking { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+/* Streaming reply: the text grows while the model writes; the caret shows
+   it is still arriving (cleared when the final message lands). */
+.msg.streaming::after {
+  content: '▌'; margin-left: 1px; opacity: .7;
+  animation: stream-caret 1s steps(1) infinite;
+}
+@keyframes stream-caret { 50% { opacity: 0; } }
 .think-orbit { position: relative; width: 22px; height: 22px; flex: 0 0 22px; animation: orbit 1.05s linear infinite; }
 .think-brain { position: absolute; top: -1px; left: 6px; font-size: 12px; line-height: 1; animation: counter 1.05s linear infinite; }
 @keyframes orbit { to { transform: rotate(360deg); } }
