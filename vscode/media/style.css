@@ -426,6 +426,10 @@ body {
 
 /* ---- attach (+) — bare plus inside the textbox, beside the first line ---- */
 .input-wrap { position: relative; flex: 1; }
+/* The + and - anchor to the textarea itself (not the whole composer), so an
+   in-flow row above the box — like the picked-command chip — pushes the box
+   and its buttons down together instead of stranding the + on the chip. */
+.composer-field { position: relative; }
 .attach-plus,
 .attach-minus {
   position: absolute;
@@ -661,6 +665,23 @@ body {
 .browse-snap .browse-cap { font-size: 10px; color: var(--reach-muted); margin-bottom: 3px; }
 .browse-snap img { max-width: 100%; border: 1px solid var(--reach-border); border-radius: 6px; display: block; }
 
+/* ---- live agent plan (todo_write) ---- */
+.todo-card { flex: 0 0 auto; min-width: 0; margin: 0 0 12px; padding: 8px 10px;
+  border: 1px solid var(--reach-border); border-left: 2px solid var(--reach-accent);
+  border-radius: 6px; background: var(--reach-surface); }
+.todo-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+.todo-title { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: var(--reach-text); }
+.todo-count { flex: none; font-size: 10px; color: var(--reach-muted); }
+.todo-items { list-style: none; margin: 0; padding: 0; }
+.todo-item { display: flex; align-items: baseline; gap: 7px; padding: 2px 0;
+  font-size: 12px; line-height: 1.45; color: var(--reach-text); }
+.todo-glyph { flex: none; width: 12px; text-align: center; color: var(--reach-muted); }
+.todo-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.todo-completed .todo-glyph { color: var(--reach-accent); }
+.todo-completed .todo-text { color: var(--reach-muted); text-decoration: line-through; }
+.todo-in_progress .todo-glyph { color: var(--reach-accent); }
+.todo-in_progress .todo-text { font-weight: 600; }
+
 /* ---- persistent agent activity ---- */
 .steps { flex: 0 0 auto; min-width: 0; padding: 4px 0 8px; }
 .steps-title { font-size: 12px; font-weight: 600; color: var(--reach-muted); margin: 0 0 10px; }
@@ -683,6 +704,32 @@ body {
 .step-details summary { cursor: pointer; padding: 3px 0; color: var(--reach-accent-light); }
 .step-details .step-result { max-height: 420px; }
 .step-preview-note { margin-top: 5px; font-size: 10px; }
+
+/* ---- step analysis: numbering, quips, current step, progress ---- */
+.steps-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 10px; }
+.steps-head .steps-title { margin: 0; }
+.steps-chip { flex: none; font-size: 10px; letter-spacing: 0.3px; color: var(--reach-accent-light);
+  border: 1px solid var(--reach-border); border-radius: 999px; padding: 1px 8px; }
+.steps-chip:empty { display: none; }
+.step-progress { flex: 0 0 100%; height: 2px; border-radius: 2px; background: var(--reach-border);
+  overflow: hidden; opacity: 0; }
+.steps.running .step-progress { opacity: 1; }
+.step-progress-fill { display: block; height: 100%; width: 0; background: var(--reach-accent); }
+.step-progress.running:not(.determinate) .step-progress-fill { width: 30%; animation: step-sheen 1.4s ease-in-out infinite; }
+@keyframes step-sheen { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
+.step-num { flex: none; min-width: 16px; text-align: right; font-size: 10px; color: var(--reach-muted); }
+.step-quip { margin: 1px 0 0; font-size: 11px; font-style: italic; color: var(--reach-muted); }
+.step-drop { margin: 6px 0 0; }
+.step-drop > summary { cursor: pointer; font-size: 10px; color: var(--reach-accent-light); padding: 2px 0; }
+.step-drop[open] > summary { margin-bottom: 4px; }
+.step-drop .step-result { margin-top: 4px; }
+.step-group { margin: 2px 0 8px 5px; padding-left: 12px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.4px; color: var(--reach-muted); border-left: 2px dashed var(--reach-border); }
+.step-line.current { border-left-color: var(--reach-accent); }
+.step-line.current .step-text { color: var(--reach-accent-light); }
+@media (prefers-reduced-motion: reduce) {
+  .step-progress.running:not(.determinate) .step-progress-fill { animation: none; width: 100%; opacity: 0.4; }
+}
 
 /* ---- LaTeX + markdown rendering ---- */
 .tex sup, .tex sub { font-size: 0.75em; line-height: 0; }
@@ -754,6 +801,51 @@ body {
   color: var(--reach-muted);
   font-size: 11px;
   padding: 4px 2px;
+}
+
+/* Local slash commands (/vram, /gpu, /ollama): facts from this machine,
+ * never sent to a model, so they render as a plain readable card. */
+.local-card {
+  position: relative;
+  border: 1px solid var(--reach-border, rgba(128, 128, 128, 0.28));
+  border-radius: 6px;
+  background: var(--reach-surface);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.local-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--reach-muted);
+}
+
+.local-body {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, ui-monospace, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre;
+}
+
+.local-copy {
+  align-self: flex-start;
+  font-size: 10px;
+  padding: 2px 8px;
+  border: 1px solid var(--reach-border, rgba(128, 128, 128, 0.28));
+  border-radius: 4px;
+  background: transparent;
+  color: var(--reach-muted);
+  cursor: pointer;
+}
+
+.local-copy:hover {
+  color: var(--reach-fg, inherit);
 }
 
 .bubble {
@@ -1078,6 +1170,36 @@ body {
 .slash-empty {
   padding: 8px 10px; font-size: 11px; color: var(--reach-muted);
 }
+
+/* ---------- picked /command chip (sits above the textarea) ---------- */
+/* Same accent treatment as .slash-cmd, so a chosen command reads as the same
+   token the menu showed — but compact, and without the template in the box. */
+.slash-chip-bar {
+  display: flex; flex-wrap: wrap; gap: 6px; padding: 0 8px 4px;
+}
+.slash-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 100%;
+  background: var(--reach-accent-bg);
+  border: 1px solid var(--reach-accent-border);
+  border-radius: 6px; padding: 2px 6px 2px 8px;
+  font-size: 12px;
+}
+.slash-chip-cmd {
+  font-family: var(--reach-mono, monospace); font-weight: 600;
+  color: var(--reach-accent-light); flex: 0 0 auto;
+}
+.slash-chip-desc {
+  color: var(--reach-muted); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.slash-chip-clear {
+  flex: 0 0 auto;
+  background: transparent; border: none; cursor: pointer;
+  color: var(--reach-muted); font-size: 13px; line-height: 1;
+  padding: 0 2px; border-radius: 3px;
+}
+.slash-chip-clear:hover { color: var(--reach-accent-light); }
 
 /* ---------- agent instructions textarea (Settings) ---------- */
 /* Same surface as the other setting inputs; only the height differs because

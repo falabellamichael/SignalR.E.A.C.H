@@ -35,7 +35,8 @@ test('numberedRefs correctly extracts and numbers interactive elements', () => {
 });
 
 test('browser tools dispatch actions and handle engine mock server', async (t) => {
-  process.env.REACH_BROWSER_PORT = '21301';
+  // Bind an ephemeral port: a fixed one (21301) collides with a running REACH
+  // tray / shim, which made this test fail on any machine with REACH open.
   __resetForTest();
   const received = [];
   const server = http.createServer((req, res) => {
@@ -84,7 +85,8 @@ test('browser tools dispatch actions and handle engine mock server', async (t) =
     });
   });
 
-  await new Promise((r) => server.listen(21301, '127.0.0.1', r));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  process.env.REACH_BROWSER_PORT = String(server.address().port);
   t.after(() => {
     delete process.env.REACH_BROWSER_PORT;
     __resetForTest();

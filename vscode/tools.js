@@ -47,7 +47,8 @@ const CORE_TOOLS = {
     tier: 'core',
     approval: true,
     budget: 40000,
-    help: 'runs a command in the integrated terminal (the user must approve it first).',
+    help: 'runs a command in the integrated terminal and returns its stdout, stderr and exit code '
+      + '(the user must approve it first). Use it to verify your own changes.',
     example: { action: 'shell', command: 'npm test' },
   },
   websearch: {

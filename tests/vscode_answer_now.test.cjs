@@ -189,6 +189,7 @@ test('quick answer completion prevents further tool extraction even if agentic i
     agentRounds: 1,
     continuationRetries: 0,
     MAX_AGENT_ROUNDS: 40,
+    UNFINISHED_RETRY_LIMIT: 2,
     activeResponseStep: null,
     conv: { id: 10, model: 'gpt-4o', messages: [{ role: 'user', content: 'What does this project do?' }] },
     agentMessages: [],

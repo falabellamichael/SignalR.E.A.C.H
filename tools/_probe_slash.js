@@ -23,7 +23,9 @@ function filter(word) {
 }
 
 [['', 'bare slash -> all'], ['re', 'prefix'], ['rev', 'prefix'],
-['ex', 'prefix'], ['commit', 'full'], ['bug', 'desc match'], ['zzz', 'no match']]
+['ex', 'prefix'], ['commit', 'full'], ['bug', 'desc match'], ['zzz', 'no match'],
+['goal', 'goal -> /goal'], ['plan', 'plan -> /plan'], ['impl', 'impl -> /implement'],
+['vram', 'vram -> /vram'], ['gpu', 'gpu -> /gpu'], ['agent', 'agent -> /agent']]
   .forEach(function (c) {
     const names = filter(c[0]).map(function (x) { return x.name; }).join(' ');
     console.log(('  /' + c[0]).padEnd(11), '->', (names || '(none)').padEnd(46), '|', c[1]);
@@ -38,7 +40,14 @@ assert(filter('zzz').length === 0, 'no match -> empty list');
 assert(table.find(function (c) { return c.name === '/commit'; }).send === true, '/commit sends at once');
 assert(!table.find(function (c) { return c.name === '/review'; }).send, '/review fills the composer');
 assert(table.every(function (c) { return c.name.charAt(0) === '/'; }), 'all names start with /');
-assert(table.every(function (c) { return c.desc && c.prompt; }), 'every command has desc + prompt');
+assert(table.every(function (c) { return c.local || (c.desc && c.prompt); }), 'every command has desc + prompt (local commands excepted)');
+assert(table.every(function (c) { return !c.local || typeof c.action === 'string'; }), 'local commands name an action');
+assert(filter('vram').some(function (c) { return c.name === '/vram' && c.local === true; }), '/vram is a local command');
+assert(filter('vram')[0].name === '/vram', 'typing vram puts /vram first');
+assert(filter('impl')[0].name === '/implement', 'impl -> /implement');
+assert(filter('plan').some(function (c) { return c.name === '/plan'; }), 'plan -> /plan');
+assert(filter('goal').some(function (c) { return c.name === '/goal'; }), 'goal -> /goal');
+assert(table.filter(function (c) { return c.local; }).length >= 3, 'at least three local hardware commands');
 console.log('');
 console.log(fail ? ('FAILURES: ' + fail) : 'all assertions passed');
 process.exitCode = fail ? 1 : 0;

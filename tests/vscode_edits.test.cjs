@@ -75,7 +75,7 @@ test('failed edits can be rejected and a failed batch stops before the next writ
  assert.ok(h.records.every(r=>r.state==='rejected'));
 });
 
-const {locateEdit,repairWindow}=require('../vscode/edits');
+const {locateEdit,repairWindow,alreadyApplied}=require('../vscode/edits');
 test('exact edits handle LF proposals on CRLF files without changing indentation',()=>{
  const current='before\r\n  one\r\n  two\r\nafter\r\n';
  const change=locateEdit(current,'  one\n  two','  three\n  four');
@@ -87,6 +87,17 @@ test('ambiguous and empty anchors never choose an arbitrary location',()=>{
  assert.throws(()=>locateEdit('aaa','aa','other'),/more than once/);
  assert.throws(()=>locateEdit('existing','','new file'),/already exists/);
  assert.throws(()=>repairWindow('x'.repeat(9000),'missing source'),/Could not locate/);
+});
+test('a proposal whose change is already in the file counts as done, not broken',()=>{
+ const current='<button id="a">X</button>\r\n<button id="b">Y</button>\r\n';
+ // The replacement is present (newline form irrelevant) and the anchor is gone.
+ assert.equal(alreadyApplied(current,'<button id="a">X</button>','<button id="a" type="button">X</button>'),false,'replacement larger than the anchor check needs the exact text');
+ const applied='<button id="a" type="button">X</button>\r\n<button id="b">Y</button>\r\n';
+ assert.equal(alreadyApplied(applied,'<button id="a">X</button>','<button id="a" type="button">X</button>'),true);
+ // Anchor still present: the edit is still applicable, never "done".
+ assert.equal(alreadyApplied(current,'<button id="a">X</button>','<button id="a" type="button">X</button>'.replace('type="button"','data-x="1"')),false);
+ // Too small to trust.
+ assert.equal(alreadyApplied('abc','x','ab'),false);
 });
 
 test('a failed review exposes Refresh and a refreshed proposal requires a separate Apply',()=>{

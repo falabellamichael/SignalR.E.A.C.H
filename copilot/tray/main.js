@@ -1282,13 +1282,17 @@ async function codegptSendRequest(text, signal, engine, label) {
     let forming = null;
     let stable = 0;
     let completed = false;
-    // Bound a broken page/request so it cannot monopolize the shared queue.
-    // The captured run response, not DOM stability, determines completion.
+    // No deadline: waiting on a live answer is agent work, and the old 180 s
+    // kill fired mid-reply while the page was still reporting progress — that
+    // is exactly how an "empty reply" reached the chat (2026-09-10,
+    // deepseek-v4.1-flash: killed at 180 s, the identical retry finished in
+    // 75 s). Only Stop / the client disconnecting (the AbortSignal) cancels
+    // this loop. The captured run response, not DOM stability, determines
+    // completion.
     let lastProgress = Date.now();
     let apiSeen = '';
     while (!completed) {
         signal?.throwIfAborted();
-        if (Date.now() - sendStart > 180000) throw new Error('CodeGPT did not complete within 180 seconds. Check the CodeGPT window and extension connection.');
         await sleep(POLL_MS);
         let snap;
         try {

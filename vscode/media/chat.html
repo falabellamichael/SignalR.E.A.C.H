@@ -18,13 +18,13 @@
       <span id="top-think" class="think-spinner" hidden aria-label="thinking"></span>
       <span id="model-chip" class="model-chip" title="Active model">—</span>
       <span class="brand-spacer"></span>
-      <button id="settings-btn" class="icon-btn" title="Settings" aria-label="Settings">
+      <button id="settings-btn" class="icon-btn" type="button" title="Settings" aria-label="Settings">
         <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M19.39 8.94 L19.83 10.34 L21.85 10.26 L21.85 13.74 L19.83 13.66 L19.39 15.06 L18.71 16.36 L20.19 17.74 L17.74 20.19 L16.36 18.71 L15.06 19.39 L13.66 19.83 L13.74 21.85 L10.26 21.85 L10.34 19.83 L8.94 19.39 L7.64 18.71 L6.26 20.19 L3.81 17.74 L5.29 16.36 L4.61 15.06 L4.17 13.66 L2.15 13.74 L2.15 10.26 L4.17 10.34 L4.61 8.94 L5.29 7.64 L3.81 6.26 L6.26 3.81 L7.64 5.29 L8.94 4.61 L10.34 4.17 L10.26 2.15 L13.74 2.15 L13.66 4.17 L15.06 4.61 L16.36 5.29 L17.74 3.81 L20.19 6.26 L18.71 7.64 Z"/><circle cx="12" cy="12" r="3.2"/></svg>
       </button>
-      <button id="tray-btn" class="icon-btn tray-btn" title="System tray — click to start if stopped" aria-label="System tray">
+      <button id="tray-btn" class="icon-btn tray-btn" type="button" title="System tray — click to start if stopped" aria-label="System tray">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M1.5 2h13A1.5 1.5 0 0 1 16 3.5v7a1.5 1.5 0 0 1-1.5 1.5H9.2l.5 1.6H11v1H5v-1h1.3l.5-1.6H1.5A1.5 1.5 0 0 1 0 10.5v-7A1.5 1.5 0 0 1 1.5 2zm0 1a.5.5 0 0 0-.5.5v7a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.5-.5h-13z"/></svg>
       </button>
-      <button id="browser-btn" class="icon-btn" title="Open REACH Browser — right-click any element to add it to chat" aria-label="Open Browser">
+      <button id="browser-btn" class="icon-btn" type="button" title="Open REACH Browser — right-click any element to add it to chat" aria-label="Open Browser">
         <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm5 7a6 6 0 0 1-1.2 3.6 6.3 6.3 0 0 0-1.9-4.9L8.7 5.4a6.6 6.6 0 0 0-.2-1.1A6 6 0 0 1 13 8zM8 2c.4 0 .9.1 1.3.3.3.3.6.8.8 1.4.3.8.5 1.6.5 2.4-.3.3-1.2 1.2-1.6 2-.6 0-2.6-.4-3.4-1.2-.6-.6-.7-1.7-.7-2.5l-.6-.8A6 6 0 0 1 8 2zM6.5 1.2A6 6 0 0 0 2 5.5c.5 0 1.3-.1 2-.5.6.5.8 1.5.8 2.4.5.5.4 1.4-.2 1.9a2.6 2.6 0 0 1 1.8-1 3.9 3.9 0 0 1 2.6 1c.6.5.9 1.4.9 2.1l.7.4A6 6 0 0 1 8 14a6 6 0 0 1-1.4-11.9c0-.2 0-.5-.1-.7z" fill="currentColor"/></svg>
       </button>
     </div>
@@ -51,30 +51,33 @@
     <div class="row">
       <select id="provider" class="model-select" title="Provider" aria-label="Provider"><option value="endpoint">Free endpoints</option><option value="copilot">Microsoft 365 Copilot</option><option value="chatgpt">ChatGPT</option><option value="codegpt">CodeGPT economy models</option></select>
       <select id="model" class="model-select" title="Model"></select>
-      <button id="history-btn" class="icon-btn" title="Chat history" aria-label="Chat history">
+      <button id="history-btn" class="icon-btn" type="button" title="Chat history" aria-label="Chat history">
         <svg viewBox="0 0 16 16" width="14" height="14"><path d="M8 1.5A6.5 6.5 0 1 1 1.5 8H2.5A5.5 5.5 0 1 0 8 2.5V1.5z" fill="currentColor"/><path d="M8 3.5v4.2l3 1.8-.6 1-3.4-2V3.5h1z" fill="currentColor"/></svg>
       </button>
-      <button id="clear-btn" class="icon-btn" title="Clear chat" aria-label="Clear chat">
+      <button id="clear-btn" class="icon-btn" type="button" title="Clear chat" aria-label="Clear chat">
         <svg viewBox="0 0 16 16" width="14" height="14"><path d="M6.5 1h3l.5 1H13v1H3V2h3l.5-1z" fill="currentColor"/><path d="M4 4.5h8l-.6 10.1a1 1 0 0 1-1 .9H5.6a1 1 0 0 1-1-.9L4 4.5zm1.2 1l.5 9h4.6l.5-9H5.2z" fill="currentColor"/></svg>
       </button>
-      <button id="refresh" class="icon-btn" title="Reload models" aria-label="Reload models">
+      <button id="refresh" class="icon-btn" type="button" title="Reload models" aria-label="Reload models">
         <svg viewBox="0 0 16 16" width="14" height="14"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9l-1 1A4.5 4.5 0 1 0 12.5 8h1z" fill="currentColor"/><path d="M13.5 1.5v4h-4l1.3-1.3A6.5 6.5 0 1 1 1.5 8h1A5.5 5.5 0 1 0 11 2.8l2.5 2.5v-3.8h0z" fill="currentColor"/></svg>
       </button>
     </div>
     <div class="row">
       <div class="input-wrap">
-        <span id="attach-btn" class="attach-plus" role="button" tabindex="0" title="Attach files or images as context" aria-label="Attach">+</span>
-        <span id="attach-clear" class="attach-minus" role="button" tabindex="0" title="Remove all attachments" aria-label="Remove all attachments" hidden>-</span>
         <div id="attach-menu" class="attach-menu" hidden>
-          <button class="attach-item" data-kind="all">📄 Attach files…</button>
-          <button class="attach-item" data-kind="images">🖼 Attach images…</button>
+          <button class="attach-item" type="button" data-kind="all">📄 Attach files…</button>
+          <button class="attach-item" type="button" data-kind="images">🖼 Attach images…</button>
         </div>
         <div id="slash-menu" class="slash-menu" role="listbox" aria-label="Commands" hidden></div>
-        <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+        <div id="slash-chip-bar" class="slash-chip-bar" hidden></div>
+        <div class="composer-field">
+          <span id="attach-btn" class="attach-plus" role="button" tabindex="0" title="Attach files or images as context" aria-label="Attach">+</span>
+          <span id="attach-clear" class="attach-minus" role="button" tabindex="0" title="Remove all attachments" aria-label="Remove all attachments" hidden>-</span>
+          <textarea id="input" rows="2" placeholder="Ask REACH anything… (Enter to send, Shift+Enter for newline)"></textarea>
+        </div>
       </div>
       <div class="send-col">
-        <button id="send" class="send-btn" title="Send">➤</button>
-        <button id="stop" class="stop-btn" title="Stop generating" aria-label="Stop generating" disabled>■</button>
+        <button id="send" class="send-btn" type="button" title="Send">➤</button>
+        <button id="stop" class="stop-btn" type="button" title="Stop generating" aria-label="Stop generating" disabled>■</button>
       </div>
     </div>
     <div class="row toggles">

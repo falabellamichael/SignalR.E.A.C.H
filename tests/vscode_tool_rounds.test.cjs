@@ -16,7 +16,7 @@ test('XML tool requests from the reported reply execute a read with the requeste
  const ctx = toolParser();
  ctx.pendingText = '<tool>\n{"action": "read", "path": "README.md", "start_line": 1, "end_line": 260}\n</tool>';
  const calls = [];
- Object.assign(ctx, { busy: true, rafPending: false, stopRequested: false, agenticEnabled: true, pendingEdits: [], agentRounds: 0, MAX_AGENT_ROUNDS: 40,
+ Object.assign(ctx, { busy: true, rafPending: false, stopRequested: false, agenticEnabled: true, pendingEdits: [], agentRounds: 0, MAX_AGENT_ROUNDS: 40, UNFINISHED_RETRY_LIMIT: 2,
    pendingBubble: {}, activeResponseStep: null, setRich() {}, startSteps() {}, showThinking() {},
    addStepRow() {}, post: (type, payload) => calls.push({type, ...payload}) });
  vm.runInNewContext(source.slice(source.indexOf('  function beginToolRound('), source.indexOf('  function continueAgent(')), ctx);

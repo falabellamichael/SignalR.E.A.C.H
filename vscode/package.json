@@ -177,6 +177,21 @@
           "default": 2048,
           "markdownDescription": "Max output tokens per request."
         },
+        "simplereach.agentMaxRounds": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "Agent rounds (model \u2194 tool exchanges) allowed per request. **0 = no limit** \u2014 the agent keeps working until the task is done or you press Stop. Set a positive number to pause at that many rounds instead."
+        },
+        "simplereach.agentUnfinishedRetries": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "Extra rounds REACH gives the agent when a reply *announces* work it never starts. **0 = no limit** \u2014 it keeps chasing the work; set a positive number to pause with \u201ccontinue\u201d after that many nudges."
+        },
+        "simplereach.toolResultBudgetKb": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "How much of a tool's result (KB) is kept in context (\u201cread\u201d always keeps the complete result). **0 = no limit** \u2014 the complete result is kept and automatic context compression protects the request size. Set a positive value to cap every other tool result."
+        },
         "simplereach.workspaceContext": {
           "type": "boolean",
           "default": true,

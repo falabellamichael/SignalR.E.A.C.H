@@ -427,6 +427,29 @@ test('Free endpoints groups the CodeGPT economy models and routes them to the lo
  assert.equal(free.options.headers.Authorization,'Bearer free-only-key');
 });
 
+test('a bare economy alias from the endpoint is routed to the bridge with the bridge id',async()=>{
+ // reachd publishes the economy models under their bare ids while the bridge
+ // validates `codegpt-eco-<id>`. Selecting the bare alias must go DIRECT to
+ // the bridge — a relay hop swallowed the tray's run error and surfaced it as
+ // an empty stream (2026-09-11) — and the wire body must carry the bridge id.
+ const h=host({},url=>new Response(JSON.stringify(url.endsWith('/models')
+   ? (url.startsWith('http://127.0.0.1:21302')
+      ? {data:[{id:'codegpt-eco-deepseek-v4.1-flash'},{id:'copilot-chat'}]}
+      : {data:[{id:'my/free-model'},{id:'deepseek-v4.1-flash'}]})
+   : {choices:[{message:{content:'OK'}}]})));
+ await h.provider._fetchModels();
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'deepseek-v4.1-flash',stream:false});
+ const econ=h.calls.at(-1);
+ assert.equal(econ.url,'http://127.0.0.1:21302/v1/chat/completions');
+ assert.equal(econ.options.headers.Authorization,undefined,'the bridge must never receive the free endpoint key');
+ assert.equal(JSON.parse(econ.options.body).model,'codegpt-eco-deepseek-v4.1-flash');
+ // A free alias still goes to the configured endpoint with its own id.
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'my/free-model',stream:false});
+ const free=h.calls.at(-1);
+ assert.equal(free.url,'https://free.example/v1/chat/completions');
+ assert.equal(JSON.parse(free.options.body).model,'my/free-model');
+});
+
 test('a tray that is not running drops the economy group without failing Free endpoints',async()=>{
  // The bridge leg rejects; the free aliases must still load, with a note.
  const h=host({},url=>url.startsWith('http://127.0.0.1:21302')

@@ -76,4 +76,18 @@ function applyPatch(current, hunks) {
   return text;
 }
 
-module.exports = { locateEdit, repairWindow, replaceLines, applyPatch };
+module.exports = { locateEdit, repairWindow, replaceLines, applyPatch, alreadyApplied };
+
+/* A proposal whose replacement is already exactly in place — and whose search
+ * anchor is gone — is done, not broken. That is the normal outcome for a card
+ * that outlived a batch, a round that re-proposed the same change, or work
+ * another surface landed first. Newline tolerance only; nothing else is guessed,
+ * and a tiny replacement is never trusted (too easy to collide). */
+function alreadyApplied(current, search, replace) {
+  const repl = String(replace == null ? '' : replace);
+  if (repl.trim().length < 8) return false;
+  const text = String(current || '').replace(/\r\n/g, '\n');
+  const anchor = String(search == null ? '' : search).replace(/\r\n/g, '\n');
+  if (anchor && text.includes(anchor)) return false;   // still applicable
+  return text.includes(repl.replace(/\r\n/g, '\n'));
+}
