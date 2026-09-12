@@ -103,3 +103,30 @@ test('chat without onDelta stays a single non-stream request', async (t) => {
   assert.equal(await client.chat(client.getSettings(), [{ role: 'user', content: 'hi' }]), 'PLAIN OK');
   assert.equal(captured.stream, false);
 });
+
+test('streaming chat merges stacked system messages too', async (t) => {
+  let captured = null;
+  const base = await serve(t, (req, res) => {
+    if (req.url === '/v1/models') return res.end(JSON.stringify({ data: [{ id: 'demo' }] }));
+    if (req.url === '/v1/chat/completions') {
+      let text = '';
+      req.on('data', (chunk) => { text += chunk; });
+      req.on('end', () => {
+        captured = JSON.parse(text);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write('data: ' + JSON.stringify({ choices: [{ delta: { content: 'OK' } }] }) + '\n\n');
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  const client = clientFor(t, base);
+  const messages = [{ role: 'system', content: 'CTX' }, { role: 'system', content: 'RULES' },
+    { role: 'user', content: 'Hi' }];
+  assert.equal(await client.chat(client.getSettings(), messages, () => {}), 'OK');
+  assert.deepEqual(captured.messages, [{ role: 'system', content: 'CTX\n\nRULES' },
+    { role: 'user', content: 'Hi' }]);
+});

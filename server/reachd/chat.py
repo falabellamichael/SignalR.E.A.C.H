@@ -10,6 +10,40 @@ from reachd.const import CLIENT_DISCONNECT_ERRORS
 from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
 
+def merge_system_messages(messages):
+    """Strict upstreams (vLLM/Qwen-class chat templates) accept exactly ONE
+    system message, and only at index 0 — a second system, even one leading,
+    is answered with 400 "System message must be at the beginning."
+
+    Clients legitimately stack systems (agent rules + workspace context +
+    compacted memory), and the model/global system_prompt injection adds one
+    more. Merge every system message into a single leading message, preserving
+    order, right before the request leaves the relay, so every upstream —
+    present or added later — keeps working.
+    """
+    systems = sum(1 for m in messages
+                  if isinstance(m, dict) and m.get("role") == "system")
+    if not systems:
+        return messages
+    first = messages[0] if messages else None
+    if systems == 1 and isinstance(first, dict) \
+            and first.get("role") == "system":
+        return messages
+    contents = []
+    rest = []
+    for message in messages:
+        if isinstance(message, dict) and message.get("role") == "system":
+            text = message.get("content")
+            if isinstance(text, str) and text:
+                contents.append(text)
+        else:
+            rest.append(message)
+    merged = ([{"role": "system", "content": "\n\n".join(contents)}]
+              if contents else [])
+    messages[:] = merged + rest
+    return messages
+
+
 def chat_execute(h):
     ip = h._client_ip()
     if not h._check_ip_lists():
@@ -212,6 +246,11 @@ def chat_execute(h):
             and (first.get("content") or "").strip() == injected
         if not already:
             messages.insert(0, {"role": "system", "content": injected})
+
+    # ---- exactly one leading system message ----
+    # The injection above (and any client that stacks systems) may leave more
+    # than one; strict upstream chat templates reject everything past index 0.
+    merge_system_messages(messages)
 
     # ---- upstream model + circuit + key ----
     upstream_model = spec["upstream"]

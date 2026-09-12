@@ -92,6 +92,39 @@ const DEFAULT_AGENT_PROMPT = 'You are SimpleREACH, an agentic coding assistant i
   + 'Use them when you need to see files that are not already in the context, then answer the question or emit edit '
   + 'blocks for the actual changes.';
 
+/* Strict OpenAI-compatible endpoints (vLLM/Qwen-class servers) reject any
+ * system message that is not the very first one: "System message must be at
+ * the beginning." REACH legitimately builds several (the agent rules, the
+ * workspace context, web results, compacted memory), so before every outbound
+ * request they are merged into ONE leading system message, in their original
+ * order. The array is mutated in place so callers keep their reference. */
+function normalizeSystemMessages(messages) {
+  if (!Array.isArray(messages) || !messages.length) return messages;
+  let systems = 0;
+  let firstAt = -1;
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i] && messages[i].role === 'system') {
+      systems += 1;
+      if (firstAt < 0) firstAt = i;
+    }
+  }
+  if (systems === 0 || (systems === 1 && firstAt === 0)) return messages;
+  const contents = [];
+  const rest = [];
+  for (const message of messages) {
+    if (message && message.role === 'system') {
+      const text = typeof message.content === 'string' ? message.content : '';
+      if (text) contents.push(text);
+    } else {
+      rest.push(message);
+    }
+  }
+  messages.length = 0;
+  if (contents.length) messages.push({ role: 'system', content: contents.join('\n\n') });
+  messages.push(...rest);
+  return messages;
+}
+
 /* Apply {{variable}} substitutions to a user-supplied prompt template. */
 function expandAgentTemplate(template, connection) {
   const workspace = vscode.workspace.workspaceFolders
@@ -664,6 +697,11 @@ async function localCommand(action) {
 // the last user turn. Send the complete text transcript in one user message;
 // ordinary OpenAI-compatible providers keep their native message roles.
 function encodeChatPayload(payload) {
+  // The last gate before a request leaves the extension. Context compression
+  // can rebuild the messages after they were already normalized — its memory
+  // system lands in front of the retained system — so normalize here too: no
+  // caller, present or future, can ship two systems to a strict endpoint.
+  normalizeSystemMessages(payload.messages);
   if (/(?:^|\/)(?:copilot|chatgpt)-chat$/.test(payload.model || '')
       && payload.messages.every(m => typeof m.content === 'string')
       && (payload.messages.length > 1 || payload.messages[0]?.role !== 'user')) {
@@ -1564,10 +1602,10 @@ class ReachChatViewProvider {
       model,
       max_tokens: thinkMaxTokens,
       stream: false,
-      messages: [
+      messages: normalizeSystemMessages([
         { role: 'system', content: system },
         ...(Array.isArray(messages) ? messages : [{ role: 'user', content: messages }]),
-      ],
+      ]),
     };
     try {
       const resp = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
@@ -1863,6 +1901,10 @@ class ReachChatViewProvider {
           messages.unshift(steerMsg);
         }
       }
+      // Strict endpoints demand the system message be the very first one.
+      // Everything above may have added more than one (agent rules, web
+      // results, workspace context, compacted memory) — merge them now.
+      normalizeSystemMessages(messages);
       const payload = {
         stream: body.stream === true,
         max_tokens: maxTokens || 2048,

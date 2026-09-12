@@ -279,6 +279,35 @@ test('Stop cancels a long Copilot reading pass before the remaining parts are se
  assert.equal(h.posts.find(p=>p.type==='done').aborted,true);
 });
 
+test('strict endpoints: every system message is merged into one leading system',async()=>{
+ // vLLM/Qwen-class servers reject any system message past index 0. REACH's
+ // pipeline stacks several (agent rules, context, compacted memory), so the
+ // outbound payload must collapse them into a single first message.
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'OK'}}]})));
+ await h.provider._chat({
+  messages:[
+   {role:'system',content:'OLD CTX'},
+   {role:'user',content:'first question'},
+   {role:'assistant',content:'first answer'},
+   {role:'system',content:'MID CONVERSATION NOTE'},
+   {role:'user',content:'second question'},
+  ],
+  model:'my/free-model',stream:false,agentic:true,
+ });
+ const sent=JSON.parse(h.calls[0].options.body).messages;
+ assert.deepEqual(sent.map(m=>m.role),['system','user','assistant','user']);
+ assert.equal(sent.filter(m=>m.role==='system').length,1);
+ assert.match(sent[0].content,/OLD CTX/);
+ assert.match(sent[0].content,/MID CONVERSATION NOTE/);
+ assert.match(sent[0].content,/agentic coding assistant/,'the agent rules ride in the same message');
+ // Think merges its own system with any the conversation carried.
+ await h.provider._think([{role:'system',content:'CTX'},{role:'user',content:'q'}],false,'my/free-model');
+ const thinkSent=JSON.parse(h.calls.at(-1).options.body).messages;
+ assert.deepEqual(thinkSent.map(m=>m.role),['system','user']);
+ assert.match(thinkSent[0].content,/private reasoning engine/);
+ assert.match(thinkSent[0].content,/CTX/);
+});
+
 function editableWorkspace(initial, dirty=false) {
  let text=initial,disk=dirty?'UNSAVED BASE ON DISK':initial,writes=0,saves=0;
  const doc={isDirty:dirty,getText:()=>text,positionAt:i=>i,save:async()=>{saves++;disk=text;return true;}};
@@ -332,8 +361,27 @@ test('all providers compress before the 400000-character relay cap, including Th
  assert.ok(h.posts.some(p=>p.type==='contextCompacted'));
  const final=JSON.parse(h.calls.at(-1).options.body);
  assert.ok(final.messages.some(m=>m.content===latest));
- assert.ok(final.messages.some(m=>m.content.startsWith('REACH conversation memory')));
+ // After compaction the memory rides inside the ONE leading system message
+ // (strict endpoints reject any system past index 0).
+ assert.ok(final.messages.some(m=>String(m.content).includes('REACH conversation memory')));
+ assert.equal(final.messages.filter(m=>m.role==='system').length,1,'exactly one system message');
+ assert.equal(final.messages[0].role,'system','and it comes first');
  assert.equal(final.agentic,undefined);assert.equal(messages.length,13);
+});
+test('context compression can never re-stack system messages (strict endpoints)',async()=>{
+ // Compression prepends its memory system while keeping the existing one, so
+ // a payload rebuilt by _encodePayload must STILL carry exactly one leading
+ // system or vLLM/Qwen endpoints answer 400 "System message must be at the
+ // beginning." Regression: the merge used to happen only before compaction.
+ const messages=[{role:'system',content:'Keep user edits.'},
+  ...Array.from({length:9},(_,i)=>({role:'assistant',content:'Step '+i+'\n'+'x'.repeat(32000)})),
+  {role:'user',content:'Finish the current task.'}];
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'memory note'}}]})));
+ const wire=JSON.parse(await h.provider._encodePayload({model:'my/free-model',messages,stream:false}));
+ assert.ok(wire.messages.some(m=>String(m.content).includes('REACH conversation memory')),'compaction ran');
+ assert.equal(wire.messages.filter(m=>m.role==='system').length,1,'exactly one system message');
+ assert.equal(wire.messages[0].role,'system','and it comes first');
+ assert.match(wire.messages[0].content,/Keep user edits/,'the retained system content is not lost');
 });
 test('a lower advertised character budget triggers one compressed retry',async()=>{
  let answers=0;

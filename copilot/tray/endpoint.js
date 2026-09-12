@@ -140,6 +140,38 @@ function requestStream(url, body, onDelta, { redirects = 3 } = {}) {
     });
 }
 
+/* Strict upstreams (vLLM/Qwen-class chat templates) accept exactly ONE system
+ * message, and only at index 0: a second system — even one leading — is
+ * answered with 400 "System message must be at the beginning." Callers may
+ * stack systems (grounding, history, future features), so merge every system
+ * message into a single leading one, preserving order, right before the
+ * request leaves for the endpoint. */
+function normalizeSystemMessages(messages) {
+    if (!Array.isArray(messages) || !messages.length) return messages;
+    let systems = 0;
+    let firstAt = -1;
+    for (let i = 0; i < messages.length; i += 1) {
+        if (messages[i] && messages[i].role === 'system') {
+            systems += 1;
+            if (firstAt < 0) firstAt = i;
+        }
+    }
+    if (systems === 0 || (systems === 1 && firstAt === 0)) return messages;
+    const contents = [];
+    const rest = [];
+    for (const message of messages) {
+        if (message && message.role === 'system') {
+            const text = typeof message.content === 'string' ? message.content : '';
+            if (text) contents.push(text);
+        } else {
+            rest.push(message);
+        }
+    }
+    return contents.length
+        ? [{ role: 'system', content: contents.join('\n\n') }, ...rest]
+        : rest;
+}
+
 function createEndpointClient(settingsPath) {
     let settings = { ...DEFAULTS };
     try {
@@ -194,17 +226,20 @@ function createEndpointClient(settingsPath) {
         const { base, models } = await discover(config);
         const model = config.model || models[0];
         if (!models.includes(model)) throw new Error(`Model ${model} is no longer available. Choose a model in Controls.`);
+        // One leading system message, whatever the caller stacked. Both the
+        // streaming and the single-shot request go out normalized.
+        const wireMessages = normalizeSystemMessages(messages);
         // No timeout: this is a model reply, not a metadata probe. With an
         // onDelta callback the reply streams: each content delta is forwarded
         // while the endpoint generates it.
         if (typeof onDelta === 'function') {
             const streamed = await requestStream(base + '/chat/completions',
-                { model, messages, stream: true }, onDelta);
+                { model, messages: wireMessages, stream: true }, onDelta);
             if (typeof streamed !== 'string' || !streamed.trim()) throw new Error('The endpoint returned an empty reply.');
             return streamed;
         }
         const data = JSON.parse(await request(base + '/chat/completions', {
-            body: { model, messages, stream: false }
+            body: { model, messages: wireMessages, stream: false }
         }));
         const content = data.choices?.[0]?.message?.content;
         if (typeof content !== 'string' || !content.trim()) throw new Error('The endpoint returned an empty reply.');
@@ -213,4 +248,4 @@ function createEndpointClient(settingsPath) {
     return { getSettings, saveSettings, discover, chat };
 }
 
-module.exports = { createEndpointClient, endpointUrl, request, DEFAULT_POINTER };
+module.exports = { createEndpointClient, endpointUrl, request, DEFAULT_POINTER, normalizeSystemMessages };
