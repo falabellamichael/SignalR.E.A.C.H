@@ -196,15 +196,23 @@ step keeps its result in a dropdown ("Result · N characters") beside its durati
 running steps render live inline, a dropdown you open stays open and keeps updating
 as data arrives, and failures open on their own so the error is visible. Numbering,
 quips and groups are deterministic and survive a window reload.
-Agent runs have **no fixed limits**. Three settings decide the effort, all defaulting
-to **0 = no limit**:
+Agent runs use explicit lifecycle control: ordinary response text never completes
+an Agent task. Completion requires a valid structured completion signal and no
+open checklist items. The run state and checklist survive a reload; interrupted
+work resumes when you send “continue”. A response without an executable action
+automatically switches the run to API-enforced JSON actions. REACH validates the
+result before sending tools through the existing executor and approval flow. The
+mode persists through tool rounds and resumes, including older stalled runs.
+Endpoints rejecting JSON Schema are tried with JSON object mode; invalid output
+is repaired once and never executed. Three settings decide the effort:
 
 - `simplereach.agentMaxRounds` — model ↔ tool exchanges allowed per request. At 0 the
   agent keeps working until the task is done or you press Stop; a positive number
   pauses at that many rounds instead.
-- `simplereach.agentUnfinishedRetries` — extra rounds given when a reply announces
-  work it never starts. At 0 it keeps chasing the announced work; a positive number
-  pauses with “continue” after that many nudges.
+- `simplereach.agentUnfinishedRetries` — recovery attempts after a response with
+  no executable action or valid completion. At 0 the default is two attempts; 1
+  reduces it to one. At most two attempts are made before visibly pausing the
+  unfinished task. This guard does not limit productive tool rounds.
 - `simplereach.toolResultBudgetKb` — how much of a tool result (KB) is kept in
   context (`read` always keeps the complete result). At 0 complete results are kept
   and automatic context compression protects the request size.

@@ -10,6 +10,7 @@ fetch('../vscode/media/chat.html', { cache: 'no-store' }).then(function (r) { re
   const v = '?v=' + Date.now();
   html = html
     .replace(/<meta http-equiv="Content-Security-Policy"[\s\S]*?>/, '')
+    .replace('{{agentRunUri}}', '../vscode/media/agent-run.js' + v)
     .replace('{{styleUri}}', '../vscode/media/style.css' + v)
     .replace('<script nonce="{{nonce}}">window.REACH_TOOL_NAMES = {{toolNames}};<\/script>',
       '<script>window.REACH_TOOL_NAMES = [];\n'

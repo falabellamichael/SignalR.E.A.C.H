@@ -18,6 +18,9 @@ const { startPageProxy, pageProxyUrl, stopPageProxy } = require('./browser-proxy
 
 const { locateEdit, repairWindow, applyPatch, alreadyApplied } = require('./edits');
 const { compactMessages, contextChars } = require('./context');
+const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response');
+const { protocol: agentRunProtocol } = require('./media/agent-run');
+const actionCodec = require('./agent-action');
 const { runBrowserAction } = require('./browser-tools');
 const toolsModule = (() => { try { return require('./tools'); } catch (e) { return {}; } })();
 const toolHelp = toolsModule.toolHelp || (() => '');
@@ -182,13 +185,6 @@ const TRAY_BRIDGE_ENDPOINT = 'http://127.0.0.1:21302/v1';
 function isEconomyModel(model) {
   return typeof model === 'string' && model.startsWith('codegpt-eco');
 }
-
-/* A stream/JSON reply that ends with zero content and no provider error is not
- * an answer. Saying "done" anyway rendered an empty bubble as a completed
- * reply (2026-09-10: the tray's fixed 180 s kill ended a live economy request
- * and the chat showed "Response shown below." over nothing). */
-const EMPTY_REPLY_MESSAGE = 'The provider returned an empty response — no content was streamed. '
-  + 'Retry, or check the tray / CodeGPT connection.';
 
 /* Parse "Name: value" lines into a headers object.
  *
@@ -1043,7 +1039,7 @@ class ReachChatViewProvider {
             } else if (action === 'todo_write') {
               todoState = normalizeTodos(msg.todos);
               result = renderTodos(todoState);
-              this._post('todos', { todos: todoState });
+              this._post('todos', { uid, todos: todoState });
             } else if (action === 'todo_read') {
               result = renderTodos(todoState);
             } else if (action === 'edit_patch') {
@@ -1429,20 +1425,32 @@ class ReachChatViewProvider {
     this._post('agentStep', { uid, status, result });
   }
 
-  /* A gateway 502/503/504 is a transient relay/upstream failure, not a problem
-   * with the request itself, so it is worth a couple of retries. Applies to every
-   * provider — the free endpoints, added endpoints and the tray bridge all reach
-   * their upstream through the same relay. Non-transient statuses (400, 401, 413…)
-   * fail immediately so nothing is retried pointlessly. Honors the user's Stop
-   * between attempts. */
-  async _fetchRetry(url, options, activity) {
+  // Retry inference/metadata requests only. Tool execution is outside this path.
+  // Fetch can reject before HTTP headers exist, so statuses alone are insufficient.
+  async _fetchRetry(url, options = {}, activity) {
     const transient = new Set([502, 503, 504]);
+    const signal = options.signal || this._controller?.signal;
     for (let attempt = 0; ; attempt++) {
-      const response = await fetch(url, options);
-      if (response.ok || !transient.has(response.status) || attempt >= 2) return response;
-      if (activity) this._finishActivity(activity, `Request attempt ${attempt + 1} failed (HTTP ${response.status}); retrying.`, 'error');
-      await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
-      this._controller?.signal.throwIfAborted();
+      signal?.throwIfAborted();
+      let response, failure;
+      try {
+        response = await fetch(url, options);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (error?.name === 'AbortError') throw error;
+        failure = transportDiagnostic(error, url);
+        if (!isTransientTransportError(error) || attempt >= 2) {
+          throw new Error(failure + ' After ' + (attempt + 1) + ' request attempt(s). The conversation is preserved; send Continue to resume.', { cause: error });
+        }
+      }
+      if (response) {
+        if (response.ok || !transient.has(response.status) || attempt >= 2) return response;
+        failure = 'HTTP ' + response.status + ' from the endpoint.';
+        try { await response.body?.cancel(); } catch { /* Discard a failed response. */ }
+      }
+      if (activity) this._post('agentStep', { uid: activity, status: 'running',
+        note: failure + ' Retrying request (' + (attempt + 2) + '/3); existing tool results are preserved.' });
+      await waitForRetry(500 * (attempt + 1), signal);
     }
   }
 
@@ -1593,7 +1601,10 @@ class ReachChatViewProvider {
     const isQuickAnswer = Boolean(options.quickAnswer ?? payload.quickAnswer);
     const isAgentic = Boolean(options.agentic ?? payload.agentic);
     const compacted = await this._compactContext(payload.messages, payload.model);
-    if (compacted.changed) payload = { ...payload, messages: compacted.messages };
+    if (compacted.changed) {
+      payload = { ...payload, messages: compacted.messages };
+      options.onCompacted?.(compacted);
+    }
     const encoded = encodeChatPayload(payload);
     if (!/(?:^|\/)(?:copilot|chatgpt)-chat$/.test(payload.model || '')) return encoded;
     const wire = JSON.parse(encoded);
@@ -1659,6 +1670,7 @@ class ReachChatViewProvider {
           + '```tool\n{"action":"read","path":"relative/path","startLine":1,"endLine":80}\n``` '
           + 'Before edits, read the exact current text when you only have notes. Propose fenced edit JSON with path, search and replace; never claim changes were applied.';
     return JSON.stringify({ ...payload, messages: [{ role: 'user', content: instruction
+      + (purpose === 'answer' && isAgentic ? '\n\n' + agentRunProtocol : '')
       + '\nLatest request: ' + question + `\nReading notes from all ${parts} parts (condensed):\n` + notes }] });
   }
 
@@ -1900,6 +1912,7 @@ class ReachChatViewProvider {
     this._controller = controller;
     try {
       const connection = config();
+      if (Array.isArray(body.runTodos)) todoState = normalizeTodos(body.runTodos);
       // The relay publishes the economy models under their bare ids while the
       // bridge validates its own `codegpt-eco-<id>` form; translate once here
       // so every downstream call speaks the id of the endpoint actually used.
@@ -2008,7 +2021,7 @@ class ReachChatViewProvider {
       if (body.agentic && agentic) {
         messages.unshift({
           role: 'system',
-          content: agentSystemPrompt(connection),
+          content: agentSystemPrompt(connection) + '\n\n' + agentRunProtocol,
         });
       }
       // ---- private reasoning steering (hidden from the visible flow) ----
@@ -2032,7 +2045,8 @@ class ReachChatViewProvider {
       // Everything above may have added more than one (agent rules, web
       // results, workspace context, compacted memory) — merge them now.
       normalizeSystemMessages(messages);
-      const payload = {
+      const structuredActions = !!(body.structuredActions && body.agentic && agentic && !body.quickAnswer);
+      let payload = {
         stream: body.stream === true,
         // User budget only: 0 = no limit, the field is omitted entirely.
         ...(maxTokens > 0 ? { max_tokens: maxTokens } : {}),
@@ -2044,19 +2058,47 @@ class ReachChatViewProvider {
       if (connection.temperature !== null && connection.temperature !== undefined) {
         payload.temperature = connection.temperature;
       }
+      if (structuredActions) payload = actionCodec.prepare(payload);
       controller.signal.throwIfAborted();
       let responseActivity;
       const sendPayload = async request => {
-        const encoded = await this._encodePayload(request);
-        responseActivity = this._beginActivity('Generate response', 'response');
-        return this._fetchRetry(`${await this._modelEndpoint(connection, request.model)}/chat/completions`, {
+        let preparedContext;
+        const encoded = await this._encodePayload(request, 'answer', {
+          agentic: body.agentic && agentic, quickAnswer: body.quickAnswer,
+          onCompacted: context => { preparedContext = context; },
+        });
+        controller.signal.throwIfAborted();
+        if (preparedContext) {
+          // Every recovery path (schema negotiation, empty reply, interrupted
+          // stream, invalid action) must reuse the context actually prepared.
+          // Also checkpoint it for the next tool round/reload in the webview.
+          request.messages = preparedContext.messages;
+          payload.messages = preparedContext.messages;
+          if (this._controller === controller) this._post('contextCompacted', {
+            messages: preparedContext.messages, before: preparedContext.before,
+            after: contextChars(preparedContext.messages),
+          });
+        }
+        responseActivity = this._beginActivity(structuredActions ? 'Request executable actions' : 'Generate response', 'response');
+        this._post('agentStep', { uid: responseActivity, status: 'running', note: 'Request sent; waiting for HTTP response headers.' });
+        const response = await this._fetchRetry(`${await this._modelEndpoint(connection, request.model)}/chat/completions`, {
           method: 'POST', headers: this._authHeaders({}, connection, request.model), body: encoded, signal: controller.signal,
         }, responseActivity);
+        this._post('agentStep', { uid: responseActivity, status: 'running', note: 'HTTP response received; waiting for answer data.' });
+        return response;
       };
       let resp = await sendPayload(payload);
       let responseError = null;
-      if (resp.status === 400 || resp.status === 413) {
+      if (structuredActions && [400,422].includes(resp.status)) {
         responseError = await resp.text();
+        if (/response_format|json_schema|structured.output|strict/i.test(responseError)) {
+          this._finishActivity(responseActivity, 'The endpoint rejected JSON Schema. Retrying in JSON object mode; actions are still validated before execution.', 'error');
+          payload.response_format = { type: 'json_object' };
+          resp = await sendPayload(payload); responseError = null;
+        }
+      }
+      if (resp.status === 400 || resp.status === 413) {
+        if (responseError === null) responseError = await resp.text();
         const limit = /input too large.*?max\s+(\d+)\s+chars/i.exec(responseError);
         if (limit && Number(limit[1]) >= 16000) {
           this._finishActivity(responseActivity, 'The endpoint requested a smaller context. Compressing before retrying.', 'error');
@@ -2078,48 +2120,84 @@ class ReachChatViewProvider {
         this._post('done', {});
         return;
       }
-      if (payload.stream) {
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        let streamed = 0;
-        let failed = false;
-        for (;;) {
-          if (this._controller !== controller) break;
-          const { done, value } = await reader.read();
-          if (done) break;
-          if (this._controller !== controller) break;
-          buf += decoder.decode(value, { stream: true });
-          let idx;
-          while ((idx = buf.indexOf('\n')) >= 0) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line.startsWith('data:')) continue;
-            const chunk = line.slice(5).trim();
-            if (chunk === '[DONE]') continue;
-            try {
-              const parsed = JSON.parse(chunk);
-              if (parsed.error) { failed = true; this._post('error', { message: parsed.error.message || 'Provider request failed.' }); continue; }
-              const delta = parsed && parsed.choices && parsed.choices[0] && parsed.choices[0].delta;
-              const text = delta && (delta.content || delta.reasoning_content);
-              if (text && this._controller === controller) { streamed += text.length; this._post('delta', { text }); }
-            } catch (e) { /* keepalive / partial chunk */ }
+      let lastReasoningUpdate = 0, receivedAnswerChars = 0;
+      const readReply = (response, streamed) => readChatResponse(response, {
+        stream: streamed, signal: controller.signal,
+        onText: text => {
+          if (this._controller !== controller) return;
+          receivedAnswerChars += text.length;
+          if (streamed) this._post('delta', { text });
+          if (Date.now() - lastReasoningUpdate >= 700) {
+            lastReasoningUpdate = Date.now();
+            this._post('agentStep', { uid: responseActivity, status: 'running', note: 'Answer data received · ' + receivedAnswerChars + ' characters' });
           }
+        },
+        onReasoning: count => {
+          if (this._controller !== controller || Date.now() - lastReasoningUpdate < 700) return;
+          lastReasoningUpdate = Date.now();
+          this._post('agentStep', { uid: responseActivity, status: 'running',
+            note: `Model is reasoning · ${count} characters received; waiting for the answer` });
+        },
+      });
+      let reply;
+      try {
+        reply = await readReply(resp, payload.stream);
+      } catch (error) {
+        controller.signal.throwIfAborted();
+        if (error.partialResponse || !isTransientTransportError(error)) throw error;
+        this._finishActivity(responseActivity, transportDiagnostic(error)
+          + ' No answer was delivered. Retrying this response once.', 'error');
+        const retry = await sendPayload(payload);
+        if (!retry.ok) throw new Error('Response recovery failed (HTTP ' + retry.status + '). The conversation is preserved.');
+        reply = await readReply(retry, payload.stream);
+      }
+      controller.signal.throwIfAborted();
+      // A successful HTTP response can still contain no answer. Retry exactly
+      // once on the SAME endpoint with the SAME context/model/token budget.
+      // Qwen uses its supported no-thinking template on the plain JSON retry:
+      // some Qwen/vLLM streams drop generated text even with thinking off.
+      // Never retry explicit errors, filtering, native tool calls or an answer
+      // already shown to the user, and never turn a reasoning trace into tools.
+      const canRetry = !reply.error && !reply.content.trim() && !reply.toolCalls
+        && (!reply.finishReason || ['stop', 'length'].includes(reply.finishReason));
+      if (canRetry && this._controller === controller) {
+        const noThinking = /qwen/i.test(payload.model);
+        const retryPayload = { ...payload, stream: false,
+          ...(noThinking ? { chat_template_kwargs: { enable_thinking: false } } : {}) };
+        this._finishActivity(responseActivity, emptyReplyDiagnostic(reply, payload.model)
+          + (noThinking ? ' Retrying once without streaming or model reasoning.' : ' Retrying once without streaming.'));
+        const retry = await sendPayload(retryPayload);
+        controller.signal.throwIfAborted();
+        if (retry.ok) {
+          reply = await readReply(retry, retryPayload.stream);
+          payload.stream = retryPayload.stream;
+        } else {
+          const detail = (await retry.text()).slice(0, 300);
+          reply.error = emptyReplyDiagnostic(reply, payload.model) + ` Retry failed (HTTP ${retry.status}): ${detail}`;
         }
-        if (this._controller === controller) {
-          // A stream that ends with no content and no provider error is not a
-          // reply — reporting "done" here used to render an empty bubble as a
-          // completed answer with no hint of what went wrong.
-          if (!failed && !streamed) this._post('error', { message: EMPTY_REPLY_MESSAGE });
+      }
+      if (this._controller === controller) {
+        if (reply.error || !reply.content.trim()) {
+          this._post('error', { message: reply.error || emptyReplyDiagnostic(reply, payload.model)
+            + ' The conversation is preserved; retry or select another model.' });
           this._post('done', {});
-        }
-      } else {
-        const data = await resp.json();
-        const choice = data && data.choices && data.choices[0];
-        const content = (choice && choice.message && choice.message.content) || '';
-        if (this._controller === controller) {
-          if (!String(content).trim()) this._post('error', { message: EMPTY_REPLY_MESSAGE });
-          this._post('done', { full: content });
+        } else {
+          if (structuredActions) {
+            let action;
+            try { action = actionCodec.decode(reply.content); }
+            catch (error) {
+              this._finishActivity(responseActivity, error.message + ' Retrying the action format once.', 'error');
+              const repair = actionCodec.withInstruction(payload,
+                error.message + ' Return valid action JSON with real tool arguments or a concrete completion/question/blocker.');
+              const repaired = await sendPayload(repair);
+              if (!repaired.ok) throw new Error('The endpoint could not supply executable action JSON (HTTP ' + repaired.status + '). The task is saved.');
+              const fixed = await readReply(repaired, false);
+              if (fixed.error) throw new Error(fixed.error);
+              action = actionCodec.decode(fixed.content);
+            }
+            controller.signal.throwIfAborted();
+            if (this._controller === controller) this._post('done', { full: action.message, agentAction: action });
+          } else this._post('done', payload.stream ? {} : { full: reply.content });
         }
       }
     } catch (err) {
@@ -2129,7 +2207,11 @@ class ReachChatViewProvider {
       if (err && (err.name === 'AbortError' || (controller && controller.signal.aborted))) {
         this._post('done', { aborted: true });
       } else {
-        this._post('error', { message: String((err && err.message) || err) });
+        this._post('error', { message: err?.partialResponse
+          ? transportDiagnostic(err) + ' The partial answer was not executed or automatically retried. Send Continue to resume.'
+          : isTransientTransportError(err) && !String(err.message).includes('conversation is preserved')
+            ? transportDiagnostic(err) + ' The conversation is preserved; send Continue to resume.'
+            : String((err && err.message) || err) });
         this._post('done', {});
       }
     } finally {
@@ -2148,6 +2230,7 @@ class ReachChatViewProvider {
       .replace(/\{\{nonce\}\}/g, nonce)
       .replace(/\{\{styleUri\}\}/g, mediaUri('style.css'))
       .replace(/\{\{scriptUri\}\}/g, mediaUri('chat.js'))
+      .replace(/\{\{agentRunUri\}\}/g, mediaUri('agent-run.js'))
       // The parser's allow-list is generated from the tool registry, so the
       // webview and the executor can never disagree about what is executable.
       .replace(/\{\{toolNames\}\}/g, JSON.stringify(allowedNames()));

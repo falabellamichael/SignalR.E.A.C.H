@@ -222,7 +222,7 @@
         "simplereach.agentUnfinishedRetries": {
           "type": "number",
           "default": 0,
-          "markdownDescription": "Extra rounds REACH gives the agent when a reply *announces* work it never starts. **0 = no limit** \u2014 it keeps chasing the work; set a positive number to pause with \u201ccontinue\u201d after that many nudges."
+          "markdownDescription": "Recovery attempts after a response provides no executable action or valid task completion. **0 = the default two attempts**; 1 reduces this to one. At most two recovery attempts are made before the task visibly pauses as unfinished. Actual tool rounds use agentMaxRounds."
         },
         "simplereach.toolResultBudgetKb": {
           "type": "number",

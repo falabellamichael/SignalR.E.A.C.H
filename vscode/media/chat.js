@@ -4,6 +4,8 @@
   const vscode = window.acquireVsCodeApi ? window.acquireVsCodeApi() : null;
   if (!vscode) return;
 
+  const agentRun = window.ReachAgentRun;
+
   const $ = (sel) => document.querySelector(sel);
   const log = $('#log');
   const input = $('#input');
@@ -57,6 +59,7 @@
   let configCache = null;
   let agenticEnabled = true;
   let pendingEdits = [];
+  let pendingActionContext = '';
   const editCards = {};
   let stepsEl = null;        // Copilot-style work-log container (step stack)
   let stepRows = [];         // visible narration rows
@@ -76,9 +79,9 @@
   let contextRevision = 0;
   let activeContextRevision = 0;
   // Agent effort limits come from settings (simplereach.agentMaxRounds /
-  // simplereach.agentUnfinishedRetries); 0 there means "no limit" — the agent
-  // works until the task is done or the user presses Stop. These initial values
-  // are the fallback used until the first config message arrives.
+  // simplereach.agentUnfinishedRetries). Tool rounds can be unlimited; the run
+  // controller caps recovery from responses without actions at two attempts.
+  // These values are fallbacks until the first config message arrives.
   let MAX_AGENT_ROUNDS = 40;
   let UNFINISHED_RETRY_LIMIT = 2;
   const followUpQueue = [];
@@ -89,8 +92,8 @@
   function state() { return vscode.getState() || { history: [], conv: null }; }
   function persist() { vscode.setState({ history: state().history, conv }); }
 
-  /* Agent effort limits are user settings: 0 = no limit (unlimited rounds, and
-   * announced work is chased without pausing), a positive number caps it. */
+  /* Zero allows unlimited tool rounds and uses the default recovery allowance.
+   * The run controller separately caps recovery from responses without actions. */
   function applyAgentLimits(cfg) {
     const rounds = Number(cfg && cfg.agentMaxRounds);
     MAX_AGENT_ROUNDS = Number.isFinite(rounds) && rounds > 0 ? Math.floor(rounds) : Infinity;
@@ -766,7 +769,7 @@
 
   function maskFenced(text) {
     let out = String(text || '')
-      .replace(/```(?:edit|tool|confirm)[\s\S]*?(?:```|$)/gi, '…')
+      .replace(/```(?:edit|tool|confirm|agent_status)[\s\S]*?(?:```|$)/gi, '…')
       .replace(/<tool\s*>[\s\S]*?(?:<\/tool\s*>|$)/gi, '…');
     // Adjacent masked blocks separated by ONLY whitespace collapse to a single
     // ellipsis — otherwise a run of ```tool blocks streams as a full-height
@@ -867,13 +870,7 @@
     think: ['thinking it through', 'weighing the options'],
     other: ['working on it', 'making progress'],
   };
-  const WAIT_QUIPS = [
-    'still going — it is a big one',
-    'no timeouts here, we wait it out',
-    'taking its sweet time, all good',
-    'still connected, still working',
-    'the model is being thorough',
-  ];
+  const WAIT_QUIPS = ['Waiting for a result; elapsed time does not confirm progress.'];
 
   // Same step, same line: a reload or repaint must never reshuffle commentary.
   function stepHash(text) {
@@ -992,6 +989,7 @@
   function renderTodoCard(todos) {
     const list = Array.isArray(todos) ? todos : [];
     lastTodos = list;
+    if (busy && conv && conv.agentRun) saveAgentRun({ ...conv.agentRun, todos: list.map(t => ({ ...t })) });
     if (!list.length) { if (todoCard) { todoCard.remove(); todoCard = null; } return; }
     if (!todoCard || !todoCard.isConnected) {
       const region = document.createElement('section');
@@ -1108,8 +1106,8 @@
   }
 
   // A running step counts up instead of only saying "waiting". Nothing here
-  // aborts anything: there are no timeouts, so the elapsed figure is the way to
-  // tell a live request from a stalled one. When the host reports real progress
+  // aborts anything. Elapsed time alone cannot tell a live request from a
+  // stalled connection. When the host reports real progress
   // (a streamed summary growing, a thinking trace in flight), that note is
   // shown instead — an observed liveness beats a claimed one.
   function startRunningTicker(row) {
@@ -1120,15 +1118,15 @@
       const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
       if (row.quipEl) {
         const line = Math.floor(seconds / 12);
-        row.quipEl.textContent = line === 0 ? row.quipText : WAIT_QUIPS[line % WAIT_QUIPS.length];
+        row.quipEl.textContent = row.progressNote ? 'Latest reported request activity'
+          : line === 0 ? row.quipText : WAIT_QUIPS[line % WAIT_QUIPS.length];
       }
       if (row.progressNote) {
-        row.outputEl.textContent = row.progressNote + ' · ' + fmtDuration(seconds) + ' elapsed';
+        row.outputEl.textContent = row.progressNote + ' · last update ' + fmtDuration(Math.max(0, Math.round((Date.now() - row.progressAt) / 1000))) + ' ago';
         return;
       }
       if (seconds < 5) { row.outputEl.textContent = 'Waiting for result…'; return; }
-      const patience = seconds >= 45 ? ' — no timeouts, nothing will be cut off' : '';
-      row.outputEl.textContent = 'Still working · ' + fmtDuration(seconds) + ' elapsed' + patience;
+      row.outputEl.textContent = 'Waiting for result · ' + fmtDuration(seconds) + ' elapsed';
     };
     paint();
     runningTickers.set(row.el, setInterval(paint, 1000));
@@ -1141,6 +1139,7 @@
     const row = rowByUid[uid];
     if (!row || row.closed) return;
     row.progressNote = String(note || '');
+    row.progressAt = Date.now();
     if (row.progressNote) row.outputEl.textContent = row.progressNote;
   }
 
@@ -1275,56 +1274,19 @@
     });
   }
 
-  function isUnfinishedUpdate(text) {
-    const prose = String(text || '').replace(/```[\s\S]*?(?:```|$)/g, '').trim();
-    // Recover clear promises of immediate work, not offers, questions, or
-    // explanations that describe what somebody else could do. Models announce
-    // the next step in many voices — "I'll inspect…", "Let me inspect…",
-    // "Next I need to check…", or a headline trailer like "Reading the
-    // reader's URL/IP validation now:" — and every one of them must continue
-    // the run instead of ending it (users otherwise have to keep typing
-    // "continue"). Summaries do not: summarize/conclude/explain are
-    // deliberately absent from the verb set. The wait-state guard needs an
-    // I/we subject so domain words like "blocked_address" or "cannot be
-    // reached" never stop a run that is still making progress.
-    if (!prose || prose.length > 1800 || isWaitingUpdate(prose)) return false;
-    const subject = "(?:i(?:['’]ll| will|['’]m going to| am going to| need to| should| want to| have to)"
-      + "|let me|let['’]s|we(?:['’]ll| will| need to| should))";
-    const adverb = "(?:\\s+(?:now|next|first|then|also|quickly|carefully|just|really|still))?";
-    const verb = "(?:continue|scan|inspect|read|search|check|review|investigate|fix|update|implement|patch|run|test|look|start|work|make|clean|refactor|examine|explore|trace|verify|debug|dig|find|grep|compare|open|list|confirm|locate|pinpoint|analyze|gather|determine|identify|ensure|double-check|rerun|re-read|dive)";
-    const announced = "(?:^|[.!…\\n]\\s*)(?:(?:first|next|now|then)[,:]?\\s+)?" + subject + adverb + "\\s+" + verb + "\\b";
-    if (new RegExp(announced, 'i').test(prose)) return true;
-    // Present continuous — "I'm checking the UIs…", "I am now reading…",
-    // "We're tracing…" — is the most common stall shape of all (a sentence
-    // that describes current work instead of doing it).
-    const continuous = "(?:^|[.!…\\n]\\s*)(?:(?:first|next|now|then)[,:]?\\s+)?(?:i['’]m|i am|we['’]re|we are)" + adverb + "\\s+\\w+ing\\b";
-    if (new RegExp(continuous, 'i').test(prose)) return true;
-    // Headline trailer: a final line that PROMISES the next action —
-    // "Reading the reader's URL/IP validation now:", "Next: inspecting the
-    // engine." — triggers even without a subject, while a plain result like
-    // "Running the tests showed everything passes." does not.
-    const lastLine = prose.split('\n').map((line) => line.trim()).filter(Boolean).pop() || '';
-    // ANY gerund opens a headline trailer — "Emitting the reads … now:",
-    // "Reading the reader's URL/IP validation now:". A fixed verb list kept
-    // missing new phrasings (emitting, greeting, wiring…), so the SHAPE is
-    // what matters: a line that STARTS with an -ing action and reads like a
-    // headline (ends with : or contains "now"). Plain results ("Running the
-    // tests showed everything passes.") carry neither.
-    if (/^(?:(?:now|next|then)[,:]\s+)?[a-z]+ing\b/i.test(lastLine)
-        && /[:…]\s*$|\bnow\b/i.test(lastLine)) return true;
-    return new RegExp("^(?:now|next|then)[,:]\\s+(?:(?:[a-z]+ing)|(?:" + verb + "))\\b", 'i').test(lastLine);
+  function saveAgentRun(run) {
+    if (!conv) return;
+    conv.agentRun = run;
+    persist(); saveConv();
   }
 
-  /* The reply stops to ask something — a question, a go-ahead, or a blocking
-   * state. That is "waiting for the user", not unfinished work: instead of an
-   * automatic nudge, the confirmation panel below the bubble offers the
-   * answer UI (option buttons + free text). */
-  function isWaitingUpdate(text) {
-    const prose = String(text || '').trim();
-    if (!prose) return false;
-    return /\?/.test(prose)
-      || /\b(?:if you|would you|let me know|need your|awaiting|approval|permission to|shall i)\b/i.test(prose)
-      || /\b(?:i|we)(?:['’]m|['’]re| am| are)?\s+(?:blocked|cannot|can['’]t)\b/i.test(prose);
+  function restoreAgentRun() {
+    lastTodos = conv && conv.agentRun && Array.isArray(conv.agentRun.todos) ? conv.agentRun.todos : [];
+    renderTodoCard(lastTodos);
+    if (conv && conv.agentRun && conv.agentRun.status === 'running' && !busy) {
+      saveAgentRun({ ...conv.agentRun, status: 'paused', reason: 'The previous run was interrupted. Send continue to resume the saved task.' });
+      showStep('Agent paused', true, '', conv.agentRun.reason);
+    }
   }
 
   function continueAgent(instruction) {
@@ -1333,11 +1295,14 @@
       .map((t) => '[' + t.action + ' ' + (t.path || t.topic || t.name || t.command || t.pattern || t.url || t.query || t.operation || t.action) + ']\n' + t.result)
       .join('\n\n');
     const follow = agentMessages.concat([
-      { role: 'assistant', content: pendingText },
+      { role: 'assistant', content: pendingActionContext || pendingText },
       { role: 'user', content: instruction || 'TOOL RESULTS (you asked for these — continue from where you stopped, '
         + 'then finish your reply; propose file changes as ```edit blocks):\n\n' + resultsText },
     ]);
     agentMessages = follow;
+    pendingActionContext = '';
+    conv.requestContext = { messages: follow.slice(), through: activeRequestLength };
+    persist(); saveConv();
     pendingText = '';
     agentRounds += 1;
     if (pendingBubble) { pendingBubble.textContent = ''; showThinking(); }
@@ -1351,6 +1316,8 @@
         think: false,
         webSearch: false,
         agentic: true,
+        runTodos: conv.agentRun ? conv.agentRun.todos : [],
+        structuredActions: !!conv.agentRun?.structuredActions,
       },
     });
   }
@@ -1397,6 +1364,8 @@
       { role: 'user', content: instruction },
     ]);
     agentMessages = follow;
+    conv.requestContext = { messages: follow.slice(), through: activeRequestLength };
+    persist(); saveConv();
     pendingText = '';
     agentRounds += 1;
 
@@ -1769,7 +1738,7 @@
     { key: 'selectMaxTokens', label: 'Selection tokens', type: 'number', min: 0, title: 'Output tokens for the workspace file-selection pass. 0 = the provider decides.' },
     { key: 'toolResultBudgetKb', label: 'Tool results KB', type: 'number', min: 0, title: 'How much of a tool result is kept in context (read always keeps the complete result). 0 = no limit.' },
     { key: 'agentMaxRounds', label: 'Agent rounds', type: 'number', min: 0, title: 'Model \u2194 tool exchanges per request. 0 = no limit.' },
-    { key: 'agentUnfinishedRetries', label: 'Unfinished retries', type: 'number', min: 0, title: 'Extra rounds when a reply announces work it never starts. 0 = no limit.' },
+    { key: 'agentUnfinishedRetries', label: 'Recovery retries', type: 'number', min: 0, title: 'Retries after a response without an action or valid completion. 0 = default two; 1 = one; values above two still allow only two.' },
     { key: 'contextMaxKb', label: 'Context max KB', type: 'number', min: 8, title: 'Workspace source budget per request.' },
     { key: 'searchResults', label: 'Search results', type: 'number', min: 1, max: 10, title: 'Search results injected per question.' },
   ];
@@ -2018,7 +1987,7 @@
     const entry = {
       id: conv.id, model: conv.model, ts: conv.ts,
       title: conv.title, messages: conv.messages.slice(), requestContext: conv.requestContext,
-      thoughts: Object.assign({}, conv.thoughts || {}), activity: conv.activity || [],
+      thoughts: Object.assign({}, conv.thoughts || {}), activity: conv.activity || [], agentRun: conv.agentRun,
     };
     hist.push(entry);
     vscode.setState({ history: hist, conv });
@@ -2028,10 +1997,11 @@
     const item = state().history.find((h) => h.id === id);
     if (!item) return;
     if (conv && conv.messages.length) saveConv();
-    conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice(), requestContext: item.requestContext, activity: item.activity || [], thoughts: Object.assign({}, item.thoughts || {}) };
+    conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice(), requestContext: item.requestContext, agentRun: item.agentRun, activity: item.activity || [], thoughts: Object.assign({}, item.thoughts || {}) };
     modelSelect.value = item.model || 'gpt-4o-mini';
     persist();
     renderMessages();
+    restoreAgentRun();
     renderHistory();
     historyPanel.hidden = true;
     updateModelChip();
@@ -2118,6 +2088,10 @@
   function finishBubble(outcome = 'completed') {
     let cardsAfter = null;
     answeringNow = false;
+    if (conv && conv.agentRun && conv.agentRun.status === 'running') {
+      saveAgentRun({ ...conv.agentRun, status: outcome === 'error' ? 'paused' : 'stopped',
+        reason: outcome === 'error' ? 'A request failed. Send continue to resume.' : 'The run was interrupted before explicit completion.' });
+    }
     if (pendingBubble) {
       cardsAfter = pendingBubble.parentElement;
       hideThinking();
@@ -2251,10 +2225,13 @@
     persist();
     agentRounds = 0;
     continuationRetries = 0;
+    if (agenticEnabled) saveAgentRun(agentRun.start(conv.agentRun));
+    lastTodos = conv.agentRun ? conv.agentRun.todos : [];
     stopRequested = false;
     contTools = [];
     contResolved = 0;
     pendingEdits = [];
+    pendingActionContext = '';
     const msgs = buildRequestMessages();
     if (appliedEdits.length) {
       msgs.unshift({
@@ -2274,6 +2251,8 @@
         think: thinkEnabled,
         webSearch: webEnabled,
         agentic: agenticEnabled,
+        runTodos: conv.agentRun ? conv.agentRun.todos : [],
+        structuredActions: !!conv.agentRun?.structuredActions,
       },
     });
     scrollBottom();
@@ -2396,8 +2375,8 @@
         // An empty, unaborted "done" is a failed round, not an answer: it used
         // to close the response step as "Response shown below." over an empty
         // bubble, hiding the real failure behind a green timeline (2026-09-10).
-        if (!aborted && !isAnsweringNow && !String(pendingText || '').trim() && !pendingEdits.length) {
-          const note = 'The provider returned an empty response — nothing was streamed. Retry, or check the tray / CodeGPT connection.';
+        if (!aborted && !isAnsweringNow && !msg.agentAction && !String(pendingText || '').trim() && !pendingEdits.length) {
+          const note = 'The selected model returned no answer. The conversation is preserved; retry or select another model.';
           if (activeResponseStep) closeStep(rowByUid[activeResponseStep], note, 'error');
           else showStep('No reply', true, '', note);
           finishBubble('error');
@@ -2408,93 +2387,78 @@
           scrollBottom();
           break;
         }
-        let tools = [];
-        let confirm = null;
-        if (agenticEnabled) {
-          const parsedE = extractEdits(pendingText);
-          if (parsedE.edits.length) pendingEdits = pendingEdits.concat(parsedE.edits);
-          if (!isAnsweringNow) {
-            const parsedT = extractTools(parsedE.text);
-            tools = parsedT.tools;
-            const parsedC = extractConfirm(parsedT.text);
-            confirm = parsedC.confirm;
-            if (parsedC.text !== pendingText) {
-              pendingText = parsedC.text;
-              if (pendingBubble) setRich(pendingBubble, pendingText);
-            }
-          }
+        let tools = [], confirm = null, control = null, invalidControl = false;
+        pendingActionContext = '';
+        if (agenticEnabled && !isAnsweringNow && msg.agentAction) {
+          // The host validated this API response. Never parse the display prose
+          // as tool instructions; executable actions travel as separate data.
+          const action = msg.agentAction;
+          tools = action.tools;
+          pendingEdits = pendingEdits.concat(action.edits);
+          control = action.control; confirm = action.confirm;
+          pendingActionContext = action.context;
+          pendingText = action.message;
+          if (pendingBubble) setRich(pendingBubble, pendingText);
+        } else if (agenticEnabled && !isAnsweringNow) {
+          const parsedRun = agentRun.parse(pendingText);
+          control = parsedRun.control; invalidControl = parsedRun.invalid;
+          const parsedE = extractEdits(parsedRun.text);
+          pendingEdits = pendingEdits.concat(parsedE.edits);
+          const parsedT = extractTools(parsedE.text);
+          tools = parsedT.tools;
+          invalidControl = invalidControl || /^```(?:edit|tool)\b/m.test(parsedT.text);
+          const parsedC = extractConfirm(parsedT.text);
+          confirm = parsedC.confirm;
+          pendingText = parsedC.text || (control && (control.summary || control.reason)) || '';
+          if (pendingBubble) setRich(pendingBubble, pendingText);
         }
-        if (!aborted && !isAnsweringNow && tools.length && agentRounds < MAX_AGENT_ROUNDS) {
+        const decision = agentRun.decide(conv && conv.agentRun || agentRun.start(), {
+          enabled: agenticEnabled, stopped: aborted, answerNow: isAnsweringNow,
+          control, invalid: invalidControl, tools: tools.length, edits: pendingEdits.length, confirm,
+          rounds: agentRounds, roundLimit: MAX_AGENT_ROUNDS, retryLimit: UNFINISHED_RETRY_LIMIT,
+        });
+        if (agenticEnabled || (conv && conv.agentRun)) saveAgentRun(decision.state);
+        if (decision.action === 'tools') {
           continuationRetries = 0;
           if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText || 'Requested ' + tools.length + ' workspace action(s).');
           else if (pendingText) showStep('Assistant update', true, '', pendingText);
           beginToolRound(tools);
           break;
         }
-        // INVARIANT, not phrasing: once a run has actually used tools, a
-        // reply that still asks for nothing is chased again no matter how it
-        // is worded — announcing, musing, or plainly stalling. Two ways out:
-        // the model states a completion, or it repeats itself verbatim
-        // (nothing new to say). Wait-states fall through to the confirm panel.
-        const waitingNow = typeof isWaitingUpdate === 'function' ? isWaitingUpdate(pendingText) : false;
-        const settled = !waitingNow && (
-          /\b(?:is|are|was|were|now|has|have|had)\s+(?:done|completed?|finished|fixed|resolved|implemented|ready)\b/i.test(String(pendingText || ''))
-          || /^\s*(?:done|completed?|finished|fixed|ready)\b/i.test(String(pendingText || ''))
-          || /\bnothing (?:left|else) (?:to do|for me)\b/i.test(String(pendingText || '')));
-        const previousAssistant = (() => {
-          const pools = [agentMessages, conv && conv.messages];
-          for (const pool of pools) {
-            if (!Array.isArray(pool)) continue;
-            for (let i = pool.length - 1; i >= 0; i -= 1) {
-              if (pool[i] && pool[i].role === 'assistant') return String(pool[i].content || '');
-            }
-          }
-          return '';
-        })();
-        const normalize = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-        const repeated = previousAssistant !== '' && normalize(previousAssistant) === normalize(pendingText);
-        const unfinished = !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length && !confirm
-          && (isUnfinishedUpdate(pendingText)
-              || (agentRounds > 0 && !settled && !waitingNow && !(continuationRetries > 0 && repeated)));
-        if (!aborted && unfinished && continuationRetries < UNFINISHED_RETRY_LIMIT && agentRounds < MAX_AGENT_ROUNDS) {
-          if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText);
-          else showStep('Assistant update', true, '', pendingText);
+        if (decision.action === 'continue') {
+          if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText || 'Model response received; the task is still active.');
+          else if (pendingText) showStep('Assistant update', true, '', pendingText);
           continuationRetries += 1;
-          showStep('Continue unfinished work', true, '', 'The reply announced a next step without requesting an action. Asking the agent to perform it.');
-          continueAgent('Continue the work you just announced now. Emit the required tool blocks or proposed edit blocks in this reply. '
-            + 'Do not stop at another promise or plan. If the task is complete, provide the result; if blocked or waiting for user input, explain exactly what is needed.');
+          showStep('Requesting executable actions', true, '', decision.reason);
+          continueAgent(decision.instruction);
           break;
         }
-        const paused = !aborted && (tools.length || unfinished);
+        const paused = ['pause', 'wait'].includes(decision.action);
         if (paused) {
-          const reason = agentRounds >= MAX_AGENT_ROUNDS
-            ? 'Paused after ' + MAX_AGENT_ROUNDS + ' agent rounds. Send “continue” to resume with the saved context.'
-            : 'Paused because the model repeated a plan without taking action. Send “continue” to retry with the saved context.';
-          pendingText = (pendingText ? pendingText + '\n\n' : '') + reason;
-          if (pendingBubble) setRich(pendingBubble, pendingText);
-          showStep('Agent paused', true, '', reason);
+          const label = decision.action === 'wait' ? 'Agent waiting' : 'Agent paused';
+          showStep(label, true, '', decision.reason);
+          if (decision.action === 'pause') {
+            pendingText = (pendingText ? pendingText + '\n\n' : '') + decision.reason;
+            if (pendingBubble) setRich(pendingBubble, pendingText);
+          }
         }
-        // A reply that stops to ask something earns a confirmation panel with
-        // the model's own options — one click answers it — instead of leaving
-        // the user to spell the answer out in the composer.
-        let confirmPayload = confirm;
-        if (!confirmPayload && !aborted && !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length
-            && !unfinished && waitingNow) {
-          confirmPayload = { question: '', options: [] };
-        }
-        if (activeResponseStep) closeStep(rowByUid[activeResponseStep], aborted ? 'Stopped.' : 'Response shown below.', aborted ? 'cancelled' : 'completed');
+        if (decision.action === 'complete') showStep('Task complete', true, '', decision.reason);
+        if (activeResponseStep) closeStep(rowByUid[activeResponseStep], aborted ? 'Stopped.' : 'Model response received.', aborted ? 'cancelled' : 'completed');
         if (pendingText && pendingBubble && conv) {
           conv.messages.push({ role: 'assistant', content: pendingText });
           conv.ts = Date.now();
           saveConv();
         }
         finishBubble(aborted || paused ? 'cancelled' : 'completed');
-        if (confirmPayload && typeof showConfirmPanel === 'function') showConfirmPanel(confirmPayload);
+        if (decision.state.status === 'waiting_input') {
+          showConfirmPanel(confirm || { question: decision.reason, options: [] });
+        }
         if (typeof answeringNow !== 'undefined') answeringNow = false;
         if (aborted) hint(pickFun(ABORT_LINES));
         break;
       }
       case 'todos':
+        if (msg.uid && !contTools.some(tool => tool.uid === msg.uid)) break;
         renderTodoCard(msg.todos);
         break;
       case 'toolResult': {
@@ -3244,6 +3208,7 @@
     opt.textContent = conv.model || 'gpt-4o-mini';
     modelSelect.appendChild(opt);
     renderMessages();
+    restoreAgentRun();
   }
   updateModelChip();
   post('getConfig');

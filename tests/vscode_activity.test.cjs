@@ -132,10 +132,10 @@ test('a running step shows live progress from the host instead of only elapsed t
  ctx.noteStep('seg','Thinking through the segment · 4,000 characters received');
  assert.equal(row.outputEl.textContent,'Thinking through the segment · 4,000 characters received');
  ctx.startRunningTicker(row);
- assert.match(row.outputEl.textContent,/^Thinking through the segment · 4,000 characters received · \d+s elapsed$/);
+ assert.match(row.outputEl.textContent,/^Thinking through the segment · 4,000 characters received · last update \d+s ago$/);
  ctx.noteStep('seg','Writing the summary · 120 characters received');
  ctx.startRunningTicker(row);
- assert.match(row.outputEl.textContent,/^Writing the summary · 120 characters received · \d+s elapsed$/);
+ assert.match(row.outputEl.textContent,/^Writing the summary · 120 characters received · last update \d+s ago$/);
  const finished=ctx.addStepRow('done-seg','Compress context · segment 1 of 4');
  ctx.closeStep(finished,'Updated conversation memory.');
  ctx.noteStep('done-seg','late note');

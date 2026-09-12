@@ -601,3 +601,249 @@ test('a tray that is not running drops the economy group without failing Free en
  const msgs=h.posts.filter(p=>p.type==='error').map(p=>p.message).join(' | ');
  assert.match(msgs,/CodeGPT economy models/);
 });
+
+test('reasoning-only Qwen completion retries once with the same context, endpoint, model, key and token budget', async()=>{
+ const endpoint='https://nexus.example/v1';
+ const h=host({additionalEndpoints:[endpoint],selectedEndpoint:endpoint,endpointAccessKeys:{[endpoint]:'nexus-key'},maxTokens:100000},(_url,options)=>{
+  const body=JSON.parse(options.body);
+  return body.chat_template_kwargs
+   ? new Response(JSON.stringify({choices:[{message:{content:'Recovered answer'},finish_reason:'stop'}]}))
+   : new Response('data: {"choices":[{"delta":{"reasoning":"private reasoning with ```tool blocks"},"finish_reason":"length"}]}\n\ndata: [DONE]\n\n');
+ });
+ await h.provider._chat({model:'Qwen/Qwen3.8-27B-FP8',messages:[{role:'user',content:'Continue the long task.'}],stream:true});
+ assert.equal(h.calls.length,2);
+ const first=JSON.parse(h.calls[0].options.body),second=JSON.parse(h.calls[1].options.body);
+ assert.deepEqual(second,{...first,stream:false,chat_template_kwargs:{enable_thinking:false}});
+ for(const c of h.calls){assert.equal(c.url,endpoint+'/chat/completions');assert.equal(c.options.headers.Authorization,'Bearer nexus-key');}
+ assert.equal(h.posts.filter(p=>p.type==='delta').length,0);
+ assert.equal(h.posts.find(p=>p.type==='done').full,'Recovered answer');
+ assert.ok(h.posts.some(p=>p.note?.includes('Model is reasoning')));
+ assert.equal(h.posts.some(p=>p.type==='error'),false);
+});
+
+test('an empty stream retries as JSON and a provider ignoring stream:true is accepted immediately',async()=>{
+ for(const ignoreStream of [true,false]){
+  const h=host({},(_url,options)=>new Response(ignoreStream||!JSON.parse(options.body).stream
+   ? JSON.stringify({choices:[{message:{content:'The answer'},finish_reason:'stop'}]})
+   : 'data: [DONE]\n\n'));
+  await h.provider._chat({model:'custom/model',messages:[{role:'user',content:'hi'}],stream:true});
+  assert.equal(h.calls.length,ignoreStream?1:2);
+  assert.equal(h.posts.some(p=>p.type==='error'),false);
+  assert.equal(ignoreStream?h.posts.find(p=>p.type==='delta').text:h.posts.find(p=>p.type==='done').full,'The answer');
+ }
+});
+
+test('two reasoning-only replies stop with an accurate diagnostic, not a CodeGPT connection error or tool execution',async()=>{
+ const h=host({},(_url,options)=>new Response(JSON.parse(options.body).stream
+  ? 'data: {"choices":[{"delta":{"reasoning":"private trace"},"finish_reason":"length"}]}\n\n'
+  : JSON.stringify({choices:[{message:{reasoning:'private trace'},finish_reason:'length'}]})));
+ await h.provider._chat({model:'Qwen/test',messages:[{role:'user',content:'hi'}],stream:true});
+ assert.equal(h.calls.length,2);
+ assert.equal(h.posts.some(p=>p.type==='delta'),false);
+ const error=h.posts.find(p=>p.type==='error').message;
+ assert.match(error,/Qwen\/test.*reasoning.*no final answer.*output token limit/);
+ assert.doesNotMatch(error,/CodeGPT|tray/);
+});
+
+test('provider errors, content filtering and native tool calls are never retried as empty replies',async()=>{
+ for(const data of [{error:{message:'Provider refused request'}},{choices:[{delta:{},finish_reason:'content_filter'}]},
+  {choices:[{delta:{tool_calls:[{index:0,function:{name:'read',arguments:'{}'}}]},finish_reason:'tool_calls'}]}]){
+  const h=host({},()=>new Response('data: '+JSON.stringify(data)+'\n\n'));
+  await h.provider._chat({model:'Qwen/test',messages:[{role:'user',content:'hi'}],stream:true});
+  assert.equal(h.calls.length,1);
+  assert.ok(h.posts.some(p=>p.type==='error'));
+ }
+});
+
+test('Stop after a reasoning-only reply prevents the automatic retry',async()=>{
+ let h;
+ h=host({},()=>new Response(new ReadableStream({start(c){
+  c.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n'));
+  h.provider._controller.abort();c.close();
+ }})));
+ await h.provider._chat({model:'Qwen/test',messages:[{role:'user',content:'hi'}],stream:true});
+ assert.equal(h.calls.length,1);
+ assert.ok(h.posts.some(p=>p.type==='done'&&p.aborted));
+});
+
+test('Agent requests always include explicit run control, even with a custom prompt, while chat stays plain',async()=>{
+ for(const agentic of [true,false]){
+  const h=host({agentTemplate:'My custom instructions.'},()=>new Response(JSON.stringify({choices:[{message:{content:'Hello'}}]})));
+  await h.provider._chat({model:'my/free-model',messages:[{role:'user',content:'hello'}],agentic,runTodos:[],stream:false});
+  const text=JSON.parse(h.calls[0].options.body).messages.map(m=>m.content).join('\n');
+  assert.equal(text.includes('AGENT RUN CONTROL'),agentic);
+  if(agentic)assert.ok(text.includes('My custom instructions.'));
+ }
+});
+
+test('the host restores the supplied conversation checklist before a resumed tool read',async()=>{
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'OK'}}]})),{workspaceFolders:[{uri:{fsPath:'/workspace'}}]});
+ await h.provider._chat({messages:[{role:'user',content:'continue'}],stream:false,runTodos:[{text:'Verify result',status:'in_progress'}]});
+ await h.receive({type:'toolReq',uid:'restored-plan',action:'todo_read'});
+ assert.match(h.posts.find(p=>p.type==='toolResult'&&p.uid==='restored-plan').result,/Verify result/);
+ await h.provider._chat({messages:[{role:'user',content:'new task'}],stream:false,runTodos:[]});
+ await h.receive({type:'toolReq',uid:'new-plan',action:'todo_read'});
+ assert.doesNotMatch(h.posts.find(p=>p.type==='toolResult'&&p.uid==='new-plan').result,/Verify result/);
+});
+
+function socketFailure(code = 'UND_ERR_HEADERS_TIMEOUT') {
+ return new TypeError('fetch failed', {cause:Object.assign(new Error('private token must not appear'),{code})});
+}
+
+test('a headers timeout retries the inference request without changing context or model', async()=>{
+ let count=0;
+ const h=host({},()=>{if(++count===1)throw socketFailure();return new Response(JSON.stringify({choices:[{message:{content:'RECOVERED'}}]}));});
+ await h.provider._chat({messages:[{role:'user',content:'continue current work'}],stream:false});
+ assert.equal(count,2);
+ assert.equal(h.calls[0].options.body,h.calls[1].options.body);
+ assert.equal(h.calls[0].url,h.calls[1].url);
+ assert.ok(h.posts.some(p=>p.type==='agentStep'&&p.status==='running'&&/UND_ERR_HEADERS_TIMEOUT.*Retrying/.test(p.note)));
+ assert.equal(h.posts.find(p=>p.type==='done').full,'RECOVERED');
+ assert.ok(!h.posts.some(p=>p.type==='error'));
+});
+
+test('persistent transport failure is bounded and preserves a useful redacted cause', async()=>{
+ const h=host({},()=>{throw socketFailure('ECONNRESET');});
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],stream:false});
+ assert.equal(h.calls.length,3);
+ const error=h.posts.find(p=>p.type==='error').message;
+ assert.match(error,/ECONNRESET/);assert.match(error,/3 request attempt/);assert.match(error,/conversation is preserved/);
+ assert.ok(!error.includes('private token'));
+});
+
+test('Stop interrupts the transport backoff before another request starts', async()=>{
+ const h=host({},()=>{setTimeout(()=>h.provider._controller.abort(),10);throw socketFailure();});
+ const began=Date.now();
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],stream:false});
+ assert.equal(h.calls.length,1);assert.ok(Date.now()-began<450);
+ assert.equal(h.posts.find(p=>p.type==='done').aborted,true);
+ assert.ok(!h.posts.some(p=>p.type==='error'));
+});
+
+test('certificate failures are diagnosed but never blindly retried', async()=>{
+ const h=host({},()=>{throw socketFailure('CERT_HAS_EXPIRED');});
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],stream:false});
+ assert.equal(h.calls.length,1);assert.match(h.posts.find(p=>p.type==='error').message,/CERT_HAS_EXPIRED/);
+});
+
+function brokenStream(text) {
+ let sent=false;
+ return new Response(new ReadableStream({pull(controller){
+  if(text&&!sent){sent=true;controller.enqueue(new TextEncoder().encode('data: '+JSON.stringify({choices:[{delta:{content:text}}]})+'\n\n'));}
+  else controller.error(socketFailure('UND_ERR_SOCKET'));
+ }}));
+}
+
+test('a broken stream before any answer recovers once', async()=>{
+ let count=0;
+ const h=host({},()=>++count===1?brokenStream(''):new Response('data: {"choices":[{"delta":{"content":"Recovered stream"}}]}\n\n'));
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],stream:true});
+ assert.equal(h.calls.length,2);assert.equal(h.posts.find(p=>p.type==='delta').text,'Recovered stream');
+ assert.ok(!h.posts.some(p=>p.type==='error'));
+});
+
+test('a stream that fails after a partial tool block is never automatically replayed', async()=>{
+ const h=host({},()=>brokenStream('```tool\n{"action":"run","command":"echo example"}\n```'));
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],stream:true});
+ assert.equal(h.calls.length,1);
+ assert.match(h.posts.find(p=>p.type==='error').message,/partial answer was not executed/);
+ assert.match(h.posts.find(p=>p.type==='error').message,/UND_ERR_SOCKET/);
+});
+
+test('a real socket close before headers recovers through the host request path', async()=>{
+ const http=require('node:http');let hits=0;
+ const server=http.createServer((req,res)=>{if(++hits===1){req.socket.destroy();return;}res.end(JSON.stringify({choices:[{message:{content:'SOCKET RECOVERED'}}]}));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ try {
+  const h=host({},(_,options)=>fetch('http://127.0.0.1:'+server.address().port,options));
+  await h.provider._chat({messages:[{role:'user',content:'test local disconnect'}],stream:false});
+  assert.equal(hits,2);assert.equal(h.posts.find(p=>p.type==='done').full,'SOCKET RECOVERED');
+  assert.ok(h.posts.some(p=>/UND_ERR_SOCKET/.test(p.note||'')));
+ } finally {server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}
+});
+
+const actionResponse=(actions=[{name:'read',arguments:'{"path":"README.md"}'}],message='Reading files.')=>JSON.stringify({status:'actions',message,actions,options:[]});
+test('structured recovery delivers validated tool data without streaming JSON or changing providers',async()=>{
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:actionResponse()}}]})));
+ await h.provider._chat({messages:[{role:'user',content:'Original request and completed tool results'}],agentic:true,structuredActions:true,stream:true});
+ const payload=JSON.parse(h.calls[0].options.body);
+ assert.equal(payload.response_format.type,'json_schema');assert.equal(payload.stream,false);
+ assert.equal(payload.messages[0].role,'system');assert.equal(payload.messages.filter(m=>m.role==='system').length,1);
+ assert.match(payload.messages[0].content,/EXECUTABLE ACTION RESPONSE/);
+ assert.ok(payload.messages.some(m=>m.content==='Original request and completed tool results'));
+ const done=h.posts.find(p=>p.type==='done');assert.deepEqual(done.agentAction.tools,[{path:'README.md',action:'read'}]);
+ assert.equal(done.full,'Reading files.');assert.ok(!h.posts.some(p=>p.type==='delta'));
+});
+
+test('schema rejection negotiates JSON mode while preserving action validation',async()=>{
+ let count=0;
+ const h=host({},()=>++count===1?new Response('response_format json_schema is unsupported',{status:400}):new Response(JSON.stringify({choices:[{message:{content:actionResponse()}}]})));
+ await h.provider._chat({messages:[{role:'user',content:'Continue'}],agentic:true,structuredActions:true,stream:true});
+ assert.equal(h.calls.length,2);assert.equal(JSON.parse(h.calls[1].options.body).response_format.type,'json_object');
+ assert.equal(h.posts.find(p=>p.type==='done').agentAction.tools[0].action,'read');
+});
+
+test('an endpoint ignoring action format is repaired once and never releases unvalidated output',async()=>{
+ let count=0;
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:++count===1?'I will continue.':actionResponse()}}]})));
+ await h.provider._chat({messages:[{role:'user',content:'Continue'}],agentic:true,structuredActions:true,stream:true});
+ assert.equal(h.calls.length,2);assert.equal(h.posts.find(p=>p.type==='done').agentAction.tools[0].action,'read');
+ assert.ok(!h.posts.some(p=>p.type==='delta'));
+ const invalid=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'Still continuing.'}}]})));
+ await invalid.provider._chat({messages:[{role:'user',content:'Continue'}],agentic:true,structuredActions:true,stream:true});
+ assert.equal(invalid.calls.length,2);assert.match(invalid.posts.find(p=>p.type==='error').message,/No action was executed/);
+ assert.ok(!invalid.posts.some(p=>p.agentAction));
+});
+
+test('Answer now and disabled Agent mode bypass action output even with a stale recovery flag',async()=>{
+ for(const override of [{quickAnswer:true,agentic:true},{agentic:false}]){
+  const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'Normal answer'}}]})));
+  await h.provider._chat({messages:[{role:'user',content:'Answer'}],structuredActions:true,stream:false,...override});
+  assert.equal(JSON.parse(h.calls[0].options.body).response_format,undefined);
+  assert.equal(h.posts.find(p=>p.type==='done').full,'Normal answer');
+ }
+});
+
+test('valid actions with surplus options execute without a format retry',async()=>{
+ const content=JSON.parse(actionResponse());content.options=['Yes','No'];
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(content)}}]})));
+ await h.provider._chat({messages:[{role:'user',content:'Continue'}],agentic:true,structuredActions:true,stream:true});
+ assert.equal(h.calls.length,1);assert.ok(!h.posts.some(p=>p.type==='error'));
+ const action=h.posts.find(p=>p.agentAction).agentAction;
+ assert.equal(action.tools[0].action,'read');assert.equal(action.confirm,null);
+});
+
+test('a format repair reuses and checkpoints the compressed context instead of summarizing it again',async()=>{
+ const {compactMessages}=require('../vscode/context');
+ let answers=0,summaries=0;
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:++answers===1?'invalid JSON':actionResponse()}}]})));
+ h.provider._compactContext=(messages)=>compactMessages(messages,async()=>{summaries++;return 'Retained goal: review browser files. Completed reads preserved. Remaining work: inspect implementation.';},
+  messages.some(m=>String(m.content).includes('EXECUTABLE ACTION RESPONSE'))?{trigger:45000,target:20000}:{});
+ const original=[{role:'user',content:'Large historical source: '+ 'ARCHIVED_SOURCE '.repeat(4000)},
+  {role:'assistant',content:'Completed earlier reads.'},{role:'user',content:'Continue reviewing the browser implementation.'}];
+ await h.provider._chat({messages:original,agentic:true,structuredActions:true,stream:true});
+ assert.equal(h.calls.length,2);assert.equal(summaries,1,'recovery must reuse the memory from the first encoding');
+ const first=JSON.parse(h.calls[0].options.body),repair=JSON.parse(h.calls[1].options.body);
+ assert.ok(JSON.stringify(first.messages).includes('Retained goal:'));
+ assert.ok(JSON.stringify(repair.messages).includes('Retained goal:'));
+ assert.ok(!JSON.stringify(repair.messages).includes('ARCHIVED_SOURCE'));
+ assert.ok(JSON.stringify(repair.messages).includes('Return valid action JSON'));
+ const checkpoint=h.posts.find(p=>p.type==='contextCompacted');assert.ok(checkpoint);
+ assert.ok(checkpoint.after<checkpoint.before);
+ assert.ok(h.posts.some(p=>p.agentAction));
+ const checkpoints=JSON.parse(JSON.stringify(checkpoint.messages));
+ await h.provider._chat({messages:checkpoints.concat({role:'user',content:'TOOL RESULTS\n[read README.md]\nActual file contents.'}),agentic:true,structuredActions:true,stream:true});
+ assert.equal(summaries,1,'the following tool round must also keep the saved memory');
+});
+
+test('schema negotiation also reuses the first encoded context',async()=>{
+ const {compactMessages}=require('../vscode/context');let replies=0,summaries=0;
+ const h=host({},()=>++replies===1?new Response('json_schema response_format unsupported',{status:400})
+  :new Response(JSON.stringify({choices:[{message:{content:actionResponse()}}]})));
+ h.provider._compactContext=messages=>compactMessages(messages,async()=>{summaries++;return 'Retained request and completed work.';},
+  messages.some(m=>String(m.content).includes('EXECUTABLE ACTION RESPONSE'))?{trigger:45000,target:20000}:{});
+ await h.provider._chat({messages:[{role:'user',content:'ARCHIVE '.repeat(8000)},{role:'user',content:'Continue the pending task'}],agentic:true,structuredActions:true});
+ assert.equal(summaries,1);assert.equal(h.calls.length,2);
+ assert.equal(JSON.parse(h.calls[1].options.body).response_format.type,'json_object');
+ assert.ok(h.posts.some(p=>p.agentAction));
+});

@@ -80,6 +80,8 @@ test('showThinking renders Answer now button in pending response bubble', () => 
   pendingDiv.appendChild(pendingBubble);
 
   const ctx = {
+    agentRun: require('../vscode/media/agent-run'),
+    saveAgentRun() {}, activeRequestLength: 1, persist() {}, saveConv() {},
     pendingBubble,
     thinkRow: null,
     answerNowBtn: null,
@@ -113,6 +115,8 @@ test('answerNow cancels running tools, gathers completed tools and context, and 
   const closedSteps = [];
 
   const ctx = {
+    agentRun: require('../vscode/media/agent-run'),
+    saveAgentRun() {}, activeRequestLength: 1, persist() {}, saveConv() {},
     busy: true,
     stopRequested: false,
     answeringNow: false,
@@ -178,6 +182,8 @@ test('quick answer completion prevents further tool extraction even if agentic i
   const calls = [];
   const steps = [];
   const ctx = {
+    agentRun: require('../vscode/media/agent-run'),
+    saveAgentRun() {}, activeRequestLength: 1, persist() {}, saveConv() {},
     busy: true,
     stopRequested: false,
     answeringNow: true,

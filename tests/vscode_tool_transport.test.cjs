@@ -26,7 +26,7 @@ function fixture(includeWorkspace = true) {
     stepRows: [{ closed: false, real: false }],
     contTools: [], contResolved: 0, agentRounds: 0, agentMessages: [], pendingBubble: null,
     conv: { model: 'example-model', messages: [{ role: 'user', content: 'Inspect my repository and extension.' }] },
-    pendingText: '',
+    pendingText: '', pendingActionContext: '', activeRequestLength: 1, persist() {}, saveConv() {},
     startSteps: () => steps.push(['start']),
     closeStep: step => { step.closed = true; },
     pickVoice: (action, detail) => ({ text: `${action}: ${detail || ''}`, title: action }),
