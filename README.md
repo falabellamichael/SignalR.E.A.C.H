@@ -14,7 +14,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Auth** | none by default (optional shared access key, IP allow/block lists) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
-| **Version** | 26.9.2 <!-- x-release-please-version --> |
+| **Version** | 26.9.3 <!-- x-release-please-version --> |
 
 ## CodeGPT economy models
 
