@@ -260,16 +260,63 @@
       : ['read', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'vscode', 'git', 'pullRequests', 'open', 'runTask', 'vscodeCommand',
         'todo_write', 'todo_read', 'tool_help',
         'browser_open', 'browser_navigate', 'browser_snapshot', 'browser_click', 'browser_type', 'browser_press', 'browser_scroll', 'browser_wait', 'browser_back', 'browser_forward', 'browser_reload', 'browser_find', 'browser_console', 'browser_network', 'browser_screenshot', 'browser_close'];
+    // One wrapper may hold SEVERAL complete JSON values — a model can stream one
+    // action per line inside a single block — and a truncated fence (REACH's own
+    // dialect) can lose its closing backticks. parseValues returns every
+    // complete value it finds plus how many characters of the content it used.
+    const parseValues = (content) => {
+      const values = [];
+      let rest = String(content || '').trimStart();
+      const total = rest.length;
+      for (;;) {
+        rest = rest.replace(/^[\s,]+/, '');
+        if (!rest || (rest[0] !== '{' && rest[0] !== '[')) break;
+        const openChar = rest[0];
+        const closeChar = openChar === '{' ? '}' : ']';
+        let depth = 0, inStr = false, end = -1;
+        for (let i = 0; i < rest.length; i += 1) {
+          const c = rest[i];
+          if (inStr) {
+            if (c === '\\') i += 1;
+            else if (c === '"') inStr = false;
+            continue;
+          }
+          if (c === '"') { inStr = true; continue; }
+          if (c === openChar) depth += 1;
+          else if (c === closeChar) { depth -= 1; if (depth === 0) { end = i; break; } }
+        }
+        if (end < 0) break;
+        try { values.push(JSON.parse(repairJson(rest.slice(0, end + 1)))); }
+        catch (e) { break; }
+        rest = rest.slice(end + 1);
+      }
+      return { values, consumed: total - rest.length };
+    };
     // Providers use several tool dialects. Only explicit, complete wrappers are
     // executable; ordinary JSON remains chat content. Accepted here:
-    //   ```tool / <tool>      - REACH's own fenced contract
+    //   ```tool            - REACH's own fenced contract; end of text closes a
+    //                        truncated fence so a complete call is not lost
+    //   <tool>             - REACH's XML form (must be closed)
     //   <tool_call>/<invoke>  - Cline / Anthropic-style XML wrappers
-    const re = /```tool\s*\n?([\s\S]*?)```|<tool\s*>([\s\S]*?)<\/tool\s*>|<tool_call\s*>([\s\S]*?)<\/tool_call\s*>|<invoke\s*>([\s\S]*?)<\/invoke\s*>/gi;
+    const re = /```tool\s*\n?([\s\S]*?)(?:```|$)|<tool\s*>([\s\S]*?)<\/tool\s*>|<tool_call\s*>([\s\S]*?)<\/tool_call\s*>|<invoke\s*>([\s\S]*?)<\/invoke\s*>/gi;
     let m;
+    const jobs = [];
     while ((m = re.exec(text || ''))) {
-      try {
-        const rawContent = (m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : m[4]))).trim();
-        let parsed = JSON.parse(repairJson(rawContent));
+      const rawContent = (m[1] !== undefined ? m[1] : (m[2] !== undefined ? m[2] : (m[3] !== undefined ? m[3] : m[4]))).trim();
+      if (rawContent) jobs.push({ block: m[0], content: rawContent });
+    }
+    // Bare "tool" label dialect: some providers copy the word from the contract
+    // but drop the backticks — "tool\n{...}". Only a line that is exactly `tool`,
+    // followed by complete JSON values with known actions, is executed; only the
+    // consumed span leaves the visible text, and plain prose is untouched.
+    const bare = /(^|\n)[ \t]*tool[ \t]*:?[ \t]*\n([\s\S]*)/i.exec(clean);
+    if (bare) jobs.unshift({ bare: true, start: bare.index + bare[1].length, prefixLen: bare[0].length - bare[1].length - bare[2].length, content: bare[2] });
+    for (const job of jobs) {
+      const parsedContent = parseValues(job.content);
+      const pendingValues = parsedContent.values;
+      let added = 0;
+      while (pendingValues.length) {
+        let parsed = pendingValues.shift();
         if (parsed && !parsed.action && parsed.name) {
           const args = parsed.arguments ?? parsed.parameters ?? {};
           parsed = Object.assign({}, typeof args === 'string'
@@ -321,12 +368,44 @@
             // edit_patch
             hunks: Array.isArray(it.hunks) ? it.hunks.slice(0, 40) : undefined,
           });
-          clean = clean.replace(m[0], '');
+          added += 1;
         }
-      } catch (e) { /* leave unparseable block in the text */ }
+      }
+      if (added) {
+        if (job.bare) clean = clean.slice(0, job.start) + clean.slice(job.start + job.prefixLen + parsedContent.consumed);
+        else clean = clean.replace(job.block, '');
+      }
     }
     clean = clean.replace(/\n{3,}/g, '\n\n');
     return { text: clean.trim(), tools };
+  }
+
+  /* The agent's own question format: a fenced confirm block naming the
+   * question and (optionally) the options it offers:
+   *   ```confirm
+   *   {"question": "Rename these 12 files now?", "options": ["Yes", "No"]}
+   *   ```
+   * The block is stripped from the visible reply; the panel below the bubble
+   * renders the question with one button per option plus a free-text answer. */
+  function extractConfirm(text) {
+    let clean = text || '';
+    let confirm = null;
+    const re = /```confirm\s*\n?([\s\S]*?)(?:```|$)/gi;
+    let m;
+    while ((m = re.exec(text || ''))) {
+      try {
+        const parsed = JSON.parse(repairJson(m[1].trim()));
+        const question = parsed && typeof parsed.question === 'string' ? parsed.question.trim() : '';
+        if (!question) continue;
+        const options = Array.isArray(parsed.options)
+          ? parsed.options.filter(o => typeof o === 'string' && o.trim()).map(o => o.trim().slice(0, 120)).slice(0, 6)
+          : [];
+        confirm = { question: question.slice(0, 600), options };
+        clean = clean.replace(m[0], '');
+      } catch (e) { /* leave unparseable block in the text */ }
+    }
+    clean = clean.replace(/\n{3,}/g, '\n\n');
+    return { text: clean.trim(), confirm };
   }
 
   function diffLines(a, b) {
@@ -687,7 +766,7 @@
 
   function maskFenced(text) {
     let out = String(text || '')
-      .replace(/```(?:edit|tool)[\s\S]*?(?:```|$)/gi, '…')
+      .replace(/```(?:edit|tool|confirm)[\s\S]*?(?:```|$)/gi, '…')
       .replace(/<tool\s*>[\s\S]*?(?:<\/tool\s*>|$)/gi, '…');
     // Adjacent masked blocks separated by ONLY whitespace collapse to a single
     // ellipsis — otherwise a run of ```tool blocks streams as a full-height
@@ -696,6 +775,66 @@
     while (/…\s*…/.test(out)) out = out.replace(/…\s*…/g, '…');
     out = out.replace(/\n{3,}/g, '\n\n');
     return out.trim();
+  }
+
+  /* The agent asked a question — present it like a VS Code confirmation: the
+   * question text, one button per option the model offered, and a free-text
+   * answer field. Answering sends the text as the user's next message and
+   * resumes the conversation with the full context intact. */
+  function dismissConfirmPanels() {
+    if (typeof document === 'undefined') return;
+    log.querySelectorAll('.confirm-card').forEach((node) => node.remove());
+  }
+
+  function showConfirmPanel(confirm) {
+    if (typeof document === 'undefined') return;
+    dismissConfirmPanels();
+    const card = document.createElement('div');
+    card.className = 'confirm-card';
+    const head = document.createElement('div');
+    head.className = 'confirm-question';
+    head.textContent = '❓ ' + ((confirm && confirm.question) || 'The agent needs your decision before it continues.');
+    card.appendChild(head);
+    const answer = (text) => {
+      const value = String(text || '').trim();
+      if (!value || busy) return;
+      dismissConfirmPanels();
+      startChat(value, false, '');
+    };
+    const options = confirm && Array.isArray(confirm.options) ? confirm.options : [];
+    if (options.length) {
+      const row = document.createElement('div');
+      row.className = 'confirm-options';
+      options.forEach((label) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'confirm-btn';
+        button.textContent = label;
+        button.addEventListener('click', () => answer(label));
+        row.appendChild(button);
+      });
+      card.appendChild(row);
+    }
+    const row = document.createElement('div');
+    row.className = 'confirm-input-row';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'confirm-input';
+    input.placeholder = options.length ? 'Or type another answer…' : 'Type your answer…';
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'confirm-btn primary';
+    send.textContent = 'Send';
+    const submit = () => answer(input.value);
+    send.addEventListener('click', submit);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); }
+    });
+    row.append(input, send);
+    card.appendChild(row);
+    log.appendChild(card);
+    scrollBottom();
+    input.focus();
   }
 
   /* ---------- Cursor-style step tracker (real steps + funny filler) ---------- */
@@ -970,7 +1109,9 @@
 
   // A running step counts up instead of only saying "waiting". Nothing here
   // aborts anything: there are no timeouts, so the elapsed figure is the way to
-  // tell a live request from a stalled one.
+  // tell a live request from a stalled one. When the host reports real progress
+  // (a streamed summary growing, a thinking trace in flight), that note is
+  // shown instead — an observed liveness beats a claimed one.
   function startRunningTicker(row) {
     stopRunningTicker(row);
     const startedAt = row.startedAt || Date.now();
@@ -981,12 +1122,26 @@
         const line = Math.floor(seconds / 12);
         row.quipEl.textContent = line === 0 ? row.quipText : WAIT_QUIPS[line % WAIT_QUIPS.length];
       }
+      if (row.progressNote) {
+        row.outputEl.textContent = row.progressNote + ' · ' + fmtDuration(seconds) + ' elapsed';
+        return;
+      }
       if (seconds < 5) { row.outputEl.textContent = 'Waiting for result…'; return; }
-      const patience = seconds >= 45 ? ' — still connected, nothing is being cut off' : '';
+      const patience = seconds >= 45 ? ' — no timeouts, nothing will be cut off' : '';
       row.outputEl.textContent = 'Still working · ' + fmtDuration(seconds) + ' elapsed' + patience;
     };
     paint();
     runningTickers.set(row.el, setInterval(paint, 1000));
+  }
+
+  // Live progress from the host for a running step (streamed summary length,
+  // thinking-trace length). Purely informational — no timeout ever reads it,
+  // and a closed row ignores late notes.
+  function noteStep(uid, note) {
+    const row = rowByUid[uid];
+    if (!row || row.closed) return;
+    row.progressNote = String(note || '');
+    if (row.progressNote) row.outputEl.textContent = row.progressNote;
   }
 
   function updateStep(row, status, result, save = true) {
@@ -1123,9 +1278,53 @@
   function isUnfinishedUpdate(text) {
     const prose = String(text || '').replace(/```[\s\S]*?(?:```|$)/g, '').trim();
     // Recover clear promises of immediate work, not offers, questions, or
-    // explanations that describe what somebody else could do.
-    if (!prose || prose.length > 1800 || /\?|\b(?:if you|would you|let me know|need your|awaiting|approval|permission|blocked|cannot|can't)\b/i.test(prose)) return false;
-    return /(?:^|[.!…\n]\s*)(?:(?:first|next|now|then)[,:]?\s+)?I(?:['’]ll| will|['’]m going to| am going to)\s+(?:continue|scan|inspect|read|search|check|review|investigate|fix|update|implement|patch|run|test|look|start|work|make|clean|refactor)\b/i.test(prose);
+    // explanations that describe what somebody else could do. Models announce
+    // the next step in many voices — "I'll inspect…", "Let me inspect…",
+    // "Next I need to check…", or a headline trailer like "Reading the
+    // reader's URL/IP validation now:" — and every one of them must continue
+    // the run instead of ending it (users otherwise have to keep typing
+    // "continue"). Summaries do not: summarize/conclude/explain are
+    // deliberately absent from the verb set. The wait-state guard needs an
+    // I/we subject so domain words like "blocked_address" or "cannot be
+    // reached" never stop a run that is still making progress.
+    if (!prose || prose.length > 1800 || isWaitingUpdate(prose)) return false;
+    const subject = "(?:i(?:['’]ll| will|['’]m going to| am going to| need to| should| want to| have to)"
+      + "|let me|let['’]s|we(?:['’]ll| will| need to| should))";
+    const adverb = "(?:\\s+(?:now|next|first|then|also|quickly|carefully|just|really|still))?";
+    const verb = "(?:continue|scan|inspect|read|search|check|review|investigate|fix|update|implement|patch|run|test|look|start|work|make|clean|refactor|examine|explore|trace|verify|debug|dig|find|grep|compare|open|list|confirm|locate|pinpoint|analyze|gather|determine|identify|ensure|double-check|rerun|re-read|dive)";
+    const announced = "(?:^|[.!…\\n]\\s*)(?:(?:first|next|now|then)[,:]?\\s+)?" + subject + adverb + "\\s+" + verb + "\\b";
+    if (new RegExp(announced, 'i').test(prose)) return true;
+    // Present continuous — "I'm checking the UIs…", "I am now reading…",
+    // "We're tracing…" — is the most common stall shape of all (a sentence
+    // that describes current work instead of doing it).
+    const continuous = "(?:^|[.!…\\n]\\s*)(?:(?:first|next|now|then)[,:]?\\s+)?(?:i['’]m|i am|we['’]re|we are)" + adverb + "\\s+\\w+ing\\b";
+    if (new RegExp(continuous, 'i').test(prose)) return true;
+    // Headline trailer: a final line that PROMISES the next action —
+    // "Reading the reader's URL/IP validation now:", "Next: inspecting the
+    // engine." — triggers even without a subject, while a plain result like
+    // "Running the tests showed everything passes." does not.
+    const lastLine = prose.split('\n').map((line) => line.trim()).filter(Boolean).pop() || '';
+    // ANY gerund opens a headline trailer — "Emitting the reads … now:",
+    // "Reading the reader's URL/IP validation now:". A fixed verb list kept
+    // missing new phrasings (emitting, greeting, wiring…), so the SHAPE is
+    // what matters: a line that STARTS with an -ing action and reads like a
+    // headline (ends with : or contains "now"). Plain results ("Running the
+    // tests showed everything passes.") carry neither.
+    if (/^(?:(?:now|next|then)[,:]\s+)?[a-z]+ing\b/i.test(lastLine)
+        && /[:…]\s*$|\bnow\b/i.test(lastLine)) return true;
+    return new RegExp("^(?:now|next|then)[,:]\\s+(?:(?:[a-z]+ing)|(?:" + verb + "))\\b", 'i').test(lastLine);
+  }
+
+  /* The reply stops to ask something — a question, a go-ahead, or a blocking
+   * state. That is "waiting for the user", not unfinished work: instead of an
+   * automatic nudge, the confirmation panel below the bubble offers the
+   * answer UI (option buttons + free text). */
+  function isWaitingUpdate(text) {
+    const prose = String(text || '').trim();
+    if (!prose) return false;
+    return /\?/.test(prose)
+      || /\b(?:if you|would you|let me know|need your|awaiting|approval|permission to|shall i)\b/i.test(prose)
+      || /\b(?:i|we)(?:['’]m|['’]re| am| are)?\s+(?:blocked|cannot|can['’]t)\b/i.test(prose);
   }
 
   function continueAgent(instruction) {
@@ -1550,18 +1749,67 @@
 
   const SETTING_FIELDS = [
     { key: 'model', label: 'Default model', type: 'text' },
-    { key: 'maxTokens', label: 'Max tokens', type: 'number', min: 1 },
     { key: 'temperature', label: 'Temperature (blank = provider default)', type: 'text' },
     { key: 'additionalHeaders', label: 'Extra headers (one Name: value per line)', type: 'text' },
     { key: 'workspaceContext', label: 'Workspace context', type: 'check' },
-    { key: 'contextMaxKb', label: 'Context max KB', type: 'number', min: 8 },
     { key: 'think', label: 'WhisperThink', type: 'check' },
     { key: 'thinkModel', label: 'Think model', type: 'text' },
-    { key: 'thinkMaxTokens', label: 'Think max tokens', type: 'number', min: 64 },
     { key: 'webSearch', label: 'Web search', type: 'check' },
-    { key: 'searchResults', label: 'Search results', type: 'number', min: 1, max: 10 },
     { key: 'playwright', label: 'Playwright fetch', type: 'check' },
   ];
+
+  /* Every output/effort budget is a user setting — nothing is hardcoded.
+   * 0 means "no limit": the request goes out without the parameter and the
+   * provider's own maximum applies. */
+  const BUDGET_FIELDS = [
+    { key: 'maxTokens', label: 'Answer tokens', type: 'number', min: 0, title: 'Output tokens for one answer. 0 = the provider decides.' },
+    { key: 'thinkMaxTokens', label: 'Think tokens', type: 'number', min: 0, title: 'Output tokens for the private reasoning pass. 0 = the provider decides.' },
+    { key: 'summaryMaxTokens', label: 'Summary tokens', type: 'number', min: 0, title: 'Output tokens for conversation compression. 0 = the provider decides (full room is recommended for reasoning models).' },
+    { key: 'compressThink', label: 'Think during compression', type: 'check', title: 'Off (default): compression asks reasoning endpoints to skip the thinking trace — segments finish in seconds. On: the model may deliberate before writing the summary.' },
+    { key: 'selectMaxTokens', label: 'Selection tokens', type: 'number', min: 0, title: 'Output tokens for the workspace file-selection pass. 0 = the provider decides.' },
+    { key: 'toolResultBudgetKb', label: 'Tool results KB', type: 'number', min: 0, title: 'How much of a tool result is kept in context (read always keeps the complete result). 0 = no limit.' },
+    { key: 'agentMaxRounds', label: 'Agent rounds', type: 'number', min: 0, title: 'Model \u2194 tool exchanges per request. 0 = no limit.' },
+    { key: 'agentUnfinishedRetries', label: 'Unfinished retries', type: 'number', min: 0, title: 'Extra rounds when a reply announces work it never starts. 0 = no limit.' },
+    { key: 'contextMaxKb', label: 'Context max KB', type: 'number', min: 8, title: 'Workspace source budget per request.' },
+    { key: 'searchResults', label: 'Search results', type: 'number', min: 1, max: 10, title: 'Search results injected per question.' },
+  ];
+
+  function appendFieldRows(container, fields, cfg) {
+    fields.forEach((f) => {
+      const row = document.createElement('div');
+      row.className = 'setting-row' + (f.type === 'check' ? ' check' : '');
+      const id = 'set-' + f.key;
+      if (f.type === 'check') {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.id = id;
+        box.checked = !!cfg[f.key];
+        box.addEventListener('change', () => post('setConfig', { key: f.key, value: box.checked }));
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.textContent = f.label;
+        if (f.title) { box.title = f.title; label.title = f.title; }
+        row.appendChild(box);
+        row.appendChild(label);
+      } else {
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.textContent = f.label;
+        if (f.title) label.title = f.title;
+        const input = document.createElement('input');
+        input.type = f.type;
+        input.id = id;
+        input.value = cfg[f.key] !== undefined ? String(cfg[f.key]) : '';
+        if (f.min !== undefined) input.min = f.min;
+        if (f.max !== undefined) input.max = f.max;
+        if (f.title) input.title = f.title;
+        input.addEventListener('change', () => post('setConfig', { key: f.key, value: input.value }));
+        row.appendChild(label);
+        row.appendChild(input);
+      }
+      container.appendChild(row);
+    });
+  }
 
   function updateProviderOptions(cfg) {
     providerSelect.replaceChildren(new Option('Free endpoints', 'endpoint'));
@@ -1577,9 +1825,8 @@
     providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
   }
 
-  function renderSettings() {
+  function renderConnectionPage() {
     const cfg = configCache || {};
-    settingsPanel.innerHTML = '';
     const endpoints = document.createElement('div');
     endpoints.className = 'setting-endpoints';
     const endpointLabel = document.createElement('label');
@@ -1677,37 +1924,7 @@
     addEndpoint(cfg.freeEndpoint || cfg.endpoint || '', true);
     (cfg.additionalEndpoints || []).forEach(value => addEndpoint(value));
     settingsPanel.appendChild(endpoints);
-    SETTING_FIELDS.forEach((f) => {
-      const row = document.createElement('div');
-      row.className = 'setting-row' + (f.type === 'check' ? ' check' : '');
-      const id = 'set-' + f.key;
-      if (f.type === 'check') {
-        const box = document.createElement('input');
-        box.type = 'checkbox';
-        box.id = id;
-        box.checked = !!cfg[f.key];
-        box.addEventListener('change', () => post('setConfig', { key: f.key, value: box.checked }));
-        const label = document.createElement('label');
-        label.htmlFor = id;
-        label.textContent = f.label;
-        row.appendChild(box);
-        row.appendChild(label);
-      } else {
-        const label = document.createElement('label');
-        label.htmlFor = id;
-        label.textContent = f.label;
-        const input = document.createElement('input');
-        input.type = f.type;
-        input.id = id;
-        input.value = cfg[f.key] !== undefined ? String(cfg[f.key]) : '';
-        if (f.min !== undefined) input.min = f.min;
-        if (f.max !== undefined) input.max = f.max;
-        input.addEventListener('change', () => post('setConfig', { key: f.key, value: input.value }));
-        row.appendChild(label);
-        row.appendChild(input);
-      }
-      settingsPanel.appendChild(row);
-    });
+    appendFieldRows(settingsPanel, SETTING_FIELDS, cfg);
 
     /* Agent instructions — a NEW card appended after the existing fields.
      * Nothing above is reflowed. Empty means "use the built-in agent prompt",
@@ -1732,6 +1949,52 @@
     agentRow.appendChild(agentInput);
     agentRow.appendChild(agentHint);
     settingsPanel.appendChild(agentRow);
+  }
+
+  function renderBudgetsPage() {
+    const cfg = configCache || {};
+    const hint = document.createElement('div');
+    hint.className = 'settings-hint';
+    hint.textContent = 'Budgets are yours to set — 0 means no limit: the request goes out without the field and the provider’s own maximum applies.';
+    settingsPanel.appendChild(hint);
+    appendFieldRows(settingsPanel, BUDGET_FIELDS, cfg);
+  }
+
+  /* The gear opens a two-page sheet; the icon tabs switch pages. Connection
+   * keeps endpoints + behaviour controls, Budgets carries every cap the agent
+   * respects while it works. */
+  let settingsPage = 'connection';
+  function renderSettings() {
+    const pageIcon = {
+      connection: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M6 1.5v3.2M10 1.5v3.2M4.2 4.7h7.6v1.8a3.8 3.8 0 0 1-7.6 0V4.7z"/><path d="M8 10.3v4.2"/></svg>',
+      budgets: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="6" cy="4" r="1.5" fill="var(--reach-surface)"/><circle cx="10.5" cy="8" r="1.5" fill="var(--reach-surface)"/><circle cx="5" cy="12" r="1.5" fill="var(--reach-surface)"/></svg>',
+    };
+    settingsPanel.innerHTML = '';
+    const tabs = document.createElement('div');
+    tabs.className = 'settings-tabs';
+    tabs.setAttribute('role', 'tablist');
+    [['connection', 'Connection'], ['budgets', 'Budgets']].forEach(([page, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'settings-tab' + (settingsPage === page ? ' active' : '');
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-selected', String(settingsPage === page));
+      button.innerHTML = pageIcon[page] + '<span>' + label + '</span>';
+      button.addEventListener('click', (event) => {
+        // Switching re-renders the sheet, which detaches this button before
+        // the click reaches the document handler — stop here so the
+        // outside-click test can’t mistake the detached target for a click
+        // somewhere else and close the panel.
+        event.stopPropagation();
+        if (settingsPage === page) return;
+        settingsPage = page;
+        renderSettings();
+      });
+      tabs.appendChild(button);
+    });
+    settingsPanel.appendChild(tabs);
+    if (settingsPage === 'budgets') renderBudgetsPage();
+    else renderConnectionPage();
 
     const link = document.createElement('div');
     link.className = 'settings-link';
@@ -2017,6 +2280,7 @@
   }
 
   function startChat(text, queued, displaySuffix) {
+    dismissConfirmPanels();
     ensureConv();
     if (!queued) {
       if (!conv.title) conv.title = text.slice(0, 48);
@@ -2145,14 +2409,17 @@
           break;
         }
         let tools = [];
+        let confirm = null;
         if (agenticEnabled) {
           const parsedE = extractEdits(pendingText);
           if (parsedE.edits.length) pendingEdits = pendingEdits.concat(parsedE.edits);
           if (!isAnsweringNow) {
             const parsedT = extractTools(parsedE.text);
             tools = parsedT.tools;
-            if (parsedT.text !== pendingText) {
-              pendingText = parsedT.text;
+            const parsedC = extractConfirm(parsedT.text);
+            confirm = parsedC.confirm;
+            if (parsedC.text !== pendingText) {
+              pendingText = parsedC.text;
               if (pendingBubble) setRich(pendingBubble, pendingText);
             }
           }
@@ -2164,7 +2431,31 @@
           beginToolRound(tools);
           break;
         }
-        const unfinished = !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length && isUnfinishedUpdate(pendingText);
+        // INVARIANT, not phrasing: once a run has actually used tools, a
+        // reply that still asks for nothing is chased again no matter how it
+        // is worded — announcing, musing, or plainly stalling. Two ways out:
+        // the model states a completion, or it repeats itself verbatim
+        // (nothing new to say). Wait-states fall through to the confirm panel.
+        const waitingNow = typeof isWaitingUpdate === 'function' ? isWaitingUpdate(pendingText) : false;
+        const settled = !waitingNow && (
+          /\b(?:is|are|was|were|now|has|have|had)\s+(?:done|completed?|finished|fixed|resolved|implemented|ready)\b/i.test(String(pendingText || ''))
+          || /^\s*(?:done|completed?|finished|fixed|ready)\b/i.test(String(pendingText || ''))
+          || /\bnothing (?:left|else) (?:to do|for me)\b/i.test(String(pendingText || '')));
+        const previousAssistant = (() => {
+          const pools = [agentMessages, conv && conv.messages];
+          for (const pool of pools) {
+            if (!Array.isArray(pool)) continue;
+            for (let i = pool.length - 1; i >= 0; i -= 1) {
+              if (pool[i] && pool[i].role === 'assistant') return String(pool[i].content || '');
+            }
+          }
+          return '';
+        })();
+        const normalize = (s) => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        const repeated = previousAssistant !== '' && normalize(previousAssistant) === normalize(pendingText);
+        const unfinished = !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length && !confirm
+          && (isUnfinishedUpdate(pendingText)
+              || (agentRounds > 0 && !settled && !waitingNow && !(continuationRetries > 0 && repeated)));
         if (!aborted && unfinished && continuationRetries < UNFINISHED_RETRY_LIMIT && agentRounds < MAX_AGENT_ROUNDS) {
           if (activeResponseStep) closeStep(rowByUid[activeResponseStep], pendingText);
           else showStep('Assistant update', true, '', pendingText);
@@ -2183,6 +2474,14 @@
           if (pendingBubble) setRich(pendingBubble, pendingText);
           showStep('Agent paused', true, '', reason);
         }
+        // A reply that stops to ask something earns a confirmation panel with
+        // the model's own options — one click answers it — instead of leaving
+        // the user to spell the answer out in the composer.
+        let confirmPayload = confirm;
+        if (!confirmPayload && !aborted && !isAnsweringNow && agenticEnabled && !tools.length && !pendingEdits.length
+            && !unfinished && waitingNow) {
+          confirmPayload = { question: '', options: [] };
+        }
         if (activeResponseStep) closeStep(rowByUid[activeResponseStep], aborted ? 'Stopped.' : 'Response shown below.', aborted ? 'cancelled' : 'completed');
         if (pendingText && pendingBubble && conv) {
           conv.messages.push({ role: 'assistant', content: pendingText });
@@ -2190,6 +2489,7 @@
           saveConv();
         }
         finishBubble(aborted || paused ? 'cancelled' : 'completed');
+        if (confirmPayload && typeof showConfirmPanel === 'function') showConfirmPanel(confirmPayload);
         if (typeof answeringNow !== 'undefined') answeringNow = false;
         if (aborted) hint(pickFun(ABORT_LINES));
         break;
@@ -2282,6 +2582,7 @@
         if (!busy || !conv || conv.id !== activeRequestConvId) break;
         let row = rowByUid[msg.uid];
         if (!row) row = addStepRow(msg.uid, msg.title);
+        if (msg.note) noteStep(msg.uid, msg.note);
         if (msg.kind === 'response') activeResponseStep = msg.uid;
         if (msg.status && msg.status !== 'running') closeStep(row, msg.result || 'Completed.', msg.status);
         break;
@@ -2527,14 +2828,20 @@
   trayBtn.addEventListener('click', () => post('trayStart'));
   browserBtn.addEventListener('click', () => post('openBrowser'));
   document.addEventListener('click', (e) => {
-    if (!settingsPanel.hidden && !settingsPanel.contains(e.target) && !settingsBtn.contains(e.target)) {
+    // The event path is fixed when the click is dispatched, so it still names
+    // a control that re-rendered its panel mid-dispatch (page tabs, delete
+    // buttons): `contains` alone would see a detached target and close the
+    // whole panel as if the click had landed outside it.
+    const clickPath = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    const inside = (panel) => panel.contains(e.target) || clickPath.includes(panel);
+    if (!settingsPanel.hidden && !inside(settingsPanel) && !settingsBtn.contains(e.target)) {
       settingsPanel.hidden = true;
       settingsBtn.classList.remove('open');
     }
-    if (!searchResults.hidden && !searchResults.contains(e.target) && !searchInput.contains(e.target)) {
+    if (!searchResults.hidden && !inside(searchResults) && !searchInput.contains(e.target)) {
       searchResults.hidden = true;
     }
-    if (!historyPanel.hidden && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) {
+    if (!historyPanel.hidden && !inside(historyPanel) && !historyBtn.contains(e.target)) {
       historyPanel.hidden = true;
     }
     if (!attachMenu.hidden && !attachMenu.contains(e.target) && !attachBtn.contains(e.target)) {
