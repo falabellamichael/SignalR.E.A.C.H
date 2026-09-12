@@ -211,8 +211,8 @@
         },
         "simplereach.maxTokens": {
           "type": "number",
-          "default": 2048,
-          "markdownDescription": "Max output tokens per request."
+          "default": 0,
+          "markdownDescription": "Answer output budget (tokens). **0 = no limit** \u2014 the `max_tokens` field is omitted and the provider\u2019s own maximum applies. Also on the Budgets page in the REACH panel (gear icon)."
         },
         "simplereach.agentMaxRounds": {
           "type": "number",
@@ -228,6 +228,21 @@
           "type": "number",
           "default": 0,
           "markdownDescription": "How much of a tool's result (KB) is kept in context (\u201cread\u201d always keeps the complete result). **0 = no limit** \u2014 the complete result is kept and automatic context compression protects the request size. Set a positive value to cap every other tool result."
+        },
+        "simplereach.summaryMaxTokens": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "Output budget for conversation compression (the internal summarizer pass). **0 = no limit** \u2014 the field is omitted and the provider\u2019s own maximum applies. Reasoning-capable endpoints need room to think before writing the summary; a small cap can leave it empty."
+        },
+        "simplereach.selectMaxTokens": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "Output budget for the workspace file-selection pass. **0 = no limit** \u2014 the field is omitted and the provider\u2019s own maximum applies."
+        },
+        "simplereach.compressThink": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Let the model think while compressing the conversation. **Off (default)** \u2014 compression asks reasoning-capable endpoints to skip the thinking trace (`chat_template_kwargs.enable_thinking`), turning multi-minute invisible waits into seconds; endpoints that reject the field are retried without it. **On** \u2014 the previous behaviour: the model may deliberate before writing the summary."
         },
         "simplereach.workspaceContext": {
           "type": "boolean",
@@ -251,8 +266,8 @@
         },
         "simplereach.thinkMaxTokens": {
           "type": "number",
-          "default": 512,
-          "markdownDescription": "Max tokens for the private reasoning pass."
+          "default": 0,
+          "markdownDescription": "Output budget for the private reasoning pass (tokens). **0 = no limit** \u2014 the field is omitted and the provider\u2019s own maximum applies."
         },
         "simplereach.webSearch": {
           "type": "boolean",
@@ -287,7 +302,7 @@
         "simplereach.agentTemplate": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Override the built-in agent instructions. Supports `{{workspace}}`, `{{model}}` and `{{provider}}`. Leave blank to use the built-in prompt. The fenced ```edit / ```tool output format is always appended so edits keep working."
+          "markdownDescription": "Override the built-in agent instructions. Supports `{{workspace}}`, `{{model}}` and `{{provider}}`. Leave blank to use the built-in prompt. The fenced ```edit / ```tool / ```confirm output formats are always appended so edits, questions and tool calls keep working."
         },
         "simplereach.provider": {
           "type": "string",

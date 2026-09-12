@@ -80,3 +80,56 @@ test('extractTools parses todo_write, edit_patch, and browser_* verbs', () => {
   assert.equal(parsedBrowser.tools[0].ref, '2');
   assert.equal(parsedBrowser.tools[0].selector, '#btn');
 });
+
+test('extractTools runs every JSON value in a wrapper and survives truncation', () => {
+  const f = fixture();
+
+  // The shape Qwen endpoints actually stream (probed 2026-09-12): several
+  // objects, one per line, inside a single fenced block.
+  const multi = '```tool\n{"action": "read", "path": "README.md"}\n'
+    + '{"action": "read", "path": "server/reachd/core.py"}\n'
+    + '{"action": "read", "path": "server/reachd/chat.py"}\n```';
+  const parsedMulti = f.parse(multi);
+  assert.equal(parsedMulti.tools.length, 3);
+  assert.deepEqual(Array.from(parsedMulti.tools, (t) => t.path),
+    ['README.md', 'server/reachd/core.py', 'server/reachd/chat.py']);
+  assert.equal(parsedMulti.text, '');
+
+  // One array in the wrapper is not part of the contract (pinned by the
+  // transport guard test): it stays visible text.
+  const arrayFenced = '```tool\n[{"action": "read", "path": "a.js"}]\n```';
+  const parsedArray = f.parse(arrayFenced);
+  assert.equal(parsedArray.tools.length, 0);
+  assert.equal(parsedArray.text, arrayFenced);
+
+  // Truncated output: the closing fence never arrived; complete values still run.
+  const truncated = 'Reading now.\n```tool\n{"action": "read", "path": "app.js"}';
+  const parsedTruncated = f.parse(truncated);
+  assert.equal(parsedTruncated.tools.length, 1);
+  assert.equal(parsedTruncated.tools[0].path, 'app.js');
+  assert.equal(parsedTruncated.text, 'Reading now.');
+
+  // Wrapper content that is not a known action stays as chat content.
+  const content = '```tool\n{"note": "just data"}\n```';
+  const parsedContent = f.parse(content);
+  assert.equal(parsedContent.tools.length, 0);
+  assert.match(parsedContent.text, /just data/);
+});
+
+test('extractTools accepts the bare tool-label dialect without backticks', () => {
+  const f = fixture();
+
+  const bare = 'Let me read the core file.\ntool\n{"action": "read", "path": "server/reachd/core.py"}\n\nThat should clarify the flow.';
+  const parsed = f.parse(bare);
+  assert.equal(parsed.tools.length, 1);
+  assert.equal(parsed.tools[0].path, 'server/reachd/core.py');
+  assert.match(parsed.text, /Let me read the core file\./);
+  assert.match(parsed.text, /That should clarify the flow\./);
+  assert.doesNotMatch(parsed.text, /"action"/);
+
+  // A bare "tool" line followed by prose (no JSON) changes nothing.
+  const prose = 'The tool\nis documented below.';
+  const untouched = f.parse(prose);
+  assert.equal(untouched.tools.length, 0);
+  assert.match(untouched.text, /documented below/);
+});

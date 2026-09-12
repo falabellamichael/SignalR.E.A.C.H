@@ -89,6 +89,11 @@ const DEFAULT_AGENT_PROMPT = 'You are SimpleREACH, an agentic coding assistant i
   + toolHelp('core') + '\n'
   + 'Plan multi-step work with a todo list so progress survives a long run:\n'
   + '```tool\n{"action": "todo_write", "todos": [{"text": "Read the parser", "status": "in_progress"}]}\n```\n'
+  + 'When you need a decision from the user — permission to proceed, a choice between approaches, or a missing '
+  + 'detail — ask with a fenced confirm block and stop:\n'
+  + '```confirm\n{"question": "Rename these 12 files now?", "options": ["Yes, proceed", "No, keep the names"]}\n```\n'
+  + 'The user answers with one click and the answer arrives as the next message; give 2-4 short options, or omit '
+  + 'options for an open question.\n'
   + 'Use them when you need to see files that are not already in the context, then answer the question or emit edit '
   + 'blocks for the actual changes.';
 
@@ -142,13 +147,27 @@ function expandAgentTemplate(template, connection) {
 function agentSystemPrompt(connection) {
   const custom = (connection && connection.agentTemplate || '').trim();
   if (!custom) return DEFAULT_AGENT_PROMPT;
-  const expanded = expandAgentTemplate(custom, connection);
-  // Already contains the contract (the user pasted the full text): use as-is.
-  if (expanded.includes('```edit') || expanded.includes('```tool')) return expanded;
-  return expanded + '\n\nOutput format for this session:\n'
-    + '```edit\n{"path": "relative/path", "search": "exact existing text", "replace": "new text"}\n```\n'
-    + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
-    + 'Emit edit blocks for file changes; the user applies them as diffs.';
+  let expanded = expandAgentTemplate(custom, connection);
+  // Already contains the contract (the user pasted the full text): keep it,
+  // but each missing piece is appended separately so a custom template can
+  // never silently lose the edit/tool/confirm formats.
+  if (expanded.includes('```edit') && expanded.includes('```tool') && expanded.includes('```confirm')) return expanded;
+  if (!expanded.includes('```edit')) {
+    expanded += '\n\nOutput format for file changes:\n'
+      + '```edit\n{"path": "relative/path", "search": "exact existing text", "replace": "new text"}\n```\n'
+      + 'Emit edit blocks for file changes; the user applies them as diffs.';
+  }
+  if (!expanded.includes('```tool')) {
+    expanded += '\n\nOutput format for tool calls:\n'
+      + '```tool\n{"action": "read", "path": "relative/path"}\n```\n';
+  }
+  if (!expanded.includes('```confirm')) {
+    expanded += '\n\nWhen you need a decision from the user — permission to proceed, a choice, or a missing detail '
+      + '— ask with a fenced confirm block and stop:\n'
+      + '```confirm\n{"question": "Rename these 12 files now?", "options": ["Yes, proceed", "No, keep the names"]}\n```\n'
+      + 'The user answers with one click; the answer arrives as the next message.';
+  }
+  return expanded;
 }
 
 const TRAY_PROVIDERS = ['copilot', 'chatgpt', 'codegpt'];
@@ -372,12 +391,15 @@ function config() {
     model: provider === 'copilot' ? 'copilot-chat' : provider === 'chatgpt' ? 'chatgpt-chat'
       : provider === 'codegpt' ? (isEconomyModel(cfg.get('model')) ? String(cfg.get('model')) : 'codegpt-eco')
       : String(cfg.get('model') || 'gpt-4o-mini'),
-    maxTokens: Number(cfg.get('maxTokens') || 2048),
+    // Output budgets are user settings (Budgets page in the panel). 0 = no
+    // limit: the max_tokens field is omitted so the provider's own maximum
+    // applies — a hardcoded budget starved reasoning models into empty replies.
+    maxTokens: limit('maxTokens'),
     workspaceContext: cfg.get('workspaceContext') !== false,
     contextMaxKb: Math.max(8, Number(cfg.get('contextMaxKb') || 120)),
     think: cfg.get('think') !== false,
     thinkModel: String(cfg.get('thinkModel') || ''),
-    thinkMaxTokens: Math.max(64, Number(cfg.get('thinkMaxTokens') || 512)),
+    thinkMaxTokens: limit('thinkMaxTokens'),
     webSearch: cfg.get('webSearch') !== false,
     searchResults: Math.max(1, Math.min(10, Number(cfg.get('searchResults') || 5))),
     playwright: cfg.get('playwright') !== false,
@@ -400,6 +422,16 @@ function config() {
     // 0 = keep complete tool results (automatic context compression still
     // protects the request size); a positive value caps every non-read result.
     toolResultBudgetKb: limit('toolResultBudgetKb'),
+    // Output budgets for the two internal model passes (conversation summary,
+    // workspace file selection). 0 = no limit — the field is omitted.
+    summaryMaxTokens: limit('summaryMaxTokens'),
+    selectMaxTokens: limit('selectMaxTokens'),
+    // Compressing the conversation is a mechanical extraction task; on
+    // reasoning endpoints the thinking trace runs for minutes with nothing to
+    // show for it (probed 2026-09-12). Off = compression asks such endpoints
+    // to skip thinking (endpoints that reject the field are retried without
+    // it); on = the previous behaviour, the model may deliberate first.
+    compressThink: cfg.get('compressThink') === true,
   };
 }
 
@@ -804,7 +836,8 @@ class ReachChatViewProvider {
             }
             break;
           }
-          const allowed = ['provider', 'additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright', 'agentic', 'temperature', 'additionalHeaders', 'agentTemplate'];
+          const allowed = ['provider', 'additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright', 'agentic', 'temperature', 'additionalHeaders', 'agentTemplate',
+            'agentMaxRounds', 'agentUnfinishedRetries', 'toolResultBudgetKb', 'summaryMaxTokens', 'selectMaxTokens', 'compressThink'];
           if (!allowed.includes(key)) break;
           const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
           const current = cfg.get(key);
@@ -1423,6 +1456,7 @@ class ReachChatViewProvider {
         ? m.content : JSON.stringify(Array.isArray(m.content) ? m.content.map(p => p.type === 'text' ? p : { type: p.type, note: 'Earlier non-text attachment; reread the original if needed.' }) : m.content)) + (m.tool_calls ? '\nTool calls: ' + JSON.stringify(m.tool_calls) : '')).join('\n\n');
       const parts = Math.ceil(transcript.length / chunkSize);
       let memory = '';
+      let thinkRejected = false; // An endpoint that rejects the field once never sees it again this run.
       for (let i = 0; i < parts; i++) {
         this._controller?.signal.throwIfAborted();
         const activity = this._beginActivity(`Compress context · segment ${i + 1} of ${parts}`);
@@ -1432,19 +1466,55 @@ class ReachChatViewProvider {
           + 'Do not invent source text or mark unfinished work complete. Return only the updated memory as terse bullets — '
           + 'no headings, no restating this instruction — well under ' + noteLimit + ' characters.\nPrior memory:\n' + memory + `\nSegment ${i + 1}/${parts}:\n`
           + transcript.slice(i * chunkSize, (i + 1) * chunkSize);
-        const body = encodeChatPayload({ model, messages: [{ role: 'user', content: prompt }], stream: false, max_tokens: copilot ? 350 : 2400 });
         const endpoint = `${await this._modelEndpoint(connection, model)}/chat/completions`;
         // No fetch timeout: compressing the conversation is agent work and can
         // legitimately outrun any fixed budget. Only the user's Stop aborts it.
         // Transient gateway failures are retried by _fetchRetry.
-        const response = await this._fetchRetry(endpoint, {
+        //
+        // The output budget is the user's own setting (Budgets page):
+        // simplereach.summaryMaxTokens. 0 = no limit, so the max_tokens field
+        // is omitted and the provider's own maximum applies — a hardcoded 2400
+        // made reasoning-capable endpoints spend the whole budget thinking and
+        // answer with no content at all ("did not produce a usable context
+        // summary", probed 2026-09-12: 6.3k chars of reasoning for a 410-char
+        // summary on api.nexus-projects.ai). The Copilot page route keeps its
+        // small fixed budget — the page itself cuts long outputs.
+        const budget = copilot ? 350 : connection.summaryMaxTokens;
+        // Summarizing is extraction, not deliberation — but reasoning endpoints
+        // deliberate anyway, invisibly, on top of the user's patience (probed
+        // 2026-09-12: skipping the trace cut a segment-sized request from 25s
+        // to 12s, and dense real segments ran for minutes). Unless the user
+        // opts back in (simplereach.compressThink), ask vLLM/Qwen-class
+        // endpoints to skip the thinking trace; when an endpoint rejects the
+        // field, the request is retried with exactly the old plain body and
+        // the rejection is remembered for every later segment.
+        const thinkOff = !copilot && !connection.compressThink && !thinkRejected
+          ? { chat_template_kwargs: { enable_thinking: false } } : null;
+        const send = (extra) => this._fetchRetry(endpoint, {
           method: 'POST', headers: this._authHeaders({}, connection),
           ...(this._controller ? { signal: this._controller.signal } : {}),
-          body,
+          body: encodeChatPayload({
+            model, messages: [{ role: 'user', content: prompt }],
+            ...(budget > 0 ? { max_tokens: budget } : {}), ...extra,
+          }),
         }, activity);
-        if (!response.ok) throw new Error('Context compression failed (HTTP ' + response.status + '). The original conversation is intact.');
-        const data = await response.json();
-        const notes = data.choices?.[0]?.message?.content;
+        let notes;
+        if (copilot) {
+          const response = await send({ stream: false });
+          if (!response.ok) throw new Error('Context compression failed (HTTP ' + response.status + '). The original conversation is intact.');
+          const data = await response.json();
+          notes = data.choices?.[0]?.message?.content;
+        } else {
+          // Streamed: the activity row shows the summary growing instead of a
+          // silent timer, and a slow generation is never cut off.
+          let response = await send({ stream: true, ...(thinkOff || {}) });
+          if (!response.ok && thinkOff && (response.status === 400 || response.status === 422)) {
+            thinkRejected = true;
+            response = await send({ stream: true });
+          }
+          if (!response.ok) throw new Error('Context compression failed (HTTP ' + response.status + '). The original conversation is intact.');
+          notes = await this._readSummaryStream(response, activity);
+        }
         if (typeof notes !== 'string' || !notes.trim()) {
           throw new Error('The model did not produce a usable context summary. The original conversation is intact; retry.');
         }
@@ -1463,6 +1533,60 @@ class ReachChatViewProvider {
       }
       return memory;
     }, options);
+  }
+
+  /* Consume the compressing endpoint's SSE stream: keep the summary text,
+   * count the thinking trace for the activity row, and cut nothing off — the
+   * counting is purely so a slow segment is visibly alive. An endpoint that
+   * ignores stream:true and answers with one JSON document is accepted too,
+   * so switching to streaming can never regress a provider. */
+  async _readSummaryStream(response, activity) {
+    if (!response.body) return '';
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '', raw = '', content = '', thinking = 0, postedAt = 0, postedPhase = '';
+    const publish = () => {
+      const phase = content ? 'writing' : thinking ? 'thinking' : '';
+      if (!phase) return;
+      const now = Date.now();
+      if (phase === postedPhase && now - postedAt < 700) return;
+      postedAt = now; postedPhase = phase;
+      this._post('agentStep', { uid: activity, status: 'running', note: phase === 'writing'
+        ? 'Writing the summary · ' + content.length + ' characters received'
+        : 'Thinking through the segment · ' + thinking + ' characters received' });
+    };
+    const feed = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) return;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === '[DONE]') return;
+      let delta;
+      try { delta = (JSON.parse(payload).choices || [{}])[0].delta || {}; } catch { return; }
+      const reason = typeof delta.reasoning_content === 'string' ? delta.reasoning_content
+        : typeof delta.reasoning === 'string' ? delta.reasoning : '';
+      if (reason) thinking += reason.length;
+      if (typeof delta.content === 'string') content += delta.content;
+      if (delta.content || reason) publish();
+    };
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const text = decoder.decode(value, { stream: true });
+      raw += text; buffer += text;
+      let cut;
+      while ((cut = buffer.indexOf('\n')) >= 0) {
+        feed(buffer.slice(0, cut));
+        buffer = buffer.slice(cut + 1);
+      }
+    }
+    if (buffer) feed(buffer);
+    if (!content) {
+      try {
+        const text = (JSON.parse(raw).choices || [{}])[0]?.message?.content;
+        if (typeof text === 'string') content = text;
+      } catch { /* not a JSON body; the caller reports the empty summary */ }
+    }
+    return content;
   }
 
   async _encodePayload(payload, purpose = 'answer', options = {}) {
@@ -1600,7 +1724,7 @@ class ReachChatViewProvider {
     }
     const payload = {
       model,
-      max_tokens: thinkMaxTokens,
+      ...(thinkMaxTokens > 0 ? { max_tokens: thinkMaxTokens } : {}),
       stream: false,
       messages: normalizeSystemMessages([
         { role: 'system', content: system },
@@ -1692,7 +1816,10 @@ class ReachChatViewProvider {
           signal: this._controller ? this._controller.signal : undefined,
           body: await this._encodePayload({
             model: connection.provider === 'copilot' ? 'copilot-chat' : connection.provider === 'chatgpt' ? 'chatgpt-chat' : model || connection.model,
-            stream: false, max_tokens: 400,
+            stream: false,
+            // User budget only (0 = omit); the local fallback still selects
+            // files when a provider answers the selection pass with nothing.
+            ...(connection.selectMaxTokens > 0 ? { max_tokens: connection.selectMaxTokens } : {}),
             messages: [{ role: 'system', content: 'Select workspace source files to READ before answering the latest user request. '
               + 'Return only a JSON array of up to 8 exact paths from the catalog. For a codebase/filebase/project review, '
               + 'select the manifest and representative implementation files, including closed files. For a follow-up, '
@@ -1907,7 +2034,8 @@ class ReachChatViewProvider {
       normalizeSystemMessages(messages);
       const payload = {
         stream: body.stream === true,
-        max_tokens: maxTokens || 2048,
+        // User budget only: 0 = no limit, the field is omitted entirely.
+        ...(maxTokens > 0 ? { max_tokens: maxTokens } : {}),
         model: connection.provider === 'copilot' ? 'copilot-chat' : connection.provider === 'chatgpt' ? 'chatgpt-chat' : body.model || connection.model,
         messages,
       };

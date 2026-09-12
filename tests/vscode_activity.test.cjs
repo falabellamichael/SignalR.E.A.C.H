@@ -125,3 +125,19 @@ test('numbering, quips and plan groups survive a reload of the timeline',()=>{
  assert.equal(region.children[0].children[1].textContent,'2 steps','a finished timeline freezes to a count');
  assert.equal(region.children.filter(c=>c.className==='step-group').length,1);
 });
+test('a running step shows live progress from the host instead of only elapsed time',()=>{
+ const {ctx}=host();
+ const row=ctx.addStepRow('seg','Compress context · segment 2 of 4');
+ assert.equal(row.outputEl.textContent,'Waiting for result…','before any progress arrives');
+ ctx.noteStep('seg','Thinking through the segment · 4,000 characters received');
+ assert.equal(row.outputEl.textContent,'Thinking through the segment · 4,000 characters received');
+ ctx.startRunningTicker(row);
+ assert.match(row.outputEl.textContent,/^Thinking through the segment · 4,000 characters received · \d+s elapsed$/);
+ ctx.noteStep('seg','Writing the summary · 120 characters received');
+ ctx.startRunningTicker(row);
+ assert.match(row.outputEl.textContent,/^Writing the summary · 120 characters received · \d+s elapsed$/);
+ const finished=ctx.addStepRow('done-seg','Compress context · segment 1 of 4');
+ ctx.closeStep(finished,'Updated conversation memory.');
+ ctx.noteStep('done-seg','late note');
+ assert.equal(finished.outputEl.children[0].className,'step-drop','a closed row ignores late notes');
+});

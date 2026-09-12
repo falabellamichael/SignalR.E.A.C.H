@@ -25,6 +25,18 @@ function host(values, response, workspace = {}, api = {}) {
  return {provider,calls,posts,config,readConfig:context.module.exports.testConfig,receive};
 }
 
+test('custom agent templates retain their text and receive every missing output format',()=>{
+ const context={vscode:{workspace:{workspaceFolders:[]}}};
+ vm.runInNewContext(source.slice(source.indexOf('function expandAgentTemplate('),source.indexOf('const TRAY_PROVIDERS')),context);
+ for (const template of ['Keep edits small.', 'Custom ```edit contract.', 'Custom ```tool contract.', 'Custom ```confirm contract.']) {
+  const prompt=context.agentSystemPrompt({agentTemplate:template});
+  assert.ok(prompt.startsWith(template));
+  for (const format of ['edit','tool','confirm']) assert.ok(prompt.includes('```'+format),format+' contract missing');
+ }
+ const complete='Use ```edit, ```tool and ```confirm.';
+ assert.equal(context.agentSystemPrompt({agentTemplate:complete}),complete);
+});
+
 test('VS Code free-endpoint chat keeps the selected model and access key',async()=>{
  const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'FREE OK'}}]})));
  await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'my/free-model',stream:false});
@@ -382,6 +394,81 @@ test('context compression can never re-stack system messages (strict endpoints)'
  assert.equal(wire.messages.filter(m=>m.role==='system').length,1,'exactly one system message');
  assert.equal(wire.messages[0].role,'system','and it comes first');
  assert.match(wire.messages[0].content,/Keep user edits/,'the retained system content is not lost');
+});
+test('output budgets are user settings: unset means the parameter is omitted',async()=>{
+ // No hardcoded budgets: 0 (the default) omits max_tokens entirely so the
+ // provider's own maximum applies — a fixed budget starved reasoning models
+ // into empty replies. Positive values are the user's, sent verbatim.
+ const plain=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'FREE OK'}}]})));
+ await plain.provider._chat({messages:[{role:'user',content:'hello'}],model:'my/free-model',stream:false});
+ assert.equal(JSON.parse(plain.calls[0].options.body).max_tokens,undefined,'no answer budget by default');
+ await plain.provider._think('q',false,'my/free-model');
+ assert.equal(JSON.parse(plain.calls.at(-1).options.body).max_tokens,undefined,'no think budget by default');
+ const capped=host({maxTokens:4200,thinkMaxTokens:900},()=>new Response(JSON.stringify({choices:[{message:{content:'OK'}}]})));
+ await capped.provider._chat({messages:[{role:'user',content:'hello'}],model:'my/free-model',stream:false});
+ assert.equal(JSON.parse(capped.calls[0].options.body).max_tokens,4200);
+ await capped.provider._think('q',false,'my/free-model');
+ assert.equal(JSON.parse(capped.calls.at(-1).options.body).max_tokens,900);
+});
+test('compaction follows the user budget and omits the field when unset',async()=>{
+ const messages=[{role:'user',content:'go'},
+  ...Array.from({length:8},(_,i)=>({role:'assistant',content:'Earlier step '+i+'\n'+'x'.repeat(34000)})),
+  {role:'user',content:'Finish the current task.'}];
+ const seen=[];
+ const h=host({},(url,options)=>{ seen.push(JSON.parse(options.body).max_tokens); return new Response(JSON.stringify({choices:[{message:{content:'memory note'}}]})); });
+ const result=await h.provider._compactContext(messages,'my/free-model');
+ assert.equal(result.changed,true);
+ assert.ok(result.messages.some(m=>String(m.content).includes('REACH conversation memory')));
+ assert.ok(seen.length&&seen.every(b=>b===undefined),'no summary budget is sent unless the user sets one');
+ const h2=host({summaryMaxTokens:5000},()=>new Response(JSON.stringify({choices:[{message:{content:'memory note'}}]})));
+ await h2.provider._compactContext(messages,'my/free-model');
+ assert.equal(JSON.parse(h2.calls[0].options.body).max_tokens,5000);
+});
+test('compression skips the reasoning trace unless the user opts in',async()=>{
+ // Summarizing is extraction, not deliberation: dense segments sent a
+ // reasoning endpoint into minutes of invisible thinking (2026-09-12), so the
+ // default asks such endpoints to skip it — and streams the summary so the
+ // activity row shows it growing. The user can opt back in.
+ const messages=[{role:'user',content:'go'},
+  ...Array.from({length:8},(_,i)=>({role:'assistant',content:'Earlier step '+i+'\n'+'x'.repeat(34000)})),
+  {role:'user',content:'Finish the current task.'}];
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'memory note'}}]})));
+ await h.provider._compactContext(messages,'my/free-model');
+ const body=JSON.parse(h.calls[0].options.body);
+ assert.deepEqual(body.chat_template_kwargs,{enable_thinking:false},'thinking is skipped by default');
+ assert.equal(body.stream,true,'the summary streams so the row can show progress');
+ const opted=host({compressThink:true},()=>new Response(JSON.stringify({choices:[{message:{content:'memory note'}}]})));
+ await opted.provider._compactContext(messages,'my/free-model');
+ assert.equal(JSON.parse(opted.calls[0].options.body).chat_template_kwargs,undefined,'the user can put the deliberation back');
+});
+test('an endpoint that rejects chat_template_kwargs is retried with the plain body and the summary streams live',async()=>{
+ const messages=[{role:'user',content:'go'},
+  ...Array.from({length:8},(_,i)=>({role:'assistant',content:'Earlier step '+i+'\n'+'x'.repeat(34000)})),
+  {role:'user',content:'Finish the current task.'}];
+ let compactions=0,withThink=0,plain=0,firstBody=null,secondBody=null;
+ const h=host({},(url,options)=>{
+  const body=JSON.parse(options.body);
+  if(String(body.messages[0].content).startsWith('Compress this conversation segment')){
+   compactions++;
+   if(compactions===1){firstBody=body;return new Response('{"error":{"message":"Unrecognized request argument: chat_template_kwargs"}}',{status:400});}
+   if(compactions===2)secondBody=body;
+   if(body.chat_template_kwargs)withThink++;else plain++;
+   return new Response('data: '+JSON.stringify({choices:[{delta:{reasoning_content:'deliberating about the segment'}}]})+'\n\n'
+    +'data: '+JSON.stringify({choices:[{delta:{content:'- goal: finish the task'}}]})+'\n\n'
+    +'data: '+JSON.stringify({choices:[{delta:{content:'; pending: verify the fix'}}]})+'\n\n'
+    +'data: [DONE]\n\n');
+  }
+  return new Response(JSON.stringify({choices:[{message:{content:'ok'}}]}));
+ });
+ const result=await h.provider._compactContext(messages,'my/free-model');
+ assert.deepEqual(firstBody.chat_template_kwargs,{enable_thinking:false},'the first attempt asks to skip thinking');
+ assert.equal(secondBody.chat_template_kwargs,undefined,'the rejected field is dropped, not the request');
+ assert.equal(withThink,0,'a rejected field is not repeated for later segments');
+ assert.ok(plain>=2&&compactions===plain+1,'one wasteful 400 for the whole run, then plain bodies');
+ assert.ok(result.messages.some(m=>String(m.content).includes('goal: finish the task')&&String(m.content).includes('pending: verify the fix')),'the streamed deltas form the memory');
+ assert.ok(!result.messages.some(m=>String(m.content).includes('deliberating about the segment')),'the thinking trace never becomes memory');
+ assert.ok(h.posts.some(p=>p.type==='agentStep'&&p.status==='running'&&/Thinking through the segment/.test(String(p.note||''))),'the row shows live thinking progress');
+ assert.ok(h.posts.some(p=>p.type==='agentStep'&&p.status==='running'&&/Writing the summary/.test(String(p.note||''))),'and live writing progress');
 });
 test('a lower advertised character budget triggers one compressed retry',async()=>{
  let answers=0;

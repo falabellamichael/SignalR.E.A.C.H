@@ -340,6 +340,32 @@ body {
   box-shadow: 0 4px 16px var(--reach-shadow);
   padding: 6px 8px;
 }
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 0 5px;
+  border-bottom: 1px solid var(--reach-border);
+}
+.settings-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--reach-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.settings-tab:hover { color: var(--reach-text); background: var(--reach-accent-bg); }
+.settings-tab.active {
+  color: var(--reach-accent-light);
+  border-color: var(--reach-accent-border);
+  background: var(--reach-accent-bg);
+}
+.settings-tab svg { display: block; }
 .setting-row {
   display: flex;
   align-items: center;
@@ -616,6 +642,51 @@ body {
 .edit-status.ok { color: #7fd68b; }
 .edit-status:empty { display: none; }
 .edit-status.err { color: var(--reach-error); flex-basis: 100%; overflow-wrap: anywhere; }
+
+/* ---- confirmation panel (agent questions) ---- */
+.confirm-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--reach-accent-border);
+  border-left: 3px solid var(--reach-accent);
+  border-radius: 8px;
+  background: var(--reach-surface);
+}
+.confirm-question { font-size: 12px; color: var(--reach-text); white-space: pre-wrap; }
+.confirm-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.confirm-btn {
+  font-size: 12px;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--reach-border);
+  background: transparent;
+  color: var(--reach-text);
+  cursor: pointer;
+}
+.confirm-btn:hover { border-color: var(--reach-accent-border); color: var(--reach-accent-light); }
+.confirm-btn.primary {
+  background: var(--reach-accent-bg);
+  border-color: var(--reach-accent-border);
+  color: var(--reach-accent-light);
+  font-weight: 600;
+}
+.confirm-input-row { display: flex; gap: 6px; }
+.confirm-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--reach-panel);
+  color: var(--reach-text);
+  border: 1px solid var(--reach-border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+.confirm-input:focus { outline: none; border-color: var(--reach-accent-border); }
 .edit-allbar {
   display: flex;
   flex-wrap: wrap;
