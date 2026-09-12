@@ -6,12 +6,14 @@ module retrieves documents only, without scripts, cookies, or subresources.
 
 import base64
 import concurrent.futures
+import gzip
 import http.client
 import ipaddress
 import socket
 import ssl
 import threading
 import time
+import zlib
 from html.parser import HTMLParser
 from urllib.parse import quote, urljoin, urlsplit, urlunsplit
 
@@ -24,7 +26,7 @@ _DNS_SLOTS = threading.BoundedSemaphore(4)
 _DNS_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=4,
                                                 thread_name_prefix="reach-browser-dns")
 _HTML_TYPES = {"text/html", "application/xhtml+xml"}
-_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/x-icon", "image/vnd.microsoft.icon"}
+_IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif", "image/svg+xml", "image/x-icon", "image/vnd.microsoft.icon"}
 
 
 class BrowserError(ValueError):
@@ -39,6 +41,38 @@ def _remaining(deadline):
     if remaining <= 0:
         raise BrowserError("The page took too long to respond.", 504, "fetch_timeout")
     return remaining
+
+
+def _decode_compressed(data, encoding):
+    """Decode a body whose server ignored the requested identity coding.
+
+    Only used on bounded bodies read above; a failing decode is reported as
+    unsupported content rather than letting undecoded bytes through.
+    """
+    try:
+        if encoding in ("gzip", "x-gzip"):
+            return gzip.decompress(data)
+        if encoding == "deflate":
+            try:
+                return zlib.decompress(data)
+            except zlib.error:
+                return zlib.decompress(data, -zlib.MAX_WBITS)
+        try:
+            import brotli
+        except ImportError:
+            raise BrowserError("The website returned a Brotli-compressed response.",
+                               415, "unsupported_content")
+        return brotli.decompress(data)
+    except BrowserError:
+        raise
+    except Exception:
+        raise BrowserError("The website returned an unreadable compressed response.",
+                           415, "unsupported_content") from None
+
+
+def _looks_svg(data):
+    head = data[:2048].lstrip(b"\xef\xbb\xbf \t\r\n")
+    return b"<svg" in head
 
 
 def _parse_url(url):
@@ -183,6 +217,72 @@ class _PinnedConnection(http.client.HTTPConnection):
         super().close()
 
 
+class _DeflateReader:
+    """Incremental inflater for 'deflate' response bodies.
+
+    zlib-wrapped streams are the norm; if the first bytes are not valid zlib,
+    restart from the already-consumed bytes as a bare DEFLATE stream, which
+    some servers send instead.
+    """
+
+    def __init__(self, response):
+        self._response = response
+        self._inflater = zlib.decompressobj(zlib.MAX_WBITS)
+        self._buffer = bytearray()
+        self._raw = []
+        self._done = False
+
+    def read(self, size=-1):
+        while not self._done and (size < 0 or len(self._buffer) < size):
+            chunk = self._response.read(65536)
+            if not chunk:
+                self._done = True
+                break
+            self._raw.append(chunk)
+            try:
+                output = self._inflater.decompress(chunk)
+            except zlib.error:
+                # Bare DEFLATE: re-inflate the already-consumed bytes raw-mode.
+                self._inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+                self._buffer.extend(self._inflater.decompress(b"".join(self._raw)))
+                self._done = True
+                break
+            self._buffer.extend(output)
+        if size < 0:
+            size = len(self._buffer)
+        output = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return output
+
+
+class _BrotliReader:
+    """Incremental inflater for 'br' bodies (requires the optional brotli)."""
+
+    def __init__(self, response):
+        self._response = response
+        self._decompressor = brotli.Decompressor()
+        self._buffer = bytearray()
+        self._done = False
+
+    def read(self, size=-1):
+        while not self._done and (size < 0 or len(self._buffer) < size):
+            chunk = self._response.read(65536)
+            if not chunk:
+                self._done = True
+                break
+            try:
+                output = self._decompressor.process(chunk)
+            except brotli.error:
+                raise BrowserError("The website returned a corrupt compressed response.",
+                                   502, "fetch_failed") from None
+            self._buffer.extend(output)
+        if size < 0:
+            size = len(self._buffer)
+        output = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return output
+
+
 class _PageText(HTMLParser):
     _HIDDEN = {"script", "style", "template", "noscript", "svg", "head"}
     _BLOCKS = {"p", "div", "article", "section", "main", "br", "li", "h1", "h2",
@@ -243,7 +343,8 @@ def fetch_page(url, kind="page"):
             response = None
             try:
                 connection.request("GET", target, headers={
-                    "User-Agent": "SignalREACH-Browser/1.0",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                  "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
                     "Accept": ",".join(sorted(allowed_types)),
                     "Accept-Encoding": "identity",
                     "Connection": "close",
@@ -263,20 +364,30 @@ def fetch_page(url, kind="page"):
                 if content_type not in allowed_types:
                     raise BrowserError("This address did not return a supported " + kind + ". Open it externally to view or download it.",
                                        415, "unsupported_content")
-                if (response.getheader("Content-Encoding") or "identity").lower() != "identity":
-                    raise BrowserError("The website returned an unsupported compressed response.",
-                                       415, "unsupported_content")
                 chunks, size = [], 0
-                while size <= limit:
+                compressed = (response.getheader("Content-Encoding") or "identity").strip().lower()
+                # Compressed bodies get a little slack beyond the cap so the
+                # final stream can decode; resources are still rejected over
+                # the cap, pages are truncated (and flagged), and the decode
+                # itself rejects anything unreadable.
+                cap = limit + (65536 if compressed not in ("", "identity") else 0)
+                while size <= cap:
                     _remaining(deadline)
-                    chunk = response.read1(min(65536, limit + 1 - size))
+                    chunk = response.read1(min(65536, cap + 1 - size))
                     if not chunk:
                         break
                     chunks.append(chunk)
                     size += len(chunk)
                 _remaining(deadline)
-                data = b"".join(chunks)[:limit]
+                raw = b"".join(chunks)
                 if kind != "page" and size > limit:
+                    raise BrowserError("The page resource is too large.", 415, "resource_too_large")
+                if compressed not in ("", "identity"):
+                    # Some servers ignore the identity content-coding; decode
+                    # their response instead of failing the whole resource.
+                    raw = _decode_compressed(raw, compressed)
+                data = raw[:limit] if kind == "page" else raw
+                if kind != "page" and len(data) > limit:
                     raise BrowserError("The page resource is too large.", 415, "resource_too_large")
                 if kind == "image":
                     signatures = {
@@ -287,6 +398,7 @@ def fetch_page(url, kind="page"):
                         "image/avif": data[4:8] == b"ftyp" and (b"avif" in data[8:32] or b"avis" in data[8:32]),
                         "image/x-icon": data.startswith(b"\x00\x00\x01\x00"),
                         "image/vnd.microsoft.icon": data.startswith(b"\x00\x00\x01\x00"),
+                        "image/svg+xml": _looks_svg(data),
                     }
                     if not signatures.get(content_type):
                         raise BrowserError("The image format does not match its content type.", 415, "unsupported_content")
@@ -308,7 +420,8 @@ def fetch_page(url, kind="page"):
                     text = "\n".join(line for part in "".join(parser.text).splitlines()
                                      if (line := " ".join(part.split())))
                 return {"url": url, "title": title, "html": html, "text": text,
-                        "content_type": content_type, "truncated": size > MAX_PAGE_BYTES}
+                        "content_type": content_type,
+                        "truncated": size > MAX_PAGE_BYTES or len(raw) > MAX_PAGE_BYTES}
             finally:
                 if response is not None:
                     response.close()

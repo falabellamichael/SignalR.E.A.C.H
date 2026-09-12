@@ -54,7 +54,22 @@
             for (const node of source.childNodes) {
                 if (++visited > 30000) return;
                 if (node.nodeType === 3) { target.appendChild(document.createTextNode(node.textContent)); continue; }
-                if (node.nodeType !== 1 || drop.has(node.tagName)) continue;
+                if (node.nodeType !== 1) continue;
+                if (node.tagName === 'SVG') {
+                    // Inline SVG icons are the most common missing "image" in the
+                    // reader. Render them as inert pictures, never as markup.
+                    if (node.childNodes.length > 1500) continue;
+                    const markup = node.outerHTML;
+                    if (markup && markup.length < 60000 && !/<script/i.test(markup)) {
+                        const img = document.createElement('img');
+                        img.alt = node.getAttribute('aria-label') || '';
+                        img.loading = 'lazy';
+                        img.src = 'data:image/svg+xml,' + encodeURIComponent(markup);
+                        target.appendChild(img);
+                    }
+                    continue;
+                }
+                if (drop.has(node.tagName)) continue;
                 if (reader && ['NAV', 'FOOTER', 'ASIDE', 'STYLE', 'LINK', 'FORM', 'INPUT', 'BUTTON', 'SELECT', 'TEXTAREA'].includes(node.tagName)) continue;
                 if (node.tagName === 'LINK') {
                     const url = node.rel === 'stylesheet' && webUrl(node.getAttribute('href'), data.url);
@@ -68,8 +83,12 @@
                 if (node.tagName === 'IMG') {
                     const img = document.createElement('img');
                     img.alt = node.getAttribute('alt') || '';
-                    const source = node.getAttribute('src') || node.getAttribute('data-src') || '';
-                    if (/^data:image\/(?:png|jpeg|gif|webp|avif);base64,[a-z\d+/=\s]+$/i.test(source) && source.length < 700000) img.src = source;
+                    const source = node.getAttribute('src') || node.getAttribute('data-src')
+                        || (node.getAttribute('srcset') || '').split(',')
+                            .map(candidate => candidate.trim().split(/\s+/)[0])
+                            .find(candidate => webUrl(candidate)) || '';
+                    if (/^data:image\/(?:png|jpeg|gif|webp|avif|svg\+xml);base64,[a-z\d+/=\s]+$/i.test(source) && source.length < 700000) img.src = source;
+                    else if (/^data:image\/svg\+xml,/i.test(source) && !/<script/i.test(source) && source.length < 700000) img.src = source;
                     else { const url = webUrl(source, data.url); if (url) img.dataset.reachImage = url; }
                     for (const attr of ['width', 'height']) {
                         const size = Number(node.getAttribute(attr));
@@ -226,6 +245,15 @@
                 const tab = active();
                 const changed = tab.url !== data.url || tab.title !== data.title || tab.loading !== data.loading;
                 tab.liveState = data; tab.loading = !!data.loading;
+                if (data.error && !tab.loading && webUrl(tab.url)) {
+                    // The engine can fail a page after navigation started
+                    // (blocked address, renderer crash, …). Fall back to the
+                    // readable snapshot instead of a blank canvas.
+                    report(data.error + ' · showing a readable snapshot instead');
+                    tab.liveOpened = false; tab.error = ''; reader = true;
+                    void navigate(tab.url, 'reload');
+                    return;
+                }
                 if (webUrl(data.url)) {
                     if (tab.history[tab.index] !== data.url) {
                         const known = tab.history.lastIndexOf(data.url);
@@ -397,7 +425,18 @@
                 tab.url = url; tab.error = ''; tab.loading = true; tab.liveOpened = true; tab.liveNeedsNavigation = false;
                 save(); showPage();
                 try { await live.navigate(tab.id, url); }
-                catch (error) { if (!disposed && tab === active()) { tab.error = error.message; tab.liveOpened = false; tab.loading = false; showPage(); } }
+                catch (error) {
+                    if (!disposed && tab === active()) {
+                        tab.error = error.message; tab.liveOpened = false; tab.loading = false;
+                        if (!webUrl(tab.url)) { showPage(); return; }
+                        // The interactive engine can't open this page (missing
+                        // engine, blocked site, …) — fall back to the readable
+                        // snapshot for this tab instead of a dead end.
+                        report(error.message + ' · showing a readable snapshot instead');
+                        reader = true;
+                        await navigate(tab.url, 'reload');
+                    }
+                }
                 return;
             }
             if (tab.liveOpened) tab.liveNeedsNavigation = true;
@@ -557,7 +596,7 @@
                         bytes += data.data.length;
                         if (controller.signal.aborted || disposed || tab !== active() || doc !== frame.contentDocument) return;
                         if (kind === 'image' && data.encoding === 'base64'
-                            && /^image\/(?:png|jpeg|gif|webp|avif|x-icon|vnd\.microsoft\.icon)$/.test(data.content_type)
+                            && /^image\/(?:png|jpeg|gif|webp|avif|svg\+xml|x-icon|vnd\.microsoft\.icon)$/.test(data.content_type)
                             && /^[a-z\d+/=\s]+$/i.test(data.data)) {
                             node.src = 'data:' + data.content_type + ';base64,' + data.data;
                         } else if (kind === 'style' && data.content_type === 'text/css') {

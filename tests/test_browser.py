@@ -1,5 +1,6 @@
 """Security and routing contracts for the local browser's document fetcher."""
 
+import gzip
 import io
 import json
 import socket
@@ -68,10 +69,33 @@ class BrowserFetchTests(unittest.TestCase):
         with self.assertRaises(browser.BrowserError):
             browser.fetch_page('https://example.com/fake.png', kind='image')
 
+    def test_svg_images_are_returned_as_inert_base64(self):
+        svg = (b'<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
+               b'<rect width="10" height="10" fill="red"/></svg>')
+        self.responses = [FakeResponse(svg, content_type='image/svg+xml')]
+        result = browser.fetch_page('https://example.com/icon.svg', kind='image')
+        self.assertEqual(result['encoding'], 'base64')
+        self.assertEqual(result['content_type'], 'image/svg+xml')
+        self.assertEqual(browser.base64.b64decode(result['data']), svg)
+
+    def test_compressed_responses_are_decoded_within_the_cap(self):
+        payload = b'<html><title>Zipped &amp; compressed</title><p>Hello world.</p></html>'
+        self.responses = [FakeResponse(gzip.compress(payload), content_type='text/html; charset=utf-8',
+                                       headers={'Content-Encoding': 'gzip'})]
+        result = browser.fetch_page('https://example.com')
+        self.assertEqual(result['title'], 'Zipped & compressed')
+        self.assertEqual(result['text'], 'Hello world.')
+        with patch.object(browser, 'MAX_PAGE_BYTES', 50):
+            self.responses = [FakeResponse(gzip.compress(b'<html><p>' + b'x' * 200 + b'</p></html>'),
+                                           content_type='text/html',
+                                           headers={'Content-Encoding': 'gzip'})]
+            result = browser.fetch_page('https://example.com')
+        self.assertTrue(result['truncated'])
+
     def test_stylesheet_resource_is_text_and_scripts_svg_html_are_rejected(self):
         self.responses = [FakeResponse(b'body { color: red; }', content_type='text/css')]
         self.assertEqual(browser.fetch_page('https://example.com/site.css', kind='style')['data'], 'body { color: red; }')
-        for kind, content_type in [('style', 'text/html'), ('style', 'text/javascript'), ('image', 'image/svg+xml')]:
+        for kind, content_type in [('style', 'text/html'), ('style', 'text/javascript'), ('image', 'image/tiff')]:
             self.responses = [FakeResponse(b'content', content_type=content_type)]
             with self.subTest(kind=kind, content_type=content_type), self.assertRaises(browser.BrowserError):
                 browser.fetch_page('https://example.com/resource', kind=kind)
