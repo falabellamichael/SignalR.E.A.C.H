@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.9.3](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.2...v26.9.3) (2026-09-12)
+
+
+### Bug Fixes
+
+* **server:** evict stale rate-limit buckets instead of clearing all ([a08198c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a08198c33bf9d41ca483c6fe6c0c5929e4b092a7))
+
 ## [26.9.2](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.1...v26.9.2) (2026-09-11)
 
 
