@@ -707,5 +707,74 @@ class ConcurrencyGateTests(unittest.TestCase):
 
 
 
+class SystemMessageMergeTests(unittest.TestCase):
+    """Strict upstreams (vLLM/Qwen-class chat templates) answer 400 for any
+    system message past index 0; the relay merges them into one leading
+    system before the request leaves for the upstream."""
+
+    def test_merge_preserves_order_and_moves_everything_leading(self):
+        from reachd.chat import merge_system_messages
+        merged = merge_system_messages([
+            {"role": "user", "content": "first"},
+            {"role": "system", "content": "CTX"},
+            {"role": "assistant", "content": "a"},
+            {"role": "system", "content": "RULES"},
+        ])
+        self.assertEqual([m["role"] for m in merged],
+                         ["system", "user", "assistant"])
+        self.assertEqual(merged[0]["content"], "CTX\n\nRULES")
+
+    def test_single_leading_system_is_left_alone(self):
+        from reachd.chat import merge_system_messages
+        original = [{"role": "system", "content": "ONLY"},
+                    {"role": "user", "content": "hi"}]
+        self.assertIs(merge_system_messages(original), original)
+
+    def test_injected_prompt_never_stacks_an_end_to_end_request(self):
+        from unittest.mock import MagicMock, patch
+        from reachd import core
+        from reachd.state import RelayState
+        from reachd.chat import chat_execute
+        import io
+
+        with tempfile.NamedTemporaryFile() as tf:
+            state = RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
+                               Path(tf.name))
+        state.cfg["models"]["gpt-4o"]["enabled"] = True
+        state.cfg["models"]["gpt-4o"]["system_prompt"] = "INJECTED RULES"
+        state.cfg["omniroute_key"] = "test-key"
+
+        h = MagicMock()
+        h._client_ip.return_value = "127.0.0.1"
+        raw = json.dumps({
+            "model": "gpt-4o",
+            "messages": [
+                {"role": "system", "content": "CTX"},
+                {"role": "user", "content": "hi"},
+                {"role": "system", "content": "MID"},
+            ],
+        }).encode("utf-8")
+        h._read_body.return_value = raw
+        h.rfile = io.BytesIO(raw)
+        h.headers = {"Content-Length": str(len(raw))}
+
+        sent = {}
+
+        def fake_urlopen(req, **kwargs):
+            sent["body"] = json.loads(req.data.decode("utf-8"))
+            return MagicMock()
+
+        with patch.object(core, "STATE", state), \
+                patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            chat_execute(h)
+
+        roles = [m["role"] for m in sent["body"]["messages"]]
+        self.assertEqual(roles, ["system", "user"])
+        merged = sent["body"]["messages"][0]["content"]
+        self.assertIn("INJECTED RULES", merged)
+        self.assertIn("CTX", merged)
+        self.assertIn("MID", merged)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

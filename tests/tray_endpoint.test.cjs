@@ -39,6 +39,24 @@ test('free endpoint: pointer, prefixed models, persisted settings, and chat rout
  await assert.rejects(client.chat({...client.getSettings(),model:'removed'},messages),/no longer available/);
 });
 
+test('free endpoint: stacked system messages merge into one leading system', async t => {
+ // Strict upstreams (vLLM/Qwen) reject any system message past index 0 — even
+ // a second leading one. The client merges whatever the caller stacked.
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-test-'));
+ t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+ let captured;
+ const base = await serve(t, (req,res) => {
+   if (req.url === '/v1/models') return res.end(JSON.stringify({data:[{id:'demo'}]}));
+   if (req.url === '/v1/chat/completions') { let text=''; req.on('data',c=>text+=c); req.on('end',()=>{ captured=JSON.parse(text); res.end(JSON.stringify({choices:[{message:{content:'OK'}}]})); }); return; }
+   res.writeHead(404);res.end();
+ });
+ const client = createEndpointClient(path.join(dir,'settings.json'));
+ client.saveSettings({endpoint:base,model:'demo'});
+ const messages = [{role:'system',content:'CTX'},{role:'user',content:'mid'},{role:'system',content:'RULES'},{role:'user',content:'Hi'}];
+ assert.equal(await client.chat(client.getSettings(),messages),'OK');
+ assert.deepEqual(captured.messages,[{role:'system',content:'CTX\n\nRULES'},{role:'user',content:'mid'},{role:'user',content:'Hi'}]);
+});
+
 test('Copilot bridge supports legacy, JSON and SSE clients with full conversation context', async t => {
  const calls=[];
  const base=await serve(t,createBridgeHandler(async text=>{calls.push(text);return 'COPILOT OK';},null,()=>({ok:true})));
