@@ -331,6 +331,64 @@ class RateLimiterTests(unittest.TestCase):
                 self.assertEqual(reason, "model_rpm")
         self.assertEqual(ok, 2)
 
+    def _rl_settings(self):
+        settings = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        settings["rate_limits"] = {"enabled": True, "per_ip_rpm": 60,
+                                   "global_rpm": 10000, "burst": 0}
+        return settings
+
+    def test_eviction_drops_stale_not_active(self):
+        """A full table trims only idle buckets: an active user's credit must
+        survive a table-full eviction (the old code wiped everyone)."""
+        limiter = reachd.RateLimiter()
+        cap = reachd.MAX_RATE_BUCKETS
+        now = time.time()
+        # cap stale buckets + 3 hot buckets => over the cap.
+        for i in range(cap):
+            limiter._buckets["stale-%d" % i] = {"tokens": 30.0,
+                                                "updated": now - 2000.0}
+        for i in range(3):
+            limiter._buckets["hot-%d" % i] = {"tokens": 30.0, "updated": now - 1.0}
+        self.assertEqual(len(limiter._buckets), cap + 3)
+
+        allowed, _h, _r = limiter.check("new.ip", self._rl_settings())
+
+        self.assertTrue(allowed)
+        # All stale buckets gone; the 3 hot ones preserved (credit intact, not
+        # reset to full capacity); plus the fresh new.ip bucket.
+        self.assertEqual(len(limiter._buckets), 4)
+        for i in range(3):
+            self.assertAlmostEqual(limiter._buckets["hot-%d" % i]["tokens"], 30.0)
+        # new.ip is brand new: a full fresh burst (60) minus the one request
+        # check() just consumed.
+        self.assertAlmostEqual(limiter._buckets["new.ip"]["tokens"], 59.0)
+
+    def test_eviction_keeps_hottest_when_all_hot(self):
+        """When the table is over cap and NO bucket is stale, only the oldest
+        are dropped; recently-active users keep their partial credit."""
+        limiter = reachd.RateLimiter()
+        cap = reachd.MAX_RATE_BUCKETS
+        now = time.time()
+        total = cap + 5
+        # ip-0 is oldest ... ip-(total-1) is newest; all partial (30/60). The
+        # 0.01s spread keeps every bucket within STALE_BUCKET_S (600s) so none
+        # is treated as idle — this exercises the "drop oldest" path, not the
+        # "drop stale" path.
+        for i in range(total):
+            limiter._buckets["ip-%d" % i] = {"tokens": 30.0,
+                                             "updated": now - (total - 1 - i) * 0.01}
+        self.assertEqual(len(limiter._buckets), total)
+
+        limiter.check("new.ip", self._rl_settings())
+
+        # 5 oldest evicted, the newest survive, new.ip added.
+        self.assertEqual(len(limiter._buckets), cap + 1)
+        for i in range(5):
+            self.assertNotIn("ip-%d" % i, limiter._buckets)
+        self.assertIn("ip-%d" % (total - 1), limiter._buckets)
+        # A survivor was NOT reset to full capacity (old clear() would reset).
+        self.assertAlmostEqual(limiter._buckets["ip-%d" % (total - 1)]["tokens"], 30.0)
+
 
 class ScrubberTests(unittest.TestCase):
     def test_truncates_at_user_continuation(self):

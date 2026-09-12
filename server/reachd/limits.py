@@ -5,6 +5,11 @@ import time
 
 from reachd.const import MAX_RATE_BUCKETS
 
+# A per-IP bucket idle longer than this is treated as stale: its owner has
+# effectively stopped, and re-touching it grants a fresh full burst (the
+# intended "fresh per user" semantics). Used only to trim the bucket table.
+STALE_BUCKET_S = 600
+
 # ----------------------------------------------------------------------
 # Rate limiter (token buckets: per-IP, per-IP+model, global)
 # ----------------------------------------------------------------------
@@ -14,6 +19,36 @@ class RateLimiter:
         self._lock = threading.RLock()
         self._buckets = {}        # key -> {"tokens": float, "updated": float}
         self._global = {"tokens": 0.0, "updated": 0.0}
+
+    def _evict_stale(self):
+        """Trim the bucket table when it exceeds the cap.
+
+        Eviction must be targeted, never global: the old behaviour
+        (`self._buckets.clear()`) wiped every active per-IP bucket at once.
+        On a public endpoint an attacker filling the table with fresh source
+        IPs could trigger that and reset everyone's credit — the exact thing
+        a rate limiter exists to deny. Instead:
+
+        1. Drop only buckets idle for more than STALE_BUCKET_S. An idle bucket
+           has effectively refilled to full anyway, so re-touching it grants a
+           fresh burst — the "fresh per user" semantics, but applied only to
+           users who actually stopped.
+        2. If the table is still over the cap (every bucket is hot), drop the
+           oldest by `updated` until it is back under the cap. This preserves
+           every recently-active user's real credit and never resets the
+           whole world.
+        """
+        if len(self._buckets) <= MAX_RATE_BUCKETS:
+            return
+        now = time.time()
+        stale = [k for k, b in self._buckets.items()
+                 if now - b["updated"] > STALE_BUCKET_S]
+        for k in stale:
+            del self._buckets[k]
+        if len(self._buckets) > MAX_RATE_BUCKETS:
+            for k in sorted(self._buckets, key=lambda k: self._buckets[k]["updated"]) \
+                    [: len(self._buckets) - MAX_RATE_BUCKETS]:
+                del self._buckets[k]
 
     def _refill(self, bucket, rate, capacity, now):
         if bucket["updated"] == 0.0:
@@ -31,8 +66,7 @@ class RateLimiter:
         if not rl.get("enabled"):
             return True, {}, None
         with self._lock:
-            if len(self._buckets) > MAX_RATE_BUCKETS:
-                self._buckets.clear()
+            self._evict_stale()
             now = time.time()
             per_ip_rpm = float(rl.get("per_ip_rpm", 12))
             burst = float(rl.get("burst", 4))
