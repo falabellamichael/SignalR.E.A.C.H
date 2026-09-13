@@ -117,6 +117,15 @@ function renderBrowserBookmarks() {
   const active = browserState.tabs.find(t => t.id === browserState.active);
   $('#browser-bookmark').textContent = browserBookmarks.some(b => b.url === active?.url) ? '★ Bookmarked' : '☆ Bookmark';
 }
+$('.browser-actions').addEventListener('wheel', event => {
+  const row = event.currentTarget;
+  if (event.ctrlKey || row.scrollWidth <= row.clientWidth) return;
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+  if (!delta) return;
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? row.clientWidth : 1;
+  event.preventDefault();
+  row.scrollLeft += delta * unit;
+}, { passive: false });
 $('#browser-navigation').onsubmit = e => { e.preventDefault(); browserCommand('navigate', { url: $('#browser-address').value }); $('#browser-address').blur(); };
 $('#browser-new').onclick = async () => { await browserCommand('new'); $('#browser-address').focus(); $('#browser-address').select(); };
 $('#browser-back').onclick = () => browserCommand('back');

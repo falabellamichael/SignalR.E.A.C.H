@@ -35,26 +35,27 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     await new Promise(resolve => setTimeout(resolve, 150));
     const point = await first.webContents.executeJavaScript("(() => { const r = document.querySelector('#counter').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()");
     await first.webContents.executeJavaScript("window.rightClicks = 0; document.addEventListener('contextmenu', e => { e.preventDefault(); window.rightClicks++; });");
-    const rightClick = () => {
+    const rightClick = async () => {
       win.focus();
       first.webContents.focus();
+      await new Promise(resolve => setTimeout(resolve, 100));
       first.webContents.sendInputEvent({ type: 'mouseDown', button: 'right', modifiers: ['rightButtonDown'], clickCount: 1, x: Math.round(point.x), y: Math.round(point.y) });
       first.webContents.sendInputEvent({ type: 'mouseUp', button: 'right', clickCount: 1, x: Math.round(point.x), y: Math.round(point.y) });
     };
     assert.equal(browser.elementsEnabled, false);
-    rightClick();
+    await rightClick();
     await until(() => first.webContents.executeJavaScript('window.rightClicks === 1'));
     assert.equal(await first.webContents.executeJavaScript("!!document.querySelector('[data-reach-browser-highlight]')"), false);
     await ui("await document.querySelector('#browser-elements').onclick();");
     assert.equal(browser.elementsEnabled, true);
-    rightClick();
+    await rightClick();
     await until(() => ui("return !document.querySelector('#browser-selection').classList.contains('hidden');"));
     browser.elementMenu?.closePopup();
     assert.equal(await first.webContents.executeJavaScript('window.rightClicks'), 1);
     assert.equal(await ui("return document.querySelector('#browser-elements').getAttribute('aria-pressed');"), 'true');
     await ui("await document.querySelector('#browser-elements').onclick();");
     assert.equal(await first.webContents.executeJavaScript("!!document.querySelector('[data-reach-browser-highlight]')"), false);
-    rightClick();
+    await rightClick();
     await until(() => first.webContents.executeJavaScript('window.rightClicks === 2'));
     console.log('ELEMENTS TOGGLE SMOKE OK: off preserves page context menus, on picks elements, off clears selection.');
     const picked = await browser.selectElement(browser.tabs.get(firstId), point);
@@ -152,6 +153,24 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     await ui(`document.querySelector('dialog.app-dialog button').click(); await window.__browserNotice;`);
     await until(() => second.getVisible());
     console.log('Browser check: dialog focus passed');
+    await ui(`
+      const row = document.querySelector('.browser-actions');
+      const savedWidth = drawer.style.width;
+      for (const width of [260, 420, 900]) {
+        drawer.style.width = width + 'px';
+        const buttons = [...row.querySelectorAll('button')];
+        const centers = buttons.map(button => { const rect = button.getBoundingClientRect(); return rect.top + rect.height / 2; });
+        if (Math.max(...centers) - Math.min(...centers) > 1) throw new Error('Browser actions wrapped');
+        row.scrollLeft = 0;
+        const overflow = row.scrollWidth > row.clientWidth;
+        row.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+        if (overflow ? row.scrollLeft <= 0 : row.scrollLeft !== 0) throw new Error('Browser action wheel scrolling failed');
+        row.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+        if (row.scrollLeft !== 0) throw new Error('Browser action reverse scrolling failed');
+      }
+      drawer.style.width = savedWidth;
+    `);
+    console.log('BROWSER ACTIONS SMOKE OK: single row and wheel scrolling both ways at narrow and wide panel widths.');
     win.showInactive();
     await new Promise(resolve => setTimeout(resolve, 150));
     const find = new Promise(resolve => second.webContents.once('found-in-page', (_event, result) => resolve(result)));
