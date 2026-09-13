@@ -5,6 +5,7 @@ const showNotice = message => window.ReachDialogs.notice(message);
 const confirmAction = message => window.ReachDialogs.confirm(message);
 
 let currentProject = null;
+let projectSelectionRevision = 0;
 let activeRunId = null;
 let currentAgent = null;
 let agents = [];
@@ -112,6 +113,7 @@ async function refreshStatus() {
 // ---------- projects ----------
 async function loadProjectList() {
   const ps = await reachApi.getProjects();
+  if (currentProject && !ps.some(p => p.dir === currentProject.dir)) ps.push(currentProject);
   projectList.innerHTML = '';
   for (const p of ps) {
     const li = document.createElement('li');
@@ -124,17 +126,34 @@ async function loadProjectList() {
 }
 
 async function selectProject(p) {
-  if ($('#page-projects').classList.contains('active') && hasUnsavedFilesOutside(p.dir)
-      && !await confirmAction('There are unsaved editor changes. Discard them and switch project?')) return;
+  const revision = ++projectSelectionRevision;
+  if (hasUnsavedFilesOutside(p.dir)
+      && !await confirmAction('There are unsaved editor changes. Discard them and switch project?')) {
+    $('#agent-project-select').value = agentProjectDir || '';
+    return false;
+  }
+  if (revision !== projectSelectionRevision) return false;
+  const changed = currentProject?.dir !== p.dir;
   currentProject = p;
+  agentProjectDir = p.dir;
+  if (currentAgent && currentAgent.dir !== p.dir) {
+    currentAgent = null;
+    agentRunning = false;
+    streamBubble = null;
+    recoveryBubble = null;
+    agentView.classList.add('hidden');
+    noAgent.classList.remove('hidden');
+  }
   projectName.textContent = p.name;
   projectPath.textContent = p.dir;
   noProject.classList.add('hidden');
   projectView.classList.remove('hidden');
-  clearLog();
-  logLine('sys', `Project: ${p.name}  (${p.dir})`);
-  await refreshFileTree();
-  await loadProjectList();
+  if (changed) {
+    clearLog();
+    logLine('sys', `Project: ${p.name}  (${p.dir})`);
+  }
+  await Promise.all([refreshFileTree(), loadProjectList(), loadAgentProjectSelect(), loadAgentTree()]);
+  return revision === projectSelectionRevision;
 }
 
 async function rememberProject(dir) {
@@ -211,12 +230,16 @@ $('#btn-create').onclick = async () => {
 
 // ---------- conversations (project-scoped, branching) ----------
 let agentProjectDir = null;   // project the sidebar tree is scoped to
+let agentTreeRevision = 0;
 
 async function loadAgentProjectSelect() {
+  const revision = projectSelectionRevision;
   // Options = remembered projects ∪ dirs that already have chats.
   const projects = await reachApi.getProjects();
   agents = await reachApi.agents.list();
+  if (revision !== projectSelectionRevision) return;
   const dirs = new Set(projects.map(p => p.dir));
+  if (currentProject) dirs.add(currentProject.dir);
   for (const a of agents) if (a.dir) dirs.add(a.dir);
   const select = $('#agent-project-select');
   const prev = agentProjectDir;
@@ -236,18 +259,21 @@ async function loadAgentProjectSelect() {
 }
 
 $('#agent-project-select').onchange = async (e) => {
-  agentProjectDir = e.target.value || null;
-  await loadAgentTree();
+  const option = e.target.selectedOptions[0];
+  if (option) await selectProject({ name: option.textContent, dir: option.value });
 };
 
 async function loadAgentTree() {
+  const revision = ++agentTreeRevision;
   const treeEl = $('#agent-tree');
   treeEl.innerHTML = '';
   if (!agentProjectDir) {
     treeEl.innerHTML = '<div class="dim tree-empty">No project selected. Add one on the Projects page or pick a folder.</div>';
     return;
   }
-  const res = await reachApi.agents.tree(agentProjectDir);
+  const dir = agentProjectDir;
+  const res = await reachApi.agents.tree(dir);
+  if (dir !== agentProjectDir || revision !== agentTreeRevision) return;
   if (!res.ok || !res.tree.length) {
     treeEl.innerHTML = '<div class="dim tree-empty">No conversations yet — start one below.</div>';
     return;
@@ -287,12 +313,18 @@ async function loadAgentTree() {
 
 async function selectAgent(a) {
   if ([...openFiles.values()].some(f => f.dirty) && !await confirmAction('There are unsaved editor changes. Discard them and switch conversation?')) return;
+  const revision = ++projectSelectionRevision;
+  const selected = await reachApi.agents.get(a.id);
+  if (!selected || revision !== projectSelectionRevision) return;
   streamBubble = null;
   recoveryBubble = null;
   resetEditors();
 
-  currentAgent = await reachApi.agents.get(a.id);
-  agentProjectDir = currentAgent.dir || agentProjectDir;
+  if (selected.dir && !await selectProject({
+    name: [...$('#agent-project-select').options].find(o => o.value === selected.dir)?.textContent || selected.dir.split(/[\\/]/).pop(),
+    dir: selected.dir,
+  })) return;
+  currentAgent = selected;
   agentNameEl.textContent = currentAgent.name;
   const lineage = currentAgent.parentChatId ? ' · ⑂ branch' : '';
   agentMetaEl.textContent = `${currentAgent.dir} · ${currentAgent.model || 'default model'}${lineage}`;
@@ -686,14 +718,9 @@ const drawer = $('#file-drawer');
 const drawerContext = $('#drawer-context');
 let drawerOpen = true;
 
-/* The drawer's directory is whatever is in focus: the selected agent on the
- * Agents page, the selected project on Projects. Agents win on their page. */
-function drawerDir(page = document.querySelector('.page.active')?.id.replace('page-', '')) {
-  if (page === 'agents' && currentAgent) return currentAgent.dir;
-  if (page === 'projects') return currentProject?.dir || null;
-  if (currentAgent) return currentAgent.dir;
-  if (currentProject) return currentProject.dir;
-  return null;
+// Files, Projects, and the conversation sidebar share one selected project.
+function drawerDir() {
+  return currentProject?.dir || null;
 }
 function drawerAgentId() {
   return ($('#page-agents').classList.contains('active') && currentAgent) ? currentAgent.id : null;
@@ -1694,7 +1721,9 @@ reachApi.teams.onEditPending(({ teamRunId, edit }) => {
   refreshStatus();
   loadProjectList();
   await loadAgentProjectSelect();
-  await loadAgentTree();
+  const option = $('#agent-project-select').selectedOptions[0];
+  if (option) await selectProject({ name: option.textContent, dir: option.value });
+  else await loadAgentTree();
   await loadCreatePage();
   loadSettings();
 })();
