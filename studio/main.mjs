@@ -18,7 +18,7 @@ const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, 
 const { listDirectory } = require('./agent/file-browser.cjs');
 
 const isDev = !app.isPackaged;
-// ESM has no __dirname; import.meta.dirname needs Node >=20.11 (Electron 33 ships 20.18)
+// ESM has no __dirname; import.meta.dirname is supported by the bundled Node runtime.
 const rootDir = import.meta.dirname;
 // Smoke checks create conversations; keep them out of the user's real store.
 const smokeRoot = process.argv.includes('--smoke') ? fs.mkdtempSync(path.join(os.tmpdir(), 'reach-studio-smoke-')) : null;
@@ -573,6 +573,7 @@ app.whenReady().then(() => {
         app.exit(1);
       }, 30_000);
       try {
+        console.log(`SMOKE RUNTIME: Electron ${process.versions.electron}; Chromium ${process.versions.chrome}; Node ${process.versions.node}`);
         fs.mkdirSync(smokeProject, { recursive: true });
         fs.mkdirSync(path.join(smokeProject, '__pycache__'));
         fs.writeFileSync(path.join(smokeProject, 'sample.pyc'), Buffer.from([0xa7, 0x0d, 0x0d, 0x0a, 0, 1]));
