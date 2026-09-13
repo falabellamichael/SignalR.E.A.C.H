@@ -27,6 +27,21 @@ creates a new Reach DApp scaffold; it does not import another project's files.
 The Files panel loads the selected directory and expands folders on demand.
 Compiled Python bytecode (`.pyc`) and other binary files are not editable source.
 
+## Files and Browser
+
+The top-right dropdown selects **Files** or **Browser** in the same resizable
+panel. Switching views preserves the selected project, open files, and browser tabs.
+The browser supports website addresses and searches, localhost projects, multiple
+tabs, back/forward/reload, bookmarks, find, and opening a page externally.
+Tabs and bookmarks are remembered between sessions.
+
+Use **Add page to chat**, or right-click a page to add an element or selected text.
+Studio appends the source URL and quoted text to your draft; it does not send a
+message automatically. Browser pages run in sandboxed Electron views without
+Node.js or Studio's file/agent bridge. Dialogs and menus remain above the page.
+Keyboard shortcuts while browsing: **Ctrl+L** address, **Ctrl+F** find,
+**Ctrl+T** new tab, and **Ctrl+W** close tab.
+
 ## Conversations and teams
 
 - Conversations are bound to project folders and can be branched.

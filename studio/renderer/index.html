@@ -26,7 +26,13 @@
       </div>
     </nav>
     <div class="statusbar">
-      <button id="btn-toggle-files" class="chip toggle" title="Toggle file drawer">Files &#x25BE;</button>
+      <div class="settings-menu" id="drawer-menu-wrap">
+        <button id="btn-toggle-files" class="chip toggle" title="Choose Files or Browser" aria-expanded="false" aria-controls="drawer-menu">Files &#x25BE;</button>
+        <div id="drawer-menu" class="settings-dropdown hidden" role="menu">
+          <button id="btn-show-files" role="menuitem">Files</button>
+          <button id="btn-show-browser" role="menuitem">Browser</button>
+        </div>
+      </div>
       <span id="wsl-status" class="chip pending">checking reach&hellip;</span>
       <span id="reach-version" class="chip dim"></span>
     </div>
@@ -229,7 +235,7 @@
   <aside id="file-drawer" class="file-drawer">
     <div id="drawer-resizer-x" class="drawer-resizer-x" title="Resize file panel"></div>
     <div class="drawer-head">
-      <span class="side-title">Files</span>
+      <span class="side-title" id="drawer-title">Files</span>
       <div class="drawer-head-actions">
         <button id="btn-refresh-tree" class="ghost tiny" title="Refresh">&#x21bb;</button>
         <button id="btn-close-drawer" class="ghost tiny" title="Close">&#x2715;</button>
@@ -247,6 +253,27 @@
         <button id="btn-save-file" class="ghost small hidden">Save (Ctrl+S)</button>
       </div>
     </div>
+    <section id="browser-panel" class="hidden" aria-label="Browser">
+      <div class="browser-tabstrip"><div id="browser-tabs" role="tablist" aria-label="Browser tabs"></div><button id="browser-new" class="ghost small" title="New browser tab (Ctrl+T)">+</button></div>
+      <form id="browser-navigation" class="browser-toolbar">
+        <button type="button" id="browser-back" class="ghost small" title="Back" aria-label="Back">←</button>
+        <button type="button" id="browser-forward" class="ghost small" title="Forward" aria-label="Forward">→</button>
+        <button type="button" id="browser-reload" class="ghost small" title="Reload" aria-label="Reload">↻</button>
+        <input id="browser-address" aria-label="Browser address or search" placeholder="Search or enter URL / localhost:3000" spellcheck="false" />
+        <button class="gold small" type="submit">Go</button>
+      </form>
+      <div class="browser-toolbar browser-actions">
+        <button id="browser-home" class="ghost small" title="Reach documentation">Home</button>
+        <button id="browser-bookmark" class="ghost small">☆ Bookmark</button>
+        <button id="browser-context" class="ghost small">Add page to chat</button>
+        <button id="browser-external" class="ghost small">Open externally</button>
+        <button id="browser-find-toggle" class="ghost small">Find</button>
+      </div>
+      <div id="browser-bookmarks" class="browser-bookmarks"></div>
+      <div id="browser-find" class="browser-toolbar hidden"><input id="browser-find-text" placeholder="Find on page" aria-label="Find on page" /><button id="browser-find-next" class="ghost small">Next</button><button id="browser-find-close" class="ghost small" aria-label="Close find">×</button></div>
+      <div id="browser-viewport"><div class="browser-welcome"><h3>REACH Browser</h3><p>Open a website or local development server above.</p><p>Right-click an element or selection to add it to your chat draft.</p></div></div>
+      <div id="browser-status" class="dim" role="status">Ready</div>
+    </section>
   </aside>
   </div>
 
@@ -381,5 +408,6 @@
   <script src="editor.bundle.js"></script>
   <script src="app.js"></script>
   <script src="settings.js"></script>
+  <script src="browser.js"></script>
 </body>
 </html>

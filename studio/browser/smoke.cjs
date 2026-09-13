@@ -1,0 +1,93 @@
+'use strict';
+const assert = require('node:assert/strict');
+const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
+const { normalizeUrl } = require('./host.cjs');
+
+module.exports = async function browserSmoke(win, browser, outputDir) {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html', 'X-Frame-Options': 'DENY' });
+    res.end(`<title>${req.url === '/second' ? 'Second fixture' : 'Browser fixture'}</title><h1>Browser fixture heading</h1><a href="/second">Next page</a><button id="counter" onclick="this.textContent='Clicked'">Click me</button><p>Known browser source text.</p>`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.address().port}/`;
+  const until = async predicate => {
+    const deadline = Date.now() + 5000;
+    while (!await predicate()) {
+      if (Date.now() > deadline) throw new Error('Browser smoke condition timed out');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  };
+  const ui = code => win.webContents.executeJavaScript(`(async () => { ${code} })()`);
+  try {
+    assert.equal(normalizeUrl('localhost:3000/test'), 'http://localhost:3000/test');
+    assert.equal(normalizeUrl('192.168.1.2:8080'), 'http://192.168.1.2:8080/');
+    assert.equal(normalizeUrl('example.com:3000/test'), 'https://example.com:3000/test');
+    assert.match(normalizeUrl('reach language'), /^https:\/\/duckduckgo.com\//);
+    await ui(`await reachApi.saveSettings({ budgets: { maxConversations: 0 } }); const result = await reachApi.agents.create('Browser fixture', currentProject.dir, 'fixture'); if (!result.ok) throw new Error(result.err); await selectAgent(result.agent);`);
+    await ui(`await selectDrawerPanel('browser'); await browserCommand('navigate', { url: ${JSON.stringify(url)} });`);
+    await until(() => browser.state().tabs.some(t => t.title === 'Browser fixture' && !t.loading));
+    const firstId = browser.active, first = browser.tabs.get(firstId).view;
+    await until(() => first.getVisible());
+    assert.deepEqual(await first.webContents.executeJavaScript('({ bridge: typeof window.reach, node: typeof require, process: typeof process })'), { bridge: 'undefined', node: 'undefined', process: 'undefined' });
+    await first.webContents.executeJavaScript("document.querySelector('#counter').click()");
+    assert.equal(await first.webContents.executeJavaScript("document.querySelector('#counter').textContent"), 'Clicked');
+    await ui(`document.querySelector('#browser-bookmark').click(); if (!browserBookmarks.some(b => b.url === ${JSON.stringify(url)})) throw new Error('Bookmark missing');`);
+    await browser.command('navigate', { url: url + 'second' });
+    await until(() => browser.state().tabs.find(t => t.id === firstId)?.title === 'Second fixture');
+    await browser.command('back');
+    await until(() => first.webContents.getURL() === url && !first.webContents.isLoading());
+    await browser.command('forward');
+    await until(() => first.webContents.getURL() === url + 'second' && !first.webContents.isLoading());
+    await ui(`await browserCommand('new', { url: ${JSON.stringify(url)} });`);
+    await until(() => browser.tabs.size === 2 && browser.state().tabs.every(t => !t.loading));
+    const second = browser.tabs.get(browser.active).view;
+    console.log('Browser check: navigation and tabs passed');
+    assert.equal(first.getVisible(), false);
+    await ui(`document.querySelector('#btn-toggle-files').click();`);
+    await until(() => !second.getVisible());
+    await ui(`await selectDrawerPanel('files');`);
+    assert.equal(second.getVisible(), false);
+    await ui(`await selectDrawerPanel('browser');`);
+    await until(() => second.getVisible());
+    console.log('Browser check: Files/Browser switching passed');
+    await ui(`window.__browserNotice = showNotice('Browser focus test');`);
+    await until(() => !second.getVisible());
+    await ui(`document.querySelector('dialog.app-dialog button').click(); await window.__browserNotice;`);
+    await until(() => second.getVisible());
+    console.log('Browser check: dialog focus passed');
+    win.showInactive();
+    await new Promise(resolve => setTimeout(resolve, 150));
+    const find = new Promise(resolve => second.webContents.once('found-in-page', (_event, result) => resolve(result)));
+    await browser.command('find', { text: 'Known browser source' });
+    assert.ok((await find).matches > 0);
+    console.log('Browser check: find passed');
+    await ui(`composerInput.value = 'My draft';`);
+    await browser.command('context');
+    await until(() => ui(`return composerInput.value.includes('Known browser source text.') && composerInput.value.startsWith('My draft');`));
+    await browser.addContext(browser.tabs.get(browser.active), { selectionText: 'Selected fixture text' });
+    await until(() => ui(`return composerInput.value.includes('Selected fixture text');`));
+    second.webContents.focus();
+    second.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'L', modifiers: ['control'] });
+    await until(() => ui(`return document.activeElement.id === 'browser-address';`));
+    assert.equal(win.webContents.isFocused(), true);
+    await assert.rejects(browser.command('navigate', { url: 'file:///C:/Windows/win.ini' }), /http or https/);
+    await assert.rejects(browser.command('navigate', { url: 'javascript:alert(1)' }), /http or https/);
+    console.log('Browser check: context and blocked URLs passed');
+    await ui(`await browserCommand('close');`);
+    assert.equal(browser.tabs.size, 1);
+    await until(() => first.getVisible());
+    const bounds = first.getBounds();
+    assert.ok(bounds.width > 100 && bounds.height > 80);
+    win.setSize(1200, 850);
+    win.showInactive();
+    await new Promise(resolve => setTimeout(resolve, 200));
+    fs.writeFileSync(path.join(outputDir, 'browser.png'), (await win.capturePage()).toPNG());
+    fs.writeFileSync(path.join(outputDir, 'browser-page.png'), (await first.webContents.capturePage()).toPNG());
+    if (process.env.REACH_BROWSER_PREVIEW === '1') await new Promise(resolve => setTimeout(resolve, 15000));
+    await ui(`await selectDrawerPanel('files'); composerInput.value = ''; if (window.__errors.length) throw new Error(window.__errors.join('; '));`);
+    console.log('BROWSER SMOKE OK: native scripts, isolated page, tabs, history, bookmarks, find, page-to-draft, scheme blocking, dropdown, dialogs and bounds.');
+    console.log('BROWSER SCREENSHOT: ' + path.join(outputDir, 'browser.png'));
+  } finally { server.closeAllConnections(); server.close(); }
+};

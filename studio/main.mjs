@@ -16,6 +16,8 @@ const { resolveInProject } = require('./agent/tool-registry.cjs');
 const { readTextFile, writeTextFile } = require('./agent/text-files.cjs');
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
+const { StudioBrowser } = require('./browser/host.cjs');
+let studioBrowser = null;
 
 const isDev = !app.isPackaged;
 // ESM has no __dirname; import.meta.dirname is supported by the bundled Node runtime.
@@ -570,6 +572,7 @@ function createWindow({ show = true } = {}) {
     },
   });
   if (show) win.once('ready-to-show', () => win.show());
+  studioBrowser = new StudioBrowser(win);
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -781,9 +784,11 @@ app.whenReady().then(() => {
             if (!composerVisible) throw new Error('composer is off-screen (top=' + composer.getBoundingClientRect().top + ')');
             if (drawer.classList.contains('closed')) throw new Error('drawer should start open');
             toggle.click();
-            if (!drawer.classList.contains('closed')) throw new Error('drawer did not close on toggle');
-            toggle.click();
-            if (drawer.classList.contains('closed')) throw new Error('drawer did not reopen on toggle');
+            if (document.querySelector('#drawer-menu').classList.contains('hidden')) throw new Error('Files/Browser menu did not open');
+            document.querySelector('#btn-close-drawer').click();
+            if (!drawer.classList.contains('closed')) throw new Error('drawer did not close');
+            await document.querySelector('#btn-show-files').onclick();
+            if (drawer.classList.contains('closed')) throw new Error('Files menu did not reopen drawer');
             // Overflow regression: seed a LONG chat history into the live DOM
             // and assert the composer stays on-screen while only the log
             // scrolls. A broken min-height:0 chain stretches the column and
@@ -1198,10 +1203,11 @@ app.whenReady().then(() => {
         const settingsScreenshot = path.join(smokeRoot, 'budget-settings.png');
         fs.writeFileSync(settingsScreenshot, (await win.webContents.capturePage()).toPNG());
         console.log('SETTINGS SCREENSHOT: ' + settingsScreenshot);
+        await require('./browser/smoke.cjs')(win, studioBrowser, smokeRoot);
         console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, WSL -> ${v}`);
         app.exit(0);
       } catch (e) {
-        console.error(`SMOKE FAIL: ${e.message}`);
+        console.error(`SMOKE FAIL: ${e.stack || e.message}`);
         app.exit(1);
       } finally {
         clearTimeout(timeout);

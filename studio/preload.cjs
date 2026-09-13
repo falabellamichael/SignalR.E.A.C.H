@@ -1,6 +1,12 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('reach', {
+  browser: {
+    command: (action, args = {}) => ipcRenderer.invoke('browser:command', action, args),
+    onState: cb => ipcRenderer.on('browser:state', (_e, state) => cb(state)),
+    onContext: cb => ipcRenderer.on('browser:context', (_e, context) => cb(context)),
+    onShortcut: cb => ipcRenderer.on('browser:shortcut', (_e, key) => cb(key)),
+  },
   // Reach CLI
   getVersion: () => ipcRenderer.invoke('reach:version'),
   run: (cwd, args) => ipcRenderer.invoke('reach:run', { cwd, args }),

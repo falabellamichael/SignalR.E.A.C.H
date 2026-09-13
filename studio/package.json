@@ -41,6 +41,7 @@
       "preload.cjs",
       "renderer/**/*",
       "agent/**/*",
+      "browser/**/*",
       "assets/**/*",
       "package.json"
     ],

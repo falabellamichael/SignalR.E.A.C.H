@@ -766,7 +766,7 @@ function setDrawer(open) {
   $('#btn-toggle-files').classList.toggle('active', drawerOpen);
   if (drawerOpen) refreshFileTree();
 }
-$('#btn-toggle-files').onclick = () => setDrawer(!drawerOpen);
+// The Files/Browser dropdown is wired by browser.js; Close still hides the drawer.
 $('#btn-close-drawer').onclick = () => setDrawer(false);
 
 // Narrow windows: the fixed 420px drawer would squeeze the chat to nothing.

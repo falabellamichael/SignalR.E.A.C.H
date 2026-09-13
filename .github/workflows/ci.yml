@@ -93,7 +93,7 @@ jobs:
       - run: npm run build:editor
       - name: Check application JavaScript
         run: |
-          $sources = @('main.mjs', 'preload.cjs') + (Get-ChildItem agent/*.cjs, renderer/*.js, test/*.cjs).FullName
+          $sources = @('main.mjs', 'preload.cjs') + (Get-ChildItem agent/*.cjs, browser/*.cjs, renderer/*.js, test/*.cjs).FullName
           foreach ($source in $sources) {
             node --check $source
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

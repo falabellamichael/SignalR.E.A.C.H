@@ -338,6 +338,23 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
   min-height: 0; padding: 0; gap: 0;
 }
 .file-drawer.closed { display: none; }
+.file-drawer[data-panel="browser"] > :is(#drawer-context, #file-tree, #drawer-resizer-y, .editor-main) { display: none; }
+#browser-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.browser-tabstrip, .browser-toolbar { display: flex; align-items: center; gap: 5px; padding: 6px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
+#browser-tabs { display: flex; flex: 1; overflow-x: auto; min-width: 0; gap: 4px; }
+.browser-tab { display: flex; min-width: 90px; max-width: 180px; border: 1px solid var(--line); border-radius: 5px; }
+.browser-tab.active { border-color: var(--gold); }
+.browser-tab button { border: 0; padding: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browser-tab button:first-child { flex: 1; min-width: 0; }
+.browser-toolbar input { min-width: 0; flex: 1; padding: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; }
+.browser-toolbar input:focus { outline: 1px solid var(--gold-dim); }
+.browser-actions { flex-wrap: wrap; }
+.browser-bookmarks { display: flex; gap: 4px; flex-wrap: wrap; max-height: 80px; overflow: auto; padding: 0 6px; flex-shrink: 0; }
+.browser-bookmarks button { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#browser-viewport { flex: 1; min-height: 80px; position: relative; background: var(--panel); }
+.browser-welcome { padding: 20px; color: var(--text); }
+#browser-status { padding: 6px 10px; font-size: 12px; flex-shrink: 0; overflow-wrap: anywhere; max-height: 70px; overflow: auto; }
+#drawer-menu { min-width: 160px; }
 
 /* Subtle horizontal resizer on left border */
 .drawer-resizer-x {
