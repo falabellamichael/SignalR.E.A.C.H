@@ -10,6 +10,8 @@ let activeRunId = null;
 let currentAgent = null;
 let agents = [];
 let agentRunning = false;
+const runningAgentIds = new Set();
+let stoppingAll = false;
 
 // ---------- editor state ----------
 const openFiles = new Map(); // relPath -> { editor, el (tab), dirty, savedText }
@@ -357,16 +359,22 @@ function updateStatusPill(status, reason) {
   const pill = $('#agent-status');
   if (!currentAgent) return;
   const s = status || (agentRunning ? 'running' : (currentAgent.runState?.status || 'idle'));
+  currentAgent.runState = { ...currentAgent.runState, status: s };
   pill.textContent = s;
   pill.className = 'chip ' + (s === 'running' ? 'pending' : s === 'completed' ? 'ok' : s === 'paused' || s === 'waiting_input' ? 'bad' : 'dim');
   $('#btn-agent-stop').classList.toggle('hidden', s !== 'running');
-  $('#btn-agent-continue').classList.toggle('hidden', !['paused', 'waiting_edits'].includes(s));
+  $('#btn-agent-continue').classList.toggle('hidden', !['stopped', 'paused', 'waiting_edits'].includes(s));
+  $('#btn-agent-continue').textContent = s === 'stopped' ? 'Start' : 'Continue';
+  updateSendControl();
   if (reason) pill.title = reason;
 }
 
 $('#btn-agent-continue').onclick = async () => {
-  if (!currentAgent) return;
-  await reachApi.agents.send(currentAgent.id, 'continue');
+  if (!currentAgent || agentRunning) return;
+  agentRunning = true;
+  updateStatusPill('running');
+  const res = await reachApi.agents.send(currentAgent.id, 'continue');
+  if (!res.ok) { agentRunning = false; updateStatusPill('paused', res.err); showNotice(res.err); }
 };
 
 // ---------- chat rendering ----------
@@ -570,6 +578,9 @@ composerInput.addEventListener('keydown', (e) => {
 });
 
 async function sendComposer() {
+  if (agentRunning || runningAgentIds.size || (activeTeamRun && !activeTeamRun.paused)) {
+    return stopAllRuns();
+  }
   const text = composerInput.value.trim();
   if (!text || !currentAgent) return;
   composerInput.value = '';
@@ -583,9 +594,27 @@ async function sendComposer() {
 
 $('#btn-agent-stop').onclick = async () => {
   if (currentAgent) await reachApi.agents.stop(currentAgent.id);
-  agentRunning = false;
-  updateStatusPill('stopped');
 };
+
+function updateSendControl() {
+  const busy = agentRunning || runningAgentIds.size > 0 || !!(activeTeamRun && !activeTeamRun.paused);
+  const button = $('#btn-send');
+  button.textContent = stoppingAll ? 'Stopping…' : busy ? 'Stop' : 'Send';
+  button.title = busy ? 'Stop all active agents and the team' : 'Send message';
+  button.classList.toggle('danger', busy);
+  button.disabled = stoppingAll;
+}
+
+async function stopAllRuns() {
+  if (stoppingAll) return;
+  stoppingAll = true;
+  updateSendControl();
+  try {
+    const res = await reachApi.teams.stopAll();
+    if (!res.ok) showNotice(res.err);
+  } catch (error) { showNotice(error.message); }
+  finally { stoppingAll = false; updateSendControl(); }
+}
 
 async function deleteAgentById(id, name) {
   if (!await confirmAction(`Delete conversation "${name}" and its branches? This cannot be undone.`)) return;
@@ -616,6 +645,11 @@ $('#btn-agent-delete').onclick = async () => {
 let streamBubble = null;
 let recoveryBubble = null;
 function handleAgentEvent(ev) {
+  if (ev.type === 'run-state') {
+    if (ev.status === 'running') runningAgentIds.add(ev.agentId);
+    else runningAgentIds.delete(ev.agentId);
+    updateSendControl();
+  }
   if (!currentAgent || ev.agentId !== currentAgent.id) return;
   switch (ev.type) {
     case 'message-start':
@@ -1311,7 +1345,7 @@ $('#btn-dispatch-team').onclick = async () => {
 $('#btn-team-run-go').onclick = async () => {
   const task = $('#team-run-task').value.trim();
   if (!task || !pendingRunTeam) return;
-  if (activeTeamRun || teamDispatching) { showNotice('Stop the current team run or wait for it to finish first.'); return; }
+  if ((activeTeamRun && !activeTeamRun.paused) || teamDispatching) { showNotice('Stop the current team run or wait for it to finish first.'); return; }
   teamDispatching = true;
   const team = pendingRunTeam;
   const agent = currentAgent;
@@ -1335,6 +1369,10 @@ $('#btn-team-run-go').onclick = async () => {
 /* Team run view: a banner + one live card per member, rendered into the
  * chat log of the current conversation (or the no-agent area if none). */
 function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
+  if (activeTeamRun) {
+    activeTeamRun.stop.remove();
+    for (const button of activeTeamRun.wrap.querySelectorAll('.member-control')) button.disabled = true;
+  }
   const run = { teamRunId, team, agentId, cards: new Map(), subCards: new Map(), buffer: new Map() };
   activeTeamRun = run;
   const host = currentAgent ? chatLog : noAgent;
@@ -1350,9 +1388,11 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   stop.title = `Stop ${team.name}`;
   stop.onclick = async () => {
     stop.disabled = true;
-    stop.textContent = 'Stopping team…';
-    try { await reachApi.teams.stop(teamRunId); }
-    catch (error) { stop.disabled = false; stop.textContent = 'Stop team'; showNotice(error.message); }
+    try {
+      const res = await reachApi.teams[run.paused ? 'start' : 'stop'](teamRunId);
+      if (!res.ok) showNotice(res.err);
+    } catch (error) { showNotice(error.message); }
+    finally { stop.disabled = false; }
   };
   document.querySelector('header .statusbar').prepend(stop);
   run.stop = stop;
@@ -1362,6 +1402,7 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   wrap.dataset.teamRunId = teamRunId;
   host.appendChild(wrap);
   activeTeamRun.wrap = wrap;
+  updateSendControl();
   host.scrollTop = host.scrollHeight;
 }
 
@@ -1375,6 +1416,7 @@ function teamCard(index, name, model) {
     + `<div class="member-body"></div>`;
   activeTeamRun.wrap.appendChild(card);
   activeTeamRun.cards.set(index, card);
+  addMemberControl(card, activeTeamRun, { index });
   return card;
 }
 
@@ -1392,7 +1434,36 @@ function subCard(agentId, name, model, depth) {
     + `<div class="member-body"></div>`;
   run.wrap.appendChild(card);
   run.subCards.set(agentId, card);
+  addMemberControl(card, run, { agentId });
   return card;
+}
+
+function addMemberControl(card, run, { index = null, agentId = null }) {
+  const button = document.createElement('button');
+  button.className = 'ghost small member-control';
+  button.textContent = 'Stop';
+  button.title = 'Stop this agent';
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      const res = await reachApi.teams.controlMember(run.teamRunId, index, agentId, card.dataset.paused === 'true');
+      if (!res.ok) showNotice(res.err);
+    } catch (error) { showNotice(error.message); }
+    finally { button.disabled = card.dataset.finished === 'true'; }
+  };
+  card.querySelector('.member-head').appendChild(button);
+}
+
+function setMemberControl(card, paused, finished = false) {
+  card.dataset.paused = String(paused);
+  card.dataset.finished = String(finished);
+  card.classList.toggle('paused', paused);
+  const button = card.querySelector('.member-control');
+  button.textContent = paused ? 'Start' : 'Stop';
+  button.title = paused ? 'Resume this agent with its saved context' : 'Stop this agent';
+  button.disabled = finished;
+  if (paused) card.querySelector('.member-state').textContent = 'stopped · ready to start';
+  else if (!finished) card.querySelector('.member-state').textContent = 'resuming…';
 }
 
 /* Inline question box shared by roster members and spawned workers: the run
@@ -1438,9 +1509,23 @@ function handleTeamEvent(ev) {
   if (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId) return;
   const run = activeTeamRun;
   switch (ev.type) {
+    case 'start':
+      for (const member of ev.members) teamCard(member.index, member.name, member.model);
+      break;
+    case 'control':
+      run.paused = ev.paused;
+      run.stop.textContent = ev.paused ? 'Start team' : 'Stop team';
+      run.stop.title = ev.paused ? 'Resume unfinished team agents' : 'Stop team';
+      updateSendControl();
+      break;
+    case 'member-control': {
+      const card = teamCard(ev.index, ev.name, ev.model);
+      if (card) setMemberControl(card, ev.paused);
+      break;
+    }
     case 'member-start': {
       const card = teamCard(ev.index, ev.name, ev.model);
-      if (card) card.querySelector('.member-state').textContent = 'working…';
+      if (card && card.dataset.paused !== 'true') card.querySelector('.member-state').textContent = 'working…';
       break;
     }
     case 'member': {
@@ -1460,7 +1545,7 @@ function handleTeamEvent(ev) {
       } else if (ev.memberType === 'error') {
         state.textContent = ev.message;
       } else if (ev.memberType === 'run-state') {
-        state.textContent = ev.status + (ev.reason ? ': ' + ev.reason : '');
+        state.textContent = card.dataset.paused === 'true' ? 'stopped · ready to start' : ev.status + (ev.reason ? ': ' + ev.reason : '');
       } else if (ev.memberType === 'message-start') {
         clearTimeout(card._renderTimer);
         card._renderTimer = null;
@@ -1531,6 +1616,7 @@ function handleTeamEvent(ev) {
     case 'member-done': {
       const card = teamCard(ev.index, ev.name, ev.model || '');
       if (card) {
+        setMemberControl(card, false, true);
         clearTimeout(card._renderTimer);
         card.classList.remove('waiting');
         card.classList.add(ev.ok ? 'done' : 'failed');
@@ -1545,12 +1631,16 @@ function handleTeamEvent(ev) {
       const body = card.querySelector('.member-body');
       const state = card.querySelector('.member-state');
       switch (ev.netType) {
+        case 'agent-control':
+          setMemberControl(card, ev.paused);
+          break;
         case 'agent-created': {
           card.classList.add('running');
           state.textContent = `spawned · ${ev.task ? ev.task.slice(0, 80) : 'working…'}`;
           break;
         }
         case 'agent-state': {
+          setMemberControl(card, false, ev.status !== 'running');
           if (ev.status === 'running') {
             card.classList.remove('done', 'failed', 'waiting');
             card.classList.add('running');
@@ -1657,6 +1747,7 @@ function handleTeamEvent(ev) {
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       run.stop.remove();
       activeTeamRun = null;
+      updateSendControl();
       break;
     }
     case 'error': {
@@ -1667,6 +1758,7 @@ function handleTeamEvent(ev) {
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       run.stop.remove();
       activeTeamRun = null;
+      updateSendControl();
       break;
     }
   }

@@ -276,6 +276,11 @@ function registerIpc() {
     if (loop) loop.stop();
     return { ok: true };
   });
+  ipcMain.handle('runs:stop', () => {
+    for (const loop of agentLoops.values()) if (loop.running) loop.stop();
+    for (const runner of teamRuns.values()) runner.pause();
+    return { ok: true };
+  });
   ipcMain.handle('agents:setTodos', (_e, { id, todos }) => {
     const agent = getAgentStore().setTodos(id, todos);
     return agent ? { ok: true } : { ok: false, err: 'Agent not found' };
@@ -352,7 +357,8 @@ function registerIpc() {
       const settings = loadSettings();
       let endpoint = settings.endpoint || '';
       try { endpoint = await resolveEndpoint(endpoint); } catch (e) { return { ok: false, err: 'Endpoint: ' + e.message }; }
-      if (teamRuns.size) return { ok: false, err: 'A team is already running. Stop it or wait for it to finish first.' };
+      if ([...teamRuns.values()].some(runner => !runner.paused)) return { ok: false, err: 'A team is already running. Stop it or wait for it to finish first.' };
+      for (const [id, runner] of teamRuns) { runner.stop(); teamRuns.delete(id); }
       const accessKey = settings.accessKey || '';
       const defaultModel = settings.model || 'gpt-4o-mini';
 
@@ -433,8 +439,24 @@ function registerIpc() {
 
   ipcMain.handle('teams:stop', (_e, { teamRunId }) => {
     const runner = teamRuns.get(teamRunId);
-    if (runner) runner.stop();
+    if (!runner) return { ok: false, err: 'Team run is no longer available.' };
+    runner.pause();
     return { ok: true };
+  });
+  ipcMain.handle('teams:start', (_e, { teamRunId }) => {
+    const runner = teamRuns.get(teamRunId);
+    if (!runner) return { ok: false, err: 'Team run is no longer available.' };
+    runner.resume();
+    return { ok: true };
+  });
+  ipcMain.handle('teams:controlMember', (_e, { teamRunId, index, agentId, start }) => {
+    try {
+      const runner = teamRuns.get(teamRunId);
+      if (!runner) throw new Error('Team run is no longer available.');
+      if (agentId) { runner.net.controlWorker(agentId, start === true); runner.updatePausedState(); }
+      else runner.controlMember(index, start === true);
+      return { ok: true };
+    } catch (error) { return { ok: false, err: error.message }; }
   });
 
   ipcMain.handle('teams:resolveEdit', (_e, { editId, accepted }) => {
@@ -816,6 +838,11 @@ app.whenReady().then(() => {
             // task, so the raw task text is a prefix of the member prompt.
             const cancel = request.messages.some(m => m.content.startsWith('Cancel the slow search'));
             const all = request.messages.map(m => String(m.content || '')).join('\n');
+            if (all.includes('Universal stop regular fixture') || (request.model === 'fixture-sub' && !all.includes('Continue the original task'))) {
+              res.writeHead(200, { 'content-type': 'text/event-stream' });
+              res.write(': waiting for stop\n\n');
+              return;
+            }
             const complete = message => JSON.stringify({ status: 'complete', message, actions: [], options: [] });
             const acts = (message, actions) => JSON.stringify({ status: 'actions', message, actions, options: [] });
             let content;
@@ -880,10 +907,26 @@ app.whenReady().then(() => {
               if (Date.now() - tick > 1000) throw new Error('Main-process IPC blocked during team search');
               const duplicate = await reachApi.teams.run(t.team.id, 'duplicate', ${JSON.stringify(smokeProject)}, agent.agent.id);
               if (duplicate.ok) throw new Error('Concurrent dispatch replaced the current team');
+              slow.cards.get(0).querySelector('.member-control').click();
+              await until(() => slow.cards.get(0).dataset.paused === 'true', 'stop individual member');
+              if (slow.cards.get(1).dataset.paused === 'true') throw new Error('Individual Stop interrupted teammate');
+              await new Promise(resolve => setTimeout(resolve, 100));
+              slow.cards.get(0).querySelector('.member-control').click();
+              await until(() => slow.cards.get(0).classList.contains('done'), 'restart individual member');
+              if (document.querySelector('#btn-send').textContent !== 'Stop') throw new Error('Send did not become universal Stop');
+              await reachApi.agents.send(currentAgent.id, 'Universal stop regular fixture');
+              await until(() => agentRunning, 'regular chat alongside team');
+              composerInput.value = 'Keep this unsent draft';
+              await document.querySelector('#btn-send').onclick();
+              await until(() => activeTeamRun?.paused, 'stop team from Send');
+              await until(() => currentAgent.runState?.status === 'stopped', 'stop regular chat alongside team');
+              if (composerInput.value !== 'Keep this unsent draft') throw new Error('Stop consumed the draft');
+              if (document.querySelector('#btn-stop-team').textContent !== 'Start team') throw new Error('Stopped team has no Start');
+              if (slow.cards.get(1).querySelector('.member-control').textContent !== 'Start') throw new Error('Stopped member has no Start');
               document.querySelector('#btn-stop-team').click();
-              await until(() => !activeTeamRun, 'stop both workers');
-              if (![...slow.cards.values()].every(c => c.querySelector('.member-state').textContent.includes('stopped'))) throw new Error('Stopped members misreported');
-              if (document.querySelector('#btn-stop-team')) throw new Error('Stop button left after completion');
+              await until(() => !activeTeamRun, 'resume unfinished team');
+              if (![...slow.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Restarted team failed');
+              composerInput.value = '';
               const good = await dispatch(t.team, 'Find hello in the fixture');
               await until(() => !activeTeamRun, 'successful parallel team');
               if (![...good.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Parallel scans did not complete');
@@ -898,6 +941,11 @@ app.whenReady().then(() => {
               const d = await reachApi.personas.create({ name: 'Delegator', model: 'fixture-d' });
               const td = await reachApi.teams.create({ name: 'Delegation crew', mode: 'parallel', members: [{ personaId: d.persona.id }] });
               const del = await dispatch(td.team, 'Delegate a sub scan');
+              await until(() => del.subCards.size === 1, 'spawned worker card');
+              const workerCard = [...del.subCards.values()][0];
+              workerCard.querySelector('.member-control').click();
+              await until(() => workerCard.dataset.paused === 'true', 'stop spawned worker');
+              workerCard.querySelector('.member-control').click();
               await until(() => !activeTeamRun, 'delegation run');
               if (![...del.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Delegator did not complete');
               const sub = del.subCards && [...del.subCards.values()][0];
@@ -1096,8 +1144,14 @@ app.whenReady().then(() => {
         // Saving settings during a request must preserve its owner and Stop.
         let budgetRequestReady;
         const budgetRequestStarted = new Promise(resolve => { budgetRequestReady = resolve; });
+        let budgetRequestCount = 0;
         const budgetServer = createServer((_req, res) => {
           res.writeHead(200, { 'content-type': 'text/event-stream' });
+          if (++budgetRequestCount > 1) {
+            const content = JSON.stringify({ status: 'complete', message: 'Resumed regular chat.', actions: [], options: [] });
+            res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
+            return;
+          }
           res.write(': waiting for cancellation\n\n');
           budgetRequestReady();
         });
@@ -1107,6 +1161,8 @@ app.whenReady().then(() => {
           const runAgent = await win.webContents.executeJavaScript(`(async () => {
             await reachApi.saveSettings({ endpoint: 'http://127.0.0.1:${budgetServer.address().port}/v1', budgets: (await reachApi.getBudgetSchema()).presets.unrestricted });
             const a = await reachApi.agents.create('Active settings fixture', ${JSON.stringify(smokeProject)}, 'fixture');
+            await selectAgent(a.agent);
+            await showTab('agents');
             await reachApi.agents.send(a.agent.id, 'Synthetic cancellation test');
             return a.agent.id;
           })()`);
@@ -1118,12 +1174,23 @@ app.whenReady().then(() => {
           })()`);
           if (agentLoops.get(runAgent) !== originalLoop || !originalLoop.settingsStale || !originalLoop.running) throw new Error('Settings save orphaned the active loop');
           if (originalLoop._budgets().maxTokens !== 0) throw new Error('Active run changed budgets mid-request');
-          await win.webContents.executeJavaScript(`reachApi.agents.stop(${JSON.stringify(runAgent)})`);
+          await win.webContents.executeJavaScript(`(async () => {
+            if (document.querySelector('#btn-send').textContent !== 'Stop') throw new Error('Regular chat did not show Stop');
+            await document.querySelector('#btn-send').onclick();
+          })()`);
           const stopDeadline = Date.now() + 3000;
           while (originalLoop.running && Date.now() < stopDeadline) await new Promise(resolve => setTimeout(resolve, 10));
           if (originalLoop.running || getAgentStore().get(runAgent).runState.status !== 'stopped') throw new Error('Stop failed after settings save');
           const replacementLoop = await getAgentLoop(runAgent);
           if (replacementLoop === originalLoop || replacementLoop._budgets().maxTokens !== 65536) throw new Error('Next run did not receive updated settings');
+          await win.webContents.executeJavaScript(`(async () => {
+            const start = document.querySelector('#btn-agent-continue');
+            if (start.classList.contains('hidden') || start.textContent !== 'Start') throw new Error('Stopped chat has no Start');
+            await start.onclick();
+          })()`);
+          const resumeDeadline = Date.now() + 3000;
+          while (getAgentStore().get(runAgent).runState.status !== 'completed' && Date.now() < resumeDeadline) await new Promise(resolve => setTimeout(resolve, 10));
+          if (getAgentStore().get(runAgent).runState.status !== 'completed' || budgetRequestCount !== 2) throw new Error('Regular Start did not resume exactly once');
           await win.webContents.executeJavaScript(`reachApi.agents.delete(${JSON.stringify(runAgent)})`);
         } finally { budgetServer.closeAllConnections(); budgetServer.close(); saveSettings(previousSettings); }
         win.setSize(1420, 980);

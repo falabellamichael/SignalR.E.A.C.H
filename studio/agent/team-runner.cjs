@@ -25,6 +25,7 @@
 
 const { AgentLoop } = require('./agent-loop.cjs');
 const { MemoryStore } = require('./memory-store.cjs');
+const { RunControl } = require('./run-control.cjs');
 const { parseAgentResponse } = require('./agent-response.cjs');
 const { AgentNet } = require('./agent-net.cjs');
 const { runToTerminal, MAX_RESUME_CYCLES: DRIVER_MAX_CYCLES } = require('./pause-resume.cjs');
@@ -100,6 +101,11 @@ class TeamRunner {
     this.memberStores = new Map();       // memberKey -> MemoryStore (for resume)
     this.memberEdits = new Map();        // memberKey -> [edit] proposed this pause cycle
     this.stopped = false;
+    this.paused = false;
+    this.controls = this.personas.map((persona, index) => new RunControl(null, paused => {
+      this.net?.syncMember(`m${index}-${persona.id}`, { status: paused ? 'paused' : 'running' });
+      this._emit('member-control', { index, name: persona.name, paused });
+    }));
     this.running = true;
     // Resolves when stop() is called so pause waits can race it and unwind.
     this._stopDeferred = null;
@@ -147,6 +153,7 @@ class TeamRunner {
     this.net = new AgentNet({
       teamRunId,
       teamName: this.team.name,
+      onSettled: () => this.updatePausedState(),
       endpoint: this.endpoint,
       accessKey: this.accessKey,
       defaultModel: this.defaultModel,
@@ -286,6 +293,8 @@ class TeamRunner {
         : undefined,
     });
     this.loops.set(key, loop);
+    const control = this.controls[index];
+    control.loop = loop;
     this.memberStores.set(key, store);
     // Join the crew net: attach the live loop to the pre-registered record so
     // peers can message/await it, and deliver anything buffered while pending.
@@ -293,7 +302,8 @@ class TeamRunner {
     if (this.net) {
       const rec = this.net.attach(key, loop, store);
       if (rec) {
-        rec.status = 'running';
+        rec.control = control;
+        rec.status = control.paused ? 'paused' : 'running';
         const inbox = rec.inbox || [];
         rec.inbox = [];
         if (inbox.length) {
@@ -311,6 +321,7 @@ class TeamRunner {
         store,
         agentId: key,
         firstPrompt: fullPrompt,
+        control,
         maxCycles: cap(this.budgets?.resumeCycles ?? MAX_RESUME_CYCLES),
         isStopped: () => this.stopped,
         stopSignal: () => this._stopSignal(),
@@ -335,6 +346,7 @@ class TeamRunner {
       this._emit('member-done', { index, name: persona.name, ok: false, error: e.message });
       return last;
     } finally {
+      control.finished = true;
       this.loops.delete(key);
       this.memberStores.delete(key);
       // Keep the crew net's view of this member truthful so peers that
@@ -342,6 +354,7 @@ class TeamRunner {
       if (this.net) {
         this.net.syncMember(key, { status: last.status, error: last.error, output: last.output });
       }
+      this.updatePausedState();
     }
   }
 
@@ -364,6 +377,34 @@ class TeamRunner {
     for (const loop of this.loops.values()) loop.stop();
     if (this.net) this.net.stop();
     if (this._stopDeferred) this._stopDeferred.resolve();
+  }
+
+  pause() {
+    this.paused = true;
+    for (const control of this.controls) control.pause();
+    this.net?.pause();
+    this._emit('control', { paused: true });
+  }
+
+  resume() {
+    this.paused = false;
+    for (const control of this.controls) control.resume();
+    this.net?.resume();
+    this._emit('control', { paused: false });
+  }
+
+  controlMember(index, start) {
+    if (!Number.isInteger(index) || !this.controls[index]) throw new Error('Team member not found.');
+    const control = this.controls[index];
+    if (control.finished) throw new Error('This member has already finished.');
+    if (start) { if (this.net) this.net.paused = false; control.resume(); }
+    else control.pause();
+    this.updatePausedState();
+  }
+
+  updatePausedState() {
+    this.paused = this.controls.every(c => c.finished || c.paused) && (!this.net || this.net.workersPaused());
+    this._emit('control', { paused: this.paused });
   }
 }
 

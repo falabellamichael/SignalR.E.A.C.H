@@ -46,13 +46,24 @@ async function runToTerminal({
   onResumed = () => {},
   stopSignal = () => Promise.resolve(null),   // resolves (to anything) on stop
   firstPrompt,
+  control = null,
 }) {
   let nextPrompt = firstPrompt;
   let cycles = 0;
   for (;;) {
+    if (control) await control.wait(stopSignal);
+    if (isStopped()) return { ...harvest(store, agentId, true), cycles };
     await loop.sendUserMessage(nextPrompt);
+    if (control) await control.wait(stopSignal);
     const h = harvest(store, agentId, isStopped());
     if (h.stopped) return { ...h, cycles };
+    if (control?.interrupted) {
+      control.interrupted = false;
+      if (h.status === 'stopped') {
+        nextPrompt = 'Continue the original task from the saved conversation and tool results. Check the current state before repeating interrupted actions.';
+        continue;
+      }
+    }
     if (h.status === 'completed') return { ...h, cycles };
     if (h.status !== 'waiting_edits' && h.status !== 'waiting_input') {
       return { ...h, cycles };   // failed / paused(round-limit) / unknown
@@ -74,6 +85,7 @@ async function runToTerminal({
         awaitEditResolution(edits.map(e => ({ editId: e.editId, path: e.path }))),
         stopSignal(),
       ]);
+      if (control) await control.wait(stopSignal);
       if (isStopped()) return { ...harvest(store, agentId, true), cycles };
       if (!decisions || !decisions.length) {
         return { ...h, cycles, error: 'Proposed edits were not accepted.' };
@@ -95,6 +107,7 @@ async function runToTerminal({
         requestMemberAnswer({ questionId, question: h.question || '' }),
         stopSignal(),
       ]);
+      if (control) await control.wait(stopSignal);
       if (isStopped()) return { ...harvest(store, agentId, true), cycles };
       if (!answer || !String(answer).trim()) {
         return { ...h, cycles, error: 'No answer supplied to the agent.' };

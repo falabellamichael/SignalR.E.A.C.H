@@ -199,6 +199,7 @@ class AgentLoop {
     // Use one response contract from the first round, including ordinary chat.
     runState.structuredActions = true;
     this._saveRunState(runState);
+    this._emit('run-state', { status: 'running', reason: '' });
 
     try {
       let transportRetries = 0;

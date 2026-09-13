@@ -25,6 +25,7 @@
 
 const { AgentLoop } = require('./agent-loop.cjs');
 const { MemoryStore } = require('./memory-store.cjs');
+const { RunControl } = require('./run-control.cjs');
 const { parseAgentResponse } = require('./agent-response.cjs');
 const { runToTerminal } = require('./pause-resume.cjs');
 
@@ -73,8 +74,10 @@ class AgentNet {
     maxAgents = MAX_AGENTS,
     maxDepth = MAX_DEPTH,
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
+    onSettled = () => {},
   } = {}) {
     this.budgets = budgets;
+    this.onSettled = onSettled;
     this.teamRunId = teamRunId;
     this.teamName = teamName;
     this.endpoint = endpoint;
@@ -96,6 +99,7 @@ class AgentNet {
     this.spawnedEdits = new Map(); // agentId -> [edit] awaiting review
     this.tasks = [];           // background run promises
     this.stopped = false;
+    this.paused = false;
     this._stopDeferred = null;
     this.seq = 0;
   }
@@ -204,6 +208,7 @@ class AgentNet {
    * keeps working and can poll (agent.status), await, or message it. */
   spawn({ name, model = '', prompt = '', task, parentId = null, depth = 0, callerName = '' }) {
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
+    if (this.paused) return { ok: false, error: 'The crew is paused by the user.' };
     const cleanTask = String(task || '').trim();
     if (!cleanTask) return { ok: false, error: 'A task is required to spawn an agent.' };
     if (!String(name || '').trim()) return { ok: false, error: 'A name is required to spawn an agent.' };
@@ -265,6 +270,10 @@ class AgentNet {
       spawnedBy: callerName || null,
     };
     this.agents.set(id, rec);
+    rec.control = new RunControl(loop, paused => {
+      rec.status = paused ? 'paused' : 'running';
+      this._emit('agent-control', { agentId: id, name: rec.name, paused });
+    });
     NET_BY_AGENT.set(id, this);
     this._emit('agent-created', {
       agentId: id, name: rec.name, model: useModel, depth: childDepth,
@@ -281,6 +290,7 @@ class AgentNet {
     const rec = this.agents.get(id);
     if (!rec) return;
     if (this.stopped) { this._settle(id, 'stopped', 'Stopped by you.'); return; }
+    rec.control.finished = false;
     rec.status = 'running';
     rec.finishedAt = null;
     this._emit('agent-state', { agentId: id, name: rec.name, status: 'running' });
@@ -292,6 +302,7 @@ class AgentNet {
         store: rec.store,
         agentId: id,
         firstPrompt: prompt,
+        control: rec.control,
         maxCycles: cap(this.budgets?.resumeCycles ?? 6),
         isStopped: () => this.stopped,
         stopSignal: () => this._stopSignal(),
@@ -317,6 +328,7 @@ class AgentNet {
   _settle(id, forceStatus = null, forceError = null) {
     const rec = this.agents.get(id);
     if (!rec) return;
+    if (rec.control) rec.control.finished = true;
     const runState = rec.store.get(id).runState;
     const output = cleanOutput(rec.store.lastAssistantText(id));
     if (output) rec.output = output;
@@ -331,6 +343,7 @@ class AgentNet {
       chars: rec.output.length, error: rec.error,
       outputPreview: rec.output.slice(0, OUTPUT_PREVIEW),
     });
+    this.onSettled();
   }
 
   /* Deliver a message to a peer. Running peer → queued into its loop (the
@@ -349,6 +362,10 @@ class AgentNet {
     rec.messagesReceived++;
 
     const prefixed = `MESSAGE FROM ${sender ? sender.name : from} (a crew member):\n${text}`;
+    if (rec.control?.paused && rec.store) {
+      rec.store.enqueue(rec.id, prefixed);
+      return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: 'paused' };
+    }
     if (!rec.loop) {
       // Pending member (chain: hasn't had its turn yet). Buffer the message;
       // it is prepended to the member's prompt when it starts.
@@ -521,6 +538,27 @@ class AgentNet {
       }
     }
     if (this._stopDeferred) this._stopDeferred.resolve();
+  }
+
+  workersPaused() {
+    return [...this.agents.values()].filter(r => r.origin === 'spawned').every(r => r.control?.finished || r.control?.paused);
+  }
+
+  pause() {
+    this.paused = true;
+    for (const rec of this.agents.values()) if (rec.origin === 'spawned') rec.control?.pause();
+  }
+
+  resume() {
+    this.paused = false;
+    for (const rec of this.agents.values()) if (rec.origin === 'spawned') rec.control?.resume();
+  }
+
+  controlWorker(id, start) {
+    const rec = this.agents.get(id);
+    if (rec?.origin !== 'spawned' || !rec.control || rec.control.finished) throw new Error('No unfinished worker with this id.');
+    if (start) { this.paused = false; rec.control.resume(); }
+    else rec.control.pause();
   }
 
   /* Update a REGISTERED (roster) member's record when its runner finishes it.

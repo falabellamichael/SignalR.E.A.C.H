@@ -67,6 +67,9 @@ contextBridge.exposeInMainWorld('reach', {
     delete: (id) => ipcRenderer.invoke('teams:delete', id),
     run: (teamId, task, dir, agentId) => ipcRenderer.invoke('teams:run', { teamId, task, dir, agentId }),
     stop: (teamRunId) => ipcRenderer.invoke('teams:stop', { teamRunId }),
+    start: (teamRunId) => ipcRenderer.invoke('teams:start', { teamRunId }),
+    stopAll: () => ipcRenderer.invoke('runs:stop'),
+    controlMember: (teamRunId, index, agentId, start) => ipcRenderer.invoke('teams:controlMember', { teamRunId, index, agentId, start }),
     resolveEdit: (editId, accepted) => ipcRenderer.invoke('teams:resolveEdit', { editId, accepted }),
     answerQuestion: (questionId, answer) => ipcRenderer.invoke('teams:answerQuestion', { questionId, answer }),
     onEvent: (cb) => {

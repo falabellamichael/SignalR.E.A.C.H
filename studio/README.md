@@ -36,6 +36,13 @@ Compiled Python bytecode (`.pyc`) and other binary files are not editable source
   conversation. Teams support parallel reviews and sequential handoffs.
 - Team members can create background workers, send messages, inspect progress,
   and await peers. Stop cancels active model requests and filesystem scans.
+- **Send becomes Stop** while agents or a team are active. It stops all active
+  regular chats and the team without sending or clearing the composer draft.
+- Each team member and spawned worker has its own **Stop / Start** control.
+  **Start team** resumes unfinished members with their saved context; completed
+  members are not rerun. A stopped regular chat exposes **Start** in its header.
+  Team sessions remain resumable while Studio stays open and until a new team
+  task replaces them. Starting a queued chain member still respects chain order.
 - File edits can be reviewed before writing. Ordinary completion text cannot
   silently approve pending edits or finish an incomplete plan.
 

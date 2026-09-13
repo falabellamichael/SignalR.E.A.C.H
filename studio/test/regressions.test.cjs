@@ -79,7 +79,7 @@ test('structured recovery supplies schema and completes once', async () => {
   assert.match(f.requests[1][0].content, /EXECUTABLE ACTION RESPONSE/);
   assert.doesNotMatch(f.requests[1][0].content, /emit each action as a fenced/);
   assert.match(f.requests[0][0].content, /may be Python/);
-  assert.equal(f.events.filter(e => e.type === 'run-state').length, 1);
+  assert.deepEqual(f.events.filter(e => e.type === 'run-state').map(e => e.status), ['running', 'completed']);
   assert.ok(f.requests[2].every(m => m.role !== 'tool' && !m._reachMeta && !m.tool_call_id));
   assert.ok(f.events.some(e => e.type === 'message-end' && e.content === 'Done.'));
 });
@@ -601,4 +601,87 @@ test('stop while a member waits for edit review unwinds the whole run', async t 
   assert.ok(result.length <= 1);
   const done = f.events.find(e => e.type === 'done');
   assert.ok(done && done.stopped === true);
+});
+
+async function waitForControl(predicate) {
+  const deadline = Date.now() + 3000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('Run control did not settle');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+test('individual Stop retains context, does not stop peers, and Start resumes only unfinished work', async t => {
+  const requests = [];
+  const endpoint = await localEndpoint(t, (body, res) => {
+    requests.push(body);
+    if (body.model === 'b' || body.messages.some(m => m.content.startsWith('Continue the original task'))) {
+      jsonReply(res, action('complete', 'Finished.'));
+    } else {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(': waiting\n\n');
+    }
+  });
+  const { runner } = crewFixture(endpoint, { members: [{}, {}], personas: [{ id: 'a', name: 'A', model: 'a' }, { id: 'b', name: 'B', model: 'b' }] });
+  t.after(() => runner.stop());
+  const work = runner.run('individual-controls');
+  await waitForControl(() => requests.length === 2 && runner.controls[1].finished);
+  runner.controlMember(0, false);
+  await waitForControl(() => !runner.loops.get('m0-a').running);
+  assert.equal(runner.controls[0].paused, true);
+  assert.equal(runner.controls[1].finished, true);
+  assert.equal(runner.running, true);
+  runner.controlMember(0, true);
+  const results = await work;
+  assert.ok(results.every(r => r.ok));
+  assert.equal(requests.filter(r => r.model === 'b').length, 1);
+  assert.ok(requests.at(-1).messages.some(m => m.content.startsWith('Do the job.')));
+  assert.throws(() => runner.controlMember(20, true), /not found/);
+});
+
+test('global Stop holds queued members and Start continues the chain without replaying earlier members', async t => {
+  const requests = [];
+  const endpoint = await localEndpoint(t, (body, res) => {
+    requests.push(body);
+    if (body.model === 'b' && !body.messages.some(m => m.content.startsWith('Continue the original task'))) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': waiting\n\n');
+    } else jsonReply(res, action('complete', 'Finished ' + body.model));
+  });
+  const { runner } = crewFixture(endpoint, { mode: 'chain', members: [{}, {}, {}], personas: ['a', 'b', 'c'].map(id => ({ id, name: id, model: id })) });
+  t.after(() => runner.stop());
+  const work = runner.run('chain-controls');
+  await waitForControl(() => requests.length === 2);
+  runner.pause();
+  await waitForControl(() => !runner.loops.get('m1-b').running);
+  assert.equal(requests.length, 2);
+  assert.equal(runner.controls[2].paused, true);
+  runner.resume();
+  assert.ok((await work).every(r => r.ok));
+  assert.deepEqual(requests.map(r => r.model), ['a', 'b', 'b', 'c']);
+  assert.ok(requests.at(-1).messages.some(m => m.content.includes('HANDOFF FROM a') && m.content.includes('HANDOFF FROM b')));
+});
+
+test('spawned workers stay stopped when peers send messages and resume their saved task', async t => {
+  const { AgentNet } = require('../agent/agent-net.cjs');
+  const requests = [];
+  const endpoint = await localEndpoint(t, (body, res) => {
+    requests.push(body);
+    if (requests.length === 1) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': waiting\n\n');
+    } else jsonReply(res, action('complete', 'Worker finished.'));
+  });
+  const net = new AgentNet({ endpoint });
+  t.after(() => net.stop());
+  const child = net.spawn({ name: 'Worker', task: 'Original worker task' });
+  await waitForControl(() => requests.length === 1);
+  net.controlWorker(child.agentId, false);
+  const rec = net.agents.get(child.agentId);
+  await waitForControl(() => !rec.loop.running);
+  assert.equal(net.send({ from: 'peer', to: child.agentId, message: 'Extra context' }).delivered, 'queued');
+  assert.equal(rec.loop.running, false);
+  net.controlWorker(child.agentId, true);
+  await net.settle();
+  assert.equal(rec.status, 'completed');
+  assert.ok(requests[1].messages.some(m => m.content === 'Original worker task'));
+  assert.ok(requests.some(r => r.messages.some(m => m.content.includes('Extra context'))));
 });
