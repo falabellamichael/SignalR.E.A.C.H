@@ -348,7 +348,7 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
 .browser-tab button:first-child { flex: 1; min-width: 0; }
 .browser-toolbar input { min-width: 0; flex: 1; padding: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; }
 .browser-toolbar input:focus { outline: 1px solid var(--gold-dim); }
-.browser-actions { flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.browser-actions { flex-wrap: nowrap; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .browser-actions > button { flex: 0 0 auto; white-space: nowrap; }
 #browser-elements[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); background: var(--panel2); }
 .browser-bookmarks { display: flex; gap: 4px; flex-wrap: wrap; max-height: 80px; overflow: auto; padding: 0 6px; flex-shrink: 0; }
