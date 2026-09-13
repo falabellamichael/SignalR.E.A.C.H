@@ -35,7 +35,9 @@ The browser supports website addresses and searches, localhost projects, multipl
 tabs, back/forward/reload, bookmarks, find, and opening a page externally.
 Tabs and bookmarks are remembered between sessions.
 
-Use **Add page to chat**, or right-click a page to add an element or selected text.
+Use **Add page to chat**, or enable **Elements** beside **Find** and right-click
+a page to add an element or selected text. Elements is off by default, preserving
+the website's normal right-click behavior.
 Studio appends the source URL and quoted text to your draft; it does not send a
 message automatically. Browser pages run in sandboxed Electron views without
 Node.js or Studio's file/agent bridge. Dialogs and menus remain above the page.
@@ -51,13 +53,17 @@ own tab by default; an explicit `tabId` lets it inspect a tab you already opened
 Stop cancels pending browser work, and Start can resume using the same tab.
 The request timeout follows the agent's budget setting, including zero for no timeout.
 
-Right-clicking a page now outlines the selected element in gold and labels it.
+With Elements enabled, right-clicking a page outlines the selected element in gold and labels it.
 A **Selected element** panel identifies its selector and text, with controls to
 show its tab or clear the highlight. **Add element to chat** includes the tab ID,
 element reference, selector, and source text in your draft so the agent can work
 with that specific element. References expire after document navigation; the
 agent must read the new page before interacting. Password/file inputs and arbitrary
 page JavaScript execution are not exposed as agent tools.
+Left-clicking away from the selected element or outside the page clears the
+highlight and selection panel. Clicking the selected element itself retains it.
+Turning Elements off clears highlights as well. Text already added to your chat
+draft is preserved.
 
 ## Conversations and teams
 

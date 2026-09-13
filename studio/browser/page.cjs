@@ -17,7 +17,7 @@ function pageAction(op, args) {
       label: (el.getAttribute('aria-label') || el.labels?.[0]?.innerText || el.getAttribute('alt') || el.getAttribute('placeholder') || el.innerText || el.textContent || tag).trim().slice(0, 180),
       text: (el.innerText || el.textContent || el.getAttribute('alt') || '').trim().slice(0, 8000) };
   };
-  const clear = () => { state.overlay?.remove(); state.cleanup?.(); state.overlay = null; state.cleanup = null; };
+  const clear = () => { state.overlay?.remove(); state.cleanup?.(); state.overlay = null; state.cleanup = null; state.selectedElement = null; };
   const highlight = el => {
     clear();
     const host = document.createElement('div');
@@ -28,7 +28,7 @@ function pageAction(op, args) {
     box.style.cssText = 'position:absolute;box-sizing:border-box;border:3px solid #d4af37;background:#d4af3722;pointer-events:none';
     label.style.cssText = 'position:absolute;background:#111;color:#f3d56b;padding:4px 7px;border:1px solid #d4af37;font:12px sans-serif;max-width:90vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.textContent = 'Selected: ' + describe(el).selector;
-    shadow.append(box, label); document.documentElement.append(host); state.overlay = host;
+    shadow.append(box, label); document.documentElement.append(host); state.overlay = host; state.selectedElement = el;
     const update = () => {
       if (!el.isConnected) { clear(); return; }
       const r = el.getBoundingClientRect();
@@ -41,13 +41,20 @@ function pageAction(op, args) {
     update();
   };
   if (op === 'clear') { clear(); return {}; }
+  if (op === 'dismiss') {
+    const target = document.elementFromPoint(args.x, args.y);
+    const dismissed = !!state.overlay && !state.selectedElement?.contains(target);
+    if (dismissed) clear();
+    return { dismissed };
+  }
   if (op === 'select') {
+    const selectionText = args.selectionText ?? getSelection()?.toString() ?? '';
     let el = Number.isFinite(args.x) && Number.isFinite(args.y) ? document.elementFromPoint(args.x, args.y) : null;
     if (!el && args.selectionText) { const node = getSelection()?.anchorNode; el = node?.nodeType === 1 ? node : node?.parentElement; }
     if (!el) el = document.body;
     if (el.closest('input[type=password],input[type=file]')) throw new Error('This input cannot be added to chat.');
     const result = describe(el); highlight(el);
-    return { ...result, text: String(args.selectionText || result.text || result.label).slice(0, 8000), documentId: state.documentId, kind: args.selectionText ? 'selection' : 'element' };
+    return { ...result, text: String(selectionText || result.text || result.label).slice(0, 8000), documentId: state.documentId, kind: selectionText ? 'selection' : 'element', isEditable: el.matches('input,textarea') || el.isContentEditable, linkURL: el.closest('a')?.href || '' };
   }
   if (op === 'page') return { text: (document.body?.innerText || '').slice(0, 8000), kind: 'page', documentId: state.documentId };
   if (op === 'click' || op === 'type') {

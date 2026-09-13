@@ -349,6 +349,7 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
 .browser-toolbar input { min-width: 0; flex: 1; padding: 7px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; }
 .browser-toolbar input:focus { outline: 1px solid var(--gold-dim); }
 .browser-actions { flex-wrap: wrap; }
+#browser-elements[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); background: var(--panel2); }
 .browser-bookmarks { display: flex; gap: 4px; flex-wrap: wrap; max-height: 80px; overflow: auto; padding: 0 6px; flex-shrink: 0; }
 .browser-bookmarks button { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #browser-viewport { flex: 1; min-height: 80px; position: relative; background: var(--panel); }

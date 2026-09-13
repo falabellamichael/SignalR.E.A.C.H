@@ -66,6 +66,7 @@ $('#btn-show-browser').onclick = () => selectDrawerPanel('browser');
 
 function renderBrowser(state) {
   browserState = state;
+  $('#browser-elements').setAttribute('aria-pressed', String(state.elementsEnabled === true));
   const host = $('#browser-tabs');
   host.replaceChildren();
   for (const tab of state.tabs) {
@@ -121,6 +122,7 @@ $('#browser-bookmark').onclick = () => {
   localStorage.setItem('reach:browser-bookmarks', JSON.stringify(browserBookmarks)); renderBrowserBookmarks();
 };
 $('#browser-find-toggle').onclick = () => { $('#browser-find').classList.toggle('hidden'); $('#browser-find-text').focus(); };
+$('#browser-elements').onclick = () => browserCommand('elements', { enabled: !browserState.elementsEnabled });
 $('#browser-find-text').oninput = () => browserCommand('find', { text: $('#browser-find-text').value });
 $('#browser-find-next').onclick = () => browserCommand('find', { text: $('#browser-find-text').value, next: true });
 $('#browser-find-close').onclick = () => { $('#browser-find').classList.add('hidden'); browserCommand('find', { text: '' }); };
@@ -133,6 +135,16 @@ function showBrowserSelection(selection) {
   $('#browser-selection-text').title = selection?.text || '';
 }
 reachApi.browser.onSelection(showBrowserSelection);
+reachApi.browser.onSelectionCleared(tabId => {
+  if (browserSelection?.tabId === tabId) showBrowserSelection(null);
+});
+document.addEventListener('pointerdown', event => {
+  if (event.button !== 0 || event.target.closest('#browser-selection')) return;
+  const tabId = browserSelection?.tabId || browserState.active;
+  if (!tabId) return;
+  showBrowserSelection(null);
+  reachApi.browser.command('clear-selection', { id: tabId }).catch(() => {});
+}, true);
 reachApi.browser.onReveal(() => selectDrawerPanel('browser', { focus: false }));
 reachApi.browser.onError(message => { $('#browser-status').textContent = message; });
 $('#browser-selection-show').onclick = () => { if (browserSelection) browserCommand('select', { id: browserSelection.tabId }); };

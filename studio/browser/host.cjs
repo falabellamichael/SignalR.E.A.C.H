@@ -26,6 +26,7 @@ class StudioBrowser {
     this.seq = 0;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
     this.visible = false;
+    this.elementsEnabled = false;
     this.session = session.fromPartition('persist:reach-browser');
     this.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     this.session.setPermissionCheckHandler(() => false);
@@ -38,7 +39,7 @@ class StudioBrowser {
     win.webContents.once('destroyed', () => { ipcMain.removeHandler('browser:command'); this.dispose(); });
   }
   state() {
-    return { active: this.active, tabs: [...this.tabs.values()].map(tab => {
+    return { active: this.active, elementsEnabled: this.elementsEnabled, tabs: [...this.tabs.values()].map(tab => {
       const wc = tab.view.webContents;
       return { id: tab.id, owner: tab.owner || '', title: wc.getTitle() || 'New tab', url: wc.getURL(), loading: wc.isLoading(),
         canBack: wc.navigationHistory.canGoBack(), canForward: wc.navigationHistory.canGoForward(), error: tab.error || '' };
@@ -84,15 +85,9 @@ class StudioBrowser {
       if (mainFrame && code !== -3) { tab.error = description; this.emit(); }
     });
     wc.on('render-process-gone', () => { tab.error = 'Page stopped responding. Reload to try again.'; this.emit(); });
-    wc.on('context-menu', async (_event, params) => {
-      let selected;
-      try {
-        selected = await this.selectElement(tab, params);
-      } catch (error) { if (!this.win.isDestroyed()) this.win.webContents.send('browser:error', error.message); return; }
+    wc.on('context-menu', (_event, params) => {
+      if (this.elementsEnabled) return;
       Menu.buildFromTemplate([
-        { label: (params.selectionText ? 'Add selection to chat: ' : 'Add element to chat: ') + selected.selector.slice(0, 60), click: () => this.addContext(tab, params, selected).catch(error => this.win.webContents.send('browser:error', error.message)) },
-        { label: 'Add page to chat', click: () => this.addContext(tab).catch(() => {}) },
-        { type: 'separator' },
         { role: 'copy', enabled: !!params.selectionText },
         ...(params.isEditable ? [{ role: 'paste' }] : []),
         ...(params.linkURL && allowed(params.linkURL) ? [{ label: 'Open link in new tab', click: () => this.newTab(params.linkURL) }] : []),
@@ -104,6 +99,17 @@ class StudioBrowser {
         this.win.webContents.focus();
         this.win.webContents.send('browser:shortcut', input.key.toLowerCase());
       }
+    });
+    wc.on('before-mouse-event', (_event, input) => {
+      if (this.elementsEnabled && input.button === 'right' && ['mouseDown', 'mouseUp'].includes(input.type)) {
+        _event.preventDefault();
+        if (input.type === 'mouseUp') this.showElementMenu(tab, { x: input.x, y: input.y });
+        return;
+      }
+      if (input.type !== 'mouseDown' || input.button !== 'left') return;
+      pageCall(tab, 'dismiss', { x: input.x, y: input.y }).then(result => {
+        if (result.dismissed && !this.win.isDestroyed()) this.win.webContents.send('browser:selection-cleared', tab.id);
+      }).catch(() => {});
     });
     this.layout();
     this.emit();
@@ -117,6 +123,25 @@ class StudioBrowser {
     tab.view.webContents.loadURL(address).catch(error => {
       if (!tab.view.webContents.isDestroyed() && error.code !== 'ERR_ABORTED') { tab.error = error.message; this.emit(); }
     });
+  }
+  async showElementMenu(tab, params) {
+    try {
+      const selected = await this.selectElement(tab, params);
+      if (this.win.isDestroyed()) return;
+      if (!this.elementsEnabled) { await pageCall(tab, 'clear'); this.win.webContents.send('browser:selection-cleared', tab.id); return; }
+      this.elementMenu?.closePopup();
+      let linkURL = '';
+      try { if (selected.linkURL) linkURL = normalizeUrl(selected.linkURL); } catch {}
+      this.elementMenu = Menu.buildFromTemplate([
+        { label: (selected.kind === 'selection' ? 'Add selection to chat: ' : 'Add element to chat: ') + selected.selector.slice(0, 60), click: () => this.addContext(tab, params, selected).catch(error => this.win.webContents.send('browser:error', error.message)) },
+        { label: 'Add page to chat', click: () => this.addContext(tab).catch(() => {}) },
+        { type: 'separator' },
+        { role: 'copy', enabled: selected.kind === 'selection' },
+        ...(selected.isEditable ? [{ role: 'paste' }] : []),
+        ...(linkURL ? [{ label: 'Open link in new tab', click: () => this.newTab(linkURL) }] : []),
+      ]);
+      this.elementMenu.popup({ window: this.win });
+    } catch (error) { if (!this.win.isDestroyed()) this.win.webContents.send('browser:error', error.message); }
   }
   agentCommand(op, args, ctx) { return agentCommand(this, op, args, ctx); }
   async selectElement(tab, params) {
@@ -140,6 +165,15 @@ class StudioBrowser {
     return result;
   }
   async command(action, args = {}) {
+    if (action === 'elements') {
+      this.elementsEnabled = args.enabled === true;
+      if (!this.elementsEnabled) {
+        this.elementMenu?.closePopup();
+        await Promise.all([...this.tabs.values()].filter(tab => tab.view.webContents.getURL()).map(tab => pageCall(tab, 'clear').catch(() => {})));
+        this.win.webContents.send('browser:selection', null);
+      }
+      this.emit(); return this.state();
+    }
     if (action === 'layout') {
       const b = args.bounds;
       if (!b || !['x', 'y', 'width', 'height'].every(k => Number.isFinite(b[k]))) throw new Error('Invalid browser bounds.');
