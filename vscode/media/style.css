@@ -1015,6 +1015,8 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  /* Keep the action at the right edge of the thinking row, away from the spinner. */
+  margin-left: auto;
   font-size: 11px;
   line-height: 1;
   font-family: inherit;
