@@ -79,7 +79,7 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null }) {
     this.budgets = budgets;
     this.team = team;
     this.personas = personas;            // resolved persona objects in roster order
@@ -90,6 +90,7 @@ class TeamRunner {
     this.accessKey = accessKey;
     this.defaultModel = defaultModel;
     this.reachExecutor = reachExecutor;
+    this.browserExecutor = browserExecutor;
     this.sendEvent = sendEvent;
     this.requestApproval = requestApproval;
     this.requestEditReview = requestEditReview;
@@ -159,6 +160,7 @@ class TeamRunner {
       defaultModel: this.defaultModel,
       projectDir: this.projectDir,
       reachExecutor: this.reachExecutor,
+      browserExecutor: this.browserExecutor,
       sendEvent: this.sendEvent,
       requestApproval: this.requestApproval,
       requestEditReview: this.requestEditReview,
@@ -260,6 +262,7 @@ class TeamRunner {
       model,
       projectDir: this.projectDir,
       reachExecutor: this.reachExecutor,
+      browserExecutor: this.browserExecutor,
       personaPrompt: persona.prompt || '',
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,

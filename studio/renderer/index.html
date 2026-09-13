@@ -270,6 +270,11 @@
         <button id="browser-find-toggle" class="ghost small">Find</button>
       </div>
       <div id="browser-bookmarks" class="browser-bookmarks"></div>
+      <div id="browser-selection" class="browser-selection hidden" role="status">
+        <strong>Selected element</strong><code id="browser-selection-label"></code>
+        <span id="browser-selection-text"></span>
+        <div><button id="browser-selection-show" class="ghost small">Show selected tab</button><button id="browser-selection-clear" class="ghost small">Clear selection</button></div>
+      </div>
       <div id="browser-find" class="browser-toolbar hidden"><input id="browser-find-text" placeholder="Find on page" aria-label="Find on page" /><button id="browser-find-next" class="ghost small">Next</button><button id="browser-find-close" class="ghost small" aria-label="Close find">×</button></div>
       <div id="browser-viewport"><div class="browser-welcome"><h3>REACH Browser</h3><p>Open a website or local development server above.</p><p>Right-click an element or selection to add it to your chat draft.</p></div></div>
       <div id="browser-status" class="dim" role="status">Ready</div>

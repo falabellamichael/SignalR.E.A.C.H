@@ -64,6 +64,7 @@ class AgentNet {
     defaultModel = '',
     projectDir = '',
     reachExecutor = null,
+    browserExecutor = null,
     sendEvent = () => {},
     requestApproval = null,
     requestEditReview = null,
@@ -85,6 +86,7 @@ class AgentNet {
     this.defaultModel = defaultModel;
     this.projectDir = projectDir;
     this.reachExecutor = reachExecutor;
+    this.browserExecutor = browserExecutor;
     this.sendEvent = sendEvent;
     this.requestApproval = requestApproval;
     this.requestEditReview = requestEditReview;
@@ -231,6 +233,7 @@ class AgentNet {
       model: useModel,
       projectDir: this.projectDir,
       reachExecutor: this.reachExecutor,
+      browserExecutor: this.browserExecutor,
       personaPrompt: String(prompt || ''),
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets ? { ...this.budgets, maxRounds: this.budgets.subagentMaxRounds } : null,

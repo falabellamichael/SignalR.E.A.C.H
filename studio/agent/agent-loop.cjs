@@ -24,7 +24,7 @@ const MAX_ROUNDS = 40;
 const RETRY_LIMIT = 2;
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000 }) {
+  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000 }) {
     this.agentId = agentId;
     this.store = store;
     this.endpoint = endpoint;
@@ -32,6 +32,7 @@ class AgentLoop {
     this.model = model || DEFAULT_MODEL;
     this.projectDir = projectDir;
     this.reachExecutor = reachExecutor;
+    this.browserExecutor = browserExecutor;
     this.sendEvent = sendEvent || (() => {});
     this.requestApproval = requestApproval;
     this.requestEditReview = requestEditReview;
@@ -293,6 +294,8 @@ class AgentLoop {
               agentId: this.agentId,
               agentStore: this.store,
               reachExecutor: this.reachExecutor,
+              browserExecutor: this.browserExecutor,
+              browserTimeoutMs: this.requestTimeoutMs,
               sendEvent: this.sendEvent,
               requestApproval: this.requestApproval,
               requestEditReview: this.requestEditReview,

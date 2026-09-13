@@ -118,6 +118,7 @@ async function getAgentLoop(agentId) {
     budgets,
     projectDir: agent.dir,
     reachExecutor: createReachToolExecutor(),
+    browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
     sendEvent: (channel, payload) => {
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },
@@ -397,6 +398,7 @@ function registerIpc() {
         defaultModel,
         budgets,
         reachExecutor: createReachToolExecutor(),
+        browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: teamRunId + ':' + ctx.agentId }),
         sendEvent,
         requestApproval: payload => requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs),
         requestEditReview: (edit) => {

@@ -263,18 +263,19 @@ const CORE_TOOLS = {
   },
   websearch: {
     class: 'browse', tier: 'core', approval: false, budget: 40000,
-    help: 'searches the web and reads the top pages.',
+    help: 'opens a web search in your in-app browser tab and returns its visible search results. Open result links to read their pages.',
     example: { action: 'websearch', query: 'Reach language parallel reduce' },
     async execute(args, ctx) {
-      return { ok: false, error: 'websearch is not yet wired in Reach Studio. Use browse with a search engine URL instead.' };
+      if (!String(args.query || '').trim()) return { ok: false, error: 'A search query is required.' };
+      return ctx.browserExecutor ? ctx.browserExecutor('open', { url: 'https://duckduckgo.com/?q=' + encodeURIComponent(args.query) }, ctx) : { ok: false, error: 'The in-app browser is not available.' };
     },
   },
   browse: {
     class: 'browse', tier: 'core', approval: false, budget: 40000,
-    help: 'opens a web page and reads its text. One-shot.',
+    help: 'opens a URL in your in-app browser tab and returns rendered text and element refs. Use browser.click or browser.type to interact.',
     example: { action: 'browse', url: 'https://docs.reach.sh' },
     async execute(args, ctx) {
-      return { ok: false, error: 'browse is not yet wired in Reach Studio.' };
+      return ctx.browserExecutor ? ctx.browserExecutor('open', args, ctx) : { ok: false, error: 'The in-app browser is not available.' };
     },
   },
   todo_write: {
@@ -433,7 +434,7 @@ const COLLAB_TOOLS = {
   },
 };
 
-const TOOLS = { ...CORE_TOOLS, ...REACH_TOOLS, ...COLLAB_TOOLS };
+const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS };
 
 function allowedNames() {
   return Object.keys(TOOLS);
@@ -443,7 +444,7 @@ function namesByTier(tier) {
   return Object.keys(TOOLS).filter((name) => TOOLS[name].tier === tier);
 }
 
-const CORE_PROMPT_TOOLS = ['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'browse', 'websearch'];
+const CORE_PROMPT_TOOLS = ['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'browser', 'browser.click', 'browser.type'];
 
 function toolHelp(tier = 'core', disabled = []) {
   const tiers = Array.isArray(tier) ? tier : [tier];

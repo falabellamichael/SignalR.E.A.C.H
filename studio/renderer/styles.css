@@ -352,6 +352,9 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
 .browser-bookmarks { display: flex; gap: 4px; flex-wrap: wrap; max-height: 80px; overflow: auto; padding: 0 6px; flex-shrink: 0; }
 .browser-bookmarks button { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #browser-viewport { flex: 1; min-height: 80px; position: relative; background: var(--panel); }
+.browser-selection { display: flex; flex-direction: column; gap: 4px; padding: 8px; border-bottom: 1px solid var(--gold-dim); background: var(--panel2); flex-shrink: 0; font-size: 12px; }
+.browser-selection code { color: var(--gold); overflow-wrap: anywhere; }
+#browser-selection-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .browser-welcome { padding: 20px; color: var(--text); }
 #browser-status { padding: 6px 10px; font-size: 12px; flex-shrink: 0; overflow-wrap: anywhere; max-height: 70px; overflow: auto; }
 #drawer-menu { min-width: 160px; }

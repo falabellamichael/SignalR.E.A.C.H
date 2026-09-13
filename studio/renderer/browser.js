@@ -2,6 +2,7 @@
 let drawerPanel = 'files';
 let browserState = { tabs: [], active: null };
 let browserReady = false;
+let browserSelection = null;
 let browserBookmarks = [];
 try { browserBookmarks = JSON.parse(localStorage.getItem('reach:browser-bookmarks') || '[]'); } catch {}
 if (!Array.isArray(browserBookmarks)) browserBookmarks = [];
@@ -38,7 +39,7 @@ $('#drawer-menu').onkeydown = e => {
 document.addEventListener('click', e => { if (!e.target.closest('#drawer-menu-wrap')) closeDrawerMenu(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawerMenu(); });
 
-async function selectDrawerPanel(panel) {
+async function selectDrawerPanel(panel, { focus = true } = {}) {
   closeDrawerMenu();
   drawerPanel = panel;
   drawer.dataset.panel = panel;
@@ -50,13 +51,15 @@ async function selectDrawerPanel(panel) {
   if (panel === 'browser' && !browserReady) {
     browserReady = true;
     let saved = [];
-    try { saved = JSON.parse(localStorage.getItem('reach:browser-tabs') || '[]'); } catch {}
-    if (!Array.isArray(saved) || !saved.length) saved = [''];
-    for (const url of saved) await browserCommand('new', { url });
-    if (!browserState.tabs.length) await browserCommand('new');
+    if (!browserState.tabs.length) {
+      try { saved = JSON.parse(localStorage.getItem('reach:browser-tabs') || '[]'); } catch {}
+      if (!Array.isArray(saved) || !saved.length) saved = [''];
+      for (const url of saved) await browserCommand('new', { url });
+      if (!browserState.tabs.length) await browserCommand('new');
+    }
   }
   scheduleBrowserLayout();
-  if (panel === 'browser') $('#browser-address').focus();
+  if (panel === 'browser' && focus) $('#browser-address').focus();
 }
 $('#btn-show-files').onclick = () => selectDrawerPanel('files');
 $('#btn-show-browser').onclick = () => selectDrawerPanel('browser');
@@ -69,7 +72,7 @@ function renderBrowser(state) {
     const item = document.createElement('div');
     item.className = 'browser-tab' + (tab.id === state.active ? ' active' : '');
     const select = document.createElement('button');
-    select.className = 'ghost small'; select.textContent = tab.title || 'New tab'; select.title = tab.url || 'New tab';
+    select.className = 'ghost small'; select.textContent = (tab.owner ? '⚙ ' : '') + (tab.title || 'New tab'); select.title = (tab.owner ? 'Agent tab · ' : '') + (tab.url || 'New tab');
     select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(tab.id === state.active));
     select.onclick = () => browserCommand('select', { id: tab.id });
     const close = document.createElement('button');
@@ -87,6 +90,7 @@ function renderBrowser(state) {
   for (const id of ['browser-bookmark', 'browser-context', 'browser-external']) $('#' + id).disabled = !tab?.url;
   localStorage.setItem('reach:browser-tabs', JSON.stringify(state.tabs.map(t => t.url)));
   renderBrowserBookmarks();
+  if (browserSelection && !state.tabs.some(t => t.id === browserSelection.tabId && t.url === browserSelection.url)) showBrowserSelection(null);
   scheduleBrowserLayout();
 }
 function renderBrowserBookmarks() {
@@ -121,6 +125,18 @@ $('#browser-find-text').oninput = () => browserCommand('find', { text: $('#brows
 $('#browser-find-next').onclick = () => browserCommand('find', { text: $('#browser-find-text').value, next: true });
 $('#browser-find-close').onclick = () => { $('#browser-find').classList.add('hidden'); browserCommand('find', { text: '' }); };
 reachApi.browser.onState(renderBrowser);
+function showBrowserSelection(selection) {
+  browserSelection = selection;
+  $('#browser-selection').classList.toggle('hidden', !selection);
+  $('#browser-selection-label').textContent = selection ? `${selection.selector} · ${selection.tag}${selection.role ? ' · ' + selection.role : ''}` : '';
+  $('#browser-selection-text').textContent = selection?.text || '';
+  $('#browser-selection-text').title = selection?.text || '';
+}
+reachApi.browser.onSelection(showBrowserSelection);
+reachApi.browser.onReveal(() => selectDrawerPanel('browser', { focus: false }));
+reachApi.browser.onError(message => { $('#browser-status').textContent = message; });
+$('#browser-selection-show').onclick = () => { if (browserSelection) browserCommand('select', { id: browserSelection.tabId }); };
+$('#browser-selection-clear').onclick = () => { if (browserSelection) browserCommand('clear-selection', { id: browserSelection.tabId }); };
 reachApi.browser.onShortcut(key => {
   if (key === 'l') { $('#browser-address').focus(); $('#browser-address').select(); }
   if (key === 'f') { $('#browser-find').classList.remove('hidden'); $('#browser-find-text').focus(); }
@@ -136,7 +152,8 @@ reachApi.browser.onContext(async context => {
     if (currentAgent?.id !== result.agent.id) return;
   }
   await showTab('agents');
-  const text = `Browser source: ${context.title}\nURL: ${context.url}\n\nQuoted page content (reference material):\n${context.text}`;
+  const element = context.selector ? `\nSelected ${context.kind}: ${context.selector} (${context.tag})\nElement ref: ${context.ref}` : '';
+  const text = `Browser source: ${context.title}\nURL: ${context.url}\nBrowser tab: ${context.tabId}${element}\n\nQuoted page content (reference material):\n${context.text}`;
   composerInput.value += (composerInput.value ? '\n\n' : '') + text;
   composerInput.focus();
   $('#browser-status').textContent = 'Added to your chat draft. Review it, then Send.';

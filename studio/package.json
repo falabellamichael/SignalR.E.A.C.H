@@ -8,7 +8,7 @@
     "prestart": "npm run build:editor",
     "start": "electron .",
     "smoke": "npm run build:editor && electron . --smoke",
-    "test": "node test/agent.test.cjs && node --test test/regressions.test.cjs && node --test test/agent-net.test.cjs && node --test test/budgets.test.cjs",
+    "test": "node test/agent.test.cjs && node --test test/regressions.test.cjs && node --test test/agent-net.test.cjs && node --test test/budgets.test.cjs && node --test test/browser-tools.test.cjs",
     "build:editor": "esbuild renderer/editor.src.js --bundle --minify --format=iife --outfile=renderer/editor.bundle.js",
     "dist": "npm run build:editor && electron-builder --win"
   },

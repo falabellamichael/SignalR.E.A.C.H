@@ -1,5 +1,6 @@
 'use strict';
 const { WebContentsView, Menu, shell, ipcMain, session } = require('electron');
+const { agentCommand, pageCall } = require('./agent.cjs');
 
 function normalizeUrl(raw) {
   const text = String(raw || '').trim();
@@ -39,7 +40,7 @@ class StudioBrowser {
   state() {
     return { active: this.active, tabs: [...this.tabs.values()].map(tab => {
       const wc = tab.view.webContents;
-      return { id: tab.id, title: wc.getTitle() || 'New tab', url: wc.getURL(), loading: wc.isLoading(),
+      return { id: tab.id, owner: tab.owner || '', title: wc.getTitle() || 'New tab', url: wc.getURL(), loading: wc.isLoading(),
         canBack: wc.navigationHistory.canGoBack(), canForward: wc.navigationHistory.canGoForward(), error: tab.error || '' };
     }) };
   }
@@ -83,9 +84,13 @@ class StudioBrowser {
       if (mainFrame && code !== -3) { tab.error = description; this.emit(); }
     });
     wc.on('render-process-gone', () => { tab.error = 'Page stopped responding. Reload to try again.'; this.emit(); });
-    wc.on('context-menu', (_event, params) => {
+    wc.on('context-menu', async (_event, params) => {
+      let selected;
+      try {
+        selected = await this.selectElement(tab, params);
+      } catch (error) { if (!this.win.isDestroyed()) this.win.webContents.send('browser:error', error.message); return; }
       Menu.buildFromTemplate([
-        { label: params.selectionText ? 'Add selection to chat' : 'Add element to chat', click: () => this.addContext(tab, params).catch(() => {}) },
+        { label: (params.selectionText ? 'Add selection to chat: ' : 'Add element to chat: ') + selected.selector.slice(0, 60), click: () => this.addContext(tab, params, selected).catch(error => this.win.webContents.send('browser:error', error.message)) },
         { label: 'Add page to chat', click: () => this.addContext(tab).catch(() => {}) },
         { type: 'separator' },
         { role: 'copy', enabled: !!params.selectionText },
@@ -113,15 +118,21 @@ class StudioBrowser {
       if (!tab.view.webContents.isDestroyed() && error.code !== 'ERR_ABORTED') { tab.error = error.message; this.emit(); }
     });
   }
-  async addContext(tab, params = null) {
+  agentCommand(op, args, ctx) { return agentCommand(this, op, args, ctx); }
+  async selectElement(tab, params) {
+    const url = tab.view.webContents.getURL();
+    const result = await pageCall(tab, 'select', { x: params.x, y: params.y, selectionText: params.selectionText });
+    if (tab.view.webContents.getURL() !== url) throw new Error('The page changed; select the element again.');
+    const selected = { ...result, tabId: tab.id, url, title: tab.view.webContents.getTitle() };
+    this.win.webContents.send('browser:selection', selected);
+    return selected;
+  }
+  async addContext(tab, params = null, selected = null) {
     const wc = tab.view.webContents;
     const url = wc.getURL(), title = wc.getTitle();
-    let text = params?.selectionText;
-    if (!text) {
-      const point = params ? `document.elementFromPoint(${Number(params.x) || 0}, ${Number(params.y) || 0})` : 'document.body';
-      text = await wc.executeJavaScriptInIsolatedWorld(999, [{ code: `(() => { const el = ${point}; return (el?.innerText || el?.textContent || '').slice(0, 8000); })()` }]);
-    }
-    const result = { url, title, text: String(text || '').trim().slice(0, 8000) };
+    const content = selected || (params ? await this.selectElement(tab, params) : await pageCall(tab, 'page'));
+    if (selected && (selected.url !== url || selected.documentId !== (await pageCall(tab, 'page')).documentId)) throw new Error('The page changed; select the element again.');
+    const result = { ...content, tabId: tab.id, url, title, text: String(content.text || '').trim().slice(0, 8000) };
     if (wc.getURL() !== url) throw new Error('The page changed; select the content again.');
     if (!result.text) throw new Error('There is no readable text to add.');
     this.win.webContents.focus();
@@ -152,6 +163,7 @@ class StudioBrowser {
       else if (action === 'stop') wc.stop();
       else if (action === 'external') await shell.openExternal(normalizeUrl(wc.getURL()));
       else if (action === 'context') await this.addContext(tab);
+      else if (action === 'clear-selection') { await pageCall(tab, 'clear'); this.win.webContents.send('browser:selection', null); }
       else if (action === 'find') {
         if (args.text) wc.findInPage(String(args.text), { forward: args.forward !== false, findNext: args.next !== true });
         else wc.stopFindInPage('clearSelection');

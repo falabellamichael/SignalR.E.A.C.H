@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('reach', {
   browser: {
+    onSelection: cb => ipcRenderer.on('browser:selection', (_e, data) => cb(data)),
+    onReveal: cb => ipcRenderer.on('browser:reveal', () => cb()),
+    onError: cb => ipcRenderer.on('browser:error', (_e, message) => cb(message)),
     command: (action, args = {}) => ipcRenderer.invoke('browser:command', action, args),
     onState: cb => ipcRenderer.on('browser:state', (_e, state) => cb(state)),
     onContext: cb => ipcRenderer.on('browser:context', (_e, context) => cb(context)),

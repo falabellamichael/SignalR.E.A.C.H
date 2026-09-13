@@ -42,6 +42,23 @@ Node.js or Studio's file/agent bridge. Dialogs and menus remain above the page.
 Keyboard shortcuts while browsing: **Ctrl+L** address, **Ctrl+F** find,
 **Ctrl+T** new tab, and **Ctrl+W** close tab.
 
+Regular agents, team members, and their spawned workers can use this same browser.
+`browse` opens a URL and reads the rendered page; `websearch` opens search results.
+`browser` supports tabs, open/read, history, reload, scrolling, and closing tabs.
+`browser.click` and `browser.type` act on element references returned by a read,
+using the conversation's existing action approval setting. Each agent gets its
+own tab by default; an explicit `tabId` lets it inspect a tab you already opened.
+Stop cancels pending browser work, and Start can resume using the same tab.
+The request timeout follows the agent's budget setting, including zero for no timeout.
+
+Right-clicking a page now outlines the selected element in gold and labels it.
+A **Selected element** panel identifies its selector and text, with controls to
+show its tab or clear the highlight. **Add element to chat** includes the tab ID,
+element reference, selector, and source text in your draft so the agent can work
+with that specific element. References expire after document navigation; the
+agent must read the new page before interacting. Password/file inputs and arbitrary
+page JavaScript execution are not exposed as agent tools.
+
 ## Conversations and teams
 
 - Conversations are bound to project folders and can be branched.
