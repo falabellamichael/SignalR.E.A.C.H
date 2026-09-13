@@ -68,18 +68,29 @@ function renderBrowser(state) {
   browserState = state;
   $('#browser-elements').setAttribute('aria-pressed', String(state.elementsEnabled === true));
   const host = $('#browser-tabs');
-  host.replaceChildren();
+  const existing = new Map([...host.children].map(item => [item.dataset.tabId, item]));
+  const liveIds = new Set(state.tabs.map(tab => tab.id));
+  for (const item of [...host.children]) if (!liveIds.has(item.dataset.tabId)) item.remove();
   for (const tab of state.tabs) {
-    const item = document.createElement('div');
+    let item = existing.get(tab.id);
+    if (!item) {
+      item = document.createElement('div');
+      item.dataset.tabId = tab.id;
+      const select = document.createElement('button');
+      select.className = 'ghost small'; select.setAttribute('role', 'tab');
+      select.onclick = () => browserCommand('select', { id: tab.id });
+      const close = document.createElement('button');
+      close.className = 'ghost small'; close.textContent = '×';
+      close.onclick = () => browserCommand('close', { id: tab.id });
+      item.append(select, close); host.append(item);
+    }
     item.className = 'browser-tab' + (tab.id === state.active ? ' active' : '');
-    const select = document.createElement('button');
-    select.className = 'ghost small'; select.textContent = (tab.owner ? '⚙ ' : '') + (tab.title || 'New tab'); select.title = (tab.owner ? 'Agent tab · ' : '') + (tab.url || 'New tab');
-    select.setAttribute('role', 'tab'); select.setAttribute('aria-selected', String(tab.id === state.active));
-    select.onclick = () => browserCommand('select', { id: tab.id });
-    const close = document.createElement('button');
-    close.className = 'ghost small'; close.textContent = '×'; close.setAttribute('aria-label', 'Close ' + tab.title);
-    close.onclick = () => browserCommand('close', { id: tab.id });
-    item.append(select, close); host.append(item);
+    const [select, close] = item.children;
+    const title = (tab.owner ? '⚙ ' : '') + (tab.title || 'New tab');
+    if (select.textContent !== title) select.textContent = title;
+    select.title = (tab.owner ? 'Agent tab · ' : '') + (tab.url || 'New tab');
+    select.setAttribute('aria-selected', String(tab.id === state.active));
+    close.setAttribute('aria-label', 'Close ' + tab.title);
   }
   const tab = state.tabs.find(t => t.id === state.active);
   if (document.activeElement !== $('#browser-address')) $('#browser-address').value = tab?.url || '';

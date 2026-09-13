@@ -36,6 +36,7 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     const point = await first.webContents.executeJavaScript("(() => { const r = document.querySelector('#counter').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()");
     await first.webContents.executeJavaScript("window.rightClicks = 0; document.addEventListener('contextmenu', e => { e.preventDefault(); window.rightClicks++; });");
     const rightClick = () => {
+      win.focus();
       first.webContents.focus();
       first.webContents.sendInputEvent({ type: 'mouseDown', button: 'right', modifiers: ['rightButtonDown'], clickCount: 1, x: Math.round(point.x), y: Math.round(point.y) });
       first.webContents.sendInputEvent({ type: 'mouseUp', button: 'right', clickCount: 1, x: Math.round(point.x), y: Math.round(point.y) });
@@ -121,6 +122,22 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     await ui(`await browserCommand('new', { url: ${JSON.stringify(url)} });`);
     await until(() => browser.tabs.size === 2 && browser.state().tabs.every(t => !t.loading));
     const second = browser.tabs.get(browser.active).view;
+    const secondId = browser.active;
+    const clickTab = async index => {
+      const position = await ui(`window.__clickedBrowserTab = document.querySelectorAll('#browser-tabs [role="tab"]')[${index}]; const r = window.__clickedBrowserTab.getBoundingClientRect(); return { x: Math.round(r.x+r.width/2), y: Math.round(r.y+r.height/2) };`);
+      win.webContents.focus();
+      win.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', modifiers: ['leftButtonDown'], clickCount: 1, ...position });
+      browser.emit(); // A loading/title update must not discard the pending click.
+      await new Promise(resolve => setTimeout(resolve, 150));
+      const retained = await ui('return window.__clickedBrowserTab.isConnected;');
+      win.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...position });
+      assert.equal(retained, true, 'Browser tab was replaced between mouse-down and mouse-up');
+    };
+    await clickTab(0);
+    await until(() => browser.active === firstId && first.getVisible() && !second.getVisible());
+    await clickTab(1);
+    await until(() => browser.active === secondId && second.getVisible() && !first.getVisible());
+    console.log('TAB CLICK SMOKE OK: real mouse gestures switch tabs both ways without replacing the clicked button.');
     console.log('Browser check: navigation and tabs passed');
     assert.equal(first.getVisible(), false);
     await ui(`document.querySelector('#btn-toggle-files').click();`);

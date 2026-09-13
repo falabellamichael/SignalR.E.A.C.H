@@ -197,7 +197,13 @@ class StudioBrowser {
       else if (action === 'stop') wc.stop();
       else if (action === 'external') await shell.openExternal(normalizeUrl(wc.getURL()));
       else if (action === 'context') await this.addContext(tab);
-      else if (action === 'clear-selection') { await pageCall(tab, 'clear'); this.win.webContents.send('browser:selection', null); }
+      else if (action === 'clear-selection') {
+        await pageCall(tab, 'clear');
+        this.win.webContents.send('browser:selection', null);
+        // Clearing an overlay does not change tabs. Do not redraw the clicked
+        // control between pointerdown and click in the Studio renderer.
+        return {};
+      }
       else if (action === 'find') {
         if (args.text) wc.findInPage(String(args.text), { forward: args.forward !== false, findNext: args.next !== true });
         else wc.stopFindInPage('clearSelection');
