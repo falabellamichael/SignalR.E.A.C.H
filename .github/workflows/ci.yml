@@ -74,3 +74,27 @@ jobs:
         run: node --test tests/*.test.cjs
       - name: Parse JSON
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
+
+  studio:
+    name: REACH Studio (Windows)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - run: npm ci
+      - run: npm run build:editor
+      - name: Check application JavaScript
+        run: |
+          $sources = @('main.mjs', 'preload.cjs') + (Get-ChildItem agent/*.cjs, renderer/*.js, test/*.cjs).FullName
+          foreach ($source in $sources) {
+            node --check $source
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - run: npm test

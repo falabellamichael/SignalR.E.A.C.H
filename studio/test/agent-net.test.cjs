@@ -1,0 +1,198 @@
+'use strict';
+/* AgentNet unit tests — Grok-Bot-style agent-driven collaboration.
+ * Appended as its own node:test block; run via npm test. */
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { AgentNet, netForAgent } = require('../agent/agent-net.cjs');
+const { MemoryStore } = require('../agent/memory-store.cjs');
+const { AgentLoop } = require('../agent/agent-loop.cjs');
+const { runToTerminal } = require('../agent/pause-resume.cjs');
+
+const action = (status, message, actions = [], options = []) =>
+  JSON.stringify({ status, message, actions, options });
+const tool = (name, args) => ({ name, arguments: args });
+
+function localEndpoint(t, handler) {
+  const server = require('node:http').createServer((req, res) => {
+    let body = '';
+    req.on('data', d => { body += d; });
+    req.on('end', () => handler(JSON.parse(body), res));
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      t.after(() => { server.closeAllConnections(); server.close(); });
+      resolve(`http://127.0.0.1:${server.address().port}/v1`);
+    });
+  });
+}
+function jsonReply(res, content) {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ choices: [{ message: { content }, finish_reason: 'stop' }] }));
+}
+
+/* A net with one manually-registered "lead" agent so collab tools have a
+ * caller. The lead's loop is scripted via _fetchChat, no HTTP needed. */
+function leadFixture(net, { replies, name = 'Lead' } = {}) {
+  const store = new MemoryStore();
+  const id = 'lead-1';
+  const loop = new AgentLoop({
+    agentId: id, store, endpoint: 'http://127.0.0.1:9/v1', model: 'lead',
+    sendEvent: () => {},
+  });
+  let call = 0;
+  loop._fetchChat = async () => {
+    const reply = replies[call++];
+    if (reply === undefined) throw new Error('Unexpected extra model request');
+    return new Response(JSON.stringify({ choices: [{ message: { content: reply }, finish_reason: 'stop' }] }),
+      { headers: { 'content-type': 'application/json' } });
+  };
+  net.register({ agentId: id, name, model: 'lead', loop, store, task: 'lead task' });
+  return { id, loop, store };
+}
+
+test('agent.spawn creates a background worker that runs to completion', async t => {
+  const events = [];
+  const endpoint = await localEndpoint(t, (_, res) => jsonReply(res, action('complete', 'Worker finished the audit.')));
+  const net = new AgentNet({ teamRunId: 'net-1', endpoint, defaultModel: 'w', sendEvent: (_, e) => events.push(e) });
+  const lead = leadFixture(net, { replies: [
+    action('actions', 'Delegating.', [tool('agent.spawn', { name: 'Auditor', task: 'Audit index.rsh', prompt: 'You audit.' })]),
+    action('complete', 'Delegated.'),
+  ] });
+  await runToTerminal({ loop: lead.loop, store: lead.store, agentId: lead.id, firstPrompt: 'Go.' });
+  await net.settle();
+
+  const created = events.find(e => e.netType === 'agent-created');
+  assert.ok(created, 'agent-created event emitted');
+  assert.equal(created.name, 'Auditor');
+  assert.ok(created.agentId);
+  const rec = net.agents.get(created.agentId);
+  assert.equal(rec.status, 'completed');
+  assert.equal(rec.output, 'Worker finished the audit.');
+  assert.equal(rec.origin, 'spawned');
+  assert.equal(rec.depth, 1);
+  assert.equal(rec.parentId, lead.id);
+  const states = events.filter(e => e.netType === 'agent-state');
+  assert.ok(states.some(e => e.status === 'running') && states.some(e => e.status === 'completed'));
+  // lead could see the worker via agent.list
+  assert.equal(net.list(lead.id).agents.length, 2);
+});
+
+test('agent.send wakes an idle worker; agent.await returns its output', async t => {
+  const endpoint = await localEndpoint(t, (body, res) => {
+    const last = body.messages[body.messages.length - 1].content;
+    if (last.includes('MESSAGE FROM Lead')) jsonReply(res, action('complete', 'Acknowledged and done.'));
+    else jsonReply(res, action('complete', 'First pass done.'));
+  });
+  const net = new AgentNet({ teamRunId: 'net-2', endpoint, sendEvent: () => {} });
+  const spawned = net.spawn({ name: 'Worker', task: 'Wait for instructions.', parentId: null, depth: 0 });
+  assert.ok(spawned.ok);
+  await net.settle();
+  assert.equal(net.agents.get(spawned.agentId).output, 'First pass done.');
+
+  // Lead messages the idle worker, then awaits it.
+  const lead = leadFixture(net, { replies: [
+    action('actions', 'Sending instructions.', [tool('agent.send', { to: 'Worker', message: 'Now audit the withdraw path.' })]),
+    action('actions', 'Waiting for the worker.', [tool('agent.await', { agent: 'Worker', timeoutMs: 5000 })]),
+    action('complete', 'Done with crew work.'),
+  ] });
+  await runToTerminal({ loop: lead.loop, store: lead.store, agentId: lead.id, firstPrompt: 'Coordinate.' });
+  await net.settle();
+
+  const worker = net.agents.get(spawned.agentId);
+  assert.equal(worker.status, 'completed');
+  assert.equal(worker.output, 'Acknowledged and done.');
+  assert.equal(worker.messagesReceived, 1);
+  // The lead's transcript shows the await result carried the worker output.
+  const leadText = lead.store.get(lead.id).messages.map(m => m.content).join('\n');
+  assert.match(leadText, /Acknowledged and done\./);
+});
+
+test('spawn limits: max agents and depth are enforced with clear errors', async t => {
+  const endpoint = await localEndpoint(t, (_, res) => jsonReply(res, action('complete', 'ok')));
+  const net = new AgentNet({ teamRunId: 'net-3', endpoint, maxAgents: 1, maxDepth: 1, sendEvent: () => {} });
+  const a = net.spawn({ name: 'A', task: 't', depth: 1 });
+  assert.ok(a.ok);
+  const b = net.spawn({ name: 'B', task: 't', depth: 1 });
+  assert.ok(!b.ok && /limit reached/i.test(b.error), 'maxAgents enforced: ' + JSON.stringify(b));
+  await net.settle();
+  // Depth: a depth-1 agent trying to spawn depth-2 with maxDepth=1 is refused.
+  const net2 = new AgentNet({ teamRunId: 'net-4', endpoint, maxDepth: 1, sendEvent: () => {} });
+  const deep = net2.spawn({ name: 'Deep', task: 't', depth: 2 });
+  assert.ok(!deep.ok && /depth limit/i.test(deep.error), 'maxDepth enforced: ' + JSON.stringify(deep));
+  net.stop(); net2.stop();
+});
+
+test('circular await is refused instead of deadlocking', async () => {
+  const net = new AgentNet({ teamRunId: 'net-5', endpoint: 'http://127.0.0.1:9/v1', sendEvent: () => {} });
+  const storeA = new MemoryStore(), storeB = new MemoryStore();
+  net.register({ agentId: 'A', name: 'A', loop: { running: false, stop() {} }, store: storeA, task: '' });
+  net.register({ agentId: 'B', name: 'B', loop: { running: false, stop() {} }, store: storeB, task: '' });
+  // A awaits B (B never finishes) in the background…
+  const pending = net.awaitAgent('B', 'A', { timeoutMs: 60000 });
+  await new Promise(r => setTimeout(r, 50));
+  // …B awaiting A must be REFUSED as a cycle, not block.
+  const cyc = await net.awaitAgent('A', 'B', { timeoutMs: 5000 });
+  assert.equal(cyc.ok, false);
+  assert.match(cyc.error, /Circular await refused/);
+  net.stop();
+  const after = await pending;
+  assert.equal(after.ok, false);
+});
+
+test('collab tools error clearly for agents outside a crew', async () => {
+  const { TOOLS } = require('../agent/tool-registry.cjs');
+  const res = await TOOLS['agent.spawn'].execute({ name: 'X', task: 'y' }, { agentId: 'nobody' });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /not part of a crew run/);
+  assert.equal(netForAgent('nobody'), null);
+});
+
+test('actionInstruction hides collab tools unless the agent is in a crew', () => {
+  const { actionInstruction } = require('../agent/agent-action.cjs');
+  const solo = actionInstruction();
+  const crew = actionInstruction({ includeCollab: true });
+  assert.ok(!solo.includes('agent.spawn'), 'solo prompt must not advertise agent.spawn');
+  assert.ok(crew.includes('agent.spawn') && crew.includes('agent.await'));
+  assert.match(crew, /one agent in a crew/);
+  // The schema enum still contains them (registry-wide) — parsing accepts
+  // them; the prompt simply doesn't tempt solo agents to call them.
+});
+
+test('pause-resume driver: worker proposing an edit resumes after acceptance', async t => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-net-'));
+  fs.writeFileSync(path.join(dir, 'x.rsh'), 'old\n');
+  const endpoint = await localEndpoint(t, (body, res) => {
+    const seen = body.messages.some(m => m.content.includes('ACCEPTED and written to disk'));
+    jsonReply(res, seen
+      ? action('complete', 'Edit applied.')
+      : action('actions', 'Writing.', [tool('write', { path: 'x.rsh', content: 'new\n' })]));
+  });
+  const net = new AgentNet({
+    teamRunId: 'net-6', endpoint, projectDir: dir, sendEvent: () => {},
+    requestEditReview: () => {},
+    awaitEditResolution: async (refs) => refs.map(r => ({ ...r, accepted: true })),
+  });
+  const spawned = net.spawn({ name: 'Writer', task: 'Replace x.rsh.', depth: 0 });
+  assert.ok(spawned.ok);
+  await net.settle();
+  const rec = net.agents.get(spawned.agentId);
+  assert.equal(rec.status, 'completed');
+  assert.equal(rec.output, 'Edit applied.');
+});
+
+test('net.stop halts workers and settles pending awaits', async t => {
+  let started = false, ready;
+  const startedP = new Promise(r => { ready = r; });
+  const endpoint = await localEndpoint(t, (_, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' }); res.write(': waiting\n\n');
+    if (!started) { started = true; ready(); }
+  });
+  const net = new AgentNet({ teamRunId: 'net-7', endpoint, sendEvent: () => {} });
+  net.spawn({ name: 'Slow', task: 'hang', depth: 0 });
+  await startedP;
+  net.stop();
+  await net.settle();
+  const rec = [...net.agents.values()].find(a => a.name === 'Slow');
+  assert.ok(['stopped', 'failed'].includes(rec.status), 'worker stopped, got ' + rec.status);
+});
