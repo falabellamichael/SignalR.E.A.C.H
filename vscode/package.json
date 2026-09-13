@@ -344,6 +344,14 @@
           "default": "http://localhost:3000",
           "markdownDescription": "URL of your DApp frontend. **REACH: Preview DApp** opens the REACH Browser panel here; **REACH: Open DApp in Browser** opens it in your system browser."
         },
+        "simplereach.disabledTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "Tools the REACH agent will not offer or execute. Valid names: read, glob, search, list, shell, browse, websearch, todo_write, todo_read, tool_help, edit_patch, vscode, git, pullRequests, open, runTask, vscodeCommand, browser_*. The model is not told they exist, the webview parser rejects them, and the executor blocks them. Empty (default) = all tools enabled."
+        },
         "simplereach.ideContext": {
           "type": "boolean",
           "default": true,

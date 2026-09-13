@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createRequire } = require('node:module');
-const extensionPath=path.resolve(__dirname,'../vscode/extension.js');
+const extensionPath=path.resolve(process.env.REACH_VSCODE_TEST_PATH || path.join(__dirname,'../vscode'),'extension.js');
 const source=fs.readFileSync(extensionPath,'utf8');
 
 function host(values, response, workspace = {}, api = {}) {
@@ -846,4 +846,102 @@ test('schema negotiation also reuses the first encoded context',async()=>{
  assert.equal(summaries,1);assert.equal(h.calls.length,2);
  assert.equal(JSON.parse(h.calls[1].options.body).response_format.type,'json_object');
  assert.ok(h.posts.some(p=>p.agentAction));
+});
+
+test('broken nested JSON retries as object arguments and remembers success only for that endpoint/model',async()=>{
+ let replies=0;
+ const malformed=actionResponse([{name:'read',arguments:'{"path":"README.md"'}]);
+ const valid=actionResponse([{name:'read',arguments:{path:'README.md'}}]);
+ const h=host({maxTokens:9000},()=>new Response(JSON.stringify({choices:[{message:{content:++replies===1?malformed:valid}}]})));
+ const request={messages:[{role:'user',content:'Continue with the existing tool results.'}],model:'Qwen/Qwen3.8-27B-FP8',agentic:true,structuredActions:true,stream:true};
+ await h.provider._chat(request);
+ assert.equal(h.calls.length,2);
+ const first=JSON.parse(h.calls[0].options.body),repair=JSON.parse(h.calls[1].options.body);
+ assert.equal(first.response_format.type,'json_schema');assert.equal(repair.response_format.type,'json_object');
+ assert.match(repair.messages[0].content,/a direct JSON object, not a string/);
+ assert.doesNotMatch(repair.messages[0].content,/JSON-encoded object string/);
+ assert.equal(repair.model,first.model);assert.equal(repair.max_tokens,9000);assert.equal(repair.stream,false);
+ assert.equal(h.calls[1].url,h.calls[0].url);assert.deepEqual(h.calls[1].options.headers,h.calls[0].options.headers);
+ assert.ok(repair.messages.some(m=>m.content===request.messages[0].content));
+ assert.deepEqual(h.posts.find(p=>p.agentAction).agentAction.tools,[{path:'README.md',action:'read'}]);
+ assert.ok(!h.posts.some(p=>p.type==='delta'));
+ await h.provider._chat(request);
+ assert.equal(h.calls.length,3);assert.equal(JSON.parse(h.calls[2].options.body).response_format.type,'json_object');
+ await h.provider._chat({...request,model:'different/model'});
+ assert.equal(JSON.parse(h.calls[3].options.body).response_format.type,'json_schema');
+ h.config.endpoint='https://different.example/v1';
+ await h.provider._chat(request);
+ assert.equal(JSON.parse(h.calls[4].options.body).response_format.type,'json_schema');
+});
+
+test('invalid object repair releases no part of a batch and does not remember an unsuccessful format',async()=>{
+ const invalid=actionResponse([{name:'read',arguments:{path:'README.md'}},{name:'shell',arguments:{command:'echo unsafe',action:'read'}}]);
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:invalid}}]})));
+ const request={messages:[{role:'user',content:'Continue'}],agentic:true,structuredActions:true};
+ await h.provider._chat(request);
+ assert.equal(h.calls.length,2);assert.ok(!h.posts.some(p=>p.agentAction));
+ assert.match(h.posts.find(p=>p.type==='error').message,/No action was executed/);
+ await h.provider._chat(request);
+ assert.equal(JSON.parse(h.calls[2].options.body).response_format.type,'json_schema');
+ assert.equal(h.calls.length,4);assert.ok(!h.posts.some(p=>p.agentAction));
+});
+
+test('200 consecutive structured rounds accept provider dialects with no repeated requests or lost work',async()=>{
+ let round=0;
+ const h=host({},()=>{
+  const index=round++, path='fixture-'+index+'.js';
+  const content={status:'actions',actions:[{name:'read',arguments:{path}}],notes:'Provider metadata',reasoning:'Not executable'};
+  if(index===199){content.status='complete';content.actions=[];content.summary='Verified the synthetic task.';}
+  else if(index%4===1) content.actions=[{action:'read',path}];
+  else if(index%4===2) return new Response(JSON.stringify({choices:[{message:{content:'Reading.',tool_calls:[{type:'function',function:{name:'read',arguments:JSON.stringify({path})}}]}}]}));
+  return new Response(JSON.stringify({choices:[{message:{content:index%4===3?'```json\n'+JSON.stringify(content)+'\n```':JSON.stringify(content)}}]}));
+ });
+ for(let i=0;i<200;i++){
+  const before=h.posts.length;
+  await h.provider._chat({model:'universal/model',agentic:true,structuredActions:true,stream:true,
+   messages:[{role:'user',content:'Synthetic round '+i+'; preserve completed work.'}]});
+  const posts=h.posts.slice(before),action=posts.find(p=>p.agentAction)?.agentAction;
+  assert.ok(action,'round '+i+': '+JSON.stringify(posts));
+  assert.ok(!posts.some(p=>p.type==='error'||p.type==='delta'));
+  if(i<199) assert.deepEqual(action.tools,[{path:'fixture-'+i+'.js',action:'read'}]);
+  else assert.equal(action.control.status,'complete');
+ }
+ assert.equal(h.calls.length,200);
+});
+
+test('format and template negotiation reaches validated plain JSON and remembers it',async()=>{
+ const h=host({},(url,options)=>{
+  const p=JSON.parse(options.body);
+  if(p.chat_template_kwargs) return new Response('chat_template_kwargs unsupported',{status:400});
+  if(p.response_format) return new Response('response_format unsupported',{status:422});
+  return new Response(JSON.stringify({choices:[{message:{content:actionResponse()}}]}));
+ });
+ const request={model:'Qwen/test',agentic:true,structuredActions:true,messages:[{role:'user',content:'Continue the task.'}]};
+ await h.provider._chat(request);
+ assert.equal(h.calls.length,4);assert.ok(h.posts.some(p=>p.agentAction));
+ const final=JSON.parse(h.calls.at(-1).options.body);
+ assert.equal(final.response_format,undefined);assert.equal(final.chat_template_kwargs,undefined);
+ await h.provider._chat(request);
+ assert.equal(h.calls.length,5);
+ assert.equal(JSON.parse(h.calls.at(-1).options.body).response_format,undefined);
+});
+
+test('format repair can negotiate an unsupported JSON object mode without losing original context',async()=>{
+ let count=0;
+ const h=host({},()=>++count===1?new Response(JSON.stringify({choices:[{message:{content:'{"status":"invalid"}'}}]})):
+  count===2?new Response('json_object response_format unsupported',{status:400}):
+  new Response(JSON.stringify({choices:[{message:{content:actionResponse()}}]})));
+ await h.provider._chat({agentic:true,structuredActions:true,messages:[{role:'user',content:'Keep this exact task.'}]});
+ assert.equal(h.calls.length,3);assert.ok(h.posts.some(p=>p.agentAction));
+ const final=JSON.parse(h.calls[2].options.body);
+ assert.equal(final.response_format,undefined);assert.ok(final.messages.some(m=>m.content==='Keep this exact task.'));
+});
+
+test('filtered and refused structured replies do not trigger execution or a format retry',async()=>{
+ for(const choice of [{finish_reason:'content_filter',message:{content:actionResponse()}},
+  {message:{content:actionResponse(),refusal:'Declined'}}]){
+  const h=host({},()=>new Response(JSON.stringify({choices:[choice]})));
+  await h.provider._chat({agentic:true,structuredActions:true,messages:[{role:'user',content:'Test filtering.'}]});
+  assert.equal(h.calls.length,1);assert.ok(!h.posts.some(p=>p.agentAction));assert.ok(h.posts.some(p=>p.type==='error'));
+ }
 });

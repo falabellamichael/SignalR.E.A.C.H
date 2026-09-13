@@ -255,24 +255,31 @@ function namesByTier(tier) {
  * Browser verbs are omitted unless asked for, so the common turn stays small. */
 const CORE_PROMPT_TOOLS = ['read', 'glob', 'search', 'list', 'shell', 'browse', 'websearch'];
 
-function toolHelp(tier = 'core') {
+function toolHelp(tier = 'core', disabled = []) {
   const tiers = Array.isArray(tier) ? tier : [tier];
+  const off = new Set(disabled);
   const lines = [];
   for (const name of CORE_PROMPT_TOOLS) {
-    if (!TOOLS[name]) continue;
+    if (!TOOLS[name] || off.has(name)) continue;
     lines.push('- ' + name + ': ' + TOOLS[name].help);
     lines.push('  ' + JSON.stringify(TOOLS[name].example));
   }
   if (tiers.includes('browser')) {
-    lines.push('Browser tools (drive the shared REACH browser; call browser_open first):');
-    for (const name of namesByTier('browser')) {
-      lines.push('- ' + name + ': ' + TOOLS[name].help);
-      lines.push('  ' + JSON.stringify(TOOLS[name].example));
+    const browserAvail = namesByTier('browser').filter(n => !off.has(n));
+    if (browserAvail.length) {
+      lines.push('Browser tools (drive the shared REACH browser; call browser_open first):');
+      for (const name of browserAvail) {
+        lines.push('- ' + name + ': ' + TOOLS[name].help);
+        lines.push('  ' + JSON.stringify(TOOLS[name].example));
+      }
     }
   } else {
-    lines.push('More tools are available on request: emit '
-      + JSON.stringify({ action: 'tool_help', topic: 'browser' })
-      + ' to receive the browser tool set (' + browserNames().join(', ') + ').');
+    const browserAvail = browserNames().filter(n => !off.has(n));
+    if (browserAvail.length) {
+      lines.push('More tools are available on request: emit '
+        + JSON.stringify({ action: 'tool_help', topic: 'browser' })
+        + ' to receive the browser tool set (' + browserAvail.join(', ') + ').');
+    }
   }
   return lines.join('\n');
 }

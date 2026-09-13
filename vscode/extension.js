@@ -21,6 +21,7 @@ const { compactMessages, contextChars } = require('./context');
 const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response');
 const { protocol: agentRunProtocol } = require('./media/agent-run');
 const actionCodec = require('./agent-action');
+const { runAgentCommand } = require('./agent-command');
 const { runBrowserAction } = require('./browser-tools');
 const toolsModule = (() => { try { return require('./tools'); } catch (e) { return {}; } })();
 const toolHelp = toolsModule.toolHelp || (() => '');
@@ -147,9 +148,64 @@ function expandAgentTemplate(template, connection) {
  * the built-in text. The fenced-block contract is appended to a custom
  * template too, because the client side only understands ```edit / ```tool
  * blocks — dropping it would silently break every edit. */
+
+/* Build the built-in agent prompt with the current tool allow-list so the
+ * model is never told about disabled tools. Rebuilt on every agentic request
+ * so a mid-session setting change takes effect immediately. */
+function buildAgentPrompt(disabled = []) {
+  const off = new Set(disabled);
+  const toolList = toolsModule.TOOLS || {};
+  const coreTools = (toolsModule.CORE_TOOLS ? Object.keys(toolsModule.CORE_TOOLS) : []).filter(n => toolList[n] && !off.has(n)).map(name =>
+    '- ' + name + ': ' + toolList[name].help + '\n  ' + JSON.stringify(toolList[name].example));
+  const browserAvail = (toolsModule.browserNames ? toolsModule.browserNames() : []).filter(n => toolList[n] && !off.has(n));
+  const toolHelpBlock = [
+    'Core tools (always available):',
+    ...coreTools,
+  ];
+  if (browserAvail.length) {
+    toolHelpBlock.push('Browser tools are available on request via the tool_help meta-tool (' + browserAvail.slice(0, 5).join(', ') + ' …).');
+  }
+  return 'You are SimpleREACH, an agentic coding assistant inside VS Code with live workspace access. '
+    + 'The workspace roots, file tree and the contents of the user\'s open files are provided '
+    + 'in the workspace context above. When the user asks you to change or create files, act '
+    + 'like an agent: briefly explain what you will do, then emit each file change as a fenced '
+    + 'JSON block — one ```edit block per file, like this:\n'
+    + '```edit\n{"path": "relative/path/in/workspace", "search": "exact existing text", "replace": "new text"}\n```\n'
+    + 'Rules: path is relative to the workspace root, forward slashes. "search" must be a small '
+    + 'exact snippet of the current file; use "" as search to create a brand-new file with the '
+    + 'full content in "replace". Emit multiple blocks for multiple edits. Only emit blocks when '
+    + 'the change is clear — otherwise ask. The user sees each block as a diff and can accept or '
+    + 'reject it, so never claim a file was already changed; you only propose edits.\n'
+    + 'For reviews and code questions, read the relevant source before drawing conclusions. '
+    + 'If needed files are missing, request them; do not stop at the directory tree or ask the user to paste files. '
+    + 'Inspect the workspace by emitting tool blocks and then STOPPING — the '
+    + 'tool results are handed back to you and you continue from there:\n'
+    + 'Keep working until the user request is handled or you need concrete user input. '
+    + 'A progress update such as "I will inspect the files" must include the tool requests '
+    + 'for that next step in the same reply. Do not finish with a promise to act later. '
+    + 'After results arrive, perform the next needed action or provide the completed result.\n'
+    + '```tool\n{"action": "read", "path": "relative/path"}\n```\n'
+    + 'The read tool returns the complete text file, including unsaved editor changes. Open-file '
+    + 'context may omit files: use read before answering or editing unless the needed file is already marked complete. '
+    + 'For files larger than one read, use inclusive 1-based line ranges and read every needed range:\n'
+    + '```tool\n{"action": "read", "path": "relative/path", "startLine": 1, "endLine": 200}\n```\n'
+    + 'Never claim to have read the full file if you only received a preview or some ranges.\n'
+    + toolHelpBlock.join('\n') + '\n'
+    + 'Plan multi-step work with a todo list so progress survives a long run:\n'
+    + '```tool\n{"action": "todo_write", "todos": [{"text": "Read the parser", "status": "in_progress"}]}\n```\n'
+    + 'When you need a decision from the user — permission to proceed, a choice between approaches, or a missing '
+    + 'detail — ask with a fenced confirm block and stop:\n'
+    + '```confirm\n{"question": "Rename these 12 files now?", "options": ["Yes, proceed", "No, keep the names"]}\n```\n'
+    + 'The user answers with one click and the answer arrives as the next message; give 2-4 short options, or omit '
+    + 'options for an open question.\n'
+    + 'Use them when you need to see files that are not already in the context, then answer the question or emit edit '
+    + 'blocks for the actual changes.';
+}
+
 function agentSystemPrompt(connection) {
   const custom = (connection && connection.agentTemplate || '').trim();
-  if (!custom) return DEFAULT_AGENT_PROMPT;
+  const disabled = (connection && connection.disabledTools) || [];
+  if (!custom) return buildAgentPrompt(disabled);
   let expanded = expandAgentTemplate(custom, connection);
   // Already contains the contract (the user pasted the full text): keep it,
   // but each missing piece is appended separately so a custom template can
@@ -428,6 +484,8 @@ function config() {
     // to skip thinking (endpoints that reject the field are retried without
     // it); on = the previous behaviour, the model may deliberate first.
     compressThink: cfg.get('compressThink') === true,
+    disabledTools: (Array.isArray(cfg.get('disabledTools')) ? cfg.get('disabledTools') : [])
+      .filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean),
   };
 }
 
@@ -654,42 +712,6 @@ function runLocal(command, timeoutMs = 6000) {
   });
 }
 
-/* Runs an agent-approved command and returns its actual output to the model.
- * The command still shows in the integrated terminal so the user can watch it;
- * unlike a fire-and-forget sendText, the model gets stdout+stderr back and can
- * verify its own change (run the tests, read the failure, fix it). */
-function runAgentCommand(command, timeoutMs = 120000) {
-  return new Promise((resolve) => {
-    const out = { done: false };
-    const finish = (text) => { if (out.done) return; out.done = true; resolve(text); };
-    let collected = '';
-    const cap = (chunk) => {
-      if (collected.length < 60000) collected += String(chunk);
-      else if (collected.length < 60100) collected += '\n[output truncated at 60k chars]';
-    };
-    let child;
-    try {
-      child = spawn(command, {
-        shell: true, windowsHide: true, cwd: agentCwd(),
-        env: { ...process.env, NO_COLOR: '1' },
-      });
-    } catch (e) { finish('(could not start: ' + String((e && e.message) || e) + ')'); return; }
-    child.stdout.on('data', cap);
-    child.stderr.on('data', cap);
-    child.on('error', (e) => finish('(could not start: ' + String((e && e.message) || e) + ')'));
-    child.on('close', (code) => {
-      const text = cleanProbeOutput(collected).slice(0, 60000);
-      finish('exit code ' + code + '\n' + (text || '(no output)'));
-    });
-    const timer = setTimeout(() => {
-      try { child.kill(); } catch (e) { /* already gone */ }
-      finish('timed out after ' + Math.round(timeoutMs / 1000) + 's\n'
-        + (cleanProbeOutput(collected).slice(0, 60000) || '(no output)'));
-    }, timeoutMs);
-    if (timer.unref) timer.unref();
-  });
-}
-
 /* Working directory for agent-run commands: the first workspace folder, so
  * `npm test` runs where the project is and not wherever VS Code was started. */
 function agentCwd() {
@@ -792,6 +814,7 @@ class ReachChatViewProvider {
         case 'abort':
           if (this._idePreparing) this._idePreparing.cancelled = true;
           if (this._controller) this._controller.abort();
+          for (const controller of this._commandControllers || []) controller.abort();
           break;
         case 'openSettings':
           vscode.commands.executeCommand('workbench.action.openSettings', '@ext:simplereach.simplereach');
@@ -833,7 +856,7 @@ class ReachChatViewProvider {
             break;
           }
           const allowed = ['provider', 'additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright', 'agentic', 'temperature', 'additionalHeaders', 'agentTemplate',
-            'agentMaxRounds', 'agentUnfinishedRetries', 'toolResultBudgetKb', 'summaryMaxTokens', 'selectMaxTokens', 'compressThink'];
+            'agentMaxRounds', 'agentUnfinishedRetries', 'toolResultBudgetKb', 'summaryMaxTokens', 'selectMaxTokens', 'compressThink', 'disabledTools'];
           if (!allowed.includes(key)) break;
           const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
           const current = cfg.get(key);
@@ -969,6 +992,11 @@ class ReachChatViewProvider {
         }
         case 'toolReq': {
           const uid = String(msg.uid || '');
+          const action = String(msg.action || '');
+          if (config().disabledTools.includes(action)) {
+            this._post('toolResult', { uid, ok:false, error:'The ' + action + ' tool is disabled in REACH settings (simplereach.disabledTools). Enable it to use this tool.' });
+            break;
+          }
           if (this._ideBridge.handles(msg.action)) {
             try {
               const result = await this._ideBridge.run(msg);
@@ -978,10 +1006,9 @@ class ReachChatViewProvider {
             }
             break;
           }
-          const action = String(msg.action || '');
           const rel = String(msg.path || '').replace(/\\/g, '/');
           const pattern = String(msg.pattern || '').slice(0, 200);
-          const command = String(msg.command || '').slice(0, 1000);
+          const command = String(msg.command || '');
           const folders = vscode.workspace.workspaceFolders || [];
           if (!folders.length) { this._post('toolResult', { uid, ok: false, error: 'No workspace folder is open.' }); break; }
           // Tools run without a timeout: a large workspace search or a big file
@@ -1009,19 +1036,44 @@ class ReachChatViewProvider {
               result = await this._workspaceList(rel);
             } else if (action === 'shell') {
               if (!command) throw new Error('no command');
-              const ok = await vscode.window.showWarningMessage(
-                'REACH agent wants to run this command and read its output:\n\n' + command
-                  + (agentCwd() ? '\n\nWorking directory: ' + agentCwd() : ''),
-                { modal: true },
-                'Run', 'Cancel');
-              if (ok !== 'Run') throw new Error('command not approved');
-              // Show it in a terminal too, so the user watches the same run the
-              // model is reading, rather than a hidden background process.
-              const term = vscode.window.createTerminal('REACH Agent');
-              term.show(true);
-              term.sendText(command);
-              const output = await runAgentCommand(command);
-              result = 'Command: ' + command + '\n--- output (visible in the REACH Agent terminal) ---\n' + output;
+              if (command.length > 60000) throw new Error('Command exceeds 60,000 characters; submit a smaller command.');
+              const commandController = new AbortController();
+              this._commandControllers ??= new Set();
+              this._commandControllers.add(commandController);
+              try {
+                this._post('agentStep', {uid, status:'running', note:'Waiting for your command approval; the command has not started.'});
+                const ok = await vscode.window.showWarningMessage(
+                  'REACH agent wants to run this command and read its output:\n\n' + command
+                    + (agentCwd() ? '\n\nWorking directory: ' + agentCwd() : ''),
+                  { modal: true },
+                  'Run', 'Cancel');
+                if (ok !== 'Run') throw new Error('command not approved');
+                commandController.signal.throwIfAborted();
+                const write = new vscode.EventEmitter();
+                let opened = false, pending = '';
+                const display = text => {
+                  const rendered = text.replace(/\r?\n/g, '\r\n');
+                  if (opened) write.fire(rendered); else pending += rendered;
+                };
+                const term = vscode.window.createTerminal({name:'REACH Agent', pty:{
+                  onDidWrite:write.event,
+                  open:() => { opened = true; write.fire(pending); pending = ''; },
+                  close:() => { commandController.abort(); write.dispose(); },
+                }});
+                term.show(true);
+                display(command + '\n');
+                this._post('agentStep', {uid, status:'running', note:'Command started; output is shown in the REACH Agent terminal.'});
+                let received = 0, lastUpdate = 0;
+                const run = await runAgentCommand(command, {cwd:agentCwd(), signal:commandController.signal, onOutput:text => {
+                  display(text); received += text.length;
+                  if (Date.now() - lastUpdate >= 700) {
+                    lastUpdate = Date.now();
+                    this._post('agentStep', {uid, status:'running', note:'Command output received · ' + received + ' characters'});
+                  }
+                }});
+                result = 'Command: ' + command + '\n--- output (visible in the REACH Agent terminal) ---\n' + run.output;
+                if (!run.ok) throw new Error(result);
+              } finally { this._commandControllers.delete(commandController); }
             } else if (action === 'browse') {
               const url = String(msg.url || '').slice(0, 800);
               if (!/^https?:\/\//i.test(url)) throw new Error('invalid url: ' + url);
@@ -1057,7 +1109,7 @@ class ReachChatViewProvider {
               result = `Patch applied to ${rel} (${hunks.length} hunks). File is now ${newText.split('\n').length} lines.`;
             } else if (action === 'tool_help') {
               const topic = String(msg.topic || 'browser').slice(0, 40);
-              result = toolHelp(topic === 'browser' ? 'browser' : 'core');
+              result = toolHelp(topic === 'browser' ? 'browser' : 'core', config().disabledTools);
             } else if (action === 'websearch') {
               const query = String(msg.query || '').slice(0, 200);
               if (!query) throw new Error('no search query');
@@ -2058,7 +2110,15 @@ class ReachChatViewProvider {
       if (connection.temperature !== null && connection.temperature !== undefined) {
         payload.temperature = connection.temperature;
       }
-      if (structuredActions) payload = actionCodec.prepare(payload);
+      // Learn only from successful validated responses, scoped to this endpoint
+      // and model for the current extension session.
+      const actionFormatKey = JSON.stringify([connection.provider, connection.endpoint, payload.model]);
+      this._actionFormats ??= new Map();
+      this._actionNoTemplate ??= new Set();
+      let omitActionTemplate = this._actionNoTemplate.has(actionFormatKey);
+      if (structuredActions) payload = actionCodec.prepare(payload,
+        this._actionFormats.get(actionFormatKey) || 'json_schema');
+      if (structuredActions && omitActionTemplate) delete payload.chat_template_kwargs;
       controller.signal.throwIfAborted();
       let responseActivity;
       const sendPayload = async request => {
@@ -2087,16 +2147,28 @@ class ReachChatViewProvider {
         this._post('agentStep', { uid: responseActivity, status: 'running', note: 'HTTP response received; waiting for answer data.' });
         return response;
       };
-      let resp = await sendPayload(payload);
       let responseError = null;
-      if (structuredActions && [400,422].includes(resp.status)) {
-        responseError = await resp.text();
-        if (/response_format|json_schema|structured.output|strict/i.test(responseError)) {
-          this._finishActivity(responseActivity, 'The endpoint rejected JSON Schema. Retrying in JSON object mode; actions are still validated before execution.', 'error');
-          payload.response_format = { type: 'json_object' };
+      const sendCompatible = async request => {
+        payload = request;
+        let resp = await sendPayload(payload);
+        responseError = null;
+        for (let negotiation = 0; structuredActions && [400,422].includes(resp.status) && negotiation < 3; negotiation++) {
+          responseError = await resp.text();
+          if (payload.chat_template_kwargs && /chat_template_kwargs|enable_thinking/i.test(responseError)) {
+            this._finishActivity(responseActivity, 'The endpoint rejected the thinking-template option. Retrying without that optional parameter.', 'error');
+            delete payload.chat_template_kwargs;
+            omitActionTemplate = true;
+          } else if (payload.response_format && /response_format|json_schema|json_object|structured.output|strict/i.test(responseError)) {
+            const next = payload.response_format.type === 'json_schema' ? 'json_object' : 'text';
+            this._finishActivity(responseActivity, 'The endpoint rejected the requested JSON format. Retrying with '
+              + (next === 'text' ? 'prompted JSON' : 'JSON object mode') + '; actions are still validated before execution.', 'error');
+            payload = actionCodec.useObjectArguments(payload, next);
+          } else break;
           resp = await sendPayload(payload); responseError = null;
         }
-      }
+        return resp;
+      };
+      let resp = await sendCompatible(payload);
       if (resp.status === 400 || resp.status === 413) {
         if (responseError === null) responseError = await resp.text();
         const limit = /input too large.*?max\s+(\d+)\s+chars/i.exec(responseError);
@@ -2110,7 +2182,7 @@ class ReachChatViewProvider {
             const checkpoint = retryContext.messages.filter(m => !(m.role === 'system'
               && String(m.content).startsWith('You are SimpleREACH, an agentic coding assistant')));
             this._post('contextCompacted', { messages: checkpoint, before: retryContext.before, after: contextChars(checkpoint) });
-            resp = await sendPayload(payload); responseError = null;
+            resp = await sendCompatible(payload);
           }
         }
       }
@@ -2147,7 +2219,7 @@ class ReachChatViewProvider {
         if (error.partialResponse || !isTransientTransportError(error)) throw error;
         this._finishActivity(responseActivity, transportDiagnostic(error)
           + ' No answer was delivered. Retrying this response once.', 'error');
-        const retry = await sendPayload(payload);
+        const retry = await sendCompatible(payload);
         if (!retry.ok) throw new Error('Response recovery failed (HTTP ' + retry.status + '). The conversation is preserved.');
         reply = await readReply(retry, payload.stream);
       }
@@ -2161,12 +2233,12 @@ class ReachChatViewProvider {
       const canRetry = !reply.error && !reply.content.trim() && !reply.toolCalls
         && (!reply.finishReason || ['stop', 'length'].includes(reply.finishReason));
       if (canRetry && this._controller === controller) {
-        const noThinking = /qwen/i.test(payload.model);
+        const noThinking = /qwen/i.test(payload.model) && !(structuredActions && omitActionTemplate);
         const retryPayload = { ...payload, stream: false,
           ...(noThinking ? { chat_template_kwargs: { enable_thinking: false } } : {}) };
         this._finishActivity(responseActivity, emptyReplyDiagnostic(reply, payload.model)
           + (noThinking ? ' Retrying once without streaming or model reasoning.' : ' Retrying once without streaming.'));
-        const retry = await sendPayload(retryPayload);
+        const retry = await sendCompatible(retryPayload);
         controller.signal.throwIfAborted();
         if (retry.ok) {
           reply = await readReply(retry, retryPayload.stream);
@@ -2177,25 +2249,29 @@ class ReachChatViewProvider {
         }
       }
       if (this._controller === controller) {
-        if (reply.error || !reply.content.trim()) {
+        if (reply.error || (!reply.content.trim() && !(structuredActions && reply.toolCalls))) {
           this._post('error', { message: reply.error || emptyReplyDiagnostic(reply, payload.model)
             + ' The conversation is preserved; retry or select another model.' });
           this._post('done', {});
         } else {
           if (structuredActions) {
+            if (reply.finishReason === 'content_filter') throw new Error('The provider filtered the action response. No action was executed.');
             let action;
-            try { action = actionCodec.decode(reply.content); }
+            try { action = actionCodec.decodeReply(reply); }
             catch (error) {
-              this._finishActivity(responseActivity, error.message + ' Retrying the action format once.', 'error');
-              const repair = actionCodec.withInstruction(payload,
+              this._finishActivity(responseActivity, error.message + ' Retrying once with direct JSON object arguments.', 'error');
+              const repair = actionCodec.withInstruction(actionCodec.useObjectArguments(payload, payload.response_format ? 'json_object' : 'text'),
                 error.message + ' Return valid action JSON with real tool arguments or a concrete completion/question/blocker.');
-              const repaired = await sendPayload(repair);
+              payload = repair;
+              const repaired = await sendCompatible(repair);
               if (!repaired.ok) throw new Error('The endpoint could not supply executable action JSON (HTTP ' + repaired.status + '). The task is saved.');
               const fixed = await readReply(repaired, false);
               if (fixed.error) throw new Error(fixed.error);
-              action = actionCodec.decode(fixed.content);
+              action = actionCodec.decodeReply(fixed);
             }
             controller.signal.throwIfAborted();
+            this._actionFormats.set(actionFormatKey, payload.response_format?.type || 'text');
+            if (omitActionTemplate) this._actionNoTemplate.add(actionFormatKey);
             if (this._controller === controller) this._post('done', { full: action.message, agentAction: action });
           } else this._post('done', payload.stream ? {} : { full: reply.content });
         }
@@ -2233,7 +2309,7 @@ class ReachChatViewProvider {
       .replace(/\{\{agentRunUri\}\}/g, mediaUri('agent-run.js'))
       // The parser's allow-list is generated from the tool registry, so the
       // webview and the executor can never disagree about what is executable.
-      .replace(/\{\{toolNames\}\}/g, JSON.stringify(allowedNames()));
+      .replace(/\{\{toolNames\}\}/g, JSON.stringify(allowedNames().filter(name => !config().disabledTools.includes(name))));
   }
 }
 
@@ -2605,6 +2681,16 @@ function activate(context) {
   // The Copilot system tray starts with the extension (no-op when it is
   // already running); the chat panel's tray icon reflects the live state.
   if (TRAY_PROVIDERS.includes(config().provider)) startTray().catch(() => {});
+
+  // Re-render the chat webview when the tool allow-list changes so the
+  // parser's allow-list (REACH_TOOL_NAMES) stays in sync with the setting.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('simplereach.disabledTools') && provider._view) {
+        provider._view.webview.html = provider._html(provider._view.webview);
+      }
+    }),
+  );
 }
 
 function deactivate() {

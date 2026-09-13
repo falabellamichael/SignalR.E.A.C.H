@@ -15,7 +15,7 @@ function fileUri(filename) {
 // Exercise the real activation, host provider, bridge, and context modules.
 // Only the VS Code host and the tray health HTTP call are substituted. No
 // process-wide loader patch, model request, service, or installed app is used.
-function fixture() {
+function fixture(commandRunner) {
   const messages = [], calls = [], commands = new Map(), configuration = {};
   const extensionPath = process.env.REACH_VSCODE_TEST_PATH || path.resolve(__dirname, '../vscode');
   const extensionUri = fileUri(extensionPath);
@@ -26,10 +26,16 @@ function fixture() {
     packageJSON: { name: 'git', displayName: 'Git', publisher: 'vscode', version: '1.0.0' },
     exports: { getAPI(version) { calls.push(['git.getAPI', version]); return gitApi; } } };
   const vscode = {
+    EventEmitter: class {
+      constructor() { this.handlers=[]; this.event=fn=>{this.handlers.push(fn);return disposable();}; }
+      fire(value) { this.handlers.forEach(fn=>fn(value)); }
+      dispose() { this.handlers=[]; }
+    },
     version: '1.100.0', env: { appName: 'Visual Studio Code', language: 'en', uiKind: 1 },
     Uri: { file: fileUri, joinPath: (base, ...parts) => fileUri(path.join(base.fsPath, ...parts)) },
     FileType: { File: 1, Directory: 2 }, ViewColumn: { Active: -1 }, TabInputText: class TabInputText {},
     workspace: { isTrusted: true, workspaceFolders: [], textDocuments: [],
+      onDidChangeConfiguration: () => disposable(),
       getConfiguration: namespace => ({ get(key, fallback) {
         return Object.hasOwn(configuration, `${namespace}.${key}`) ? configuration[`${namespace}.${key}`] : fallback;
       } }),
@@ -39,6 +45,7 @@ function fixture() {
       fs: { readFile: async () => { throw new Error('Unexpected filesystem content read'); } },
     },
     window: { visibleTextEditors: [], terminals: [], tabGroups: { all: [] },
+      createTerminal: options => { calls.push(['terminal.create',options]);options.pty.open();return {show(){}}; },
       registerWebviewViewProvider: (id, provider) => { calls.push(['webview.register', id]); registeredProvider = provider; return disposable(); },
       showTextDocument: async (document, options) => { calls.push(['document.show', document, options]); return {}; },
       showWarningMessage: async (...args) => { calls.push(['approval', ...args]); return undefined; },
@@ -64,6 +71,7 @@ function fixture() {
   loaded.paths = Module._nodeModulePaths(extensionPath);
   loaded.require = function (id) {
     if (id === 'vscode') return vscode;
+    if (id === './agent-command' && commandRunner) return {runAgentCommand:commandRunner};
     if (id === 'http') return fakeHttp;
     if (id === 'child_process') return { ...require('node:child_process'), spawn() { throw new Error('Unexpected child process'); } };
     return Module.prototype.require.call(this, id);
@@ -158,8 +166,8 @@ test('legacy actions retain their own workspace guard and unsupported-action err
   assert.equal(result[0].ok, false);
   assert.match(result[0].error, /unknown action: not-a-tool/);
   result = await f.send({ type: 'toolReq', uid: 'legacy-shell', action: 'shell', command: 'echo never-executed' });
-  assert.equal(result[0].ok, false);
-  assert.match(result[0].error, /not approved/);
+  assert.equal(result.find(m => m.type === 'toolResult').ok, false);
+  assert.match(result.find(m => m.type === 'toolResult').error, /not approved/);
   assert.ok(f.calls.some(call => call[0] === 'approval'));
   assert.equal(f.calls.some(call => call[0] === 'command.execute'), false);
 });
@@ -176,4 +184,39 @@ test('registered Inspect Context command opens the observed real bridge snapshot
   const shown = f.calls.find(call => call[0] === 'document.show');
   assert.equal(shown[2].preview, true);
   assert.equal(f.messages.length, 0);
+});
+
+test('approved shell dispatch creates one output terminal and invokes the command runner once',async()=>{
+ const executions=[];
+ const f=fixture(async(command,options)=>{executions.push(command);options.onOutput('ACTUAL OUTPUT\n');return {ok:true,code:0,output:'exit code 0\nACTUAL OUTPUT'};});
+ f.vscode.workspace.workspaceFolders=[{uri:fileUri(path.resolve(__dirname,'..'))}];
+ f.vscode.window.showWarningMessage=async()=> 'Run';
+ const result=await f.send({type:'toolReq',uid:'single',action:'shell',command:'node fixture.js'});
+ assert.deepEqual(executions,['node fixture.js']);
+ assert.equal(f.calls.filter(c=>c[0]==='terminal.create').length,1);
+ assert.match(result.find(m=>m.type==='toolResult').result,/ACTUAL OUTPUT/);
+ assert.ok(result.some(m=>m.note?.includes('has not started')));
+ assert.ok(result.some(m=>m.note?.includes('Command started')));
+ assert.equal(f.provider._commandControllers.size,0);
+});
+
+test('Stop while approval is pending prevents a late approval from launching the command',async()=>{
+ let approve,executions=0;
+ const f=fixture(async()=>{executions++;});
+ f.vscode.workspace.workspaceFolders=[{uri:fileUri(path.resolve(__dirname,'..'))}];
+ f.vscode.window.showWarningMessage=()=>new Promise(resolve=>{approve=resolve;});
+ const pending=f.send({type:'toolReq',uid:'stopped',action:'shell',command:'never-run'});
+ await f.send({type:'abort'});approve('Run');
+ const messages=await pending;
+ assert.equal(executions,0);assert.equal(messages.find(m=>m.type==='toolResult').ok,false);
+ assert.equal(f.calls.some(c=>c[0]==='terminal.create'),false);
+});
+
+test('disabled IDE tools are blocked before reaching their executor',async()=>{
+ const f=fixture();f.configuration['simplereach.disabledTools']=['vscode','git'];
+ for(const action of ['vscode','git']){
+  const messages=await f.send({type:'toolReq',uid:action,action});
+  assert.equal(messages[0].ok,false);assert.match(messages[0].error,/disabled/);
+ }
+ assert.equal(f.calls.some(c=>c[0]==='git.getAPI'),false);
 });

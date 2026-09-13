@@ -106,6 +106,37 @@ test('toolHelp outputs core help and conditionally browser help', () => {
   assert.ok(browserHelp.includes('browser_click'));
 });
 
+test('toolHelp hides disabled tools from core and browser sections', () => {
+  const coreHelp = toolHelp('core', ['read', 'shell']);
+  assert.ok(!coreHelp.includes('- read:'));
+  assert.ok(!coreHelp.includes('- shell:'));
+  assert.ok(coreHelp.includes('- glob:'));
+  assert.ok(coreHelp.includes('- search:'));
+
+  const browserHelp = toolHelp(['core', 'browser'], ['browser_open', 'browser_click']);
+  assert.ok(!browserHelp.includes('browser_open:'));
+  assert.ok(!browserHelp.includes('browser_click:'));
+  assert.ok(browserHelp.includes('browser_navigate:'));
+
+  const allDisabled = toolHelp(['core', 'browser'], allowedNames());
+  assert.ok(!allDisabled.includes('Browser tools (drive the shared REACH browser'));
+});
+
+test('executor guard blocks disabled tools before execution', () => {
+  const extSrc = EXTENSION_SRC;
+  assert.ok(extSrc.includes("config().disabledTools.includes(action)"),
+    'the disabledTools guard is missing from the toolReq handler');
+  assert.ok(extSrc.includes('simplereach.disabledTools'),
+    'the guard error message must reference the setting name');
+});
+
+test('webview toolNames injection filters disabled tools', () => {
+  assert.ok(EXTENSION_SRC.includes('allowedNames().filter'),
+    'the webview injection must filter allowedNames through disabledTools');
+  assert.ok(EXTENSION_SRC.includes('disabledTools.includes'),
+    'the webview injection must check each name against disabledTools');
+});
+
 test('edits applyPatch supports multi-hunk search and replace', () => {
   const initial = 'line 1\nline 2\nline 3\nline 4\n';
   const hunks = [
