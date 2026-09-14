@@ -270,11 +270,13 @@ npm run dist
   `Reach Studio.app` into `/Applications` to install. Local Mac builds are not
   notarized; public distribution needs Developer ID signing and notarization. Generated bundles, installers, dependencies, logs and local
   credentials are excluded from Git.
-- `npm run dist:linux` produces an **AppImage** and a **deb** package under
-  `dist/`. Install the AppImage with `chmod +x` and run it directly, or install
-  the deb with `sudo apt install ./reach-studio_*.deb` (or
-  `sudo dpkg -i reach-studio_*.deb`). Linux desktops need a GUI session; on
-  headless servers run the smoke check with `xvfb-run -a npm run smoke`.
+- `npm run dist:linux` produces an **AppImage**, a **deb** package, and a
+  portable **zip** under `dist/`. Install the AppImage with `chmod +x` and run
+  it directly; install the deb with `sudo apt install ./reach-studio_*.deb`
+  (Debian/Ubuntu); or extract the zip and run its `reach-studio` binary — no
+  package manager needed, on any distro (including Arch/pacman). Linux
+  desktops need a GUI session; on headless servers run the smoke check with
+  `xvfb-run -a npm run smoke`.
 
 The root CI workflow includes Windows, macOS, and Linux jobs that install the
 locked dependencies, build the editor, check JavaScript syntax, and run

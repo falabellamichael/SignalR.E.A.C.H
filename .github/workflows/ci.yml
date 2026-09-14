@@ -120,4 +120,5 @@ jobs:
           path: |
             studio/dist/*.AppImage
             studio/dist/*.deb
+            studio/dist/*.zip
           if-no-files-found: error

@@ -78,7 +78,8 @@
     "linux": {
       "target": [
         "AppImage",
-        "deb"
+        "deb",
+        "zip"
       ],
       "category": "Development",
       "icon": "assets/icon.png",
