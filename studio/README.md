@@ -1,17 +1,18 @@
 # REACH Studio
 
-REACH Studio is the standalone macOS and Windows desktop app in this repository. It combines
+REACH Studio is the standalone macOS, Windows, and Linux desktop app in this repository. It combines
 project files and editing, AI conversations, custom personas, and collaborating
 agent teams. It connects to a configured OpenAI-compatible endpoint, including
-SignalREACH. It also provides optional Reach DApp CLI integration through a native executable on macOS or WSL on Windows.
+SignalREACH. It also provides optional Reach DApp CLI integration through a
+native executable on macOS and Linux, or WSL on Windows.
 
 Built by Michael Anthony Falabella. Licensed under the repository's [MIT license](../LICENSE).
 
 ## Run from source
 
-Use macOS or Windows and Node.js 24 LTS. From the repository root:
+Use macOS, Windows, or Linux and Node.js 24 LTS. From the repository root:
 
-```powershell
+```bash
 cd studio
 npm ci
 npm start
@@ -20,7 +21,9 @@ npm start
 `npm start` builds the CodeMirror editor bundle before launching Electron.
 Configure the endpoint, access key if required, and default model in
 **Settings ▾ → Connection & default model**. Settings and conversations are stored
-in Electron's user-data directory, normally `%APPDATA%\Reach Studio`.
+in Electron's user-data directory, normally `%APPDATA%\Reach Studio` on
+Windows, `~/Library/Application Support/Reach Studio` on macOS, and
+`~/.config/Reach Studio` on Linux.
 
 Use **Open Folder** to work with an existing project. **New Project → Create & Init**
 creates a new Reach DApp scaffold; it does not import another project's files.
@@ -94,8 +97,8 @@ same measurements. Telemetry can also be opened over an existing conversation;
 
 On Windows, readings include CPU, physical RAM, GPU engine utilization, dedicated
 and shared GPU memory, the largest 30 process working sets, network and disk rates,
-and uptime. Activity charts retain up to 60 seconds of measured history. macOS has
-CPU, RAM and process readings; GPU, network and disk counters remain Windows-only.
+and uptime. Activity charts retain up to 60 seconds of measured history. macOS
+and Linux have CPU, RAM and process readings; GPU, network and disk counters remain Windows-only.
 Missing counters display as unavailable rather than zero.
 
 **Sources…** configures up to eight Ollama, LM Studio, or Lemonade servers. These
@@ -228,8 +231,9 @@ updates open editors without losing edits, selections, or undo history.
 ## Optional Reach CLI integration
 
 The Projects command bar and agent tools share the same CLI configuration.
-On macOS, Studio finds `reach` on PATH, including `/opt/homebrew/bin`,
-`/usr/local/bin`, `~/.local/bin`, and `~/bin` when launched from Finder. Set
+On macOS and Linux, Studio finds `reach` on PATH, including `/opt/homebrew/bin`,
+`/usr/local/bin`, `~/.local/bin`, and `~/bin` when launched from Finder or a
+desktop launcher. Set
 **Settings → Connection → Reach CLI executable** to an existing executable
 if installed elsewhere. Paths containing spaces are supported. The environment
 variable `REACH_STUDIO_CLI` supplies a fallback path.
@@ -266,6 +270,13 @@ npm run dist
   `Reach Studio.app` into `/Applications` to install. Local Mac builds are not
   notarized; public distribution needs Developer ID signing and notarization. Generated bundles, installers, dependencies, logs and local
   credentials are excluded from Git.
+- `npm run dist:linux` produces an **AppImage** and a **deb** package under
+  `dist/`. Install the AppImage with `chmod +x` and run it directly, or install
+  the deb with `sudo apt install ./reach-studio_*.deb` (or
+  `sudo dpkg -i reach-studio_*.deb`). Linux desktops need a GUI session; on
+  headless servers run the smoke check with `xvfb-run -a npm run smoke`.
 
-The root CI workflow includes Windows and macOS jobs that installs the locked dependencies,
-builds the editor, checks JavaScript syntax, and runs `npm test`. macOS also runs the Electron smoke test and packages the app.
+The root CI workflow includes Windows, macOS, and Linux jobs that install the
+locked dependencies, build the editor, check JavaScript syntax, and run
+`npm test`. macOS runs the Electron smoke test and packages the app; Linux runs
+the smoke test headless and packages the AppImage and deb installers.

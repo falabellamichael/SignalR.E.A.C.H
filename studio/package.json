@@ -3,6 +3,8 @@
   "productName": "Reach Studio",
   "version": "1.0.0",
   "description": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
+  "homepage": "https://github.com/falabellamichael/SignalR.E.A.C.H",
+  "desktopName": "reach-studio.desktop",
   "main": "main.mjs",
   "scripts": {
     "prestart": "npm run build:editor",
@@ -14,9 +16,10 @@
     "dist": "npm run build:editor && electron-builder",
     "dist:mac": "npm run build:editor && electron-builder --mac",
     "dist:win": "npm run build:editor && electron-builder --win",
+    "dist:linux": "npm run build:editor && electron-builder --linux",
     "check": "node scripts/check-syntax.cjs"
   },
-  "author": "Michael Anthony Falabella",
+  "author": "Michael Anthony Falabella <falabellamichael@gmail.com>",
   "license": "MIT",
   "engines": {
     "node": ">=22.12.0"
@@ -71,6 +74,17 @@
       "category": "public.app-category.developer-tools",
       "icon": "assets/icon.icns",
       "identity": "-"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development",
+      "icon": "assets/icon.png",
+      "maintainer": "Michael Anthony Falabella <falabellamichael@gmail.com>",
+      "synopsis": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
+      "syncDesktopName": true
     }
   },
   "allowScripts": {

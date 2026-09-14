@@ -81,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest]
+        os: [windows-latest, macos-latest, ubuntu-latest]
     defaults:
       run:
         working-directory: studio
@@ -97,9 +97,27 @@ jobs:
       - run: npm run build:editor
       - run: npm run check
       - run: npm test
+      - name: Install Electron runtime libraries (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2 libx11-xcb1 xvfb
       - name: macOS Electron smoke test
         if: runner.os == 'macOS'
         run: npm run smoke
+      - name: Linux Electron smoke test (headless)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run smoke
       - name: Package macOS application
         if: runner.os == 'macOS'
         run: npm run dist:mac -- --dir
+      - name: Package Linux installers
+        if: runner.os == 'Linux'
+        run: npm run dist:linux
+      - name: Upload Linux installers
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reach-studio-linux
+          path: |
+            studio/dist/*.AppImage
+            studio/dist/*.deb
+          if-no-files-found: error
