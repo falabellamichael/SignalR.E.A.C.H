@@ -6,7 +6,7 @@ const path = require('node:path');
 // Finder-launched apps do not inherit a terminal's Homebrew/user PATH.
 function commandEnv(env = process.env, platform = process.platform, home = os.homedir()) {
   if (platform === 'win32') return { ...env };
-  const dirs = [env.PATH || '', '/opt/homebrew/bin', '/usr/local/bin', path.join(home, '.local/bin'), path.join(home, 'bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  const dirs = [env.PATH || '', '/opt/homebrew/bin', '/usr/local/bin', path.posix.join(home, '.local/bin'), path.posix.join(home, 'bin'), '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   return { ...env, PATH: [...new Set(dirs.join(':').split(':').filter(Boolean))].join(':') };
 }
 function reachCommand(args = [], settings = {}, platform = process.platform, env = process.env) {
