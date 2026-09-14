@@ -6,9 +6,11 @@ import re
 import sys
 import time
 
+from .agent_tools import TOOLS, run_tool, tool_help_text
 from .client import ReachApiError
 from .grounding import build_grounded_messages
 from .terminal import (
+    WaitIndicator,
     banner,
     c_bold,
     c_cyan,
@@ -33,16 +35,21 @@ DEFAULT_IDENTITY = (
 
 AGENT_SYSTEM_PROMPT = (
     "You are SimpleREACH, an agentic coding assistant. You operate inside a "
-    "directory called the workpath. When the user asks you to change or create "
-    "files, act like an agent: briefly explain what you will do, then emit each "
-    "file change as a fenced JSON block, one ```edit block per file:\n"
-    '```edit\n{"path": "relative/path/from/workpath", "search": "exact existing text", "replace": "new text"}\n```\n'
-    'Rules: "path" is relative to the workpath and uses forward slashes. '
-    '"search" must be a small exact snippet of the current file; use "" as '
-    "search to create a brand-new file with the full content in \"replace\". "
-    "Emit multiple blocks for multiple edits. Only emit blocks when the change "
-    "is clear, otherwise ask. The user reviews and approves every edit before it "
-    "is applied, so never claim a file was already changed — you only propose edits."
+    "directory called the workpath and act through local tools.\n\n"
+    "TOOLS:\n"
+    + tool_help_text()
+    + "\n\nTo take an action, emit one standalone fenced tool block as your "
+    "whole reply (one action per turn):\n"
+    '```tool\n{"action": "search", "pattern": "def \\w+", "regex": true}\n```\n'
+    "After every tool block you receive a [tool result] message. React to it "
+    "with the next action. Never guess what a tool returned. Before starting a "
+    "multi-step task, write a plan with todo_write and keep it updated.\n\n"
+    "RUN CONTROL (required; ordinary prose never ends the task):\n"
+    "When the request is fully handled (plan complete, edits applied, changes "
+    "verified with shell where possible), finish with exactly:\n"
+    '```agent_status\n{"status": "complete", "summary": "What was done and how it was verified."}\n```\n'
+    "If you need a decision from the user, ask in plain prose and stop — do not "
+    "emit agent_status. Do not claim completion while work remains."
 )
 
 
@@ -191,19 +198,190 @@ def set_system_message(history, client):
         history.insert(0, {"role": "system", "content": prompt})
 
 
-def stream_reply(client, messages):
-    """Streams a reply; returns (ok, full_text)."""
+def stream_reply(client, messages, prefix=""):
+    """Streams a reply; returns (ok, full_text).
+
+    Shows an animated waiting line until the first token arrives, so a
+    long upstream wait (reasoning models, slow aliases, cold relays) is
+    never silent.
+    """
     text_parts = []
+    indicator = WaitIndicator(prefix)
+    indicator.start()
     try:
         for delta in client.chat(messages):
+            indicator.stop()
             sys.stdout.write(delta)
             sys.stdout.flush()
             text_parts.append(delta)
     except ReachApiError as exc:
+        indicator.stop()
         print(c_red("  ✗ " + str(exc)))
         return False, ""
+    finally:
+        indicator.stop()
     print()
     return True, "".join(text_parts)
+
+
+# ---- agent loop ------------------------------------------------------------
+
+_TOOL_FENCE = re.compile(r"```tool\s*\n(.*?)```", re.DOTALL)
+_STATUS_FENCE = re.compile(r"```agent_status\s*\n(.*?)```", re.DOTALL)
+
+MAX_AGENT_ROUNDS = 16
+MAX_RECOVERY = 2
+
+
+class AgentState:
+    """Per-session agent state: the plan and the 'always approve' switch."""
+
+    def __init__(self):
+        self.todos = []
+        self.auto_approve = False
+
+    def approve(self, kind, detail):
+        """Approval callback for exec/write tools."""
+        if self.auto_approve:
+            return True
+        print()
+        print(c_bold(c_yellow("  agent %s: " % kind)) + c_bold(detail))
+        try:
+            answer = input(c_bold(c_yellow("  allow? [y/n/a/q] "))).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+        if answer == "a":
+            self.auto_approve = True
+            return True
+        if answer == "q":
+            raise KeyboardInterrupt  # stop the whole run
+        return answer in ("y", "yes")
+
+
+def parse_tool_blocks(text):
+    """Split a reply into (actions, status, invalid)."""
+    actions = []
+    for raw in _TOOL_FENCE.findall(text or ""):
+        try:
+            data = json.loads(raw.strip())
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(data, dict) and data.get("action"):
+            actions.append(data)
+    status = None
+    for raw in _STATUS_FENCE.findall(text or ""):
+        try:
+            data = json.loads(raw.strip())
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(data, dict) and data.get("status") in ("complete", "blocked"):
+            status = data
+    invalid = bool(_TOOL_FENCE.search(text or "")) and not actions
+    return actions, status, invalid
+
+
+def _execute_actions(client, actions, state):
+    """Run each tool action; return the [tool result] message text."""
+    ctx = {"todos": state.todos, "approve": state.approve}
+    parts = []
+    for action in actions:
+        name = str(action.get("action"))
+        args = {k: v for k, v in action.items() if k != "action"}
+        if TOOLS.get(name, {}).get("approval"):
+            preview = args.get("command") or args.get("path") or name
+            print(c_bold(c_yellow("  agent %s → ")) % name, c_bold(str(preview)))  # noqa: E501
+        else:
+            print(c_dim("  agent %s → %s" % (name, json.dumps(args)[:90])))
+        result = run_tool(name, args, client.workpath, ctx)
+        first = result.splitlines()[0][:100] if result else ""
+        marker = c_red("✗") if result.startswith("error:") else c_green("✓")
+        print(marker + c_dim("  " + first))
+        parts.append("tool %s %s:\n%s" % (name, json.dumps(args), result))
+    return "[tool result]\n" + "\n\n".join(parts)
+
+
+def _apply_status(history, reply_text, status, state):
+    """Handle a run-control block. Returns True when the turn is over."""
+    if status.get("status") == "blocked":
+        print(c_yellow("  ⏸ agent blocked: " + str(status.get("reason", ""))[:300]))
+        return True
+    open_items = [t for t in state.todos if t.get("status") != "completed"]
+    if open_items:
+        # completion rejected — nudge the model to finish the plan
+        history.append({"role": "assistant", "content": reply_text})
+        history.append({
+            "role": "user",
+            "content": "[run control] Completion rejected: %d plan item(s) "
+            "remain open: %s. Continue working; request the next tool."
+            % (len(open_items), json.dumps(open_items)),
+        })
+        return False
+    print(c_green("  ⏹ agent complete: " + str(status.get("summary", ""))[:300]))
+    return True
+
+
+def run_agent_turn(client, history, state, instruction=None):
+    """One full agent run: act → observe → act … until complete/blocked/paused.
+
+    ``instruction`` optionally injects a recovery prompt before the first
+    round. History is mutated with the tool exchanges; the visible transcript
+    stays readable because tool blocks live inside the assistant messages.
+    """
+    rounds = 0
+    recovery = 0
+    if instruction:
+        history.append({"role": "user", "content": instruction})
+    try:
+        while rounds < MAX_AGENT_ROUNDS:
+            rounds += 1
+            set_system_message(history, client)
+            print(c_dim("  ── agent round %d ──" % rounds))
+            print(c_bold(c_magenta("ai  ▸ ")), end="")
+            sys.stdout.flush()
+            ok, reply_text = stream_reply(
+                client, history, prefix=c_bold(c_magenta("ai  ▸ "))
+            )
+            if not ok:
+                return False
+            actions, status, invalid = parse_tool_blocks(reply_text)
+            history.append({"role": "assistant", "content": reply_text})
+
+            if status is not None:
+                if _apply_status(history, reply_text, status, state):
+                    return True
+                continue
+            if actions:
+                recovery = 0
+                history.append({
+                    "role": "user",
+                    "content": _execute_actions(client, actions, state),
+                })
+                continue
+            # no action, no completion: recover or treat as the final answer
+            had_results = any(
+                m.get("role") == "user" and m.get("content", "").startswith("[tool result]")
+                for m in history
+            )
+            if had_results and recovery < MAX_RECOVERY:
+                recovery += 1
+                history.append({
+                    "role": "user",
+                    "content": "[run control] "
+                    + ("The tool block was invalid." if invalid
+                       else "The response ended without an action or an explicit "
+                            "task completion.")
+                    + " Use the tool-block response format now: request the next "
+                      "actual tool, or finish with an agent_status complete block.",
+                })
+                continue
+            print_footer(client)
+            return True  # plain prose answer — turn over
+        print(c_yellow("  ⏸ agent round limit reached — send 'continue' to resume"))
+        return True
+    except KeyboardInterrupt:
+        print(c_dim("\n  agent stopped."))
+        return False
 
 
 
@@ -248,7 +426,8 @@ def repl_commands():
         "/model <alias>": "switch model (aliases below)",
         "/models": "list models served by the endpoint",
         "/web <question>": "grounded search-and-answer (SimpleRAG websearch)",
-        "/agent": "toggle agent mode (model can propose file edits)",
+        "/agent": "toggle agent mode (multi-round tool loop: read/search/shell/edit/web)",
+        "/tools": "list the tools the agent can use",
         "/workpath <dir>": "set the directory the agent works in",
         "/system <text>": "set/clear the session system prompt",
         "/clear": "reset the conversation",
@@ -263,6 +442,7 @@ def repl_commands():
 def run_chat(client, base):
     banner(client, base, "chat")
     history = []
+    agent_state = AgentState()
     set_system_message(history, client)
     try:
         while True:
@@ -287,6 +467,7 @@ def run_chat(client, base):
                     continue
                 if command == "/models":
                     try:
+                        status_line("fetching served models…")
                         models = client.models()
                         print(c_dim("  served models:"))
                         for alias in models:
@@ -300,6 +481,7 @@ def run_chat(client, base):
                         print(c_yellow("  usage: /model <alias>"))
                         continue
                     try:
+                        status_line("checking served models…")
                         served = client.models()
                     except Exception:
                         served = None
@@ -317,6 +499,13 @@ def run_chat(client, base):
                     if history:
                         history.append({"role": "user", "content": query})
                     run_web_answer(client, query)
+                    continue
+                if command == "/tools":
+                    print(c_dim("  agent tools:"))
+                    for name, tool in TOOLS.items():
+                        approval = c_yellow(" (approval)") if tool["approval"] else ""
+                        print("   - %s%s" % (c_cyan(name), approval))
+                        print(c_dim("     %s" % tool["help"]))
                     continue
                 if command == "/system":
                     client.system = argument or None
@@ -373,10 +562,18 @@ def run_chat(client, base):
                 print(c_yellow("  unknown command %r — /help" % command))
                 continue
             history.append({"role": "user", "content": line})
+            if client.agent:
+                try:
+                    run_agent_turn(client, history, agent_state)
+                except Exception as exc:
+                    print(c_red("  ✗ %s" % exc))
+                continue
             print(c_bold(c_magenta("ai  ▸ ")), end="")
             sys.stdout.flush()
             try:
-                ok, reply_text = stream_reply(client, history)
+                ok, reply_text = stream_reply(
+                    client, history, prefix=c_bold(c_magenta("ai  ▸ "))
+                )
                 if ok:
                     history.append({"role": "assistant", "content": reply_text})
                     print_footer(client)
@@ -403,6 +600,8 @@ def run_ask(client, question, web=False):
     if prompt:
         messages.append({"role": "system", "content": prompt})
     messages.append({"role": "user", "content": question})
+    if client.agent:
+        return run_agent_turn(client, messages, AgentState())
     ok, reply_text = stream_reply(client, messages)
     if not ok:
         return False

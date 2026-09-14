@@ -42,8 +42,8 @@ def main(argv=None):
     )
     parser.add_argument(
         "--agent", action="store_true",
-        help="agent mode — the assistant can propose file edits inside the "
-        "workpath (each one needs your approval)",
+        help="agent mode — a multi-round tool loop in the workpath "
+        "(read/search/shell/edit/web; shell and edits need your approval)",
     )
     parser.add_argument(
         "--workpath", default=None,
@@ -71,20 +71,39 @@ def main(argv=None):
         client.workpath = workpath
 
     if args.command == "models":
+        indicator = terminal.WaitIndicator(
+            message="locating endpoint (local relay, then public pointer)"
+        )
+        indicator.start()
         try:
             base = client.resolve_base()
-            if not base:
-                print(c_red("no reachable endpoint (tried local + pointer)"))
-                return 1
-            client.base = base
-            for alias in client.models():
-                print(alias)
+        finally:
+            indicator.stop()
+        if not base:
+            print(c_red("no reachable endpoint (tried local + pointer)"))
+            return 1
+        client.base = base
+        indicator = terminal.WaitIndicator(message="fetching served models")
+        indicator.start()
+        try:
+            aliases = client.models()
         except Exception as exc:
             print(c_red("✗ %s" % exc))
             return 1
+        finally:
+            indicator.stop()
+        for alias in aliases:
+            print(alias)
         return 0
 
-    base = client.resolve_base()
+    indicator = terminal.WaitIndicator(
+        message="locating endpoint (local relay, then public pointer)"
+    )
+    indicator.start()
+    try:
+        base = client.resolve_base()
+    finally:
+        indicator.stop()
     if not base:
         print(
             c_red(

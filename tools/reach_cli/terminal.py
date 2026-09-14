@@ -2,6 +2,7 @@
 
 import os
 import sys
+import threading
 import time
 
 VERSION = "1.0.0"
@@ -145,6 +146,62 @@ def spinner(message):
 def spinner_clear():
     sys.stdout.write("\r" + " " * 60 + "\r")
     sys.stdout.flush()
+
+
+class WaitIndicator:
+    """Animated waiting line while a blocking call is in progress.
+
+    Renders ``prefix + spinner + message + elapsed seconds`` on the current
+    line until stop(). The first stop() clears back to ``prefix`` so the
+    caller can stream tokens in place. Non-interactive stdout renders
+    nothing, keeping piped output clean.
+    """
+
+    CR = chr(13)
+
+    def __init__(self, prefix="", message="waiting for the model"):
+        self._prefix = prefix
+        self._message = message
+        self._stop = threading.Event()
+        self._started = False
+        self._stopped = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def _run(self):
+        started = time.time()
+        while not self._stop.is_set():
+            self._frame(time.time() - started)
+            self._stop.wait(0.1)
+
+    def _frame(self, elapsed):
+        glyph = spinner_char() if PAINT.on else "."
+        label = "%s… %ds" % (self._message, int(elapsed))
+        sys.stdout.write(
+            self.CR + self._prefix + glyph + " " + c_dim(label) + "  "
+        )
+        sys.stdout.flush()
+
+    def start(self):
+        if not sys.stdout.isatty():
+            return
+        self._started = True
+        self._thread.start()
+
+    def _clear(self):
+        sys.stdout.write(
+            self.CR + self._prefix + " " * 80 + self.CR + self._prefix
+        )
+        sys.stdout.flush()
+
+    def stop(self):
+        if self._stopped:
+            return
+        self._stopped = True
+        self._stop.set()
+        if self._started:
+            self._thread.join(timeout=1.0)
+        if sys.stdout.isatty():
+            self._clear()
 
 
 
