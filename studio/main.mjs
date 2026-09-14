@@ -797,7 +797,8 @@ app.whenReady().then(() => {
             const drawer = document.querySelector('#file-drawer');
             const toggle = document.querySelector('#btn-toggle-files');
             const mainEl = document.querySelector('main');
-            const dr = drawer.getBoundingClientRect();
+              setDrawer(true);
+              const dr = drawer.getBoundingClientRect();
             const mr = mainEl.getBoundingClientRect();
             if (dr.left < mr.right - 1) {
               throw new Error('file drawer is not to the right of main (left=' + dr.left + ' mainRight=' + mr.right + ')');
@@ -1356,6 +1357,7 @@ app.whenReady().then(() => {
         }
         layoutActivity = activityReducer(layoutActivity, { type: 'run-state', status: 'completed', reason: report });
         getAgentStore().setActivity(layoutAgent.id, layoutActivity);
+        win.showInactive();
         for (const [width, height, zoom] of [[1000, 640, 1], [1440, 860, 1], [1420, 980, 1.25]]) {
           win.setSize(width, height);
           win.webContents.setZoomFactor(zoom);
@@ -1367,8 +1369,10 @@ app.whenReady().then(() => {
             setDrawer(true);
             await new Promise(r => setTimeout(r, 200));
             const activity = document.querySelector('#agent-activity');
+            const activityDeadline = Date.now() + 3000;
+            while (!activity.querySelector('.activity-count').textContent.includes('80 steps') && Date.now() < activityDeadline) await new Promise(r => setTimeout(r, 20));
             const details = activity.querySelector('.activity-details');
-            if (details.open) throw new Error('Completed activity did not start collapsed');
+            if (details.open) throw new Error('Completed activity did not start collapsed: ' + JSON.stringify({ status: activity.dataset.status, count: activity.querySelector('.activity-count').textContent, saved: currentAgent.activity?.status }));
             if (activity.querySelector('.activity-note').textContent.length > 100) throw new Error('Activity duplicates the final report');
             const composer = document.querySelector('.composer');
             const input = document.querySelector('#composer-input');
@@ -1381,7 +1385,7 @@ app.whenReady().then(() => {
             if (!details.open) throw new Error('Completed activity cannot be expanded');
             if (Math.abs(before.top - after.top) > 1 || after.bottom > innerHeight || after.right > innerWidth + 1 || after.left < 0) throw new Error('Expanded activity displaced composer: ' + JSON.stringify({ before: before.toJSON(), after: after.toJSON(), width: innerWidth, height: innerHeight }));
             if (after.right > document.querySelector('#file-drawer').getBoundingClientRect().left + 1) throw new Error('Composer extends underneath the Files panel');
-            if (scroll.clientHeight < 60 || input.getBoundingClientRect().width < 60) throw new Error('Conversation or input squeezed out of view');
+            if (scroll.clientHeight < 60 || input.getBoundingClientRect().width < 60) throw new Error('Conversation or input squeezed out of view: ' + JSON.stringify({ height: scroll.clientHeight, inputWidth: input.getBoundingClientRect().width, window: [innerWidth, innerHeight] }));
             if (document.body.scrollHeight > innerHeight + 1) throw new Error('Conversation overflowed the window');
             const headerBeforeScroll = activity.getBoundingClientRect();
             const contextBeforeScroll = document.querySelector('.context-bar').getBoundingClientRect();

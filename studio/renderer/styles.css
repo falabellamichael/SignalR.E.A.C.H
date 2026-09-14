@@ -825,11 +825,11 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 #agent-name { font-size: var(--chat-title-size); }
 #agent-view > .project-head, #agent-view .project-actions { gap: var(--chat-header-gap); }
 #agent-view .project-actions button { padding: var(--chat-button-padding); font-size: var(--chat-button-size); }
-.chat-status { flex: 0 0 auto; display: flex; flex-direction: column; min-width: 0; gap: 8px; }
+.chat-status { flex: 0 0 auto; display: flex; flex-direction: column; min-width: 0; max-height: 50%; gap: 8px; }
 .chat-status .context-bar { padding: var(--chat-context-padding); flex-wrap: nowrap; }
 #agent-context { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #btn-agent-compact { flex-shrink: 0; }
-#agent-activity { padding: var(--chat-status-padding); display: flex; flex-direction: column; min-height: 0; max-height: min(290px, 38vh); }
+#agent-activity { padding: var(--chat-status-padding); display: flex; flex-direction: column; min-height: 0; max-height: min(290px, 38vh); overflow: hidden; }
 #agent-activity > :not(.activity-details) { flex-shrink: 0; }
 #agent-activity .activity-note { -webkit-line-clamp: var(--chat-note-lines); }
 #agent-activity .activity-progress { margin: var(--chat-status-gap) 0; }
