@@ -3,7 +3,7 @@
 // One schema for validation, the settings form, and every execution path.
 // Zero is an explicit absence of an application cap, never a missing value.
 const fields = [
-  ['maxTokens', 'Output tokens per request', 4096, 'Generation', 'Includes reasoning on models that share a token budget. 0 omits max_tokens; the provider chooses its default, which may still be small.'],
+  ['maxTokens', 'Output tokens per request', 16384, 'Generation', 'Includes shared reasoning tokens. Studio reserves room for a response and may make one concise retry with the same per-request cap. 0 omits max_tokens; the provider chooses its default, which may still be small.'],
   ['requestTimeoutMs', 'Request timeout (milliseconds)', 180000, 'Generation', 'Covers connection and streaming. 0 waits until completion or Stop.'],
   ['maxRounds', 'Rounds per conversation / team member', 40, 'Execution', 'A round is a model request plus its actions. 0 continues until completion, input, failure, or Stop.'],
   ['subagentMaxRounds', 'Rounds per spawned agent', 12, 'Execution', '0 removes the spawned worker round cap.'],
@@ -16,11 +16,11 @@ const fields = [
   ['awaitTimeoutMs', 'Default peer wait (milliseconds)', 120000, 'Teams', '0 waits until completion or Stop. An agent can still request a shorter wait.'],
   ['relayChars', 'Chain handoff characters', 24000, 'Teams', '0 relays all completed member reports. Display previews remain bounded for responsiveness.'],
   ['autoCompact', 'Automatically compress conversation context', true, 'Context', 'Turn off to send the full retained conversation. The provider context window still applies.'],
-  ['contextTrigger', 'Compress above this many characters', 240000, 'Context', 'Character estimate, not tokens. 0 disables this trigger.'],
-  ['contextMessages', 'Compress above this many messages', 72, 'Context', '0 disables the message-count trigger.'],
-  ['contextTarget', 'Target characters after compression', 120000, 'Context', 'Must be at least 8,000; automatically kept below a nonzero character trigger.', 8000],
+  ['contextTrigger', 'Compress above this many characters', 96000, 'Context', 'Character estimate, not tokens. 0 disables this trigger.'],
+  ['contextMessages', 'Compress above this many messages', 48, 'Context', '0 disables the message-count trigger.'],
+  ['contextTarget', 'Target characters after compression', 48000, 'Context', 'Must be at least 8,000; automatically kept below a nonzero character trigger.', 8000],
   ['summaryTokens', 'Output tokens for context compression', 16384, 'Context', 'Separate budget so reasoning can finish before writing memory. 0 uses the provider default.'],
-  ['storedMessages', 'Retained messages per conversation', 400, 'History', '0 keeps all messages unless context compression replaces older history. Lowering this applies on the next appended message.'],
+  ['storedMessages', 'Retained messages per conversation', 0, 'History', '0 keeps the complete chat. Context compression never replaces saved history. Lowering this applies on the next appended message.'],
   ['maxConversations', 'Saved conversations', 200, 'History', '0 removes the saved-chat count cap. Existing chats are never deleted by this setting.'],
 ].map(([key, label, value, group, help, min = 0]) => ({ key, label, value, group, help, min, globalOnly: key === 'maxConversations', type: typeof value === 'boolean' ? 'boolean' : 'number' }));
 const defaults = Object.fromEntries(fields.map(f => [f.key, f.value]));

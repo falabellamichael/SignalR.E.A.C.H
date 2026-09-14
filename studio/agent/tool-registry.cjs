@@ -248,17 +248,10 @@ const CORE_TOOLS = {
     help: 'runs a shell command in the project directory and returns stdout/stderr/exit code. The user must approve it first.',
     example: { action: 'shell', command: 'ls -la' },
     async execute(args, ctx) {
-      const { spawn } = require('child_process');
+      const { runCommand } = require('./platform.cjs');
       const cmd = String(args.command || '');
       if (!cmd) return { ok: false, error: 'A command is required.' };
-      return await new Promise((resolve) => {
-        const proc = spawn(cmd, { cwd: ctx.projectDir, shell: true, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-        let out = '', err = '';
-        proc.stdout.on('data', d => { out += d; if (out.length > 60000) proc.kill(); });
-        proc.stderr.on('data', d => { err += d; });
-        proc.on('close', code => resolve({ ok: code === 0, exitCode: code, stdout: out, stderr: err }));
-        proc.on('error', e => resolve({ ok: false, error: e.message }));
-      });
+      return runCommand(cmd, [], { cwd: ctx.projectDir, shell: true, signal: ctx.signal });
     },
   },
   websearch: {
@@ -311,13 +304,13 @@ const CORE_TOOLS = {
 const REACH_TOOLS = {
   'reach.compile': {
     class: 'exec', tier: 'reach', approval: true, budget: 40000,
-    help: 'compiles a Reach source file. Optional path (default index.rsh). Runs in WSL against the project directory.',
+    help: 'compiles a Reach source file. Optional path (default index.rsh). Runs through the configured Reach CLI in the project directory.',
     example: { action: 'reach.compile', path: 'index.rsh' },
     execute: null, // wired in agent-tool-runner.cjs via createReachToolExecutor
   },
   'reach.run': {
     class: 'exec', tier: 'reach', approval: true, budget: 40000,
-    help: 'runs a Reach program. Optional path (default index.rsh) and args array. Runs in WSL.',
+    help: 'runs a Reach program. Optional path (default index.rsh) and args array. Runs through the configured Reach CLI.',
     example: { action: 'reach.run', path: 'index.rsh', args: [] },
     execute: null,
   },

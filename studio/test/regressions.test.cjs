@@ -80,7 +80,7 @@ test('structured recovery supplies schema and completes once', async () => {
   assert.doesNotMatch(f.requests[1][0].content, /emit each action as a fenced/);
   assert.match(f.requests[0][0].content, /may be Python/);
   assert.deepEqual(f.events.filter(e => e.type === 'run-state').map(e => e.status), ['running', 'completed']);
-  assert.ok(f.requests[2].every(m => m.role !== 'tool' && !m._reachMeta && !m.tool_call_id));
+  assert.ok(f.requests[2].every(m => m.role !== 'tool' && !m.tool_call_id));
   assert.ok(f.events.some(e => e.type === 'message-end' && e.content === 'Done.'));
 });
 
@@ -356,7 +356,7 @@ test('structured team handoffs and answers contain only the visible answer', asy
   assert.doesNotMatch(handoff.content, /"status"|"actions"/);
 });
 
-test('an empty provider reply reports its real diagnostic once', async t => {
+test('reasoning exhaustion produces a saved budget checkpoint without claiming success', async t => {
   let requests = 0;
   const endpoint = await localEndpoint(t, (_, res) => {
     requests++;
@@ -365,8 +365,8 @@ test('an empty provider reply reports its real diagnostic once', async t => {
   });
   const f = teamFixture(endpoint);
   const result = await f.runner.run('empty');
-  assert.equal(requests, 2);
-  assert.ok(result.every(r => !r.ok && /reasoning.*no final answer.*token limit/.test(r.error)));
+  assert.equal(requests, 4);
+  assert.ok(result.every(r => !r.ok && r.status === 'paused' && /Budget reached/.test(r.error)));
 });
 
 test('long conversations compact and resume against an endpoint allowing only one initial system message', async t => {
@@ -377,20 +377,21 @@ test('long conversations compact and resume against an endpoint allowing only on
     if (body.messages.some((m, i) => m.role === 'system' && i !== 0)) {
       res.writeHead(400); res.end('System message must be at the beginning.'); return;
     }
-    jsonReply(res, body.stream ? action('complete', 'Long conversation completed.') : 'Preserve the fixture goal.');
+    jsonReply(res, body.messages[0].content.includes('durable conversation memory') ? 'Preserve the fixture goal.' : action('complete', 'Long conversation completed.'));
   });
   const f = fixture([]);
   f.store.setMessages(f.agent.id, Array.from({ length: 74 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `Synthetic turn ${i}` })));
   const loop = new AgentLoop({ agentId: f.agent.id, store: f.store, endpoint, projectDir: f.dir });
   await loop.sendUserMessage('Finish the fixture.');
   assert.equal(f.agent.runState.status, 'completed');
-  const memory = f.agent.messages.find(m => m.content.startsWith(MEMORY_PREFIX));
+  assert.ok(f.agent.messages.some(m => m.content === 'Synthetic turn 0'));
+  const memory = f.agent.context.messages.find(m => m.content.startsWith(MEMORY_PREFIX));
   assert.equal(memory.role, 'user');
   // Also cover old persisted memories, without requiring a destructive migration.
   memory.role = 'system';
   await loop.sendUserMessage('Continue after reloading an older memory.');
   assert.equal(f.agent.runState.status, 'completed');
-  for (const request of requests.filter(r => r.stream)) {
+  for (const request of requests.filter(r => !r.messages[0].content.includes('durable conversation memory'))) {
     assert.deepEqual(request.messages.flatMap((m, i) => m.role === 'system' ? [i] : []), [0]);
     assert.ok(request.messages.some(m => m.role === 'user' && m.content.startsWith(MEMORY_PREFIX)));
     assert.doesNotMatch(request.messages[0].content, /REACH conversation memory/);

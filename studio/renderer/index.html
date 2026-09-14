@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'" />
   <title>Reach Studio</title>
+  <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -26,6 +27,10 @@
       </div>
     </nav>
     <div class="statusbar">
+      <div id="activity-global" class="chip" hidden><i class="activity-spinner" aria-hidden="true"></i><span></span></div>
+      <button id="theme-toggle" class="chip theme-toggle" type="button" role="switch" aria-label="Light theme" aria-checked="false">
+        <span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span>
+      </button>
       <div class="settings-menu" id="drawer-menu-wrap">
         <button id="btn-toggle-files" class="chip toggle" title="Choose Files or Browser" aria-expanded="false" aria-controls="drawer-menu">Files &#x25BE;</button>
         <div id="drawer-menu" class="settings-dropdown hidden" role="menu">
@@ -55,7 +60,7 @@
         <div id="no-project" class="empty">
           <div class="big-mark">R</div>
           <p>Select a project or create a new one.</p>
-          <p class="sub">Reach runs natively in WSL &mdash; no Docker.</p>
+          <p class="sub">Manage projects and run your optional Reach CLI toolchain.</p>
         </div>
 
         <div id="project-view" class="hidden">
@@ -126,13 +131,21 @@
             </div>
           </div>
 
-          <div id="agent-todos" class="todos hidden">
-            <div class="todos-title">Plan</div>
-            <ul id="agent-todo-list"></ul>
-          </div>
-
           <div class="chat-pane">
-            <div id="chat-log" class="chat-log"></div>
+            <div class="chat-status">
+              <div class="context-bar">
+                <span id="agent-context" role="status" title="Estimate uses three characters per token. Actual provider token counts vary.">Conversation context</span>
+                <button id="btn-agent-compact" class="ghost" title="Summarize older context while preserving your saved chat">Compress now</button>
+              </div>
+              <section id="agent-activity" class="hidden" aria-label="Agent activity"></section>
+            </div>
+            <div id="chat-scroll" class="chat-scroll" tabindex="0" aria-label="Conversation">
+              <div id="agent-todos" class="todos hidden">
+                <div class="todos-title">Plan</div>
+                <ul id="agent-todo-list"></ul>
+              </div>
+              <div id="chat-log" class="chat-log"></div>
+            </div>
             <div id="queued-indicator" class="queued hidden"></div>
             <div class="composer">
               <textarea id="composer-input" placeholder="Ask the agent to inspect, edit, or debug your project&hellip; (Ctrl+Enter sends)" rows="3"></textarea>
@@ -186,6 +199,9 @@
           <button id="btn-browse-models" class="ghost small">Browse&hellip;</button>
         </div>
         <datalist id="model-list"></datalist>
+        <label for="set-reach-cli">Reach CLI executable (optional)</label>
+        <input id="set-reach-cli" type="text" placeholder="Automatic discovery" spellcheck="false" />
+        <p id="set-reach-cli-help" class="dim"></p>
         <div class="settings-actions">
           <button id="btn-save-settings" class="gold">Save Settings</button>
           <span id="settings-status" class="dim"></span>
@@ -284,7 +300,7 @@
   </div>
 
   <footer>
-    <span>Reach for Windows &mdash; native WSL backend, no Docker</span>
+    <span>Reach Studio &mdash; projects, agents, and browser</span>
     <span id="conn-mode" class="dim"></span>
   </footer>
 
@@ -412,6 +428,8 @@
   <script src="markdown.js"></script>
   <script src="dialogs.js"></script>
   <script src="editor.bundle.js"></script>
+  <script src="activity-state.js"></script>
+  <script src="activity.js"></script>
   <script src="app.js"></script>
   <script src="settings.js"></script>
   <script src="browser.js"></script>

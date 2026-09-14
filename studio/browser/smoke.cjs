@@ -183,7 +183,7 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     await browser.addContext(browser.tabs.get(browser.active), { selectionText: 'Selected fixture text' });
     await until(() => ui(`return composerInput.value.includes('Selected fixture text');`));
     second.webContents.focus();
-    second.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'L', modifiers: ['control'] });
+    second.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'L', modifiers: [process.platform === 'darwin' ? 'meta' : 'control'] });
     await until(() => ui(`return document.activeElement.id === 'browser-address';`));
     assert.equal(win.webContents.isFocused(), true);
     await assert.rejects(browser.command('navigate', { url: 'file:///C:/Windows/win.ini' }), /http or https/);

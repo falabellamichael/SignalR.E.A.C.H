@@ -13,7 +13,7 @@ function textContent(value) {
     .map(part => part.text).join('');
 }
 
-async function readChatResponse(response, { stream = false, onText = () => {}, onReasoning = () => {}, signal } = {}) {
+async function readChatResponse(response, { stream = false, onText = () => {}, onReasoning = () => {}, onProgress = () => {}, signal } = {}) {
   const result = { content: '', reasoningChars: 0, finishReason: null, usage: null, error: null, toolCalls: false };
   const native = new Map();
   const accept = data => {
@@ -56,6 +56,7 @@ async function readChatResponse(response, { stream = false, onText = () => {}, o
     if (message.refusal) result.error = 'The provider declined this request. No action was executed.';
     const text = textContent(message.content) || textContent(message.refusal);
     if (text) { result.content += text; onText(text); }
+    onProgress({ reasoningChars: result.reasoningChars, contentChars: result.content.length, toolCalls: result.toolCalls, finishReason: result.finishReason });
   };
   signal?.throwIfAborted();
   if (!stream && !/text\/event-stream/i.test(response.headers?.get('content-type') || '')) {
@@ -109,6 +110,7 @@ async function readChatResponse(response, { stream = false, onText = () => {}, o
       accept(data); // Some endpoints ignore stream:true and return ordinary JSON.
     }
   } catch (error) {
+    await reader.cancel().catch(() => {});
     error.partialResponse = !!result.content || result.toolCalls;
     throw error;
   } finally {

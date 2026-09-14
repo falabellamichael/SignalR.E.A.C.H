@@ -1,5 +1,14 @@
 const $ = (s) => document.querySelector(s);
 const reachApi = window.reach;
+const isMac = reachApi.platform === 'darwin';
+if (isMac) {
+  $('#composer-input').placeholder = $('#composer-input').placeholder.replace('Ctrl+', 'Cmd+');
+  $('#btn-save-file').textContent = 'Save (Cmd+S)';
+  $('#browser-new').title = 'New browser tab (Cmd+T)';
+}
+$('#set-reach-cli-help').textContent = reachApi.platform === 'win32'
+  ? 'Optional Reach language toolchain: path inside WSL Ubuntu. Leave blank for /usr/local/bin/reach.'
+  : 'Optional Reach language toolchain: executable path. Leave blank to find reach on PATH, including Homebrew and ~/.local/bin.';
 const md = window.ReachMarkdown;
 const showNotice = message => window.ReachDialogs.notice(message);
 const confirmAction = message => window.ReachDialogs.confirm(message);
@@ -48,6 +57,7 @@ const agentView = $('#agent-view');
 const agentNameEl = $('#agent-name');
 const agentMetaEl = $('#agent-meta');
 const chatLog = $('#chat-log');
+const chatScroll = $('#chat-scroll');
 const composerInput = $('#composer-input');
 const todosPanel = $('#agent-todos');
 const todoList = $('#agent-todo-list');
@@ -102,13 +112,15 @@ reachApi.onExit(({ runId, code }) => {
 async function refreshStatus() {
   const v = await reachApi.getVersion();
   if (v.startsWith('reach ')) {
-    wslStatus.textContent = 'reach native \u2713';
+    wslStatus.textContent = 'Reach CLI \u2713';
     wslStatus.className = 'chip ok';
     reachVersion.textContent = v;
+    reachVersion.title = '';
   } else {
-    wslStatus.textContent = 'reach unavailable';
-    wslStatus.className = 'chip bad';
-    reachVersion.textContent = v;
+    wslStatus.textContent = 'CLI not configured';
+    wslStatus.className = 'chip';
+    reachVersion.textContent = 'Configure optional CLI in Settings';
+    reachVersion.title = v;
   }
 }
 
@@ -327,14 +339,17 @@ async function selectAgent(a) {
     dir: selected.dir,
   })) return;
   currentAgent = selected;
-  agentNameEl.textContent = currentAgent.name;
+  window.ReachActivity.select(currentAgent);
+  agentNameEl.textContent = agentNameEl.title = currentAgent.name;
   const lineage = currentAgent.parentChatId ? ' · ⑂ branch' : '';
   agentMetaEl.textContent = `${currentAgent.dir} · ${currentAgent.model || 'default model'}${lineage}`;
+  agentMetaEl.title = agentMetaEl.textContent;
   noAgent.classList.add('hidden');
   agentView.classList.remove('hidden');
   agentRunning = currentAgent.runState && currentAgent.runState.status === 'running';
   updateStatusPill();
   renderChatHistory();
+  refreshContextStatus();
   renderTodos();
   renderPendingEdits();
   await refreshFileTree();
@@ -365,9 +380,40 @@ function updateStatusPill(status, reason) {
   $('#btn-agent-stop').classList.toggle('hidden', s !== 'running');
   $('#btn-agent-continue').classList.toggle('hidden', !['stopped', 'paused', 'waiting_edits'].includes(s));
   $('#btn-agent-continue').textContent = s === 'stopped' ? 'Start' : 'Continue';
+  $('#btn-agent-compact').disabled = s === 'running';
   updateSendControl();
   if (reason) pill.title = reason;
 }
+
+function renderContextStatus(context) {
+  if (!context) return;
+  const last = context.lastCompression;
+  const total = document.createElement('span');
+  total.textContent = `Context ≈ ${context.estimatedTokens.toLocaleString()} tokens`;
+  const extra = document.createElement('span');
+  extra.className = 'context-extra';
+  extra.textContent = ` · Auto ${context.automatic ? 'on' : 'off'}`
+    + (last ? ` · Last compression ${Math.round((1 - last.after / last.before) * 100)}% smaller` : '');
+  $('#agent-context').replaceChildren(total, extra);
+  $('#agent-context').title = total.textContent + extra.textContent + '\nEstimated at three characters per token; provider counts vary.';
+}
+async function refreshContextStatus() {
+  const id = currentAgent?.id;
+  if (!id) return;
+  const context = await reachApi.agents.context(id);
+  if (currentAgent?.id === id) renderContextStatus(context);
+}
+$('#btn-agent-compact').onclick = async () => {
+  if (!currentAgent || agentRunning) return;
+  const id = currentAgent.id;
+  $('#btn-agent-compact').disabled = true;
+  const result = await reachApi.agents.compact(id);
+  if (currentAgent?.id === id) {
+    $('#btn-agent-compact').disabled = agentRunning;
+    if (result.ok) renderContextStatus(result.context);
+    else showNotice(result.err);
+  }
+};
 
 $('#btn-agent-continue').onclick = async () => {
   if (!currentAgent || agentRunning) return;
@@ -405,7 +451,7 @@ function appendChatMessage(role, text, msgIndex = null) {
     div.appendChild(fork);
   }
   chatLog.appendChild(div);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  chatScroll.scrollTop = chatScroll.scrollHeight;
   return div;
 }
 
@@ -439,7 +485,7 @@ function appendToolCard(tool, ok, pending, error, result) {
   card.appendChild(body);
   head.onclick = () => body.classList.toggle('hidden');
   chatLog.appendChild(card);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
 function appendEditCard(edit) {
@@ -478,7 +524,7 @@ function appendEditCard(edit) {
   acceptBtn.onclick = () => resolveEditCard(card, edit.editId, true);
   rejectBtn.onclick = () => resolveEditCard(card, edit.editId, false);
   chatLog.appendChild(card);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
 async function resolveEditCard(card, editId, accepted) {
@@ -645,6 +691,7 @@ $('#btn-agent-delete').onclick = async () => {
 let streamBubble = null;
 let recoveryBubble = null;
 function handleAgentEvent(ev) {
+  window.ReachActivity.ingest(ev);
   if (ev.type === 'run-state') {
     if (ev.status === 'running') runningAgentIds.add(ev.agentId);
     else runningAgentIds.delete(ev.agentId);
@@ -660,13 +707,13 @@ function handleAgentEvent(ev) {
         streamBubble.dataset.raw = '';
         streamBubble.className = 'chat-msg assistant streaming';
         chatLog.appendChild(streamBubble);
-        chatLog.scrollTop = chatLog.scrollHeight;
+        chatScroll.scrollTop = chatScroll.scrollHeight;
       }
       break;
     case 'delta':
       if (streamBubble) {
         streamBubble.innerHTML = md.render((streamBubble.dataset.raw = (streamBubble.dataset.raw || '') + ev.text));
-        chatLog.scrollTop = chatLog.scrollHeight;
+        chatScroll.scrollTop = chatScroll.scrollHeight;
       }
       break;
     case 'message-end':
@@ -702,6 +749,7 @@ function handleAgentEvent(ev) {
       if (ev.status !== 'running') recoveryBubble = null;
       agentRunning = ev.status === 'running';
       updateStatusPill(ev.status, ev.reason);
+      if (ev.status !== 'running') refreshContextStatus();
       if (ev.status !== 'running') queuedIndicator.classList.add('hidden');
       if (ev.status === 'stopped' || ev.status === 'paused') {
         appendChatMessage('system', `Run ${ev.status}: ${ev.reason || ''}`);
@@ -710,7 +758,7 @@ function handleAgentEvent(ev) {
       break;
     case 'renamed':
       // Auto-title from the first user message.
-      if (currentAgent) { currentAgent.name = ev.name; agentNameEl.textContent = ev.name; }
+      if (currentAgent) { currentAgent.name = ev.name; agentNameEl.textContent = agentNameEl.title = ev.name; }
       loadAgentTree();
       break;
     case 'error':
@@ -718,6 +766,12 @@ function handleAgentEvent(ev) {
       agentRunning = false;
       updateStatusPill('error');
       loadAgentTree();
+      break;
+    case 'context-status':
+      renderContextStatus(ev);
+      break;
+    case 'compaction-start':
+      $('#agent-context').textContent = `Compressing context · segment ${ev.segment} of ${ev.total}…`;
       break;
     case 'compacted':
       appendChatMessage('system', `Context compacted (${ev.before} → ${ev.after} chars)`);
@@ -1094,14 +1148,17 @@ async function loadSettings() {
   $('#set-endpoint').value = s.endpoint || '';
   $('#set-accesskey').value = s.accessKey || '';
   $('#set-model').value = s.model || '';
+  $('#set-reach-cli').value = s.reachCli || '';
 }
 $('#btn-save-settings').onclick = async () => {
   const s = {
+    reachCli: $('#set-reach-cli').value.trim(),
     endpoint: $('#set-endpoint').value.trim(),
     accessKey: $('#set-accesskey').value.trim(),
     model: $('#set-model').value.trim(),
   };
   await reachApi.saveSettings(s);
+  refreshStatus();
   $('#settings-status').textContent = 'Saved.';
   setTimeout(() => { $('#settings-status').textContent = ''; }, 2000);
 };
@@ -1508,6 +1565,8 @@ function handleTeamEvent(ev) {
   if (teamDispatching && !activeTeamRun) { pendingTeamEvents.push(ev); return; }
   if (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId) return;
   const run = activeTeamRun;
+  const activityCard = ev.type === 'subagent' ? subCard(ev.agentId, ev.name, ev.model || '', ev.depth) : ev.index !== undefined ? teamCard(ev.index, ev.name, ev.model) : null;
+  window.ReachActivity.team(ev, activityCard);
   switch (ev.type) {
     case 'start':
       for (const member of ev.members) teamCard(member.index, member.name, member.model);

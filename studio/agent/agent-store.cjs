@@ -35,6 +35,7 @@ class AgentStore {
       if (!raw || !Array.isArray(raw.agents)) return [];
       return raw.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => {
         if (a.runState?.status === 'running') {
+          if (a.activity) a.activity = require('../renderer/activity-state.js').reduce(a.activity, { type: 'run-state', status: 'paused', reason: 'Previous app session ended.' });
           a.runState = { ...a.runState, status: 'paused', reason: 'The previous app session ended. Continue to resume this conversation.' };
         }
         return a;
@@ -156,7 +157,7 @@ class AgentStore {
         approvals: 'prompt',   // 'prompt' | 'auto-read' | 'auto-all'  (exec always prompts unless auto-all)
         reviewEdits: true,     // show accept/reject diff cards for write/edit_patch
         maxRounds: 40,
-        maxTokens: 4096,
+        maxTokens: resolveBudgets(this.getSettings()).maxTokens,
         temperature: null,     // null = let the endpoint decide
       },
     };
@@ -206,8 +207,8 @@ class AgentStore {
     const agent = this.get(id);
     if (!agent) return null;
     agent.messages.push(message);
-    // Trim oldest non-system messages when the log gets absurd; compaction
-    // should handle this long before, this is just a disk-safety valve.
+    // Apply only the user-configured history retention cap. Compression keeps
+    // a separate context checkpoint and never removes the audit transcript.
     const retained = resolveBudgets(this.getSettings(), agent.settings).storedMessages;
     if (retained > 0 && agent.messages.length > retained) {
       const keepSystem = agent.messages.filter(m => m.role === 'system' || m.role === 'developer').slice(0, 4);
@@ -229,6 +230,11 @@ class AgentStore {
     agent.updatedAt = Date.now();
     this._save();
     return agent;
+  }
+
+  setActivity(id, activity) {
+    const agent = this.get(id);
+    if (agent) { agent.activity = activity; this._save(); }
   }
 
   setRunState(id, runState) {
@@ -291,11 +297,26 @@ class AgentStore {
     return agent ? agent.queue.length : 0;
   }
 
-  // Replace the whole message array in one write (compaction does this).
+  // Replacing history invalidates the compressed working context.
+  setContext(id, context) {
+    const agent = this.get(id);
+    if (!agent) return null;
+    const previous = agent.context;
+    agent.context = context;
+    try { this._save(); }
+    catch (error) {
+      if (previous === undefined) delete agent.context;
+      else agent.context = previous;
+      throw error;
+    }
+    return agent;
+  }
+
   setMessages(id, messages) {
     const agent = this.get(id);
     if (!agent) return null;
     agent.messages = Array.isArray(messages) ? messages : [];
+    delete agent.context;
     agent.updatedAt = Date.now();
     this._save();
     return agent;

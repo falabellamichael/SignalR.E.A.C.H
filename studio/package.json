@@ -2,15 +2,18 @@
   "name": "reach-studio",
   "productName": "Reach Studio",
   "version": "1.0.0",
-  "description": "Native desktop app for the Reach DApp language - no Docker required",
+  "description": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
   "main": "main.mjs",
   "scripts": {
     "prestart": "npm run build:editor",
     "start": "electron .",
     "smoke": "npm run build:editor && electron . --smoke",
-    "test": "node test/agent.test.cjs && node --test test/regressions.test.cjs && node --test test/agent-net.test.cjs && node --test test/budgets.test.cjs && node --test test/browser-tools.test.cjs",
+    "test": "node test/agent.test.cjs && node --test test/regressions.test.cjs && node --test test/agent-net.test.cjs && node --test test/budgets.test.cjs && node --test test/browser-tools.test.cjs && node --test test/platform.test.cjs && node --test test/activity.test.cjs && node --test test/compaction.test.cjs && node --test test/budget-awareness.test.cjs",
     "build:editor": "esbuild renderer/editor.src.js --bundle --minify --format=iife --outfile=renderer/editor.bundle.js",
-    "dist": "npm run build:editor && electron-builder --win"
+    "dist": "npm run build:editor && electron-builder",
+    "dist:mac": "npm run build:editor && electron-builder --mac",
+    "dist:win": "npm run build:editor && electron-builder --win",
+    "check": "node scripts/check-syntax.cjs"
   },
   "author": "Michael Anthony Falabella",
   "license": "MIT",
@@ -58,6 +61,15 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Reach Studio"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "identity": "-"
     }
   },
   "allowScripts": {

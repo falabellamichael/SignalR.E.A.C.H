@@ -10,7 +10,7 @@
  *   reach.clean   {}             → reach clean
  *   reach.version {}             → reach version
  *
- * All of them run inside WSL against the agent's bound project directory via
+ * All of them use the platform-specific CLI against the agent's bound project directory via
  * reach-process.cjs. Exec-class tools require approval per the registry.
  */
 
@@ -64,9 +64,13 @@ function createReachToolExecutor() {
     const cwd = context && context.projectDir;
     if (!cwd) return { ok: false, error: 'This agent is not bound to a project directory.' };
 
+    if (context.signal?.aborted) return { ok: false, error: 'reach command cancelled' };
     const runId = reachProcess.runReach({ cwd, args: argv });
 
     return await new Promise((resolve) => {
+      const abort = () => reachProcess.killRun(runId);
+      context.signal?.addEventListener('abort', abort, { once: true });
+      if (context.signal?.aborted) abort();
       let collected = '';
       let errCollected = '';
       const detach = reachProcess.onRunEvent((ev) => {
@@ -75,13 +79,14 @@ function createReachToolExecutor() {
           if (ev.channel === 'err') errCollected += ev.data;
           else collected += ev.data;
         } else if (ev.type === 'exit') {
+          context.signal?.removeEventListener('abort', abort);
           detach();
           clearTimeout(timer);
           const out = collected.trim();
           const err = errCollected.trim();
           const summary = (out ? out + '\n' : '') + (err ? '[stderr]\n' + err : '');
           resolve({
-            ok: ev.code === 0,
+            ok: ev.code === 0 && !context.signal?.aborted,
             exitCode: ev.code,
             output: summary || '(no output)',
           });
@@ -89,6 +94,7 @@ function createReachToolExecutor() {
       });
       // reach compiles can take a while (SMT verification) — 10 minutes max.
       const timer = setTimeout(() => {
+        context.signal?.removeEventListener('abort', abort);
         detach();
         reachProcess.killRun(runId);
         resolve({ ok: false, error: 'reach command timed out after 10 minutes', output: collected + errCollected });

@@ -29,9 +29,17 @@ class MemoryStore {
     return r;
   }
 
+  setContext(id, context) {
+    const agent = this.get(id);
+    if (!agent) return null;
+    agent.context = context;
+    return agent;
+  }
+
   setMessages(id, messages) {
     const r = this._rec(id);
     r.messages = Array.isArray(messages) ? messages : [];
+    delete r.context;
     return r;
   }
 

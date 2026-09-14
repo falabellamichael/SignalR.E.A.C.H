@@ -79,20 +79,25 @@ async function compactMessages(messages, summarize, options = {}) {
   const target = Math.min(options.target || 120000, Math.floor(trigger * 0.6));
   const before = contextChars(messages);
   const provenance = provenanceFor(messages);
-  if (before <= trigger && messages.length <= messageLimit) return { messages, changed: false, before, after: before, provenance };
+  if (!options.force && before <= trigger && messages.length <= messageLimit) return { messages, changed: false, before, after: before, provenance };
   const keep = new Map();
   let used = 0;
   const reserve = Math.min(16000, Math.floor(target / 4));
   const add = (i, message = messages[i]) => { if (!keep.has(i)) { keep.set(i, message); used += messageChars(message); } };
+  const isMemory = m => String(m.content).startsWith(MEMORY_PREFIX);
   for (let i = 0; i < messages.length; i++) {
-    const m = messages[i];
-    if (['system', 'developer'].includes(m.role) && typeof m.content === 'string'
-        && !m.content.startsWith(MEMORY_PREFIX) && messageChars(m) < 16000
-        && keep.size < 16 && used + messageChars(m) < target / 3) add(i);
+    if (['system', 'developer'].includes(messages[i].role) && !isMemory(messages[i])) add(i);
   }
-  const lastRequest = messages.findLastIndex(m => m.role === 'user'
-    && (typeof m.content !== 'string' || !m.content.startsWith('TOOL RESULTS')));
-  if (lastRequest >= 0 && messageChars(messages[lastRequest]) < target / 3) add(lastRequest);
+  const isRequest = m => m.role === 'user' && !isMemory(m)
+    && !String(m.content).startsWith('TOOL RESULTS')
+    && !['recovery', 'tool-summary'].includes(messageMeta(m)?.source);
+  const firstRequest = messages.findIndex(isRequest);
+  const lastRequest = messages.findLastIndex(isRequest);
+  if (firstRequest >= 0) add(firstRequest);
+  if (lastRequest >= 0) add(lastRequest);
+  if (used > target - reserve || keep.size + 1 > messageLimit) {
+    throw new Error('The system instructions and original/latest request exceed the compression target. Increase the context target in Budgeting; these instructions were preserved.');
+  }
   const groups = groupsFor(messages);
   for (let g = groups.length - 1; g >= 0; g--) {
     const indices = groups[g].filter(i => !keep.has(i));
@@ -128,7 +133,8 @@ async function compactMessages(messages, summarize, options = {}) {
       truncated: !!(meta && meta.truncated),
     };
   });
-  const memory = await summarize(archived);
+  if (!archived.length) return { messages, changed: false, before, after: before, provenance };
+  const memory = await summarize(archived, { maxChars: reserve - 500 });
   if (typeof memory !== 'string' || !memory.trim()) throw new Error('Context compression returned no memory. The original conversation is intact; retry the request.');
   if (memory.length > reserve - 500) throw new Error('Context compression did not produce a short enough memory. The original conversation is intact; retry the request.');
   const summary = withMeta({ role: 'user', content: MEMORY_PREFIX + '\n'
@@ -139,7 +145,8 @@ async function compactMessages(messages, summarize, options = {}) {
   const isInstruction = m => ['system', 'developer'].includes(m.role);
   const result = [...retained.filter(isInstruction), summary, ...retained.filter(m => !isInstruction(m))];
   const after = contextChars(result);
-  if (after >= trigger || result.length > messageLimit) throw new Error('Context could not fit the request budget. No oversized request was sent.');
+  if (after >= trigger || after > target || result.length > messageLimit) throw new Error('Context could not fit the request budget. No oversized request was sent.');
+  if (after >= before) return { messages, changed: false, before, after: before, provenance };
   return { messages: result, changed: true, before, after, provenance: provenanceFor(result), archivedMeta };
 }
 

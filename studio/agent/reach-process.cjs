@@ -2,13 +2,15 @@
 
 /* Reach Studio — reach CLI subprocess spawner + per-run pub/sub.
  *
- * This is the single place that talks to wsl.exe. Everything else (the
+ * This is the single place that launches the platform-specific Reach CLI. Everything else (the
  * Projects page command bar, agent reach.* tools) subscribes through
  * onRunEvent, which is a MAIN-PROCESS bus — renderer events are a separate
  * concern that main.mjs mirrors to the window.
  */
 
-const { spawn } = require('child_process');
+const { reachCommand, spawnCommand, killProcessTree, runCommand } = require('./platform.cjs');
+let settingsProvider = () => ({});
+function configure(provider) { settingsProvider = provider; }
 
 const WSL_DISTRO = 'Ubuntu';
 const REACH_BIN = '/usr/local/bin/reach';
@@ -30,12 +32,8 @@ function onRunEvent(fn) {
 
 function runReach({ cwd, args = [] }) {
   const runId = ++runSeq;
-  const wslArgs = ['-d', WSL_DISTRO, '--', REACH_BIN, ...args];
-  const proc = spawn('wsl.exe', wslArgs, {
-    cwd: cwd || undefined,
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const spec = reachCommand(args, settingsProvider());
+  const proc = spawnCommand(spec.command, spec.args, { cwd: cwd || undefined });
   running.set(runId, { proc, killed: false });
   proc.stdout.on('data', (d) => emit({ type: 'output', runId, channel: 'out', data: d.toString() }));
   proc.stderr.on('data', (d) => emit({ type: 'output', runId, channel: 'err', data: d.toString() }));
@@ -51,7 +49,7 @@ function killRun(runId) {
   const r = running.get(runId);
   if (!r) return false;
   r.killed = true;
-  spawn('taskkill', ['/pid', String(r.proc.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
+  killProcessTree(r.proc);
   return true;
 }
 
@@ -59,15 +57,11 @@ function killAllRuns() {
   for (const id of [...running.keys()]) killRun(id);
 }
 
-function reachVersion() {
-  return new Promise((resolve) => {
-    const p = spawn('wsl.exe', ['-d', WSL_DISTRO, '--', REACH_BIN, 'version'], { windowsHide: true });
-    let s = '';
-    p.stdout.on('data', (d) => (s += d));
-    p.stderr.on('data', (d) => (s += d));
-    p.on('close', (c) => resolve(c === 0 ? s.trim() : `error(${c}): ${s.trim()}`));
-    p.on('error', (e) => resolve(`error: ${e.message}`));
-  });
+async function reachVersion() {
+  const spec = reachCommand(['version'], settingsProvider());
+  const result = await runCommand(spec.command, spec.args, { timeoutMs: 10000, maxOutput: 4096 });
+  if (result.ok) return result.stdout.trim();
+  return `Optional Reach CLI unavailable. Configure its executable in Settings. ${result.error || result.stderr.trim() || `Exit ${result.exitCode}`}`;
 }
 
-module.exports = { runReach, killRun, killAllRuns, onRunEvent, reachVersion, WSL_DISTRO, REACH_BIN };
+module.exports = { configure, runReach, killRun, killAllRuns, onRunEvent, reachVersion, WSL_DISTRO, REACH_BIN };

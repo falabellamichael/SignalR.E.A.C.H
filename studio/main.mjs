@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -155,6 +155,15 @@ async function resolveEndpoint(raw, depth = 0) {
 
 // ---------- ipc ----------
 function registerIpc() {
+  ipcMain.on('theme:get', event => { event.returnValue = loadSettings().theme === 'light' ? 'light' : 'dark'; });
+  ipcMain.handle('theme:set', (_event, theme) => {
+    if (!['light', 'dark'].includes(theme)) throw new Error('Invalid theme');
+    // Appearance changes must not invalidate an active agent's settings.
+    saveSettings({ ...loadSettings(), theme });
+    nativeTheme.themeSource = theme;
+    if (win && !win.isDestroyed()) win.setBackgroundColor(theme === 'light' ? '#fdf6e3' : '#0a0a0a');
+    return theme;
+  });
   ipcMain.handle('reach:version', () => reachProcess.reachVersion());
   ipcMain.handle('reach:run', (_e, { cwd, args }) => reachProcess.runReach({ cwd, args }));
   ipcMain.handle('reach:kill', (_e, runId) => reachProcess.killRun(runId));
@@ -273,6 +282,16 @@ function registerIpc() {
     } catch (e) {
       return { ok: false, err: e.message };
     }
+  });
+  ipcMain.handle('agents:context', async (_e, id) => {
+    const agent = getAgentStore().get(id);
+    if (!agent) return null;
+    const loop = agentLoops.get(id) || new AgentLoop({ agentId: id, store: getAgentStore(), endpoint: '', projectDir: agent.dir, budgets: resolveBudgets(loadSettings(), agent.settings) });
+    return loop.contextStatus();
+  });
+  ipcMain.handle('agents:compact', async (_e, id) => {
+    try { return { ok: true, context: await (await getAgentLoop(id)).compactNow() }; }
+    catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('agents:stop', (_e, id) => {
     const loop = agentLoops.get(id);
@@ -563,7 +582,7 @@ function createWindow({ show = true } = {}) {
     height: 860,
     minWidth: 1000,
     minHeight: 640,
-    backgroundColor: '#0a0a0a',
+    backgroundColor: loadSettings().theme === 'light' ? '#fdf6e3' : '#0a0a0a',
     icon: path.join(rootDir, 'assets', 'icon.png'),
     show: false,
     webPreferences: {
@@ -581,17 +600,20 @@ function createWindow({ show = true } = {}) {
   });
 
   // Mirror reach run events to the renderer (Projects page log).
-  reachProcess.onRunEvent((ev) => {
+  const detachReachEvents = reachProcess.onRunEvent((ev) => {
     if (!win || win.isDestroyed()) return;
     if (ev.type === 'output') win.webContents.send('reach:output', ev);
     else if (ev.type === 'exit') win.webContents.send('reach:exit', ev);
   });
 
+  win.once('closed', detachReachEvents);
   return win.loadFile(path.join(rootDir, 'renderer', 'index.html'));
 }
 
 // ---------- lifecycle ----------
 app.whenReady().then(() => {
+  nativeTheme.themeSource = loadSettings().theme === 'light' ? 'light' : 'dark';
+  reachProcess.configure(loadSettings);
   registerIpc();
   if (process.argv.includes('--smoke')) {
     (async () => {
@@ -618,7 +640,9 @@ app.whenReady().then(() => {
           (async () => {
             if (!window.reach) throw new Error('Reach preload bridge is unavailable');
             const version = await window.reach.getVersion();
-            if (!version.startsWith('reach ')) throw new Error(version);
+            if (typeof version !== 'string' || !version) throw new Error('CLI status missing');
+            if (!['darwin', 'win32', 'linux'].includes(window.reach.platform)) throw new Error('Platform bridge missing');
+            if (window.reach.platform === 'darwin' && !document.querySelector('#btn-save-file').textContent.includes('Cmd+S')) throw new Error('Mac shortcut label missing');
             await window.reach.getProjects();
             await window.reach.agents.list();
             document.querySelector('#btn-new').click();
@@ -792,7 +816,7 @@ app.whenReady().then(() => {
             await document.querySelector('#btn-show-files').onclick();
             if (drawer.classList.contains('closed')) throw new Error('Files menu did not reopen drawer');
             // Overflow regression: seed a LONG chat history into the live DOM
-            // and assert the composer stays on-screen while only the log
+            // and assert the composer stays on-screen while the conversation
             // scrolls. A broken min-height:0 chain stretches the column and
             // clips the textbox at the bottom (shipped once, 2026-09-13).
             const log = document.querySelector('#chat-log');
@@ -819,8 +843,9 @@ app.whenReady().then(() => {
             if (compR.bottom > window.innerHeight || compR.height < 20) {
               throw new Error('composer clipped with long history (bottom=' + compR.bottom + ' height=' + compR.height + ' innerH=' + window.innerHeight + ')');
             }
-            if (log.scrollHeight <= log.clientHeight) {
-              throw new Error('chat log is not scrolling with 80 seeded messages (scrollH=' + log.scrollHeight + ' clientH=' + log.clientHeight + ')');
+            const conversation = document.querySelector('#chat-scroll');
+            if (conversation.scrollHeight <= conversation.clientHeight) {
+              throw new Error('Conversation is not scrolling with 80 seeded messages');
             }
             log.innerHTML = '';
             // Cleanup: remove every conversation the smoke run created in the
@@ -909,6 +934,7 @@ app.whenReady().then(() => {
               const slow = await dispatch(t.team, 'Cancel the slow search');
               await until(() => slow.cards.size === 2 && [...slow.cards.values()].every(c => c.querySelector('.member-state').textContent === 'Running search…'), 'both workers searching');
               await new Promise(resolve => setTimeout(resolve, 150));
+              await until(() => [...slow.cards.values()].every(c => c.querySelector('.activity-panel')?.dataset.active === 'true'), 'live team activity panels');
               const tick = Date.now();
               await reachApi.getProjects();
               if (Date.now() - tick > 1000) throw new Error('Main-process IPC blocked during team search');
@@ -1148,6 +1174,62 @@ app.whenReady().then(() => {
             if (window.__errors.length) throw new Error('Renderer errors: ' + window.__errors.join('; '));
           })()
         `);
+        // Exercise manual compression through the real preload/renderer and SSE path.
+        let compressionReady, finishCompression;
+        const compressionStarted = new Promise(resolve => { compressionReady = resolve; });
+        let compressionRequests = 0;
+        const compressionServer = createServer(async (req, res) => {
+          let raw = ''; for await (const chunk of req) raw += chunk;
+          const body = JSON.parse(raw);
+          if (!body.stream || !body.messages[0].content.includes('durable conversation memory')) { res.writeHead(400); res.end('Expected streamed summary'); return; }
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          const content = 'Goal: inspect src/chat.py. Completed: file read. Pending: tests and final report. Preserve compatibility.';
+          res.write('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n');
+          const finish = () => res.end('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
+          if (++compressionRequests === 1) { finishCompression = finish; compressionReady(); }
+          else finish();
+        });
+        await new Promise(resolve => compressionServer.listen(0, '127.0.0.1', resolve));
+        const preCompressionSettings = loadSettings();
+        try {
+          const compressionAgent = getAgentStore().create({ name: 'Context compression fixture', dir: smokeProject, model: 'Qwen/fixture' });
+          getAgentStore().setMessages(compressionAgent.id, [{ role: 'user', content: 'Inspect src/chat.py and preserve compatibility.' },
+            ...Array.from({ length: 70 }, (_, i) => ({ role: 'assistant', content: `File evidence ${i}: ` + 'x'.repeat(1500) })),
+            { role: 'user', content: 'Finish the tests and final report.' }]);
+          getAgentStore().setRunState(compressionAgent.id, { status: 'paused', reason: 'Pending tests' });
+          const savedHistory = JSON.stringify(compressionAgent.messages);
+          await win.webContents.executeJavaScript(`(async () => {
+            await reachApi.saveSettings({ endpoint: 'http://127.0.0.1:${compressionServer.address().port}/v1', budgets: (await reachApi.getBudgetSchema()).presets.balanced });
+            await selectAgent({ id: ${JSON.stringify(compressionAgent.id)} });
+            await showTab('agents');
+            window.__compressionPromise = document.querySelector('#btn-agent-compact').onclick();
+          })()`);
+          await compressionStarted;
+          win.showInactive();
+          await win.webContents.executeJavaScript(`(async () => {
+            const deadline = Date.now() + 3000;
+            while (!document.querySelector('#agent-activity').textContent.includes('Writing memory') && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+            if (!document.querySelector('#agent-context').textContent.includes('segment 1 of')) throw new Error('Compression segment indicator missing');
+            if (!document.querySelector('#btn-agent-compact').disabled) throw new Error('Duplicate manual compression allowed');
+            if (!document.querySelector('#agent-activity').textContent.includes('Writing memory')) throw new Error('Compression stream progress missing');
+          })()`);
+          const compressionScreenshot = path.join(smokeRoot, 'context-compression.png');
+          fs.writeFileSync(compressionScreenshot, (await win.capturePage()).toPNG());
+          console.log('COMPRESSION SCREENSHOT: ' + compressionScreenshot);
+          finishCompression();
+          await win.webContents.executeJavaScript('window.__compressionPromise');
+          if (JSON.stringify(compressionAgent.messages) !== savedHistory || !compressionAgent.context) throw new Error('Compression damaged history or failed to persist memory');
+          await win.webContents.executeJavaScript(`(async () => {
+            await selectAgent({ id: ${JSON.stringify(compressionAgent.id)} });
+            await refreshContextStatus();
+            if (!document.querySelector('#agent-context').textContent.includes('Last compression')) throw new Error('Saved compression status missing');
+            if (document.querySelector('#btn-agent-compact').disabled || document.querySelector('#agent-status').textContent !== 'paused') throw new Error('Compression did not restore paused controls');
+            if (window.__errors.length) throw new Error('Renderer errors: ' + window.__errors.join('; '));
+          })()`);
+          console.log('COMPRESSION SMOKE OK: streamed segments, progress, manual control, saved memory, unchanged history and paused-state restoration.');
+        } finally {
+          compressionServer.closeAllConnections(); compressionServer.close(); saveSettings(preCompressionSettings);
+        }
         // Saving settings during a request must preserve its owner and Stop.
         let budgetRequestReady;
         const budgetRequestStarted = new Promise(resolve => { budgetRequestReady = resolve; });
@@ -1159,7 +1241,7 @@ app.whenReady().then(() => {
             res.end('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] }) + '\n\ndata: [DONE]\n\n');
             return;
           }
-          res.write(': waiting for cancellation\n\n');
+          res.write('data: ' + JSON.stringify({ choices: [{ delta: { reasoning_content: 'fixture reasoning' } }] }) + '\n\n');
           budgetRequestReady();
         });
         await new Promise(resolve => budgetServer.listen(0, '127.0.0.1', resolve));
@@ -1174,6 +1256,25 @@ app.whenReady().then(() => {
             return a.agent.id;
           })()`);
           await budgetRequestStarted;
+          win.showInactive();
+          await win.webContents.executeJavaScript(`(async () => {
+            await showTab('agents');
+            const deadline = Date.now() + 3000;
+            while (document.querySelector('#agent-activity .activity-title').textContent !== 'Thinking' && Date.now() < deadline) await new Promise(r => setTimeout(r, 25));
+            const panel = document.querySelector('#agent-activity');
+            if (panel.classList.contains('hidden') || panel.dataset.active !== 'true' || panel.querySelector('.activity-title').textContent !== 'Thinking') throw new Error('Reasoning has no active indicator');
+            if (!panel.textContent.includes('17 characters received') || document.querySelector('#activity-global').hidden) throw new Error('Reasoning counter or global activity missing');
+            const elapsed = panel.querySelector('.activity-time').textContent;
+            const timerDeadline = Date.now() + 3000;
+            while (panel.querySelector('.activity-time').textContent === elapsed && Date.now() < timerDeadline) await new Promise(r => setTimeout(r, 100));
+            if (panel.querySelector('.activity-time').textContent === elapsed) throw new Error('Elapsed timer froze');
+            await selectAgent(await reachApi.agents.get(${JSON.stringify(runAgent)}));
+            if (!document.querySelector('#agent-activity').textContent.includes('17 characters received')) throw new Error('Switching chats lost activity');
+          })()`);
+          await new Promise(resolve => setTimeout(resolve, 200));
+          const activityScreenshot = path.join(smokeRoot, 'live-activity.png');
+          fs.writeFileSync(activityScreenshot, (await win.capturePage()).toPNG());
+          console.log('ACTIVITY SCREENSHOT: ' + activityScreenshot);
           const originalLoop = agentLoops.get(runAgent);
           await win.webContents.executeJavaScript(`(async () => {
             await reachApi.saveSettings({ budgets: (await reachApi.getBudgetSchema()).presets.heavy });
@@ -1188,6 +1289,9 @@ app.whenReady().then(() => {
           const stopDeadline = Date.now() + 3000;
           while (originalLoop.running && Date.now() < stopDeadline) await new Promise(resolve => setTimeout(resolve, 10));
           if (originalLoop.running || getAgentStore().get(runAgent).runState.status !== 'stopped') throw new Error('Stop failed after settings save');
+          await new Promise(resolve => setTimeout(resolve, 180));
+          if (await win.webContents.executeJavaScript(`document.querySelector('#agent-activity').dataset.active`) !== 'false') throw new Error('Activity still animates after Stop');
+          console.log('ACTIVITY SMOKE OK: real streamed reasoning, counters, elapsed timer, chat switching and Stop.');
           const replacementLoop = await getAgentLoop(runAgent);
           if (replacementLoop === originalLoop || replacementLoop._budgets().maxTokens !== 65536) throw new Error('Next run did not receive updated settings');
           await win.webContents.executeJavaScript(`(async () => {
@@ -1200,13 +1304,180 @@ app.whenReady().then(() => {
           if (getAgentStore().get(runAgent).runState.status !== 'completed' || budgetRequestCount !== 2) throw new Error('Regular Start did not resume exactly once');
           await win.webContents.executeJavaScript(`reachApi.agents.delete(${JSON.stringify(runAgent)})`);
         } finally { budgetServer.closeAllConnections(); budgetServer.close(); saveSettings(previousSettings); }
+        // A provider that ignores its budget guidance still leaves a useful,
+        // explicitly app-authored checkpoint instead of an empty/error bubble.
+        let exhaustedRequests = 0;
+        const exhaustedServer = createServer(async (req, res) => {
+          let raw = ''; for await (const chunk of req) raw += chunk;
+          const request = JSON.parse(raw);
+          exhaustedRequests++;
+          if (request.max_tokens !== 512 || !request.messages[0].content.includes('Hard output allowance: 512')) { res.writeHead(400); res.end('Missing budget contract'); return; }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'Provider reasoning without an answer' }, finish_reason: 'length' }] }));
+        });
+        await new Promise(resolve => exhaustedServer.listen(0, '127.0.0.1', resolve));
+        const beforeExhaustedSettings = loadSettings();
+        try {
+          await win.webContents.executeJavaScript(`(async () => {
+            await reachApi.saveSettings({ endpoint: 'http://127.0.0.1:${exhaustedServer.address().port}/v1', budgets: { ...(await reachApi.getBudgetSchema()).presets.balanced, maxTokens: 512 } });
+            const fixture = await reachApi.agents.create('Budget-aware checkpoint', ${JSON.stringify(smokeProject)}, 'Qwen/fixture');
+            await selectAgent(fixture.agent);
+            await showTab('agents');
+            await reachApi.agents.send(fixture.agent.id, 'Inspect the project within the configured output budget.');
+            const deadline = Date.now() + 3000;
+            while (Date.now() < deadline) {
+              const saved = await reachApi.agents.get(fixture.agent.id);
+              if (saved.runState?.status === 'paused' && document.querySelector('#chat-log').textContent.includes('REACH budget checkpoint')) break;
+              await new Promise(r => setTimeout(r, 25));
+            }
+            const saved = await reachApi.agents.get(fixture.agent.id);
+            if (saved.runState?.status !== 'paused' || !document.querySelector('#chat-log').textContent.includes('REACH budget checkpoint')) throw new Error('Output exhaustion produced no visible checkpoint');
+            if (document.querySelector('#chat-log').textContent.includes('Error:') || !saved.messages.some(m => m._reachMeta?.source === 'budget-checkpoint')) throw new Error('Budget checkpoint missing or rendered as an error');
+            if (document.querySelector('#btn-agent-continue').classList.contains('hidden') || document.querySelector('#btn-send').textContent !== 'Send') throw new Error('Budget checkpoint cannot resume');
+            if (window.__errors.length) throw new Error('Renderer errors: ' + window.__errors.join('; '));
+          })()`);
+          if (exhaustedRequests !== 2) throw new Error('Budget recovery exceeded one concise retry');
+          console.log('BUDGET AWARENESS SMOKE OK: model receives actual limit, exactly one capped retry, visible saved checkpoint, no error bubble and Continue available.');
+        } finally {
+          exhaustedServer.closeAllConnections(); exhaustedServer.close(); saveSettings(beforeExhaustedSettings);
+        }
+        // Completed activity must never displace the composer, even with long
+        // provider summaries, an expanded plan, and every result opened.
+        const layoutAgent = getAgentStore().create({ name: 'Read through the project and write a detailed summary', dir: smokeProject });
+        const report = '# Project summary\n\n' + 'A detailed finding with a source path and supporting evidence. '.repeat(600);
+        getAgentStore().setMessages(layoutAgent.id, [{ role: 'user', content: 'Review the project.' }, { role: 'assistant', content: report }]);
+        getAgentStore().setTodos(layoutAgent.id, Array.from({ length: 30 }, (_, i) => ({ text: 'Review project component ' + i, status: 'completed' })));
+        getAgentStore().setRunState(layoutAgent.id, { status: 'completed', reason: report });
+        let layoutActivity = null;
+        const activityReducer = require('./renderer/activity-state.js').reduce;
+        for (let i = 0; i < 80; i++) {
+          layoutActivity = activityReducer(layoutActivity, { type: 'tool-call', tool: 'read', arguments: { path: 'src/component-' + i + '.py' } });
+          layoutActivity = activityReducer(layoutActivity, { type: 'tool-result', ok: true, result: { content: report } });
+        }
+        layoutActivity = activityReducer(layoutActivity, { type: 'run-state', status: 'completed', reason: report });
+        getAgentStore().setActivity(layoutAgent.id, layoutActivity);
+        for (const [width, height, zoom] of [[1000, 640, 1], [1440, 860, 1], [1420, 980, 1.25]]) {
+          win.setSize(width, height);
+          win.webContents.setZoomFactor(zoom);
+          await new Promise(resolve => setTimeout(resolve, 150));
+          await win.webContents.executeJavaScript(`(async () => {
+            await selectAgent({ id: ${JSON.stringify(layoutAgent.id)} });
+            await showTab('agents');
+            await selectDrawerPanel('files');
+            setDrawer(true);
+            await new Promise(r => setTimeout(r, 200));
+            const activity = document.querySelector('#agent-activity');
+            const details = activity.querySelector('.activity-details');
+            if (details.open) throw new Error('Completed activity did not start collapsed');
+            if (activity.querySelector('.activity-note').textContent.length > 100) throw new Error('Activity duplicates the final report');
+            const composer = document.querySelector('.composer');
+            const input = document.querySelector('#composer-input');
+            const scroll = document.querySelector('#chat-scroll');
+            const before = composer.getBoundingClientRect();
+            details.querySelector('summary').click();
+            for (const result of activity.querySelectorAll('.activity-result')) result.open = true;
+            await new Promise(r => requestAnimationFrame(r));
+            const after = composer.getBoundingClientRect();
+            if (!details.open) throw new Error('Completed activity cannot be expanded');
+            if (Math.abs(before.top - after.top) > 1 || after.bottom > innerHeight || after.right > innerWidth + 1 || after.left < 0) throw new Error('Expanded activity displaced composer: ' + JSON.stringify({ before: before.toJSON(), after: after.toJSON(), width: innerWidth, height: innerHeight }));
+            if (after.right > document.querySelector('#file-drawer').getBoundingClientRect().left + 1) throw new Error('Composer extends underneath the Files panel');
+            if (scroll.clientHeight < 60 || input.getBoundingClientRect().width < 60) throw new Error('Conversation or input squeezed out of view');
+            if (document.body.scrollHeight > innerHeight + 1) throw new Error('Conversation overflowed the window');
+            const headerBeforeScroll = activity.getBoundingClientRect();
+            const contextBeforeScroll = document.querySelector('.context-bar').getBoundingClientRect();
+            scroll.scrollTop = scroll.scrollHeight;
+            if (Math.abs(activity.getBoundingClientRect().top - headerBeforeScroll.top) > 1 || Math.abs(document.querySelector('.context-bar').getBoundingClientRect().top - contextBeforeScroll.top) > 1) throw new Error('Conversation scrolling moved the stationary status header');
+            if (scroll.scrollTop <= 0 || Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) > 2) throw new Error('Final answer is not reachable by scrolling');
+            const lastMessage = document.querySelector('#chat-log .chat-msg:last-child').getBoundingClientRect();
+            const viewport = scroll.getBoundingClientRect();
+            if (lastMessage.bottom > viewport.bottom + 1 || lastMessage.bottom < viewport.top) throw new Error('The end of the actual final answer is not visible');
+            input.value = 'Layout test draft'; input.focus();
+            if (document.activeElement !== input) throw new Error('Composer is not usable');
+            // Routine activity repaint must preserve a manually expanded completed trace.
+            window.ReachActivity.select(currentAgent);
+            await new Promise(r => setTimeout(r, 150));
+            if (!details.open) throw new Error('Activity repaint collapsed the user-opened trace');
+            if (getComputedStyle(document.querySelector('#agent-name')).fontSize !== (innerHeight <= 760 || document.querySelector('.workbench').clientWidth - 32 <= 620 ? '18px' : '24px')) throw new Error('Compact header did not respond to available space');
+            await new Promise(r => setTimeout(r, 100));
+          })()`);
+          const layoutScreenshot = path.join(smokeRoot, `chat-layout-${width}-${zoom}.png`);
+          fs.writeFileSync(layoutScreenshot, (await win.capturePage()).toPNG());
+          console.log('CHAT LAYOUT SCREENSHOT: ' + layoutScreenshot);
+          await win.webContents.executeJavaScript("document.querySelector('#agent-activity .activity-details').open = false");
+        }
+        win.webContents.setZoomFactor(1);
+        console.log('CHAT LAYOUT SMOKE OK: long completed report, 80 expanded activity results, 30 plan items, file panel, minimum window and 125% zoom; stationary status header, responsive compact layout and visible composer.');
         win.setSize(1420, 980);
         await new Promise(resolve => setTimeout(resolve, 150));
         const settingsScreenshot = path.join(smokeRoot, 'budget-settings.png');
         fs.writeFileSync(settingsScreenshot, (await win.webContents.capturePage()).toPNG());
         console.log('SETTINGS SCREENSHOT: ' + settingsScreenshot);
         await require('./browser/smoke.cjs')(win, studioBrowser, smokeRoot);
-        console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, WSL -> ${v}`);
+        const beforeTheme = loadSettings();
+        const cachedLoops = [...agentLoops.entries()];
+        await win.webContents.executeJavaScript(`(async () => {
+          await selectDrawerPanel('files');
+          await openFile('hello.py');
+          const editor = openFiles.get('hello.py').editor;
+          editor.view.dispatch({ changes: { from: editor.getText().length, insert: '\\n# unsaved theme check' }, selection: { anchor: 3 } });
+          const text = editor.getText();
+          const selection = editor.view.state.selection.main.head;
+          const button = document.querySelector('#theme-toggle');
+          await button.onclick();
+          if (document.documentElement.dataset.theme !== 'light' || button.getAttribute('aria-checked') !== 'true') throw new Error('Light switch failed');
+          if (getComputedStyle(document.body).backgroundColor !== 'rgb(253, 246, 227)') throw new Error('Light palette missing');
+          if (editor.getText() !== text || editor.view.state.selection.main.head !== selection) throw new Error('Theme reset editor state');
+          if (getComputedStyle(editor.view.dom).backgroundColor !== 'rgb(253, 246, 227)') throw new Error('Editor did not follow light theme');
+          await button.onclick();
+          if (document.documentElement.dataset.theme !== 'dark' || getComputedStyle(document.body).backgroundColor !== 'rgb(10, 10, 10)') throw new Error('Dark palette did not restore');
+          await button.onclick();
+          editor.setText(editor.getText().replace('\\n# unsaved theme check', ''));
+          openFiles.get('hello.py').dirty = false;
+        })()`);
+        if (loadSettings().theme !== 'light' || loadSettings().accessKey !== beforeTheme.accessKey || cachedLoops.some(([id, loop]) => agentLoops.get(id) !== loop)) throw new Error('Theme save changed connection or agent state');
+        await new Promise(resolve => setTimeout(resolve, 150));
+        await win.webContents.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+        await new Promise(resolve => setTimeout(resolve, 350));
+        const themeScreenshot = path.join(smokeRoot, 'light-theme.png');
+        fs.writeFileSync(themeScreenshot, (await win.capturePage()).toPNG());
+        console.log('LIGHT THEME SCREENSHOT: ' + themeScreenshot);
+        await win.webContents.executeJavaScript(`(async () => {
+          await document.querySelector('#theme-toggle').onclick();
+          appendChatMessage('user', 'Review this project and suggest the next steps.');
+          appendChatMessage('assistant', 'The project is ready to explore. Start with the entry point, then check the tests and review any changes before saving.');
+        })()`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        const darkScreenshot = path.join(smokeRoot, 'dark-theme.png');
+        fs.writeFileSync(darkScreenshot, (await win.capturePage()).toPNG());
+        console.log('DARK THEME SCREENSHOT: ' + darkScreenshot);
+        await win.webContents.executeJavaScript(`(async () => {
+          document.querySelector('[data-settings-panel="connection"]').click();
+        })()`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        fs.writeFileSync(path.join(smokeRoot, 'dark-settings.png'), (await win.capturePage()).toPNG());
+        await win.webContents.executeJavaScript(`document.querySelector('#theme-toggle').onclick()`);
+        const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
+        win.webContents.reload();
+        await reloaded;
+        if (await win.webContents.executeJavaScript(`document.documentElement.dataset.theme`) !== 'light') throw new Error('Theme did not survive reload');
+        console.log('THEME SMOKE OK: light/dark switch, editor state, credential preservation and persisted preference.');
+        if (process.platform === 'darwin') {
+          const closed = new Promise(resolve => win.once('closed', resolve));
+          win.close();
+          await closed;
+          if (BrowserWindow.getAllWindows().length) throw new Error('Mac window did not close');
+          app.emit('activate');
+          if (!win || win.isDestroyed()) throw new Error('Dock activation did not reopen the window');
+          await new Promise(resolve => win.webContents.once('did-finish-load', resolve));
+          const reopened = await win.webContents.executeJavaScript(`(async () => {
+            const projects = await reachApi.getProjects();
+            const browser = await reachApi.browser.command('state');
+            return { projects: projects.length, browser: browser.ok === true };
+          })()`);
+          if (!reopened.projects || !reopened.browser) throw new Error('Reopened workspace lost projects or browser IPC');
+          console.log('MAC LIFECYCLE SMOKE OK: close last window, Dock activation, project persistence and browser IPC.');
+        }
+        console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, optional CLI -> ${v}`);
         app.exit(0);
       } catch (e) {
         console.error(`SMOKE FAIL: ${e.stack || e.message}`);
@@ -1224,7 +1495,10 @@ app.on('window-all-closed', () => {
   reachProcess.killAllRuns();
   for (const loop of agentLoops.values()) loop.stop();
   for (const runner of teamRuns.values()) runner.stop();
-  app.quit();
+  if (process.platform !== 'darwin') app.quit();
+});
+app.on('activate', () => {
+  if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: !process.argv.includes('--smoke') });
 });
 app.on('before-quit', () => {
   reachProcess.killAllRuns();

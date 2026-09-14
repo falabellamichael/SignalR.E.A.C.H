@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('reach', {
+  platform: process.platform,
+  initialTheme: ipcRenderer.sendSync('theme:get'),
+  setTheme: theme => ipcRenderer.invoke('theme:set', theme),
   browser: {
     onSelection: cb => ipcRenderer.on('browser:selection', (_e, data) => cb(data)),
     onSelectionCleared: cb => ipcRenderer.on('browser:selection-cleared', (_e, tabId) => cb(tabId)),
@@ -39,6 +42,8 @@ contextBridge.exposeInMainWorld('reach', {
   agents: {
     list: () => ipcRenderer.invoke('agents:list'),
     get: (id) => ipcRenderer.invoke('agents:get', id),
+    context: (id) => ipcRenderer.invoke('agents:context', id),
+    compact: (id) => ipcRenderer.invoke('agents:compact', id),
     tree: (dir) => ipcRenderer.invoke('agents:tree', dir),
     create: (name, dir, model) => ipcRenderer.invoke('agents:create', { name, dir, model }),
     fork: (id, upToIndex, name) => ipcRenderer.invoke('agents:fork', { id, upToIndex, name }),

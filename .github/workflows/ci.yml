@@ -76,8 +76,12 @@ jobs:
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
 
   studio:
-    name: REACH Studio (Windows)
-    runs-on: windows-latest
+    name: REACH Studio (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
     defaults:
       run:
         working-directory: studio
@@ -91,11 +95,11 @@ jobs:
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run build:editor
-      - name: Check application JavaScript
-        run: |
-          $sources = @('main.mjs', 'preload.cjs') + (Get-ChildItem agent/*.cjs, browser/*.cjs, renderer/*.js, test/*.cjs).FullName
-          foreach ($source in $sources) {
-            node --check $source
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
+      - run: npm run check
       - run: npm test
+      - name: macOS Electron smoke test
+        if: runner.os == 'macOS'
+        run: npm run smoke
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: npm run dist:mac -- --dir

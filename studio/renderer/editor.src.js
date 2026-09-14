@@ -12,35 +12,37 @@ import { tags } from '@lezer/highlight';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 
-const goldTheme = EditorView.theme({
-  '&': { backgroundColor: '#0a0a0a', color: '#e6e0cc', height: '100%', fontSize: '13px' },
-  '.cm-content': { fontFamily: "Consolas, 'Courier New', monospace", caretColor: '#d4af37', padding: '10px 0' },
-  '.cm-cursor': { borderLeftColor: '#d4af37' },
-  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { backgroundColor: '#2a2416 !important' },
-  '.cm-activeLine': { backgroundColor: '#111008' },
-  '.cm-activeLineGutter': { backgroundColor: '#111008', color: '#d4af37' },
-  '.cm-gutters': { backgroundColor: '#0a0a0a', color: '#4a4536', border: 'none', borderRight: '1px solid #262626' },
+const editorTheme = dark => EditorView.theme({
+  '&': { backgroundColor: 'var(--bg)', color: 'var(--text)', height: '100%', fontSize: '13px' },
+  '.cm-content': { fontFamily: "Menlo, Consolas, 'Courier New', monospace", caretColor: 'var(--gold)', padding: '10px 0' },
+  '.cm-cursor': { borderLeftColor: 'var(--gold)' },
+  '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': { backgroundColor: 'var(--selection) !important' },
+  '.cm-activeLine': { backgroundColor: 'var(--active-line)' },
+  '.cm-activeLineGutter': { backgroundColor: 'var(--active-line)', color: 'var(--gold)' },
+  '.cm-gutters': { backgroundColor: 'var(--bg)', color: 'var(--muted)', border: 'none', borderRight: '1px solid var(--line)' },
   '.cm-lineNumbers .cm-gutterElement': { padding: '0 8px 0 12px' },
   '&.cm-focused': { outline: 'none' },
-  '.cm-matchingBracket': { backgroundColor: '#2a2416', outline: '1px solid #8a7430' },
-  '.cm-selectionMatch': { backgroundColor: '#241f10' },
-}, { dark: true });
+  '.cm-matchingBracket': { backgroundColor: 'var(--selection)', outline: '1px solid var(--gold-dim)' },
+  '.cm-selectionMatch': { backgroundColor: 'var(--selection)' },
+}, { dark });
 
 const goldHighlight = HighlightStyle.define([
-  { tag: tags.keyword, color: '#d4af37' },
-  { tag: [tags.string, tags.special(tags.string)], color: '#a8c187' },
-  { tag: [tags.number, tags.bool, tags.null], color: '#d19a66' },
-  { tag: tags.comment, color: '#5c5646', fontStyle: 'italic' },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: '#e6c07b' },
-  { tag: tags.typeName, color: '#c678dd' },
-  { tag: tags.operator, color: '#8a8578' },
-  { tag: tags.punctuation, color: '#6b6555' },
-  { tag: tags.propertyName, color: '#e06c75' },
-  { tag: tags.definition(tags.variableName), color: '#e6e0cc' },
+  { tag: tags.keyword, color: 'var(--gold)' },
+  { tag: [tags.string, tags.special(tags.string)], color: 'var(--syntax-string)' },
+  { tag: [tags.number, tags.bool, tags.null], color: 'var(--syntax-number)' },
+  { tag: tags.comment, color: 'var(--syntax-comment)', fontStyle: 'italic' },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: 'var(--code-text)' },
+  { tag: tags.typeName, color: 'var(--syntax-type)' },
+  { tag: tags.operator, color: 'var(--dim)' },
+  { tag: tags.punctuation, color: 'var(--dim)' },
+  { tag: tags.propertyName, color: 'var(--syntax-property)' },
+  { tag: tags.definition(tags.variableName), color: 'var(--text)' },
 ]);
 
 function create(parent, { doc = '', onChange = null, filename = '' } = {}) {
   const language = new Compartment();
+  const theme = new Compartment();
+  const currentTheme = () => editorTheme(document.documentElement.dataset.theme !== 'light');
   const updateListener = EditorView.updateListener.of((u) => {
     if (u.docChanged && onChange) onChange(u.state.doc.toString());
   });
@@ -56,13 +58,15 @@ function create(parent, { doc = '', onChange = null, filename = '' } = {}) {
       closeBrackets(),
       highlightSelectionMatches(),
       language.of([]),
-      goldTheme,
+      theme.of(currentTheme()),
       syntaxHighlighting(goldHighlight),
       updateListener,
       keymap.of([...defaultKeymap, ...historyKeymap, ...closeBracketsKeymap, ...searchKeymap, indentWithTab]),
     ],
   });
   const view = new EditorView({ state, parent });
+  const refreshTheme = () => view.dispatch({ effects: theme.reconfigure(currentTheme()) });
+  document.addEventListener('reach-theme-change', refreshTheme);
   let destroyed = false;
   const mode = /\.rsh$/i.test(filename) ? languages.find(l => l.name === 'JavaScript') : LanguageDescription.matchFilename(languages, filename);
   if (mode) mode.load().then(extension => {
@@ -75,7 +79,7 @@ function create(parent, { doc = '', onChange = null, filename = '' } = {}) {
       view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
     },
     focus: () => view.focus(),
-    destroy: () => { destroyed = true; view.destroy(); },
+    destroy: () => { destroyed = true; document.removeEventListener('reach-theme-change', refreshTheme); view.destroy(); },
   };
 }
 
