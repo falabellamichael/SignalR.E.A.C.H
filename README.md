@@ -16,6 +16,15 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
 | **Version** | 26.9.3 <!-- x-release-please-version --> |
 
+## Standalone REACH Studio desktop app
+
+The Windows desktop app is in [`studio/`](studio/README.md). It provides project
+files and editing, AI conversations, custom personas, collaborating agent teams,
+and a dedicated Budgeting settings page with global defaults, conversation
+overrides, and unrestricted testing controls. It connects to an OpenAI-compatible
+endpoint, including SignalREACH. See the [Studio guide](studio/README.md) for setup,
+tests, Windows builds, and the optional WSL Reach CLI integration.
+
 ## CodeGPT economy models
 
 CodeGPT's paid plans include an **economy tier** that costs no credits. The list is

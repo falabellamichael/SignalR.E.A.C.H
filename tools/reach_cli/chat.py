@@ -20,6 +20,9 @@ from .terminal import (
     c_red,
     c_yellow,
     print_footer,
+    response_indent,
+    response_label,
+    response_open,
     spinner,
     spinner_clear,
     status_line,
@@ -198,24 +201,48 @@ def set_system_message(history, client):
         history.insert(0, {"role": "system", "content": prompt})
 
 
-def stream_reply(client, messages, prefix=""):
-    """Streams a reply; returns (ok, full_text).
+def stream_reply(client, messages, indent=None):
+    """Streams a reply under a styled left rule; returns (ok, full_text).
 
     Shows an animated waiting line until the first token arrives, so a
     long upstream wait (reasoning models, slow aliases, cold relays) is
     never silent.
     """
-    text_parts = []
-    indicator = WaitIndicator(prefix)
+    if indent is None:
+        indent = response_indent()
+    response_open()
+    indicator = WaitIndicator(prefix=response_label())
     indicator.start()
+    text_parts = []
+    buf = ""
+    at_start = True  # next write begins a fresh line
+    first = True     # first line continues after the 'ai ▸' label
     try:
         for delta in client.chat(messages):
             indicator.stop()
-            sys.stdout.write(delta)
-            sys.stdout.flush()
             text_parts.append(delta)
+            buf += delta
+            while True:
+                newline = buf.find("\n")
+                if newline == -1:
+                    break
+                line, buf = buf[:newline], buf[newline + 1:]
+                if not first and at_start:
+                    sys.stdout.write(indent)
+                sys.stdout.write(line + "\n")
+                at_start = True
+                first = False
+            if buf:
+                if not first and at_start:
+                    sys.stdout.write(indent)
+                sys.stdout.write(buf)
+                buf = ""  # consumed — never re-emit this chunk on the next delta
+                at_start = False
+                first = False
+            sys.stdout.flush()
     except ReachApiError as exc:
         indicator.stop()
+        print()
         print(c_red("  ✗ " + str(exc)))
         return False, ""
     finally:
@@ -337,11 +364,7 @@ def run_agent_turn(client, history, state, instruction=None):
             rounds += 1
             set_system_message(history, client)
             print(c_dim("  ── agent round %d ──" % rounds))
-            print(c_bold(c_magenta("ai  ▸ ")), end="")
-            sys.stdout.flush()
-            ok, reply_text = stream_reply(
-                client, history, prefix=c_bold(c_magenta("ai  ▸ "))
-            )
+            ok, reply_text = stream_reply(client, history)
             if not ok:
                 return False
             actions, status, invalid = parse_tool_blocks(reply_text)
@@ -568,12 +591,8 @@ def run_chat(client, base):
                 except Exception as exc:
                     print(c_red("  ✗ %s" % exc))
                 continue
-            print(c_bold(c_magenta("ai  ▸ ")), end="")
-            sys.stdout.flush()
             try:
-                ok, reply_text = stream_reply(
-                    client, history, prefix=c_bold(c_magenta("ai  ▸ "))
-                )
+                ok, reply_text = stream_reply(client, history)
                 if ok:
                     history.append({"role": "assistant", "content": reply_text})
                     print_footer(client)

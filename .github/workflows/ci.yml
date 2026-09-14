@@ -74,3 +74,32 @@ jobs:
         run: node --test tests/*.test.cjs
       - name: Parse JSON
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
+
+  studio:
+    name: REACH Studio (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: studio
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - run: npm ci
+      - run: npm audit --audit-level=high
+      - run: npm run build:editor
+      - run: npm run check
+      - run: npm test
+      - name: macOS Electron smoke test
+        if: runner.os == 'macOS'
+        run: npm run smoke
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: npm run dist:mac -- --dir

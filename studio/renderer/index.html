@@ -1,0 +1,455 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'" />
+  <title>Reach Studio</title>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="mark">R</span>
+      <h1>Reach Studio</h1>
+    </div>
+    <nav class="tabs">
+      <button id="tab-projects" class="tab active">Projects</button>
+      <button id="tab-agents" class="tab">Agents</button>
+      <button id="tab-create" class="tab">Create</button>
+      <div class="settings-menu">
+        <button id="tab-settings" class="tab" aria-expanded="false" aria-controls="tab-settings-menu">Settings &#9662;</button>
+        <div id="tab-settings-menu" class="settings-dropdown hidden">
+          <button data-settings-panel="connection">Connection &amp; default model</button>
+          <button data-settings-panel="conversation">Conversation &amp; permissions</button>
+          <button data-settings-panel="budgeting">Budgeting</button>
+        </div>
+      </div>
+    </nav>
+    <div class="statusbar">
+      <div id="activity-global" class="chip" hidden><i class="activity-spinner" aria-hidden="true"></i><span></span></div>
+      <button id="theme-toggle" class="chip theme-toggle" type="button" role="switch" aria-label="Light theme" aria-checked="false">
+        <span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span>
+      </button>
+      <div class="settings-menu" id="drawer-menu-wrap">
+        <button id="btn-toggle-files" class="chip toggle" title="Choose Files or Browser" aria-expanded="false" aria-controls="drawer-menu">Files &#x25BE;</button>
+        <div id="drawer-menu" class="settings-dropdown hidden" role="menu">
+          <button id="btn-show-files" role="menuitem">Files</button>
+          <button id="btn-show-browser" role="menuitem">Browser</button>
+        </div>
+      </div>
+      <span id="wsl-status" class="chip pending">checking reach&hellip;</span>
+      <span id="reach-version" class="chip dim"></span>
+    </div>
+  </header>
+
+  <div class="app-body">
+  <main>
+    <!-- ========== PROJECTS PAGE ========== -->
+    <section id="page-projects" class="page active">
+      <aside>
+        <div class="side-title">Projects</div>
+        <ul id="project-list"></ul>
+        <div class="side-actions">
+          <button id="btn-new" class="gold">+ New Project</button>
+          <button id="btn-open" class="ghost">Open Folder&hellip;</button>
+        </div>
+      </aside>
+
+      <section class="work">
+        <div id="no-project" class="empty">
+          <div class="big-mark">R</div>
+          <p>Select a project or create a new one.</p>
+          <p class="sub">Manage projects and run your optional Reach CLI toolchain.</p>
+        </div>
+
+        <div id="project-view" class="hidden">
+          <div class="project-head">
+            <div>
+              <h2 id="project-name"></h2>
+              <div id="project-path" class="path"></div>
+            </div>
+            <div class="project-actions">
+              <button id="btn-compile" class="gold">Compile</button>
+              <button id="btn-clean" class="ghost">Clean</button>
+              <button id="btn-info" class="ghost">Info</button>
+              <button id="btn-folder" class="ghost">Open Folder</button>
+            </div>
+          </div>
+
+          <div class="cmdbar">
+            <span class="prompt">reach</span>
+            <input id="cmd-input" type="text" placeholder="type any reach command, e.g. scaffold eth" spellcheck="false" />
+            <button id="btn-run" class="gold small">Run</button>
+            <button id="btn-stop" class="ghost small hidden">Stop</button>
+          </div>
+
+          <div class="log" id="log"></div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ========== AGENTS PAGE ========== -->
+    <section id="page-agents" class="page">
+      <aside>
+        <div class="side-title">Conversations</div>
+        <select id="agent-project-select" title="Conversations stem from a project"></select>
+        <div id="agent-tree" class="agent-tree"></div>
+        <div class="side-actions">
+          <button id="btn-new-chat" class="gold">+ New Chat</button>
+          <button id="btn-branch-chat" class="ghost">⑂ Branch This Chat</button>
+          <button id="btn-clear-chat" class="ghost">Clear Chat</button>
+        </div>
+      </aside>
+
+      <section class="work workbench">
+        <div id="no-agent" class="empty">
+          <div class="big-mark">A</div>
+          <p>Pick a project, then start a conversation.</p>
+          <p class="sub">Chats stem from a project and can branch — hover any message and hit ⑂ to fork the history from that point.</p>
+        </div>
+
+        <div id="agent-view" class="hidden">
+          <div class="project-head">
+            <div>
+              <h2 id="agent-name"></h2>
+              <div id="agent-meta" class="path"></div>
+            </div>
+            <div class="project-actions">
+              <span id="agent-status" class="chip dim">idle</span>
+              <button id="btn-dispatch-team" class="ghost" title="Send a task to a team of custom agents">⚡ Team…</button>
+              <button id="btn-agent-continue" class="ghost hidden">Continue</button>
+              <button id="btn-agent-stop" class="ghost hidden">Stop</button>
+              <div class="settings-menu">
+        <button id="btn-agent-settings" class="ghost" aria-expanded="false" aria-controls="btn-agent-settings-menu">Settings &#9662;</button>
+        <div id="btn-agent-settings-menu" class="settings-dropdown hidden">
+          <button data-settings-panel="connection">Connection &amp; default model</button>
+          <button data-settings-panel="conversation">Conversation &amp; permissions</button>
+          <button data-settings-panel="budgeting">Budgeting</button>
+        </div>
+      </div>
+              <button id="btn-agent-delete" class="ghost danger">Delete</button>
+            </div>
+          </div>
+
+          <div class="chat-pane">
+            <div class="chat-status">
+              <div class="context-bar">
+                <span id="agent-context" role="status" title="Estimate uses three characters per token. Actual provider token counts vary.">Conversation context</span>
+                <button id="btn-agent-compact" class="ghost" title="Summarize older context while preserving your saved chat">Compress now</button>
+              </div>
+              <section id="agent-activity" class="hidden" aria-label="Agent activity"></section>
+            </div>
+            <div id="chat-scroll" class="chat-scroll" tabindex="0" aria-label="Conversation">
+              <div id="agent-todos" class="todos hidden">
+                <div class="todos-title">Plan</div>
+                <ul id="agent-todo-list"></ul>
+              </div>
+              <div id="chat-log" class="chat-log"></div>
+            </div>
+            <div id="queued-indicator" class="queued hidden"></div>
+            <div class="composer">
+              <textarea id="composer-input" aria-label="Message" placeholder="Ask the agent to inspect, edit, or debug your project&hellip; (Ctrl+Enter sends)" rows="1"></textarea>
+              <div class="composer-actions">
+                <input id="composer-model-value" type="hidden" />
+                <button id="composer-model" class="ghost small" title="Choose a model for this conversation">Default model ▾</button>
+                <button id="btn-send" class="gold">Send</button>
+              </div>
+              <div class="composer-footer" aria-label="Conversation controls">
+                <div id="composer-tools" class="composer-tools"></div>
+                <div class="telemetry-control">
+                  <button id="telemetry-toggle" type="button" class="ghost small" aria-pressed="true">Telemetry</button>
+                  <select id="telemetry-view" aria-label="Telemetry view">
+                    <option value="overview">Overview</option>
+                    <option value="activity">Activity</option>
+                    <option value="models">Models &amp; Memory</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ========== CREATE PAGE ========== -->
+    <section id="page-create" class="page">
+      <div class="create-layout">
+        <div class="create-col">
+          <div class="create-head">
+            <h2>Custom Agents</h2>
+            <button id="btn-new-persona" class="gold small">+ New</button>
+          </div>
+          <p class="create-sub">Reusable personas: a name, an optional model override, and custom instructions that replace the generic assistant identity.</p>
+          <div id="persona-list" class="persona-list"></div>
+        </div>
+        <div class="create-col">
+          <div class="create-head">
+            <h2>Teams</h2>
+            <button id="btn-new-team" class="gold small">+ New</button>
+          </div>
+          <p class="create-sub">A crew of custom agents. <strong>Parallel</strong>: every member gets the same task and they run simultaneously. <strong>Chain</strong>: members run in order, each one's answer is handed to the next.</p>
+          <div id="team-list" class="team-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SETTINGS PAGE ========== -->
+    <section id="page-settings" class="page">
+<nav class="settings-nav" aria-label="Settings sections">
+        <button data-settings-panel="connection" class="ghost">Connection</button>
+        <button data-settings-panel="conversation" class="ghost">Conversation &amp; permissions</button>
+        <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
+      </nav>
+      <div class="settings-scroll">      <div id="settings-connection" class="settings-panel settings-content">
+        <h2>Endpoint</h2>
+        <label>Base URL</label>
+        <input id="set-endpoint" type="text" placeholder="https://your-endpoint.example.com/v1" spellcheck="false" />
+        <label>Access Key</label>
+        <input id="set-accesskey" type="password" placeholder="leave blank for none" spellcheck="false" />
+        <label>Default Model</label>
+        <div class="row">
+          <input id="set-model" type="text" readonly placeholder="click Browse to pick from the endpoint" spellcheck="false" />
+          <button id="btn-browse-models" class="ghost small">Browse&hellip;</button>
+        </div>
+        <datalist id="model-list"></datalist>
+        <label for="set-reach-cli">Reach CLI executable (optional)</label>
+        <input id="set-reach-cli" type="text" placeholder="Automatic discovery" spellcheck="false" />
+        <p id="set-reach-cli-help" class="dim"></p>
+        <div class="settings-actions">
+          <button id="btn-save-settings" class="gold">Save Settings</button>
+          <span id="settings-status" class="dim"></span>
+        </div>
+      </div>
+<div id="settings-conversation" class="settings-panel settings-content hidden">      <h2>Conversation &amp; permissions</h2><p id="agent-settings-context" class="dim"></p>
+      <label>Name</label>
+      <input id="agent-set-name" type="text" spellcheck="false" />
+      <label>Model (blank = default)</label>
+      <div class="row">
+        <input id="agent-set-model" type="text" readonly spellcheck="false" />
+        <button id="btn-agent-set-browse" class="ghost small">Browse&hellip;</button>
+      </div>
+      <label>Approvals</label>
+      <select id="agent-set-approvals">
+        <option value="prompt">Prompt for every exec action</option>
+        <option value="auto-read">Auto-approve reads, prompt for exec</option>
+        <option value="auto-all">Auto-approve everything (dangerous)</option>
+      </select>
+      <label class="check"><input id="agent-set-review" type="checkbox" /> Review file edits before applying</label>
+      <div class="settings-actions">
+        <button id="btn-agent-set-cancel" class="ghost">Back to chat</button>
+        <button id="btn-agent-set-save" class="gold">Save</button>
+      </div>
+<p id="agent-settings-status" role="status" class="dim"></p></div><div id="settings-budgeting" class="settings-panel settings-content hidden">
+        <h2>Budgeting</h2>
+        <p class="settings-description">Control how long agents can work, how much they can generate, and how teams share context. Saved changes apply to new runs.</p>
+        <label for="budget-scope">Apply to</label>
+        <select id="budget-scope"><option value="global">All conversations and teams (default)</option><option value="conversation">Selected conversation and its teams</option></select>
+        <label id="budget-inherit-label" class="check hidden"><input id="budget-inherit" type="checkbox" /> Use global budgets for this conversation</label>
+        <div id="budget-controls">
+          <div class="budget-presets" aria-label="Budget presets">
+            <button data-budget-preset="balanced" class="ghost">Balanced</button>
+            <button data-budget-preset="heavy" class="ghost">Heavy use · 32K output</button>
+            <button data-budget-preset="unrestricted" class="ghost">Unrestricted testing</button>
+          </div>
+          <p id="budget-preset-status" role="status" class="dim">Choose a preset or customize each value below, then save.</p>
+          <p class="settings-description">Zero means no REACH Studio cap where indicated. For output tokens, zero lets the provider choose its default; it does not guarantee maximum output. Set an explicit token budget for long reasoning answers. Provider context, output and rate limits still apply. These settings do not change approval or file-review permissions.</p>
+          <form id="budget-form"><div id="budget-fields"></div></form>
+        </div>
+        <div class="settings-actions"><button id="btn-save-budgets" class="gold">Save budgets</button><span id="budget-status" role="status" class="dim"></span></div>
+      </div></div>
+    </section>
+  </main>
+
+  <!-- ========== FILE DRAWER (right side, toggleable) ========== -->
+  <aside id="file-drawer" class="file-drawer">
+    <div id="drawer-resizer-x" class="drawer-resizer-x" title="Resize file panel"></div>
+    <div class="drawer-head">
+      <span class="side-title" id="drawer-title">Files</span>
+      <div class="drawer-head-actions">
+        <button id="btn-refresh-tree" class="ghost tiny" title="Refresh">&#x21bb;</button>
+        <button id="btn-close-drawer" class="ghost tiny" title="Close">&#x2715;</button>
+      </div>
+    </div>
+    <div id="drawer-context" class="drawer-context dim">no project bound</div>
+    <div id="file-tree" class="file-tree"></div>
+    <div id="drawer-resizer-y" class="drawer-resizer-y" title="Resize split"></div>
+    <div class="editor-main">
+      <div id="editor-tabs" class="editor-tabs"></div>
+      <div id="editor-host" class="editor-host"></div>
+      <div id="editor-empty" class="empty"><p class="sub">Pick a file from the tree.</p></div>
+      <div class="editor-footer">
+        <span id="editor-status" class="dim"></span>
+        <button id="btn-save-file" class="ghost small hidden">Save (Ctrl+S)</button>
+      </div>
+    </div>
+    <section id="browser-panel" class="hidden" aria-label="Browser">
+      <div class="browser-tabstrip"><div id="browser-tabs" role="tablist" aria-label="Browser tabs"></div><button id="browser-new" class="ghost small" title="New browser tab (Ctrl+T)">+</button></div>
+      <form id="browser-navigation" class="browser-toolbar">
+        <button type="button" id="browser-back" class="ghost small" title="Back" aria-label="Back">←</button>
+        <button type="button" id="browser-forward" class="ghost small" title="Forward" aria-label="Forward">→</button>
+        <button type="button" id="browser-reload" class="ghost small" title="Reload" aria-label="Reload">↻</button>
+        <input id="browser-address" aria-label="Browser address or search" placeholder="Search or enter URL / localhost:3000" spellcheck="false" />
+        <button class="gold small" type="submit">Go</button>
+      </form>
+      <div class="browser-toolbar browser-actions">
+        <button id="browser-home" class="ghost small" title="Reach documentation">Home</button>
+        <button id="browser-bookmark" class="ghost small">☆ Bookmark</button>
+        <button id="browser-context" class="ghost small">Add page to chat</button>
+        <button id="browser-external" class="ghost small">Open externally</button>
+        <button id="browser-find-toggle" class="ghost small">Find</button>
+        <button id="browser-elements" class="ghost small" aria-pressed="false" title="Turn element selection on to use right-click for picking elements. Off keeps the page’s normal right-click behavior.">Elements</button>
+      </div>
+      <div id="browser-bookmarks" class="browser-bookmarks"></div>
+      <div id="browser-selection" class="browser-selection hidden" role="status">
+        <strong>Selected element</strong><code id="browser-selection-label"></code>
+        <span id="browser-selection-text"></span>
+        <div><button id="browser-selection-show" class="ghost small">Show selected tab</button><button id="browser-selection-clear" class="ghost small">Clear selection</button></div>
+      </div>
+      <div id="browser-find" class="browser-toolbar hidden"><input id="browser-find-text" placeholder="Find on page" aria-label="Find on page" /><button id="browser-find-next" class="ghost small">Next</button><button id="browser-find-close" class="ghost small" aria-label="Close find">×</button></div>
+      <div id="browser-viewport"><div class="browser-welcome"><h3>REACH Browser</h3><p>Open a website or local development server above.</p><p>Turn on Elements to right-click an element or selection and add it to your chat draft.</p></div></div>
+      <div id="browser-status" class="dim" role="status">Ready</div>
+    </section>
+  </aside>
+  </div>
+
+  <footer>
+    <span>Reach Studio &mdash; projects, agents, and browser</span>
+    <span id="conn-mode" class="dim"></span>
+  </footer>
+
+  <!-- New Project modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>New Project</h3>
+      <label>Name</label>
+      <input id="new-name" type="text" placeholder="my-dapp" spellcheck="false" />
+      <label>Location</label>
+      <div class="row">
+        <input id="new-parent" type="text" readonly />
+        <button id="btn-pick-parent" class="ghost small">Browse&hellip;</button>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-cancel" class="ghost">Cancel</button>
+        <button id="btn-create" class="gold">Create &amp; Init</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Approval modal -->
+  <div id="approval-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Approve Action</h3>
+      <div id="approval-detail" class="approval-detail"></div>
+      <div class="modal-actions">
+        <button id="btn-approval-no" class="ghost">Decline</button>
+        <button id="btn-approval-yes" class="gold">Approve</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Persona editor modal -->
+  <div id="persona-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="persona-modal-title">New Custom Agent</h3>
+      <label>Name</label>
+      <input id="persona-name" type="text" placeholder="e.g. Security Auditor" spellcheck="false" />
+      <label>Model (blank = default from Settings)</label>
+      <div class="row">
+        <input id="persona-model" type="text" readonly placeholder="click Browse to pick from the endpoint" spellcheck="false" />
+        <button id="btn-persona-browse" class="ghost small">Browse&hellip;</button>
+      </div>
+      <label>Instructions (system prompt for this agent)</label>
+      <textarea id="persona-prompt" rows="7" placeholder="You are a meticulous security auditor. Review Reach contracts for reentrancy, participant-order bugs, and token-balance mistakes. Always compile before declaring work done."></textarea>
+      <div class="modal-actions">
+        <button id="btn-persona-delete" class="ghost danger hidden">Delete</button>
+        <button id="btn-persona-cancel" class="ghost">Cancel</button>
+        <button id="btn-persona-save" class="gold">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Team builder modal -->
+  <div id="team-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="team-modal-title">New Team</h3>
+      <label>Name</label>
+      <input id="team-name" type="text" placeholder="e.g. Contract Review Crew" spellcheck="false" />
+      <label>Mode</label>
+      <select id="team-mode">
+        <option value="parallel">Parallel — all members work the same task simultaneously</option>
+        <option value="chain">Chain — members work in order, passing results along</option>
+      </select>
+      <label>Members (in order — for Chain, this is the pipeline)</label>
+      <div id="team-members" class="team-members"></div>
+      <div class="row">
+        <select id="team-member-pick"></select>
+        <input id="team-member-role" type="text" placeholder="role (optional, e.g. reviewer)" spellcheck="false" />
+        <button id="btn-team-add-member" class="ghost small">Add</button>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-team-delete" class="ghost danger hidden">Delete</button>
+        <button id="btn-team-cancel" class="ghost">Cancel</button>
+        <button id="btn-team-save" class="gold">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Team run modal -->
+  <div id="team-run-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Dispatch Team</h3>
+      <div id="team-run-info" class="dim"></div>
+      <label>Task</label>
+      <textarea id="team-run-task" rows="5" placeholder="What should the crew do?"></textarea>
+      <div class="modal-actions">
+        <button id="btn-team-run-cancel" class="ghost">Cancel</button>
+        <button id="btn-team-run-go" class="gold">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model picker modal -->
+  <div id="model-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Pick a Model</h3>
+      <input id="model-search" type="text" placeholder="filter&hellip;" spellcheck="false" />
+      <div id="model-choices" class="model-choices"></div>
+      <div class="modal-actions">
+        <button id="btn-model-cancel" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.__errors = [];
+    // Unhandled renderer errors surface as a system chat line — invisible
+    // failures are how the preview looked broken while only the list was stale.
+    window.addEventListener('error', (e) => {
+      window.__errors.push(String(e.message || e.error));
+      const log = document.querySelector('#chat-log');
+      if (log) {
+        const div = document.createElement('div');
+        div.className = 'chat-msg system';
+        div.textContent = '[renderer error] ' + (e.message || e.error);
+        log.appendChild(div);
+      }
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      window.__errors.push('unhandledrejection: ' + String(e.reason && e.reason.message || e.reason));
+    });
+  </script>
+  <script src="markdown.js"></script>
+  <script src="dialogs.js"></script>
+  <script src="editor.bundle.js"></script>
+  <script src="activity-state.js"></script>
+  <script src="activity.js"></script>
+  <script src="app.js"></script>
+  <script src="scrollbar.js"></script>
+  <script src="settings.js"></script>
+  <script src="browser.js"></script>
+  <script src="workspace.js"></script>
+  <script src="telemetry.js"></script>
+</body>
+</html>

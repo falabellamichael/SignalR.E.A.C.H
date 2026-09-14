@@ -1,0 +1,80 @@
+{
+  "name": "reach-studio",
+  "productName": "Reach Studio",
+  "version": "1.0.0",
+  "description": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
+  "main": "main.mjs",
+  "scripts": {
+    "prestart": "npm run build:editor",
+    "start": "electron .",
+    "smoke": "npm run build:editor && electron . --smoke",
+    "test": "node test/agent.test.cjs && node --test test/regressions.test.cjs && node --test test/agent-net.test.cjs && node --test test/budgets.test.cjs && node --test test/browser-tools.test.cjs && node --test test/platform.test.cjs && node --test test/activity.test.cjs && node --test test/compaction.test.cjs && node --test test/budget-awareness.test.cjs && node --test test/telemetry.test.cjs test/tool-policy.test.cjs",
+    "test:workspace": "electron test/telemetry-ui.cjs",
+    "build:editor": "esbuild renderer/editor.src.js --bundle --minify --format=iife --outfile=renderer/editor.bundle.js",
+    "dist": "npm run build:editor && electron-builder",
+    "dist:mac": "npm run build:editor && electron-builder --mac",
+    "dist:win": "npm run build:editor && electron-builder --win",
+    "check": "node scripts/check-syntax.cjs"
+  },
+  "author": "Michael Anthony Falabella",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/commands": "^6.11.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.4",
+    "@codemirror/view": "^6.43.11",
+    "@lezer/highlight": "^1.2.3",
+    "electron": "44.3.0",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.28.2"
+  },
+  "build": {
+    "appId": "com.falab.reachstudio",
+    "productName": "Reach Studio",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.mjs",
+      "preload.cjs",
+      "renderer/**/*",
+      "agent/**/*",
+      "browser/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Reach Studio"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon.icns",
+      "identity": "-"
+    }
+  },
+  "allowScripts": {
+    "electron@44.3.0": true,
+    "esbuild@0.28.2": true
+  }
+}

@@ -131,7 +131,31 @@ def print_footer(client, cited=False):
         parts.append("%s tok" % client.usage["completion"])
     if cited:
         parts.append("grounded")
-    print(c_dim("  · ".join(parts)))
+    print(c_cyan("  └─") + c_dim("  " + " · ".join(parts)))
+    print()
+
+
+
+def response_label():
+    """Inline label for an AI response: left rule + 'ai ▸' (no newline).
+
+    Separated from response_open so the waiting indicator can re-emit the
+    label after clearing its animated line.
+    """
+    return c_cyan("  │ ") + c_bold(c_magenta("ai ▸") + " ")
+
+
+def response_open():
+    """Opening rule for an AI response: blank line, border, 'ai ▸' label.
+    The streamed body continues right after this."""
+    sys.stdout.write("\n" + response_label())
+    sys.stdout.flush()
+
+
+
+def response_indent():
+    """Left-rule prefix for continuation lines of a streamed reply."""
+    return c_cyan("  │ ")
 
 
 
