@@ -4,6 +4,11 @@ contextBridge.exposeInMainWorld('reach', {
   platform: process.platform,
   initialTheme: ipcRenderer.sendSync('theme:get'),
   setTheme: theme => ipcRenderer.invoke('theme:set', theme),
+  telemetry: {
+    sample: () => ipcRenderer.invoke('telemetry:sample'),
+    sources: () => ipcRenderer.invoke('telemetry:sources'),
+    saveSources: sources => ipcRenderer.invoke('telemetry:saveSources', sources),
+  },
   browser: {
     onSelection: cb => ipcRenderer.on('browser:selection', (_e, data) => cb(data)),
     onSelectionCleared: cb => ipcRenderer.on('browser:selection-cleared', (_e, tabId) => cb(tabId)),
@@ -40,6 +45,8 @@ contextBridge.exposeInMainWorld('reach', {
 
   // Agents
   agents: {
+    clear: id => ipcRenderer.invoke('agents:clear', id),
+    toolSchema: () => ipcRenderer.invoke('agents:toolSchema'),
     list: () => ipcRenderer.invoke('agents:list'),
     get: (id) => ipcRenderer.invoke('agents:get', id),
     context: (id) => ipcRenderer.invoke('agents:context', id),

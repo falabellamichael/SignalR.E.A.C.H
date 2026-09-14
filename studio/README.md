@@ -84,6 +84,48 @@ draft is preserved.
 - File edits can be reviewed before writing. Ordinary completion text cannot
   silently approve pending edits or finish an incomplete plan.
 
+## Agents workspace and telemetry
+
+An empty conversation opens a telemetry dashboard. Use the dropdown beside
+**Telemetry** in the composer footer to switch between **Overview**, **Activity**,
+and **Models & Memory**. The view is remembered, and all three layouts share the
+same measurements. Telemetry can also be opened over an existing conversation;
+**Back to chat** returns to its messages. Sampling pauses when the dashboard is hidden.
+
+On Windows, readings include CPU, physical RAM, GPU engine utilization, dedicated
+and shared GPU memory, the largest 30 process working sets, network and disk rates,
+and uptime. Activity charts retain up to 60 seconds of measured history. macOS has
+CPU, RAM and process readings; GPU, network and disk counters remain Windows-only.
+Missing counters display as unavailable rather than zero.
+
+**Sources…** configures up to eight Ollama, LM Studio, or Lemonade servers. These
+are read-only inventory requests: telemetry does not load models or send chat
+prompts. Only provider-reported loaded models are listed. Disk model size is not
+treated as resident RAM, unknown memory is labeled **Not reported**, and remote
+models are identified separately from this machine. Process working sets can
+include shared pages and do not sum to either model weights or total system RAM.
+
+The composer offers **Agent**, **Workspace**, **Think**, **Web**, and **Terminal**
+switches. **Tools…** selects individual tools, while **Permissions…** manages
+command approval and edit review. These settings follow the conversation into
+team members and spawned workers; disabled tools are blocked at execution as
+well as removed from the model's tool list. Turning a switch off blocks subsequent
+tool dispatches; use **Stop** to interrupt a command already executing. **Think**
+off requests concise answers and disables Qwen thinking where the provider
+supports it. Previously shared conversation context remains available.
+
+**Clear Chat**, immediately below **Branch This Chat**, confirms before removing
+that conversation's messages, plan, pending edits and compressed context. It
+starts fresh in the same conversation with telemetry exposed, keeping its
+project, model, settings, and independent branches. Active agent/team runs must
+finish before clearing.
+
+Run `npm test` for policy, inventory and persistence regressions, and
+`npm run test:workspace` for an isolated native Electron UI check. The latter
+creates a temporary profile, exercises the real preload/IPC bridge, and captures
+all three views in both themes at desktop and minimum window sizes. Its labeled
+preview data is confined to that test process.
+
 ## Budgeting
 
 **Settings ▾ → Budgeting** is a separate scrollable page. It controls output tokens,

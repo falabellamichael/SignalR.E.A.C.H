@@ -14,6 +14,7 @@
  */
 
 const { TOOLS, needsApproval, budgetFor, resolveInProject } = require('./tool-registry.cjs');
+const { disabledTools } = require('./tool-policy.cjs');
 
 function truncate(text, budget) {
   const s = String(text === undefined ? '' : text);
@@ -35,6 +36,11 @@ async function runToolCall(agentId, name, args, context) {
 
   // Approval: exec-class tools prompt unless the agent's settings say auto-all.
   const settings = (context.agentStore && context.agentStore.get(agentId)?.settings) || {};
+  if (disabledTools(settings, TOOLS).includes(name)) {
+    const error = `The ${name} tool is disabled in this conversation's tool controls.`;
+    await persistToolResult(agentId, name, args, { ok: false, error }, context);
+    return { ok: false, error, record };
+  }
   const approvalMode = settings.approvals || 'prompt';
   const needsPrompt = needsApproval(name) && approvalMode !== 'auto-all';
   // Read-only tools never prompt. Auto-read mode only auto-approves reads.
@@ -65,6 +71,8 @@ async function runToolCall(agentId, name, args, context) {
 
   let result;
   try {
+    // Controls may change while an approval dialog is open.
+    if (disabledTools(context.agentStore?.get(agentId)?.settings || {}, TOOLS).includes(name)) throw new Error(`The ${name} tool is now disabled.`);
     if (name.startsWith('reach.')) {
       if (typeof context.reachExecutor !== 'function') throw new Error('Reach tools are not available.');
       result = await context.reachExecutor(name, args || {}, context);

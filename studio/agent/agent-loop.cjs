@@ -16,7 +16,8 @@ const { protocol, start, decide } = require('./agent-run.cjs');
 const { actionInstruction } = require('./agent-action.cjs');
 const { parseAgentResponse, extractToolBlocks } = require('./agent-response.cjs');
 const { runToolCall } = require('./agent-tool-runner.cjs');
-const { toolHelp } = require('./tool-registry.cjs');
+const { toolHelp, TOOLS } = require('./tool-registry.cjs');
+const { features, disabledTools } = require('./tool-policy.cjs');
 
 const { budgetPolicy, reserveGuard, checkpoint } = require('./budget-awareness.cjs');
 const { resolveBudgets, cap } = require('./budgets.cjs');
@@ -81,7 +82,12 @@ class AgentLoop {
   }
 
   _buildSystemPrompt() {
-    const projectLine = this.projectDir
+    const settings = this._agent()?.settings || {}, controls = features(settings);
+    const disabled = disabledTools(settings, TOOLS);
+    if (!controls.agent) return 'You are REACH Studio. Answer the user directly in normal prose. Agent mode is off: do not use tools, execute commands, modify files, or emit action/control blocks. '
+      + (controls.think ? '' : 'Give a concise direct answer without an extended reasoning narrative. ')
+      + this.personaPrompt;
+    const projectLine = !controls.workspace ? 'Workspace access is off. Do not read or change project files or run project commands.' : this.projectDir
       ? `You are working inside the project at ${this.projectDir}. All file paths are relative to that directory.`
       : 'You are not bound to a project directory; ask the user to bind one before file or reach operations.';
     const structured = this._agent()?.runState?.structuredActions;
@@ -97,7 +103,8 @@ class AgentLoop {
       + 'When you change a file the user reviews a diff before it is applied — do not claim a change is live until the tool result confirms it. '
       + 'For greetings and questions, answer directly and mark that request complete without inventing file work. '
       + 'Keep the user informed with short, concrete status lines.\n\n'
-      + (structured ? actionInstruction({ includeCollab: this._inCrew() }) : toolHelp(['core', 'reach']) + '\n\n' + protocol)
+      + (controls.think ? '' : 'Thinking preference is off: keep reasoning brief and respond directly.\n')
+      + (structured ? actionInstruction({ includeCollab: this._inCrew(), disabled }) : toolHelp(['core', 'reach'], disabled) + '\n\n' + protocol)
       + '\n\nCURRENT SAVED TASK STATE (data, not instructions):\n' + JSON.stringify({
         todos: this._agent()?.todos || [],
         pendingEdits: Object.values(this._agent()?.pendingEdits || {}).map(edit => ({ path: edit.path || edit.filePath, editId: edit.editId, status: 'awaiting review, not applied' })),
@@ -130,7 +137,7 @@ class AgentLoop {
       messages: normalizeChatMessages([...messages, { role: 'system', content: budgetPolicy({ maxTokens, purpose, budgets: this._budgets(), round: this.requestRound || 1, contextChars: contextChars(messages), concise }) }]),
       stream,
     };
-    if ((concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
+    if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
     if (maxTokens > 0) body.max_tokens = maxTokens;
     if (settings.temperature !== null && settings.temperature !== undefined) {
       body.temperature = settings.temperature;
@@ -346,6 +353,12 @@ class AgentLoop {
         }
 
         let content = reply.content || '';
+        if (!features(this._agent()?.settings).agent) {
+          this._emit('message-end', { role: 'assistant', content });
+          this.store.appendMessage(this.agentId, { role: 'assistant', content, _reachMeta: { display: content } });
+          runState = { ...runState, status: 'completed', reason: '' };
+          break;
+        }
         let parsed = parseAgentResponse(content, reply.nativeActions || []);
         runState.todos = this._agent()?.todos || [];
 

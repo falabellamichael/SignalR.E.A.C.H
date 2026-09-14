@@ -72,12 +72,14 @@ class AgentNet {
     requestMemberAnswer = null,
     requestTimeoutMs = 180000,
     budgets = null,
+    agentSettings = {},
     maxAgents = MAX_AGENTS,
     maxDepth = MAX_DEPTH,
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
     onSettled = () => {},
   } = {}) {
     this.budgets = budgets;
+    this.agentSettings = agentSettings;
     this.onSettled = onSettled;
     this.teamRunId = teamRunId;
     this.teamName = teamName;
@@ -224,6 +226,7 @@ class AgentNet {
 
     const id = `net-${(++this.seq).toString(36)}-${Date.now().toString(36)}`;
     const store = new MemoryStore();
+    Object.assign(store.get(id).settings, structuredClone(this.agentSettings));
     const useModel = String(model || '').trim() || this.defaultModel || 'gpt-4o-mini';
     const loop = new AgentLoop({
       agentId: id,

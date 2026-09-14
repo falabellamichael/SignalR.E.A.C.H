@@ -76,6 +76,7 @@ async function showTab(name) {
   for (const tab of document.querySelectorAll('.tab')) tab.classList.remove('active');
   $('#page-' + name).classList.add('active');
   $('#tab-' + name).classList.add('active');
+  window.ReachWorkspace?.sync();
   return refreshFileTree();
 }
 $('#tab-projects').onclick = () => showTab('projects');
@@ -352,6 +353,7 @@ async function selectAgent(a) {
   refreshContextStatus();
   renderTodos();
   renderPendingEdits();
+  window.ReachWorkspace?.sync();
   await refreshFileTree();
   await loadAgentTree();
 }
@@ -649,6 +651,7 @@ function updateSendControl() {
   button.title = busy ? 'Stop all active agents and the team' : 'Send message';
   button.classList.toggle('danger', busy);
   button.disabled = stoppingAll;
+  window.ReachWorkspace?.syncControls();
 }
 
 async function stopAllRuns() {
@@ -1192,7 +1195,10 @@ async function openModelPicker(inputEl) {
       btn.className = 'model-choice';
       btn.textContent = id;
       btn.onclick = () => {
-        if (modelPickerTarget) modelPickerTarget.value = id;
+        if (modelPickerTarget) {
+          modelPickerTarget.value = id;
+          modelPickerTarget.dispatchEvent(new Event('change', { bubbles: true }));
+        }
         modal.classList.add('hidden');
       };
       choices.appendChild(btn);

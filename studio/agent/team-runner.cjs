@@ -79,7 +79,8 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {} }) {
+    this.agentSettings = agentSettings;
     this.budgets = budgets;
     this.team = team;
     this.personas = personas;            // resolved persona objects in roster order
@@ -152,6 +153,7 @@ class TeamRunner {
     // One network per crew run: roster members register into it, and any of
     // them may spawn/message/await peers through the agent.* collab tools.
     this.net = new AgentNet({
+      agentSettings: this.agentSettings,
       teamRunId,
       teamName: this.team.name,
       onSettled: () => this.updatePausedState(),
@@ -253,6 +255,7 @@ class TeamRunner {
   async _runMember(persona, index, prompt) {
     const key = `m${index}-${persona.id}`;
     const store = new MemoryStore();
+    Object.assign(store.get(key).settings, structuredClone(this.agentSettings));
     const model = persona.model || this.defaultModel || 'gpt-4o-mini';
     const loop = new AgentLoop({
       agentId: key,

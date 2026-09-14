@@ -24,10 +24,10 @@ const schema = {
   }, required: ['status', 'message', 'actions', 'options'],
 };
 
-function actionInstruction({ includeCollab = false } = {}) {
+function actionInstruction({ includeCollab = false, disabled = [] } = {}) {
   const call = (name, args) => ({name, arguments:args});
-  const visible = Object.entries(TOOLS).filter(([,tool]) =>
-    tool.tier !== 'browser' && (includeCollab || tool.tier !== 'collab'));
+  const visible = Object.entries(TOOLS).filter(([name,tool]) =>
+    !disabled.includes(name) && tool.tier !== 'browser' && (includeCollab || tool.tier !== 'collab'));
   const examples = visible.map(([name, tool]) => {
     const {action, ...args} = tool.example;
     return name + ': ' + tool.help + '\n' + JSON.stringify(call(name, args));
@@ -69,9 +69,7 @@ function actionInstruction({ includeCollab = false } = {}) {
   + 'Use only the fields status, message, actions and options. Supply at most 8 actions per response; continue with the next batch after results. '
   + 'Do not infer that the task is done from earlier assistant promises. Tool results, not promises, establish completed work.\n'
   + examples.join('\n') + '\n'
-  + 'Use tool_help to request browser tool details.\n'
-  + 'Example: ' + JSON.stringify({status:'actions',message:'Reading the relevant files.',
-    actions:[call('read', {path:'index.rsh'})],options:[]}) + '\n'
+  + (visible.some(([name]) => name === 'tool_help') ? 'Use tool_help to request details for enabled tool suites.\n' : '')
   + 'Schema: ' + JSON.stringify(promptSchema);
 }
 

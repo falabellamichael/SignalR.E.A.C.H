@@ -17,6 +17,10 @@ const { readTextFile, writeTextFile } = require('./agent/text-files.cjs');
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
 const { StudioBrowser } = require('./browser/host.cjs');
+const { Telemetry, defaults: telemetryDefaults, validateSources } = require('./agent/telemetry.cjs');
+const { validatePolicy } = require('./agent/tool-policy.cjs');
+const { TOOLS } = require('./agent/tool-registry.cjs');
+const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 
 const isDev = !app.isPackaged;
@@ -155,6 +159,14 @@ async function resolveEndpoint(raw, depth = 0) {
 
 // ---------- ipc ----------
 function registerIpc() {
+  ipcMain.handle('telemetry:sample', () => telemetry.sample());
+  ipcMain.handle('telemetry:sources', () => loadSettings().telemetrySources || telemetryDefaults);
+  ipcMain.handle('telemetry:saveSources', (_event, sources) => {
+    saveSettings({ ...loadSettings(), telemetrySources: validateSources(sources) });
+    telemetry.providerCache = null; telemetry.cache = null;
+    return { ok: true };
+  });
+  ipcMain.handle('agents:toolSchema', () => Object.entries(TOOLS).map(([name, tool]) => ({ name, class: tool.class, help: tool.help, tier: tool.tier })));
   ipcMain.on('theme:get', event => { event.returnValue = loadSettings().theme === 'light' ? 'light' : 'dark'; });
   ipcMain.handle('theme:set', (_event, theme) => {
     if (!['light', 'dark'].includes(theme)) throw new Error('Invalid theme');
@@ -248,8 +260,15 @@ function registerIpc() {
     }
   });
   ipcMain.handle('agents:update', (_e, { id, ...patch }) => {
+    if (patch.settings) validatePolicy(patch.settings, TOOLS);
     if (patch.settings?.budgetOverrides != null) patch.settings.budgetOverrides = validateBudgets(patch.settings.budgetOverrides);
     const agent = getAgentStore().update(id, patch);
+    if (agent) for (const runner of teamRuns.values()) if (runner.conversationId === id) {
+      runner.agentSettings = structuredClone(agent.settings);
+      if (runner.net) runner.net.agentSettings = structuredClone(agent.settings);
+      for (const [key, store] of runner.memberStores) Object.assign(store.get(key).settings, structuredClone(agent.settings));
+      for (const member of runner.net?.agents.values() || []) if (member.store) Object.assign(member.store.get(member.id).settings, structuredClone(agent.settings));
+    }
     // A settings save must not orphan an active loop or break Stop.
     const loop = agentLoops.get(id);
     if (loop?.running) loop.settingsStale = true;
@@ -261,6 +280,14 @@ function registerIpc() {
     if (loop) loop.stop();
     agentLoops.delete(id);
     return { ok: getAgentStore().remove(id) };
+  });
+  ipcMain.handle('agents:clear', (_e, id) => {
+    try {
+      if (agentLoops.get(id)?.running || [...teamRuns.values()].some(r => r.conversationId === id)) throw new Error('Finish the current agent or team run before clearing this conversation.');
+      const agent = getAgentStore().clear(id);
+      agentLoops.delete(id);
+      return agent ? { ok: true, agent } : { ok: false, err: 'Conversation not found.' };
+    } catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('agents:send', async (_e, { id, text }) => {
     try {
@@ -407,6 +434,7 @@ function registerIpc() {
       };
       const budgets = resolveBudgets(settings, agentId ? getAgentStore().get(agentId)?.settings : {});
       const runner = new TeamRunner({
+        agentSettings: structuredClone(agentId ? getAgentStore().get(agentId)?.settings || {} : {}),
         team: { ...team, members: team.members },
         personas,
         roles,
@@ -448,6 +476,7 @@ function registerIpc() {
           if (budgets.questionTimeoutMs > 0) setTimeout(() => { if (pendingMemberAnswers.delete(questionId)) resolve(null); }, budgets.questionTimeoutMs);
         }),
       });
+      runner.conversationId = agentId || null;
       teamRuns.set(teamRunId, runner);
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });

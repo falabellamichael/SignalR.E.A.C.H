@@ -6,6 +6,7 @@
   <title>Reach Studio</title>
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
 </head>
 <body>
   <header>
@@ -98,6 +99,7 @@
         <div class="side-actions">
           <button id="btn-new-chat" class="gold">+ New Chat</button>
           <button id="btn-branch-chat" class="ghost">⑂ Branch This Chat</button>
+          <button id="btn-clear-chat" class="ghost">Clear Chat</button>
         </div>
       </aside>
 
@@ -150,7 +152,20 @@
             <div class="composer">
               <textarea id="composer-input" placeholder="Ask the agent to inspect, edit, or debug your project&hellip; (Ctrl+Enter sends)" rows="3"></textarea>
               <div class="composer-actions">
+                <input id="composer-model-value" type="hidden" />
+                <button id="composer-model" class="ghost small" title="Choose a model for this conversation">Default model ▾</button>
                 <button id="btn-send" class="gold">Send</button>
+              </div>
+              <div class="composer-footer" aria-label="Conversation controls">
+                <div id="composer-tools" class="composer-tools"></div>
+                <div class="telemetry-control">
+                  <button id="telemetry-toggle" type="button" class="ghost small" aria-pressed="true">Telemetry</button>
+                  <select id="telemetry-view" aria-label="Telemetry view">
+                    <option value="overview">Overview</option>
+                    <option value="activity">Activity</option>
+                    <option value="models">Models &amp; Memory</option>
+                  </select>
+                </div>
               </div>
             </div>
           </div>
@@ -434,5 +449,7 @@
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>
   <script src="browser.js"></script>
+  <script src="workspace.js"></script>
+  <script src="telemetry.js"></script>
 </body>
 </html>

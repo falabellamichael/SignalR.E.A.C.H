@@ -296,7 +296,8 @@ const CORE_TOOLS = {
     help: 'shows extended documentation for specific tool suites.',
     example: { action: 'tool_help', topic: 'reach' },
     async execute(args, ctx) {
-      return { ok: true, help: toolHelp(args.topic || 'core') };
+      const disabled = require('./tool-policy.cjs').disabledTools(ctx.agentStore?.get(ctx.agentId)?.settings || {}, TOOLS);
+      return { ok: true, help: toolHelp(args.topic || 'core', disabled) };
     },
   },
 };

@@ -203,6 +203,20 @@ class AgentStore {
     return agent;
   }
 
+  clear(id) {
+    const agent = this.get(id);
+    if (!agent) return null;
+    if (agent.runState?.status === 'running') throw new Error('Stop the conversation before clearing it.');
+    // Keep the project, model, controls and independent branches. Clear every
+    // source of conversational memory so a fresh prompt cannot recover it.
+    Object.assign(agent, { name: 'Chat', messages: [], todos: [], runState: null, pendingEdits: {}, queue: [] });
+    delete agent.context;
+    delete agent.activity;
+    agent.updatedAt = Date.now();
+    this._save();
+    return agent;
+  }
+
   appendMessage(id, message) {
     const agent = this.get(id);
     if (!agent) return null;
