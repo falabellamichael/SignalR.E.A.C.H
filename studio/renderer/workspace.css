@@ -91,9 +91,9 @@
 .tool-option .tool-tier { flex: 0; color: var(--gold-dim); font-size: 11px; }
 .telemetry-source-row { display: grid; grid-template-columns: 20px 120px minmax(0, 1fr) 70px; gap: 10px; align-items: center; padding: 8px 0; }
 @container (max-width: 730px) {
-  .composer-footer { flex-wrap: wrap; gap: 5px; }
-  .composer-tools { flex-basis: 100%; }
-  .telemetry-control { margin-left: auto; }
+  .composer-footer { flex-wrap: nowrap; gap: 5px; min-width: 0; }
+  .composer-tools { flex-basis: auto; }
+  .telemetry-control { margin-left: auto; flex-shrink: 0; }
   .telemetry-grid { grid-template-columns: 1fr; }
   .telemetry-processes { border-left: 0; padding-left: 0; border-top: 1px solid var(--line); padding-top: 20px; }
   .metric-value { font-size: 23px; }

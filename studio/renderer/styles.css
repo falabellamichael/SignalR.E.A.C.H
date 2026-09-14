@@ -397,7 +397,7 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
 /* Status and composer stay stationary; messages and the plan scroll between
  * them. Expanded activity has its own bounded scroll area. */
 .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 10px; }
-.chat-scroll { flex: 1 1 0; min-width: 0; min-height: 0; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; gap: 10px; }
+.chat-scroll { flex: 1 1 0; min-width: 0; min-height: 72px; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; gap: 10px; }
 .chat-scroll > * { flex-shrink: 0; }
 .chat-scroll:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: -1px; }
 .chat-scroll { --scrollbar-ink: transparent; scrollbar-color: auto; scrollbar-width: auto; }
@@ -825,7 +825,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 #agent-name { font-size: var(--chat-title-size); }
 #agent-view > .project-head, #agent-view .project-actions { gap: var(--chat-header-gap); }
 #agent-view .project-actions button { padding: var(--chat-button-padding); font-size: var(--chat-button-size); }
-.chat-status { flex: 0 0 auto; display: flex; flex-direction: column; min-width: 0; max-height: 50%; gap: 8px; }
+.chat-status { flex: 0 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; max-height: 50%; overflow: hidden; gap: 8px; }
 .chat-status .context-bar { padding: var(--chat-context-padding); flex-wrap: nowrap; }
 #agent-context { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #btn-agent-compact { flex-shrink: 0; }
@@ -844,6 +844,11 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
     --chat-context-padding: 5px 8px;
   }
   #agent-activity[data-status="completed"] .activity-note, #agent-context .context-extra { display: none; }
+  /* Keep the header and its action buttons on one scrollable row so the
+     conversation column never loses its floor to a wrapped button tower. */
+  #agent-view > .project-head { flex-wrap: nowrap; }
+  #agent-view > .project-head > :first-child { flex: 1 1 120px; }
+  #agent-view .project-actions { flex-wrap: nowrap; overflow-x: auto; min-width: 0; }
 }
 @media (max-height: 760px) {
   #agent-view {
