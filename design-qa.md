@@ -2,6 +2,25 @@
 
 final result: passed
 
+## Compact composer follow-up
+
+The user's one-line/two-line request replaces the earlier tall composer. The
+message input now shares one row with the model picker and Send/Stop. It starts at
+25px, grows to 45px for two lines, and reveals a native vertical corner grip only
+when the draft needs more space. Manual expansion survives further typing;
+shortening the draft returns it to automatic sizing. Browser context insertion
+and suggested replies trigger the same sizing path without submitting the draft.
+
+Verified with `npm run test:workspace`: single line, explicit newlines, wrapped
+long text, two-line cap, resize availability, retained manual height, collapse on
+deletion/clearing, both themes and minimum window geometry. Syntax check passed.
+Evidence: `C:/Users/Falab/AppData/Local/Temp/reach-workspace-ui-haLYvb/`, including
+`composer-one-line.png`, `composer-two-lines.png`, `composer-expanded.png`, and
+`overview-light-1000.png`. The compact composer is 97px high at the desktop test
+viewport. A scrollbar width change initially reset manual height; measuring the
+outer input width fixed it and the regression now passes. No remaining P0/P1/P2
+layout issues were found in the rendered captures.
+
 ## Scope and visual evidence
 
 The three approved concepts are implemented as Overview, Activity, and Models &

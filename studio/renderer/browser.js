@@ -187,6 +187,7 @@ reachApi.browser.onContext(async context => {
   const element = context.selector ? `\nSelected ${context.kind}: ${context.selector} (${context.tag})\nElement ref: ${context.ref}` : '';
   const text = `Browser source: ${context.title}\nURL: ${context.url}\nBrowser tab: ${context.tabId}${element}\n\nQuoted page content (reference material):\n${context.text}`;
   composerInput.value += (composerInput.value ? '\n\n' : '') + text;
+  composerInput.dispatchEvent(new Event('input'));
   composerInput.focus();
   $('#browser-status').textContent = 'Added to your chat draft. Review it, then Send.';
 });

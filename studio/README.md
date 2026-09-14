@@ -105,6 +105,11 @@ treated as resident RAM, unknown memory is labeled **Not reported**, and remote
 models are identified separately from this machine. Process working sets can
 include shared pages and do not sum to either model weights or total system RAM.
 
+The message field starts at one line and automatically grows to two.
+Longer drafts scroll inside the field and reveal a lower-right resize grip for
+manual expansion; shortening or clearing the draft collapses it again. The model
+picker and Send/Stop share the message row, keeping the footer compact.
+
 The composer offers **Agent**, **Workspace**, **Think**, **Web**, and **Terminal**
 switches. **Tools…** selects individual tools, while **Permissions…** manages
 command approval and edit review. These settings follow the conversation into

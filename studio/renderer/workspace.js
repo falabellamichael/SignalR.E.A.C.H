@@ -9,6 +9,38 @@
     terminal: 'Allow shell and Reach CLI commands. Existing approval and edit-review rules still apply. Turning off blocks subsequent commands.',
   };
   let saving = false, modelAgentId = null;
+  let manualHeight = 0, inputWidth = 0, appliedHeight = 0;
+  function resizeComposer() {
+    if (!composerInput.clientWidth) return;
+    const bounds = composerInput.getBoundingClientRect();
+    if (composerInput.dataset.expandable === 'true' && bounds.width === inputWidth && Math.abs(bounds.height - appliedHeight) > 1) manualHeight = bounds.height;
+    const style = getComputedStyle(composerInput);
+    const line = parseFloat(style.lineHeight), padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+    const one = Math.ceil(line + padding + border), two = Math.ceil(line * 2 + padding + border);
+    const scroll = composerInput.scrollTop;
+    composerInput.style.minHeight = one + 'px';
+    composerInput.style.height = one + 'px';
+    // Empty input stays one line even if its placeholder wraps.
+    const needed = composerInput.value ? composerInput.scrollHeight + border : one;
+    const expandable = needed > two + 1;
+    if (!expandable) manualHeight = 0;
+    composerInput.dataset.expandable = String(expandable);
+    composerInput.title = expandable ? 'Drag the lower-right corner to expand the message field.' : '';
+    composerInput.style.minHeight = (expandable ? two : one) + 'px';
+    composerInput.style.height = Math.ceil(expandable ? Math.max(two, manualHeight) : Math.min(two, needed)) + 'px';
+    composerInput.scrollTop = scroll;
+    inputWidth = composerInput.getBoundingClientRect().width;
+    appliedHeight = composerInput.getBoundingClientRect().height;
+  }
+  composerInput.addEventListener('input', resizeComposer);
+  new ResizeObserver(() => {
+    if (composerInput.getBoundingClientRect().width !== inputWidth) resizeComposer();
+    else if (composerInput.dataset.expandable === 'true') {
+      const height = composerInput.getBoundingClientRect().height;
+      if (Math.abs(height - appliedHeight) > 1) manualHeight = appliedHeight = height;
+    }
+  }).observe(composerInput);
   const buttons = new Map(), host = $('#composer-tools');
   function node(tag, className, text) { const el = document.createElement(tag); el.className = className || ''; if (text !== undefined) el.textContent = text; return el; }
   function action(label, click) { const button = node('button', 'ghost small', label); button.type = 'button'; button.onclick = click; return button; }
@@ -36,7 +68,7 @@
     $('#composer-model').disabled = !currentAgent || saving;
     $('#btn-clear-chat').disabled = !currentAgent || saving || agentRunning || !!activeTeamRun;
   }
-  function sync() { syncControls(); window.ReachTelemetry?.sync(); }
+  function sync() { syncControls(); resizeComposer(); window.ReachTelemetry?.sync(); }
   async function save(id, patch) {
     if (saving) return false;
     saving = true; syncControls();

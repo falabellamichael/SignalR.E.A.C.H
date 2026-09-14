@@ -76,6 +76,35 @@ const timeout = setTimeout(() => { console.error('Workspace UI timed out'); app.
   await until('document.querySelector(".telemetry-note")?.textContent.includes("Preview data")', 'Fixture sample not rendered');
   win.setMenuBarVisibility(false);
   const screenshots = [];
+  win.setContentSize(1440, 1024);
+  const inputGeometry = () => run(`(() => { const input=document.querySelector('#composer-input'), style=getComputedStyle(input); return { height:input.getBoundingClientRect().height, line:parseFloat(style.lineHeight), padding:parseFloat(style.paddingTop)+parseFloat(style.paddingBottom), resize:style.resize, expandable:input.dataset.expandable, value:input.value, composer:document.querySelector('.composer').getBoundingClientRect().height }; })()`);
+  const draft = async text => { await run(`composerInput.value=${JSON.stringify(text)}; composerInput.dispatchEvent(new Event('input'))`); await delay(60); return inputGeometry(); };
+  const single = await draft('One line');
+  console.log('COMPOSER', JSON.stringify(single));
+  fs.writeFileSync(path.join(root, 'composer-one-line.png'), (await win.capturePage()).toPNG());
+  console.log('COMPOSER EVIDENCE', root);
+  assert.ok(single.height <= Math.ceil(single.line + single.padding) + 1);
+  assert.equal(single.resize, 'none');
+  assert.ok(single.composer < 105, 'Empty/short composer stays compact');
+  const double = await draft('First line\nSecond line');
+  assert.ok(double.height > single.height && double.height <= Math.ceil(double.line * 2 + double.padding) + 1);
+  assert.equal(double.resize, 'none');
+  const longText = 'First line\nSecond line\nThird line\nFourth line';
+  const long = await draft(longText);
+  assert.equal(long.height, double.height, 'Automatic growth stops at two lines');
+  assert.equal(long.resize, 'vertical');
+  fs.writeFileSync(path.join(root, 'composer-two-lines.png'), (await win.capturePage()).toPNG());
+  // Native textarea resize changes its inline height; verify the observer preserves it on input.
+  await run(`composerInput.style.height='140px'`); await delay(60);
+  const expanded = await draft(longText + '\nMore text');
+  assert.equal(expanded.height, 140);
+  fs.writeFileSync(path.join(root, 'composer-expanded.png'), (await win.capturePage()).toPNG());
+  const reduced = await draft('Short again');
+  assert.equal(reduced.height, single.height); assert.equal(reduced.resize, 'none');
+  const wrapped = await draft('Wrapped text '.repeat(60));
+  assert.equal(wrapped.resize, 'vertical'); assert.equal(wrapped.height, double.height);
+  const empty = await draft('');
+  assert.equal(empty.height, single.height, 'Clearing collapses to one line despite a long placeholder');
   for (const [width, height] of [[1440, 1024], [1000, 640]]) {
     win.setContentSize(width, height);
     for (const theme of ['dark', 'light']) {

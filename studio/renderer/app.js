@@ -468,7 +468,7 @@ function appendQuestion(question) {
     const button = document.createElement('button');
     button.className = 'ghost small';
     button.textContent = option;
-    button.onclick = () => { composerInput.value = option; composerInput.focus(); };
+    button.onclick = () => { composerInput.value = option; composerInput.dispatchEvent(new Event('input')); composerInput.focus(); };
     card.appendChild(button);
   }
   chatLog.appendChild(card);
@@ -632,6 +632,7 @@ async function sendComposer() {
   const text = composerInput.value.trim();
   if (!text || !currentAgent) return;
   composerInput.value = '';
+  composerInput.dispatchEvent(new Event('input'));
   appendChatMessage('user', text);
   agentRunning = true;
   updateStatusPill('running');
