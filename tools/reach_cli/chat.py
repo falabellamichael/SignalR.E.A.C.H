@@ -18,6 +18,8 @@ from .terminal import (
     c_red,
     c_yellow,
     print_footer,
+    response_indent,
+    response_open,
     spinner,
     spinner_clear,
     status_line,
@@ -191,15 +193,39 @@ def set_system_message(history, client):
         history.insert(0, {"role": "system", "content": prompt})
 
 
-def stream_reply(client, messages):
-    """Streams a reply; returns (ok, full_text)."""
+def stream_reply(client, messages, indent=None):
+    """Streams a reply under a styled left rule; returns (ok, full_text)."""
+    if indent is None:
+        indent = response_indent()
+    response_open()
     text_parts = []
+    buf = ""
+    at_start = True  # next write begins a fresh line
+    first = True     # first line continues after the 'ai ▸' label
     try:
         for delta in client.chat(messages):
-            sys.stdout.write(delta)
-            sys.stdout.flush()
             text_parts.append(delta)
+            buf += delta
+            while True:
+                newline = buf.find("\n")
+                if newline == -1:
+                    break
+                line, buf = buf[:newline], buf[newline + 1:]
+                if not first and at_start:
+                    sys.stdout.write(indent)
+                sys.stdout.write(line + "\n")
+                at_start = True
+                first = False
+            if buf:
+                if not first and at_start:
+                    sys.stdout.write(indent)
+                sys.stdout.write(buf)
+                buf = ""  # consumed — never re-emit this chunk on the next delta
+                at_start = False
+                first = False
+            sys.stdout.flush()
     except ReachApiError as exc:
+        print()
         print(c_red("  ✗ " + str(exc)))
         return False, ""
     print()
@@ -373,8 +399,6 @@ def run_chat(client, base):
                 print(c_yellow("  unknown command %r — /help" % command))
                 continue
             history.append({"role": "user", "content": line})
-            print(c_bold(c_magenta("ai  ▸ ")), end="")
-            sys.stdout.flush()
             try:
                 ok, reply_text = stream_reply(client, history)
                 if ok:
