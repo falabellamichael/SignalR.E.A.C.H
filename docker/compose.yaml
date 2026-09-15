@@ -1,0 +1,15 @@
+services:
+  reachd:
+    build:
+      context: ..
+      dockerfile: docker/reachd/Dockerfile
+    image: signalreach-relay:latest
+    container_name: reachd
+    restart: unless-stopped
+    ports:
+      - "20777:20777"
+    volumes:
+      - reachd-data:/data
+
+volumes:
+  reachd-data:

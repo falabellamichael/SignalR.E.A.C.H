@@ -173,6 +173,40 @@ client as a `systemd --user` service, puts the `reach` CLI in `~/.local/bin`, an
 LazyVim keymaps (`<leader>ac` chat, `<leader>af` file, `<leader>as` selection). See
 `installer/cachyos-lazyvim/README.md`.
 
+## Relay in Docker
+
+The relay server is stdlib-only Python, so it runs in a tiny container with no
+pip dependencies:
+
+```bash
+docker build -f docker/reachd/Dockerfile -t signalreach-relay .
+docker run -d --name reachd -p 20777:20777 -v reachd-data:/data signalreach-relay
+```
+
+or with compose from `docker/`:
+
+```bash
+cd docker && docker compose up -d --build
+```
+
+The container binds `:20777` (health-checked via `/v1/models`) and keeps its
+`config.json`, caches and analytics in the mounted `/data` volume — the volume
+is what survives container restarts and upgrades, so back it up to keep your
+settings. A fresh container starts with default settings; edit `/data/config.json`
+(models, rate limits, publishing) and restart, exactly like the host install.
+Note the container has no tunnel binary and no CodeGPT tray: it serves the relay
+itself, reachable from the LAN/host on the published port; front it with your own
+reverse proxy or tunnel for public exposure.
+
+## Desktop apps in containers
+
+For the **Reach Studio GUI** on Linux, the packaged options (in `studio/`) are the
+sandboxed route: a **Flatpak** (`npm run dist:linux` builds one alongside the
+AppImage/deb/zip) runs under bubblewrap with proper desktop integration —
+`flatpak install --user reach-studio.flatpak` then launch from your app grid. Raw
+Docker is not used for the GUI: Electron needs X11/Wayland + audio + GPU socket
+passthrough that Flatpak handles natively.
+
 ## VS Code
 
 The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
