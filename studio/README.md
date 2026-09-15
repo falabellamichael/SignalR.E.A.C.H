@@ -270,11 +270,16 @@ npm run dist
   `Reach Studio.app` into `/Applications` to install. Local Mac builds are not
   notarized; public distribution needs Developer ID signing and notarization. Generated bundles, installers, dependencies, logs and local
   credentials are excluded from Git.
-- `npm run dist:linux` produces an **AppImage**, a **deb** package, and a
-  portable **zip** under `dist/`. Install the AppImage with `chmod +x` and run
-  it directly; install the deb with `sudo apt install ./reach-studio_*.deb`
-  (Debian/Ubuntu); or extract the zip and run its `reach-studio` binary — no
-  package manager needed, on any distro (including Arch/pacman). Linux
+- `npm run dist:linux` produces an **AppImage**, a **deb** package, a portable
+  **zip**, and a sandboxed **Flatpak** under `dist/`. Install the AppImage with
+  `chmod +x` and run it directly; install the deb with
+  `sudo apt install ./reach-studio_*.deb` (Debian/Ubuntu); extract the zip and
+  run its `reach-studio` binary — no package manager needed, on any distro
+  (including Arch/pacman); or install the Flatpak bundle with
+  `flatpak install --user reach-studio-*.flatpak` and launch it as
+  `com.falab.reachstudio` (it needs the `org.freedesktop.Platform//25.08`
+  runtime and the `org.electronjs.Electron2.BaseApp//25.08` base from Flathub,
+  pulled automatically). Linux
   desktops need a GUI session; on headless servers run the smoke check with
   `xvfb-run -a npm run smoke`.
 

@@ -79,13 +79,34 @@
       "target": [
         "AppImage",
         "deb",
-        "zip"
+        "zip",
+        "flatpak"
       ],
       "category": "Development",
       "icon": "assets/icon.png",
       "maintainer": "Michael Anthony Falabella <falabellamichael@gmail.com>",
       "synopsis": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
       "syncDesktopName": true
+    },
+    "flatpak": {
+      "runtime": "org.freedesktop.Platform",
+      "runtimeVersion": "25.08",
+      "sdk": "org.freedesktop.Sdk",
+      "base": "org.electronjs.Electron2.BaseApp",
+      "baseVersion": "25.08",
+      "finishArgs": [
+        "--socket=wayland",
+        "--socket=x11",
+        "--share=ipc",
+        "--device=dri",
+        "--socket=pulseaudio",
+        "--filesystem=home",
+        "--filesystem=xdg-run/reach-studio:create",
+        "--share=network",
+        "--talk-name=org.freedesktop.Notifications",
+        "--talk-name=org.freedesktop.secrets",
+        "--env=ELECTRON_TRASH=gio"
+      ]
     }
   },
   "allowScripts": {

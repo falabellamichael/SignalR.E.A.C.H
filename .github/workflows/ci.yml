@@ -99,12 +99,26 @@ jobs:
       - run: npm test
       - name: Install Electron runtime libraries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2 libx11-xcb1 xvfb
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2 libx11-xcb1 xvfb flatpak flatpak-builder elfutils
+      - name: Install Flatpak runtimes (Linux)
+        if: runner.os == 'Linux'
+        # Must match studio/package.json build.flatpak versions. --user so the
+        # non-root runner and flatpak-builder see the same installation.
+        run: |
+          flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak --user install -y --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
       - name: macOS Electron smoke test
         if: runner.os == 'macOS'
         run: npm run smoke
       - name: Linux Electron smoke test (headless)
         if: runner.os == 'Linux'
+        # GitHub runners have no root-owned SUID chrome-sandbox; Electron
+        # aborts with SIGTRAP without this (same reason WSL needs it).
+        env:
+          ELECTRON_DISABLE_SANDBOX: 1
         run: xvfb-run -a npm run smoke
       - name: Package macOS application
         if: runner.os == 'macOS'
@@ -121,4 +135,5 @@ jobs:
             studio/dist/*.AppImage
             studio/dist/*.deb
             studio/dist/*.zip
+            studio/dist/*.flatpak
           if-no-files-found: error
