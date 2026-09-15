@@ -165,3 +165,20 @@ jobs:
             sleep 2
             DISPLAY=:9 /opt/reach-studio/reach-studio --no-sandbox --smoke
           '
+      - name: Smoke native-window passthrough (external display)
+        # The entrypoint must detect an external display and launch Electron
+        # on it instead of Xvfb/noVNC. Self-contained: Xvfb runs inside the
+        # container as the "host display", no runner X server needed.
+        run: |
+          docker run -d --name studio-native --shm-size=1g \
+            -e DISPLAY=:7 --entrypoint /bin/bash reach-studio -c '
+              mkdir -p /tmp/.X11-unix
+              Xvfb :7 -screen 0 1440x900x24 -nolisten tcp >/dev/null 2>&1 &
+              sleep 2
+              exec /entrypoint.sh
+            '
+          sleep 15
+          docker logs studio-native | grep -q 'launching native window'
+          docker exec studio-native pgrep -f 'reach-studio --type=renderer' >/dev/null
+          docker exec studio-native sh -c 'DISPLAY=:7 xwininfo -root -tree | grep -q "Reach Studio"'
+          docker rm -f studio-native

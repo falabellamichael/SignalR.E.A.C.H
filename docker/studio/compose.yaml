@@ -21,6 +21,28 @@ services:
       - studio-projects:/projects  # or bind-mount a host folder over this
       # - ~/my-code:/projects      # ← alternative: your real project tree
 
+  # NATIVE WINDOW mode — the app opens as a real window on the host
+  # desktop instead of a browser tab. Needs an X server on the host.
+  #   Linux (X11):    xhost +local:docker && docker compose --profile native up native
+  #   Linux (Wayland): use an XWayland session, or run the Flatpak instead.
+  #   macOS:          install XQuartz, enable "Allow connections from network
+  #                   clients", then the same xhost command.
+  #   Windows:        install VcXsrv ("Multiple windows", "Disable access
+  #                   control"), then the same xhost command.
+  studio-native:
+    profiles: ["native"]
+    image: reach-studio:latest
+    container_name: reach-studio-native
+    restart: unless-stopped
+    shm_size: 1gb
+    network_mode: host   # reach the host X server's unix socket / TCP :0
+    environment:
+      DISPLAY: ":0"
+    volumes:
+      - studio-data:/data
+      - studio-projects:/projects
+      - /tmp/.X11-unix:/tmp/.X11-unix:ro
+
 volumes:
   studio-data:
   studio-projects:

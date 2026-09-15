@@ -44,8 +44,8 @@ RUN useradd -m -u 1000 studio \
     && chown -R studio:studio /data /projects
 
 COPY --from=builder --chown=studio:studio /src/studio/dist/linux-unpacked /opt/reach-studio
-COPY --chown=studio:studio docker/studio/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY --chown=studio:studio docker/studio/entrypoint.sh docker/studio/healthcheck.sh /
+RUN chmod +x /entrypoint.sh /healthcheck.sh
 
 USER studio
 ENV HOME=/home/studio \
@@ -60,4 +60,4 @@ EXPOSE 6080
 ENTRYPOINT ["/entrypoint.sh"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:6080/vnc.html', timeout=4).status==200 else 1)"
+  CMD ["/healthcheck.sh"]

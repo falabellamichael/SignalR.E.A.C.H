@@ -226,6 +226,33 @@ The **Reach Studio GUI** has two sandboxed distribution routes:
   beyond localhost. The in-container smoke suite passes 12/12; Electron
   runs with `--no-sandbox` (the container boundary is the isolation).
 
+- **Docker + native window** (same image, real window on the host desktop —
+  no browser tab). The entrypoint auto-detects an external display and
+  launches Electron on it instead of starting Xvfb/noVNC:
+
+  ```bash
+  # Linux host with X11 (Xorg or XWayland):
+  xhost +local:docker
+  docker run -d --name studio --shm-size=1g -e DISPLAY=:0 \
+    -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+    -v reach-studio-data:/data reach-studio
+
+  # Windows host (install VcXsrv first: "Multiple windows",
+  # "Disable access control"):
+  docker run -d --name studio --shm-size=1g \
+    -e DISPLAY=host.docker.internal:0 \
+    -v reach-studio-data:/data reach-studio
+
+  # macOS host (install XQuartz, enable "Allow connections from network
+  # clients", log out/in): xhost +localhost, then the Windows command above.
+  ```
+
+  Or on Linux: `cd docker/studio && docker compose --profile native up -d`.
+  The window appears on your desktop like any other app; closing it stops
+  the container's foreground process. Note a native-mode container can still
+  only reach host services via `host.docker.internal` (Docker Desktop) or
+  the host's LAN IP.
+
 ## VS Code
 
 The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
