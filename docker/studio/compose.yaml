@@ -1,0 +1,26 @@
+services:
+  studio:
+    build:
+      context: ../..
+      dockerfile: docker/studio/Dockerfile
+    image: reach-studio:latest
+    container_name: reach-studio
+    restart: unless-stopped
+    # Chromium shared memory: Docker's 64MB default starves the browser
+    # panel and sub-views (ERR_INSUFFICIENT_RESOURCES). Verified required.
+    shm_size: 1gb
+    ports:
+      # noVNC web client — open http://localhost:6080/vnc.html
+      - "127.0.0.1:6080:6080"
+    environment:
+      RESOLUTION: 1600x900x24
+      # Set a password if you expose the port beyond localhost:
+      # VNC_PASSWORD: changeme
+    volumes:
+      - studio-data:/data          # settings + conversations persist here
+      - studio-projects:/projects  # or bind-mount a host folder over this
+      # - ~/my-code:/projects      # ← alternative: your real project tree
+
+volumes:
+  studio-data:
+  studio-projects:

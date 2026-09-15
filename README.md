@@ -200,12 +200,31 @@ reverse proxy or tunnel for public exposure.
 
 ## Desktop apps in containers
 
-For the **Reach Studio GUI** on Linux, the packaged options (in `studio/`) are the
-sandboxed route: a **Flatpak** (`npm run dist:linux` builds one alongside the
-AppImage/deb/zip) runs under bubblewrap with proper desktop integration —
-`flatpak install --user reach-studio.flatpak` then launch from your app grid. Raw
-Docker is not used for the GUI: Electron needs X11/Wayland + audio + GPU socket
-passthrough that Flatpak handles natively.
+The **Reach Studio GUI** has two sandboxed distribution routes:
+
+- **Flatpak** (native desktop integration): `npm run dist:linux` builds the
+  bundle; `flatpak install --user reach-studio-*.flatpak` then launch from
+  your app grid. Best when the container host IS the desktop.
+- **Docker + noVNC** (true container, works on ANY Docker host, even
+  headless — this is for the "best you can do is a container" crowd):
+
+  ```bash
+  docker build -f docker/studio/Dockerfile -t reach-studio .
+  docker run -d --name studio --shm-size=1g \
+    -p 127.0.0.1:6080:6080 -v reach-studio-data:/data reach-studio
+  # open http://localhost:6080/vnc.html in a browser
+  ```
+
+  or `cd docker/studio && docker compose up -d --build` (compose pins
+  `shm_size: 1gb` and localhost-only binding automatically).
+
+  The image runs Electron on Xvfb and streams the desktop through
+  x11vnc → noVNC. Mount `/data` (settings + conversations persist) and
+  `/projects` (your code). **`--shm-size=1g` is required** — Docker's 64MB
+  default starves Chromium and the browser panel fails with
+  ERR_INSUFFICIENT_RESOURCES. Set `VNC_PASSWORD` if you expose port 6080
+  beyond localhost. The in-container smoke suite passes 12/12; Electron
+  runs with `--no-sandbox` (the container boundary is the isolation).
 
 ## VS Code
 

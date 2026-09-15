@@ -137,3 +137,31 @@ jobs:
             studio/dist/*.zip
             studio/dist/*.flatpak
           if-no-files-found: error
+
+  docker:
+    name: Docker images (relay + GUI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build relay image
+        run: docker build -f docker/reachd/Dockerfile -t signalreach-relay .
+      - name: Boot relay container and verify from the host
+        run: |
+          docker run -d --name reachd -p 20777:20777 -v reachd-ci:/data signalreach-relay
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:20777/v1/models || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          [ "$code" = "200" ] || { docker logs reachd; exit 1; }
+          docker inspect --format '{{.State.Health.Status}}' reachd | grep -qE 'healthy|starting'
+          docker rm -f reachd
+      - name: Build GUI image
+        run: docker build -f docker/studio/Dockerfile -t reach-studio .
+      - name: Smoke the GUI inside the container (Xvfb, shm 1g)
+        run: |
+          docker run --rm --shm-size=1g --entrypoint /bin/bash reach-studio -c '
+            Xvfb :9 -screen 0 1600x900x24 -nolisten tcp >/dev/null 2>&1 &
+            sleep 2
+            DISPLAY=:9 /opt/reach-studio/reach-studio --no-sandbox --smoke
+          '

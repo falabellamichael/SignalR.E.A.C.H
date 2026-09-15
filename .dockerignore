@@ -1,0 +1,17 @@
+# Docker build context hygiene: only the studio source + docker/ are needed.
+# node_modules, dist and browser profiles would otherwise ride into every build.
+**/node_modules
+**/dist
+**/__pycache__
+**/*.pyc
+**/.git
+browser-profile
+studio/browser-profile
+.vscode
+.idea
+*.log
+*.AppImage
+*.deb
+*.flatpak
+*.zip
+installer/cachyos-lazyvim
