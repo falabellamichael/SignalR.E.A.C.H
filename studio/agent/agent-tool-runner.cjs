@@ -15,11 +15,58 @@
 
 const { TOOLS, needsApproval, budgetFor, resolveInProject } = require('./tool-registry.cjs');
 const { disabledTools } = require('./tool-policy.cjs');
+const { evaluateCommand, defaultPolicy } = require('./sandbox.cjs');
 
 function truncate(text, budget) {
   const s = String(text === undefined ? '' : text);
   if (s.length <= budget) return s;
   return s.slice(0, budget) + '\n… [truncated at ' + budget + ' characters]';
+}
+
+/**
+ * Enforce the command sandbox for exec-class tools.
+ *
+ * This is the single choke point: every shell command an agent runs passes
+ * through runToolCall, so gating here cannot be bypassed by a tool that forgets
+ * to check. Approval stays a separate, additional gate — a command can be
+ * user-approved and still be refused by policy, which is the whole point: the
+ * policy is enforced by code rather than by the user remembering what they
+ * clicked.
+ *
+ * Opt-in through settings.sandbox.enabled so an existing conversation's
+ * behaviour is unchanged until the user turns the sandbox on. An invalid policy
+ * fails closed (the command is refused) rather than silently running wide open.
+ */
+function enforceSandbox(name, args, settings, context) {
+  const sandbox = settings && settings.sandbox;
+  if (!sandbox || sandbox.enabled !== true) return null;
+  if (!TOOLS[name] || TOOLS[name].class !== 'exec') return null;
+  const command = String((args && args.command) || '');
+  // No configured policy means the built-in default, not an empty object: an
+  // empty policy is invalid and would refuse everything with a confusing
+  // "policy rejected" message, which reads like a bug rather than a guard.
+  const policy = sandbox.policy && typeof sandbox.policy === 'object' && !Array.isArray(sandbox.policy)
+    ? sandbox.policy
+    : defaultPolicy();
+  const verdict = evaluateCommand(command, policy, { projectDir: context.projectDir });
+  if (verdict.allowed) return null;
+  // Record every refusal in the audit log when one is wired up. The log is
+  // append-only and hash-chained; a denial that is not recorded is a denial
+  // nobody can explain later.
+  try {
+    if (context.auditLog && typeof context.auditLog.write === 'function') {
+      context.auditLog.write({
+        event: 'sandbox.deny',
+        agent: context.agentId || null,
+        command,
+        allowed: false,
+        code: verdict.code,
+        reason: verdict.reason,
+        findings: verdict.findings,
+      });
+    }
+  } catch { /* an audit failure must not turn into a command being allowed */ }
+  return `Sandbox policy refused this command (${verdict.code}): ${verdict.reason}`;
 }
 
 async function runToolCall(agentId, name, args, context) {
@@ -41,6 +88,18 @@ async function runToolCall(agentId, name, args, context) {
     await persistToolResult(agentId, name, args, { ok: false, error }, context);
     return { ok: false, error, record };
   }
+
+  // Sandbox policy is checked BEFORE the approval prompt. A command the policy
+  // forbids must never reach the user as something they can click through:
+  // otherwise "Approve" looks like it grants permission the sandbox is meant to
+  // withhold, and an approval recorded for a refused command is misleading.
+  const sandboxDenial = enforceSandbox(name, args, settings, context);
+  if (sandboxDenial) {
+    record.error = sandboxDenial;
+    await persistToolResult(agentId, name, args, { ok: false, error: sandboxDenial }, context);
+    return { ok: false, error: sandboxDenial, record };
+  }
+
   const approvalMode = settings.approvals || 'prompt';
   const needsPrompt = needsApproval(name) && approvalMode !== 'auto-all';
   // Read-only tools never prompt. Auto-read mode only auto-approves reads.

@@ -20,8 +20,21 @@ const { StudioBrowser } = require('./browser/host.cjs');
 const { Telemetry, defaults: telemetryDefaults, validateSources } = require('./agent/telemetry.cjs');
 const { validatePolicy } = require('./agent/tool-policy.cjs');
 const { TOOLS } = require('./agent/tool-registry.cjs');
+const { readChatResponse } = require('./agent/chat-response.cjs');
+const codeIndex = require('./agent/code-index.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
+
+/* Prompt-console runs in flight, keyed by the renderer-supplied runId so Stop
+ * aborts exactly the run the user is looking at. Bounded: a leaked run must not
+ * grow this forever. */
+const playgroundRuns = new Map();
+const MAX_PLAYGROUND_RUNS = 8;
+
+/* One code index per project directory, so repeated symbol searches do not
+ * re-walk the tree. Keyed by resolved path; entries are small summaries only. */
+const codeIndexCache = new Map();
+const MAX_INDEX_CACHE = 4;
 
 const isDev = !app.isPackaged;
 // ESM has no __dirname; import.meta.dirname is supported by the bundled Node runtime.
@@ -602,6 +615,231 @@ function registerIpc() {
       return { ok: false, err: e.message };
     }
   });
+
+  // ---------- workspace dashboard (PRD: Studio Workspace Dashboard) ----------
+
+  /* Measure round-trip latency to the configured endpoint. Read-only: it calls
+   * GET /models, never a completion, so a ping cannot cost tokens or mutate
+   * anything. Reports the HTTP status and latency the PRD asks for. */
+  ipcMain.handle('workspace:pingEndpoint', async () => {
+    const settings = loadSettings();
+    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    const started = Date.now();
+    try {
+      const base = await resolveEndpoint(settings.endpoint);
+      const headers = {};
+      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
+      const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+      const latencyMs = Date.now() - started;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}` };
+      }
+      let models = null;
+      try {
+        const data = await res.json();
+        models = Array.isArray(data.data) ? data.data.length : null;
+      } catch { /* a non-JSON body still proves reachability */ }
+      return { ok: true, status: res.status, latencyMs, models };
+    } catch (e) {
+      // Distinguish a timeout from a refused connection so the message is useful.
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      return { ok: false, latencyMs: Date.now() - started, err: timeout ? 'Timed out after 10 s.' : e.message };
+    }
+  });
+
+  /* Resolve a renderer-supplied project directory to something safe to index.
+   * Indexing walks the tree, so it is restricted to a real existing directory
+   * and bounded by the indexer's own file and size caps. */
+  function resolveIndexableDir(raw) {
+    const text = String(raw || '').trim();
+    if (!text) throw new Error('No project directory was supplied.');
+    const abs = path.resolve(text);
+    let stat;
+    try { stat = fs.statSync(abs); } catch { throw new Error('Project directory does not exist.'); }
+    if (!stat.isDirectory()) throw new Error('The project path is not a directory.');
+    return abs;
+  }
+
+  function cachedIndex(dir, { force = false } = {}) {
+    if (!force && codeIndexCache.has(dir)) return codeIndexCache.get(dir);
+    const index = codeIndex.indexProject(dir, { maxFiles: 2000 });
+    if (codeIndexCache.size >= MAX_INDEX_CACHE) {
+      // Evict the oldest entry; Map preserves insertion order.
+      const oldest = codeIndexCache.keys().next().value;
+      if (oldest !== undefined) codeIndexCache.delete(oldest);
+    }
+    codeIndexCache.set(dir, index);
+    return index;
+  }
+
+  ipcMain.handle('workspace:indexCode', (_e, { projectDir } = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    try {
+      const index = cachedIndex(dir, { force: true });
+      return {
+        ok: true,
+        summary: codeIndex.summarize(index),
+        // Cap the list so a huge repo cannot blow the IPC payload.
+        warnings: index.warnings.slice(0, 40),
+        truncated: index.warnings.length > 40,
+      };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  ipcMain.handle('workspace:searchSymbols', (_e, { projectDir, query, limit = 20 } = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const text = String(query || '').trim();
+    if (!text) return { ok: true, symbols: [] };
+    const max = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, limit)) : 20;
+    try {
+      const index = cachedIndex(dir);
+      const ctx = codeIndex.contextForQuery(index, text, { maxSymbols: max, maxChars: 8000, includeSnippets: false });
+      // Strip snippets: the list view shows path/line/signature only, and
+      // sending thousands of source lines over IPC would stall the renderer.
+      return { ok: true, symbols: ctx.symbols.map(s => ({ ...s, snippet: undefined })), total: ctx.total };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  /* Prompt-context injection (PRD: Codebase AST Context Search). Returns the
+   * formatted block plus the symbols behind it so a caller can show what will
+   * be injected instead of trusting an opaque string. */
+  ipcMain.handle('workspace:extractContext', (_e, { projectDir, query, maxChars = 6000, maxSymbols = 12 } = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const text = String(query || '').trim();
+    if (!text) return { ok: true, context: '', symbols: [] };
+    try {
+      const index = cachedIndex(dir);
+      const ctx = codeIndex.contextForQuery(index, text, {
+        maxChars: Number.isSafeInteger(maxChars) ? Math.max(500, Math.min(24000, maxChars)) : 6000,
+        maxSymbols: Number.isSafeInteger(maxSymbols) ? Math.max(1, Math.min(40, maxSymbols)) : 12,
+        includeSnippets: true,
+      });
+      return {
+        ok: true,
+        context: codeIndex.formatContext(ctx),
+        chars: ctx.chars,
+        symbols: ctx.symbols.map(s => ({ name: s.qualified, kind: s.kind, path: s.path, line: s.line, score: s.score })),
+        dependencies: ctx.dependencies,
+      };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  // ---------- prompt console (PRD US-2: Interactive Prompt Console) ----------
+
+  /* Runs one completion against the configured endpoint and streams tokens to
+   * the renderer. The access key stays in the main process; the renderer never
+   * sees it. Reuses readChatResponse so streaming, usage accounting and
+   * reasoning separation behave exactly as they do for agent conversations. */
+  ipcMain.handle('playground:run', async (_e, payload = {}) => {
+    const settings = loadSettings();
+    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    const model = String(payload.model || settings.model || '').trim();
+    if (!model) return { ok: false, err: 'No model selected.' };
+    const prompt = String(payload.prompt || '');
+    if (!prompt.trim()) return { ok: false, err: 'Enter a prompt.' };
+    const runId = String(payload.runId || 'pg_' + Date.now().toString(36));
+
+    // Bound concurrent runs so a stuck stream cannot accumulate controllers.
+    if (playgroundRuns.size >= MAX_PLAYGROUND_RUNS) {
+      const oldest = playgroundRuns.keys().next().value;
+      if (oldest !== undefined) {
+        try { playgroundRuns.get(oldest)?.abort(); } catch { /* already gone */ }
+        playgroundRuns.delete(oldest);
+      }
+    }
+
+    const controller = new AbortController();
+    playgroundRuns.set(runId, controller);
+    const send = (data) => {
+      if (win && !win.isDestroyed()) win.webContents.send('playground:token', { runId, ...data });
+    };
+
+    const started = Date.now();
+    let tokens = 0;
+    try {
+      const base = await resolveEndpoint(settings.endpoint);
+      const headers = { 'Content-Type': 'application/json' };
+      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
+
+      const system = String(payload.system || '').trim();
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: prompt });
+
+      const stream = payload.stream !== false;
+      const maxTokens = Number.isSafeInteger(payload.maxTokens) && payload.maxTokens > 0 ? payload.maxTokens : 0;
+      const temperature = Number.isFinite(payload.temperature) ? Math.max(0, Math.min(2, payload.temperature)) : 0.7;
+      const body = { model, messages, stream, temperature };
+      if (maxTokens > 0) body.max_tokens = maxTokens;
+
+      const response = await fetch(base + '/chat/completions', {
+        method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        // Surface the provider's own message: "429 rate limit exceeded" is far
+        // more useful to a developer than "request failed".
+        return { ok: false, status: response.status, err: text ? text.slice(0, 400) : `HTTP ${response.status}` };
+      }
+
+      const reply = await readChatResponse(response, {
+        stream,
+        signal: controller.signal,
+        onText: (chunk) => {
+          tokens += Math.max(1, Math.round(chunk.length / 4));
+          send({ delta: chunk, tokens });
+        },
+      });
+
+      const latencyMs = Date.now() - started;
+      if (reply.error) return { ok: false, status: response.status, latencyMs, err: reply.error, usage: reply.usage || null };
+      return {
+        ok: true, status: response.status, latencyMs,
+        // Non-streaming runs deliver their text in one piece.
+        text: stream ? undefined : reply.content,
+        usage: reply.usage || null,
+        finishReason: reply.finishReason || null,
+        reasoningChars: reply.reasoningChars || 0,
+      };
+    } catch (e) {
+      if (controller.signal.aborted) return { ok: false, cancelled: true, err: 'Stopped.', latencyMs: Date.now() - started };
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      return { ok: false, err: timeout ? 'The request timed out.' : e.message, latencyMs: Date.now() - started };
+    } finally {
+      playgroundRuns.delete(runId);
+      send({ done: true, tokens, elapsedMs: Date.now() - started });
+    }
+  });
+
+  ipcMain.handle('playground:stop', (_e, runId) => {
+    const controller = playgroundRuns.get(String(runId || ''));
+    if (!controller) return { ok: false, err: 'That run already finished.' };
+    controller.abort();
+    playgroundRuns.delete(String(runId));
+    return { ok: true };
+  });
+
+  // ---------- about (PRD: About REACH Studio) ----------
+  ipcMain.handle('about:info', () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    electron: process.versions.electron,
+    chromium: process.versions.chrome,
+    node: process.versions.node,
+    v8: process.versions.v8,
+    userData: app.getPath('userData'),
+  }));
 }
 
 // ---------- window ----------
@@ -1510,7 +1748,82 @@ app.whenReady().then(() => {
           if (!reopened.projects || !reopened.browser) throw new Error('Reopened workspace lost projects or browser IPC');
           console.log('MAC LIFECYCLE SMOKE OK: close last window, Dock activation, project persistence and browser IPC.');
         }
-        console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, optional CLI -> ${v}`);
+
+        // ---------- PRD workspace shell: nav rail, hotkeys, status bar, new pages ----------
+        {
+          const shell = await win.webContents.executeJavaScript(`(async () => {
+            // The nav rail must exist and expose every view, including the new ones.
+            const rail = document.querySelector('#nav-rail');
+            if (!rail) return { err: 'nav rail missing' };
+            const items = [...rail.querySelectorAll('.rail-item')].map(b => b.dataset.view);
+            const pages = ['workspace', 'playground', 'projects', 'agents', 'create', 'settings', 'about'];
+            const missing = pages.filter(p => !document.querySelector('#page-' + p));
+            if (missing.length) return { err: 'missing pages: ' + missing.join(',') };
+            const railViews = rail.querySelectorAll('.rail-item').length;
+
+            // Rail navigation drives the same showTab() path as the header tabs.
+            await window.ReachWorkspaceShell.goView('workspace');
+            const wsActive = document.querySelector('#page-workspace').classList.contains('active');
+            const railActive = document.querySelector('#rail-workspace').classList.contains('active');
+            await window.ReachWorkspaceShell.goView('about');
+            const aboutActive = document.querySelector('#page-about').classList.contains('active');
+
+            // Bottom status bar exists and reflects the configured endpoint.
+            // The chip refreshes at init/workspace-sync; refresh it explicitly so
+            // the assertion is not dependent on when saveSettings last ran.
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            const sb = document.querySelector('#statusbar-bottom');
+            const endpointText = document.querySelector('#sb-endpoint-text');
+
+            // Back to a view the existing smoke assertions may still rely on.
+            await window.ReachWorkspaceShell.goView('projects');
+            return { railViews, items, wsActive, railActive, aboutActive, hasSb: !!sb, endpointText: endpointText && endpointText.textContent };
+          })()`);
+          if (shell.err) throw new Error(shell.err);
+          if (shell.railViews !== 7) throw new Error('Expected 7 rail items, got ' + shell.railViews);
+          if (!shell.wsActive) throw new Error('Workspace page did not activate via the rail');
+          if (!shell.railActive) throw new Error('Rail did not mark Workspace active');
+          if (!shell.aboutActive) throw new Error('About page did not activate via the rail');
+          if (!shell.hasSb) throw new Error('Bottom status bar missing');
+          if (shell.endpointText === 'no endpoint') throw new Error('Status bar did not reflect the configured endpoint');
+
+          // Ctrl/Cmd+1..6 hotkeys switch views (and never fire while typing).
+          const hotkeys = await win.webContents.executeJavaScript(`(async () => {
+            const dispatch = (key) => document.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true }));
+            dispatch('2');
+            await new Promise(r => setTimeout(r, 30));
+            const playground = document.querySelector('#page-playground').classList.contains('active');
+            // Typing guard: a real keystroke targets the FOCUSED element, so
+            // dispatch on the textarea. Ctrl+1 there is data, not a shortcut.
+            const input = document.querySelector('#pg-prompt');
+            input.focus();
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: '1', ctrlKey: true, bubbles: true }));
+            await new Promise(r => setTimeout(r, 30));
+            const stillPlayground = document.querySelector('#page-playground').classList.contains('active');
+            // With no field focused the same hotkey navigates for real.
+            input.blur();
+            dispatch('6');
+            await new Promise(r => setTimeout(r, 30));
+            const settings = document.querySelector('#page-settings').classList.contains('active');
+            return { playground, stillPlayground, settings };
+          })()`);
+          if (!hotkeys.playground) throw new Error('Ctrl+2 did not open the Playground');
+          if (!hotkeys.stillPlayground) throw new Error('Ctrl+1 while typing in a textarea must not navigate');
+          if (!hotkeys.settings) throw new Error('Ctrl+6 did not open Settings');
+
+          // The About page populates real app info, not a placeholder.
+          const aboutInfo = await win.webContents.executeJavaScript(`(async () => {
+            await window.ReachAbout.sync();
+            const dd = [...document.querySelectorAll('#ab-list dd')].map(e => e.textContent);
+            return { count: dd.length, hasVersion: dd.some(t => /\\d+\\.\\d+\\.\\d+/.test(t)) };
+          })()`);
+          if (aboutInfo.count === 0) throw new Error('About page populated nothing');
+          if (!aboutInfo.hasVersion) throw new Error('About page did not show the app version');
+
+          console.log('WORKSPACE SHELL SMOKE OK: 7-item nav rail, rail+hotkey navigation, typing guard, persistent status bar, Workspace/Playground/About pages, About version info.');
+        }
+
+        console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, workspace shell+rail+hotkeys+status bar, optional CLI -> ${v}`);
         app.exit(0);
       } catch (e) {
         console.error(`SMOKE FAIL: ${e.stack || e.message}`);

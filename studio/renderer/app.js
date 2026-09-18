@@ -70,13 +70,20 @@ const editorStatus = $('#editor-status');
 
 // ---------- tabs ----------
 async function showTab(name) {
+  const page = $('#page-' + name);
+  // A rail view (workspace, playground, about) has no header tab. Without this
+  // guard the null lookup below throws a TypeError and the page never shows.
+  if (!page) return;
   const nextDir = drawerDir(name);
   if (hasUnsavedFilesOutside(nextDir) && !await confirmAction('There are unsaved editor changes. Discard them and switch project?')) return;
-  for (const page of document.querySelectorAll('.page')) page.classList.remove('active');
+  for (const p of document.querySelectorAll('.page')) p.classList.remove('active');
   for (const tab of document.querySelectorAll('.tab')) tab.classList.remove('active');
-  $('#page-' + name).classList.add('active');
-  $('#tab-' + name).classList.add('active');
+  page.classList.add('active');
+  $('#tab-' + name)?.classList.add('active');
   window.ReachWorkspace?.sync();
+  window.ReachWorkspaceShell?.markRail();
+  if (name === 'workspace') window.ReachWorkspaceDash?.sync();
+  if (name === 'about') window.ReachAbout?.sync();
   return refreshFileTree();
 }
 $('#tab-projects').onclick = () => showTab('projects');

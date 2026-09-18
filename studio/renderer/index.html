@@ -7,6 +7,7 @@
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="workspace.css" />
+  <link rel="stylesheet" href="studio-prd.css" />
 </head>
 <body>
   <header>
@@ -45,6 +46,38 @@
   </header>
 
   <div class="app-body">
+  <!-- ========== PERSISTENT NAV RAIL (PRD: Sidebar Quick-Navigation Menu) ==========
+       Keyboard-first vertical navigation. The PRD specifies Cmd/Ctrl+1-6; those
+       routes are the relay-management screens (/aliases, /logs, /tray-settings,
+       /app-settings) which are out of scope here, so 1-6 map to the views this
+       build actually has: Workspace, Playground, Projects, Agents, Create,
+       Settings. Each button carries its own hotkey in data-hotkey and shows it
+       in a kbd hint. -->
+  <nav class="rail" id="nav-rail" aria-label="Views">
+    <button class="rail-item" id="rail-workspace" data-view="workspace" data-hotkey="1" title="Workspace dashboard (Ctrl+1)">
+      <span class="rail-icon" aria-hidden="true">&#9636;</span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
+    </button>
+    <button class="rail-item" id="rail-playground" data-view="playground" data-hotkey="2" title="Prompt console (Ctrl+2)">
+      <span class="rail-icon" aria-hidden="true">&#9655;</span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
+    </button>
+    <div class="rail-sep" role="separator"></div>
+    <button class="rail-item" id="rail-projects" data-view="projects" data-hotkey="3" title="Projects (Ctrl+3)">
+      <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd>
+    </button>
+    <button class="rail-item" id="rail-agents" data-view="agents" data-hotkey="4" title="Agents (Ctrl+4)">
+      <span class="rail-icon" aria-hidden="true">&#9673;</span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd>
+    </button>
+    <button class="rail-item" id="rail-create" data-view="create" data-hotkey="5" title="Create (Ctrl+5)">
+      <span class="rail-icon" aria-hidden="true">&#10010;</span><span class="rail-label">Create</span><kbd class="rail-key">5</kbd>
+    </button>
+    <button class="rail-item" id="rail-settings" data-view="settings" data-hotkey="6" title="Settings (Ctrl+6)">
+      <span class="rail-icon" aria-hidden="true">&#9881;</span><span class="rail-label">Settings</span><kbd class="rail-key">6</kbd>
+    </button>
+    <div class="rail-sep" role="separator"></div>
+    <button class="rail-item" id="rail-about" data-view="about" title="About REACH Studio">
+      <span class="rail-icon" aria-hidden="true">&#8505;</span><span class="rail-label">About</span>
+    </button>
+  </nav>
   <main>
     <!-- ========== PROJECTS PAGE ========== -->
     <section id="page-projects" class="page active">
@@ -260,6 +293,141 @@
         <div class="settings-actions"><button id="btn-save-budgets" class="gold">Save budgets</button><span id="budget-status" role="status" class="dim"></span></div>
       </div></div>
     </section>
+
+    <!-- ========== WORKSPACE PAGE (PRD: Studio Workspace Dashboard) ========== -->
+    <section id="page-workspace" class="page">
+      <div class="ws-wrap">
+        <header class="ws-head">
+          <h2>Workspace</h2>
+          <p class="dim" id="ws-stamp">Sampling local system telemetry&hellip;</p>
+          <div class="ws-head-actions">
+            <label class="check"><input type="checkbox" id="ws-live" checked /> Live</label>
+            <button id="ws-refresh" class="ghost small">Sample now</button>
+          </div>
+        </header>
+
+        <div class="ws-metrics" id="ws-metrics">
+          <div class="ws-metric"><span class="ws-metric-label">CPU</span><strong id="ws-cpu">&mdash;</strong><small id="ws-cpu-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">RAM</span><strong id="ws-ram">&mdash;</strong><small id="ws-ram-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">GPU</span><strong id="ws-gpu">&mdash;</strong><small id="ws-gpu-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">Uptime</span><strong id="ws-uptime">&mdash;</strong><small id="ws-uptime-note" class="dim">waiting</small></div>
+        </div>
+
+        <div class="ws-grid">
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>System activity</h3><span class="dim">last 60 samples</span></div>
+            <canvas id="ws-chart" height="150" role="img" aria-label="CPU and GPU activity history"></canvas>
+            <div class="ws-axis"><span>60 samples ago</span><span>now</span></div>
+          </section>
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Endpoint</h3><button id="ws-ping" class="ghost small">Ping</button></div>
+            <div id="ws-endpoint" class="ws-kv"><span class="dim">Not configured</span></div>
+            <div id="ws-ping-result" class="ws-ping-result" role="status"></div>
+            <p class="ws-note">Ping measures round-trip latency to the configured OpenAI-compatible endpoint. It calls <code>/models</code>; it does not modify anything.</p>
+          </section>
+        </div>
+
+        <div class="ws-grid">
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Codebase index</h3><button id="ws-index" class="ghost small">Index project</button></div>
+            <div id="ws-index-summary" class="ws-kv"><span class="dim">No project indexed</span></div>
+            <div id="ws-index-warnings" class="ws-warnings" hidden></div>
+            <div class="ws-search">
+              <input id="ws-symbol-query" type="text" placeholder="Search symbols&hellip;" spellcheck="false" aria-label="Search indexed symbols" />
+              <button id="ws-symbol-run" class="ghost small">Search</button>
+            </div>
+            <div id="ws-symbol-results" class="ws-symbols" role="list"></div>
+          </section>
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Top processes</h3><span class="dim">by working set</span></div>
+            <div id="ws-processes" class="ws-processes"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== PLAYGROUND PAGE (PRD: Interactive Prompt Console / US-2) ========== -->
+    <section id="page-playground" class="page">
+      <div class="pg-wrap">
+        <header class="pg-head">
+          <h2>Prompt Console</h2>
+          <p class="dim" id="pg-hint">Runs a completion against the configured endpoint. Nothing is saved to a conversation.</p>
+        </header>
+
+        <div class="pg-controls">
+          <div class="pg-field">
+            <label for="pg-model">Model</label>
+            <div class="row">
+              <input id="pg-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
+              <button id="pg-browse" class="ghost small">Browse&hellip;</button>
+            </div>
+            <datalist id="pg-model-list"></datalist>
+          </div>
+          <div class="pg-field">
+            <label for="pg-temp">Temperature <span id="pg-temp-val" class="dim">0.7</span></label>
+            <input id="pg-temp" type="range" min="0" max="2" step="0.05" value="0.7" />
+          </div>
+          <div class="pg-field">
+            <label for="pg-max">Max tokens</label>
+            <input id="pg-max" type="number" min="0" max="2147483647" step="64" value="1024" />
+            <small class="dim">0 lets the provider choose.</small>
+          </div>
+          <div class="pg-field">
+            <label class="check"><input id="pg-stream" type="checkbox" checked /> Stream response</label>
+          </div>
+        </div>
+
+        <div class="pg-panes">
+          <div class="pg-pane">
+            <label for="pg-system">System prompt</label>
+            <textarea id="pg-system" rows="3" spellcheck="false" placeholder="Optional. Sets the model's behaviour for this test."></textarea>
+            <label for="pg-prompt">Prompt</label>
+            <textarea id="pg-prompt" rows="10" spellcheck="false" placeholder="Ask something&hellip;"></textarea>
+            <div class="pg-actions">
+              <button id="pg-run" class="gold">Execute Completion</button>
+              <button id="pg-stop" class="ghost" disabled>Stop</button>
+              <button id="pg-clear" class="ghost small">Clear</button>
+              <span id="pg-status" class="dim" role="status"></span>
+            </div>
+          </div>
+          <div class="pg-pane">
+            <div class="pg-response-head">
+              <label>Response</label>
+              <div class="pg-metrics" id="pg-metrics">
+                <span class="pg-metric" title="Time to first streamed token"><b id="pg-ttft">&mdash;</b><small>TTFT</small></span>
+                <span class="pg-metric" title="Total round-trip"><b id="pg-elapsed">&mdash;</b><small>total</small></span>
+                <span class="pg-metric" title="Tokens per second"><b id="pg-tps">&mdash;</b><small>tok/s</small></span>
+                <span class="pg-metric" title="Completion tokens"><b id="pg-tokens">&mdash;</b><small>tokens</small></span>
+              </div>
+            </div>
+            <pre id="pg-output" class="pg-output" role="log" aria-live="polite"></pre>
+            <details id="pg-raw-wrap" class="pg-raw" hidden>
+              <summary>Raw JSON</summary>
+              <pre id="pg-raw" class="pg-raw-body"></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== ABOUT PAGE (PRD: About REACH Studio) ========== -->
+    <section id="page-about" class="page">
+      <div class="ab-wrap">
+        <div class="ab-mark" aria-hidden="true">R</div>
+        <h2>Reach Studio</h2>
+        <p class="dim" id="ab-tagline">Desktop workspace for local AI relays, agents, and prompt engineering.</p>
+        <dl class="ab-list" id="ab-list"></dl>
+        <section class="ab-card">
+          <h3>Build status</h3>
+          <dl class="ab-list" id="ab-build"></dl>
+        </section>
+        <section class="ab-card">
+          <h3>License</h3>
+          <p id="ab-license" class="dim">MIT &mdash; see the LICENSE file in the SignalR.E.A.C.H repository.</p>
+        </section>
+        <p class="ab-credit">Built by Michael Anthony Falabella.</p>
+      </div>
+    </section>
   </main>
 
   <!-- ========== FILE DRAWER (right side, toggleable) ========== -->
@@ -314,9 +482,36 @@
   </aside>
   </div>
 
-  <footer>
-    <span>Reach Studio &mdash; projects, agents, and browser</span>
+  <!-- ========== PERSISTENT BOTTOM STATUS BAR (PRD Navigation Design §3) ==========
+       Anchored across every route. The PRD's three indicators are the reachd
+       connectivity ping, the active model proxy badge, and a tray quick control.
+       Relay management is out of scope for this build, so the first indicator
+       reports the configured OpenAI-compatible endpoint instead of a reachd
+       daemon, and the tray control opens Settings rather than toggling a
+       background daemon. Both say what they actually are. -->
+  <footer class="statusbar-bottom" id="statusbar-bottom">
     <span id="conn-mode" class="dim"></span>
+    <div class="sb-group">
+      <span id="sb-endpoint" class="sb-item sb-chip" title="Configured endpoint">
+        <span class="sb-dot" id="sb-endpoint-dot" aria-hidden="true"></span><span id="sb-endpoint-text">no endpoint</span>
+      </span>
+      <span id="sb-latency" class="sb-item sb-chip" title="Last measured round-trip latency" hidden>
+        latency <b id="sb-latency-val">&mdash;</b>
+      </span>
+      <span id="sb-model" class="sb-item sb-chip" title="Active model" hidden>
+        model <b id="sb-model-val">&mdash;</b>
+      </span>
+      <span id="sb-index" class="sb-item sb-chip" title="Codebase index" hidden>
+        index <b id="sb-index-val">&mdash;</b>
+      </span>
+      <span id="sb-sync" class="sb-item sb-chip" title="Cross-IDE sync" hidden>
+        sync <b id="sb-sync-val">&mdash;</b>
+      </span>
+    </div>
+    <div class="sb-group">
+      <span class="sb-item dim">Reach Studio &mdash; projects, agents, and browser</span>
+      <button id="sb-settings" class="sb-item sb-link" type="button" title="Open settings">Settings</button>
+    </div>
   </footer>
 
   <!-- New Project modal -->
@@ -451,5 +646,8 @@
   <script src="browser.js"></script>
   <script src="workspace.js"></script>
   <script src="telemetry.js"></script>
+  <script src="workspace-shell.js"></script>
+  <script src="playground.js"></script>
+  <script src="about.js"></script>
 </body>
 </html>
