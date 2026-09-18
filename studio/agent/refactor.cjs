@@ -108,8 +108,10 @@ function planFromEdits(edits, options = {}) {
 
     if (byPath.has(rel)) {
       // Two edits for one file would be applied in sequence with the second
-      // blind to the first; require the caller to merge them instead.
-      plan.errors.push(`"${rel}" appears in more than one edit. Merge them into a single edit.`);
+      // blind to the first; require the caller to merge them instead. Say HOW,
+      // because "merge them" alone sends the model back to guess at a format
+      // and it will most likely just re-send the same two entries.
+      plan.errors.push(`"${rel}" appears in more than one edit. Put every change to that file in ONE edit using hunks: [{search, replace}, ...].`);
       continue;
     }
 

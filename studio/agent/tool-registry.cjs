@@ -428,7 +428,7 @@ const COLLAB_TOOLS = {
   },
 };
 
-const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS };
+const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS, ...require('./code-tools.cjs') };
 
 function allowedNames() {
   return Object.keys(TOOLS);
@@ -464,6 +464,28 @@ function toolHelp(tier = 'core', disabled = []) {
       lines.push('More tools are available on request: emit '
         + JSON.stringify({ action: 'tool_help', topic: 'reach' })
         + ' to receive the Reach tool set (' + reachAvail.join(', ') + ').');
+    }
+  }
+  // Codebase tools (indexing, impact analysis, multi-file refactor, patch
+  // review, structured test/lint runs). Same advertise-or-reveal pattern as
+  // Reach so the base prompt stays small. This tier is only meaningful when the
+  // agent is bound to a project, which the caller gates on.
+  if (tiers.includes('code')) {
+    const codeAvail = namesByTier('code').filter(n => !off.has(n));
+    if (codeAvail.length) {
+      lines.push('Codebase tools (understand and safely change this project):');
+      for (const name of codeAvail) {
+        lines.push('- ' + name + ': ' + TOOLS[name].help);
+        lines.push('  ' + JSON.stringify(TOOLS[name].example));
+      }
+    }
+  } else {
+    const codeAvail = namesByTier('code').filter(n => !off.has(n));
+    if (codeAvail.length) {
+      lines.push('Codebase tools are available on request: emit '
+        + JSON.stringify({ action: 'tool_help', topic: 'code' })
+        + ' to index, search symbols, plan multi-file refactors and run test/lint gates ('
+        + codeAvail.join(', ') + ').');
     }
   }
   return lines.join('\n');

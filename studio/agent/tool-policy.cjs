@@ -10,9 +10,15 @@ function features(settings = {}) { return { ...defaults, ...settings.features };
 function disabledTools(settings = {}, tools = {}) {
   const f = features(settings), disabled = new Set(settings.disabledTools || []);
   for (const [name, tool] of Object.entries(tools)) {
+    // The `code` tier (code.index/search/context/impact, refactor.plan/apply,
+    // patch.review, tests.run/quickfix) reads and writes the bound project, so
+    // it belongs to the workspace feature exactly like read/write/edit_patch do.
+    // Without this, turning workspace OFF would leave the refactor and indexing
+    // tools able to modify project files.
     if (!f.agent || !f.terminal && tool.class === 'exec'
       || !f.web && (tool.class === 'browse' || tool.tier === 'browser')
-      || !f.workspace && (['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell'].includes(name) || tool.tier === 'reach')) disabled.add(name);
+      || !f.workspace && (['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell'].includes(name)
+        || tool.tier === 'reach' || tool.tier === 'code')) disabled.add(name);
   }
   return [...disabled];
 }
