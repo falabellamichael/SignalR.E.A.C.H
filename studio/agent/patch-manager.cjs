@@ -37,7 +37,8 @@ const MAX_DIFF_LINES = 20000;
  * reviewDiff does, but retaining positions so selection can be inverted).
  *
  * Returns chunks: [{id, index, type, origStart, origEnd, nextStart, nextEnd,
- *                   added, removed, lines:[{type,text,orig,next}], contextBefore, contextAfter}]
+ *                   added, removed, lines:[{type,text,orig,next}]}]
+ * buildReview() adds the `sideBySide` rows for the viewer on top of this.
  */
 function buildChunks(before, after, context = DEFAULT_CONTEXT) {
   const entries = diffEntries(before, after);
@@ -49,9 +50,26 @@ function buildChunks(before, after, context = DEFAULT_CONTEXT) {
 
   const closeChunk = () => {
     if (!current) return;
-    // Trim trailing context that belongs to the NEXT chunk's margin.
-    while (current.lines.length && current.lines[current.lines.length - 1].type === 'ctx') {
-      current.lines.pop();
+    /* Keep up to `context` trailing context lines, dropping any beyond that.
+     *
+     * This used to pop EVERY trailing context line, on the theory that it
+     * belongs to the next chunk's leading margin. Two problems: the final chunk
+     * has no successor, so its trailing context was simply lost; and a hunk with
+     * no lines below the change cannot be read in context, which defeats the
+     * point of showing context at all.
+     *
+     * Keeping `context` on both sides cannot duplicate lines, because chunks only
+     * split once an unchanged run exceeds context*2 — so the trailing margin of
+     * one chunk and the leading margin of the next are always separated by at
+     * least one line that belongs to neither.
+     *
+     * Safety: applySelection keys chunk ownership on non-ctx lines only, so the
+     * context carried here is display metadata and cannot change what a
+     * selection applies. */
+    {
+      let trailing = 0;
+      while (trailing < current.lines.length && current.lines[current.lines.length - 1 - trailing].type === 'ctx') trailing++;
+      while (trailing > context) { current.lines.pop(); trailing--; }
     }
     if (current.lines.some(l => l.type !== 'ctx')) {
       finalize(current);
@@ -76,6 +94,14 @@ function buildChunks(before, after, context = DEFAULT_CONTEXT) {
     if (entry.type === 'ctx') {
       run.push(entry);
       // A long unchanged run ends the current chunk.
+      //
+      // The threshold stays at `context` rather than git's 2*context on purpose:
+      // two independent changes separated by a smallish gap stay separately
+      // acceptable, which is what the granular accept/reject story needs. Git
+      // merges them because it stages hunks; this splits them because a reviewer
+      // may want to take one insertion and refuse the other. The overlap that
+      // keeping trailing context would otherwise create is removed by a
+      // post-pass below, not by merging chunks.
       if (current && run.length > context) closeChunk();
       if (run.length > context * 2) run = run.slice(-context);
       if (current) current.lines.push(entry);
@@ -92,6 +118,44 @@ function buildChunks(before, after, context = DEFAULT_CONTEXT) {
   closeChunk();
   flushContext();
 
+  /* Remove context lines shown by two adjacent chunks.
+   *
+   * Splitting at `> context` (see above) keeps independent changes separately
+   * acceptable, but it also means an unchanged run of context+1 .. 2*context
+   * lines can end up in one chunk's trailing margin AND the next chunk's leading
+   * margin, so the same source line renders in two hunks.
+   *
+   * The later chunk's LEADING context is kept and the earlier chunk's TRAILING
+   * margin is trimmed: leading context sits directly above the change it
+   * explains, so it is the more useful of the two for a reviewer. Either side
+   * would be consistent, but dropping the leading margin would leave a hunk
+   * starting at its change with nothing above it.
+   *
+   * Display-only. applySelection keys chunk ownership on non-ctx lines, so
+   * trimming context here cannot change what a selection applies — but the
+   * position fields are recomputed so they stay truthful about what is shown. */
+  for (let i = 1; i < chunks.length; i++) {
+    const prev = chunks[i - 1], next = chunks[i];
+    const nextLeading = new Set();
+    for (const line of next.lines) {
+      if (line.type !== 'ctx') break;
+      if (line.orig !== null) nextLeading.add(line.orig);
+    }
+    if (!nextLeading.size) continue;
+
+    // Trim from the END of the previous chunk, stopping at its first non-ctx line
+    // so the change itself is never touched.
+    let trimmed = 0;
+    while (prev.lines.length) {
+      const last = prev.lines[prev.lines.length - 1];
+      if (last.type !== 'ctx') break;
+      if (last.orig === null || !nextLeading.has(last.orig)) break;
+      prev.lines.pop();
+      trimmed++;
+    }
+    if (trimmed) finalize(prev);
+  }
+
   // Attach stable ids and trailing context for display.
   const withIds = [];
   for (let i = 0; i < chunks.length; i++) {
@@ -104,25 +168,51 @@ function buildChunks(before, after, context = DEFAULT_CONTEXT) {
 /* -------------------------------------------------------------- side-by-side */
 
 /**
- * Render a chunk as aligned left/right rows for a side-by-side viewer. A
- * modify chunk pairs deletions with additions positionally; extra lines on
- * either side get a null counterpart so the two columns stay aligned.
+ * Render one chunk as side-by-side rows IN SOURCE ORDER.
+ *
+ * Walks chunk.lines as they occur. Consecutive del/add lines form one change
+ * block and are paired positionally (del i with add i) so a replaced line shows
+ * as 'modify' rather than as a remove above an add. Context rows are emitted
+ * where they appear, not collected separately.
+ *
+ * An earlier revision filtered the lines into three lists and emitted all the
+ * context rows first, then all the change rows. That reordered the diff: for a
+ * chunk containing change, context, change it rendered the trailing context ABOVE
+ * the changes it followed, so the preview could not be read as the file. The
+ * unit tests did not catch it because every fixture had at most one change per
+ * chunk, where grouping and ordering coincide.
  */
 function sideBySide(chunk) {
-  const dels = chunk.lines.filter(l => l.type === 'del');
-  const adds = chunk.lines.filter(l => l.type === 'add');
-  const ctx = chunk.lines.filter(l => l.type === 'ctx');
+  const lines = Array.isArray(chunk && chunk.lines) ? chunk.lines : [];
   const rows = [];
-  for (const c of ctx) rows.push({ left: { text: c.text, line: c.orig }, right: { text: c.text, line: c.next }, kind: 'ctx' });
-  const n = Math.max(dels.length, adds.length);
-  for (let i = 0; i < n; i++) {
-    const d = dels[i], a = adds[i];
-    rows.push({
-      left: d ? { text: d.text, line: d.orig } : null,
-      right: a ? { text: a.text, line: a.next } : null,
-      kind: d && a ? 'modify' : d ? 'remove' : 'add',
-    });
+  let dels = [], adds = [];
+
+  // Emit the accumulated change block, pairing deletions with additions.
+  const flush = () => {
+    const n = Math.max(dels.length, adds.length);
+    for (let i = 0; i < n; i++) {
+      const d = dels[i], a = adds[i];
+      rows.push({
+        left: d ? { text: d.text, line: d.orig } : null,
+        right: a ? { text: a.text, line: a.next } : null,
+        kind: d && a ? 'modify' : d ? 'remove' : 'add',
+      });
+    }
+    dels = []; adds = [];
+  };
+
+  for (const line of lines) {
+    if (!line) continue;
+    if (line.type === 'ctx') {
+      flush();
+      rows.push({ left: { text: line.text, line: line.orig }, right: { text: line.text, line: line.next }, kind: 'ctx' });
+    } else if (line.type === 'del') {
+      dels.push(line);
+    } else if (line.type === 'add') {
+      adds.push(line);
+    }
   }
+  flush();
   return rows;
 }
 

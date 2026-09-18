@@ -20,6 +20,115 @@ test('two widely-separated changes form two chunks with side-by-side rows', () =
   assert.equal(modRows[0].right.text, 'CHANGED2');
 });
 
+test('side-by-side rows keep SOURCE order when a chunk interleaves changes and context', () => {
+  // Regression: sideBySide used to bucket lines into context/deletions/additions
+  // and emit all the context rows first, then the change rows. For a chunk with
+  // change-context-change that rendered the trailing context ABOVE the changes it
+  // followed, so the preview could not be read as the file. Every earlier fixture
+  // had one change per chunk, where grouping and ordering coincide, so it passed.
+  //
+  // Context 4 puts both changes in ONE chunk, which is what exposes the ordering.
+  const before = ['a', 'OLD1', 'c', 'd', 'OLD2', 'e'].join('\n');
+  const after = ['a', 'NEW1', 'c', 'd', 'NEW2', 'e'].join('\n');
+  const rev = P.buildReview(before, after, { path: 'x.txt', context: 4 });
+  assert.equal(rev.chunks.length, 1, 'both changes must share one chunk');
+
+  const rows = rev.chunks[0].sideBySide;
+  assert.deepEqual(rows.map(r => r.kind), ['ctx', 'modify', 'ctx', 'ctx', 'modify', 'ctx'],
+    'rows follow source order: ' + rows.map(r => r.kind).join(','));
+
+  // The left column alone must read as the original file, top to bottom.
+  assert.deepEqual(rows.filter(r => r.left).map(r => r.left.text), ['a', 'OLD1', 'c', 'd', 'OLD2', 'e']);
+  // ...and the right column as the proposed file.
+  assert.deepEqual(rows.filter(r => r.right).map(r => r.right.text), ['a', 'NEW1', 'c', 'd', 'NEW2', 'e']);
+  // Line numbers stay monotonic per side, which is what a viewer scrolls against.
+  const leftLines = rows.filter(r => r.left).map(r => r.left.line);
+  assert.deepEqual(leftLines, [...leftLines].sort((x, y) => x - y), 'left line numbers ascend');
+});
+
+test('side-by-side pairs a multi-line replacement positionally within one block', () => {
+  const before = ['keep', 'one', 'two', 'keep2'].join('\n');
+  const after = ['keep', 'ONE', 'TWO', 'THREE', 'keep2'].join('\n');
+  const rev = P.buildReview(before, after, { path: 'x.txt', context: 2 });
+  assert.equal(rev.chunks.length, 1);
+  const rows = rev.chunks[0].sideBySide;
+  // 2 deletions against 3 additions: the first two pair as modify, the extra add
+  // gets a null left so the columns stay aligned instead of shifting.
+  assert.deepEqual(rows.map(r => r.kind), ['ctx', 'modify', 'modify', 'add', 'ctx'],
+    rows.map(r => r.kind).join(','));
+  assert.equal(rows[3].left, null, 'unpaired addition has no left side');
+  assert.equal(rows[3].right.text, 'THREE');
+});
+
+test('side-by-side handles a pure deletion and a pure insertion', () => {
+  const removed = P.buildReview(['a', 'gone', 'b'].join('\n'), ['a', 'b'].join('\n'), { path: 'x.txt', context: 1 });
+  assert.deepEqual(removed.chunks[0].sideBySide.map(r => r.kind), ['ctx', 'remove', 'ctx']);
+  assert.equal(removed.chunks[0].sideBySide[1].right, null);
+
+  const inserted = P.buildReview(['a', 'b'].join('\n'), ['a', 'new', 'b'].join('\n'), { path: 'x.txt', context: 1 });
+  assert.deepEqual(inserted.chunks[0].sideBySide.map(r => r.kind), ['ctx', 'add', 'ctx']);
+  assert.equal(inserted.chunks[0].sideBySide[1].left, null);
+});
+
+test('no context line is shown by two adjacent chunks', () => {
+  // Regression: keeping a trailing context margin while splitting chunks at
+  // `> context` made an unchanged run of context+1 .. 2*context lines appear in
+  // one chunk's trailing margin AND the next chunk's leading margin, so the same
+  // source line rendered twice in the preview. Verified empirically with
+  // context 3: gaps of 4 and 5 duplicated 2 and 1 lines respectively.
+  //
+  // The split threshold stays low so independent changes remain separately
+  // acceptable (see the insertion test above); the overlap is removed instead.
+  for (const context of [1, 2, 3]) {
+    for (const gap of [context + 1, context + 2, context * 2 + 1]) {
+      const beforeLines = ['HEAD', 'OLD1'];
+      for (let i = 0; i < gap; i++) beforeLines.push(`gap${i + 1}`);
+      beforeLines.push('OLD2', 'TAIL');
+      const afterLines = beforeLines.map(l => (l === 'OLD1' ? 'NEW1' : l === 'OLD2' ? 'NEW2' : l));
+      const rev = P.buildReview(beforeLines.join('\n'), afterLines.join('\n'), { path: 'x.txt', context });
+      assert.ok(rev.chunks.length >= 1);
+
+      // A context line shown in more than one chunk is the bug.
+      const seen = new Map();
+      for (const c of rev.chunks) {
+        for (const r of c.sideBySide) {
+          if (r.kind !== 'ctx') continue;
+          const key = r.left.line;
+          assert.equal(seen.has(key), false,
+            `ctx line ${key} ("${r.left.text}") shown in chunks ${seen.get(key)} and ${c.id} (context ${context}, gap ${gap})`);
+          seen.set(key, c.id);
+        }
+      }
+
+      // Trimming must not eat the change or leave a chunk empty of context above
+      // its own change when the source has lines there.
+      for (const c of rev.chunks) {
+        assert.ok(c.sideBySide.some(r => r.kind !== 'ctx'), `chunk ${c.id} still shows its change`);
+        assert.ok(c.sideBySide.some(r => r.kind === 'ctx'), `chunk ${c.id} still has context`);
+      }
+
+      // Display-only trimming must not change what selections apply.
+      assert.equal(P.applySelection(beforeLines.join('\n'), afterLines.join('\n'), null).text, afterLines.join('\n'),
+        'accept-all still reproduces the proposed text');
+    }
+  }
+});
+
+test('trimming overlapping context recomputes chunk positions', () => {
+  // origEnd/nextEnd describe what the viewer scrolls to, so they must match the
+  // lines actually retained after trimming.
+  const before = ['a', 'OLD1', 'b', 'c', 'd', 'e', 'OLD2', 'f'].join('\n');
+  const after = ['a', 'NEW1', 'b', 'c', 'd', 'e', 'NEW2', 'f'].join('\n');
+  const rev = P.buildReview(before, after, { path: 'x.txt', context: 2 });
+  for (const c of rev.chunks) {
+    const origs = c.lines.filter(l => l.orig !== null).map(l => l.orig);
+    if (origs.length) {
+      assert.equal(c.origStart, Math.min(...origs), 'origStart matches retained lines');
+      assert.equal(c.origEnd, Math.max(...origs), 'origEnd matches retained lines');
+    }
+  }
+});
+
 test('accept-all reproduces the proposed text exactly', () => {
   assert.equal(P.applySelection(WIDE_BEFORE, WIDE_AFTER, null).text, WIDE_AFTER);
   assert.equal(P.applySelection(WIDE_BEFORE, WIDE_AFTER, ['c0', 'c1']).text, WIDE_AFTER);
