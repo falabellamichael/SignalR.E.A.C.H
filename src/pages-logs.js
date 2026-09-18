@@ -136,6 +136,10 @@
             overlay.appendChild(modal);
             document.body.appendChild(overlay);
             activeModal = overlay;
+            // Body-level overlay: inherit the user's chosen accent palette.
+            if (window.signalReach && typeof window.signalReach.reapplyAccent === 'function') {
+                try { window.signalReach.reapplyAccent(); } catch (_e) { /* cosmetic only */ }
+            }
 
             const close = () => {
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);

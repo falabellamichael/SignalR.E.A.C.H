@@ -194,7 +194,7 @@
 
     function applyAccentColor(hex) {
         const targets = document.querySelectorAll(
-            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page, .reach-modal-card'
+            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page, .reach-modal-card, .reach-palette-overlay'
         );
         if (!hex || hex === 'default') {
             const props = [
@@ -1038,6 +1038,9 @@
         overlay.appendChild(box);
         document.body.appendChild(overlay);
         paletteOverlay = overlay;
+        // The overlay lives on document.body (outside .reach-page), so re-seed
+        // the user's chosen accent onto it now that it exists.
+        applyAccentColor(runtime.accentColor);
         renderList();
         input.focus();
     }
@@ -1227,6 +1230,12 @@
         version: MANIFEST.version,
         ensureHostRecord: ensureHostRecord,
         switchPage: switchPage,
+        // Re-seeds the user's chosen accent onto REACH-scoped containers.
+        // Body-level overlays (confirm dialog, log inspector, palette) are
+        // created AFTER the last accent application and live outside
+        // .reach-page, so they call this on mount to inherit the palette.
+        // Honors the applyAccentColor() rule: never touches body or :root.
+        reapplyAccent: () => applyAccentColor(runtime.accentColor),
         controller: controller
     });
     window[CONTROLLER_DISPOSE_KEY] = controller.unmount;

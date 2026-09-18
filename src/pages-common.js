@@ -76,9 +76,9 @@
             const modal = el('div', 'reach-modal-card reach-modal-confirm');
             const head = el('div', 'reach-modal-head');
             const titleWrap = el('h3', null);
-            titleWrap.innerHTML = '<i class="fa-solid fa-triangle-exclamation" '
-                + 'style="color:var(--reach-warn, #ffb454);"></i> '
-                + core.esc(title || 'Confirm action');
+            const warnIcon = el('i', 'fa-solid fa-triangle-exclamation reach-confirm-icon');
+            titleWrap.appendChild(warnIcon);
+            titleWrap.appendChild(document.createTextNode(' ' + (title || 'Confirm action')));
             head.appendChild(titleWrap);
             modal.appendChild(head);
             const body = el('div', 'reach-modal-body');
@@ -94,6 +94,10 @@
             modal.appendChild(foot);
             overlay.appendChild(modal);
             document.body.appendChild(overlay);
+            // Body-level overlay: inherit the user's chosen accent palette.
+            if (window.signalReach && typeof window.signalReach.reapplyAccent === 'function') {
+                try { window.signalReach.reapplyAccent(); } catch (_e) { /* cosmetic only */ }
+            }
 
             let settled = false;
             const close = result => {
