@@ -319,6 +319,110 @@ test('quickFix edits are rolled back with the rest when the loop fails', async (
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a quickFix that WRITES to disk stalls the loop (the contract it must not break)', async () => {
+  /* Regression for the production eslint path.
+   *
+   * main.mjs's quickFix ran `eslint --fix`, which rewrites the file, and then
+   * returned the already-fixed content as `edits`. The loop builds its plan by
+   * reading the CURRENT file as `before` — so before === after, the plan had
+   * nothing to apply, and the loop reported a no-change stall and broke WITHOUT
+   * re-running the gate that would now have passed. The fix was on disk but the
+   * run was reported failed, and that write sat outside the loop's rollback set.
+   *
+   * Every other quickFix test returns edits without writing, which is why none
+   * of them caught this. This one mirrors the broken shape and asserts the
+   * symptom, documenting exactly why write-in-place cannot work.
+   *
+   * NOTE: this uses an inline quickFix, so it would still pass if main.mjs were
+   * reverted. The guard against that revert is the source-level assertion in the
+   * next test.
+   */
+  const dir = tmpProject();
+  const GOOD = 'const x = {a:1}\n';
+  const FIXED = 'const x = { a: 1 };\n';
+  fs.writeFileSync(path.join(dir, 'q.js'), GOOD, 'utf8');
+
+  let qfCalls = 0;
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    // Content-driven, not counter-driven: passes once the fix is really on disk.
+    runGate: async () => (fs.readFileSync(path.join(dir, 'q.js'), 'utf8') === FIXED
+      ? { ok: true, exitCode: 0, stdout: 'ok\n', stderr: '', durationMs: 1 }
+      : { ok: false, exitCode: 1, stdout: 'FAIL\n', stderr: 'FAIL\n', durationMs: 1 }),
+    // The BROKEN shape: writes in place, then returns the new content.
+    quickFix: async () => {
+      qfCalls++;
+      const abs = path.join(dir, 'q.js');
+      fs.writeFileSync(abs, FIXED, 'utf8');
+      return { edits: [{ path: 'q.js', content: fs.readFileSync(abs, 'utf8') }] };
+    },
+    proposeFix: async () => null,
+    projectDir: dir,
+    maxAttempts: 4,
+    keepOnFailure: true,
+  });
+
+  assert.equal(qfCalls, 1);
+  assert.equal(r.passed, false, 'a write-in-place quickFix cannot make the loop pass');
+  assert.ok(r.iterations.some(i => i.phase === 'no-change'),
+    'it stalls as no-change: ' + JSON.stringify(r.iterations.map(i => i.phase)));
+  // The file IS fixed on disk — which is precisely why the failure is silent.
+  assert.equal(fs.readFileSync(path.join(dir, 'q.js'), 'utf8'), FIXED);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('main.mjs quickFix restores the tree after running eslint --fix', () => {
+  /* Source-level guard for the fix above. main.mjs cannot be require()d in a node
+   * test — importing it fails with "The requested module 'electron' does not
+   * provide an export named 'BrowserWindow'" — so the behavioural tests use an
+   * inline quickFix and cannot detect a regression in the real one. Assert on
+   * the source instead: if someone removes the restore, this fails.
+   */
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.mjs'), 'utf8');
+  const start = src.indexOf('const quickFix = async (');
+  assert.ok(start > 0, 'the production quickFix must exist in main.mjs');
+  // Slice to the next statement after the function. Searching for the first `};`
+  // does not work: the function's own first line ends in `|| {};`.
+  const endMarker = src.indexOf('const result = await testLoop.runSelfCorrectionLoop', start);
+  assert.ok(endMarker > start, 'quickFix must still be defined immediately before the loop call');
+  const body = src.slice(start, endMarker);
+  assert.match(body, /eslint --fix/, 'it must actually run the fixer');
+  assert.match(body, /finally\s*\{/, 'the fixer write must be undone in a finally block');
+  assert.match(body, /writeFileSync\(/, 'and the originals written back');
+  assert.match(body, /return \{ edits,/, 'returning EDITS, not writing in place');
+  // The blast radius must be the snapshotted set, never a bare `.`.
+  assert.ok(!/eslint --fix\s*\$\{lintTargets\}/.test(body),
+    'must pass the explicit file list, not a bare `.` that rewrites untracked files');
+});
+
+test('a quickFix that returns edits WITHOUT writing lets the loop pass', async () => {
+  // The contract main.mjs now follows: snapshot, let the fixer run, harvest the
+  // result as edits, restore the originals. The loop applies the edits itself,
+  // so they are inside the rollback set and the gate is re-run afterwards.
+  const dir = tmpProject();
+  const GOOD = 'const x = {a:1}\n';
+  const FIXED = 'const x = { a: 1 };\n';
+  fs.writeFileSync(path.join(dir, 'q.js'), GOOD, 'utf8');
+
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    runGate: async () => (fs.readFileSync(path.join(dir, 'q.js'), 'utf8') === FIXED
+      ? { ok: true, exitCode: 0, stdout: 'ok\n', stderr: '', durationMs: 1 }
+      : { ok: false, exitCode: 1, stdout: 'FAIL\n', stderr: 'FAIL\n', durationMs: 1 }),
+    quickFix: async () => ({ edits: [{ path: 'q.js', content: FIXED }], summary: 'eslint --fix' }),
+    proposeFix: async () => null,
+    projectDir: dir,
+    maxAttempts: 4,
+    keepOnFailure: true,
+  });
+
+  assert.equal(r.passed, true, 'returning edits lets the loop converge: ' + JSON.stringify(r.iterations.map(i => i.phase)));
+  assert.ok(r.iterations.some(i => i.phase === 'applied'), 'the loop applied the edits itself');
+  assert.ok(!r.iterations.some(i => i.phase === 'no-change'), 'no spurious stall');
+  assert.equal(fs.readFileSync(path.join(dir, 'q.js'), 'utf8'), FIXED);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('the default attempt cap is the PRD-specified 10', async () => {
   const dir = tmpProject();
   fs.writeFileSync(path.join(dir, 'q.js'), 'x\n');

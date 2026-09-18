@@ -1459,15 +1459,13 @@ function registerIpc() {
         if (!(counts.fixable > 0)) return null;
         const runner = String(gate.runner || '').toLowerCase();
         if (runner !== 'eslint' && !/eslint/i.test(String(gate.command || ''))) return null;
-        const lintTargets = scope.length ? scope.join(' ') : '.';
-        send({ stage: 'quickfix', note: `Running eslint --fix on ${counts.fixable} fixable problem(s)` });
-
-        // Snapshot, run the fixer, diff — so the change is reviewable and
-        // revertible. A fixer that writes in place with no snapshot would leave
-        // edits the loop's rollback cannot undo.
+        // Only run on files we can snapshot and restore. A bare `.` would let
+        // eslint rewrite files OUTSIDE this set, and those writes could not be
+        // undone by the loop's rollback.
         const targets = scope.length ? scope : [...new Set(
           ((interpreted && interpreted.failures) || []).map(f => f.file && f.file.path).filter(p => typeof p === 'string' && p.length)
         )].slice(0, 40);
+        if (!targets.length) return null;
         const before = new Map();
         for (const rel of targets) {
           try {
@@ -1476,19 +1474,43 @@ function registerIpc() {
           } catch { /* unreadable: skip */ }
         }
         if (!before.size) return null;
+        send({ stage: 'quickfix', note: `Running eslint --fix on ${counts.fixable} fixable problem(s) in ${before.size} file(s)` });
 
-        await runCommand(`npx eslint --fix ${lintTargets}`, [], { cwd: dir, shell: true, timeoutMs: 180000, signal: controller.signal });
-        invalidateIndex(dir);
-
+        // `eslint --fix` WRITES, so run it, harvest the result as edits, then put
+        // the originals back — the tree must be untouched when we return.
+        //
+        // Why this matters: the loop builds a plan by reading the CURRENT file as
+        // `before`. If the fixer has already rewritten it, before === after, the
+        // plan has nothing to apply, and the loop reports a no-change stall even
+        // though the fix landed on disk OUTSIDE the rollback set. Verified
+        // 2026-09-18 with a probe mirroring this shape: passed=false, phases
+        // ["baseline","no-change"], file already fixed. Returning edits instead
+        // lets the loop apply them atomically, so rollback covers them.
+        const quoted = [...before.keys()].map(rel => `"${String(rel).replace(/["\\]/g, '\\$&')}"`).join(' ');
         const edits = [];
-        for (const [rel, oldText] of before) {
-          try {
-            const abs = resolveInProject(dir, rel);
-            if (!fs.existsSync(abs)) continue;
-            const now = fs.readFileSync(abs, 'utf8');
-            if (now !== oldText) edits.push({ path: rel, content: now });
-          } catch { /* skip */ }
+        try {
+          await runCommand(`npx eslint --fix ${quoted}`, [], { cwd: dir, shell: true, timeoutMs: 180000, signal: controller.signal });
+          for (const [rel, oldText] of before) {
+            try {
+              const abs = resolveInProject(dir, rel);
+              if (!fs.existsSync(abs)) continue;
+              const now = fs.readFileSync(abs, 'utf8');
+              if (now !== oldText) edits.push({ path: rel, content: now });
+            } catch { /* skip */ }
+          }
+        } finally {
+          // Restore whatever eslint touched, even if the run threw or was
+          // cancelled mid-way. Best effort: a file we cannot restore is reported
+          // by the loop's own diff on the next gate run.
+          for (const [rel, oldText] of before) {
+            try {
+              const abs = resolveInProject(dir, rel);
+              if (fs.existsSync(abs) && fs.readFileSync(abs, 'utf8') !== oldText) fs.writeFileSync(abs, oldText, 'utf8');
+            } catch { /* best effort */ }
+          }
+          invalidateIndex(dir);
         }
+
         if (!edits.length) return null;
         send({ stage: 'quickfix', note: `Auto-fixed ${edits.length} file(s) mechanically` });
         return { edits, summary: `eslint --fix on ${edits.length} file(s)` };
