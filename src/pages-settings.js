@@ -245,10 +245,15 @@
             const aliases = Object.keys(draft.models);
             grid.appendChild(mf('text', 'upstream', 'Upstream model id'));
             grid.appendChild(mf('text', 'description', 'Description'));
-            grid.appendChild(mf('select', 'fallback', 'Fallback alias', [
+            // NOTE: mf signature is (kind, key, label, help, opts) — the
+            // options array is the FIFTH arg. Passing it fourth made
+            // opts.forEach crash on a string and took down the whole
+            // Settings page for any install with model aliases.
+            grid.appendChild(mf('select', 'fallback', 'Fallback alias',
+                'Tried when the upstream fails (non-stream).', [
                 { value: '__null__', label: 'none' },
                 ...aliases.filter(a => a !== alias).map(a => ({ value: a, label: a }))
-            ], 'Tried when the upstream fails (non-stream).'));
+            ]));
             grid.appendChild(mf('number', 'context_window', 'Context window'));
             grid.appendChild(mf('checkbox', 'strip_trailing_roles', 'Strip trailing role turns',
                 'Truncates fake "User:"/"Assistant:" transcript continuations some upstream routes leak.'));
@@ -780,11 +785,82 @@
                 { nullable: true }));
             ho.appendChild(buildInput('checkbox', 'publish', 'enabled', 'Publish URL to the pointer gist'));
             ho.appendChild(buildInput('number', 'publish', 'interval_min', 'Republish interval (min)', '0 = on change only.'));
+
+            // Pointer publication status (PRD: publication timestamp, live
+            // status badge, direct gist link, single-click revoke/update).
+            const pubStatus = el('div', 'reach-card-foot reach-pointer-status');
+            const pubBadge = el('span', 'reach-chip', 'checking…');
+            const pubTime = el('span', 'reach-hint', '');
+            const gistLink = document.createElement('a');
+            gistLink.className = 'reach-hint';
+            gistLink.href = 'https://gist.github.com/' + 'falabellamichael/e261e0c31ad08c373bcd667b6982847a';
+            gistLink.target = '_blank';
+            gistLink.rel = 'noopener noreferrer';
+            gistLink.textContent = 'Open pointer gist ↗';
+            pubStatus.appendChild(pubBadge);
+            pubStatus.appendChild(pubTime);
+            pubStatus.appendChild(gistLink);
+            ho.appendChild(pubStatus);
+
+            function refreshPubStatus() {
+                core.refreshLocal().then(snap => {
+                    const s = snap || core.store.local || {};
+                    const publishedAt = s.last_published_at;
+                    const url = s.public_url || core.store.pointerUrl;
+                    if (publishedAt) {
+                        pubBadge.className = 'reach-chip reach-chip-live';
+                        pubBadge.textContent = 'published ✓';
+                        pubTime.textContent = 'Last publish: ' + core.fmtAgo(publishedAt)
+                            + (url ? ' — ' + url : '');
+                    } else if (url) {
+                        pubBadge.className = 'reach-chip reach-chip-warn';
+                        pubBadge.textContent = 'not published';
+                        pubTime.textContent = 'Public URL discovered (' + (s.public_url_source || 'tunnel')
+                            + ') but not pushed to the gist this session.';
+                    } else {
+                        pubBadge.className = 'reach-chip';
+                        pubBadge.textContent = 'no public URL';
+                        pubTime.textContent = 'Start a tunnel or set an override to publish.';
+                    }
+                });
+            }
+            refreshPubStatus();
+
+            const pubBtnRow = el('div', 'reach-card-foot');
             const pubBtn = el('button', 'reach-btn reach-btn-sm', 'Publish now');
-            pubBtn.addEventListener('click', () => publishNow()
-                .then(() => toast('Published ✓', 'ok'))
-                .catch(e => toast(e.message, 'error')));
-            ho.appendChild(pubBtn);
+            pubBtn.addEventListener('click', () => {
+                pubBtn.disabled = true;
+                publishNow()
+                    .then(d => {
+                        toast('Published ✓ ' + ((d && d.public_url) || ''), 'ok');
+                        refreshPubStatus();
+                    })
+                    .catch(e => toast(e.message, 'error'))
+                    .finally(() => { pubBtn.disabled = false; });
+            });
+            const revokeBtn = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Revoke pointer');
+            revokeBtn.addEventListener('click', () => {
+                window.__reachPageWidgets.confirmDialog({
+                    title: 'Revoke the published pointer URL?',
+                    message: 'The pointer gist will be blanked. Remote clients that discover this relay through the pointer will no longer find it. Republish at any time with "Publish now".',
+                    confirmLabel: 'Revoke',
+                    danger: true
+                }).then(ok => {
+                    if (!ok) return;
+                    revokeBtn.disabled = true;
+                    core.relayFetch('/_reach/publish/revoke', { method: 'POST' }, 30000)
+                        .then(res => res.json().then(d => ({ ok: res.ok, d: d })))
+                        .then(({ ok: resOk, d }) => {
+                            toast(resOk ? 'Pointer revoked ✓' : ('Revoke failed: ' + (d.error || '?')), resOk ? 'ok' : 'error');
+                            refreshPubStatus();
+                        })
+                        .catch(e => toast('Revoke failed: ' + e.message, 'error'))
+                        .finally(() => { revokeBtn.disabled = false; });
+                });
+            });
+            pubBtnRow.appendChild(pubBtn);
+            pubBtnRow.appendChild(revokeBtn);
+            ho.appendChild(pubBtnRow);
 
             // 10. System
             const sy = section('System', 'fa-gears', 'Danger zone — think before toggling.');

@@ -41,6 +41,17 @@ class Analytics:
                     ip TEXT PRIMARY KEY, day TEXT NOT NULL,
                     tokens INTEGER NOT NULL DEFAULT 0
                 )""")
+            # Audit trail for destructive admin actions (log purge, cache
+            # flush, key revocation). PRD: purge operations must record an
+            # audit event with timestamp and actor.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    actor TEXT NOT NULL DEFAULT '',
+                    detail TEXT DEFAULT ''
+                )""")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_requests_ts ON requests(ts)")
             conn.execute(
@@ -221,6 +232,48 @@ class Analytics:
                 return [dict(r) for r in conn.execute(query, params)]
             return self._run(_read)
         except sqlite3.Error:
+            return []
+
+    def log_detail(self, log_id):
+        """Full stored record for one request, including the truncated
+        request/response bodies (the payload-inspector deep dive)."""
+        try:
+            def _read(conn):
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT id, ts, model, upstream_model, ip, user_agent,"
+                    " status, error, latency_ms, tokens_in, tokens_out, stream,"
+                    " cached, key_name, request_body, response_body"
+                    " FROM requests WHERE id = ?", (int(log_id),)).fetchone()
+                return dict(row) if row else None
+            return self._run(_read)
+        except (sqlite3.Error, ValueError, TypeError):
+            return None
+
+    def log_audit(self, action, actor="", detail=""):
+        try:
+            def _write(conn):
+                conn.execute(
+                    "INSERT INTO audit (ts, action, actor, detail)"
+                    " VALUES (?,?,?,?)",
+                    (time.strftime("%Y-%m-%dT%H:%M:%S"),
+                     str(action)[:64], str(actor)[:64], str(detail)[:500]))
+                conn.commit()
+                return True
+            return self._run(_write)
+        except sqlite3.Error:
+            return False
+
+    def audit_events(self, limit=50):
+        try:
+            def _read(conn):
+                conn.row_factory = sqlite3.Row
+                return [dict(r) for r in conn.execute(
+                    "SELECT id, ts, action, actor, detail FROM audit"
+                    " ORDER BY id DESC LIMIT ?",
+                    (max(1, min(int(limit), 200)),))]
+            return self._run(_read)
+        except (sqlite3.Error, ValueError, TypeError):
             return []
 
     def clear(self):

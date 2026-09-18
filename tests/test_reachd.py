@@ -292,6 +292,51 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(total, 150)
         self.assertEqual(self.analytics.tokens_today("1.2.3.4"), 150)
 
+    def test_log_detail_returns_bodies_and_404s_cleanly(self):
+        self._log(request_body='{"model": "gpt-4o"}',
+                  response_body='{"choices": []}', cached=True)
+        rows = self.analytics.logs(limit=1)
+        self.assertEqual(len(rows), 1)
+        log_id = rows[0]["id"]
+        # the list view never carries bodies…
+        self.assertNotIn("request_body", rows[0])
+        # …but the detail view does.
+        detail = self.analytics.log_detail(log_id)
+        self.assertIsNotNone(detail)
+        self.assertEqual(detail["request_body"], '{"model": "gpt-4o"}')
+        self.assertEqual(detail["response_body"], '{"choices": []}')
+        self.assertEqual(detail["cached"], 1)
+        self.assertIsNone(self.analytics.log_detail(999999))
+        self.assertIsNone(self.analytics.log_detail("not-an-id"))
+
+    def test_audit_trail_records_and_lists(self):
+        self.assertTrue(self.analytics.log_audit(
+            "logs.purge", "local-admin", ""))
+        self.assertTrue(self.analytics.log_audit(
+            "cache.flush", "remote-admin-token", "entries=3"))
+        events = self.analytics.audit_events(limit=10)
+        self.assertEqual(len(events), 2)
+        # newest first
+        self.assertEqual(events[0]["action"], "cache.flush")
+        self.assertEqual(events[0]["actor"], "remote-admin-token")
+        self.assertEqual(events[0]["detail"], "entries=3")
+        self.assertEqual(events[1]["action"], "logs.purge")
+        self.assertTrue(events[1]["ts"])
+        # over-long fields are bounded, not rejected
+        self.analytics.log_audit("x" * 500, "y" * 500, "z" * 5000)
+        bounded = self.analytics.audit_events(limit=1)[0]
+        self.assertLessEqual(len(bounded["action"]), 64)
+        self.assertLessEqual(len(bounded["actor"]), 64)
+        self.assertLessEqual(len(bounded["detail"]), 500)
+
+    def test_audit_limit_is_clamped(self):
+        for i in range(5):
+            self.analytics.log_audit("test.%d" % i, "local-admin")
+        self.assertEqual(len(self.analytics.audit_events(limit=2)), 2)
+        # a bogus limit clamps to 1 (never a full dump, never an error)
+        self.assertEqual(len(self.analytics.audit_events(limit=0)), 1)
+        self.assertEqual(len(self.analytics.audit_events(limit=9999)), 5)
+
 
 class RateLimiterTests(unittest.TestCase):
     def test_bucket_allows_then_blocks(self):
@@ -705,6 +750,197 @@ class ConcurrencyGateTests(unittest.TestCase):
             self.assertEqual(state.gate._active, initial_active)
 
 
+
+
+class DiagnosticsRouteTests(unittest.TestCase):
+    """PRD 'Test Public Endpoint Reachability': /_reach/diagnose probes the
+    public pointer URL (TLS + headers + sample chat payload) and reports
+    per-check results."""
+
+    def _state_and_handler(self, public_url):
+        from unittest.mock import MagicMock
+        from reachd.state import RelayState
+        from reachd.handler import RelayHandler
+
+        with tempfile.NamedTemporaryFile() as tf:
+            state = RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
+                               Path(tf.name))
+        state.public_url = public_url
+        h = MagicMock(spec=RelayHandler)
+        h.handle_diagnose = RelayHandler.handle_diagnose.__get__(h)
+        h._json = MagicMock()
+        return state, h
+
+    def test_diagnose_requires_public_url(self):
+        from reachd import core
+        state, h = self._state_and_handler(None)
+        with patch.object(core, "STATE", state):
+            h.handle_diagnose()
+        status = h._json.call_args[0][0]
+        self.assertEqual(status, 409)
+
+    def test_diagnose_rejects_non_https(self):
+        from reachd import core
+        state, h = self._state_and_handler("http://example.ngrok.io")
+        with patch.object(core, "STATE", state):
+            h.handle_diagnose()
+        self.assertEqual(h._json.call_args[0][0], 409)
+
+    def test_diagnose_reports_connection_failure(self):
+        from reachd import core
+        state, h = self._state_and_handler("https://dead.example.test")
+        with patch.object(core, "STATE", state):
+            with patch("urllib.request.urlopen",
+                       side_effect=OSError("connection refused")):
+                h.handle_diagnose()
+        status, payload = h._json.call_args[0]
+        self.assertEqual(status, 502)
+        self.assertFalse(payload["ok"])
+        self.assertIn("connection refused", payload["error"])
+
+    def test_diagnose_passes_on_healthy_endpoint(self):
+        from reachd import core
+        import io
+        state, h = self._state_and_handler("https://live.example.test")
+
+        health_body = json.dumps({"ok": True, "service": "signalreach",
+                                  "version": "26.9.3"}).encode()
+        chat_body = json.dumps({"choices": [{"message": {"content": "REACH OK"}}]}).encode()
+
+        class _FakeResp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.endswith("/health"):
+                return _FakeResp(health_body)
+            return _FakeResp(chat_body)
+
+        with patch.object(core, "STATE", state):
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                h.handle_diagnose()
+        status, payload = h._json.call_args[0]
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+        names = [c["name"] for c in payload["checks"]]
+        self.assertEqual(names, ["tls_and_headers", "relay_health",
+                                 "chat_completion"])
+        self.assertTrue(all(c["ok"] for c in payload["checks"]))
+
+    def test_diagnose_fails_when_chat_probe_fails(self):
+        from reachd import core
+        import io
+        import urllib.error
+        state, h = self._state_and_handler("https://live.example.test")
+
+        health_body = json.dumps({"ok": True}).encode()
+
+        class _FakeResp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.endswith("/health"):
+                return _FakeResp(health_body)
+            raise urllib.error.HTTPError(
+                req.full_url, 429, "rate limited", {},
+                io.BytesIO(b'{"error": "slow down"}'))
+
+        with patch.object(core, "STATE", state):
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                h.handle_diagnose()
+        status, payload = h._json.call_args[0]
+        self.assertEqual(status, 502)
+        self.assertFalse(payload["ok"])
+        chat_check = [c for c in payload["checks"]
+                      if c["name"] == "chat_completion"][0]
+        self.assertFalse(chat_check["ok"])
+        self.assertIn("429", chat_check["detail"])
+
+
+class PublishTimestampTests(unittest.TestCase):
+    """PRD 'Publish Public Pointer URL': UI displays publication timestamp;
+    admin can revoke the pointer with a single click."""
+
+    def _state(self):
+        from reachd.state import RelayState
+        with tempfile.NamedTemporaryFile() as tf:
+            return RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
+                              Path(tf.name))
+
+    def test_publish_records_timestamp_and_snapshot_exposes_it(self):
+        from reachd import publish as pub
+        state = self._state()
+        state.public_url = "https://abc.ngrok-free.app"
+
+        class _Ok:
+            returncode = 0
+            stderr = ""
+
+        with patch("shutil.which", return_value="gh"), \
+             patch("subprocess.run", return_value=_Ok()):
+            ok, url = pub.publish_url(state)
+        self.assertTrue(ok)
+        self.assertEqual(url, "https://abc.ngrok-free.app")
+        self.assertIsNotNone(state.last_published_at)
+        snap = state.snapshot()
+        self.assertEqual(snap["last_published_at"], state.last_published_at)
+        self.assertIn("publish_enabled", snap)
+
+    def test_publish_failure_records_no_timestamp(self):
+        from reachd import publish as pub
+        state = self._state()
+        state.public_url = "https://abc.ngrok-free.app"
+
+        class _Fail:
+            returncode = 1
+            stderr = "gist edit failed"
+
+        with patch("shutil.which", return_value="gh"), \
+             patch("subprocess.run", return_value=_Fail()):
+            ok, detail = pub.publish_url(state)
+        self.assertFalse(ok)
+        self.assertIsNone(state.last_published_at)
+
+    def test_revoke_blanks_pointer_and_clears_timestamp(self):
+        from reachd import publish as pub
+        state = self._state()
+        state.last_published_at = "2026-09-18T00:00:00Z"
+
+        class _Ok:
+            returncode = 0
+            stderr = ""
+
+        with patch("shutil.which", return_value="gh"), \
+             patch("subprocess.run", return_value=_Ok()) as run:
+            ok, detail = pub.revoke_url(state)
+        self.assertTrue(ok)
+        self.assertIsNone(state.last_published_at)
+        gist_file = state.cfg_path.parent / reachd.GIST_FILE
+        self.assertEqual(gist_file.read_text(encoding="utf-8"), "")
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["gh", "gist", "edit"])
+
+    def test_revoke_without_gh_cli_fails_gracefully(self):
+        from reachd import publish as pub
+        state = self._state()
+        state.last_published_at = "2026-09-18T00:00:00Z"
+        with patch("shutil.which", return_value=None), \
+             patch("pathlib.Path.is_file", return_value=False):
+            ok, detail = pub.revoke_url(state)
+        self.assertFalse(ok)
+        self.assertIn("gh CLI not found", detail)
+        self.assertEqual(state.last_published_at, "2026-09-18T00:00:00Z")
 
 
 class SystemMessageMergeTests(unittest.TestCase):
