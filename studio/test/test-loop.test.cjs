@@ -226,3 +226,116 @@ test('a failing gate that later passes reports the gate that was failing', async
   assert.equal(r.passed, true, r.report);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/* ---------------------------------------------------- quick-fix (PRD AC) */
+
+// ESLint stylish output needs a file header line, otherwise the problems cannot
+// be attributed to a file and the parser (correctly) reports none.
+const LINT_OUT = 'C:\\proj\\q.js\n  1:12  error  Missing semicolon  semi\n\n\u2716 1 problem (1 error, 0 warnings)\n  1 error and 0 warnings potentially fixable with the `--fix` option.\n';
+
+test('quickFix runs BEFORE the model and its edits are applied', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, 'q.js'), 'const a = 1\n');   // missing semicolon
+  const order = [];
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    runGate: async () => (order.includes('quickfix')
+      ? { ok: true, exitCode: 0, stdout: '' }
+      : { ok: false, exitCode: 1, stdout: LINT_OUT }),
+    quickFix: async ({ gate, interpreted }) => {
+      order.push('quickfix');
+      assert.equal(gate.runner, 'eslint', 'the quick-fixer is told which gate failed');
+      // The parsed diagnostics are what a real `eslint --fix` wrapper needs in
+      // order to decide whether anything is mechanically fixable at all.
+      assert.ok(interpreted.failures.length >= 1, 'given the parsed diagnostics, got ' + interpreted.failures.length);
+      assert.equal(interpreted.failures[0].code, 'semi');
+      assert.equal(interpreted.counts.fixable, 1, 'fixable count is available');
+      return { edits: [{ path: 'q.js', content: 'const a = 1;\n' }], summary: 'eslint --fix: semi' };
+    },
+    proposeFix: async () => { order.push('model'); return null; },
+    projectDir: dir,
+  });
+  assert.equal(r.passed, true, r.report);
+  assert.deepEqual(order, ['quickfix'], 'the model was never asked: ' + order.join(','));
+  assert.equal(fs.readFileSync(path.join(dir, 'q.js'), 'utf8'), 'const a = 1;\n');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a quickFix that returns nothing falls through to the model fixer', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, 'q.js'), 'before\n');
+  const order = [];
+  // keepOnFailure so the applied model fix is inspectable afterwards: without
+  // it the loop rolls the tree back on failure, which is correct but would make
+  // this test assert on a restored file.
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    runGate: async () => ({ ok: false, exitCode: 1, stdout: LINT_OUT }),
+    quickFix: async () => { order.push('quickfix'); return { edits: [] }; },
+    proposeFix: async () => { order.push('model'); return [{ path: 'q.js', content: 'after\n' }]; },
+    projectDir: dir,
+    maxAttempts: 2,
+    keepOnFailure: true,
+  });
+  assert.deepEqual(order.slice(0, 2), ['quickfix', 'model'], 'empty quick-fix defers to the model');
+  assert.equal(r.passed, false);
+  assert.equal(fs.readFileSync(path.join(dir, 'q.js'), 'utf8'), 'after\n', 'the model fix was applied');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a throwing quickFix is recorded and does not abort the loop', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, 'q.js'), 'before\n');
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    runGate: async () => ({ ok: false, exitCode: 1, stdout: LINT_OUT }),
+    quickFix: async () => { throw new Error('eslint not installed'); },
+    proposeFix: async () => [{ path: 'q.js', content: 'after\n' }],
+    projectDir: dir,
+    maxAttempts: 2,
+    keepOnFailure: true,
+  });
+  // The mechanical fixer being unavailable must not cost the model its chance.
+  assert.ok(r.iterations.some(i => i.phase === 'quick-fix-error'), r.iterations.map(i => i.phase).join(','));
+  assert.ok(r.iterations.some(i => i.phase === 'applied'), 'the model fix was still attempted');
+  assert.equal(fs.readFileSync(path.join(dir, 'q.js'), 'utf8'), 'after\n', 'the model fix still ran');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('quickFix edits are rolled back with the rest when the loop fails', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, 'q.js'), 'ORIGINAL\n');
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    runGate: async () => ({ ok: false, exitCode: 1, stdout: 'still bad ' + Math.random() }),
+    quickFix: async () => ({ edits: [{ path: 'q.js', content: 'QUICKFIXED\n' }] }),
+    projectDir: dir,
+    maxAttempts: 2,
+  });
+  assert.equal(r.passed, false);
+  // Quick-fix writes go through the same plan/apply path, so rollback covers
+  // them — a quick-fixer that wrote files directly would leave this dirty.
+  assert.equal(fs.readFileSync(path.join(dir, 'q.js'), 'utf8'), 'ORIGINAL\n');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the default attempt cap is the PRD-specified 10', async () => {
+  const dir = tmpProject();
+  fs.writeFileSync(path.join(dir, 'q.js'), 'x\n');
+  let runs = 0;
+  // noProgressLimit stops this well before 10; assert the CAP via maxAttempts
+  // being absent and the reported maxAttempts value on each attempt event.
+  let reportedMax = null;
+  const r = await T.runSelfCorrectionLoop({
+    gates: [gate('lint', 'eslint')],
+    runGate: async () => { runs++; return { ok: false, exitCode: 1, stdout: 'bad ' + runs }; },
+    proposeFix: async () => [{ path: 'q.js', content: 'v' + runs + '\n' }],
+    projectDir: dir,
+    noProgressLimit: 10,
+    onEvent: e => { if (e.type === 'attempt-start') reportedMax = e.maxAttempts; },
+  });
+  assert.equal(reportedMax, 10, 'attempts are capped at 10 by default, not 4');
+  assert.equal(r.passed, false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+

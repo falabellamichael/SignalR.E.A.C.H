@@ -26,7 +26,13 @@
 const path = require('node:path');
 const { planFromEdits, applyPlan, summarizePlan } = require('./refactor.cjs');
 
-const DEFAULT_MAX_ATTEMPTS = 4;
+/**
+ * The PRD's self-correction story specifies "up to 10 attempts" against the
+ * project's test/lint/type gates before pausing for the user, so 10 is the
+ * default. `noProgressLimit` still stops the loop early when repeated fixes
+ * change nothing — the cap is a ceiling, not a target.
+ */
+const DEFAULT_MAX_ATTEMPTS = 10;
 /**
  * How many consecutive attempts may produce an IDENTICAL failure set before the
  * loop gives up. One repeat is not proof of stalling: a multi-file fix often
@@ -54,6 +60,22 @@ const RUNNERS = {
     label: 'pytest',
     parse: parsePytestOutput,
   },
+  jest: {
+    label: 'Jest',
+    parse: parseJestOutput,
+  },
+  vitest: {
+    label: 'Vitest',
+    parse: parseVitestOutput,
+  },
+  tsc: {
+    label: 'TypeScript compiler',
+    parse: parseTscOutput,
+  },
+  eslint: {
+    label: 'ESLint',
+    parse: parseEslintOutput,
+  },
   generic: {
     label: 'Generic (exit code + failing lines)',
     parse: parseGenericOutput,
@@ -62,9 +84,9 @@ const RUNNERS = {
 
 /** node --test / node:test TAP-ish output. */
 function parseNodeTestOutput(stdout, stderr) {
-  const text = String(stdout || '') + '\n' + String(stderr || '');
+  const text = scanText(stdout, stderr);
   const failures = [];
-  const lines = text.split('\n');
+  const lines = splitLines(text);
   let current = null;
   for (const line of lines) {
     // `not ok 3 - test name` and the ✖ marker both appear across versions.
@@ -107,7 +129,7 @@ function parseNodeTestOutput(stdout, stderr) {
 
 /** pytest short/long output. */
 function parsePytestOutput(stdout, stderr) {
-  const text = String(stdout || '') + '\n' + String(stderr || '');
+  const text = scanText(stdout, stderr);
   const failures = [];
   // `FAILED tests/test_x.py::test_name - AssertionError: ...`
   for (const m of text.matchAll(/^FAILED\s+([^\s:]+)::([^\s-]+)\s*-?\s*(.*)$/gm)) {
@@ -126,13 +148,17 @@ function parsePytestOutput(stdout, stderr) {
     const target = failures.find(f => !f.message) || failures[failures.length - 1];
     if (target) target.message = eLines[0].slice(0, 400);
   }
-  const tail = /=+\s*(\d+)\s+failed[^=]*=+|=+\s*(\d+)\s+passed[^=]*=+/.exec(text);
   const counts = {};
+  // pytest's summary is `=== N failed, M passed in 0.05s ===`; count the words
+  // rather than assuming a particular banner width.
   const failedMatch = /(\d+)\s+failed/.exec(text);
   const passedMatch = /(\d+)\s+passed/.exec(text);
   if (failedMatch) counts.fail = Number(failedMatch[1]);
   if (passedMatch) counts.pass = Number(passedMatch[1]);
-  void tail;
+  // Same shape guarantee as the other parsers: a clean run has no "failed" token,
+  // which used to leave counts.fail undefined instead of 0.
+  counts.fail = Number(counts.fail) || 0;
+  counts.pass = Number(counts.pass) || 0;
   // file:line for tracebacks
   for (const f of failures) {
     if (f.file) continue;
@@ -144,7 +170,7 @@ function parsePytestOutput(stdout, stderr) {
 
 /** Exit-code plus any line that looks like a failure. Never assumes success. */
 function parseGenericOutput(stdout, stderr, result = {}) {
-  const text = String(stdout || '') + '\n' + String(stderr || '');
+  const text = scanText(stdout, stderr);
   const failures = [];
   const patterns = [
     /^.*\b(?:FAIL|FAILED|ERROR|Error:|error:|AssertionError|panic:)\b.*$/gm,
@@ -168,6 +194,438 @@ function parseGenericOutput(stdout, stderr, result = {}) {
 
 function escapeRe(s) { return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+/**
+ * Strip ANSI/VT escape sequences (colours, cursor moves, reverse video).
+ *
+ * Every tool in this table colourises when it thinks it has a TTY, and tsc does
+ * so even when piped in some environments — verified against real output, where
+ * `src/bad.ts:4:7 - error TS2322: …` arrived as
+ * `\x1b[96msrc/bad.ts\x1b[0m:\x1b[93m4\x1b[0m:\x1b[93m7\x1b[0m - …`.
+ *
+ * This matters far beyond cosmetics: a parser that matches nothing returns an
+ * EMPTY failure list, and the loop reads that as "nothing failed". Combined
+ * with a non-zero exit code the run is still red, but with no diagnostics to
+ * act on — and any tool that exits 0 while printing errors would look green.
+ * Stripping once here protects every parser instead of each regex having to
+ * anticipate escape codes inside its own pattern.
+ */
+const ANSI_RE = /[\u001b\u009b][[()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d\/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d\/#&.:=?%@~_]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+function stripAnsi(text) {
+  return String(text == null ? '' : text).replace(ANSI_RE, '');
+}
+
+/**
+ * Split captured tool output into lines, tolerating CRLF.
+ *
+ * Tools on Windows emit \r\n. Splitting on '\n' alone leaves a trailing '\r'
+ * on every line, which silently breaks any regex anchored with `$` and no
+ * trailing `\s*` — that is exactly how an ESLint file-header line stopped
+ * matching and every one of its diagnostics was dropped. Splitting on
+ * /\r?\n/ removes the hazard for all parsers at once.
+ */
+function splitLines(text) {
+  return String(text == null ? '' : text).split(/\r?\n/);
+}
+
+/**
+ * Combine a tool's stdout and stderr into one plain-text scan buffer: ANSI
+ * escapes removed and line endings normalised to '\n'.
+ *
+ * Parsers that scan the WHOLE buffer with /gm regexes (pytest, generic) cannot
+ * rely on splitLines(), because in multiline mode `$` matches before the '\n'
+ * and a trailing '\r' is still inside the capture group. Normalising here makes
+ * every anchored pattern behave identically regardless of host OS.
+ */
+function scanText(stdout, stderr) {
+  return (stripAnsi(stdout) + '\n' + stripAnsi(stderr)).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/**
+ * Is this line noise that must never join a failure message?
+ *
+ * Jest and Vitest print the offending SOURCE with a line-number gutter and a
+ * caret, plus a `- Expected / + Received` diff block, inside each failure.
+ * Those are context for a human, but folded into `message` they bury the actual
+ * assertion (verified against real jest 29 / vitest 1 output, where the message
+ * became "expect(received).toBe(expected) … 1 | const { sum } = require…" and
+ * the diff lines).
+ *
+ *   `      4 |   test('handles zero', …)`   gutter + source echo
+ *   `        |              ^`             caret / underline
+ *   `    - Expected` / `    + Received`    diff header
+ *   `    - 4` / `    + 3`                  diff value
+ *   `⎯⎯ Failed Tests 2 ⎯⎯`                 vitest divider
+ */
+function isNoiseLine(line) {
+  const t = String(line == null ? '' : line).trim();
+  if (!t) return true;
+  if (/^\d+\s*\|/.test(t)) return true;          // `4 | source…`
+  if (/^>\s*\d+\s*\|/.test(t)) return true;      // `> 4 | source…`
+  if (/^[|^~^\s]+$/.test(t)) return true;         // caret / gutter-only lines
+  if (/^[-+]\s/.test(t)) return true;             // diff line
+  if (/^[-+](Expected|Received)$/.test(t)) return true;
+  if (/^[⎯─━=_]{3,}/.test(t)) return true;        // dividers
+  if (/^\[\d+\/\d+\]$/.test(t)) return true;
+  return false;
+}
+
+/** Append a content line to a failure message, skipping noise, bounded. */
+function appendMessage(failure, line, limit = 400) {
+  if (isNoiseLine(line)) return;
+  const t = line.trim();
+  if (failure.message.length >= limit) return;
+  failure.message = (failure.message ? failure.message + ' ' : '') + t.slice(0, 200);
+}
+
+/* ------------------------------------------------ TypeScript toolchain parsers */
+
+/**
+ * Jest output. Jest writes results to STDERR (not stdout) and prefixes file
+ * names with FAIL/PASS. The per-test block looks like:
+ *
+ *   ● suite › test name
+ *
+ *     expect(received).toBe(expected)
+ *
+ *       at Object.<anonymous> (src/a.test.ts:12:5)
+ *
+ * Summary lines: `Tests: 1 failed, 2 passed, 3 total`.
+ */
+function parseJestOutput(stdout, stderr) {
+  const text = scanText(stdout, stderr);
+  const lines = splitLines(text);
+  const failures = [];
+  let current = null;
+
+  for (const line of lines) {
+    // `● suite › name` — Jest uses U+25CF. A nested `›` chain is the test path.
+    const head = /^\s*●\s+(?!Console)(.+?)\s*$/.exec(line);
+    if (head) {
+      const name = head[1].replace(/\s*›\s*/g, ' › ').trim();
+      current = { name: name.slice(0, 200), file: null, message: '', stack: [] };
+      failures.push(current);
+      continue;
+    }
+    // A new file header ends the current failure's message accumulation.
+    if (/^\s*(?:FAIL|PASS)\s+\S/.test(line)) { current = null; continue; }
+    if (!current) continue;
+
+    const at = /^\s*at\s+(.+)$/.exec(line);
+    if (at) {
+      current.stack.push(at[1].trim());
+      // `at Object.<anonymous> (src/a.test.ts:12:5)`
+      const ref = /\(([^()]*?\.[cm]?[jt]sx?):(\d+):(\d+)\)/.exec(at[1])
+        || /(?:^|\s)([^()\s]*?\.[cm]?[jt]sx?):(\d+):(\d+)/.exec(at[1]);
+      if (ref && !current.file) current.file = { path: ref[1], line: Number(ref[2]), column: Number(ref[3]) };
+      continue;
+    }
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    if (current.stack.length) continue;   // do not fold stack frames into the message
+    // Jest prints the source gutter + caret + diff block inside each failure;
+    // none of that belongs in the message the fixer reads.
+    appendMessage(current, trimmedLine);
+  }
+
+  // `Tests:       1 failed, 2 passed, 3 total`
+  const counts = {};
+  const testsLine = /^\s*Tests:\s*(.+)$/m.exec(text);
+  if (testsLine) {
+    let m;
+    const re = /(\d+)\s+(failed|passed|skipped|todo)/gi;
+    while ((m = re.exec(testsLine[1])) !== null) {
+      const key = m[2].toLowerCase();
+      // Normalise to the keys every other parser emits (fail/pass), so a
+      // caller does not need a per-runner translation table.
+      const norm = key === 'failed' ? 'fail' : key === 'passed' ? 'pass' : key;
+      counts[norm] = Number(m[1]);
+    }
+    const total = /(\d+)\s+total/i.exec(testsLine[1]);
+    if (total) counts.tests = Number(total[1]);
+  }
+  if (!counts.fail && failures.length) counts.fail = failures.length;
+  // Normalise the shape: `counts.fail` is always a number, so a caller (or the
+  // UI) never has to distinguish "0 failures" from "field absent". A passing
+  // run has no `failed` token in the summary, which previously left this
+  // undefined.
+  counts.fail = Number(counts.fail) || 0;
+  counts.pass = Number(counts.pass) || 0;
+
+  // Jest also emits a machine-readable summary line; prefer it when present.
+  const jsonSummary = /^\s*{\s*"numFailedTests":\s*(\d+),\s*"numPassedTests":\s*(\d+)/m.exec(text);
+  if (jsonSummary) { counts.fail = Number(jsonSummary[1]); counts.pass = Number(jsonSummary[2]); }
+
+  return { failures, counts, parser: 'jest' };
+}
+
+/**
+ * Vitest output.
+ *
+ * Verified against real vitest 1.6 output rather than assumed shape. Two
+ * layouts appear in one run: a compact list AND a detail block per failure, so
+ * the same test is printed twice and a naive parser doubles the count.
+ *
+ *   compact list                       detail block
+ *   ❯ vsum.test.js > sum > adds…       FAIL  vsum.test.js > sum > adds…
+ *     → expected 3 to be 4             AssertionError: expected 3 to be 4
+ *                                      - Expected / + Received / - 4 / + 3
+ *                                      ❯ vsum.test.js:4:54
+ *                                      4|   test('adds two numbers', …)
+ *
+ * Failures are keyed on (file, name) so the two layouts merge into one entry
+ * carrying both the file reference and the best message.
+ *
+ * Three other `❯`-prefixed lines are NOT failures and are skipped explicitly:
+ * the per-file header (`❯ vsum.test.js  (2 tests | 2 failed) 8ms`) and the file
+ * reference (`❯ vsum.test.js:4:54`). Matching those as tests was the bug that
+ * turned 2 real failures into 7 phantom ones.
+ */
+function parseVitestOutput(stdout, stderr) {
+  const text = scanText(stdout, stderr);
+  const lines = splitLines(text);
+  const byKey = new Map();
+  const failures = [];
+  let current = null;
+
+  const addFailure = (name, filePath) => {
+    const key = (filePath || '') + '::' + name;
+    let f = byKey.get(key);
+    if (!f) {
+      f = { name, file: filePath ? { path: filePath, line: null } : null, message: '', stack: [] };
+      byKey.set(key, f);
+      failures.push(f);
+    } else if (filePath && !f.file) {
+      f.file = { path: filePath, line: null };
+    }
+    return f;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    // Run banner, summary footer and dividers end the current failure.
+    if (/^(?:Test Files|Tests|Duration|Start at|RUN)\b/.test(line) || /^[⎯─━]{3,}/.test(line)) {
+      current = null;
+      continue;
+    }
+
+    // `FAIL  path > suite > test` — the authoritative detail block.
+    const fail = /^FAIL\s+(.+?)\s+>\s+(.+?)\s*$/.exec(line);
+    if (fail) {
+      current = addFailure(fail[2].replace(/\s*>\s*/g, ' › ').trim().slice(0, 200), fail[1].trim());
+      continue;
+    }
+
+    // `❯ path:line:col` — a file reference for the current failure, not a test.
+    const ref = /^[❯✗×]\s+([^\s>]+?\.[cm]?[jt]sx?):(\d+):(\d+)\s*$/.exec(line);
+    if (ref) {
+      if (current) {
+        if (!current.file) current.file = { path: ref[1], line: Number(ref[2]), column: Number(ref[3]) };
+        else { current.file.line = Number(ref[2]); current.file.column = Number(ref[3]); }
+        current.stack.push(line);
+      }
+      continue;
+    }
+
+    // `❯ path  (N tests | M failed) Nms` — a per-file header, not a failure.
+    if (/^[❯✗×]\s+\S+\s+\(\d+\s+tests?\s*\|/.test(line)) continue;
+
+    // `❯ path > suite > test` — the compact list entry.
+    const entry = /^[❯✗×]\s+(.+?)\s+>\s+(.+?)\s*$/.exec(line);
+    if (entry) {
+      current = addFailure(entry[2].replace(/\s*>\s*/g, ' › ').trim().slice(0, 200), entry[1].trim());
+      continue;
+    }
+
+    if (!current) continue;
+    if (/^at\s/.test(line)) { current.stack.push(line); continue; }
+
+    // Message lines. An explicit error class (`AssertionError: …`) is more
+    // informative than the compact `→ …` summary, so it replaces it.
+    const msg = line.replace(/^→\s*/, '');
+    if (/^[A-Z][\w]*(?:Error|Exception):/.test(msg)) { current.message = msg.slice(0, 400); continue; }
+    appendMessage(current, msg);
+  }
+
+  const counts = {};
+  // `      Tests  2 failed (2)` — note vitest uses `|` as a separator only in
+  // some reporters, so match each `<n> <state>` token independently.
+  const testsLine = /^\s*Tests\s+(.+)$/m.exec(text);
+  if (testsLine) {
+    let m;
+    const re = /(\d+)\s+(failed|passed|skipped)/gi;
+    while ((m = re.exec(testsLine[1])) !== null) {
+      const key = m[2].toLowerCase();
+      counts[key === 'failed' ? 'fail' : key === 'passed' ? 'pass' : key] = Number(m[1]);
+    }
+  }
+  if (!counts.fail && failures.length) counts.fail = failures.length;
+  // Same shape guarantee as the Jest parser: `fail` is always a number.
+  counts.fail = Number(counts.fail) || 0;
+  counts.pass = Number(counts.pass) || 0;
+  return { failures, counts, parser: 'vitest' };
+}
+
+/**
+ * tsc output. Diagnostics are file-oriented, not test-oriented:
+ *
+ *   src/a.ts:12:5 - error TS2322: Type 'string' is not assignable to type 'number'.
+ *
+ * Also handles the `--pretty false` form (`src/a.ts(12,5): error TS2322: ...`)
+ * and project-wide errors with no file (`error TS5057: ...`).
+ */
+function parseTscOutput(stdout, stderr) {
+  const text = scanText(stdout, stderr);
+  const failures = [];
+  // Pretty form: `path:line:col - error TSxxxx: message`
+  const pretty = /^([^\s(][^:]*?\.[cm]?[jt]sx?):(\d+):(\d+)\s+-\s+(error|warning)\s+(TS\d+):\s*(.*)$/;
+  // Classic form: `path(line,col): error TSxxxx: message`
+  const classic = /^([^\s(][^(]*?\.[cm]?[jt]sx?)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s*(.*)$/;
+  // No-file form: `error TS5057: ...`
+  const global = /^error\s+(TS\d+):\s*(.*)$/;
+
+  for (const line of splitLines(text)) {
+    const t = line.trim();
+    if (!t) continue;
+    let m = pretty.exec(t) || classic.exec(t);
+    if (m) {
+      const [, path_, lineNo, col, severity, code, message] = m;
+      failures.push({
+        name: `${code}: ${message.trim().slice(0, 160)}`,
+        file: { path: path_.trim(), line: Number(lineNo), column: Number(col) },
+        message: message.trim().slice(0, 400),
+        severity: severity.toLowerCase(),
+        code,
+        stack: [],
+        fixable: false,
+      });
+      continue;
+    }
+    const g = global.exec(t);
+    if (g) {
+      failures.push({ name: `${g[1]}: ${g[2].trim().slice(0, 160)}`, file: null, message: g[2].trim().slice(0, 400), severity: 'error', code: g[1], stack: [], fixable: false });
+      continue;
+    }
+    // Continuation lines of a multi-line diagnostic get appended to the last one.
+    const last = failures[failures.length - 1];
+    if (last && last.message.length < 400 && !/^\s*\d+\s+/.test(t) && !/^~+$/.test(t) && !/^\s*$/.test(t)) {
+      // Skip the source-echo and caret lines tsc prints under a diagnostic.
+      if (!/^[\s~^]+$/.test(line)) last.message = (last.message + ' ' + t).slice(0, 400);
+    }
+  }
+
+  const counts = {};
+  const errorCount = /(\d+)\s+errors?\b/i.exec(text);
+  if (errorCount) counts.fail = Number(errorCount[1]);
+  else counts.fail = failures.filter(f => f.severity !== 'warning').length;
+  counts.warnings = failures.filter(f => f.severity === 'warning').length;
+  return { failures, counts, parser: 'tsc' };
+}
+
+/**
+ * ESLint default (stylish) output:
+ *
+ *   /abs/src/a.ts
+ *     12:5  error  'x' is defined but never used  no-unused-vars
+ *
+ * Also parses the `--format compact` form:
+ *   /abs/src/a.ts: line 12, col 5, Error - 'x' is ... (no-unused-vars)
+ *
+ * `fixable` is set from ESLint's own summary line ("N problems (M errors,
+ * K warnings) ... X fixable with the `--fix` option"), which is how the loop
+ * decides whether a quick-fix pass can help.
+ */
+function parseEslintOutput(stdout, stderr) {
+  const text = scanText(stdout, stderr);
+  const lines = splitLines(text);
+  const failures = [];
+  let currentFile = null;
+
+  const stylish = /^(\d+):(\d+)\s+(error|warning)\s+(.+?)\s{2,}([\w@./-]+)\s*$/;
+  const stylishNoRule = /^(\d+):(\d+)\s+(error|warning)\s+(.+?)\s*$/;
+  // Compact form: `path: line 1, col 7, Error - message. (rule-id)`.
+  // The rule id is matched by its own pattern rather than an optional trailing
+  // group: `(.+?)\s*(?:\((rule)\))?$` lets the lazy message swallow the rule id
+  // and skip the optional group entirely, which is how compact output lost its
+  // rule ids while stylish output kept them.
+  const compactRule = /^(.*?\.[cm]?[jt]sx?):\s*line\s+(\d+),\s*col\s+(\d+),\s*(Error|Warning)\s*-\s*(.+?)\s+\(([\w@./-]+)\)\s*$/;
+  const compactNoRule = /^(.*?\.[cm]?[jt]sx?):\s*line\s+(\d+),\s*col\s+(\d+),\s*(Error|Warning)\s*-\s*(.+?)\s*$/;
+
+  for (const rawLine of lines) {
+    // ESLint indents every problem line under its file header, and the summary
+    // lines are indented too. All the patterns below are anchored at ^, so they
+    // must be matched against the TRIMMED line — running them against the raw
+    // line silently matched nothing and dropped every diagnostic while the
+    // summary count still reported 7 problems.
+    const line = rawLine.trim();
+    if (!line) { continue; }
+
+    // A file header in stylish output is a bare path ending in a known source
+    // extension. Absolute (C:\... or /...) and relative (./ or ../) both occur.
+    if (/^(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)[^\s]+?\.[cm]?[jt]sx?$/.test(line)) {
+      currentFile = line;
+      continue;
+    }
+
+    const cm = compactRule.exec(line) || compactNoRule.exec(line);
+    if (cm) {
+      // Capture groups: 1=path 2=line 3=col 4=severity 5=message 6=rule.
+      // compactRule has all six; compactNoRule stops at 5, so cm[6] is undefined
+      // there rather than a wrong-index read. (An earlier off-by-one read the
+      // message from cm[6] and the rule from cm[7], which is why compact output
+      // reported `rule id null` for every diagnostic.)
+      const rule = cm[6] || null;
+      const message = cm[5];
+      failures.push({
+        name: `${rule || 'eslint'}: ${String(message).trim().slice(0, 160)}`,
+        file: { path: cm[1], line: Number(cm[2]), column: Number(cm[3]) },
+        message: String(message).trim().slice(0, 400),
+        severity: cm[4].toLowerCase(),
+        code: rule,
+        stack: [],
+      });
+      continue;
+    }
+
+    let sm = stylish.exec(line);
+    let rule = null, message = null, lineNo = null, col = null, severity = null;
+    if (sm) { lineNo = sm[1]; col = sm[2]; severity = sm[3]; message = sm[4]; rule = sm[5]; }
+    else {
+      sm = stylishNoRule.exec(line);
+      if (sm) { lineNo = sm[1]; col = sm[2]; severity = sm[3]; message = sm[4]; }
+    }
+    if (sm && currentFile) {
+      failures.push({
+        name: `${rule || 'eslint'}: ${String(message).trim().slice(0, 160)}`,
+        file: { path: currentFile, line: Number(lineNo), column: Number(col) },
+        message: String(message).trim().slice(0, 400),
+        severity: severity.toLowerCase(),
+        code: rule,
+        stack: [],
+      });
+    }
+  }
+
+  const counts = {};
+  // `✖ 12 problems (10 errors, 2 warnings)`
+  const problems = /(\d+)\s+problems?\s*\((\d+)\s+errors?,\s*(\d+)\s+warnings?\)/i.exec(text);
+  if (problems) {
+    counts.tests = Number(problems[1]);
+    counts.fail = Number(problems[2]);
+    counts.warnings = Number(problems[3]);
+  } else {
+    counts.fail = failures.filter(f => f.severity === 'error').length;
+    counts.warnings = failures.filter(f => f.severity === 'warning').length;
+  }
+  // `10 errors and 0 warnings potentially fixable with the \`--fix\` option.`
+  const fixable = /(\d+)\s+errors?\s+and\s+(\d+)\s+warnings?\s+potentially fixable/i.exec(text);
+  if (fixable) counts.fixable = Number(fixable[1]) + Number(fixable[2]);
+  else if (/potentially fixable with the/i.test(text)) counts.fixable = counts.fail;
+  else counts.fixable = 0;
+  return { failures, counts, parser: 'eslint' };
+}
+
 /** Pick a parser by name, defaulting to generic. */
 function parserFor(runner) {
   const key = String(runner || 'generic').toLowerCase();
@@ -181,8 +639,11 @@ function parserFor(runner) {
  */
 function interpret(result, runner) {
   const res = result || {};
-  const stdout = String(res.stdout || '').slice(0, MAX_OUTPUT_CHARS);
-  const stderr = String(res.stderr || '').slice(0, MAX_OUTPUT_CHARS);
+  // Strip escape codes before slicing: a colour sequence can split across the
+  // cut point and leave a stray escape in the UI, and every parser below needs
+  // plain text to match at all.
+  const stdout = stripAnsi(res.stdout).slice(0, MAX_OUTPUT_CHARS);
+  const stderr = stripAnsi(res.stderr).slice(0, MAX_OUTPUT_CHARS);
   const spec = parserFor(runner);
   const parsed = spec.parse(stdout, stderr, res);
   const ok = res.ok === true;
@@ -217,8 +678,22 @@ function failureSignature(interpreted) {
  *   gates        array of {id, command, args, runner, cwd} — each must pass
  *   runGate      (gate) => Promise<runResult>  (injected; uses platform.runCommand in prod)
  *   proposeFix   ({attempt, gate, interpreted, previousEdits}) => Promise<edits[]|null>
+ *   quickFix     ({attempt, gate, interpreted, projectDir}) => Promise<{edits[], summary?}|null>
+ *                Optional deterministic auto-fixer consulted BEFORE the model
+ *                (PRD: "Automatically applies suggested quick-fixes for ESLint
+ *                and tsc diagnostics before re-running tests"). This is where
+ *                `eslint --fix` output belongs: formatting and import rules are
+ *                cheaper to fix mechanically than to spend a model attempt on.
+ *
+ *                It must RETURN edits, never write files. Every byte of change
+ *                goes through planFromEdits/applyPlan so the loop stays the only
+ *                writer and rollback can still restore the pre-loop tree; a
+ *                quick-fixer that rewrites in place would leave changes outside
+ *                `appliedPlans` that a later failure cannot undo. To wrap a tool
+ *                like `eslint --fix`, run it in a scratch copy and hand back the
+ *                resulting diff. Returning null/[] falls through to proposeFix.
  *   projectDir   project root for refactor plans
- *   maxAttempts  iteration cap (default 4)
+ *   maxAttempts  iteration cap (default 10, per the PRD's self-correction story)
  *   keepOnFailure  keep the last attempted fix even if gates still fail
  *   onEvent      (event) => void  progress reporting for the UI
  *   signal       AbortSignal
@@ -229,6 +704,7 @@ async function runSelfCorrectionLoop(options = {}) {
     gates = [],
     runGate,
     proposeFix,
+    quickFix,
     projectDir = null,
     maxAttempts = DEFAULT_MAX_ATTEMPTS,
     keepOnFailure = false,
@@ -295,6 +771,11 @@ async function runSelfCorrectionLoop(options = {}) {
   // The gate that is failing NOW, not the one that failed at baseline: a later
   // attempt can fail a different gate once the first one is fixed.
   let failingGate = baseline.gate;
+  // The diagnostics of the gate that is failing NOW, not the baseline's. Kept
+  // alongside failingGate so the quick-fixer and the model fixer both receive
+  // the failure set that the previous attempt actually produced — the baseline
+  // snapshot goes stale as soon as anything is fixed.
+  let failingInterpreted = baseline.interpreted;
   iterations.push({ attempt: 0, phase: 'baseline', gate: failingGate.id || failingGate.command, interpreted: baseline.interpreted, edits: null });
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -306,16 +787,48 @@ async function runSelfCorrectionLoop(options = {}) {
     attemptsUsed = attempt;
     emit('attempt-start', { attempt, maxAttempts: attempts });
 
-    // Ask the fixer for edits.
-    let edits = null;
-    if (typeof proposeFix === 'function') {
+    // Deterministic quick-fix first (PRD: "Automatically applies suggested
+    // quick-fixes for ESLint and tsc diagnostics before re-running tests").
+    //
+    // quickFix returns EDITS rather than writing files itself. Keeping every
+    // byte of change on the planFromEdits/applyPlan path preserves the loop's
+    // two invariants: the loop is the only writer, and rollback can restore the
+    // pre-loop tree. A quick-fixer that rewrote files in place (the obvious way
+    // to wrap `eslint --fix`) would leave changes outside `appliedPlans`, so a
+    // later failure could not undo them — the caller should run such a tool in a
+    // scratch copy and hand back the diff.
+    let quickEdits = null;
+    if (typeof quickFix === 'function' && failingGate) {
+      try {
+        const qf = await quickFix({
+          attempt,
+          gate: failingGate,
+          interpreted: failingInterpreted,
+          projectDir,
+        });
+        if (qf && Array.isArray(qf.edits) && qf.edits.length) {
+          quickEdits = qf.edits;
+          emit('quick-fix', { attempt, gate: failingGate.id || failingGate.command, files: qf.edits.map(e => e.path), summary: qf.summary || null });
+        }
+      } catch (error) {
+        // A quick-fixer that throws must not abort the loop — the model fixer
+        // can still succeed where the mechanical one could not. Recorded and
+        // continued past, never swallowed silently.
+        iterations.push({ attempt, phase: 'quick-fix-error', error: String(error && error.message || error) });
+        emit('quick-fix-error', { attempt, error: String(error && error.message || error) });
+      }
+    }
+
+    // Ask the fixer for edits, unless a quick-fix already produced some.
+    let edits = quickEdits;
+    if (!edits && typeof proposeFix === 'function') {
       try {
         edits = await proposeFix({
           attempt,
           maxAttempts: attempts,
           gate: failingGate,
           interpreted: baseline.interpreted,
-          lastFailure: [...iterations].reverse().find(i => i.interpreted)?.interpreted || baseline.interpreted,
+          lastFailure: failingInterpreted,
           previousEdits: iterations.map(i => i.edits).filter(Boolean),
         });
       } catch (error) {
@@ -380,6 +893,7 @@ async function runSelfCorrectionLoop(options = {}) {
       break;
     }
     failingGate = after.gate;
+    failingInterpreted = after.interpreted;
     iterations.push({ attempt, phase: 'still-failing', gate: after.gate.id || after.gate.command, interpreted: after.interpreted });
 
     // No-progress detection: an identical failure set means the fix changed
@@ -511,6 +1025,10 @@ module.exports = {
   parseNodeTestOutput,
   parsePytestOutput,
   parseGenericOutput,
+  parseJestOutput,
+  parseVitestOutput,
+  parseTscOutput,
+  parseEslintOutput,
   parserFor,
   interpret,
   failureSignature,
