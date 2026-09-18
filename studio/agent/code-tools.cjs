@@ -86,7 +86,7 @@ const planSessions = new Map();
 const MAX_PLAN_SESSIONS = 12;
 const PLAN_TTL_MS = 30 * 60 * 1000;
 
-function storePlan(projectDir, plan, reviews) {
+function storePlan(projectDir, plan, reviews, context) {
   for (const [id, entry] of planSessions) {
     if (Date.now() - entry.at > PLAN_TTL_MS) planSessions.delete(id);
   }
@@ -96,7 +96,16 @@ function storePlan(projectDir, plan, reviews) {
     planSessions.delete(oldest);
   }
   const planId = 'plan-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-  planSessions.set(planId, { at: Date.now(), projectDir: path.resolve(String(projectDir)), plan, reviews });
+  // `context` is stored because chunk ids are positional in the chunking: they
+  // only mean the same thing at the width the previews were built with. See the
+  // note on refactor.apply below.
+  planSessions.set(planId, {
+    at: Date.now(),
+    projectDir: path.resolve(String(projectDir)),
+    plan,
+    reviews,
+    context,
+  });
   return planId;
 }
 
@@ -246,7 +255,20 @@ const CODE_TOOLS = {
         // Per-file chunked previews so the caller (or the UI) can accept or
         // reject individual hunks instead of all-or-nothing.
         const reviews = plan.files.map(f => patchManager.buildReview(f.before, f.after, { path: f.path, context: args.context }));
-        const planId = storePlan(ctx.projectDir, plan, reviews);
+
+        // Halt on unparseable output here too, matching the UI path: the PRD's
+        // contract is that the agent "halts refactoring and displays an error
+        // trace highlighting affected modules". Reporting it at plan time means
+        // the caller can fix its edits immediately instead of storing a planId
+        // whose apply is guaranteed to be refused. refactor.apply re-validates
+        // regardless, because chunk selection can recombine edits.
+        const syntax = await refactor.validateSyntax(plan);
+        if (!syntax.ok) {
+          return { ok: false, error: syntax.errors[0], errors: syntax.errors.slice(0, 12), warnings: syntax.warnings.slice(0, 12), halted: 'syntax' };
+        }
+        for (const w of syntax.warnings) plan.warnings.push({ path: null, message: w });
+
+        const planId = storePlan(ctx.projectDir, plan, reviews, args.context);
         return {
           ok: true,
           planId,
@@ -289,12 +311,26 @@ const CODE_TOOLS = {
             after: plan.files[i].after,
             selected: Array.isArray(accepted[plan.files[i].path]) ? accepted[plan.files[i].path] : null,
           }));
-          const selected = patchManager.applySelections(selections, accepted);
+          // The stored context MUST match what the previews were built with:
+          // chunk ids are positional, so re-deriving chunks at the default width
+          // would map an accepted id onto a different (or larger) chunk and write
+          // text the caller never selected. See patch-manager.applySelection.
+          const selected = patchManager.applySelections(selections, accepted, { context: entry.context });
           if (!selected.edits.length) {
             return { ok: false, error: 'No chunks were selected, so nothing would change.', warnings: selected.warnings, skipped: selected.skipped };
           }
           plan = refactor.planFromEdits(selected.edits, { projectDir: entry.projectDir });
           if (plan.errors.length) return { ok: false, error: plan.errors[0], errors: plan.errors.slice(0, 12) };
+        }
+
+        // Syntax guard before ANY write. This is the agent-facing path, so a model
+        // proposes the edits and there is no human reviewing a diff — a rejected
+        // selection can also combine chunks into code that never existed in the
+        // plan. Nothing is written if it does not parse; the planId is kept so the
+        // caller can re-select rather than re-plan.
+        const syntax = await refactor.validateSyntax(plan);
+        if (!syntax.ok) {
+          return { ok: false, error: syntax.errors[0], errors: syntax.errors.slice(0, 12), halted: 'syntax', wrote: false };
         }
 
         const applied = refactor.applyPlan(plan, { projectDir: entry.projectDir });

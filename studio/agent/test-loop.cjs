@@ -24,7 +24,7 @@
  */
 
 const path = require('node:path');
-const { planFromEdits, applyPlan, summarizePlan } = require('./refactor.cjs');
+const { planFromEdits, applyPlan, summarizePlan, validateSyntax } = require('./refactor.cjs');
 
 /**
  * The PRD's self-correction story specifies "up to 10 attempts" against the
@@ -757,6 +757,9 @@ async function runSelfCorrectionLoop(options = {}) {
   const appliedPlans = [];   // {plan, applied[]} for rollback on final failure
   let lastSignature = null;
   let stalled = 0;           // consecutive attempts with an unchanged failure set
+  // Parse errors from the previous attempt's rejected edit, fed back to the fixer.
+  // Cleared whenever an edit parses.
+  let lastSyntaxErrors = null;
   let attemptsUsed = 0;
   let passed = false;
 
@@ -830,6 +833,11 @@ async function runSelfCorrectionLoop(options = {}) {
           interpreted: baseline.interpreted,
           lastFailure: failingInterpreted,
           previousEdits: iterations.map(i => i.edits).filter(Boolean),
+          // Set only when the previous attempt's edit was rejected for not parsing.
+          // Without this the fixer gets no signal about its own mistake and would
+          // regenerate the same unparseable edit, so the loop would stall until
+          // noProgressLimit rather than actually correcting anything.
+          syntaxErrors: lastSyntaxErrors,
         });
       } catch (error) {
         iterations.push({ attempt, phase: 'propose-error', error: String(error && error.message || error) });
@@ -869,6 +877,35 @@ async function runSelfCorrectionLoop(options = {}) {
       }
       break;
     }
+    // Reject a fix that would not parse BEFORE it touches disk. This path has no
+    // human reviewing a diff — the loop is the only thing standing between a model
+    // and the user's files — so it is the one place a syntax guard is mandatory
+    // rather than merely useful.
+    //
+    // The tree is unchanged, so simply retrying would regenerate the same broken
+    // edit. The parse error is therefore carried into the NEXT attempt's fixer
+    // prompt (lastSyntaxErrors below) so the model can correct what it actually
+    // got wrong. Counted as a stall so noProgressLimit still ends a loop that
+    // cannot produce parseable code, instead of burning all 10 attempts.
+    const syntax = await validateSyntax(plan);
+    if (!syntax.ok) {
+      lastSyntaxErrors = syntax.errors.slice(0, 8);
+      iterations.push({
+        attempt, phase: 'syntax-error', edits,
+        errors: syntax.errors, warnings: syntax.warnings,
+        detail: 'The proposed fix does not parse; it was not written to disk.',
+        summary: summarizePlan(plan),
+      });
+      emit('syntax-error', { attempt, errors: syntax.errors.slice(0, 8) });
+      stalled++;
+      if (stalled >= noProgressLimit) {
+        iterations.push({ attempt, phase: 'no-progress', detail: 'Repeated fixes failed to parse.' });
+        emit('no-progress', { attempt, stalled });
+        break;
+      }
+      continue;
+    }
+    lastSyntaxErrors = null;
     const apply = applyPlan(plan, { ...planCtx, signal });
     if (!apply.ok) {
       iterations.push({ attempt, phase: 'apply-error', edits, error: apply.error, summary: summarizePlan(plan) });

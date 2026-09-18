@@ -963,7 +963,8 @@ function registerIpc() {
     };
   }
 
-  ipcMain.handle('refactor:plan', (_e, payload = {}) => {
+  // async: the syntax guard shells out to `node --check` (see validateSyntax).
+  ipcMain.handle('refactor:plan', async (_e, payload = {}) => {
     let dir;
     try { dir = resolveIndexableDir(payload.projectDir); }
     catch (e) { return { ok: false, err: e.message }; }
@@ -978,6 +979,22 @@ function registerIpc() {
         // "Apply" on changes that cannot be applied.
         return { ok: false, err: plan.errors[0], errors: plan.errors.slice(0, 12), warnings: plan.warnings.slice(0, 12) };
       }
+      // PRD: "If dependency cycles or syntax errors are detected, the agent halts
+      // refactoring and displays an error trace highlighting affected modules."
+      // Cycles are caught by planFromEdits above; this is the syntax half. It runs
+      // BEFORE a planId is issued, so a plan that cannot be applied is never
+      // offered an Apply button in the first place.
+      const syntax = await refactorEngine.validateSyntax(plan, { tmpDir: os.tmpdir() });
+      if (!syntax.ok) {
+        return {
+          ok: false,
+          err: syntax.errors[0],
+          errors: syntax.errors.slice(0, 12),
+          warnings: [...syntax.warnings, ...plan.warnings.map(w => w.message || JSON.stringify(w))].slice(0, 12),
+          halted: 'syntax',
+        };
+      }
+      for (const w of syntax.warnings) plan.warnings.push({ path: null, message: w });
       const reviews = plan.files.map(f =>
         patchEngine.buildReview(f.before, f.after, { path: f.path, context: contextLines }));
       const failed = reviews.find(r => !r.ok);
@@ -1013,6 +1030,19 @@ function registerIpc() {
         selection = { skipped: sel.skipped };
         plan = refactorEngine.planFromEdits(sel.edits, { projectDir: dir });
         if (plan.errors.length) return { ok: false, err: plan.errors[0], errors: plan.errors.slice(0, 12) };
+      }
+      // Re-validate the ACTUAL content about to be written. This is not redundant
+      // with the plan-time check: chunk-level selection can produce a combination
+      // the plan never contained — accepting a chunk that opens a block while
+      // rejecting the one that closes it yields unbalanced braces even though
+      // every chunk was individually valid. Checking only the full plan would
+      // let that through to disk.
+      const syntax = await refactorEngine.validateSyntax(plan, { tmpDir: os.tmpdir() });
+      if (!syntax.ok) {
+        // Nothing was written yet, so no rollback is needed — but the plan is
+        // deliberately NOT consumed, so the user can change their selection and
+        // retry instead of re-running the whole refactor task.
+        return { ok: false, err: syntax.errors[0], errors: syntax.errors.slice(0, 12), halted: 'syntax', wrote: false };
       }
       const res = refactorEngine.applyPlan(plan, { projectDir: dir });
       // The tree changed either way: a failed apply may have written some files
@@ -1379,7 +1409,7 @@ function registerIpc() {
         return files;
       };
 
-      const proposeFix = async ({ attempt, gate, interpreted }) => {
+      const proposeFix = async ({ attempt, gate, interpreted, syntaxErrors }) => {
         const failures = (interpreted && interpreted.failures) || [];
         send({ stage: 'fix', note: `Attempt ${attempt}: asking ${model} to fix ${gate.id || gate.command}`, failures: failures.length });
         const files = await readScope(failures);
@@ -1391,12 +1421,22 @@ function registerIpc() {
           const where = f.file ? `${f.file.path}${f.file.line ? ':' + f.file.line : ''}${f.file.column ? ':' + f.file.column : ''}` : '';
           return `- ${f.name || 'failure'}${where ? ' @ ' + where : ''}${f.code ? ' [' + f.code + ']' : ''}${f.message ? ': ' + f.message : ''}`;
         }).join('\n');
+        // Set when the loop rejected the PREVIOUS attempt's edit because it would
+        // not parse. That rejection wrote nothing, so the gate output above is
+        // unchanged and the model would otherwise have no idea its last edit was
+        // discarded — leading it to reproduce the same syntax error.
+        const syntaxBlock = Array.isArray(syntaxErrors) && syntaxErrors.length
+          ? '\nYOUR PREVIOUS EDIT WAS REJECTED — IT DOES NOT PARSE (nothing was written):\n'
+            + syntaxErrors.map(e => '- ' + e).join('\n')
+            + '\nProduce syntactically valid code this time. Balanced braces, parens and brackets.\n'
+          : '';
         const task = [
           `The quality gate "${gate.id || gate.command}" (runner: ${interpreted.runner}) failed with ${failures.length} problem(s).`,
           'Fix the code so this gate passes. Do not weaken, skip, or delete tests, and do not disable lint rules, to make it pass.',
           '',
           'FAILURES:',
           trace || '- (the gate failed without structured diagnostics; see the raw output below)',
+          syntaxBlock,
           interpreted.stderrTail ? '\nRAW OUTPUT TAIL:\n' + String(interpreted.stderrTail).slice(-1200) : '',
         ].join('\n');
 

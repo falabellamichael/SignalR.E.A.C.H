@@ -492,3 +492,116 @@ test('the command sandbox still governs tests.run and tests.quickfix', async () 
   assert.match(denied.error, /Sandbox policy refused/, denied.error);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/* ------------------------------------- syntax guard on the agent-tool path */
+
+/* PRD, Multi-File Refactoring Engine: "If dependency cycles or syntax errors are
+ * detected, the agent halts refactoring and displays an error trace highlighting
+ * affected modules." These are the agent-facing tools, so a MODEL proposes the
+ * edits and no human reviews a diff — the guard is the only thing between a
+ * malformed edit and the user's files.
+ *
+ * The fixture must use .js: validateSyntax deliberately SKIPS .ts/.tsx (Studio
+ * bundles no TypeScript compiler), and the shared project() fixture is all .ts,
+ * so it would never exercise this path. */
+const JS_GOOD = 'module.exports = { add: (a, b) => a + b };\n';
+const JS_BROKEN = 'module.exports = { add: (a, b) => a + b ;\n';   // unbalanced paren
+
+function jsProject() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codetools-syntax-'));
+  fs.writeFileSync(path.join(dir, 'app.js'), JS_GOOD, 'utf8');
+  return dir;
+}
+
+test('refactor.plan halts on unparseable proposed content and issues no planId', async () => {
+  const dir = jsProject();
+  const res = await run('refactor.plan', {
+    edits: [{ path: 'app.js', content: JS_BROKEN }],
+  }, ctx(dir));
+  assert.equal(res.ok, false, 'a plan whose output does not parse must be refused');
+  assert.equal(res.planId, undefined, 'no planId: the UI must never offer Apply on it');
+  assert.equal(res.halted, 'syntax');
+  assert.match(res.error, /app\.js/, 'the error names the affected module');
+  assert.match(res.error, /Syntax error/i);
+  assert.ok(!res.error.includes('candidate'), 'temp file name must not leak into the trace');
+  // Nothing was written by planning.
+  assert.equal(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'), JS_GOOD);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('refactor.apply refuses a partial selection that recombines into unparseable code', async () => {
+  const dir = jsProject();
+  // BEFORE has a 5-line gap between the two changes, so at context:1 they are two
+  // independent chunks. Chunk c0 OPENS a wrapper function; chunk c1 CLOSES it.
+  // Each chunk is valid in isolation, and the full replacement parses — but
+  // accepting c0 alone leaves `function wrap() {` unterminated. That combination
+  // never existed in the plan, so only an apply-time check can catch it.
+  const BEFORE = [
+    'const HEAD = 1;',
+    'function add(a, b) {',
+    '  return a + b;',
+    '}',
+    'const MID = 2;',
+    'const TAIL = 3;',
+    'module.exports = { add };',
+    '',
+  ].join('\n');
+  fs.writeFileSync(path.join(dir, 'app.js'), BEFORE, 'utf8');
+  const AFTER = BEFORE
+    .replace('const HEAD = 1;', 'function wrap() {\nconst HEAD = 1;')
+    .replace('module.exports = { add };', 'module.exports = { add };\n}');
+
+  const planned = await run('refactor.plan', {
+    edits: [{ path: 'app.js', content: AFTER }],
+    context: 1,
+  }, ctx(dir));
+  assert.equal(planned.ok, true, 'the full replacement is valid so planning succeeds: ' + planned.error);
+  const chunks = planned.files[0].chunks;
+  assert.ok(chunks.length >= 2, 'context:1 must split into 2 chunks, got ' + chunks.length);
+
+  const partial = await run('refactor.apply', {
+    planId: planned.planId,
+    accepted: { 'app.js': [chunks[0].id] },
+  }, ctx(dir));
+
+  assert.equal(partial.ok, false, 'accepting only the opening chunk must be refused');
+  assert.equal(partial.halted, 'syntax', 'refused for a syntax reason: ' + partial.error);
+  assert.equal(partial.wrote, false, 'nothing was written');
+  assert.match(partial.error, /app\.js/);
+  // The file on disk is untouched — not half-written.
+  assert.equal(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'), BEFORE,
+    'a refused apply must leave the file byte-identical');
+  // The planId survives so the caller can re-select instead of re-planning.
+  assert.ok(await run('refactor.apply', { planId: planned.planId, accepted: { 'app.js': chunks.map(c => c.id) } }, ctx(dir))
+    .then(r => r.ok), 'accepting every chunk still applies after the refusal');
+  assert.equal(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'), AFTER);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('valid JS still plans and applies (the guard is not over-eager)', async () => {
+  const dir = jsProject();
+  const ESM = "import { add } from './math.js';\nexport const total = add(1, 2);\n";
+  const res = await run('refactor.plan', {
+    edits: [{ path: 'app.js', content: ESM }],
+  }, ctx(dir));
+  assert.equal(res.ok, true, 'valid ESM must not be rejected: ' + res.error);
+  assert.ok(res.planId, 'a planId is issued for valid content');
+  assert.ok(!res.error, 'no error surfaced');
+
+  const applied = await run('refactor.apply', { planId: res.planId }, ctx(dir));
+  assert.equal(applied.ok, true, 'apply must succeed: ' + JSON.stringify(applied.error));
+  assert.equal(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'), ESM);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a .ts plan is not blocked by the JS-only syntax guard', async () => {
+  // TypeScript is not bundled, so .ts cannot be parsed by node --check. Blocking
+  // a TS refactor because we cannot check it would be worse than not checking.
+  const dir = project();
+  const res = await run('refactor.plan', {
+    edits: [{ path: 'src/app.ts', search: 'export function total(', replace: 'export function grandTotal(' }],
+  }, ctx(dir));
+  assert.equal(res.ok, true, 'a TypeScript plan must still be usable: ' + res.error);
+  assert.equal(res.halted, undefined);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
