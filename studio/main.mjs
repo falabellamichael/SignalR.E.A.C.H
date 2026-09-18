@@ -1457,6 +1457,14 @@ function registerIpc() {
       const quickFix = async ({ gate, interpreted }) => {
         const counts = (interpreted && interpreted.counts) || {};
         if (!(counts.fixable > 0)) return null;
+        // ESLint only. The PRD asks for quick-fixes on "ESLint and tsc
+        // diagnostics", but tsc has no --fix: a type error has no mechanical
+        // correction, only a semantic one. Returning null for tsc gates is the
+        // honest behaviour — the loop then falls through to proposeFix, which is
+        // where a type error actually gets addressed. Reporting tsc diagnostics
+        // as "fixable" (so this hook would claim them) would be the wrong answer:
+        // counts.fixable is set by the ESLint parser from its own "N fixable with
+        // the --fix option" summary and is not populated for tsc at all.
         const runner = String(gate.runner || '').toLowerCase();
         if (runner !== 'eslint' && !/eslint/i.test(String(gate.command || ''))) return null;
         // Only run on files we can snapshot and restore. A bare `.` would let
