@@ -148,3 +148,130 @@ test('indexProject on a missing directory reports an error instead of throwing',
   assert.equal(index.files, 0);
   assert.match(index.warnings[0].message, /does not exist/i);
 });
+
+/* ------------------------------------------------------------------ tsconfig */
+
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { stripJsonComments, parseTsConfig, buildTsConfigTables, nearestTsConfig,
+  resolveAlias } = require('../agent/code-index.cjs');
+
+test('tsconfig is parsed as JSONC: comments and trailing commas, strings intact', () => {
+  const jsonc = `{
+    // line comment
+    "compilerOptions": {
+      "baseUrl": ".", /* block
+         comment */
+      "paths": { "@utils/*": ["src/utils/*"] },  // trailing
+      "url": "http://x/a//b",
+    },
+  }`;
+  // parseTsConfig strips JSONC syntax itself; stripJsonComments is asserted
+  // separately below so this stays readable.
+  const parsed = parseTsConfig(jsonc);
+  assert.equal(parsed.compilerOptions.baseUrl, '.');
+  assert.equal(parsed.compilerOptions.url, 'http://x/a//b', '// inside a string must survive');
+  assert.equal(parsed.compilerOptions.paths['@utils/*'][0], 'src/utils/*');
+  // stripJsonComments must not mangle a comment-like sequence inside a string.
+  const stripped = stripJsonComments(jsonc);
+  assert.ok(!stripped.includes('line comment'));
+  assert.ok(stripped.includes('http://x/a//b'));
+  assert.doesNotThrow(() => JSON.parse(stripped), 'stripped output is valid JSON');
+});
+
+test('unparseable tsconfig yields null and reports, never throws', () => {
+  assert.equal(parseTsConfig(''), null);
+  assert.equal(parseTsConfig('not json {{{'), null);
+  let warned = null;
+  parseTsConfig('{bad}', { onError: m => { warned = m; } });
+  assert.match(String(warned), /could not be parsed/);
+});
+
+test('alias resolution: wildcard, exact, extensions, index, cross-package', () => {
+  const knownFiles = new Set(['src/utils/math.ts', 'src/utils/index.ts', 'src/config.ts',
+    'src/deep/nested/thing.tsx', 'packages/ui/button.tsx']);
+  const [t] = buildTsConfigTables([{ path: 'tsconfig.json', content: JSON.stringify({ compilerOptions: {
+    baseUrl: '.',
+    paths: { '@utils/*': ['src/utils/*'], '@config': ['src/config.ts'],
+      '@deep/*': ['src/deep/nested/*'], '@ui/*': ['packages/ui/*'] },
+  } }) }], knownFiles, []);
+  assert.equal(resolveAlias('@utils/math', t), 'src/utils/math.ts');
+  assert.equal(resolveAlias('@config', t), 'src/config.ts');
+  assert.equal(resolveAlias('@deep/thing', t), 'src/deep/nested/thing.tsx');
+  assert.equal(resolveAlias('@ui/button', t), 'packages/ui/button.tsx');
+  // `@utils` without the slash does NOT match `@utils/*`; TypeScript requires
+  // the literal prefix and `*` may then capture the empty string for `@utils/`.
+  assert.equal(resolveAlias('@utils', t), null);
+  assert.equal(resolveAlias('@utils/', t), 'src/utils/index.ts');
+  assert.equal(resolveAlias('@nope/x', t), null);
+  assert.equal(resolveAlias('express', t), null, 'a real bare package stays external');
+});
+
+test('resolveSpecifier threads aliases while leaving relatives and externals alone', () => {
+  const knownFiles = new Set(['src/a.ts', 'src/utils/math.ts']);
+  const [t] = buildTsConfigTables([{ path: 'tsconfig.json', content: JSON.stringify({
+    compilerOptions: { baseUrl: '.', paths: { '@utils/*': ['src/utils/*'] } } }) }], knownFiles, []);
+  assert.equal(resolveSpecifier('src/a.ts', '@utils/math', knownFiles, t), 'src/utils/math.ts');
+  assert.equal(resolveSpecifier('src/a.ts', '@utils/math', knownFiles), null, 'no tsconfig => bare is external');
+  assert.equal(resolveSpecifier('src/a.ts', './utils/math', knownFiles, t), 'src/utils/math.ts');
+});
+
+test('baseUrl is honoured as a relative root', () => {
+  const knownFiles = new Set(['src/lib/x.ts', 'src/main.ts']);
+  const [t] = buildTsConfigTables([{ path: 'tsconfig.json', content: JSON.stringify({
+    compilerOptions: { baseUrl: 'src', paths: { '@lib/*': ['lib/*'] } } }) }], knownFiles, []);
+  assert.equal(t.baseUrl, 'src');
+  assert.equal(resolveAlias('@lib/x', t), 'src/lib/x.ts');
+});
+
+test('nearest tsconfig governs each file in a monorepo', () => {
+  const knownFiles = new Set(['apps/web/src/a.ts', 'packages/lib/src/b.ts']);
+  const tables = buildTsConfigTables([
+    { path: 'tsconfig.json', content: JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@root/*': ['*'] } } }) },
+    { path: 'apps/web/tsconfig.json', content: JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@app/*': ['src/*'] } } }) },
+    { path: 'packages/lib/tsconfig.json', content: JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@lib/*': ['src/*'] } } }) },
+  ], knownFiles, []);
+  assert.equal(tables.length, 3);
+  assert.equal(nearestTsConfig('apps/web/src/a.ts', tables).dir, 'apps/web');
+  assert.equal(nearestTsConfig('packages/lib/src/b.ts', tables).dir, 'packages/lib');
+  assert.equal(nearestTsConfig('other/x.ts', tables).dir, '', 'falls back to the root config');
+});
+
+test('extends inherits paths from a base config', () => {
+  const knownFiles = new Set(['src/util.ts']);
+  const tables = buildTsConfigTables([
+    { path: 'tsconfig.base.json', content: JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '@u/*': ['src/*'] } } }) },
+    { path: 'tsconfig.json', content: JSON.stringify({ extends: './tsconfig.base.json' }) },
+  ], knownFiles, []);
+  const leaf = tables.find(x => x.path === 'tsconfig.json');
+  assert.equal(leaf.aliasRules.length, 1);
+  assert.equal(resolveAlias('@u/util', leaf), 'src/util.ts');
+});
+
+test('an aliased import becomes a real dependency edge', () => {
+  const index = buildIndex([
+    { path: 'src/app.ts', content: "import { add } from '@utils/math';\nexport function main() { return add(1, 2); }\n" },
+    { path: 'src/utils/math.ts', content: 'export function add(a: number, b: number): number { return a + b; }\n' },
+  ], { tsConfigs: [{ path: 'tsconfig.json', content: JSON.stringify({ compilerOptions: {
+    baseUrl: '.', paths: { '@utils/*': ['src/utils/*'] } } }) }] });
+  const edges = index.fileGraph.get('src/app.ts');
+  assert.ok(edges && edges.includes('src/utils/math.ts'), 'edge: ' + JSON.stringify(edges));
+  assert.ok(index.symbols.some(s => s.name === 'add' && s.kind === 'function'));
+  assert.ok(index.symbols.some(s => s.name === 'main'));
+});
+
+test('indexProject reads tsconfig.json from disk (JSONC with comments)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tsidx-'));
+  fs.mkdirSync(path.join(dir, 'src/utils'), { recursive: true });
+  // A comment and a trailing comma: real-world configs are JSONC, and a plain
+  // JSON.parse would throw and silently disable alias resolution.
+  fs.writeFileSync(path.join(dir, 'tsconfig.json'),
+    '{\n  // path aliases\n  "compilerOptions": {\n    "baseUrl": ".",\n    "paths": { "@utils/*": ["src/utils/*"] },\n  },\n}\n');
+  fs.writeFileSync(path.join(dir, 'src/app.ts'), "import { add } from '@utils/math';\nexport const r = add(1,2);\n");
+  fs.writeFileSync(path.join(dir, 'src/utils/math.ts'), 'export function add(a,b){return a+b;}\n');
+  const idx = indexProject(dir);
+  const edges = idx.fileGraph.get('src/app.ts');
+  assert.ok(edges && edges.includes('src/utils/math.ts'), 'resolved from disk: ' + JSON.stringify(edges));
+  fs.rmSync(dir, { recursive: true, force: true });
+});

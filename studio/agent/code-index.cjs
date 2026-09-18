@@ -63,6 +63,11 @@ const DEFAULT_IGNORED_DIRS = new Set([
 const MAX_FILE_BYTES = 2 * 1024 * 1024;   // a single source file this large is data, not code
 const DEFAULT_MAX_FILES = 4000;
 
+// tsconfig files are small and few. A bound prevents a pathological tree (or a
+// generated-config farm) from reading unbounded JSON into memory.
+const MAX_TSCONFIG_BYTES = 256 * 1024;
+const MAX_TSCONFIG_FILES = 32;
+
 /**
  * Strip comments, string bodies and regex bodies for signature scanning while
  * preserving the original line numbering. Returns one string per source line
@@ -383,8 +388,16 @@ function extractImports(content) {
 }
 
 /** Resolve a relative specifier to a project-relative path, or null if external. */
-function resolveSpecifier(fromFile, spec, knownFiles) {
+function resolveSpecifier(fromFile, spec, knownFiles, tsConfig) {
   const s = String(spec || '');
+
+  // tsconfig `paths` aliases. Only consulted when a tsconfig was found, because
+  // without one a bare specifier is always an external package.
+  if (tsConfig && tsConfig.aliasRules.length && !s.startsWith('.') && !s.startsWith('/')) {
+    const aliased = resolveAlias(s, tsConfig);
+    if (aliased) return aliased;
+  }
+
   if (!s.startsWith('.') && !s.startsWith('/')) return null;  // bare package import
   const base = path.posix.dirname(String(fromFile).split(path.sep).join('/'));
   const joined = path.posix.normalize(path.posix.join(base, s));
@@ -394,6 +407,254 @@ function resolveSpecifier(fromFile, spec, knownFiles) {
     path.posix.join(joined, 'index.js'), path.posix.join(joined, 'index.cjs'),
     path.posix.join(joined, 'index.mjs'), path.posix.join(joined, '__init__.py')];
   for (const c of candidates) if (knownFiles.has(c)) return c;
+  return null;
+}
+
+/** Extensions tried when an alias target omits them, in TypeScript's order. */
+const ALIAS_EXTENSIONS = ['.ts', '.tsx', '.d.ts', '.js', '.jsx', '.mjs', '.cjs'];
+const ALIAS_INDEX = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs', 'index.cjs'];
+
+/**
+ * Expand the candidate paths for one alias substitution.
+ *
+ * TypeScript tries, in order: the literal target, target + each extension, and
+ * target as a directory with an index file. Mirroring that order matters — the
+ * wrong pick silently resolves an import to an unrelated file.
+ */
+function aliasCandidates(target, knownFiles) {
+  const out = [];
+  if (knownFiles.has(target)) out.push(target);
+  for (const ext of ALIAS_EXTENSIONS) {
+    if (knownFiles.has(target + ext)) out.push(target + ext);
+  }
+  for (const idx of ALIAS_INDEX) {
+    const p = path.posix.join(target, idx);
+    if (knownFiles.has(p)) out.push(p);
+  }
+  return out;
+}
+
+/**
+ * Resolve a bare specifier against tsconfig `paths`, or return null.
+ *
+ * Supports both forms TypeScript allows:
+ *   "@utils/*": ["src/utils/*"]   — wildcard substitution
+ *   "@config":  ["src/config.ts"] — exact match
+ * A `*` pattern matches the longest prefix, and every remaining `*` in the
+ * target is substituted (TypeScript requires exactly one, but tolerating more
+ * avoids a hard failure on odd configs).
+ */
+function resolveAlias(spec, tsConfig) {
+  const { aliasRules, knownFiles, baseUrl } = tsConfig;
+  // Exact matches win over wildcards, so try them first.
+  for (const rule of aliasRules) {
+    if (!rule.exact || rule.prefix !== spec) continue;
+    for (const target of rule.targets) {
+      const resolved = baseUrl ? path.posix.join(baseUrl, target) : target;
+      const hit = aliasCandidates(resolved, knownFiles)[0];
+      if (hit) return hit;
+    }
+  }
+  let best = null;
+  for (const rule of aliasRules) {
+    if (rule.exact || !spec.startsWith(rule.prefix) || !spec.endsWith(rule.suffix)) continue;
+    // The captured text between prefix and suffix. Must not use
+    // `suffix.length || undefined`: when suffix is '' that evaluates to
+    // undefined, `spec.length - undefined` is NaN, and slice(prefix, NaN)
+    // yields '' — which silently resolved every wildcard alias to its bare
+    // directory (index file) instead of the requested module.
+    if (spec.length < rule.prefix.length + rule.suffix.length) continue;
+    // `*` may capture the empty string, exactly as TypeScript allows: `@utils/`
+    // against `@utils/*` yields `src/utils/`, which then resolves to
+    // src/utils/index.ts via aliasCandidates. Guarding against an empty star
+    // here would diverge from tsc and silently drop a valid resolution.
+    const star = spec.slice(rule.prefix.length, spec.length - rule.suffix.length);
+    if (!best || rule.prefix.length > best.rule.prefix.length) best = { rule, star };
+  }
+  if (!best) return null;
+  for (const target of best.rule.targets) {
+    const substituted = target.split('*').join(best.star);
+    const resolved = baseUrl ? path.posix.join(baseUrl, substituted) : substituted;
+    const hit = aliasCandidates(resolved, knownFiles)[0];
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * Parse tsconfig.json, which is JSONC: line comments, block comments and
+ * trailing commas are legal and appear in real projects. A bare JSON.parse
+ * therefore throws on valid configs, and swallowing that throw would silently
+ * disable alias resolution — so comments and trailing commas are stripped first.
+ *
+ * Returns null when there is no config or it cannot be understood; the caller
+ * treats null as "no aliases", which is correct rather than fatal.
+ */
+function parseTsConfig(text, { onError } = {}) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  try {
+    return JSON.parse(stripJsonComments(text));
+  } catch (error) {
+    if (onError) onError('tsconfig.json could not be parsed: ' + error.message);
+    return null;
+  }
+}
+
+/** Remove line and block comments plus trailing commas, preserving string literals. */
+function stripJsonComments(text) {
+  let out = '';
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    // String literal: copy verbatim so a "//" inside a string survives.
+    if (ch === '"') {
+      out += ch; i++;
+      while (i < n) {
+        const c = text[i];
+        out += c;
+        if (c === '\\') { if (i + 1 < n) { out += text[i + 1]; i += 2; continue; } }
+        i++;
+        if (c === '"') break;
+      }
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      while (i < n && text[i] !== '\n') i++;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      i = end === -1 ? n : end + 2;
+      continue;
+    }
+    out += ch; i++;
+  }
+  // Trailing commas before } or ] are legal in JSONC but not JSON.
+  return out.replace(/,(\s*[}\]])/g, '$1');
+}
+
+/**
+ * Build the alias lookup table from a parsed tsconfig.
+ *
+ * `baseUrl` is resolved relative to the tsconfig's own directory and returned
+ * project-relative; `paths` are compiled into prefix/suffix rules with wildcard
+ * `*` handled. `extends` chains are followed (bounded) because a paths map
+ * commonly lives in a shared base config rather than the leaf one.
+ */
+function buildAliasRules(parsed, configDir, readFile, knownFiles, onError, depth = 0) {
+  if (!parsed || typeof parsed !== 'object' || depth > 4) {
+    return { aliasRules: [], baseUrl: '', knownFiles };
+  }
+  let inherited = { aliasRules: [], baseUrl: '' };
+  if (typeof parsed.extends === 'string' && parsed.extends) {
+    const parentRel = resolveTsConfigExtends(parsed.extends, configDir, readFile, onError);
+    if (parentRel) {
+      const parentDir = path.posix.dirname(parentRel.path);
+      const parentParsed = parseTsConfig(parentRel.text, { onError });
+      inherited = buildAliasRules(parentParsed, parentDir, readFile, knownFiles, onError, depth + 1);
+    }
+  }
+  const compilerOptions = parsed.compilerOptions && typeof parsed.compilerOptions === 'object'
+    ? parsed.compilerOptions : {};
+  const baseUrl = typeof compilerOptions.baseUrl === 'string'
+    ? path.posix.normalize(path.posix.join(configDir, compilerOptions.baseUrl.split(path.sep).join('/')))
+    : inherited.baseUrl;
+  const paths = compilerOptions.paths && typeof compilerOptions.paths === 'object'
+    ? compilerOptions.paths : null;
+
+  let aliasRules = inherited.aliasRules;
+  if (paths) {
+    const rules = [];
+    for (const [pattern, targets] of Object.entries(paths)) {
+      if (!Array.isArray(targets)) continue;
+      const clean = targets.filter(t => typeof t === 'string' && t);
+      if (!clean.length) continue;
+      const star = pattern.indexOf('*');
+      if (star === -1) rules.push({ exact: true, prefix: pattern, suffix: '', targets: clean });
+      else rules.push({ exact: false, prefix: pattern.slice(0, star), suffix: pattern.slice(star + 1), targets: clean });
+    }
+    if (rules.length) aliasRules = rules;
+  }
+  return { aliasRules, baseUrl, knownFiles };
+}
+
+/** Resolve an `extends` entry to a project-relative path + text, or null. */
+function resolveTsConfigExtends(spec, configDir, readFile, onError) {
+  const candidates = [];
+  const s = String(spec);
+  if (s.startsWith('.')) {
+    const joined = path.posix.normalize(path.posix.join(configDir, s));
+    candidates.push(joined, joined + '.json');
+  } else {
+    // A package-style extends (e.g. "@tsconfig/node20") resolves under
+    // node_modules, which the indexer skips; treat it as unavailable rather
+    // than walking outside the project.
+    candidates.push(path.posix.join('node_modules', s), path.posix.join('node_modules', s + '.json'));
+    candidates.push(path.posix.join('node_modules', s, 'tsconfig.json'));
+  }
+  for (const c of candidates) {
+    const text = readFile(c);
+    if (typeof text === 'string') return { path: c, text };
+  }
+  if (onError && !s.startsWith('.')) onError(`tsconfig "extends" target not indexed: ${s}`);
+  return null;
+}
+
+/**
+ * Compile supplied tsconfig entries into alias tables keyed by the directory
+ * they govern.
+ *
+ * options.tsConfigs is a flat list of {path, content} exactly like source files,
+ * because tsconfig.json is not a source language and the directory walk does not
+ * collect it otherwise. Entries without alias rules are dropped: a tsconfig with
+ * no `paths` cannot help resolution, and keeping it would only add lookup work.
+ *
+ * A reader is needed for `extends` chains. Configs may extend another config
+ * that is present in the file list, so lookups are served from `knownFiles`
+ * content supplied by the caller via options.configFiles when available, and
+ * otherwise extend resolution reports a warning and continues.
+ */
+function buildTsConfigTables(configs, knownFiles, warnings) {
+  const tables = [];
+  const list = Array.isArray(configs) ? configs : [];
+  if (!list.length) return tables;
+
+  const contentByPath = new Map();
+  for (const c of list) {
+    if (!c || typeof c !== 'object') continue;
+    const p = String(c.path || '').split(path.sep).join('/').replace(/^\.\//, '');
+    if (!p) continue;
+    contentByPath.set(p, String(c.content == null ? '' : c.content));
+  }
+
+  const readFile = (rel) => (contentByPath.has(rel) ? contentByPath.get(rel) : null);
+  const onError = (message) => warnings.push({ path: '.', level: 'warn', message });
+
+  for (const [configPath, content] of contentByPath) {
+    const parsed = parseTsConfig(content, { onError });
+    if (!parsed) continue;
+    const configDir = path.posix.dirname(configPath);
+    const table = buildAliasRules(parsed, configDir === '.' ? '' : configDir, readFile, knownFiles, onError);
+    if (!table.aliasRules.length) continue;
+    tables.push({ dir: configDir === '.' ? '' : configDir, path: configPath, ...table });
+  }
+  // Longest directory prefix first so nearestTsConfig can return on first match.
+  tables.sort((a, b) => b.dir.length - a.dir.length);
+  return tables;
+}
+
+/**
+ * The tsconfig that governs `file`: the table whose directory is the longest
+ * prefix of the file's directory. Returns null when no config has aliases.
+ */
+function nearestTsConfig(file, tables) {
+  if (!tables || !tables.length) return null;
+  const dir = path.posix.dirname(String(file).split(path.sep).join('/'));
+  for (const table of tables) {   // already sorted longest-prefix-first
+    if (!table.dir) return table;  // a root tsconfig governs everything
+    if (dir === table.dir || dir.startsWith(table.dir + '/')) return table;
+  }
   return null;
 }
 
@@ -607,6 +868,11 @@ function buildIndex(files, options = {}) {
     normalized.push({ path: rel, content: String(raw.content == null ? '' : raw.content) });
   }
 
+  // tsconfig alias tables, keyed by the directory they govern. Nearest config
+  // wins: TypeScript resolves paths relative to the tsconfig that declares
+  // them, and monorepos legitimately have several.
+  const tsConfigs = buildTsConfigTables(options.tsConfigs, knownFiles, warnings);
+
   for (const file of normalized) {
     const language = languageFor(file.path);
     if (!language) continue;   // not a source file we model; not an error
@@ -630,8 +896,10 @@ function buildIndex(files, options = {}) {
   const fileGraph = new Map();
   for (const [file, specs] of fileImports) {
     const targets = [];
+    // Pick the tsconfig nearest to this file, not the first one in the project.
+    const tsConfig = nearestTsConfig(file, tsConfigs);
     for (const spec of specs) {
-      const target = resolveSpecifier(file, spec, knownFiles);
+      const target = resolveSpecifier(file, spec, knownFiles, tsConfig);
       if (target && target !== file) { resolvedImports.add(target); targets.push(target); }
     }
     if (targets.length) fileGraph.set(file, [...new Set(targets)]);
@@ -677,6 +945,11 @@ function indexProject(projectDir, options = {}) {
   const extensions = options.extensions ? new Set(options.extensions) : EXT_TO_LANG;
   const warnings = [];
   const files = [];
+  // tsconfig files are collected separately: they are JSON, not a source
+  // language, so they are not symbol-bearing files, but their `paths`/`baseUrl`
+  // are required to resolve aliased imports across the tree.
+  const tsConfigs = [];
+  const maxConfigs = options.maxTsConfigs || MAX_TSCONFIG_FILES;
   let visited = 0;
   let truncated = false;
 
@@ -695,6 +968,23 @@ function indexProject(projectDir, options = {}) {
       } else if (entry.isFile()) {
         visited++;
         const ext = path.extname(entry.name).toLowerCase();
+        const lower = entry.name.toLowerCase();
+        // tsconfig*.json files govern path aliases. They are collected (not
+        // indexed as source) so aliased imports across the tree resolve; a
+        // monorepo can legitimately have several, hence the bounded count.
+        if (lower.endsWith('.json') && lower.startsWith('tsconfig') && tsConfigs.length < maxConfigs) {
+          const abs = path.join(dir, entry.name);
+          try {
+            const stat = fs.statSync(abs);
+            if (stat.size <= MAX_TSCONFIG_BYTES) {
+              const content = fs.readFileSync(abs, 'utf8');
+              if (!content.includes('\u0000')) tsConfigs.push({ path: childRel, content });
+            }
+          } catch (error) {
+            warnings.push({ path: childRel, level: 'warn', message: `tsconfig unreadable: ${error.message}` });
+          }
+          continue;
+        }
         if (!extensions.has(ext)) continue;
         const abs = path.join(dir, entry.name);
         let stat;
@@ -721,7 +1011,7 @@ function indexProject(projectDir, options = {}) {
       warnings: [{ path: '.', level: 'error', message: 'Project directory does not exist.' }] };
   }
   walk(root, '');
-  const index = buildIndex(files, options);
+  const index = buildIndex(files, { ...options, tsConfigs });
   if (truncated) {
     index.warnings.unshift({ path: '.', level: 'warn', message: `Index truncated at ${maxFiles} files; raise maxFiles to cover the rest.` });
   }
@@ -752,12 +1042,20 @@ module.exports = {
   LANGUAGES,
   DEFAULT_IGNORED_DIRS,
   MAX_FILE_BYTES,
+  MAX_TSCONFIG_BYTES,
+  MAX_TSCONFIG_FILES,
   languageFor,
   maskLiterals,
   extractSymbols,
   guessEndLine,
   extractImports,
   resolveSpecifier,
+  stripJsonComments,
+  parseTsConfig,
+  buildAliasRules,
+  buildTsConfigTables,
+  nearestTsConfig,
+  resolveAlias,
   buildCallGraph,
   findCycles,
   scoreSymbol,
