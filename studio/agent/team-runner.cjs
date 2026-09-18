@@ -79,9 +79,12 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {} }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null }) {
     this.agentSettings = agentSettings;
     this.budgets = budgets;
+    // Shared security audit log: every member runs tools, so every member's
+    // sandbox denials must be recorded, not just the orchestrator's.
+    this.auditLog = auditLog;
     this.team = team;
     this.personas = personas;            // resolved persona objects in roster order
     this.roles = Array.isArray(roles) ? roles : [];
@@ -170,6 +173,7 @@ class TeamRunner {
       requestMemberAnswer: this.requestMemberAnswer,
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
+      auditLog: this.auditLog,
     });
     this._emit('start', {
       teamName: this.team.name,
@@ -269,6 +273,7 @@ class TeamRunner {
       personaPrompt: persona.prompt || '',
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
+      auditLog: this.auditLog,
       sendEvent: (_channel, payload) => {
         // Tag every loop event with member identity and forward it.
         // Field order matters: spread the inner event FIRST, then override

@@ -111,4 +111,43 @@ contextBridge.exposeInMainWorld('reach', {
 
   // Models
   listModels: () => ipcRenderer.invoke('models:list'),
+
+  // Workspace dashboard (PRD: Studio Workspace Dashboard). Local system
+  // telemetry only — no relay admin API is contacted.
+  workspace: {
+    pingEndpoint: () => ipcRenderer.invoke('workspace:pingEndpoint'),
+    indexCode: (projectDir) => ipcRenderer.invoke('workspace:indexCode', { projectDir }),
+    searchSymbols: (args) => ipcRenderer.invoke('workspace:searchSymbols', args),
+    extractContext: (args) => ipcRenderer.invoke('workspace:extractContext', args),
+  },
+
+  // Prompt console (PRD US-2: Interactive Prompt Console). The renderer never
+  // holds the endpoint access key, so streaming happens in main and arrives as
+  // playground:token events tagged with the runId the renderer generated.
+  playground: {
+    run: (payload) => ipcRenderer.invoke('playground:run', payload),
+    stop: (runId) => ipcRenderer.invoke('playground:stop', runId),
+    onToken: (cb) => ipcRenderer.on('playground:token', (_e, d) => cb(d)),
+  },
+
+  // About page (PRD: About REACH Studio)
+  about: {
+    info: () => ipcRenderer.invoke('about:info'),
+  },
+
+  // Refactor workbench (PRD: Multi-File Refactoring Workbench /refactor and
+  // Interactive Diff & Patch Manager). Plans stay in main keyed by planId — they
+  // hold whole file contents, and the renderer only needs the id plus its chunk
+  // selections. Apply is atomic and single-use; see the handler comments.
+  refactor: {
+    generate: (payload) => ipcRenderer.invoke('refactor:generate', payload),
+    stop: (runId) => ipcRenderer.invoke('refactor:stop', runId),
+    onProgress: (cb) => ipcRenderer.on('refactor:progress', (_e, d) => cb(d)),
+    plan: (payload) => ipcRenderer.invoke('refactor:plan', payload),
+    apply: (payload) => ipcRenderer.invoke('refactor:apply', payload),
+    defaultGates: (projectDir) => ipcRenderer.invoke('refactor:defaultGates', { projectDir }),
+    gates: (payload) => ipcRenderer.invoke('refactor:gates', payload),
+    selfCorrect: (payload) => ipcRenderer.invoke('refactor:selfCorrect', payload),
+    revert: (payload) => ipcRenderer.invoke('refactor:revert', payload),
+  },
 });

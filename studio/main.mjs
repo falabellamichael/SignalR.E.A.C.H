@@ -20,8 +20,57 @@ const { StudioBrowser } = require('./browser/host.cjs');
 const { Telemetry, defaults: telemetryDefaults, validateSources } = require('./agent/telemetry.cjs');
 const { validatePolicy } = require('./agent/tool-policy.cjs');
 const { TOOLS } = require('./agent/tool-registry.cjs');
+const { readChatResponse } = require('./agent/chat-response.cjs');
+const codeIndex = require('./agent/code-index.cjs');
+// Refactor workbench engines. Named distinctly from the local `refactorPlans`
+// bookkeeping below so a reader can tell engine calls from session handling.
+const refactorEngine = require('./agent/refactor.cjs');
+const patchEngine = require('./agent/patch-manager.cjs');
+const testLoop = require('./agent/test-loop.cjs');
+const { runCommand } = require('./agent/platform.cjs');
+// The index cache is owned by code-context.cjs, which is also what prompt
+// injection and the code.* agent tools use. This file previously kept its own
+// Map; three caches for one tree disagree the moment anything writes a file, and
+// this one had no TTL and no write-invalidation, so the dashboard could keep
+// showing symbols the agent had already renamed or deleted.
+const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-context.cjs');
+const { AuditLog } = require('./agent/audit-log.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
+
+/* The security audit log (PRD, Terminal & Tool Execution Sandbox: "All terminal
+ * commands ... are logged to an immutable security audit log").
+ *
+ * audit-log.cjs existed and was fully tested, but nothing ever constructed one,
+ * so the tool runner's `if (context.auditLog)` was always false and every
+ * sandbox denial was refused WITHOUT being recorded. One shared instance for the
+ * whole app: the log is hash-chained, so two writers would each maintain a
+ * different chain and neither file would verify.
+ *
+ * Lazy and cached because app.getPath('userData') is only valid once Electron is
+ * ready, and the smoke harness repoints userData at a temp profile before any
+ * agent runs — resolving it at module load would pin the log to the real
+ * profile and lose those records.
+ */
+let securityAuditLog = null;
+function getAuditLog() {
+  if (!securityAuditLog) {
+    securityAuditLog = new AuditLog(path.join(app.getPath('userData'), 'security-audit.jsonl'));
+    try { securityAuditLog.open(); }
+    catch (error) {
+      // An unreadable log must not stop the app: keep writing (open() is called
+      // again by write()), and surface the failure rather than swallowing it.
+      console.error('Security audit log could not be opened:', error && error.message);
+    }
+  }
+  return securityAuditLog;
+}
+
+/* Prompt-console runs in flight, keyed by the renderer-supplied runId so Stop
+ * aborts exactly the run the user is looking at. Bounded: a leaked run must not
+ * grow this forever. */
+const playgroundRuns = new Map();
+const MAX_PLAYGROUND_RUNS = 8;
 
 const isDev = !app.isPackaged;
 // ESM has no __dirname; import.meta.dirname is supported by the bundled Node runtime.
@@ -127,6 +176,7 @@ async function getAgentLoop(agentId) {
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },
     requestApproval: payload => requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs),
+    auditLog: getAuditLog(),
     requestEditReview: (edit) => {
       store.addPendingEdit(agentId, edit);
       if (win && !win.isDestroyed()) {
@@ -444,6 +494,9 @@ function registerIpc() {
         accessKey,
         defaultModel,
         budgets,
+        // Shared with the orchestrator loop: members and their subagents run
+        // tools, and one hash-chained log means one chain to verify.
+        auditLog: getAuditLog(),
         reachExecutor: createReachToolExecutor(),
         browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: teamRunId + ':' + ctx.agentId }),
         sendEvent,
@@ -602,6 +655,997 @@ function registerIpc() {
       return { ok: false, err: e.message };
     }
   });
+
+  // ---------- workspace dashboard (PRD: Studio Workspace Dashboard) ----------
+
+  /* Measure round-trip latency to the configured endpoint. Read-only: it calls
+   * GET /models, never a completion, so a ping cannot cost tokens or mutate
+   * anything. Reports the HTTP status and latency the PRD asks for. */
+  ipcMain.handle('workspace:pingEndpoint', async () => {
+    const settings = loadSettings();
+    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    const started = Date.now();
+    try {
+      const base = await resolveEndpoint(settings.endpoint);
+      const headers = {};
+      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
+      const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+      const latencyMs = Date.now() - started;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}${body ? ': ' + body.slice(0, 200) : ''}` };
+      }
+      let models = null;
+      try {
+        const data = await res.json();
+        models = Array.isArray(data.data) ? data.data.length : null;
+      } catch { /* a non-JSON body still proves reachability */ }
+      return { ok: true, status: res.status, latencyMs, models };
+    } catch (e) {
+      // Distinguish a timeout from a refused connection so the message is useful.
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      return { ok: false, latencyMs: Date.now() - started, err: timeout ? 'Timed out after 10 s.' : e.message };
+    }
+  });
+
+  /* Models routinely wrap JSON in ``` fences or preface it with prose despite
+   * being told not to. Extracting the first balanced object is more useful than
+   * failing the run — but only a balanced one: a naive first-{-to-last-} slice
+   * would merge two objects or return truncated JSON that throws on parse. */
+  function extractJsonObject(text) {
+    const src = String(text || '');
+    const start = src.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0, inString = false, escaped = false;
+    for (let i = start; i < src.length; i++) {
+      const ch = src[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try { return JSON.parse(src.slice(start, i + 1)); }
+          catch { return null; }
+        }
+      }
+    }
+    return null;
+  }
+
+  /* Resolve a renderer-supplied project directory to something safe to index.
+   * Indexing walks the tree, so it is restricted to a real existing directory
+   * and bounded by the indexer's own file and size caps. */
+  function resolveIndexableDir(raw) {
+    const text = String(raw || '').trim();
+    if (!text) throw new Error('No project directory was supplied.');
+    const abs = path.resolve(text);
+    let stat;
+    try { stat = fs.statSync(abs); } catch { throw new Error('Project directory does not exist.'); }
+    if (!stat.isDirectory()) throw new Error('The project path is not a directory.');
+    return abs;
+  }
+
+  function cachedIndex(dir, { force = false } = {}) {
+    return sharedGetIndex(dir, { force });
+  }
+
+  ipcMain.handle('workspace:indexCode', (_e, { projectDir } = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    try {
+      const index = cachedIndex(dir, { force: true });
+      return {
+        ok: true,
+        summary: codeIndex.summarize(index),
+        // Cap the list so a huge repo cannot blow the IPC payload.
+        warnings: index.warnings.slice(0, 40),
+        truncated: index.warnings.length > 40,
+      };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  ipcMain.handle('workspace:searchSymbols', (_e, { projectDir, query, limit = 20 } = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const text = String(query || '').trim();
+    if (!text) return { ok: true, symbols: [] };
+    const max = Number.isSafeInteger(limit) ? Math.max(1, Math.min(100, limit)) : 20;
+    try {
+      const index = cachedIndex(dir);
+      const ctx = codeIndex.contextForQuery(index, text, { maxSymbols: max, maxChars: 8000, includeSnippets: false });
+      // Strip snippets: the list view shows path/line/signature only, and
+      // sending thousands of source lines over IPC would stall the renderer.
+      return { ok: true, symbols: ctx.symbols.map(s => ({ ...s, snippet: undefined })), total: ctx.total };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  /* Prompt-context injection (PRD: Codebase AST Context Search). Returns the
+   * formatted block plus the symbols behind it so a caller can show what will
+   * be injected instead of trusting an opaque string. */
+  ipcMain.handle('workspace:extractContext', (_e, { projectDir, query, maxChars = 6000, maxSymbols = 12 } = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const text = String(query || '').trim();
+    if (!text) return { ok: true, context: '', symbols: [] };
+    try {
+      const index = cachedIndex(dir);
+      const ctx = codeIndex.contextForQuery(index, text, {
+        maxChars: Number.isSafeInteger(maxChars) ? Math.max(500, Math.min(24000, maxChars)) : 6000,
+        maxSymbols: Number.isSafeInteger(maxSymbols) ? Math.max(1, Math.min(40, maxSymbols)) : 12,
+        includeSnippets: true,
+      });
+      return {
+        ok: true,
+        context: codeIndex.formatContext(ctx),
+        chars: ctx.chars,
+        symbols: ctx.symbols.map(s => ({ name: s.qualified, kind: s.kind, path: s.path, line: s.line, score: s.score })),
+        dependencies: ctx.dependencies,
+      };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  // ---------- prompt console (PRD US-2: Interactive Prompt Console) ----------
+
+  /* Runs one completion against the configured endpoint and streams tokens to
+   * the renderer. The access key stays in the main process; the renderer never
+   * sees it. Reuses readChatResponse so streaming, usage accounting and
+   * reasoning separation behave exactly as they do for agent conversations. */
+  ipcMain.handle('playground:run', async (_e, payload = {}) => {
+    const settings = loadSettings();
+    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    const model = String(payload.model || settings.model || '').trim();
+    if (!model) return { ok: false, err: 'No model selected.' };
+    const prompt = String(payload.prompt || '');
+    if (!prompt.trim()) return { ok: false, err: 'Enter a prompt.' };
+    const runId = String(payload.runId || 'pg_' + Date.now().toString(36));
+
+    // Bound concurrent runs so a stuck stream cannot accumulate controllers.
+    if (playgroundRuns.size >= MAX_PLAYGROUND_RUNS) {
+      const oldest = playgroundRuns.keys().next().value;
+      if (oldest !== undefined) {
+        try { playgroundRuns.get(oldest)?.abort(); } catch { /* already gone */ }
+        playgroundRuns.delete(oldest);
+      }
+    }
+
+    const controller = new AbortController();
+    playgroundRuns.set(runId, controller);
+    const send = (data) => {
+      if (win && !win.isDestroyed()) win.webContents.send('playground:token', { runId, ...data });
+    };
+
+    const started = Date.now();
+    let tokens = 0;
+    try {
+      const base = await resolveEndpoint(settings.endpoint);
+      const headers = { 'Content-Type': 'application/json' };
+      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
+
+      const system = String(payload.system || '').trim();
+      const messages = [];
+      if (system) messages.push({ role: 'system', content: system });
+      messages.push({ role: 'user', content: prompt });
+
+      const stream = payload.stream !== false;
+      const maxTokens = Number.isSafeInteger(payload.maxTokens) && payload.maxTokens > 0 ? payload.maxTokens : 0;
+      const temperature = Number.isFinite(payload.temperature) ? Math.max(0, Math.min(2, payload.temperature)) : 0.7;
+      const body = { model, messages, stream, temperature };
+      if (maxTokens > 0) body.max_tokens = maxTokens;
+
+      const response = await fetch(base + '/chat/completions', {
+        method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        // Surface the provider's own message: "429 rate limit exceeded" is far
+        // more useful to a developer than "request failed".
+        return { ok: false, status: response.status, err: text ? text.slice(0, 400) : `HTTP ${response.status}` };
+      }
+
+      const reply = await readChatResponse(response, {
+        stream,
+        signal: controller.signal,
+        onText: (chunk) => {
+          tokens += Math.max(1, Math.round(chunk.length / 4));
+          send({ delta: chunk, tokens });
+        },
+      });
+
+      const latencyMs = Date.now() - started;
+      if (reply.error) return { ok: false, status: response.status, latencyMs, err: reply.error, usage: reply.usage || null };
+      return {
+        ok: true, status: response.status, latencyMs,
+        // Non-streaming runs deliver their text in one piece.
+        text: stream ? undefined : reply.content,
+        usage: reply.usage || null,
+        finishReason: reply.finishReason || null,
+        reasoningChars: reply.reasoningChars || 0,
+      };
+    } catch (e) {
+      if (controller.signal.aborted) return { ok: false, cancelled: true, err: 'Stopped.', latencyMs: Date.now() - started };
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      return { ok: false, err: timeout ? 'The request timed out.' : e.message, latencyMs: Date.now() - started };
+    } finally {
+      playgroundRuns.delete(runId);
+      send({ done: true, tokens, elapsedMs: Date.now() - started });
+    }
+  });
+
+  ipcMain.handle('playground:stop', (_e, runId) => {
+    const controller = playgroundRuns.get(String(runId || ''));
+    if (!controller) return { ok: false, err: 'That run already finished.' };
+    controller.abort();
+    playgroundRuns.delete(String(runId));
+    return { ok: true };
+  });
+
+  // ---------- about (PRD: About REACH Studio) ----------
+  ipcMain.handle('about:info', () => ({
+    name: app.getName(),
+    version: app.getVersion(),
+    packaged: app.isPackaged,
+    platform: process.platform,
+    arch: process.arch,
+    electron: process.versions.electron,
+    chromium: process.versions.chrome,
+    node: process.versions.node,
+    v8: process.versions.v8,
+    userData: app.getPath('userData'),
+  }));
+
+  /* ---------- refactor workbench (PRD: /refactor) ----------
+   *
+   * Plans live HERE, keyed by an opaque id, rather than in the renderer. A plan
+   * holds full file contents, so round-tripping it through the UI would bloat
+   * every IPC message and let the renderer hold a mutated copy that no longer
+   * matches disk. The renderer keeps the id plus its chunk selections.
+   *
+   * Bounded and time-expired like the agent tool's plan sessions, because an
+   * abandoned plan holds whole file contents in memory.
+   */
+  const refactorPlans = new Map();
+  const MAX_REFACTOR_PLANS = 12;
+  const REFACTOR_PLAN_TTL_MS = 30 * 60 * 1000;
+  const refactorRuns = new Map();
+  const MAX_REFACTOR_RUNS = 6;
+
+  /* `contextLines` is stored with the plan because chunk ids are a function of
+   * the context width. The preview the user approves is built with it, so apply
+   * must re-derive chunks with the SAME value or an accepted id can silently map
+   * onto a different chunk than the one on screen. */
+  function storeRefactorPlan(projectDir, plan, reviews, contextLines) {
+    const now = Date.now();
+    for (const [id, e] of refactorPlans) if (now - e.at > REFACTOR_PLAN_TTL_MS) refactorPlans.delete(id);
+    while (refactorPlans.size >= MAX_REFACTOR_PLANS) {
+      const oldest = refactorPlans.keys().next().value;
+      if (oldest === undefined) break;
+      refactorPlans.delete(oldest);
+    }
+    const planId = 'rfp-' + now.toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    refactorPlans.set(planId, {
+      at: now,
+      projectDir: path.resolve(String(projectDir)),
+      plan,
+      reviews,
+      context: Number.isSafeInteger(contextLines) && contextLines >= 0 ? contextLines : 3,
+    });
+    return planId;
+  }
+
+  function getRefactorPlan(planId) {
+    const entry = refactorPlans.get(String(planId || ''));
+    if (!entry) return null;
+    if (Date.now() - entry.at > REFACTOR_PLAN_TTL_MS) { refactorPlans.delete(String(planId)); return null; }
+    return entry;
+  }
+
+  /**
+   * Trim a plan to what the review UI needs.
+   *
+   * Diff rows carry PLAIN TEXT, not HTML. Highlighting happens in the renderer
+   * (CodeMirror is bundled there, not here), and sending escaped markup from main
+   * would mean two escaping passes whose interaction is easy to get wrong —
+   * double-escaped entities in the diff, or a raw-text path that bypasses
+   * escaping entirely. The renderer draws these through textContent or through
+   * ReachEditor.highlight(), which escapes internally.
+   *
+   * Payload is bounded: chunk rows are capped so one enormous file cannot stall
+   * IPC. buildReview already refuses oversize files outright.
+   */
+  function reviewPayload(plan, reviews) {
+    const MAX_ROWS_PER_CHUNK = 4000;
+    return {
+      summary: refactorEngine.summarizePlan(plan),
+      order: plan.order,
+      cycles: plan.cycles,
+      warnings: plan.warnings.slice(0, 20),
+      files: plan.files.map((f, i) => {
+        const review = reviews[i];
+        return {
+          path: f.path,
+          creating: !!f.creating,
+          identical: !!review.identical,
+          stats: review.stats,
+          chunks: review.chunks.map(c => ({
+            id: c.id,
+            added: c.added,
+            removed: c.removed,
+            origStart: c.origStart,
+            origEnd: c.origEnd,
+            nextStart: c.nextStart,
+            nextEnd: c.nextEnd,
+            truncated: c.sideBySide.length > MAX_ROWS_PER_CHUNK,
+            rows: c.sideBySide.slice(0, MAX_ROWS_PER_CHUNK).map(r => ({
+              kind: r.kind,
+              left: r.left ? { line: r.left.line, text: r.left.text } : null,
+              right: r.right ? { line: r.right.line, text: r.right.text } : null,
+            })),
+          })),
+        };
+      }),
+    };
+  }
+
+  // async: the syntax guard shells out to `node --check` (see validateSyntax).
+  ipcMain.handle('refactor:plan', async (_e, payload = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(payload.projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const edits = Array.isArray(payload.edits) ? payload.edits : null;
+    if (!edits || !edits.length) return { ok: false, err: 'A plan needs at least one edit.' };
+    if (edits.length > 60) return { ok: false, err: `Too many edits at once (${edits.length}); split into batches of 60 or fewer files.` };
+    try {
+      const contextLines = Number.isSafeInteger(payload.context) ? Math.max(0, Math.min(40, payload.context)) : 3;
+      const plan = refactorEngine.planFromEdits(edits, { projectDir: dir });
+      if (plan.errors.length) {
+        // No planId for an invalid plan: handing one back would let the UI offer
+        // "Apply" on changes that cannot be applied.
+        return { ok: false, err: plan.errors[0], errors: plan.errors.slice(0, 12), warnings: plan.warnings.slice(0, 12) };
+      }
+      // PRD: "If dependency cycles or syntax errors are detected, the agent halts
+      // refactoring and displays an error trace highlighting affected modules."
+      // Cycles are caught by planFromEdits above; this is the syntax half. It runs
+      // BEFORE a planId is issued, so a plan that cannot be applied is never
+      // offered an Apply button in the first place.
+      const syntax = await refactorEngine.validateSyntax(plan, { tmpDir: os.tmpdir() });
+      if (!syntax.ok) {
+        return {
+          ok: false,
+          err: syntax.errors[0],
+          errors: syntax.errors.slice(0, 12),
+          warnings: [...syntax.warnings, ...plan.warnings.map(w => w.message || JSON.stringify(w))].slice(0, 12),
+          halted: 'syntax',
+        };
+      }
+      for (const w of syntax.warnings) plan.warnings.push({ path: null, message: w });
+      const reviews = plan.files.map(f =>
+        patchEngine.buildReview(f.before, f.after, { path: f.path, context: contextLines }));
+      const failed = reviews.find(r => !r.ok);
+      if (failed) return { ok: false, err: failed.error || 'Could not build a diff for review.' };
+      const planId = storeRefactorPlan(dir, plan, reviews, contextLines);
+      return { ok: true, planId, plan: reviewPayload(plan, reviews) };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  ipcMain.handle('refactor:apply', async (_e, payload = {}) => {
+    const entry = getRefactorPlan(payload.planId);
+    if (!entry) return { ok: false, err: 'Unknown or expired plan. Re-run the refactor task to build a fresh one.' };
+    const dir = String(payload.projectDir || entry.projectDir);
+    // A plan carries `before` contents captured for one project root; applying it
+    // elsewhere would overwrite that project's files with this one's text.
+    if (path.resolve(dir) !== entry.projectDir) {
+      return { ok: false, err: 'This plan belongs to a different project directory. Build a fresh plan.' };
+    }
+    try {
+      let plan = entry.plan;
+      const accepted = payload.accepted && typeof payload.accepted === 'object' ? payload.accepted : null;
+      let selection = null;
+      if (accepted) {
+        const files = entry.reviews.map((review, i) => ({
+          path: plan.files[i].path,
+          before: plan.files[i].before,
+          after: plan.files[i].after,
+        }));
+        const sel = patchEngine.applySelections(files, accepted, { context: entry.context });
+        if (!sel.edits.length) {
+          return { ok: false, err: 'No chunks are accepted, so nothing would change.', skipped: sel.skipped };
+        }
+        selection = { skipped: sel.skipped };
+        plan = refactorEngine.planFromEdits(sel.edits, { projectDir: dir });
+        if (plan.errors.length) return { ok: false, err: plan.errors[0], errors: plan.errors.slice(0, 12) };
+      }
+      // Re-validate the ACTUAL content about to be written. This is not redundant
+      // with the plan-time check: chunk-level selection can produce a combination
+      // the plan never contained — accepting a chunk that opens a block while
+      // rejecting the one that closes it yields unbalanced braces even though
+      // every chunk was individually valid. Checking only the full plan would
+      // let that through to disk.
+      const syntax = await refactorEngine.validateSyntax(plan, { tmpDir: os.tmpdir() });
+      if (!syntax.ok) {
+        // Nothing was written yet, so no rollback is needed — but the plan is
+        // deliberately NOT consumed, so the user can change their selection and
+        // retry instead of re-running the whole refactor task.
+        return { ok: false, err: syntax.errors[0], errors: syntax.errors.slice(0, 12), halted: 'syntax', wrote: false };
+      }
+      const res = refactorEngine.applyPlan(plan, { projectDir: dir });
+      // The tree changed either way: a failed apply may have written some files
+      // before rolling back, so the index must not claim otherwise.
+      invalidateIndex(dir);
+      // Single-use. The plan's `before` snapshots no longer match disk, so a
+      // replay would either fail its own hash check or write stale content.
+      refactorPlans.delete(String(payload.planId));
+      if (!res.ok) {
+        return {
+          ok: false, err: res.error, rolledBack: !!res.rolledBack,
+          rollbackFailed: !!res.rollbackFailed, restoreErrors: res.restoreErrors || [],
+        };
+      }
+      const out = { ok: true, applied: res.applied, summary: refactorEngine.summarizePlan(plan) };
+      if (selection) out.selection = selection;
+      if (payload.commit === true) {
+        // Best-effort checkpoint. A project that is not a git repository yields
+        // {skipped:true}, which is not an error — the apply already succeeded.
+        out.checkpoint = await refactorEngine.commitCheckpoint(dir, payload.commitMessage);
+      }
+      return out;
+    } catch (e) {
+      invalidateIndex(dir);
+      return { ok: false, err: e.message };
+    }
+  });
+
+  /* Infer the gates a project actually has rather than assuming `npm test`
+   * exists. A gate that cannot run reports a misleading failure; better to omit
+   * it and say so. */
+  function defaultGates(dir) {
+    const gates = [];
+    const hasPkg = fs.existsSync(path.join(dir, 'package.json'));
+    let scripts = {};
+    if (hasPkg) {
+      try { scripts = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).scripts || {}; }
+      catch { /* malformed package.json: treat as no scripts */ }
+    }
+    const testScript = String(scripts.test || '');
+    if (testScript) {
+      const runner = /vitest/i.test(testScript) ? 'vitest' : /jest/i.test(testScript) ? 'jest' : 'node';
+      gates.push({ id: 'test', command: 'npm test', runner });
+    }
+    if (scripts.lint) gates.push({ id: 'lint', command: 'npm run lint', runner: 'eslint' });
+    const typeScript = scripts.typecheck || scripts['type-check'];
+    if (typeScript) {
+      gates.push({ id: 'typecheck', command: `npm run ${scripts.typecheck ? 'typecheck' : 'type-check'}`, runner: 'tsc' });
+    } else if (fs.existsSync(path.join(dir, 'tsconfig.json')) && scripts.build) {
+      gates.push({ id: 'typecheck', command: 'npm run build', runner: 'tsc' });
+    }
+    if (fs.existsSync(path.join(dir, 'pyproject.toml')) || fs.existsSync(path.join(dir, 'pytest.ini'))) {
+      gates.push({ id: 'pytest', command: 'python -m pytest -q', runner: 'pytest' });
+    }
+    return gates;
+  }
+
+  ipcMain.handle('refactor:defaultGates', (_e, payload = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(payload.projectDir); }
+    catch (e) { return { ok: false, err: e.message, gates: [] }; }
+    return { ok: true, gates: defaultGates(dir) };
+  });
+
+  /* Run quality gates and return STRUCTURED diagnostics (file, line, rule,
+   * message) rather than raw output — that is what the Review Modal shows and
+   * what a follow-up fix round consumes. Stops at the first failing gate for fast
+   * feedback, matching the self-correction loop. */
+  ipcMain.handle('refactor:gates', async (_e, payload = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(payload.projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const gates = Array.isArray(payload.gates) && payload.gates.length ? payload.gates : defaultGates(dir);
+    if (!gates.length) {
+      return { ok: false, err: 'No quality gates were found for this project. Add a test or lint script, or specify gates explicitly.' };
+    }
+    if (gates.length > 8) return { ok: false, err: 'At most 8 gates per run.' };
+    const results = [];
+    let firstFailure = null;
+    for (const gate of gates) {
+      const command = String(gate.command || '').trim();
+      if (!command) { results.push({ gate: gate.id || '?', ok: false, err: 'A gate needs a command.' }); continue; }
+      const started = Date.now();
+      const raw = await runCommand(command, [], { cwd: dir, shell: true, timeoutMs: 300000 });
+      const interpreted = testLoop.interpret({ ...raw, durationMs: Date.now() - started }, gate.runner);
+      const row = {
+        gate: gate.id || command,
+        command,
+        runner: interpreted.runner,
+        ok: interpreted.ok,
+        exitCode: interpreted.exitCode,
+        durationMs: interpreted.durationMs,
+        counts: interpreted.counts,
+        failures: interpreted.failures.slice(0, 40).map(f => ({
+          name: String(f.name || '').slice(0, 200),
+          file: f.file || null,
+          message: String(f.message || '').slice(0, 600),
+          code: f.code || null,
+          severity: f.severity || null,
+        })),
+        failureCount: interpreted.failures.length,
+        // Raw tail for failures the parser cannot structure — better than
+        // reporting "failed" with nothing to show.
+        tail: String(raw.stderr || raw.stdout || '').slice(-1500),
+      };
+      results.push(row);
+      if (!interpreted.ok && !firstFailure) { firstFailure = row; break; }
+    }
+    return { ok: !firstFailure, passed: !firstFailure, results, failingGate: firstFailure ? firstFailure.gate : null };
+  });
+
+  /* Ask the model for edits against REAL file contents, then normalise the reply
+   * into the shapes planFromEdits accepts.
+   *
+   * Shared by refactor:generate and the self-correction fix provider so both ask
+   * the same way and parse the same way — two copies of a prompt and a JSON
+   * extractor drift apart, and the drift shows up as edits that cannot be
+   * located.
+   *
+   * @param {string[]} extraRules  additional instructions appended to the system
+   *        prompt (the fix loop adds the failing-gate context).
+   * @returns {Promise<{ok:boolean, edits?:Array, notes?:string, err?:string,
+   *          raw?:string, status?:number, parseFailed?:boolean}>}
+   *   Throws on transport failure; the caller's catch turns that into a result.
+   */
+  async function proposeEditsViaModel({ settings, model, task, contextBlock = '', files, controller, send = () => {}, extraRules = [] }) {
+    const base = await resolveEndpoint(settings.endpoint);
+    const headers = { 'Content-Type': 'application/json' };
+    if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
+
+    const system = [
+      'You are a precise refactoring engine for REACH Studio.',
+      'Return ONLY a JSON object — no prose, no markdown fences — shaped exactly:',
+      '{"edits":[{"path":"relative/path","hunks":[{"search":"exact existing text","replace":"new text"}]}],"notes":"one line"}',
+      'Rules:',
+      '- One entry per file. Put every change to that file in its hunks array.',
+      '- `search` must be copied VERBATIM from the file contents below, including indentation, and must be UNIQUE in that file.',
+      '- Prefer small uniquely-locatable search strings over whole functions.',
+      '- Do not invent files, imports, or symbols that are not shown.',
+      '- If the task cannot be done safely from the supplied files, return {"edits":[],"notes":"why"}.',
+      ...extraRules,
+    ].join('\n');
+    const user = [
+      'TASK: ' + task,
+      '',
+      contextBlock ? 'MATCHED SYMBOLS AND DEFINITIONS:\n' + contextBlock + '\n' : '',
+      'FILES IN SCOPE (exact current contents):',
+      ...files.map(f => f.content === undefined
+        ? `--- ${f.path} ---\n(${f.missing ? 'file not found' : f.skipped || 'unreadable: ' + (f.error || '')})`
+        : `--- ${f.path} ---\n${f.content}`),
+    ].join('\n');
+
+    const response = await fetch(base + '/chat/completions', {
+      method: 'POST', headers,
+      body: JSON.stringify({
+        model, stream: true, temperature: 0.1,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      // Surface the provider's own message: "429 rate limit exceeded" is far more
+      // useful to a developer than "request failed".
+      return { ok: false, status: response.status, err: text ? text.slice(0, 400) : `HTTP ${response.status}` };
+    }
+    let streamed = 0;
+    const reply = await readChatResponse(response, {
+      stream: true, signal: controller.signal,
+      onText: (chunk) => { streamed += chunk.length; send({ stage: 'model', note: 'Generating edits', chars: streamed }); },
+    });
+    if (reply.error) return { ok: false, err: reply.error };
+
+    const text = String(reply.content || '').trim();
+    const parsed = extractJsonObject(text);
+    if (!parsed) return { ok: false, parseFailed: true, err: 'The model did not return a parseable edit list.', raw: text.slice(0, 2000) };
+
+    const rawEdits = Array.isArray(parsed.edits) ? parsed.edits : [];
+    if (!rawEdits.length) {
+      return { ok: true, edits: [], notes: String(parsed.notes || 'The model proposed no changes.') };
+    }
+    // Normalise into the shapes planFromEdits accepts, dropping malformed hunks.
+    const edits = [];
+    for (const e of rawEdits) {
+      if (!e || typeof e !== 'object' || typeof e.path !== 'string' || !e.path.trim()) continue;
+      const hunks = Array.isArray(e.hunks)
+        ? e.hunks.filter(h => h && typeof h.search === 'string' && typeof h.replace === 'string' && h.search.length)
+            .map(h => ({ search: h.search, replace: h.replace }))
+        : [];
+      if (hunks.length) { edits.push({ path: e.path.trim(), hunks }); continue; }
+      if (typeof e.content === 'string') edits.push({ path: e.path.trim(), content: e.content });
+    }
+    if (!edits.length) {
+      return { ok: false, err: 'The model returned edits in an unusable shape (no valid hunks or content).', raw: text.slice(0, 2000) };
+    }
+    return { ok: true, edits, notes: String(parsed.notes || '') };
+  }
+
+
+  /* Model-driven edit generation for a natural-language refactor task.
+   *
+   * Grounded in the real index: the model receives matched symbol definitions and
+   * the exact current contents of the files in scope, so it proposes search /
+   * replace hunks that actually exist. Proposing against imagined source is how
+   * such a feature produces edits that cannot be located or applied.
+   */
+  ipcMain.handle('refactor:generate', async (_e, payload = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(payload.projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const settings = loadSettings();
+    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    const model = String(payload.model || settings.model || '').trim();
+    if (!model) return { ok: false, err: 'No model selected.' };
+    const task = String(payload.task || '').trim();
+    if (!task) return { ok: false, err: 'Describe the refactor task.' };
+    if (task.length > 8000) return { ok: false, err: 'That task description is too long (8000 characters max).' };
+
+    const runId = String(payload.runId || 'rf_' + Date.now().toString(36));
+    if (refactorRuns.size >= MAX_REFACTOR_RUNS) {
+      const oldest = refactorRuns.keys().next().value;
+      if (oldest !== undefined) {
+        try { refactorRuns.get(oldest)?.abort(); } catch { /* already gone */ }
+        refactorRuns.delete(oldest);
+      }
+    }
+    const controller = new AbortController();
+    refactorRuns.set(runId, controller);
+    const send = (data) => { if (win && !win.isDestroyed()) win.webContents.send('refactor:progress', { runId, ...data }); };
+
+    try {
+      let scope = Array.isArray(payload.files) ? payload.files.map(String).filter(Boolean) : [];
+      send({ stage: 'index', note: 'Reading the project index' });
+      let contextBlock = '';
+      let matched = [];
+      try {
+        const index = sharedGetIndex(dir);
+        const found = codeIndex.contextForQuery(index, task, { maxSymbols: 12, maxChars: 9000, includeSnippets: true });
+        matched = found.symbols.map(s => ({ name: s.qualified, kind: s.kind, path: s.path, line: s.line }));
+        contextBlock = codeIndex.formatContext(found);
+        if (!scope.length) scope = [...new Set(found.symbols.map(s => s.path))].slice(0, 8);
+      } catch (e) {
+        send({ stage: 'index', note: 'Index unavailable (' + e.message + '); using the supplied file list only' });
+      }
+      if (!scope.length) {
+        return { ok: false, err: 'Could not determine which files to change. Add files to the scope, or make the task more specific.' };
+      }
+      scope = scope.slice(0, 12);
+
+      // Exact current contents, capped per file and in total: one huge file must
+      // not consume the whole context window before the model answers.
+      const files = [];
+      let totalChars = 0;
+      for (const rel of scope) {
+        if (totalChars > 120000) { files.push({ path: rel, skipped: 'scope budget reached' }); continue; }
+        try {
+          const abs = resolveInProject(dir, rel);
+          if (!fs.existsSync(abs)) { files.push({ path: rel, missing: true }); continue; }
+          const text = readTextFile(abs).content;
+          const clipped = text.length > 40000 ? text.slice(0, 40000) + '\n/* truncated */' : text;
+          totalChars += clipped.length;
+          files.push({ path: rel, content: clipped });
+        } catch (e) { files.push({ path: rel, error: e.message }); }
+      }
+      if (!files.some(f => f.content)) return { ok: false, err: 'None of the scoped files could be read.' };
+
+      send({ stage: 'model', note: 'Asking ' + model + ' to propose edits', files: files.map(f => f.path) });
+      const proposed = await proposeEditsViaModel({ settings, model, task, contextBlock, files, controller, send });
+      if (!proposed.ok) {
+        if (proposed.parseFailed) send({ stage: 'parse', note: 'The model did not return usable JSON' });
+        return { ok: false, err: proposed.err, ...(proposed.raw ? { raw: proposed.raw } : {}), ...(proposed.status ? { status: proposed.status } : {}) };
+      }
+      if (!proposed.edits.length) {
+        return { ok: true, edits: [], notes: proposed.notes, matched, scope };
+      }
+      send({ stage: 'done', note: `Proposed ${proposed.edits.length} file change(s)` });
+      return { ok: true, edits: proposed.edits, notes: proposed.notes, matched, scope };
+    } catch (e) {
+      if (controller.signal.aborted) return { ok: false, cancelled: true, err: 'Stopped.' };
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      return { ok: false, err: timeout ? 'The request timed out.' : e.message };
+    } finally {
+      refactorRuns.delete(runId);
+    }
+  });
+
+  /* ---------- self-correction loop (PRD: Autonomous Test & Lint Self-Correction) ----------
+   *
+   * Runs the project's quality gates, asks the model to fix what failed, applies
+   * the fix through the refactor engine, and repeats — up to 10 attempts (the PRD
+   * figure). On giving up it emits 'stopped' with the real failing traces so the
+   * Review Modal can offer Revert / Adjust Scope / Manually Edit.
+   *
+   * Uses testLoop.runSelfCorrectionLoop rather than a second loop here: that
+   * module owns the rollback semantics, no-progress detection and the parsers, and
+   * it is already unit-tested against real tool output. This handler supplies the
+   * three things it cannot know: how to run a command, how to ask the model, and
+   * where to report progress.
+   *
+   * A deterministic quick-fix pass runs BEFORE the model on each attempt, which is
+   * what the PRD asks for ("automatically applies suggested quick-fixes for ESLint
+   * and tsc diagnostics before re-running tests").
+   */
+  ipcMain.handle('refactor:selfCorrect', async (_e, payload = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(payload.projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    const settings = loadSettings();
+    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    const model = String(payload.model || settings.model || '').trim();
+    if (!model) return { ok: false, err: 'No model selected.' };
+
+    const gates = Array.isArray(payload.gates) && payload.gates.length ? payload.gates : defaultGates(dir);
+    if (!gates.length) {
+      return { ok: false, err: 'No quality gates were found for this project. Add a test or lint script.' };
+    }
+    const scope = Array.isArray(payload.files) ? payload.files.map(String).filter(Boolean).slice(0, 12) : [];
+
+    const runId = String(payload.runId || 'sc_' + Date.now().toString(36));
+    if (refactorRuns.size >= MAX_REFACTOR_RUNS) {
+      const oldest = refactorRuns.keys().next().value;
+      if (oldest !== undefined) {
+        try { refactorRuns.get(oldest)?.abort(); } catch { /* already gone */ }
+        refactorRuns.delete(oldest);
+      }
+    }
+    const controller = new AbortController();
+    refactorRuns.set(runId, controller);
+    const send = (data) => { if (win && !win.isDestroyed()) win.webContents.send('refactor:progress', { runId, ...data }); };
+
+    try {
+      // The loop calls this for each gate. runCommand goes through the same
+      // platform layer as the shell tool, so timeouts and process-tree kills
+      // behave identically.
+      const runGate = async (gate) => {
+        const command = String(gate.command || '').trim();
+        if (!command) return { ok: false, exitCode: 1, stdout: '', stderr: 'A gate needs a command.' };
+        const started = Date.now();
+        const raw = await runCommand(command, [], { cwd: dir, shell: true, timeoutMs: 300000, signal: controller.signal });
+        return { ...raw, durationMs: Date.now() - started };
+      };
+
+      // Read the CURRENT contents of the files in scope on every attempt: the
+      // loop edits between attempts, so a snapshot taken once would make the model
+      // propose hunks against text that no longer exists.
+      const readScope = async (failures) => {
+        const wanted = scope.length ? scope : [...new Set(
+          (failures || []).map(f => f.file && f.file.path).filter(p => typeof p === 'string' && p.length)
+        )].slice(0, 8);
+        if (!wanted.length) return [];
+        const files = [];
+        let total = 0;
+        for (const rel of wanted) {
+          if (total > 120000) break;
+          try {
+            const abs = resolveInProject(dir, rel);
+            if (!fs.existsSync(abs)) { files.push({ path: rel, missing: true }); continue; }
+            const text = readTextFile(abs).content;
+            const clipped = text.length > 40000 ? text.slice(0, 40000) + '\n/* truncated */' : text;
+            total += clipped.length;
+            files.push({ path: rel, content: clipped });
+          } catch (e) { files.push({ path: rel, error: e.message }); }
+        }
+        return files;
+      };
+
+      const proposeFix = async ({ attempt, gate, interpreted, syntaxErrors }) => {
+        const failures = (interpreted && interpreted.failures) || [];
+        send({ stage: 'fix', note: `Attempt ${attempt}: asking ${model} to fix ${gate.id || gate.command}`, failures: failures.length });
+        const files = await readScope(failures);
+        if (!files.length || !files.some(f => f.content)) return null;
+
+        // The diagnostics ARE the task: quote them verbatim so the model fixes
+        // what actually failed rather than guessing at the goal.
+        const trace = failures.slice(0, 25).map(f => {
+          const where = f.file ? `${f.file.path}${f.file.line ? ':' + f.file.line : ''}${f.file.column ? ':' + f.file.column : ''}` : '';
+          return `- ${f.name || 'failure'}${where ? ' @ ' + where : ''}${f.code ? ' [' + f.code + ']' : ''}${f.message ? ': ' + f.message : ''}`;
+        }).join('\n');
+        // Set when the loop rejected the PREVIOUS attempt's edit because it would
+        // not parse. That rejection wrote nothing, so the gate output above is
+        // unchanged and the model would otherwise have no idea its last edit was
+        // discarded — leading it to reproduce the same syntax error.
+        const syntaxBlock = Array.isArray(syntaxErrors) && syntaxErrors.length
+          ? '\nYOUR PREVIOUS EDIT WAS REJECTED — IT DOES NOT PARSE (nothing was written):\n'
+            + syntaxErrors.map(e => '- ' + e).join('\n')
+            + '\nProduce syntactically valid code this time. Balanced braces, parens and brackets.\n'
+          : '';
+        const task = [
+          `The quality gate "${gate.id || gate.command}" (runner: ${interpreted.runner}) failed with ${failures.length} problem(s).`,
+          'Fix the code so this gate passes. Do not weaken, skip, or delete tests, and do not disable lint rules, to make it pass.',
+          '',
+          'FAILURES:',
+          trace || '- (the gate failed without structured diagnostics; see the raw output below)',
+          syntaxBlock,
+          interpreted.stderrTail ? '\nRAW OUTPUT TAIL:\n' + String(interpreted.stderrTail).slice(-1200) : '',
+        ].join('\n');
+
+        const proposed = await proposeEditsViaModel({
+          settings, model, task, files, controller, send,
+          extraRules: [
+            '- Fix the reported failures. Never change a test expectation, skip a test, or disable a lint rule to make a gate pass.',
+            '- Only edit files shown below.',
+          ],
+        });
+        if (!proposed.ok) { send({ stage: 'fix', note: 'The model could not propose a fix: ' + (proposed.err || 'unknown') }); return null; }
+        return proposed.edits.length ? proposed.edits : null;
+      };
+
+      // Mechanical fixes first: they are cheaper than a model round and handle the
+      // bulk of formatting/lint churn. Returns EDITS (never writes), so the loop
+      // stays the only writer and rollback still covers these changes.
+      const quickFix = async ({ gate, interpreted }) => {
+        const counts = (interpreted && interpreted.counts) || {};
+        if (!(counts.fixable > 0)) return null;
+        // ESLint only. The PRD asks for quick-fixes on "ESLint and tsc
+        // diagnostics", but tsc has no --fix: a type error has no mechanical
+        // correction, only a semantic one. Returning null for tsc gates is the
+        // honest behaviour — the loop then falls through to proposeFix, which is
+        // where a type error actually gets addressed. Reporting tsc diagnostics
+        // as "fixable" (so this hook would claim them) would be the wrong answer:
+        // counts.fixable is set by the ESLint parser from its own "N fixable with
+        // the --fix option" summary and is not populated for tsc at all.
+        const runner = String(gate.runner || '').toLowerCase();
+        if (runner !== 'eslint' && !/eslint/i.test(String(gate.command || ''))) return null;
+        // Only run on files we can snapshot and restore. A bare `.` would let
+        // eslint rewrite files OUTSIDE this set, and those writes could not be
+        // undone by the loop's rollback.
+        const targets = scope.length ? scope : [...new Set(
+          ((interpreted && interpreted.failures) || []).map(f => f.file && f.file.path).filter(p => typeof p === 'string' && p.length)
+        )].slice(0, 40);
+        if (!targets.length) return null;
+        const before = new Map();
+        for (const rel of targets) {
+          try {
+            const abs = resolveInProject(dir, rel);
+            if (fs.existsSync(abs)) before.set(rel, fs.readFileSync(abs, 'utf8'));
+          } catch { /* unreadable: skip */ }
+        }
+        if (!before.size) return null;
+        send({ stage: 'quickfix', note: `Running eslint --fix on ${counts.fixable} fixable problem(s) in ${before.size} file(s)` });
+
+        // `eslint --fix` WRITES, so run it, harvest the result as edits, then put
+        // the originals back — the tree must be untouched when we return.
+        //
+        // Why this matters: the loop builds a plan by reading the CURRENT file as
+        // `before`. If the fixer has already rewritten it, before === after, the
+        // plan has nothing to apply, and the loop reports a no-change stall even
+        // though the fix landed on disk OUTSIDE the rollback set. Verified
+        // 2026-09-18 with a probe mirroring this shape: passed=false, phases
+        // ["baseline","no-change"], file already fixed. Returning edits instead
+        // lets the loop apply them atomically, so rollback covers them.
+        const quoted = [...before.keys()].map(rel => `"${String(rel).replace(/["\\]/g, '\\$&')}"`).join(' ');
+        const edits = [];
+        try {
+          await runCommand(`npx eslint --fix ${quoted}`, [], { cwd: dir, shell: true, timeoutMs: 180000, signal: controller.signal });
+          for (const [rel, oldText] of before) {
+            try {
+              const abs = resolveInProject(dir, rel);
+              if (!fs.existsSync(abs)) continue;
+              const now = fs.readFileSync(abs, 'utf8');
+              if (now !== oldText) edits.push({ path: rel, content: now });
+            } catch { /* skip */ }
+          }
+        } finally {
+          // Restore whatever eslint touched, even if the run threw or was
+          // cancelled mid-way. Best effort: a file we cannot restore is reported
+          // by the loop's own diff on the next gate run.
+          for (const [rel, oldText] of before) {
+            try {
+              const abs = resolveInProject(dir, rel);
+              if (fs.existsSync(abs) && fs.readFileSync(abs, 'utf8') !== oldText) fs.writeFileSync(abs, oldText, 'utf8');
+            } catch { /* best effort */ }
+          }
+          invalidateIndex(dir);
+        }
+
+        if (!edits.length) return null;
+        send({ stage: 'quickfix', note: `Auto-fixed ${edits.length} file(s) mechanically` });
+        return { edits, summary: `eslint --fix on ${edits.length} file(s)` };
+      };
+
+      const result = await testLoop.runSelfCorrectionLoop({
+        gates,
+        runGate,
+        proposeFix,
+        quickFix,
+        projectDir: dir,
+        maxAttempts: Number.isSafeInteger(payload.maxAttempts) ? Math.max(1, Math.min(10, payload.maxAttempts)) : 10,
+        // Keep the last attempted fix on failure: the Review Modal offers
+        // "Manually edit", which is useless if the tree was already rolled back.
+        // "Revert changes" performs the rollback explicitly instead.
+        keepOnFailure: true,
+        signal: controller.signal,
+        onEvent: (event) => {
+          // The loop writes through the refactor engine (fs, not writeTextFile),
+          // so the write observer does not fire — invalidate explicitly or the
+          // index would keep serving pre-refactor symbols. 'applied' is the only
+          // write event the loop emits; there is no 'rollback' event, so the
+          // post-loop invalidateIndex below covers that path.
+          if (event.type === 'applied') invalidateIndex(dir);
+          send({ stage: 'loop', ...event });
+        },
+      });
+
+      // Whatever the outcome (pass, give-up with keepOnFailure, or an internal
+      // rollback), the tree may differ from when we started, so the index must
+      // not claim otherwise.
+      invalidateIndex(dir);
+
+      send({ stage: 'done', note: result.passed ? 'All gates pass' : 'Stopped without passing all gates' });
+      return {
+        ok: true,
+        passed: !!result.passed,
+        cancelled: !!result.cancelled,
+        attempts: result.attempts,
+        report: result.report,
+        restoredFiles: result.restoredFiles || [],
+        // The Review Modal needs the actual traces, not just a summary line.
+        iterations: (result.iterations || []).map(i => ({
+          attempt: i.attempt,
+          phase: i.phase,
+          gate: i.gate || null,
+          error: i.error || null,
+          failures: (i.interpreted && i.interpreted.failures || []).slice(0, 20).map(f => ({
+            name: String(f.name || '').slice(0, 200),
+            file: f.file || null,
+            message: String(f.message || '').slice(0, 600),
+            code: f.code || null,
+          })),
+          tail: i.interpreted && i.interpreted.stderrTail ? String(i.interpreted.stderrTail).slice(-1200) : null,
+          files: i.applied || null,
+        })),
+      };
+    } catch (e) {
+      invalidateIndex(dir);
+      if (controller.signal.aborted) return { ok: false, cancelled: true, err: 'Stopped.' };
+      return { ok: false, err: e.message };
+    } finally {
+      refactorRuns.delete(runId);
+    }
+  });
+
+  /* Revert the tree to its pre-refactor state, for the Review Modal's first
+   * option. Uses git when the project is a repository (the apply step can create a
+   * checkpoint), and reports honestly when it cannot. */
+  ipcMain.handle('refactor:revert', async (_e, payload = {}) => {
+    let dir;
+    try { dir = resolveIndexableDir(payload.projectDir); }
+    catch (e) { return { ok: false, err: e.message }; }
+    if (!fs.existsSync(path.join(dir, '.git'))) {
+      return { ok: false, err: 'This project is not a git repository, so there is no committed state to revert to. Undo the changes manually, or restore from your own backup.' };
+    }
+    try {
+      // `git checkout -- .` restores tracked files; clean -fd would DELETE
+      // untracked files, which is not a revert and could destroy new work.
+      const res = await runCommand('git', ['checkout', '--', '.'], { cwd: dir, timeoutMs: 60000 });
+      invalidateIndex(dir);
+      if (!res.ok) return { ok: false, err: res.error || res.stderr || 'git checkout failed' };
+      return { ok: true, note: 'Tracked files restored to their last committed state. Untracked new files were left alone.' };
+    } catch (e) { return { ok: false, err: e.message }; }
+  });
+
+  ipcMain.handle('refactor:stop', (_e, runId) => {
+    const controller = refactorRuns.get(String(runId || ''));
+    if (!controller) return { ok: false, err: 'That run already finished.' };
+    controller.abort();
+    refactorRuns.delete(String(runId));
+    return { ok: true };
+  });
+
 }
 
 // ---------- window ----------
@@ -1510,7 +2554,192 @@ app.whenReady().then(() => {
           if (!reopened.projects || !reopened.browser) throw new Error('Reopened workspace lost projects or browser IPC');
           console.log('MAC LIFECYCLE SMOKE OK: close last window, Dock activation, project persistence and browser IPC.');
         }
-        console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, optional CLI -> ${v}`);
+
+        // ---------- PRD workspace shell: nav rail, hotkeys, status bar, new pages ----------
+        {
+          const shell = await win.webContents.executeJavaScript(`(async () => {
+            // The nav rail must exist and expose every view, including the new ones.
+            const rail = document.querySelector('#nav-rail');
+            if (!rail) return { err: 'nav rail missing' };
+            const items = [...rail.querySelectorAll('.rail-item')].map(b => b.dataset.view);
+            const pages = ['workspace', 'playground', 'projects', 'agents', 'create', 'settings', 'refactor', 'about'];
+            const missing = pages.filter(p => !document.querySelector('#page-' + p));
+            if (missing.length) return { err: 'missing pages: ' + missing.join(',') };
+            const railViews = rail.querySelectorAll('.rail-item').length;
+
+            // Rail navigation drives the same showTab() path as the header tabs.
+            await window.ReachWorkspaceShell.goView('workspace');
+            const wsActive = document.querySelector('#page-workspace').classList.contains('active');
+            const railActive = document.querySelector('#rail-workspace').classList.contains('active');
+            await window.ReachWorkspaceShell.goView('about');
+            const aboutActive = document.querySelector('#page-about').classList.contains('active');
+            // Refactor is a rail destination with NO numeric hotkey: PRD1 pins
+            // Ctrl/Cmd+1-6 to the six primary views, so it must be reachable by
+            // rail click alone and must not have claimed a hotkey.
+            await window.ReachWorkspaceShell.goView('refactor');
+            const refactorActive = document.querySelector('#page-refactor').classList.contains('active');
+            const refactorRailActive = document.querySelector('#rail-refactor').classList.contains('active');
+            const refactorHasHotkey = document.querySelector('#rail-refactor').hasAttribute('data-hotkey');
+
+            // Bottom status bar exists and reflects the configured endpoint.
+            // The chip refreshes at init/workspace-sync; refresh it explicitly so
+            // the assertion is not dependent on when saveSettings last ran.
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            const sb = document.querySelector('#statusbar-bottom');
+            const endpointText = document.querySelector('#sb-endpoint-text');
+
+            // Back to a view the existing smoke assertions may still rely on.
+            await window.ReachWorkspaceShell.goView('projects');
+            return { railViews, items, wsActive, railActive, aboutActive, refactorActive, refactorRailActive, refactorHasHotkey, hasSb: !!sb, endpointText: endpointText && endpointText.textContent };
+          })()`);
+          if (shell.err) throw new Error(shell.err);
+          if (shell.railViews !== 8) throw new Error('Expected 8 rail items, got ' + shell.railViews);
+          if (!shell.wsActive) throw new Error('Workspace page did not activate via the rail');
+          if (!shell.railActive) throw new Error('Rail did not mark Workspace active');
+          if (!shell.aboutActive) throw new Error('About page did not activate via the rail');
+          if (!shell.refactorActive) throw new Error('Refactor page did not activate via the rail');
+          if (!shell.refactorRailActive) throw new Error('Rail did not mark Refactor active');
+          if (shell.refactorHasHotkey) throw new Error('Refactor rail item must not claim a numeric hotkey (Ctrl/Cmd+1-6 are pinned to the primary views)');
+          if (!shell.hasSb) throw new Error('Bottom status bar missing');
+          if (shell.endpointText === 'no endpoint') throw new Error('Status bar did not reflect the configured endpoint');
+
+          // Ctrl/Cmd+1..6 hotkeys switch views (and never fire while typing).
+          const hotkeys = await win.webContents.executeJavaScript(`(async () => {
+            const dispatch = (key) => document.dispatchEvent(new KeyboardEvent('keydown', { key, ctrlKey: true, bubbles: true }));
+            dispatch('2');
+            await new Promise(r => setTimeout(r, 30));
+            const playground = document.querySelector('#page-playground').classList.contains('active');
+            // Typing guard: a real keystroke targets the FOCUSED element, so
+            // dispatch on the textarea. Ctrl+1 there is data, not a shortcut.
+            const input = document.querySelector('#pg-prompt');
+            input.focus();
+            input.dispatchEvent(new KeyboardEvent('keydown', { key: '1', ctrlKey: true, bubbles: true }));
+            await new Promise(r => setTimeout(r, 30));
+            const stillPlayground = document.querySelector('#page-playground').classList.contains('active');
+            // With no field focused the same hotkey navigates for real.
+            input.blur();
+            dispatch('6');
+            await new Promise(r => setTimeout(r, 30));
+            const settings = document.querySelector('#page-settings').classList.contains('active');
+            return { playground, stillPlayground, settings };
+          })()`);
+          if (!hotkeys.playground) throw new Error('Ctrl+2 did not open the Playground');
+          if (!hotkeys.stillPlayground) throw new Error('Ctrl+1 while typing in a textarea must not navigate');
+          if (!hotkeys.settings) throw new Error('Ctrl+6 did not open Settings');
+
+          // The About page populates real app info, not a placeholder.
+          const aboutInfo = await win.webContents.executeJavaScript(`(async () => {
+            await window.ReachAbout.sync();
+            const dd = [...document.querySelectorAll('#ab-list dd')].map(e => e.textContent);
+            return { count: dd.length, hasVersion: dd.some(t => /\\d+\\.\\d+\\.\\d+/.test(t)) };
+          })()`);
+          if (aboutInfo.count === 0) throw new Error('About page populated nothing');
+          if (!aboutInfo.hasVersion) throw new Error('About page did not show the app version');
+
+          // ---------- Refactor workbench: real plan -> review -> apply over IPC ----------
+          // Exercises the renderer module, the preload bridge, the plan session in
+          // main, chunk selection, atomic apply and single-use planId. The model
+          // `generate` path is NOT driven here (it needs a live endpoint); it is
+          // covered by the refactor:generate handler's own validation and by
+          // proposeEditsViaModel's shared JSON extraction.
+          const refactorFile = path.join(smokeProject, 'refactor-sample.js');
+          // Two changes separated by a 3-line unchanged gap, so the preview at
+          // context=2 genuinely shows TWO chunks. The original 4-line fixture
+          // merged both hunks into a single chunk, which made "partial apply"
+          // apply everything and defeated the whole point of the check.
+          fs.writeFileSync(refactorFile, [
+            'function computeTotal(a, b) {',
+            '  return a + b;',
+            '}',
+            'const SCALE = 2;',
+            'const OFFSET = 10;',
+            "const NOTE = 'unchanged';",
+            'module.exports = { computeTotal };',
+            '',
+          ].join('\n'));
+          const rf = await win.webContents.executeJavaScript(`(async () => {
+            const dir = ${JSON.stringify(smokeProject)};
+            const api = window.reach.refactor;
+            if (!api) return { err: 'refactor bridge missing' };
+
+            // 1. Plan a real two-hunk change to one file. Nothing is written yet.
+            const planned = await api.plan({ projectDir: dir, context: 2, edits: [
+              { path: 'refactor-sample.js', hunks: [
+                { search: 'function computeTotal(', replace: 'function sumTotals(' },
+                { search: 'module.exports = { computeTotal }', replace: 'module.exports = { sumTotals }' },
+              ] },
+            ] });
+            if (!planned.ok) return { err: 'plan failed: ' + planned.err };
+            const file = planned.plan.files[0];
+            const chunkCount = file.chunks.length;
+            const rowCount = file.chunks.reduce((n, c) => n + c.rows.length, 0);
+            // Rows carry PLAIN TEXT; the renderer escapes/highlights. A row whose
+            // text already contained markup would mean main was building HTML.
+            const rowsAreText = file.chunks.every(c => c.rows.every(r =>
+              (r.left ? typeof r.left.text === 'string' : true) && (r.right ? typeof r.right.text === 'string' : true)));
+
+            // 2. Reject every chunk: apply must refuse rather than write nothing silently.
+            const noneSel = {};
+            noneSel[file.path] = [];
+            const rejectedAll = await api.apply({ planId: planned.planId, projectDir: dir, accepted: noneSel });
+            const refusedEmpty = rejectedAll.ok === false;
+
+            // 3. Accept one chunk only (partial selection) on a FRESH plan.
+            const planned2 = await api.plan({ projectDir: dir, context: 2, edits: [
+              { path: 'refactor-sample.js', hunks: [
+                { search: 'function computeTotal(', replace: 'function sumTotals(' },
+                { search: 'module.exports = { computeTotal }', replace: 'module.exports = { sumTotals }' },
+              ] },
+            ] });
+            const file2 = planned2.plan.files[0];
+            const partial = {};
+            partial[file2.path] = [file2.chunks[0].id];
+            const applied = await api.apply({ planId: planned2.planId, projectDir: dir, accepted: partial });
+            if (!applied.ok) return { err: 'partial apply failed: ' + applied.err };
+
+            // 4. The planId is single-use: replaying must be refused, not re-applied.
+            const replay = await api.apply({ planId: planned2.planId, projectDir: dir });
+            const replayRefused = replay.ok === false;
+
+            // 5. Path traversal and absolute paths must be refused by the plan.
+            const traversal = await api.plan({ projectDir: dir, edits: [{ path: '../escape.js', content: 'x' }] });
+            const absolute = await api.plan({ projectDir: dir, edits: [{ path: ${JSON.stringify(process.platform === 'win32' ? 'C:/Windows/x.js' : '/etc/x.js')}, content: 'x' }] });
+
+            // 6. A stale/unknown planId is refused.
+            const unknown = await api.apply({ planId: 'rfp-does-not-exist', projectDir: dir });
+
+            // 7. The renderer module is present and its page renders.
+            const hasModule = typeof window.ReachRefactor === 'object';
+            await window.ReachWorkspaceShell.goView('refactor');
+            const pageHasTask = !!document.querySelector('#rf-task');
+            const pageHasApply = !!document.querySelector('#rf-apply');
+
+            return { chunkCount, rowCount, rowsAreText, refusedEmpty, appliedFiles: applied.applied,
+              replayRefused, traversalRefused: traversal.ok === false, absoluteRefused: absolute.ok === false,
+              unknownRefused: unknown.ok === false, hasModule, pageHasTask, pageHasApply };
+          })()`);
+          if (rf.err) throw new Error(rf.err);
+          if (!(rf.chunkCount >= 2)) throw new Error('Refactor plan must split into 2 chunks at context=2, got ' + rf.chunkCount);
+          if (!(rf.rowCount > 0)) throw new Error('Refactor diff produced no rows');
+          if (!rf.rowsAreText) throw new Error('Diff rows must carry plain text, not markup');
+          if (!rf.refusedEmpty) throw new Error('Apply with zero accepted chunks must be refused');
+          if (!Array.isArray(rf.appliedFiles) || rf.appliedFiles.length !== 1) throw new Error('Partial apply did not write exactly one file: ' + JSON.stringify(rf.appliedFiles));
+          if (!rf.replayRefused) throw new Error('A planId must be single-use');
+          if (!rf.traversalRefused) throw new Error('Refactor plan accepted a traversal path');
+          if (!rf.absoluteRefused) throw new Error('Refactor plan accepted an absolute path');
+          if (!rf.unknownRefused) throw new Error('An unknown planId was not refused');
+          if (!rf.hasModule) throw new Error('ReachRefactor module did not load');
+          if (!rf.pageHasTask || !rf.pageHasApply) throw new Error('Refactor page is missing its task/apply controls');
+          // The partial apply changed only the first hunk; confirm on disk.
+          const rfAfter = fs.readFileSync(refactorFile, 'utf8');
+          if (!rfAfter.includes('sumTotals(')) throw new Error('Accepted chunk was not written to disk');
+          // The second hunk was NOT accepted, so the export line must be untouched.
+          if (!rfAfter.includes('module.exports = { computeTotal }')) throw new Error('An unaccepted chunk was written to disk');
+
+          console.log('WORKSPACE SHELL SMOKE OK: 8-item nav rail, rail+hotkey navigation, typing guard, persistent status bar, Workspace/Playground/About pages, About version info, refactor workbench plan/partial-apply/single-use/path-jail.');
+        }
+
+        console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, workspace shell+rail+hotkeys+status bar, refactor workbench, optional CLI -> ${v}`);
         app.exit(0);
       } catch (e) {
         console.error(`SMOKE FAIL: ${e.stack || e.message}`);

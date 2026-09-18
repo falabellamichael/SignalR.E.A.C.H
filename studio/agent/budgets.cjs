@@ -20,13 +20,15 @@ const fields = [
   ['contextMessages', 'Compress above this many messages', 48, 'Context', '0 disables the message-count trigger.'],
   ['contextTarget', 'Target characters after compression', 48000, 'Context', 'Must be at least 8,000; automatically kept below a nonzero character trigger.', 8000],
   ['summaryTokens', 'Output tokens for context compression', 16384, 'Context', 'Separate budget so reasoning can finish before writing memory. 0 uses the provider default.'],
+  ['codeContext', 'Inject codebase context into prompts', true, 'Context', 'Retrieves the most relevant symbol definitions from the local project index and adds them to each request. Off sends only the conversation.'],
+  ['codeContextChars', 'Codebase context characters per request', 6000, 'Context', 'Upper bound on injected source text. Skipped entirely once the conversation is at the compression trigger. 0 disables injection.', 0],
   ['storedMessages', 'Retained messages per conversation', 0, 'History', '0 keeps the complete chat. Context compression never replaces saved history. Lowering this applies on the next appended message.'],
   ['maxConversations', 'Saved conversations', 200, 'History', '0 removes the saved-chat count cap. Existing chats are never deleted by this setting.'],
 ].map(([key, label, value, group, help, min = 0]) => ({ key, label, value, group, help, min, globalOnly: key === 'maxConversations', type: typeof value === 'boolean' ? 'boolean' : 'number' }));
 const defaults = Object.fromEntries(fields.map(f => [f.key, f.value]));
 const presets = {
   balanced: { ...defaults },
-  heavy: { ...defaults, maxTokens: 32768, requestTimeoutMs: 900000, maxRounds: 200, subagentMaxRounds: 100, resumeCycles: 30, maxAgents: 32, maxDepth: 8, relayChars: 120000, contextTrigger: 480000, contextTarget: 240000, contextMessages: 144, storedMessages: 0, maxConversations: 0 },
+  heavy: { ...defaults, maxTokens: 32768, requestTimeoutMs: 900000, maxRounds: 200, subagentMaxRounds: 100, resumeCycles: 30, maxAgents: 32, maxDepth: 8, relayChars: 120000, contextTrigger: 480000, contextTarget: 240000, contextMessages: 144, storedMessages: 0, maxConversations: 0, codeContextChars: 12000 },
   unrestricted: { ...Object.fromEntries(fields.map(f => [f.key, f.type === 'boolean' ? false : f.min])), contextTarget: 120000 },
 };
 function validateBudgets(value) {

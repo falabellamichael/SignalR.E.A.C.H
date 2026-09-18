@@ -77,9 +77,12 @@ class AgentNet {
     maxDepth = MAX_DEPTH,
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
     onSettled = () => {},
+    auditLog = null,
   } = {}) {
     this.budgets = budgets;
     this.agentSettings = agentSettings;
+    // Subagents run tools too, so they share the same security audit log.
+    this.auditLog = auditLog;
     this.onSettled = onSettled;
     this.teamRunId = teamRunId;
     this.teamName = teamName;
@@ -240,6 +243,7 @@ class AgentNet {
       personaPrompt: String(prompt || ''),
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets ? { ...this.budgets, maxRounds: this.budgets.subagentMaxRounds } : null,
+      auditLog: this.auditLog,
       requestApproval: this.requestApproval
         ? (payload) => this.requestApproval({ ...payload, memberName: name, subagent: true })
         : undefined,

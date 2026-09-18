@@ -32,6 +32,25 @@ function readTextFile(file) {
   return { content, encoding, bom };
 }
 
+/* Write observers.
+ *
+ * Every write to disk goes through writeTextFile below — the core write and
+ * edit_patch tools, the edit-review acceptance path in main.mjs, and the save
+ * handler. Derived state about the file tree therefore has to be invalidated
+ * here or not at all: patching each call site is how a cache goes stale the
+ * first time someone adds a new writer.
+ *
+ * This is an observer rather than a direct require of code-context.cjs so the
+ * layering stays honest — a text I/O utility should not know that a symbol index
+ * exists. Observers must not throw into the write path.
+ */
+const writeObservers = [];
+function onFileWrite(listener) {
+  if (typeof listener !== 'function') return () => {};
+  writeObservers.push(listener);
+  return () => { const i = writeObservers.indexOf(listener); if (i >= 0) writeObservers.splice(i, 1); };
+}
+
 function writeTextFile(file, content) {
   assertTextPath(file);
   const existing = fs.existsSync(file) ? readTextFile(file) : { encoding: 'utf-8', bom: Buffer.alloc(0) };
@@ -39,6 +58,9 @@ function writeTextFile(file, content) {
   if (existing.encoding === 'utf-16be') body = body.swap16();
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, Buffer.concat([existing.bom, body]));
+  for (const listener of writeObservers) {
+    try { listener(file); } catch { /* a failing observer must not fail the write */ }
+  }
 }
 
-module.exports = { readTextFile, writeTextFile, assertTextPath };
+module.exports = { readTextFile, writeTextFile, assertTextPath, onFileWrite };

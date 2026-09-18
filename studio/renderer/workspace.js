@@ -34,12 +34,28 @@
     appliedHeight = composerInput.getBoundingClientRect().height;
   }
   composerInput.addEventListener('input', resizeComposer);
+  // resizeComposer() writes style.height/minHeight — i.e. it changes the layout
+  // of the very element this observer watches. Doing that synchronously inside a
+  // ResizeObserver pass can require a second observation round, which Chromium
+  // reports as "ResizeObserver loop completed with undelivered notifications".
+  // The smoke treats that as a fatal renderer error.
+  //
+  // Deferring the write to the next animation frame takes it out of the
+  // observation pass. Behaviour is unchanged; the height just lands one frame
+  // later, which is invisible. This was latent until the persistent nav rail
+  // narrowed the flex row, and macOS scrollbar metrics tipped it over the limit.
+  let composerFrame = 0;
   new ResizeObserver(() => {
-    if (composerInput.getBoundingClientRect().width !== inputWidth) resizeComposer();
-    else if (composerInput.dataset.expandable === 'true') {
-      const height = composerInput.getBoundingClientRect().height;
-      if (Math.abs(height - appliedHeight) > 1) manualHeight = appliedHeight = height;
-    }
+    if (composerFrame) return;
+    composerFrame = requestAnimationFrame(() => {
+      composerFrame = 0;
+      if (!composerInput.isConnected) return;
+      if (composerInput.getBoundingClientRect().width !== inputWidth) resizeComposer();
+      else if (composerInput.dataset.expandable === 'true') {
+        const height = composerInput.getBoundingClientRect().height;
+        if (Math.abs(height - appliedHeight) > 1) manualHeight = appliedHeight = height;
+      }
+    });
   }).observe(composerInput);
   const buttons = new Map(), host = $('#composer-tools');
   function node(tag, className, text) { const el = document.createElement(tag); el.className = className || ''; if (text !== undefined) el.textContent = text; return el; }

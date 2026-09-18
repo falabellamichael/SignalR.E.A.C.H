@@ -21,6 +21,37 @@ function walkLcs(a, b, dp) {
   return out;
 }
 
+/* Same walk, but every entry carries its 1-based line number in the original
+ * and/or the proposed text. Selective chunk acceptance needs those positions:
+ * to rebuild a file from "original minus rejected chunks" you must know which
+ * original lines a chunk covers. `orig` is null for an added line and `next` is
+ * null for a deleted one. */
+function walkLcsPositioned(a, b, dp) {
+  const out = [];
+  let i = 0, j = 0;
+  const n = a.length, m = b.length;
+  const push = (type, text) => out.push({
+    type, text,
+    orig: type === 'add' ? null : i + 1,
+    next: type === 'del' ? null : j + 1,
+  });
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { push('ctx', a[i]); i++; j++; continue; }
+    if (dp[i + 1][j] >= dp[i][j + 1]) { push('del', a[i]); i++; }
+    else { push('add', b[j]); j++; }
+  }
+  while (i < n) { push('del', a[i]); i++; }
+  while (j < m) { push('add', b[j]); j++; }
+  return out;
+}
+
+/** ctx/add/del entries with 1-based original and proposed line numbers. */
+function diffEntries(oldText, newText) {
+  const a = String(oldText || '').split('\n');
+  const b = String(newText || '').split('\n');
+  return walkLcsPositioned(a, b, buildLcs(a, b));
+}
+
 function buildLcs(a, b) {
   const n = a.length, m = b.length;
   const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
@@ -78,4 +109,4 @@ function stats(hunks) {
   return { added, removed };
 }
 
-module.exports = { diffLines, reviewDiff, compactHunks, stats };
+module.exports = { diffLines, reviewDiff, compactHunks, stats, diffEntries };

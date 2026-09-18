@@ -7,6 +7,7 @@
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="workspace.css" />
+  <link rel="stylesheet" href="studio-prd.css" />
 </head>
 <body>
   <header>
@@ -45,6 +46,44 @@
   </header>
 
   <div class="app-body">
+  <!-- ========== PERSISTENT NAV RAIL (PRD: Sidebar Quick-Navigation Menu) ==========
+       Keyboard-first vertical navigation. The PRD specifies Cmd/Ctrl+1-6; those
+       routes are the relay-management screens (/aliases, /logs, /tray-settings,
+       /app-settings) which are out of scope here, so 1-6 map to the views this
+       build actually has: Workspace, Playground, Projects, Agents, Create,
+       Settings. Each button carries its own hotkey in data-hotkey and shows it
+       in a kbd hint. -->
+  <nav class="rail" id="nav-rail" aria-label="Views">
+    <button class="rail-item" id="rail-workspace" data-view="workspace" data-hotkey="1" title="Workspace dashboard (Ctrl+1)">
+      <span class="rail-icon" aria-hidden="true">&#9636;</span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
+    </button>
+    <button class="rail-item" id="rail-playground" data-view="playground" data-hotkey="2" title="Prompt console (Ctrl+2)">
+      <span class="rail-icon" aria-hidden="true">&#9655;</span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
+    </button>
+    <div class="rail-sep" role="separator"></div>
+    <button class="rail-item" id="rail-projects" data-view="projects" data-hotkey="3" title="Projects (Ctrl+3)">
+      <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd>
+    </button>
+    <button class="rail-item" id="rail-agents" data-view="agents" data-hotkey="4" title="Agents (Ctrl+4)">
+      <span class="rail-icon" aria-hidden="true">&#9673;</span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd>
+    </button>
+    <button class="rail-item" id="rail-create" data-view="create" data-hotkey="5" title="Create (Ctrl+5)">
+      <span class="rail-icon" aria-hidden="true">&#10010;</span><span class="rail-label">Create</span><kbd class="rail-key">5</kbd>
+    </button>
+    <button class="rail-item" id="rail-settings" data-view="settings" data-hotkey="6" title="Settings (Ctrl+6)">
+      <span class="rail-icon" aria-hidden="true">&#9881;</span><span class="rail-label">Settings</span><kbd class="rail-key">6</kbd>
+    </button>
+    <div class="rail-sep" role="separator"></div>
+    <!-- No numeric hotkey: PRD1 pins Ctrl/Cmd+1-6 to the six primary views, and
+         the smoke asserts exactly that mapping. Refactor joins About as an
+         unnumbered rail destination. -->
+    <button class="rail-item" id="rail-refactor" data-view="refactor" title="Refactor workbench">
+      <span class="rail-icon" aria-hidden="true">&#9998;</span><span class="rail-label">Refactor</span>
+    </button>
+    <button class="rail-item" id="rail-about" data-view="about" title="About REACH Studio">
+      <span class="rail-icon" aria-hidden="true">&#8505;</span><span class="rail-label">About</span>
+    </button>
+  </nav>
   <main>
     <!-- ========== PROJECTS PAGE ========== -->
     <section id="page-projects" class="page active">
@@ -260,7 +299,234 @@
         <div class="settings-actions"><button id="btn-save-budgets" class="gold">Save budgets</button><span id="budget-status" role="status" class="dim"></span></div>
       </div></div>
     </section>
+
+    <!-- ========== WORKSPACE PAGE (PRD: Studio Workspace Dashboard) ========== -->
+    <section id="page-workspace" class="page">
+      <div class="ws-wrap">
+        <header class="ws-head">
+          <h2>Workspace</h2>
+          <p class="dim" id="ws-stamp">Sampling local system telemetry&hellip;</p>
+          <div class="ws-head-actions">
+            <label class="check"><input type="checkbox" id="ws-live" checked /> Live</label>
+            <button id="ws-refresh" class="ghost small">Sample now</button>
+          </div>
+        </header>
+
+        <div class="ws-metrics" id="ws-metrics">
+          <div class="ws-metric"><span class="ws-metric-label">CPU</span><strong id="ws-cpu">&mdash;</strong><small id="ws-cpu-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">RAM</span><strong id="ws-ram">&mdash;</strong><small id="ws-ram-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">GPU</span><strong id="ws-gpu">&mdash;</strong><small id="ws-gpu-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">Uptime</span><strong id="ws-uptime">&mdash;</strong><small id="ws-uptime-note" class="dim">waiting</small></div>
+        </div>
+
+        <div class="ws-grid">
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>System activity</h3><span class="dim">last 60 samples</span></div>
+            <canvas id="ws-chart" height="150" role="img" aria-label="CPU and GPU activity history"></canvas>
+            <div class="ws-axis"><span>60 samples ago</span><span>now</span></div>
+          </section>
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Endpoint</h3><button id="ws-ping" class="ghost small">Ping</button></div>
+            <div id="ws-endpoint" class="ws-kv"><span class="dim">Not configured</span></div>
+            <div id="ws-ping-result" class="ws-ping-result" role="status"></div>
+            <p class="ws-note">Ping measures round-trip latency to the configured OpenAI-compatible endpoint. It calls <code>/models</code>; it does not modify anything.</p>
+          </section>
+        </div>
+
+        <div class="ws-grid">
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Codebase index</h3><button id="ws-index" class="ghost small">Index project</button></div>
+            <div id="ws-index-summary" class="ws-kv"><span class="dim">No project indexed</span></div>
+            <div id="ws-index-warnings" class="ws-warnings" hidden></div>
+            <div class="ws-search">
+              <input id="ws-symbol-query" type="text" placeholder="Search symbols&hellip;" spellcheck="false" aria-label="Search indexed symbols" />
+              <button id="ws-symbol-run" class="ghost small">Search</button>
+            </div>
+            <div id="ws-symbol-results" class="ws-symbols" role="list"></div>
+          </section>
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Top processes</h3><span class="dim">by working set</span></div>
+            <div id="ws-processes" class="ws-processes"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== PLAYGROUND PAGE (PRD: Interactive Prompt Console / US-2) ========== -->
+    <section id="page-playground" class="page">
+      <div class="pg-wrap">
+        <header class="pg-head">
+          <h2>Prompt Console</h2>
+          <p class="dim" id="pg-hint">Runs a completion against the configured endpoint. Nothing is saved to a conversation.</p>
+        </header>
+
+        <div class="pg-controls">
+          <div class="pg-field">
+            <label for="pg-model">Model</label>
+            <div class="row">
+              <input id="pg-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
+              <button id="pg-browse" class="ghost small">Browse&hellip;</button>
+            </div>
+            <datalist id="pg-model-list"></datalist>
+          </div>
+          <div class="pg-field">
+            <label for="pg-temp">Temperature <span id="pg-temp-val" class="dim">0.7</span></label>
+            <input id="pg-temp" type="range" min="0" max="2" step="0.05" value="0.7" />
+          </div>
+          <div class="pg-field">
+            <label for="pg-max">Max tokens</label>
+            <input id="pg-max" type="number" min="0" max="2147483647" step="64" value="1024" />
+            <small class="dim">0 lets the provider choose.</small>
+          </div>
+          <div class="pg-field">
+            <label class="check"><input id="pg-stream" type="checkbox" checked /> Stream response</label>
+          </div>
+        </div>
+
+        <div class="pg-panes">
+          <div class="pg-pane">
+            <label for="pg-system">System prompt</label>
+            <textarea id="pg-system" rows="3" spellcheck="false" placeholder="Optional. Sets the model's behaviour for this test."></textarea>
+            <label for="pg-prompt">Prompt</label>
+            <textarea id="pg-prompt" rows="10" spellcheck="false" placeholder="Ask something&hellip;"></textarea>
+            <div class="pg-actions">
+              <button id="pg-run" class="gold">Execute Completion</button>
+              <button id="pg-stop" class="ghost" disabled>Stop</button>
+              <button id="pg-clear" class="ghost small">Clear</button>
+              <span id="pg-status" class="dim" role="status"></span>
+            </div>
+          </div>
+          <div class="pg-pane">
+            <div class="pg-response-head">
+              <label>Response</label>
+              <div class="pg-metrics" id="pg-metrics">
+                <span class="pg-metric" title="Time to first streamed token"><b id="pg-ttft">&mdash;</b><small>TTFT</small></span>
+                <span class="pg-metric" title="Total round-trip"><b id="pg-elapsed">&mdash;</b><small>total</small></span>
+                <span class="pg-metric" title="Tokens per second"><b id="pg-tps">&mdash;</b><small>tok/s</small></span>
+                <span class="pg-metric" title="Completion tokens"><b id="pg-tokens">&mdash;</b><small>tokens</small></span>
+              </div>
+            </div>
+            <pre id="pg-output" class="pg-output" role="log" aria-live="polite"></pre>
+            <details id="pg-raw-wrap" class="pg-raw" hidden>
+              <summary>Raw JSON</summary>
+              <pre id="pg-raw" class="pg-raw-body"></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== ABOUT PAGE (PRD: About REACH Studio) ========== -->
+    <section id="page-about" class="page">
+      <div class="ab-wrap">
+        <div class="ab-mark" aria-hidden="true">R</div>
+        <h2>Reach Studio</h2>
+        <p class="dim" id="ab-tagline">Desktop workspace for local AI relays, agents, and prompt engineering.</p>
+        <dl class="ab-list" id="ab-list"></dl>
+        <section class="ab-card">
+          <h3>Build status</h3>
+          <dl class="ab-list" id="ab-build"></dl>
+        </section>
+        <section class="ab-card">
+          <h3>License</h3>
+          <p id="ab-license" class="dim">MIT &mdash; see the LICENSE file in the SignalR.E.A.C.H repository.</p>
+        </section>
+        <p class="ab-credit">Built by Michael Anthony Falabella.</p>
+      </div>
+    </section>
+
+    <!-- ========== REFACTOR WORKBENCH (PRD: /refactor) ==========
+         Multi-file refactoring workspace: describe a task, review a syntax-
+         highlighted side-by-side diff, stage individual chunks, then apply
+         atomically with an optional git checkpoint. -->
+    <section id="page-refactor" class="page">
+      <div class="rf-wrap">
+        <header class="pg-head">
+          <h2>Refactor Workbench</h2>
+          <p class="dim">Describe a change, review the proposed diff chunk by chunk, then apply it atomically. Nothing is written until you approve.</p>
+        </header>
+
+        <div id="rf-noproject" class="rf-empty">
+          <p>No project is selected. Pick a project on the <button type="button" class="linkish" id="rf-go-projects">Projects</button> page first.</p>
+        </div>
+
+        <div id="rf-body" hidden>
+          <div class="rf-task">
+            <label for="rf-task">Task</label>
+            <textarea id="rf-task" rows="3" spellcheck="false"
+              placeholder="e.g. Rename computeTotal to sumTotals everywhere it is used, and extract the duplicated formatting into a helper."></textarea>
+            <div class="rf-task-row">
+              <div class="rf-field">
+                <label for="rf-model">Model</label>
+                <div class="row">
+                  <input id="rf-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
+                  <button type="button" id="rf-browse" class="ghost small">Browse&hellip;</button>
+                </div>
+                <datalist id="rf-model-list"></datalist>
+              </div>
+              <div class="rf-field rf-scope">
+                <label for="rf-scope">Scope <span class="dim">(optional — one path per line)</span></label>
+                <textarea id="rf-scope" rows="2" spellcheck="false" placeholder="Leave empty to let the symbol index choose."></textarea>
+              </div>
+            </div>
+            <div class="rf-actions">
+              <button type="button" id="rf-generate" class="gold">Propose changes</button>
+              <button type="button" id="rf-stop" class="ghost" disabled>Stop</button>
+              <label class="check" title="Commit a checkpoint after a successful apply"><input id="rf-commit" type="checkbox" checked /> Git checkpoint</label>
+              <span id="rf-status" class="dim" role="status"></span>
+            </div>
+          </div>
+
+          <div id="rf-review" class="rf-review" hidden>
+            <div class="rf-review-head">
+              <div>
+                <strong id="rf-summary">Proposed changes</strong>
+                <div class="dim" id="rf-summary-detail"></div>
+              </div>
+              <div class="rf-review-actions">
+                <button type="button" id="rf-select-all" class="ghost small">Accept all</button>
+                <button type="button" id="rf-select-none" class="ghost small">Reject all</button>
+              </div>
+            </div>
+            <div id="rf-warnings" class="rf-warnings" hidden></div>
+            <div id="rf-files" class="rf-files"></div>
+            <div class="rf-apply-row">
+              <button type="button" id="rf-apply" class="gold">Apply selected</button>
+              <button type="button" id="rf-discard" class="ghost">Discard plan</button>
+              <span id="rf-apply-status" class="dim" role="status"></span>
+            </div>
+          </div>
+
+          <div id="rf-verify" class="rf-verify" hidden>
+            <div class="rf-review-head">
+              <strong>Quality gates</strong>
+              <div class="rf-review-actions">
+                <button type="button" id="rf-run-gates" class="ghost small">Run gates</button>
+                <button type="button" id="rf-fix-loop" class="ghost small" title="Run gates, ask the model to fix failures, retry — up to 10 attempts">Self-correct</button>
+              </div>
+            </div>
+            <div id="rf-gates" class="rf-gates"></div>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <!-- Review Modal (PRD: on reaching 10 failing attempts, pause and offer
+       Revert / Adjust Scope / Manually Edit). Rendered as an overlay, not a page,
+       because it must interrupt whatever the user is doing. -->
+  <div id="rf-modal" class="rf-modal" hidden role="dialog" aria-modal="true" aria-labelledby="rf-modal-title">
+    <div class="rf-modal-card">
+      <h3 id="rf-modal-title">Self-correction stopped</h3>
+      <p class="dim" id="rf-modal-sub"></p>
+      <div id="rf-modal-traces" class="rf-modal-traces"></div>
+      <div class="rf-modal-actions">
+        <button type="button" id="rf-modal-revert" class="ghost">Revert changes</button>
+        <button type="button" id="rf-modal-scope" class="ghost">Adjust scope</button>
+        <button type="button" id="rf-modal-edit" class="gold">Manually edit</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ========== FILE DRAWER (right side, toggleable) ========== -->
   <aside id="file-drawer" class="file-drawer">
@@ -314,9 +580,36 @@
   </aside>
   </div>
 
-  <footer>
-    <span>Reach Studio &mdash; projects, agents, and browser</span>
+  <!-- ========== PERSISTENT BOTTOM STATUS BAR (PRD Navigation Design §3) ==========
+       Anchored across every route. The PRD's three indicators are the reachd
+       connectivity ping, the active model proxy badge, and a tray quick control.
+       Relay management is out of scope for this build, so the first indicator
+       reports the configured OpenAI-compatible endpoint instead of a reachd
+       daemon, and the tray control opens Settings rather than toggling a
+       background daemon. Both say what they actually are. -->
+  <footer class="statusbar-bottom" id="statusbar-bottom">
     <span id="conn-mode" class="dim"></span>
+    <div class="sb-group">
+      <span id="sb-endpoint" class="sb-item sb-chip" title="Configured endpoint">
+        <span class="sb-dot" id="sb-endpoint-dot" aria-hidden="true"></span><span id="sb-endpoint-text">no endpoint</span>
+      </span>
+      <span id="sb-latency" class="sb-item sb-chip" title="Last measured round-trip latency" hidden>
+        latency <b id="sb-latency-val">&mdash;</b>
+      </span>
+      <span id="sb-model" class="sb-item sb-chip" title="Active model" hidden>
+        model <b id="sb-model-val">&mdash;</b>
+      </span>
+      <span id="sb-index" class="sb-item sb-chip" title="Codebase index" hidden>
+        index <b id="sb-index-val">&mdash;</b>
+      </span>
+      <span id="sb-sync" class="sb-item sb-chip" title="Cross-IDE sync" hidden>
+        sync <b id="sb-sync-val">&mdash;</b>
+      </span>
+    </div>
+    <div class="sb-group">
+      <span class="sb-item dim">Reach Studio &mdash; projects, agents, and browser</span>
+      <button id="sb-settings" class="sb-item sb-link" type="button" title="Open settings">Settings</button>
+    </div>
   </footer>
 
   <!-- New Project modal -->
@@ -451,5 +744,9 @@
   <script src="browser.js"></script>
   <script src="workspace.js"></script>
   <script src="telemetry.js"></script>
+  <script src="workspace-shell.js"></script>
+  <script src="playground.js"></script>
+  <script src="about.js"></script>
+  <script src="refactor.js"></script>
 </body>
 </html>
