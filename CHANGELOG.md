@@ -1,5 +1,49 @@
 # Changelog
 
+## [26.9.4](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.3...v26.9.4) (2026-09-18)
+
+
+### Features
+
+* add workspace telemetry views and agent controls ([3fbbe03](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3fbbe03170a1bb84ac46d4006b532fe23035737c))
+* **agent:** add budget controls and reliable continuation ([#81](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/81)) ([263238d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/263238d28665ea4f03eb129b3fde1aa308c5cf6e))
+* **browser:** decode compressed responses, render inline SVG, and fall back to the readable snapshot ([#80](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/80)) ([9f122a2](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9f122a2292605c1aa996e3403228db8add448074))
+* **cli:** style streamed replies with response borders ([e3652f6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e3652f6b0410d37048757d405882c8317befdc3a))
+* **panel:** PRD diagnostics, payload inspector, audit trail, and command palette ([#86](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/86)) ([cf41fdd](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/cf41fdd699892879f7f10ca0bf7c207aaa0073c3))
+* **reach-cli:** agent tool loop with live waiting indicators ([efadf32](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/efadf3212c3a559f118c217699f6da31a9acc071))
+* **relay:** Docker image and compose for the relay server ([b6439d0](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b6439d006f6b447e86f0054f18568345c6163719))
+* **studio:** add browser panel and Files menu ([a1820d0](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a1820d006d90688b4e3f5a5fbf30a3b747587284))
+* **studio:** add desktop app with configurable agent budgets ([470a9d6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/470a9d6e782259d98bd49ce9c135a8c0bd0d91f7))
+* **studio:** add Flatpak target and fix Linux CI smoke sandbox ([0624068](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/06240686be1fa5ffa83242143d44d8c6201277d4))
+* **studio:** add macOS support and resilient agent UI ([c20a521](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c20a5212c65a8024bd0500a00ecd1ce8d83d44b5))
+* **studio:** add portable zip to Linux build targets ([a5286e1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a5286e1636ccbd83141e63d56dd5d0e392041674))
+* **studio:** add universal stop and resumable agent controls ([744b34e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/744b34e3eba39f638f007af132aa066b59f86861))
+* **studio:** build Linux AppImage and deb installers ([f86a4d8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f86a4d860a135dbc80e71f19534f07d5f2581d86))
+* **studio:** Docker GUI container with noVNC streaming ([4977ac8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/4977ac8af9215f83df6de70b5b5842ac597d7ef6))
+* **studio:** enable agent browser control and element selection ([6319c13](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6319c1367343014efc43be46bafbf9889fdc23d5))
+* **studio:** native-window mode for the GUI container ([1d01487](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1d0148790a9f43149c165b8615ddb4920ea89d8c))
+* **studio:** reveal themed chat scrollbar near the pointer ([07d4a8e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/07d4a8e3485142843fe9e5929952cf824f014086))
+* **studio:** workspace shell, prompt console, and six agentic engines ([#87](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/87)) ([92b4da1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/92b4da16f1e0ff695305fa10288851b02d1f7cce))
+
+
+### Bug Fixes
+
+* **agent:** improve action compatibility and command execution ([2df140b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/2df140b4a5c08f2e9a02884f42b14ecc780f01dd))
+* **agent:** improve action compatibility and command execution ([#82](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/82)) ([96ca831](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/96ca831041b931469bd7559c15e3d35aa945ceab))
+* compact the composer with two-line auto sizing ([e18030a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e18030aaf707ca5f1f5ea96372e923c270ba704a))
+* **provider:** merge stacked system messages into one leading system for strict endpoints ([#78](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/78)) ([0c30b9e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0c30b9e527a2a2e797caf7365efa85e9a5e996ca))
+* **studio:** center conversations within a readable page width ([7598acb](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/7598acb3156a62f9cbcfe0823dc1e7a1c706d723))
+* **studio:** hide browser action scrollbar ([32bea19](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/32bea191cefa44f3e9207bf557c54b25dcc952c8))
+* **studio:** make element picking optional and dismiss on click away ([1d77dfd](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1d77dfd7d41ae443e6dabfdd18e329c3ed1b8c71))
+* **studio:** preserve browser tab clicks during state updates ([3c02b67](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3c02b670fb4b412a0fa89a51be8a5043993c06ba))
+* **studio:** reserve conversation space at narrow window sizes ([f4d3270](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f4d32705cedb2557b1a03b4509e4366b9bf9621e))
+* **studio:** reserve conversation space below expanded activity ([d626daa](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d626daa414f20dc67a6f084c7252067aa59168b2))
+* **studio:** scroll browser actions in a single row ([328bd2a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/328bd2a0f431c5f4b7f5b81b37f02f5bb65485c4))
+* **studio:** synchronize project selection across views ([8726e5f](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8726e5f1c8744afdc3a1d4f23879e9119f0a3e08))
+* **studio:** upgrade Electron to resolve dependency vulnerabilities ([8a63c57](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8a63c575a1d352535a5f3c2eb51a48099aeff62e))
+* **studio:** use POSIX paths for non-Windows environments ([d7b4726](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d7b4726b1d70845aee4ca10b827db1ccf062eac9))
+* **vscode:** recover stalled agent runs and preserve request context ([86412c7](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/86412c73a9b728ca4f2e9a81c9a9f4a87b0faf70))
+
 ## [26.9.3](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.2...v26.9.3) (2026-09-12)
 
 
