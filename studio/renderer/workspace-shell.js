@@ -110,9 +110,18 @@
     goView(entry.view).catch(err => window.ReachDialogs?.notice(err.message));
   });
 
-  // Keep the rail in step with the header tabs too.
-  document.addEventListener('click', () => { setTimeout(markRail, 0); });
-  const viewObserver = typeof MutationObserver === 'function' ? new MutationObserver(markRail) : null;
+  /* Rail highlighting needs no observer or document-wide click listener.
+   *
+   * An earlier revision installed a MutationObserver on document.body watching
+   * every class change, whose callback wrote classes itself — a self-triggering
+   * feedback loop. On macOS that collided with CodeMirror's own ResizeObserver
+   * and produced "ResizeObserver loop completed with undelivered
+   * notifications", which the smoke treats as a fatal renderer error.
+   *
+   * It was also redundant: showTab() in app.js is the ONLY place a .page
+   * becomes active (verified by grep), and it already calls markRail(). Every
+   * navigation path — header tabs, this rail, and the hotkeys below — goes
+   * through showTab(). */
 
   /* ------------------------------------------------------------ status bar */
 
@@ -578,9 +587,6 @@
     document.addEventListener('reach-theme-change', drawChart);
     window.addEventListener('resize', drawChart);
     document.addEventListener('visibilitychange', () => { if (document.hidden) stopLive(); else if (state.live) startLive(); });
-    if (viewObserver) {
-      viewObserver.observe(document.body, { attributes: true, subtree: true, attributeFilter: ['class'] });
-    }
   }
 
   window.ReachWorkspaceShell = { goView, markRail, activeView, VIEWS, refreshEndpointChip, setLatency, setIndex, setSync, setChip };
