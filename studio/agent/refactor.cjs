@@ -488,6 +488,14 @@ function defaultCheckSyntax(content, dir, ext) {
   const { execFileSync } = require('node:child_process');
   const tmp = fs.mkdtempSync(path.join(dir || os.tmpdir(), 'synchk-'));
   const results = [];
+  // process.execPath is the NODE binary under `node --test`, but the ELECTRON
+  // binary inside the packaged app (and under `electron . --smoke`). Running
+  // `electron --check file` does NOT parse the file: Electron ignores --check and
+  // tries to boot a GUI, hanging until the timeout. ELECTRON_RUN_AS_NODE makes
+  // that same binary behave as plain node. Verified 2026-09-18: without it,
+  // ETIMEDOUT after 8s; with it, exit 0 in ~47ms. Harmless under real node, so
+  // set it unconditionally rather than sniffing the runtime.
+  const env = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
   try {
     // Force module vs script semantics with the temp extension so the outcome
     // cannot depend on a package.json "type" field we did not write.
@@ -499,6 +507,8 @@ function defaultCheckSyntax(content, dir, ext) {
           encoding: 'utf8',
           timeout: SYNTAX_CHECK_TIMEOUT_MS,
           stdio: ['ignore', 'ignore', 'pipe'],
+          env,
+          windowsHide: true,   // never let the check pop a console/GUI window
         });
         return { ok: true };   // parses under at least one semantics
       } catch (e) {

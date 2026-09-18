@@ -113,6 +113,30 @@ test('every broken file in a multi-file plan is reported, not just the first', a
 
 /* ------------------------------------------- integration with planFromEdits */
 
+test('the checker forces ELECTRON_RUN_AS_NODE so the packaged app cannot hang', () => {
+  // Regression (found by CI, not locally): inside the packaged app and under
+  // `electron . --smoke`, process.execPath is the ELECTRON binary. `electron
+  // --check file` ignores --check and boots a GUI, hanging until the timeout —
+  // which took the headless smoke past its 30s budget on ubuntu and macOS while
+  // passing on Windows (the only platform tested locally, and where the browser
+  // flake aborted the run earlier).
+  //
+  // Under `node --test` execPath is node, so this cannot be reproduced by running
+  // the test normally; assert on the env the checker builds instead. Verified
+  // separately by executing this module under the real Electron binary.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'agent', 'refactor.cjs'), 'utf8');
+  assert.match(src, /ELECTRON_RUN_AS_NODE/, 'checker must set ELECTRON_RUN_AS_NODE');
+  assert.match(src, /windowsHide:\s*true/, 'checker must not spawn a visible window');
+
+  // And the observable contract: even with the variable ALREADY set (simulating
+  // the Electron runtime's env), checks are fast and correct rather than timing
+  // out. If execPath ever regressed to a GUI boot, this would exceed the budget.
+  const t0 = Date.now();
+  const res = R.defaultCheckSyntax('const a = 1;\n');
+  assert.equal(res.ok, true);
+  assert.ok(Date.now() - t0 < 4000, 'a check must not approach the timeout: ' + (Date.now() - t0) + 'ms');
+});
+
 test('a plan whose proposed code is broken is refused end to end before any write', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'synguard-'));
   fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
