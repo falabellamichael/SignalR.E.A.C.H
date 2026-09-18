@@ -34,36 +34,15 @@ const { runCommand } = require('./platform.cjs');
 
 /* ------------------------------------------------------------------- caching */
 
-/**
- * One index per project directory, shared by the tools AND main.mjs's IPC
- * handlers. Two separate caches would double the walk cost on a large repo and
- * could disagree about file contents after an edit.
+/* The index cache lives in code-context.cjs, which is the single owner.
  *
- * Entries are keyed by resolved absolute path and evicted oldest-first. The
- * index holds full source text per file, so the bound is about memory, not
- * lookup speed.
+ * An earlier revision of this file kept its own cache. Two caches for the same
+ * project disagree the moment anything writes to the tree: prompt injection
+ * could serve definitions that the tools had already invalidated, or vice versa,
+ * and the agent would be reasoning about source that no longer exists. Both call
+ * sites now share one Map and one TTL.
  */
-const indexCache = new Map();
-const MAX_INDEX_CACHE = 4;
-
-function getIndex(projectDir, { force = false, maxFiles } = {}) {
-  const dir = path.resolve(String(projectDir || ''));
-  if (!dir) throw new Error('This agent is not bound to a project directory.');
-  if (!force && indexCache.has(dir)) return indexCache.get(dir);
-  const index = codeIndex.indexProject(dir, { maxFiles: maxFiles || 2000 });
-  if (indexCache.size >= MAX_INDEX_CACHE) {
-    const oldest = indexCache.keys().next().value;
-    if (oldest !== undefined) indexCache.delete(oldest);
-  }
-  indexCache.set(dir, index);
-  return index;
-}
-
-/** Drop a cached index, e.g. after files changed on disk. */
-function invalidateIndex(projectDir) {
-  if (!projectDir) { indexCache.clear(); return; }
-  indexCache.delete(path.resolve(String(projectDir)));
-}
+const { getIndex, invalidateIndex } = require('./code-context.cjs');
 
 /* ------------------------------------------------------------ bounded output */
 
@@ -494,6 +473,6 @@ const CODE_TOOLS = {
  */
 module.exports = CODE_TOOLS;
 Object.defineProperty(module.exports, 'internals', {
-  value: { getIndex, invalidateIndex, storePlan, getPlan, capSymbols, planSessions, indexCache },
+  value: { getIndex, invalidateIndex, storePlan, getPlan, capSymbols, planSessions },
   enumerable: false,
 });
