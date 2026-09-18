@@ -275,3 +275,160 @@ test('indexProject reads tsconfig.json from disk (JSONC with comments)', () => {
   assert.ok(edges && edges.includes('src/utils/math.ts'), 'resolved from disk: ' + JSON.stringify(edges));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/* ------------------------------------------------- TypeScript declarations */
+
+const TS_SOURCE = `
+export interface User {
+  id: string;
+  name: string;
+}
+export type ID = string | number;
+export type Handler<T> = (value: T) => Promise<void>;
+export enum Status { Idle, Running, Done }
+export const enum Mode { Fast, Slow }
+export abstract class Base<T> {
+  protected value: T;
+  constructor(v: T) { this.value = v; }
+  abstract render(): string;
+  async load(): Promise<void> { }
+  static create<U>(u: U): Base<U> { return null as any; }
+  get size(): number { return 1; }
+}
+export class Service extends Base<string> implements User {
+  readonly id = 'a';
+  async fetch(url: string, opts?: RequestInit): Promise<Response> { return null as any; }
+}
+export function plain(a: number, b = 2): number { return a + b; }
+export const arrow = (x: number): number => x * 2;
+export const typed: (s: string) => boolean = (s) => !!s;
+export default function defaultFn() { return 1; }
+declare function ambient(x: number): void;
+export namespace Outer {
+  export function inner(): void {}
+}
+export interface Nested {
+  child: { deep: string };
+  method(x: number): void;
+}
+`;
+
+function tsSymbols() {
+  const { symbols } = extractSymbols('probe.ts', TS_SOURCE);
+  return new Map(symbols.map(s => [s.qualified, s]));
+}
+
+test('TypeScript type declarations are indexed: interface, type, enum, namespace', () => {
+  const byQ = tsSymbols();
+  // The PRD requires "type definitions, interface contracts, and exported
+  // function signatures" in the symbol index.
+  for (const q of ['User', 'ID', 'Handler', 'Status', 'Mode', 'Outer', 'Nested']) {
+    assert.ok(byQ.has(q), q + ' indexed');
+  }
+  assert.equal(byQ.get('Status').kind, 'enum');
+  assert.equal(byQ.get('Mode').kind, 'enum', 'const enum is still an enum');
+  assert.equal(byQ.get('Outer').kind, 'namespace');
+  assert.equal(byQ.get('User').kind, 'interface');
+  assert.equal(byQ.get('Handler').kind, 'interface');
+  assert.ok(byQ.get('User').exported);
+});
+
+test('an abstract class is indexed (the old class rule required a bare "class")', () => {
+  const byQ = tsSymbols();
+  assert.ok(byQ.has('Base'), 'abstract class Base indexed');
+  assert.equal(byQ.get('Base').kind, 'class');
+  assert.match(byQ.get('Base').signature, /abstract class Base<T>/, 'generics kept in signature');
+});
+
+test('methods with TypeScript return types are indexed and scoped to their class', () => {
+  const byQ = tsSymbols();
+  // The old rule required `{` immediately after `)`, so any annotated method
+  // was dropped — most of a typed codebase.
+  for (const q of ['Base.render', 'Base.load', 'Base.create', 'Base.size', 'Base.constructor',
+    'Service.fetch', 'Nested.method', 'Outer.inner']) {
+    assert.ok(byQ.has(q), q + ' indexed and scoped');
+  }
+  assert.equal(byQ.get('Base.render').scope, 'Base');
+  assert.equal(byQ.get('Service.fetch').scope, 'Service');
+  assert.match(byQ.get('Base.render').signature, /abstract render\(\): string;/,
+    'a signature-only abstract method keeps its return type');
+  assert.match(byQ.get('Service.fetch').signature, /Promise<Response>/);
+  assert.match(byQ.get('Base.create').signature, /static create<U>/, 'generic method params kept');
+});
+
+test('members of an exported type inherit its exported flag', () => {
+  const byQ = tsSymbols();
+  // A member line carries no `export` keyword, but Service is exported, so
+  // Service.fetch is part of the module's public surface.
+  assert.equal(byQ.get('Service.fetch').exported, true);
+  assert.equal(byQ.get('Base.load').exported, true);
+});
+
+test('a type annotation between name and = does not defeat const rules', () => {
+  const byQ = tsSymbols();
+  assert.ok(byQ.has('typed'), 'const typed: (s: string) => boolean = ... indexed');
+  assert.ok(byQ.has('arrow'), 'const arrow = (x: number): number => ... indexed');
+  assert.ok(byQ.has('defaultFn'), 'export default function indexed');
+  assert.ok(byQ.has('ambient'), 'declare function indexed');
+  assert.ok(byQ.has('plain'), 'export function indexed');
+});
+
+test('a plain call statement is never indexed as a method', () => {
+  // The signature-only method rule requires an explicit modifier, and the
+  // interface-member rule requires an enclosing type body. Without both guards
+  // every `foo();` line in a JS file would become a phantom symbol.
+  const src = [
+    'function setup() {',
+    '  doThing();',
+    '  other.thing(a, b);',
+    '  awaitSomething();',
+    '}',
+    'doThing();',
+    'const cfg = { method(x) { return x; } };',
+  ].join('\n');
+  const { symbols } = extractSymbols('calls.js', src);
+  const names = symbols.map(s => s.qualified);
+  assert.ok(names.includes('setup'), 'the real function is indexed');
+  assert.ok(names.includes('cfg'), 'the real const is indexed');
+  assert.ok(!names.includes('doThing'), 'a call statement is not a declaration');
+  assert.ok(!names.includes('thing'), 'a member call is not a declaration');
+  assert.ok(!names.includes('awaitSomething'), 'a top-level call is not a declaration');
+  assert.equal(symbols.filter(s => s.kind === 'method' && s.scope === null).length, 0,
+    'no unscoped method symbols in plain JS');
+});
+
+test('enum and namespace kinds never appear in plain JavaScript files', () => {
+  const src = 'const enumLike = 1;\nfunction namespace() { return 1; }\nexport { enumLike };\n';
+  const { symbols } = extractSymbols('plain.js', src);
+  assert.equal(symbols.filter(s => s.kind === 'enum' || s.kind === 'namespace').length, 0,
+    'TS-only kinds stayed out of JS');
+  assert.ok(symbols.some(s => s.name === 'namespace' && s.kind === 'function'),
+    'a JS function named namespace is still a function');
+});
+
+test('indexing the real Studio tree produces no phantom symbols', () => {
+  // Regression guard for the TypeScript rules against this repo's own JS/CSS.
+  const idx = indexProject(path.join(__dirname, '..'), { maxFiles: 4000 });
+  assert.ok(idx.symbols.length > 500, 'indexed a meaningful tree: ' + idx.symbols.length);
+  const js = idx.symbols.filter(s => /\.c?js$/.test(s.path));
+  assert.equal(js.filter(s => (s.kind === 'enum' || s.kind === 'namespace')).length, 0,
+    'no TS-only kinds leaked into JS');
+  for (const s of js) {
+    if (s.kind === 'variable') assert.match(s.signature, /(?:^|\s)(?:const|let|var)\s/,
+      'variable symbol is a real declaration: ' + s.path + ':' + s.line);
+    if (s.kind === 'method') {
+      // An unscoped method is legitimate — object-literal shorthand such as
+      // `async execute(args, ctx) {` belongs to an anonymous object, so it has
+      // no type scope. What must never happen is a CALL STATEMENT being
+      // indexed. The discriminator is the body brace: every method definition
+      // opens one (`{`), while a call such as `doThing();` or
+      // `other.thing(a, b);` never does. Checking only for a trailing `{`
+      // would wrongly reject one-liners like `add(text) { n++; },`.
+      const sig = (s.signature || '').trim();
+      assert.ok(sig.includes('{'),
+        'method symbol is a definition, not a call: ' + s.path + ':' + s.line + ' ' + JSON.stringify(sig.slice(0, 70)));
+      assert.ok(!/^\s*[A-Za-z_$][\w$.]*\([^)]*\)\s*;/.test(sig),
+        'method symbol is not a bare call statement: ' + s.path + ':' + s.line + ' ' + JSON.stringify(sig.slice(0, 70)));
+    }
+  }
+});

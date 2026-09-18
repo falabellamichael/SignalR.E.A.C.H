@@ -169,13 +169,28 @@ function maskLiterals(source, language) {
 // indentation first (the Python class/def rules) silently produced empty
 // names and dropped every class it found. Ordered by specificity so a
 // decorated method does not also match as a bare function.
+// TypeScript member modifiers. Kept as a string because several rules reuse it.
+const TS_MOD = '(?:public|private|protected|static|abstract|override|readonly|declare)';
+// An optional TypeScript type annotation between a binding name and its `=`.
+// Written as `[^=]*(?:=>[^=]*)*` rather than `(?:[^=]|=>)*`: the alternation
+// form can backtrack exponentially on a long annotation, this one is linear.
+const TS_ANNOTATION = '(?::[^=]*(?:=>[^=]*)*)?';
+// An optional return-type annotation between `)` and the body/semicolon.
+const TS_RETURNTYPE = '(?::[^{;]+)?';
+
 const SYMBOL_RULES = [
   // ---- JavaScript / TypeScript ----
-  { lang: 'js', kind: 'class', name: 1, re: /^\s*(?:export\s+)?(?:default\s+)?class\s+([A-Za-z_$][\w$]*)/ },
-  { lang: 'js', kind: 'interface', name: 1, re: /^\s*(?:export\s+)?(?:interface|type)\s+([A-Za-z_$][\w$]*)/ },
-  { lang: 'js', kind: 'function', name: 1, re: /^\s*(?:export\s+)?(?:default\s+)?async\s+function\s*\*?\s*([A-Za-z_$][\w$]*)/ },
-  { lang: 'js', kind: 'function', name: 1, re: /^\s*(?:export\s+)?(?:default\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/ },
-  { lang: 'js', kind: 'function', name: 1, re: /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:function\s*\*?\s*\(|\([^)]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/ },
+  { lang: 'js', kind: 'class', name: 1, re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)/ },
+  { lang: 'js', kind: 'interface', name: 1, re: /^\s*(?:export\s+)?(?:declare\s+)?(?:interface|type)\s+([A-Za-z_$][\w$]*)/ },
+  { lang: 'js', kind: 'enum', name: 1, re: /^\s*(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+([A-Za-z_$][\w$]*)/ },
+  // Identifier-named namespaces only. A string-named ambient module
+  // (`declare module 'virtual'`) has its name masked away by maskLiterals, so
+  // there is nothing to capture; those declare external shapes, not project
+  // symbols, so skipping them loses nothing from the dependency graph.
+  { lang: 'js', kind: 'namespace', name: 1, re: /^\s*(?:export\s+)?(?:declare\s+)?namespace\s+([A-Za-z_$][\w$]*)/ },
+  { lang: 'js', kind: 'function', name: 1, re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?async\s+function\s*\*?\s*([A-Za-z_$][\w$]*)/ },
+  { lang: 'js', kind: 'function', name: 1, re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/ },
+  { lang: 'js', kind: 'function', name: 1, re: new RegExp('^\\s*(?:export\\s+)?(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*' + TS_ANNOTATION + '=\\s*(?:async\\s*)?(?:function\\s*\\*?\\s*\\(|\\([^)]*\\)\\s*=>|[A-Za-z_$][\\w$]*\\s*=>)') },
   // Module-scope constants only. A `const` inside a function body is a local,
   // not part of the codebase's referenceable surface — indexing those buried
   // the real symbols (an early run produced 1795 variable hits on 68 files).
@@ -183,8 +198,21 @@ const SYMBOL_RULES = [
   // IIFE-wrapped, so its module constants sit at indent 2 and a `topLevelOnly`
   // indent test would have discarded all of them.
   { lang: 'js', kind: 'variable', name: 1, moduleScopeOnly: true,
-    re: /^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/ },
-  { lang: 'js', kind: 'method', name: 1, re: /^\s*(?:static\s+)?(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{/ },
+    re: new RegExp('^\\s*(?:export\\s+)?(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*' + TS_ANNOTATION + '=') },
+  // Member with a body. Tolerates TypeScript generics and return-type
+  // annotations: the old `\)\s*\{` form missed every method annotated with a
+  // return type, which is most of a typed codebase.
+  { lang: 'js', kind: 'method', name: 1,
+    re: new RegExp('^\\s*(?:' + TS_MOD + '\\s+)*(?:async\\s+)?(?:get\\s+|set\\s+)?([A-Za-z_$][\\w$]*)\\s*(?:<[^>()]*>)?\\s*\\([^)]*\\)\\s*' + TS_RETURNTYPE + '\\s*\\{') },
+  // Signature-only member with an explicit modifier (abstract method, overload,
+  // `declare function`). Requiring a modifier keeps plain call statements such
+  // as `foo();` from being mistaken for declarations.
+  { lang: 'js', kind: 'method', name: 1,
+    re: new RegExp('^\\s*(?:' + TS_MOD + '\\s+)+(?:async\\s+)?(?:get\\s+|set\\s+)?([A-Za-z_$][\\w$]*)\\s*(?:<[^>()]*>)?\\s*\\([^)]*\\)\\s*(?::[^;{]+)?\\s*;') },
+  // Interface / type-literal member signature. Only valid inside a type body,
+  // where `name(...);` cannot be a call statement.
+  { lang: 'js', kind: 'method', name: 1, typeBodyOnly: true,
+    re: /^\s*(?:readonly\s+)?(?:async\s+)?(?:get\s+|set\s+)?([A-Za-z_$][\w$]*)\s*(?:<[^>()]*>)?\s*\([^)]*\)\s*(?::[^;{]+)?\s*;/ },
   // ---- Python ----
   { lang: 'python', kind: 'class', name: 2, re: /^(\s*)class\s+([A-Za-z_]\w*)/ },
   { lang: 'python', kind: 'method', name: 2, re: /^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)/ },
@@ -237,6 +265,10 @@ function extractSymbols(file, content) {
   }
 
   const lines = masked.split('\n');
+  // The UNMASKED lines, split once. Signatures must show the real source (a
+  // masked line would blank string literals out of the signature), and the
+  // previous code re-split the whole file inside the symbol loop — O(n²).
+  const rawLines = text.split('\n');
   const rules = SYMBOL_RULES.filter(r => r.lang === language);
   const symbols = [];
   const seen = new Set();
@@ -248,13 +280,31 @@ function extractSymbols(file, content) {
   // Brace languages track scope with a stack instead of indentation, because
   // indentation says nothing about scope: every renderer file in this repo is
   // IIFE-wrapped, so its module constants sit at indent 2 while still being
-  // module scope. Each entry records whether that brace opened a FUNCTION body
-  // (declarations inside it are locals) or module-ish scope (an IIFE wrapper,
-  // an object literal). A declaration is module scope when no enclosing brace
-  // is a function body — so nesting inside an `if` block within a function is
-  // still correctly treated as function scope.
-  const braceStack = [];
-  const inFunctionBody = () => braceStack.some(Boolean);
+  // module scope. Each entry records what that brace opened — a FUNCTION body
+  // (declarations inside it are locals), a TYPE body (interface/enum/namespace,
+  // where a `name(...);` line is a member signature and not a call statement),
+  // or neither (an IIFE wrapper, an object literal, a block).
+  //
+  // A declaration is module scope when no enclosing brace is a function body —
+  // so nesting inside an `if` block within a function is still correctly
+  // treated as function scope.
+  const scopeStack = [];
+  const inFunctionBody = () => scopeStack.some(e => e.fn);
+  const inTypeBody = () => scopeStack.some(e => e.type);
+  const enclosingTypeName = () => {
+    for (let k = scopeStack.length - 1; k >= 0; k--) {
+      if (scopeStack[k].type && scopeStack[k].name) return scopeStack[k].name;
+    }
+    return null;
+  };
+  // Members of an exported type are exported too, even though the member's own
+  // line carries no `export` keyword. Walk outward to the nearest type scope.
+  const enclosingTypeExported = () => {
+    for (let k = scopeStack.length - 1; k >= 0; k--) {
+      if (scopeStack[k].type && scopeStack[k].name) return !!scopeStack[k].exported;
+    }
+    return false;
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -262,11 +312,16 @@ function extractSymbols(file, content) {
     const indent = line.length - line.trimStart().length;
     const trimmed = line.trim();
     const moduleScope = language === 'python' ? indent === 0 : !inFunctionBody();
+    const typeBody = language === 'python' ? false : inTypeBody();
 
     let produced = null;
     for (const rule of rules) {
       // Module constants only: skip locals declared inside a function body.
       if (rule.moduleScopeOnly && !moduleScope) continue;
+      // Signature-only members (`method(x: number): void;`) are meaningful only
+      // inside an interface or type literal. Elsewhere that shape is an
+      // ordinary call statement, and indexing it would invent symbols.
+      if (rule.typeBodyOnly && !typeBody) continue;
       const m = rule.re.exec(line);
       if (!m) continue;
       const rawName = (m[rule.name] || '').trim();
@@ -285,13 +340,22 @@ function extractSymbols(file, content) {
           if (indent === 0) kind = 'function';
           else if (lastClassName !== null && indent > lastClassIndent) scope = lastClassName;
         }
+      } else if (typeBody) {
+        // A member declared inside a class/interface/enum/namespace body is
+        // qualified by that type, which is how TypeScript itself names it
+        // (Service.fetch, Nested.method, Outer.inner). Without this, every
+        // method in a typed codebase indexed as a bare name and collided.
+        scope = enclosingTypeName();
       }
       const endLine = guessEndLine(lines, i, indent, language);
       const key = `${kind}:${scope || ''}:${name}:${i + 1}`;
       if (seen.has(key)) break;
       seen.add(key);
 
-      const rawLine = (text.split('\n')[i] || '').trim();
+      const rawLine = (rawLines[i] || '').trim();
+      // A member of an exported type is part of the module's public surface
+      // even though its own line carries no `export` keyword.
+      const inheritedExport = typeBody ? !!enclosingTypeExported() : false;
       const symbol = {
         name,
         qualified: scope ? `${scope}.${name}` : name,
@@ -302,7 +366,7 @@ function extractSymbols(file, content) {
         line: i + 1,
         endLine,
         signature: rawLine.length > 200 ? rawLine.slice(0, 200) + '…' : rawLine,
-        exported: /\bexport\b/.test(rawLine) || (language === 'python' && !name.startsWith('_'))
+        exported: inheritedExport || /\bexport\b/.test(rawLine) || (language === 'python' && !name.startsWith('_'))
           || (language === 'js' && /module\.exports/.test(text)),
       };
       symbols.push(symbol);
@@ -310,16 +374,28 @@ function extractSymbols(file, content) {
       break; // one symbol per line
     }
 
-    // Update brace scope for the NEXT line. Masked input means comments,
-    // strings and regex bodies cannot contribute stray braces.
+    // Update scope for the NEXT line. Masked input means comments, strings and
+    // regex bodies cannot contribute stray braces.
     if (language !== 'python' && language !== 'markdown') {
-      const opensFn = !!(produced && ['function', 'method'].includes(produced.kind))
-        || /\bfunction\b/.test(trimmed) || /=>/.test(trimmed);
+      const producedKind = produced ? produced.kind : null;
+      // A class/interface/enum/namespace brace opens a TYPE body: `name(...);`
+      // inside it is a member signature rather than a call statement, and
+      // declarations inside are qualified by this name.
+      const opensType = producedKind === 'class' || producedKind === 'interface'
+        || producedKind === 'enum' || producedKind === 'namespace';
+      const opensFn = !opensType && (producedKind === 'function' || producedKind === 'method'
+        || /\bfunction\b/.test(trimmed) || /=>/.test(trimmed));
       // An IIFE wrapper's body is module scope, not a function body.
       const isIife = /^[(;]?\(?\s*(?:async\s+)?(?:function\s*\(|\(\s*\)\s*=>)/.test(trimmed);
+      const entry = {
+        fn: opensFn && !isIife,
+        type: opensType,
+        name: opensType ? produced.name : null,
+        exported: opensType ? /\bexport\b/.test(rawLines[i] || '') : false,
+      };
       for (const ch of line) {
-        if (ch === '{') braceStack.push(opensFn && !isIife);
-        else if (ch === '}') braceStack.pop();
+        if (ch === '{') scopeStack.push(entry);
+        else if (ch === '}') scopeStack.pop();
       }
     }
   }
