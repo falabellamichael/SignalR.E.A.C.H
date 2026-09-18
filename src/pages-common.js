@@ -62,8 +62,58 @@
             .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
             .then(({ ok, data }) => {
                 if (!ok) throw new Error((data && data.error) || 'publish failed');
-                return data.public_url;
+                return data;
             });
+    }
+
+    /* Destructive-action confirmation modal (PRD: purge/flush/revoke all
+     * require an explicit confirm step). Resolves true on Confirm, false on
+     * Cancel/Escape/backdrop click. */
+    function confirmDialog(opts) {
+        const { title, message, confirmLabel, danger } = opts || {};
+        return new Promise(resolve => {
+            const overlay = el('div', 'reach-modal-overlay');
+            const modal = el('div', 'reach-modal-card reach-modal-confirm');
+            const head = el('div', 'reach-modal-head');
+            const titleWrap = el('h3', null);
+            const warnIcon = el('i', 'fa-solid fa-triangle-exclamation reach-confirm-icon');
+            titleWrap.appendChild(warnIcon);
+            titleWrap.appendChild(document.createTextNode(' ' + (title || 'Confirm action')));
+            head.appendChild(titleWrap);
+            modal.appendChild(head);
+            const body = el('div', 'reach-modal-body');
+            body.appendChild(el('p', 'reach-copy', message || 'Are you sure?'));
+            modal.appendChild(body);
+            const foot = el('div', 'reach-modal-foot');
+            const cancelBtn = el('button', 'reach-btn reach-btn-sm', 'Cancel');
+            const okBtn = el('button',
+                'reach-btn reach-btn-sm ' + (danger ? 'reach-btn-danger' : 'reach-btn-primary'),
+                confirmLabel || 'Confirm');
+            foot.appendChild(cancelBtn);
+            foot.appendChild(okBtn);
+            modal.appendChild(foot);
+            overlay.appendChild(modal);
+            document.body.appendChild(overlay);
+            // Body-level overlay: inherit the user's chosen accent palette.
+            if (window.signalReach && typeof window.signalReach.reapplyAccent === 'function') {
+                try { window.signalReach.reapplyAccent(); } catch (_e) { /* cosmetic only */ }
+            }
+
+            let settled = false;
+            const close = result => {
+                if (settled) return;
+                settled = true;
+                document.removeEventListener('keydown', onKey);
+                if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+                resolve(result);
+            };
+            const onKey = e => { if (e.key === 'Escape') close(false); };
+            cancelBtn.addEventListener('click', () => close(false));
+            okBtn.addEventListener('click', () => close(true));
+            overlay.addEventListener('click', e => { if (e.target === overlay) close(false); });
+            document.addEventListener('keydown', onKey);
+            okBtn.focus();
+        });
     }
 
     window.__reachPageWidgets = Object.freeze({
@@ -72,6 +122,7 @@
         emptyNote,
         chip,
         kv,
-        publishNow
+        publishNow,
+        confirmDialog
     });
 })();

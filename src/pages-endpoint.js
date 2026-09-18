@@ -44,6 +44,86 @@
         urlCard.appendChild(meta);
         body.appendChild(urlCard);
 
+        // --- Endpoint Diagnostics Card (PRD: Test Public Endpoint Reachability) ---
+        const diagCard = el('section', 'reach-card');
+        const diagHead = el('header', 'reach-card-head');
+        diagHead.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">'
+            + '<i class="fa-solid fa-stethoscope" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+            + '<span>Endpoint Diagnostics</span></div>'
+            + '<span class="reach-chip" id="diag-badge">idle</span>';
+        diagCard.appendChild(diagHead);
+        const diagBody = el('div', 'reach-card-body');
+        diagBody.appendChild(el('p', 'reach-copy',
+            'Probe the public pointer URL from the relay itself: TLS certificate validity, response headers, and a sample chat payload with round-trip timing. Verifies external clients can actually connect.'));
+        const diagUrl = el('div', 'reach-url-row');
+        const diagUrlCode = el('code', 'reach-url', core.store.pointerUrl || (core.store.local && core.store.local.public_url) || 'no public URL yet');
+        diagUrl.appendChild(diagUrlCode);
+        diagBody.appendChild(diagUrl);
+        const diagResults = el('div', 'reach-diag-results');
+        diagResults.hidden = true;
+        diagBody.appendChild(diagResults);
+        const diagFoot = el('div', 'reach-card-foot');
+        const diagBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm');
+        diagBtn.innerHTML = '<i class="fa-solid fa-satellite-dish"></i> Run Diagnostics';
+        const diagBadge = diagHead.querySelector('#diag-badge');
+        diagBtn.addEventListener('click', () => {
+            diagBtn.disabled = true;
+            diagBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Probing…';
+            diagBadge.className = 'reach-chip';
+            diagBadge.textContent = 'running…';
+            diagResults.hidden = false;
+            diagResults.innerHTML = '<p class="reach-hint">Contacting public endpoint…</p>';
+            core.relayFetch('/_reach/diagnose', { method: 'POST' }, 90000)
+                .then(res => res.json().then(data => ({ ok: res.ok, status: res.status, data })))
+                .then(({ ok, status, data }) => {
+                    diagResults.innerHTML = '';
+                    if (data.url) {
+                        const u = el('div', 'reach-hint', 'Target: ' + data.url + (data.total_ms != null ? ' — ' + data.total_ms + ' ms total' : ''));
+                        diagResults.appendChild(u);
+                    }
+                    const checks = data.checks || [];
+                    if (checks.length) {
+                        const tbl = el('table', 'reach-table');
+                        tbl.innerHTML = '<thead><tr><th>Check</th><th>Result</th><th>Detail</th></tr></thead>';
+                        const tb = document.createElement('tbody');
+                        checks.forEach(c => {
+                            const tr = document.createElement('tr');
+                            tr.appendChild(el('td', null, c.name || '—'));
+                            const resTd = el('td', null, c.ok ? 'PASS' : 'FAIL');
+                            resTd.className = c.ok ? 'reach-kv-ok' : 'reach-kv-bad';
+                            tr.appendChild(resTd);
+                            tr.appendChild(el('td', 'reach-hint', c.detail || ''));
+                            tb.appendChild(tr);
+                        });
+                        tbl.appendChild(tb);
+                        diagResults.appendChild(tbl);
+                    }
+                    if (data.error) {
+                        const e = el('div', 'reach-banner reach-banner-off', 'Diagnostic error: ' + data.error);
+                        diagResults.appendChild(e);
+                    }
+                    const passed = ok && data.ok;
+                    diagBadge.className = 'reach-chip ' + (passed ? 'reach-chip-live' : 'reach-chip-warn');
+                    diagBadge.textContent = passed ? 'reachable ✓' : 'failed ✗';
+                    toast(passed ? 'Endpoint reachable ✓' : 'Diagnostics reported failures', passed ? 'ok' : 'error');
+                })
+                .catch(err => {
+                    diagResults.innerHTML = '';
+                    diagResults.appendChild(el('div', 'reach-banner reach-banner-off', 'Diagnostics unavailable: ' + err.message));
+                    diagBadge.className = 'reach-chip reach-chip-warn';
+                    diagBadge.textContent = 'error';
+                    toast('Diagnostics failed: ' + err.message, 'error');
+                })
+                .finally(() => {
+                    diagBtn.disabled = false;
+                    diagBtn.innerHTML = '<i class="fa-solid fa-satellite-dish"></i> Run Diagnostics';
+                });
+        });
+        diagFoot.appendChild(diagBtn);
+        diagBody.appendChild(diagFoot);
+        diagCard.appendChild(diagBody);
+        body.appendChild(diagCard);
+
         // --- Interactive API Playground Card ---
         const playCard = el('section', 'reach-card');
         const playHead = el('header', 'reach-card-head');
@@ -118,6 +198,18 @@
         tempInput.style.width = '54px';
         ctrlBar.appendChild(tempInput);
 
+        // Max tokens
+        const maxLabel = el('span', 'reach-hint', 'Max tok:');
+        ctrlBar.appendChild(maxLabel);
+        const maxInput = el('input', 'reach-input reach-input-sm');
+        maxInput.type = 'number';
+        maxInput.min = '1';
+        maxInput.max = '8192';
+        maxInput.step = '64';
+        maxInput.value = '512';
+        maxInput.style.width = '64px';
+        ctrlBar.appendChild(maxInput);
+
         // Send Button
         const sendBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm');
         sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i> Send';
@@ -158,6 +250,9 @@
             const model = modelSelect.value || 'gpt-4o';
             const isStream = streamCheck.checked;
             const temp = parseFloat(tempInput.value) || 0.7;
+            let maxTok = parseInt(maxInput.value, 10);
+            if (isNaN(maxTok) || maxTok < 1) maxTok = 512;
+            if (maxTok > 8192) maxTok = 8192;
 
             sendBtn.disabled = true;
             sendBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Sending…';
@@ -172,7 +267,7 @@
                 messages: [{ role: 'user', content: prompt }],
                 stream: isStream,
                 temperature: temp,
-                max_tokens: 512
+                max_tokens: maxTok
             };
 
             const targetUrl = core.RELAY + '/v1/chat/completions';

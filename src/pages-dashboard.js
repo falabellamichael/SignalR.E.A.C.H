@@ -13,7 +13,7 @@
         return;
     }
     const { el, esc, toast } = core;
-    const { pageHeader, statTile, chip, kv, publishNow } =
+    const { pageHeader, statTile, chip, kv, publishNow, confirmDialog } =
         window.__reachPageWidgets;
 
     /* ------------------------------------------------------------- DASHBOARD */
@@ -187,8 +187,20 @@
                 actRow.appendChild(actionBtn('fa-cloud-arrow-up', 'Publish pointer URL',
                     () => publishNow().then(() => toast('Published ✓', 'ok'))));
                 actRow.appendChild(actionBtn('fa-trash-can', 'Clear request log',
-                    () => core.relayFetch('/_reach/logs', { method: 'DELETE' }, 5000)
-                        .then(() => toast('Log cleared ✓', 'ok'))));
+                    () => confirmDialog({
+                        title: 'Clear all request logs?',
+                        message: 'This permanently purges every stored request record from the local database. The purge is recorded in the audit trail. This cannot be undone.',
+                        confirmLabel: 'Purge Logs',
+                        danger: true
+                    }).then(ok => {
+                        if (!ok) return;
+                        return core.relayFetch('/_reach/logs', { method: 'DELETE' }, 5000)
+                            .then(res => {
+                                if (!res.ok) throw new Error('HTTP ' + res.status);
+                                toast('Log cleared ✓', 'ok');
+                            })
+                            .catch(err => toast('Purge failed: ' + err.message, 'error'));
+                    })));
                 wrap.appendChild(actRow);
 
                 return wrap;

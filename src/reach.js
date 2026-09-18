@@ -194,7 +194,7 @@
 
     function applyAccentColor(hex) {
         const targets = document.querySelectorAll(
-            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page, .reach-modal-card'
+            '.reach-page, .reach-shell, .reach-stationary-panel, .reach-toast, #reach-page, .reach-modal-card, .reach-palette-overlay'
         );
         if (!hex || hex === 'default') {
             const props = [
@@ -895,6 +895,184 @@
     }
 
     // ------------------------------------------------------------------
+    // Quick Jump & Shortcut Command Bar (Ctrl+K / Cmd+K) — PRD navigation
+    // ------------------------------------------------------------------
+    let paletteOverlay = null;
+
+    function paletteCommands() {
+        const cmds = pages.defs.map(def => ({
+            label: def.label,
+            hint: 'Go to page',
+            icon: def.icon,
+            run: () => switchPage(def.id, true)
+        }));
+        cmds.push({
+            label: 'Ping upstream',
+            hint: 'Run /_reach/test now',
+            icon: 'fa-bolt',
+            run: () => {
+                core.toast('Pinging upstream…', 'info');
+                core.relayFetch('/_reach/test', { method: 'POST' }, 20000)
+                    .then(r => r.json())
+                    .then(d => core.toast(d.ok
+                        ? 'Upstream reachable: ' + core.fmtLatency(d.latency_ms)
+                        : 'Upstream test failed: ' + (d.error || '?'), d.ok ? 'ok' : 'error'))
+                    .catch(err => core.toast('Ping failed: ' + err.message, 'error'));
+            }
+        });
+        cmds.push({
+            label: 'Run endpoint diagnostics',
+            hint: 'Probe the public pointer URL',
+            icon: 'fa-stethoscope',
+            run: () => {
+                switchPage('endpoint', true);
+                setTimeout(() => {
+                    // Click the diagnostics card's trigger button.
+                    const buttons = document.querySelectorAll('.reach-card-foot .reach-btn-primary');
+                    for (const b of buttons) {
+                        if (/Run Diagnostics/.test(b.textContent || '')) { b.click(); return; }
+                    }
+                }, 250);
+            }
+        });
+        cmds.push({
+            label: 'Flush response cache',
+            hint: 'Clear cached upstream responses',
+            icon: 'fa-broom',
+            run: () => {
+                window.__reachPageWidgets.confirmDialog({
+                    title: 'Flush response cache?',
+                    message: 'All cached responses will be discarded. This cannot be undone.',
+                    confirmLabel: 'Flush Cache',
+                    danger: true
+                }).then(ok => {
+                    if (!ok) return;
+                    core.relayFetch('/_reach/cache/clear', { method: 'POST' }, 5000)
+                        .then(res => res.json())
+                        .then(d => core.toast('Cache flushed ✓ (' + (d.entries || 0) + ' entries)', 'ok'))
+                        .catch(err => core.toast('Flush failed: ' + err.message, 'error'));
+                });
+            }
+        });
+        return cmds;
+    }
+
+    function openCommandPalette() {
+        if (paletteOverlay) return;
+        const cmds = paletteCommands();
+        const overlay = core.el('div', 'reach-modal-overlay reach-palette-overlay');
+        const box = core.el('div', 'reach-palette');
+        box.setAttribute('role', 'dialog');
+        box.setAttribute('aria-label', 'REACH command palette');
+
+        const input = core.el('input', 'reach-palette-input');
+        input.type = 'text';
+        input.placeholder = 'Jump to a page or run a command… (Esc to close)';
+        const list = core.el('div', 'reach-palette-list');
+        let filtered = cmds.slice();
+        let selected = 0;
+
+        function renderList() {
+            list.innerHTML = '';
+            if (!filtered.length) {
+                list.appendChild(core.el('div', 'reach-palette-empty', 'No matching commands'));
+                return;
+            }
+            filtered.forEach((cmd, idx) => {
+                const row = core.el('button', 'reach-palette-row' + (idx === selected ? ' reach-palette-row-active' : ''));
+                row.type = 'button';
+                const ic = core.el('i', 'fa-solid ' + (cmd.icon || 'fa-angle-right'));
+                const label = core.el('span', 'reach-palette-label', cmd.label);
+                const hint = core.el('span', 'reach-palette-hint', cmd.hint || '');
+                row.appendChild(ic);
+                row.appendChild(label);
+                row.appendChild(hint);
+                row.addEventListener('click', () => { close(); cmd.run(); });
+                row.addEventListener('mouseenter', () => {
+                    selected = idx;
+                    list.querySelectorAll('.reach-palette-row').forEach((r, i) =>
+                        r.classList.toggle('reach-palette-row-active', i === idx));
+                });
+                list.appendChild(row);
+            });
+        }
+
+        function applyFilter() {
+            const q = input.value.trim().toLowerCase();
+            filtered = q
+                ? cmds.filter(c => (c.label + ' ' + (c.hint || '')).toLowerCase().includes(q))
+                : cmds.slice();
+            selected = 0;
+            renderList();
+        }
+
+        function close() {
+            document.removeEventListener('keydown', onKey, true);
+            if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+            paletteOverlay = null;
+        }
+
+        function onKey(e) {
+            if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return; }
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                selected = Math.min(selected + 1, filtered.length - 1);
+                renderList();
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                selected = Math.max(selected - 1, 0);
+                renderList();
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                const cmd = filtered[selected];
+                if (cmd) { close(); cmd.run(); }
+            }
+        }
+
+        input.addEventListener('input', applyFilter);
+        overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+        document.addEventListener('keydown', onKey, true);
+
+        box.appendChild(input);
+        box.appendChild(list);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+        paletteOverlay = overlay;
+        // The overlay lives on document.body (outside .reach-page), so re-seed
+        // the user's chosen accent onto it now that it exists.
+        applyAccentColor(runtime.accentColor);
+        renderList();
+        input.focus();
+    }
+
+    function onGlobalKeydown(e) {
+        // Ctrl+K / Cmd+K opens the palette while the REACH page is active.
+        if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+            if (!runtime.mounted) return;
+            if (!document.querySelector('.reach-page')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            openCommandPalette();
+        }
+    }
+
+    function installPaletteHotkey() {
+        if (runtime.paletteHotkey) return;
+        document.addEventListener('keydown', onGlobalKeydown, true);
+        runtime.paletteHotkey = true;
+    }
+
+    function removePaletteHotkey() {
+        if (!runtime.paletteHotkey) return;
+        document.removeEventListener('keydown', onGlobalKeydown, true);
+        runtime.paletteHotkey = false;
+        if (paletteOverlay && paletteOverlay.parentNode) {
+            paletteOverlay.parentNode.removeChild(paletteOverlay);
+        }
+        paletteOverlay = null;
+    }
+
+    // ------------------------------------------------------------------
     // Page controller (SimpleRAG host contract)
     // ------------------------------------------------------------------
     const controller = {
@@ -915,6 +1093,7 @@
         activate(context) {
             runtime.context = context || runtime.context;
             runtime.mounted = true;
+            installPaletteHotkey();
             const saved = core.prefsGet('page', 'dashboard');
             runtime.activePage = pages.defs.some(d => d.id === saved) ? saved : 'dashboard';
             if (runtime.context && runtime.context.state) {
@@ -985,11 +1164,13 @@
         deactivate() {
             runtime.mounted = false;
             stopPolling();
+            removePaletteHotkey();
         },
 
         unmount() {
             runtime.mounted = false;
             stopPolling();
+            removePaletteHotkey();
             if (runtime.themeObserver) {
                 try { runtime.themeObserver.disconnect(); } catch (_e) { }
                 runtime.themeObserver = null;
@@ -1049,6 +1230,12 @@
         version: MANIFEST.version,
         ensureHostRecord: ensureHostRecord,
         switchPage: switchPage,
+        // Re-seeds the user's chosen accent onto REACH-scoped containers.
+        // Body-level overlays (confirm dialog, log inspector, palette) are
+        // created AFTER the last accent application and live outside
+        // .reach-page, so they call this on mount to inherit the palette.
+        // Honors the applyAccentColor() rule: never touches body or :root.
+        reapplyAccent: () => applyAccentColor(runtime.accentColor),
         controller: controller
     });
     window[CONTROLLER_DISPOSE_KEY] = controller.unmount;

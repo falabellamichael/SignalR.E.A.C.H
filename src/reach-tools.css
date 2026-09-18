@@ -206,3 +206,151 @@
     to { opacity: 1; transform: scale(1); }
 }
 
+/* ---- payload-inspector drawer variant (wider, right-aligned slide-in) ---- */
+.reach-modal-drawer {
+    max-width: 760px;
+    animation: reachDrawerIn 160ms ease;
+}
+
+@keyframes reachDrawerIn {
+    from { opacity: 0; transform: translateX(24px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* ---- confirm-dialog warning icon (warn token, theme-aware) ---- */
+.reach-confirm-icon {
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+/* ---- endpoint diagnostics results ---- */
+.reach-diag-results {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.reach-diag-results[hidden] {
+    display: none !important;
+}
+
+/* ---- pointer publication status row ---- */
+.reach-pointer-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
+
+.reach-pointer-status a {
+    color: var(--reach-accent-light, #ffd37a);
+    text-decoration: none;
+}
+
+.reach-pointer-status a:hover {
+    text-decoration: underline;
+}
+
+/* ---- Ctrl+K command palette ----
+ * Uses the same accent tokens as the rest of the panel so it follows the
+ * user's chosen accent preset (Amber Gold / Warm Blue / Cyber Cyan / …).
+ * The overlay is appended to document.body, so reach.js lists
+ * .reach-palette-overlay in applyAccentColor() to seed these vars. */
+.reach-palette-overlay {
+    align-items: flex-start;
+    padding-top: 12vh;
+}
+
+.reach-palette {
+    background: #141920;
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 520px;
+    color: var(--text-primary, #e6e6e6);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    animation: reachFadeIn 140ms ease;
+}
+
+.reach-palette-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 12px 14px;
+    font: inherit;
+    font-size: 13px;
+    color: inherit;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.2);
+    outline: none;
+}
+
+.reach-palette-input::placeholder {
+    color: var(--text-muted, #9aa4b2);
+    opacity: 0.75;
+}
+
+.reach-palette-list {
+    max-height: 320px;
+    overflow-y: auto;
+    padding: 6px;
+}
+
+.reach-palette-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    font: inherit;
+    font-size: 12px;
+    color: inherit;
+    text-align: left;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.reach-palette-row i {
+    width: 16px;
+    opacity: 0.7;
+    flex: 0 0 auto;
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+.reach-palette-row-active {
+    background: var(--reach-accent-bg, rgba(255, 176, 32, 0.12));
+    outline: 1px solid var(--reach-accent-border, rgba(255, 176, 32, 0.3));
+}
+
+.reach-palette-row-active i {
+    opacity: 1;
+}
+
+.reach-palette-label {
+    font-weight: 600;
+    flex: 0 0 auto;
+}
+
+.reach-palette-hint {
+    font-size: 10.5px;
+    color: var(--text-muted, #9aa4b2);
+    opacity: 0.85;
+    margin-left: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 55%;
+}
+
+.reach-palette-empty {
+    padding: 14px;
+    text-align: center;
+    font-size: 11.5px;
+    color: var(--text-muted, #9aa4b2);
+    opacity: 0.8;
+}
+

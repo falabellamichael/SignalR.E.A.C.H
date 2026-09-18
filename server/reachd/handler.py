@@ -22,7 +22,7 @@ from reachd.browser import BrowserError, fetch_page
 from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
 from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
-from reachd.publish import publish_url
+from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
     DEFAULT_SETTINGS,
     SettingsError,
@@ -161,6 +161,21 @@ class RelayHandler(BaseHTTPRequestHandler):
                                    "type": "forbidden"}})
         return False
 
+    def _admin_actor(self):
+        """Human-readable actor name for audit-trail entries: the local panel
+        or the remote admin token (never the token value itself)."""
+        if self._admin_local():
+            return "local-admin"
+        return "remote-admin-token"
+
+    def _audit(self, action, detail=""):
+        """Record a destructive admin action (timestamp + actor) without ever
+        letting an analytics failure break the request."""
+        try:
+            core.STATE.analytics.log_audit(action, self._admin_actor(), detail)
+        except Exception:
+            pass
+
     def _check_access(self):
         access = core.STATE.cfg.get("access", {})
         key_required = access.get("key_required", False)
@@ -295,6 +310,21 @@ class RelayHandler(BaseHTTPRequestHandler):
                     limit=query.get("limit", 100),
                     status=query.get("status"),
                     model=query.get("model"))})
+            elif path.startswith("/_reach/logs/"):
+                if not self._require_admin():
+                    return
+                log_id = path[len("/_reach/logs/"):]
+                record = core.STATE.analytics.log_detail(log_id)
+                if record is None:
+                    self._json(404, {"error": {"message": "Log entry not found",
+                                               "type": "not_found"}})
+                else:
+                    self._json(200, record)
+            elif path == "/_reach/audit":
+                if not self._require_admin():
+                    return
+                self._json(200, {"events": core.STATE.analytics.audit_events(
+                    limit=query.get("limit", 50))})
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
@@ -336,6 +366,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 core.STATE.analytics.clear()
+                self._audit("logs.purge")
                 self._json(200, {"cleared": True})
             elif path.startswith("/_reach/keys/"):
                 if not self._require_admin():
@@ -349,6 +380,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                                       if k.get("id") != key_id and k.get("key") != key_id]
                     if len(access["keys"]) < orig_len:
                         save_config(core.STATE.cfg, core.STATE.cfg_path)
+                        self._audit("keys.revoke", "id=%s" % key_id)
                         self._json(200, {"deleted": True, "id": key_id})
                     else:
                         self._json(404, {"error": {"message": "Key not found", "type": "not_found"}})
@@ -441,15 +473,30 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_upstream_test()
+            elif path == "/_reach/diagnose":
+                if not self._require_admin():
+                    return
+                self.handle_diagnose()
             elif path == "/_reach/publish":
                 if not self._require_admin():
                     return
                 self.handle_publish()
+            elif path == "/_reach/publish/revoke":
+                if not self._require_admin():
+                    return
+                ok, detail = revoke_url(core.STATE)
+                if ok:
+                    self._audit("pointer.revoke")
+                    self._json(200, {"ok": True, "detail": detail})
+                else:
+                    self._json(400, {"ok": False, "error": detail})
             elif path == "/_reach/cache/clear":
                 if not self._require_admin():
                     return
+                entries = len(core.STATE.cache)
                 core.STATE.cache.clear()
-                self._json(200, {"cleared": True})
+                self._audit("cache.flush", "entries=%d" % entries)
+                self._json(200, {"cleared": True, "entries": entries})
             elif path == "/_reach/keys":
                 if not self._require_admin():
                     return
@@ -756,9 +803,103 @@ class RelayHandler(BaseHTTPRequestHandler):
     def handle_publish(self):
         ok, detail = publish_url(core.STATE)
         if ok:
-            self._json(200, {"ok": True, "public_url": detail})
+            self._audit("pointer.publish", detail)
+            self._json(200, {"ok": True, "public_url": detail,
+                             "published_at": core.STATE.last_published_at})
         else:
             self._json(400, {"ok": False, "error": detail})
+
+    def handle_diagnose(self):
+        """PRD 'Test Public Endpoint Reachability': probe the relay's own
+        public pointer URL from the outside — TLS handshake, headers, and a
+        sample chat payload with round-trip timing. Server-side (not the
+        browser) so CORS/opaque responses can't fake a pass."""
+        url = (core.STATE.public_url or "").strip()
+        if not url:
+            return self._json(409, {"ok": False,
+                                    "error": "no public URL — start a tunnel "
+                                             "or set an override first"})
+        if not url.lower().startswith("https://"):
+            return self._json(409, {"ok": False,
+                                    "error": "public URL is not https"})
+        checks = []
+        started = time.time()
+        # ngrok free tier serves a browser-warning interstitial (HTTP 502 to
+        # plain clients) unless this header is present — a diagnostics probe
+        # must see the real endpoint, not the interstitial.
+        probe_headers = {"User-Agent": "SignalR.E.A.C.H-diagnose",
+                         "ngrok-skip-browser-warning": "1"}
+        try:
+            # Plain GET /health through the public URL. ssl context is the
+            # default (verifies certificate + hostname) — a bad cert raises.
+            req = urllib.request.Request(url.rstrip("/") + "/health",
+                                         headers=probe_headers)
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                health_ms = round((time.time() - started) * 1000)
+                body = resp.read(4096).decode("utf-8", "replace")
+                try:
+                    health = json.loads(body)
+                except ValueError:
+                    health = {}
+                checks.append({"name": "tls_and_headers", "ok": True,
+                               "detail": "certificate verified; HTTP %d in %d ms"
+                                         % (resp.status, health_ms),
+                               "status": resp.status, "latency_ms": health_ms})
+                checks.append({"name": "relay_health",
+                               "ok": bool(health.get("ok")),
+                               "detail": "service=%s version=%s"
+                                         % (health.get("service", "?"),
+                                            health.get("version", "?"))})
+        except urllib.error.HTTPError as exc:
+            return self._json(502, {"ok": False, "url": url, "checks": checks,
+                                    "error": "HTTP %d from public endpoint"
+                                             % exc.code})
+        except Exception as exc:
+            # ssl.SSLCertVerificationError, DNS failures, timeouts, connection
+            # refused (firewall) all land here with the real message.
+            return self._json(502, {"ok": False, "url": url, "checks": checks,
+                                    "error": str(exc)[:300]})
+
+        # Sample chat payload through the public route (tiny, cheap).
+        probe_started = time.time()
+        access = core.STATE.cfg.get("access", {}) or {}
+        headers = {"Content-Type": "application/json",
+                   "ngrok-skip-browser-warning": "1"}
+        legacy_key = access.get("access_key")
+        if access.get("key_required") and legacy_key:
+            headers["Authorization"] = "Bearer " + legacy_key
+        payload = {"model": sorted(core.STATE.public_models() or ["gpt-4o"])[0],
+                   "messages": [{"role": "user",
+                                 "content": "Reply with exactly: REACH OK"}],
+                   "max_tokens": 16, "stream": False}
+        try:
+            req = urllib.request.Request(
+                url.rstrip("/") + "/v1/chat/completions",
+                data=json.dumps(payload).encode("utf-8"), method="POST",
+                headers=headers)
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                chat_ms = round((time.time() - probe_started) * 1000)
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+                reply = (data.get("choices") or [{}])[0].get("message", {}).get("content")
+                checks.append({"name": "chat_completion", "ok": True,
+                               "detail": "HTTP %d in %d ms — %r"
+                                         % (resp.status, chat_ms,
+                                            (reply or "")[:40]),
+                               "status": resp.status, "latency_ms": chat_ms})
+        except urllib.error.HTTPError as exc:
+            detail = exc.read(512).decode("utf-8", "replace")
+            checks.append({"name": "chat_completion", "ok": False,
+                           "detail": "HTTP %d — %s" % (exc.code, detail[:200]),
+                           "status": exc.code,
+                           "latency_ms": round((time.time() - probe_started) * 1000)})
+        except Exception as exc:
+            checks.append({"name": "chat_completion", "ok": False,
+                           "detail": str(exc)[:200],
+                           "latency_ms": round((time.time() - probe_started) * 1000)})
+        ok = all(c.get("ok") for c in checks)
+        self._json(200 if ok else 502,
+                   {"ok": ok, "url": url, "checks": checks,
+                    "total_ms": round((time.time() - started) * 1000)})
 
     def handle_public_url_override(self):
         body = self._read_body()

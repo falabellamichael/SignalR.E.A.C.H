@@ -37,6 +37,10 @@ class RelayState:
         self.speeds = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
         self.public_url = None
         self.public_url_source = None
+        # ISO timestamp of the last successful pointer-gist publish (PRD:
+        # "UI displays publication timestamp, live status badge"). None until
+        # the first publish of this process.
+        self.last_published_at = None
         self.started_at = time.time()
         self.upstream_ok = None
         self.upstream_checked = 0.0
@@ -252,6 +256,9 @@ class RelayState:
                 "model_count": len(self.cfg.get("models", {})),
                 "public_url": self.public_url,
                 "public_url_source": self.public_url_source,
+                "last_published_at": self.last_published_at,
+                "publish_enabled": bool(self.cfg.get("publish", {})
+                                        .get("enabled")),
                 "uptime_s": round(time.time() - self.started_at, 1),
                 "p95_latency_ms": self.p95_latency_ms(),
                 "tokens_per_sec": speed,

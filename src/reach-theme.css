@@ -655,4 +655,48 @@
     border-color: var(--text-primary, #1c1917);
 }
 
+/* ---- Confirm dialog / drawer / diagnostics / pointer status (PRD overlays) ---- */
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-chip-live {
+    color: #1a7f37;
+    border-color: rgba(26, 127, 55, 0.4);
+    background: rgba(26, 127, 55, 0.1);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-confirm-icon {
+    color: #9a6700;
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-pointer-status a {
+    color: var(--reach-accent-hover, #0d5ca0);
+}
+
+/* ---- Ctrl+K command palette (warm-light) ---- */
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette {
+    background: #fffdfa;
+    border: 1px solid var(--border, #baa68f);
+    color: var(--text-primary, #1c1917);
+    box-shadow: 0 16px 40px rgba(60, 42, 20, 0.22);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette-input {
+    border-bottom: 1px solid rgba(186, 166, 143, 0.5);
+    color: var(--text-primary, #1c1917);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette-input::placeholder {
+    color: var(--text-muted, #6b5d4f);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette-row:hover {
+    background: rgba(60, 42, 20, 0.06);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette-hint {
+    color: var(--text-muted, #6b5d4f);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette-empty {
+    color: var(--text-muted, #6b5d4f);
+}
+
 
