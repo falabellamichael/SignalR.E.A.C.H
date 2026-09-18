@@ -22,6 +22,12 @@ const { validatePolicy } = require('./agent/tool-policy.cjs');
 const { TOOLS } = require('./agent/tool-registry.cjs');
 const { readChatResponse } = require('./agent/chat-response.cjs');
 const codeIndex = require('./agent/code-index.cjs');
+// The index cache is owned by code-context.cjs, which is also what prompt
+// injection and the code.* agent tools use. This file previously kept its own
+// Map; three caches for one tree disagree the moment anything writes a file, and
+// this one had no TTL and no write-invalidation, so the dashboard could keep
+// showing symbols the agent had already renamed or deleted.
+const { getIndex: sharedGetIndex } = require('./agent/code-context.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 
@@ -30,11 +36,6 @@ let studioBrowser = null;
  * grow this forever. */
 const playgroundRuns = new Map();
 const MAX_PLAYGROUND_RUNS = 8;
-
-/* One code index per project directory, so repeated symbol searches do not
- * re-walk the tree. Keyed by resolved path; entries are small summaries only. */
-const codeIndexCache = new Map();
-const MAX_INDEX_CACHE = 4;
 
 const isDev = !app.isPackaged;
 // ESM has no __dirname; import.meta.dirname is supported by the bundled Node runtime.
@@ -662,15 +663,7 @@ function registerIpc() {
   }
 
   function cachedIndex(dir, { force = false } = {}) {
-    if (!force && codeIndexCache.has(dir)) return codeIndexCache.get(dir);
-    const index = codeIndex.indexProject(dir, { maxFiles: 2000 });
-    if (codeIndexCache.size >= MAX_INDEX_CACHE) {
-      // Evict the oldest entry; Map preserves insertion order.
-      const oldest = codeIndexCache.keys().next().value;
-      if (oldest !== undefined) codeIndexCache.delete(oldest);
-    }
-    codeIndexCache.set(dir, index);
-    return index;
+    return sharedGetIndex(dir, { force });
   }
 
   ipcMain.handle('workspace:indexCode', (_e, { projectDir } = {}) => {
