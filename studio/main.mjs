@@ -34,8 +34,37 @@ const { runCommand } = require('./agent/platform.cjs');
 // this one had no TTL and no write-invalidation, so the dashboard could keep
 // showing symbols the agent had already renamed or deleted.
 const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-context.cjs');
+const { AuditLog } = require('./agent/audit-log.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
+
+/* The security audit log (PRD, Terminal & Tool Execution Sandbox: "All terminal
+ * commands ... are logged to an immutable security audit log").
+ *
+ * audit-log.cjs existed and was fully tested, but nothing ever constructed one,
+ * so the tool runner's `if (context.auditLog)` was always false and every
+ * sandbox denial was refused WITHOUT being recorded. One shared instance for the
+ * whole app: the log is hash-chained, so two writers would each maintain a
+ * different chain and neither file would verify.
+ *
+ * Lazy and cached because app.getPath('userData') is only valid once Electron is
+ * ready, and the smoke harness repoints userData at a temp profile before any
+ * agent runs — resolving it at module load would pin the log to the real
+ * profile and lose those records.
+ */
+let securityAuditLog = null;
+function getAuditLog() {
+  if (!securityAuditLog) {
+    securityAuditLog = new AuditLog(path.join(app.getPath('userData'), 'security-audit.jsonl'));
+    try { securityAuditLog.open(); }
+    catch (error) {
+      // An unreadable log must not stop the app: keep writing (open() is called
+      // again by write()), and surface the failure rather than swallowing it.
+      console.error('Security audit log could not be opened:', error && error.message);
+    }
+  }
+  return securityAuditLog;
+}
 
 /* Prompt-console runs in flight, keyed by the renderer-supplied runId so Stop
  * aborts exactly the run the user is looking at. Bounded: a leaked run must not
@@ -147,6 +176,7 @@ async function getAgentLoop(agentId) {
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },
     requestApproval: payload => requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs),
+    auditLog: getAuditLog(),
     requestEditReview: (edit) => {
       store.addPendingEdit(agentId, edit);
       if (win && !win.isDestroyed()) {
@@ -464,6 +494,9 @@ function registerIpc() {
         accessKey,
         defaultModel,
         budgets,
+        // Shared with the orchestrator loop: members and their subagents run
+        // tools, and one hash-chained log means one chain to verify.
+        auditLog: getAuditLog(),
         reachExecutor: createReachToolExecutor(),
         browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: teamRunId + ':' + ctx.agentId }),
         sendEvent,

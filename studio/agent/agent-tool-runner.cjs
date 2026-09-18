@@ -85,6 +85,13 @@ function enforceSandbox(name, args, settings, context) {
           code: verdict.code,
           reason: verdict.reason,
           findings: verdict.findings,
+          // `tool` is not a field in AuditLog's canonical() record set, and
+          // canonical() must not change: its own comment warns that changing the
+          // hashed shape invalidates every previously written log. detail IS in
+          // the hash, so the tool name rides along there rather than being
+          // silently dropped — a denial that cannot name the tool is much
+          // harder to explain later.
+          detail: { tool: name, projectDir: context.projectDir || null },
         });
       }
     } catch { /* an audit failure must not turn into a command being allowed */ }

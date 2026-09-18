@@ -189,3 +189,138 @@ test('an exec call with no recognisable command fails closed', async () => {
   assert.match(res.error, /no recognisable command/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+/* ------------------------------------------------- the audit log is wired up */
+
+/* Every test above passes `auditLog` straight into runToolCall, which is why
+ * none of them noticed that NOTHING IN PRODUCTION ever constructed one:
+ * agent/audit-log.cjs existed, was fully tested, and the runner guarded its
+ * write with `if (context.auditLog)` — but main.mjs never created the log, so
+ * every sandbox denial was refused without being recorded. That breaks the PRD's
+ * sandbox AC ("All terminal commands ... are logged to an immutable security
+ * audit log") while every test still passed.
+ *
+ * These close that gap: the first drives a real AgentLoop through a mock SSE
+ * endpoint so the denial travels the same hops production uses; the rest pin the
+ * wiring at each hop, because main.mjs cannot be require()d in a node test. */
+
+test('a sandbox denial reaches the audit log through a real AgentLoop', async () => {
+  const { AgentLoop } = require('../agent/agent-loop.cjs');
+  const dir = tmpDir();
+  const auditFile = path.join(dir, 'audit.ndjson');
+  const auditLog = new AuditLog(auditFile);
+
+  const store = new MemoryStore();
+  store.get('a').settings = {
+    approvals: 'auto-all',
+    reviewEdits: false,
+    sandbox: { enabled: true, policy: defaultPolicy() },
+  };
+
+  // Scripted model: first reply asks to run a forbidden command, second completes.
+  const { createServer } = require('node:http');
+  const requests = [];
+  const server = createServer((req, res) => {
+    if (req.method !== 'POST') { res.writeHead(404); res.end(); return; }
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      requests.push(body);
+      const script = [
+        'Running a command.\n```tool\n{"action":"shell","command":"rm -rf /"}\n```',
+        'That was refused.\n```agent_status\n{"status":"complete","summary":"The sandbox refused the command."}\n```',
+      ];
+      const content = script[Math.min(requests.length - 1, script.length - 1)];
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\n`);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const loop = new AgentLoop({
+    agentId: 'a',
+    store,
+    endpoint: `http://127.0.0.1:${port}/v1`,
+    model: 'mock',
+    projectDir: dir,
+    accessKey: '',
+    // The one thing this test exists to prove is plumbed through.
+    auditLog,
+  });
+  try {
+    await loop.sendUserMessage('Delete everything.');
+
+    const records = auditLog.read();
+    assert.ok(records.length >= 1, 'the denial must be recorded, got ' + records.length);
+    const denial = records.find(r => r.event === 'sandbox.deny');
+    assert.ok(denial, 'a sandbox.deny record must exist: ' + JSON.stringify(records.map(r => r.event)));
+    assert.equal(denial.allowed, false);
+    assert.match(String(denial.command), /rm -rf/);
+    // The tool name is not a field in canonical(), so it rides in detail.
+    const detail = typeof denial.detail === 'string' ? JSON.parse(denial.detail) : denial.detail;
+    assert.equal(detail.tool, 'shell', 'the denial must name the tool it refused');
+    assert.equal(auditLog.verify().ok, true, 'the hash chain must still verify');
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('every loop factory forwards auditLog to the loops it builds', () => {
+  /* Source-level guard for the hops the behavioural test cannot reach:
+   * AgentLoop -> runToolCall context, TeamRunner -> its member loops, and
+   * AgentNet -> its subagent loops. Without these, only the top-level
+   * orchestrator would record denials and every team member or subagent's
+   * refusal would vanish — which is exactly how this shipped once already.
+   */
+  const read = f => fs.readFileSync(path.join(__dirname, '..', 'agent', f), 'utf8');
+
+  const loop = read('agent-loop.cjs');
+  assert.match(loop, /auditLog = null/, 'AgentLoop must accept an auditLog option');
+  assert.match(loop, /this\.auditLog = auditLog/, 'AgentLoop must store it');
+  assert.match(loop, /auditLog: this\.auditLog/, 'AgentLoop must pass it into the tool context');
+
+  const team = read('team-runner.cjs');
+  assert.match(team, /auditLog = null/, 'TeamRunner must accept an auditLog option');
+  assert.match(team, /this\.auditLog = auditLog/, 'TeamRunner must store it');
+  // TeamRunner builds an AgentNet and per-member AgentLoops; both need it.
+  assert.equal(team.match(/auditLog: this\.auditLog/g).length, 2,
+    'TeamRunner must forward auditLog to BOTH its AgentNet and its member loops');
+
+  const net = read('agent-net.cjs');
+  assert.match(net, /auditLog = null/, 'AgentNet must accept an auditLog option');
+  assert.match(net, /this\.auditLog = auditLog/, 'AgentNet must store it');
+  assert.match(net, /auditLog: this\.auditLog/, 'AgentNet must pass it to subagent loops');
+});
+
+test('main.mjs constructs the audit log and gives it to both loop factories', () => {
+  /* main.mjs cannot be require()d outside Electron ("The requested module
+   * 'electron' does not provide an export named 'BrowserWindow'"), so assert on
+   * the source. This is the hop that was missing: the module existed and every
+   * downstream test passed, yet no production code ever built a log. */
+  const src = fs.readFileSync(path.join(__dirname, '..', 'main.mjs'), 'utf8');
+  assert.match(src, /require\('\.\/agent\/audit-log\.cjs'\)/, 'main must import AuditLog');
+  assert.match(src, /new AuditLog\(/, 'main must construct an AuditLog');
+  assert.match(src, /security-audit\.jsonl/, 'the log must live in a stable, inspectable file');
+  // One shared instance: the log is hash-chained, so two writers would each keep
+  // a different chain and neither file would verify.
+  assert.equal(src.match(/auditLog: getAuditLog\(\)/g).length, 2,
+    'main must pass the SAME log to the orchestrator loop and to TeamRunner');
+  assert.match(src, /if \(!securityAuditLog\)/, 'the log must be a cached singleton');
+});
+
+test('the denial record names the tool, since canonical() has no tool field', () => {
+  // AuditLog.write() hashes a FIXED record shape and its own comment warns that
+  // changing canonical() invalidates every previously written log. `tool` is not
+  // in that shape, so the runner must not silently drop it — it rides in detail,
+  // which IS hashed. Guard the source rather than the behaviour so a future edit
+  // that drops the field is caught even if the log still verifies.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'agent', 'agent-tool-runner.cjs'), 'utf8');
+  const start = src.indexOf("event: 'sandbox.deny'");
+  assert.ok(start > 0, 'the sandbox.deny write must exist');
+  const call = src.slice(start, src.indexOf('});', start));
+  assert.match(call, /detail:\s*\{\s*tool:\s*name/, 'the denial must carry the tool name in detail');
+});

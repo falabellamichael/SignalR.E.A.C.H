@@ -28,7 +28,7 @@ const MAX_ROUNDS = 40;
 const RETRY_LIMIT = 2;
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000 }) {
+  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null }) {
     this.agentId = agentId;
     this.store = store;
     this.endpoint = endpoint;
@@ -40,6 +40,10 @@ class AgentLoop {
     this.sendEvent = sendEvent || (() => {});
     this.requestApproval = requestApproval;
     this.requestEditReview = requestEditReview;
+    // Optional security audit log (agent/audit-log.cjs). The tool runner writes
+    // every sandbox denial to it when present; without it denials are refused but
+    // not recorded, which the PRD's sandbox AC requires.
+    this.auditLog = auditLog;
     this.personaPrompt = String(personaPrompt || '');
     this.budgets = budgets;
     this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
@@ -466,6 +470,7 @@ class AgentLoop {
               projectDir: this.projectDir,
               agentId: this.agentId,
               agentStore: this.store,
+              auditLog: this.auditLog,
               reachExecutor: this.reachExecutor,
               browserExecutor: this.browserExecutor,
               browserTimeoutMs: this.requestTimeoutMs,
