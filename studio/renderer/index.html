@@ -74,6 +74,12 @@
       <span class="rail-icon" aria-hidden="true">&#9881;</span><span class="rail-label">Settings</span><kbd class="rail-key">6</kbd>
     </button>
     <div class="rail-sep" role="separator"></div>
+    <!-- No numeric hotkey: PRD1 pins Ctrl/Cmd+1-6 to the six primary views, and
+         the smoke asserts exactly that mapping. Refactor joins About as an
+         unnumbered rail destination. -->
+    <button class="rail-item" id="rail-refactor" data-view="refactor" title="Refactor workbench">
+      <span class="rail-icon" aria-hidden="true">&#9998;</span><span class="rail-label">Refactor</span>
+    </button>
     <button class="rail-item" id="rail-about" data-view="about" title="About REACH Studio">
       <span class="rail-icon" aria-hidden="true">&#8505;</span><span class="rail-label">About</span>
     </button>
@@ -428,7 +434,99 @@
         <p class="ab-credit">Built by Michael Anthony Falabella.</p>
       </div>
     </section>
+
+    <!-- ========== REFACTOR WORKBENCH (PRD: /refactor) ==========
+         Multi-file refactoring workspace: describe a task, review a syntax-
+         highlighted side-by-side diff, stage individual chunks, then apply
+         atomically with an optional git checkpoint. -->
+    <section id="page-refactor" class="page">
+      <div class="rf-wrap">
+        <header class="pg-head">
+          <h2>Refactor Workbench</h2>
+          <p class="dim">Describe a change, review the proposed diff chunk by chunk, then apply it atomically. Nothing is written until you approve.</p>
+        </header>
+
+        <div id="rf-noproject" class="rf-empty">
+          <p>No project is selected. Pick a project on the <button type="button" class="linkish" id="rf-go-projects">Projects</button> page first.</p>
+        </div>
+
+        <div id="rf-body" hidden>
+          <div class="rf-task">
+            <label for="rf-task">Task</label>
+            <textarea id="rf-task" rows="3" spellcheck="false"
+              placeholder="e.g. Rename computeTotal to sumTotals everywhere it is used, and extract the duplicated formatting into a helper."></textarea>
+            <div class="rf-task-row">
+              <div class="rf-field">
+                <label for="rf-model">Model</label>
+                <div class="row">
+                  <input id="rf-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
+                  <button type="button" id="rf-browse" class="ghost small">Browse&hellip;</button>
+                </div>
+                <datalist id="rf-model-list"></datalist>
+              </div>
+              <div class="rf-field rf-scope">
+                <label for="rf-scope">Scope <span class="dim">(optional — one path per line)</span></label>
+                <textarea id="rf-scope" rows="2" spellcheck="false" placeholder="Leave empty to let the symbol index choose."></textarea>
+              </div>
+            </div>
+            <div class="rf-actions">
+              <button type="button" id="rf-generate" class="gold">Propose changes</button>
+              <button type="button" id="rf-stop" class="ghost" disabled>Stop</button>
+              <label class="check" title="Commit a checkpoint after a successful apply"><input id="rf-commit" type="checkbox" checked /> Git checkpoint</label>
+              <span id="rf-status" class="dim" role="status"></span>
+            </div>
+          </div>
+
+          <div id="rf-review" class="rf-review" hidden>
+            <div class="rf-review-head">
+              <div>
+                <strong id="rf-summary">Proposed changes</strong>
+                <div class="dim" id="rf-summary-detail"></div>
+              </div>
+              <div class="rf-review-actions">
+                <button type="button" id="rf-select-all" class="ghost small">Accept all</button>
+                <button type="button" id="rf-select-none" class="ghost small">Reject all</button>
+              </div>
+            </div>
+            <div id="rf-warnings" class="rf-warnings" hidden></div>
+            <div id="rf-files" class="rf-files"></div>
+            <div class="rf-apply-row">
+              <button type="button" id="rf-apply" class="gold">Apply selected</button>
+              <button type="button" id="rf-discard" class="ghost">Discard plan</button>
+              <span id="rf-apply-status" class="dim" role="status"></span>
+            </div>
+          </div>
+
+          <div id="rf-verify" class="rf-verify" hidden>
+            <div class="rf-review-head">
+              <strong>Quality gates</strong>
+              <div class="rf-review-actions">
+                <button type="button" id="rf-run-gates" class="ghost small">Run gates</button>
+                <button type="button" id="rf-fix-loop" class="ghost small" title="Run gates, ask the model to fix failures, retry — up to 10 attempts">Self-correct</button>
+              </div>
+            </div>
+            <div id="rf-gates" class="rf-gates"></div>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
+
+  <!-- Review Modal (PRD: on reaching 10 failing attempts, pause and offer
+       Revert / Adjust Scope / Manually Edit). Rendered as an overlay, not a page,
+       because it must interrupt whatever the user is doing. -->
+  <div id="rf-modal" class="rf-modal" hidden role="dialog" aria-modal="true" aria-labelledby="rf-modal-title">
+    <div class="rf-modal-card">
+      <h3 id="rf-modal-title">Self-correction stopped</h3>
+      <p class="dim" id="rf-modal-sub"></p>
+      <div id="rf-modal-traces" class="rf-modal-traces"></div>
+      <div class="rf-modal-actions">
+        <button type="button" id="rf-modal-revert" class="ghost">Revert changes</button>
+        <button type="button" id="rf-modal-scope" class="ghost">Adjust scope</button>
+        <button type="button" id="rf-modal-edit" class="gold">Manually edit</button>
+      </div>
+    </div>
+  </div>
 
   <!-- ========== FILE DRAWER (right side, toggleable) ========== -->
   <aside id="file-drawer" class="file-drawer">
@@ -649,5 +747,6 @@
   <script src="workspace-shell.js"></script>
   <script src="playground.js"></script>
   <script src="about.js"></script>
+  <script src="refactor.js"></script>
 </body>
 </html>

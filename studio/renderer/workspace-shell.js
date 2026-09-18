@@ -31,7 +31,7 @@
     { key: '5', view: 'create', label: 'Create' },
     { key: '6', view: 'settings', label: 'Settings' },
   ];
-  const ALL_VIEWS = VIEWS.map(v => v.view).concat(['about']);
+  const ALL_VIEWS = VIEWS.map(v => v.view).concat(['refactor', 'about']);
 
   /* ------------------------------------------------------------- nav rail */
 

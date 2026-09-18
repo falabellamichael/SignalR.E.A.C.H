@@ -84,6 +84,7 @@ async function showTab(name) {
   window.ReachWorkspaceShell?.markRail();
   if (name === 'workspace') window.ReachWorkspaceDash?.sync();
   if (name === 'about') window.ReachAbout?.sync();
+  if (name === 'refactor') window.ReachRefactor?.sync();
   return refreshFileTree();
 }
 $('#tab-projects').onclick = () => showTab('projects');

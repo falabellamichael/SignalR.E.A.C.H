@@ -421,3 +421,209 @@
 .ab-card p { margin: 0; font-size: 12px; line-height: 1.6; }
 
 .ab-credit { margin: 4px 0 0; font-size: 11.5px; color: var(--dim); }
+
+/* ============================================================
+   REFACTOR WORKBENCH (PRD: /refactor + Interactive Diff & Patch Manager)
+
+   Palette note: the diff colours reuse the existing --diff-add / --diff-del
+   tokens already used by .diff-line in styles.css, and the syntax token classes
+   reuse the --syntax-* tokens the live editor uses. That keeps one palette across
+   the app and gives dark/light parity for free, since those tokens are already
+   overridden under :root[data-theme="light"].
+   ============================================================ */
+
+.rf-wrap {
+  padding: 18px 22px 28px;
+  max-width: 1400px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.rf-empty {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--dim);
+  background: var(--panel);
+}
+.rf-empty p { margin: 0; font-size: 13px; }
+.linkish {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--gold); font: inherit; text-decoration: underline;
+}
+
+/* --- task composer --- */
+.rf-task {
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px;
+}
+.rf-task > label { font-size: 12px; color: var(--dim); letter-spacing: 0.4px; }
+.rf-task textarea {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px;
+  padding: 9px 11px; font: 13px/1.55 Menlo, Consolas, 'Courier New', monospace;
+}
+.rf-task textarea:focus { outline: none; border-color: var(--gold-dim); }
+.rf-task-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.rf-field { display: flex; flex-direction: column; gap: 5px; min-width: 220px; flex: 1; }
+.rf-field > label { font-size: 11.5px; color: var(--dim); }
+.rf-field .row { display: flex; gap: 8px; }
+.rf-field input[type="text"] {
+  flex: 1; min-width: 0;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; font-size: 12.5px;
+}
+.rf-scope textarea { font-size: 12px; }
+.rf-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rf-actions .check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); }
+
+/* --- status colours --- */
+#rf-status.rf-ok, #rf-apply-status.rf-ok { color: var(--ok); }
+#rf-status.rf-bad, #rf-apply-status.rf-bad { color: var(--err); }
+#rf-status.rf-warn, #rf-apply-status.rf-warn { color: var(--gold); }
+
+/* --- review panel --- */
+.rf-review, .rf-verify {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.rf-review-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.rf-review-head strong { font-size: 13.5px; color: var(--text); }
+.rf-review-head .dim { font-size: 11.5px; margin-top: 3px; }
+.rf-review-actions { display: flex; gap: 8px; }
+.rf-apply-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 12px; }
+
+.rf-warnings {
+  border: 1px solid var(--gold-dim); background: var(--panel2);
+  border-radius: 8px; padding: 9px 12px;
+}
+.rf-warnings ul { margin: 0; padding-left: 18px; }
+.rf-warnings li { font-size: 12px; color: var(--gold); line-height: 1.6; }
+
+/* --- per-file cards --- */
+.rf-files { display: flex; flex-direction: column; gap: 12px; max-height: 62vh; overflow: auto; }
+.rf-file { border: 1px solid var(--line); border-radius: 9px; background: var(--bg); overflow: hidden; }
+.rf-file-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; background: var(--panel2); border-bottom: 1px solid var(--line);
+}
+.rf-collapse { width: 22px; padding: 0 4px; line-height: 1; }
+.rf-file-path { font: 12.5px/1.4 Menlo, Consolas, monospace; color: var(--text); word-break: break-all; flex: 1; }
+.rf-file-stats { font-size: 11.5px; color: var(--dim); white-space: nowrap; }
+.rf-file-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--dim); white-space: nowrap; }
+.rf-no-chunks { margin: 0; padding: 10px 12px; font-size: 12px; }
+
+/* --- chunks --- */
+.rf-chunk { border-top: 1px solid var(--line); }
+.rf-chunk:first-child { border-top: none; }
+.rf-chunk-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 5px 12px; background: var(--panel);
+}
+.rf-chunk-bar .check { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+.rf-chunk-meta { font-size: 11px; white-space: nowrap; }
+
+/* --- the side-by-side diff table --- */
+.rf-diff {
+  width: 100%; border-collapse: collapse; table-layout: fixed;
+  font: 12px/1.5 Menlo, Consolas, 'Courier New', monospace;
+}
+.rf-diff td { vertical-align: top; padding: 0; border: none; width: 50%; }
+.rf-cell { display: flex; }
+.rf-left { border-right: 1px solid var(--line); }
+.rf-ln {
+  flex: 0 0 46px; text-align: right; padding: 0 8px 0 4px;
+  color: var(--muted); user-select: none; opacity: 0.75;
+}
+.rf-code { flex: 1; min-width: 0; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
+
+/* Row kinds reuse the established .diff-line palette from styles.css so the
+   workbench and the edit-review card look like the same product. */
+.rf-row.rf-ctx .rf-code { color: var(--dim); }
+.rf-row.rf-add { background: rgba(122, 168, 106, 0.12); }
+.rf-row.rf-add .rf-code { color: var(--diff-add); }
+.rf-row.rf-remove { background: rgba(201, 106, 74, 0.12); }
+.rf-row.rf-remove .rf-code { color: var(--diff-del); }
+.rf-row.rf-modify { background: rgba(122, 168, 106, 0.07); }
+.rf-row.rf-modify .rf-left { background: rgba(201, 106, 74, 0.12); }
+.rf-row.rf-modify .rf-left .rf-code { color: var(--diff-del); }
+.rf-row.rf-modify .rf-right { background: rgba(122, 168, 106, 0.12); }
+.rf-row.rf-modify .rf-right .rf-code { color: var(--diff-add); }
+/* A missing counterpart keeps the two columns aligned. */
+.rf-row td .rf-code:empty { min-height: 1.5em; }
+
+/* --- syntax tokens emitted by ReachEditor.highlight(). These mirror the live
+       editor's goldHighlight mapping so a diff and the opened file agree. --- */
+.rf-code .tok-keyword { color: var(--gold); }
+.rf-code .tok-string { color: var(--syntax-string); }
+.rf-code .tok-number { color: var(--syntax-number); }
+.rf-code .tok-comment { color: var(--syntax-comment); font-style: italic; }
+.rf-code .tok-type { color: var(--syntax-type); }
+.rf-code .tok-property { color: var(--syntax-property); }
+.rf-code .tok-fn { color: var(--code-text); }
+.rf-code .tok-def { color: var(--text); }
+.rf-code .tok-op, .rf-code .tok-punct { color: var(--dim); }
+
+/* --- quality gates --- */
+.rf-gates { display: flex; flex-direction: column; gap: 9px; }
+.rf-gate { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 9px 12px; }
+.rf-gate.rf-ok { border-left: 3px solid var(--ok); }
+.rf-gate.rf-bad { border-left: 3px solid var(--err); }
+.rf-gate-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.rf-gate-head strong { font-size: 12.5px; color: var(--text); }
+.rf-gate-head .dim { font-size: 11px; }
+.rf-badge {
+  font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor;
+}
+.rf-gate.rf-ok .rf-badge { color: var(--ok); }
+.rf-gate.rf-bad .rf-badge { color: var(--err); }
+.rf-failures { margin: 8px 0 0; padding-left: 18px; }
+.rf-failures li { font-size: 11.5px; line-height: 1.6; color: var(--text); word-break: break-word; }
+.rf-failures pre {
+  margin: 4px 0 0; padding: 8px 10px; background: var(--panel2); border-radius: 6px;
+  font-size: 11px; color: var(--dim); white-space: pre-wrap; word-break: break-word;
+  max-height: 180px; overflow: auto;
+}
+
+/* --- Review Modal (Revert / Adjust Scope / Manually Edit) --- */
+.rf-modal {
+  position: fixed; inset: 0; z-index: 900;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--scrim); padding: 24px;
+}
+/* A class selector beats the UA `[hidden] { display: none }`, so the hidden
+   attribute must be restated explicitly or the modal would always show. */
+.rf-modal[hidden] { display: none; }
+.rf-modal-card {
+  width: min(720px, 100%); max-height: 82vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 20px 22px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.rf-modal-card h3 { margin: 0; font-size: 15px; color: var(--text); }
+.rf-modal-card .dim { font-size: 12.5px; line-height: 1.6; margin: 0; }
+.rf-modal-traces { display: flex; flex-direction: column; gap: 8px; }
+.rf-modal-head { margin: 0; font-size: 12px; color: var(--gold); }
+.rf-modal-traces ul { margin: 0; padding-left: 18px; max-height: 220px; overflow: auto; }
+.rf-modal-traces li { font-size: 11.5px; line-height: 1.6; color: var(--text); word-break: break-word; }
+.rf-modal-tail {
+  margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; font-size: 11px; color: var(--dim);
+  white-space: pre-wrap; word-break: break-word; max-height: 150px; overflow: auto;
+}
+.rf-modal-phases { font-size: 11px; margin: 0; }
+.rf-modal-actions { display: flex; gap: 9px; justify-content: flex-end; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 12px; }
+
+/* Narrow windows: stack the task row and let the diff columns breathe. */
+@media (max-width: 900px) {
+  .rf-task-row { flex-direction: column; }
+  .rf-wrap { padding: 14px 14px 24px; }
+  .rf-diff { font-size: 11px; }
+  .rf-ln { flex-basis: 34px; }
+}

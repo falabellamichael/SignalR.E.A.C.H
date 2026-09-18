@@ -70,6 +70,52 @@ test('side-by-side handles a pure deletion and a pure insertion', () => {
   assert.equal(inserted.chunks[0].sideBySide[1].left, null);
 });
 
+test('accepted chunk ids are interpreted at the PREVIEW context, not the default', () => {
+  // Regression: applySelection() used to rebuild chunks with DEFAULT_CONTEXT (3)
+  // regardless of the width the preview was shown at. Chunk ids are positional in
+  // that chunking, so a plan previewed at a narrower width could apply chunks the
+  // user never ticked — the worst possible failure for a "review before writing"
+  // feature, because it is silent.
+  //
+  // A 3-line gap between two changes splits at context=2 (run 3 > 2) but NOT at
+  // context=3 (run 3 > 3 is false), so the two widths genuinely disagree and the
+  // bug is observable rather than hypothetical.
+  const before = [
+    'const a = 1;',
+    'const SCALE = 2;',
+    'const OFFSET = 10;',
+    "const NOTE = 'x';",
+    'const b = 2;',
+    '',
+  ].join('\n');
+  const after = before.replace('const a = 1;', 'const A = 1;').replace('const b = 2;', 'const B = 2;');
+
+  const narrow = P.buildChunks(before, after, 2);
+  const wide = P.buildChunks(before, after, 3);
+  assert.equal(narrow.length, 2, 'context=2 splits into two chunks');
+  assert.equal(wide.length, 1, 'context=3 keeps them as one chunk');
+
+  // Accepting only the first chunk the user was shown must apply only that change.
+  const partial = P.applySelection(before, after, [narrow[0].id], { context: 2 });
+  assert.equal(partial.applied, 1, 'exactly one chunk applied');
+  assert.ok(partial.text.includes('const A = 1;'), 'the accepted change landed');
+  assert.ok(partial.text.includes('const b = 2;'), 'the UNACCEPTED change did not land');
+  assert.ok(!partial.text.includes('const B = 2;'), 'no unaccepted text on disk');
+
+  // Without the context the same ids over-apply — that is the old, broken path.
+  const drifted = P.applySelection(before, after, [narrow[0].id]);
+  assert.equal(drifted.applied, 2, 'default context merges the chunks and applies both');
+
+  // The list form used by main.mjs threads context through too.
+  const viaList = P.applySelections([{ path: 'f.js', before, after }], { 'f.js': [narrow[0].id] }, { context: 2 });
+  assert.equal(viaList.edits.length, 1);
+  assert.ok(!viaList.edits[0].content.includes('const B = 2;'), 'applySelections honours the preview context');
+
+  // A context value is still bounded and junk falls back to the default.
+  const huge = P.applySelection(before, after, null, { context: 999 });
+  assert.equal(huge.text, after, 'accept-all is unaffected by context width');
+});
+
 test('no context line is shown by two adjacent chunks', () => {
   // Regression: keeping a trailing context margin while splitting chunks at
   // `> context` made an unchanged run of context+1 .. 2*context lines appear in

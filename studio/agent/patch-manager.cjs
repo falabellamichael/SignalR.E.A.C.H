@@ -266,10 +266,19 @@ function buildReview(before, after, options = {}) {
  *        null/undefined means "accept everything" (equivalent to writing `after`).
  * @returns {{text:string, applied:number, skipped:number, warnings:string[]}}
  */
-function applySelection(before, after, acceptedIds) {
+/* `context` selects the chunk width, and it MUST be the same value used to build
+ * the preview the accepted ids came from. Chunk ids (c0, c1, ...) are positional
+ * in that chunking, so re-deriving with a different width would silently apply a
+ * neighbouring chunk. Defaults to DEFAULT_CONTEXT for callers that never showed
+ * a preview at all. */
+function resolveContext(context) {
+  return Number.isSafeInteger(context) && context >= 0 ? Math.min(context, 40) : DEFAULT_CONTEXT;
+}
+
+function applySelection(before, after, acceptedIds, options = {}) {
   const a = String(before == null ? '' : before);
   const b = String(after == null ? '' : after);
-  const chunks = buildChunks(a, b, DEFAULT_CONTEXT);
+  const chunks = buildChunks(a, b, resolveContext(options.context));
   if (!chunks.length) return { text: a, applied: 0, skipped: 0, warnings: ['No changes to apply.'] };
 
   const acceptAll = acceptedIds === null || acceptedIds === undefined;
@@ -349,13 +358,13 @@ function applySelection(before, after, acceptedIds) {
  * @param files [{path, before, after}]
  * @param selections { [path]: string[] | null }
  */
-function applySelections(files, selections = {}) {
+function applySelections(files, selections = {}, options = {}) {
   const edits = [];
   const skipped = [];
   for (const file of Array.isArray(files) ? files : []) {
     if (!file || typeof file !== 'object' || !file.path) continue;
     const ids = Object.hasOwn(selections, file.path) ? selections[file.path] : null;
-    const res = applySelection(file.before, file.after, ids);
+    const res = applySelection(file.before, file.after, ids, options);
     if (res.text === String(file.before == null ? '' : file.before)) {
       skipped.push({ path: file.path, reason: 'No chunks accepted; file unchanged.' });
       continue;

@@ -8,7 +8,7 @@ import { EditorState, Compartment } from '@codemirror/state';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { languages } from '@codemirror/language-data';
 import { HighlightStyle, syntaxHighlighting, bracketMatching, LanguageDescription } from '@codemirror/language';
-import { tags } from '@lezer/highlight';
+import { tags, highlightTree } from '@lezer/highlight';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 
@@ -83,4 +83,92 @@ function create(parent, { doc = '', onChange = null, filename = '' } = {}) {
   };
 }
 
-window.ReachEditor = { create };
+/* One-shot syntax highlighting for read-only rendered code (the refactor
+ * workbench's diff view). Reuses the same grammar set and the same colour
+ * mapping as the live editor, so a diff and the file open in the editor agree on
+ * colours instead of shipping a second highlighter.
+ *
+ * `tag -> css class` rather than inline styles: colours stay in CSS and follow
+ * the active theme, which an inline style could not.
+ *
+ * Async because CodeMirror loads grammars lazily. Bounded: the caller passes one
+ * diff side at a time, never a whole file, and anything over the cap is returned
+ * escaped-but-unhighlighted rather than freezing the renderer.
+ */
+const HIGHLIGHT_MAX_CHARS = 200000;
+const TAG_CLASS = [
+  [tags.keyword, 'tok-keyword'],
+  [tags.string, 'tok-string'],
+  [tags.special(tags.string), 'tok-string'],
+  [tags.number, 'tok-number'],
+  [tags.bool, 'tok-number'],
+  [tags.null, 'tok-number'],
+  [tags.comment, 'tok-comment'],
+  [tags.typeName, 'tok-type'],
+  [tags.propertyName, 'tok-property'],
+  [tags.function(tags.variableName), 'tok-fn'],
+  [tags.operator, 'tok-op'],
+  [tags.punctuation, 'tok-punct'],
+  [tags.definition(tags.variableName), 'tok-def'],
+];
+
+const escapeHtml = (s) => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * Escape text for HTML without highlighting. Always safe to call.
+ */
+function escape(text) { return escapeHtml(text); }
+
+/**
+ * Highlight `text` as `filename`'s language and return HTML.
+ *
+ * Returns escaped plain text when the language is unknown, the grammar has not
+ * loaded yet, the text is too large, or parsing throws. Callers get a correct,
+ * readable result in every case — highlighting is a nicety, never a
+ * correctness dependency.
+ *
+ * Grammar loading is asynchronous in CodeMirror, so this is async too; the
+ * resolved value is the final HTML.
+ */
+async function highlight(text, filename = '') {
+  const src = String(text == null ? '' : text);
+  if (!src) return '';
+  if (src.length > HIGHLIGHT_MAX_CHARS) return escapeHtml(src);
+  let mode = null;
+  try {
+    mode = /\.rsh$/i.test(filename)
+      ? languages.find(l => l.name === 'JavaScript')
+      : LanguageDescription.matchFilename(languages, filename || 'x.js');
+    if (!mode) return escapeHtml(src);
+    const support = await mode.load();
+    const language = support && support.language;
+    if (!language) return escapeHtml(src);
+
+    // Walk the syntax tree once and collect non-overlapping spans. Nesting is
+    // resolved by preferring the innermost tag, matching what the live editor
+    // shows.
+    const tree = language.parser.parse(src);
+    const spans = [];
+    highlightTree(tree, TAG_CLASS, (tag, from, to) => {
+      if (to > from) spans.push({ from, to, tag });
+    });
+    if (!spans.length) return escapeHtml(src);
+    spans.sort((a, b) => a.from - b.from || b.to - a.to);
+
+    let html = '', cursor = 0;
+    for (const s of spans) {
+      if (s.from < cursor) continue;          // already inside a rendered span
+      if (s.from > cursor) html += escapeHtml(src.slice(cursor, s.from));
+      html += `<span class="${s.tag}">${escapeHtml(src.slice(s.from, s.to))}</span>`;
+      cursor = s.to;
+    }
+    if (cursor < src.length) html += escapeHtml(src.slice(cursor));
+    return html;
+  } catch {
+    // Any grammar or parse failure degrades to escaped text.
+    return escapeHtml(src);
+  }
+}
+
+window.ReachEditor = { create, highlight, escape };

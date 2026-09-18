@@ -134,4 +134,20 @@ contextBridge.exposeInMainWorld('reach', {
   about: {
     info: () => ipcRenderer.invoke('about:info'),
   },
+
+  // Refactor workbench (PRD: Multi-File Refactoring Workbench /refactor and
+  // Interactive Diff & Patch Manager). Plans stay in main keyed by planId — they
+  // hold whole file contents, and the renderer only needs the id plus its chunk
+  // selections. Apply is atomic and single-use; see the handler comments.
+  refactor: {
+    generate: (payload) => ipcRenderer.invoke('refactor:generate', payload),
+    stop: (runId) => ipcRenderer.invoke('refactor:stop', runId),
+    onProgress: (cb) => ipcRenderer.on('refactor:progress', (_e, d) => cb(d)),
+    plan: (payload) => ipcRenderer.invoke('refactor:plan', payload),
+    apply: (payload) => ipcRenderer.invoke('refactor:apply', payload),
+    defaultGates: (projectDir) => ipcRenderer.invoke('refactor:defaultGates', { projectDir }),
+    gates: (payload) => ipcRenderer.invoke('refactor:gates', payload),
+    selfCorrect: (payload) => ipcRenderer.invoke('refactor:selfCorrect', payload),
+    revert: (payload) => ipcRenderer.invoke('refactor:revert', payload),
+  },
 });
