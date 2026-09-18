@@ -252,6 +252,13 @@
   function drawChart() {
     const canvas = dash.chart;
     if (!canvas || !canvas.getContext) return;
+    // Never touch layout while hidden. Writing canvas.width/height reflows the
+    // page, and several other modules (CodeMirror, scrollbar.js, telemetry.js,
+    // workspace.js) run ResizeObserver callbacks; reflowing from a window-resize
+    // handler while they are measuring is how "ResizeObserver loop completed
+    // with undelivered notifications" gets raised. A hidden page cannot be seen
+    // anyway, so drawing it is wasted work AND a layout hazard.
+    if (document.hidden || activeView() !== 'workspace') return;
     const dpr = window.devicePixelRatio || 1;
     const cssW = canvas.clientWidth || 600, cssH = 150;
     if (canvas.width !== Math.round(cssW * dpr)) { canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr); }
@@ -585,7 +592,15 @@
       if (e.key === 'Enter') { e.preventDefault(); searchSymbols(); }
     });
     document.addEventListener('reach-theme-change', drawChart);
-    window.addEventListener('resize', drawChart);
+    // Coalesce resize into a single draw on the next frame. The smoke (and real
+    // window dragging) fires many resize events back-to-back; without this each
+    // one reflowed synchronously inside the event, which is the pattern that
+    // trips ResizeObserver loop detection. One frame => at most one reflow.
+    let chartFrame = 0;
+    window.addEventListener('resize', () => {
+      if (chartFrame) return;
+      chartFrame = requestAnimationFrame(() => { chartFrame = 0; drawChart(); });
+    });
     document.addEventListener('visibilitychange', () => { if (document.hidden) stopLive(); else if (state.live) startLive(); });
   }
 
