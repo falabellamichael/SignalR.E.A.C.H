@@ -7,10 +7,22 @@
  * extension in real time, and a disconnected link must queue updates locally and
  * re-sync automatically on reconnect.
  *
+ * STATUS (2026-09-18): IMPLEMENTED AND TESTED, BUT NOT WIRED INTO THE APP.
+ *   Nothing in main.mjs, preload.cjs, the renderer, or the VS Code extension
+ *   constructs a SyncEngine. The only mentions in the repo are its own test file
+ *   and the test registration in package.json. The PRD's Phase 2 "Studio & IDE Agent
+ *   Synchronization Console" is therefore not yet delivered end to end, and the
+ *   `sb-sync` status chip in the renderer stays hidden (workspace-shell.js
+ *   defines and exports setSync() but nothing ever calls it, while its siblings
+ *   setLatency and setIndex are called). Closing this needs a transport and
+ *   a VS Code counterpart, neither of which exists yet; that is a design
+ *   decision, not a missing function call. Do not let a passing test suite imply
+ *   this feature ships.
+ *
  * Design:
  *   - Transport-agnostic. A transport is just {send(record) -> Promise, onReceive(cb)}.
- *     Production wires it to the local relay's IPC/WebSocket; tests wire it to an
- *     in-memory pair. Nothing here knows about Electron.
+ *     Nothing here knows about Electron. Tests wire it to an in-memory pair; a
+ *     real transport (relay IPC/WebSocket) has not been written.
  *   - Lamport-style versioning per (peer, key). Each peer stamps its own updates
  *     with a monotonically increasing counter, so "newest wins" is well defined
  *     across peers without synchronized clocks.
