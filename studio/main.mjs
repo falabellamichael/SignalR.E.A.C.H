@@ -2200,6 +2200,18 @@ app.whenReady().then(() => {
                   await new Promise(resolve => setTimeout(resolve, 20));
                 }
               };
+              // Border widths are reported scaled by the display factor on some
+              // machines (a 1px border reads 0.571429px at 175% Windows
+              // scaling), so a finished card's left edge is compared against a
+              // freshly-created resting card instead of the literal '1px'.
+              const restingEdgeWidth = () => {
+                const probe = document.createElement('div');
+                probe.className = 'member-card';
+                document.body.appendChild(probe);
+                const width = getComputedStyle(probe).borderLeftWidth;
+                probe.remove();
+                return width;
+              };
               await reachApi.saveSettings({ endpoint: 'http://127.0.0.1:${teamServer.address().port}/v1', model: 'fixture', accessKey: '' });
               const a = await reachApi.personas.create({ name: 'Worker A', model: 'fixture-a' });
               const b = await reachApi.personas.create({ name: 'Worker B', model: 'fixture-b' });
@@ -2235,7 +2247,16 @@ app.whenReady().then(() => {
               if (slow.cards.get(1).dataset.paused === 'true') throw new Error('Individual Stop interrupted teammate');
               await new Promise(resolve => setTimeout(resolve, 100));
               slow.cards.get(0).querySelector('.member-control').click();
-              await until(() => slow.cards.get(0).classList.contains('done'), 'restart individual member');
+              // A finished response flashes the border once (just-finished) and
+              // keeps no colored edge bar afterwards.
+              let memberFlashSeen = false;
+              await until(() => {
+                const card = slow.cards.get(0);
+                if (card.classList.contains('just-finished')) memberFlashSeen = true;
+                return card.classList.contains('done');
+              }, 'restart individual member');
+              if (!memberFlashSeen) throw new Error('Finished member card did not flash');
+              if (getComputedStyle(slow.cards.get(0)).borderLeftWidth !== restingEdgeWidth()) throw new Error('Finished member card must not keep a colored edge bar');
               if (document.querySelector('#btn-send').textContent !== 'Stop') throw new Error('Send did not become universal Stop');
               await reachApi.agents.send(currentAgent.id, 'Universal stop regular fixture');
               await until(() => agentRunning, 'regular chat alongside team');
@@ -2253,6 +2274,9 @@ app.whenReady().then(() => {
               const good = await dispatch(t.team, 'Find hello in the fixture');
               await until(() => !activeTeamRun, 'successful parallel team');
               if (![...good.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Parallel scans did not complete');
+              for (const card of good.cards.values()) {
+                if (getComputedStyle(card).borderLeftWidth !== restingEdgeWidth()) throw new Error('Done member cards must not keep a colored edge bar');
+              }
               if ([...good.cards.values()].some(c => c.querySelector('.member-body').textContent !== 'Fixture scan completed.')) throw new Error('Team answer polluted by prior rounds or structured JSON');
               await new Promise(resolve => setTimeout(resolve, 150));
               const saved = await reachApi.agents.get(agent.agent.id);
@@ -2269,13 +2293,20 @@ app.whenReady().then(() => {
               workerCard.querySelector('.member-control').click();
               await until(() => workerCard.dataset.paused === 'true', 'stop spawned worker');
               workerCard.querySelector('.member-control').click();
-              await until(() => !activeTeamRun, 'delegation run');
+              let subFlashSeen = false;
+              await until(() => {
+                const card = [...del.subCards.values()][0];
+                if (card && card.classList.contains('just-finished')) subFlashSeen = true;
+                return !activeTeamRun;
+              }, 'delegation run');
               if (![...del.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Delegator did not complete');
               const sub = del.subCards && [...del.subCards.values()][0];
               if (!sub) throw new Error('Spawned worker got no card');
               if (!sub.classList.contains('done')) throw new Error('Spawned worker did not complete');
               if (!sub.querySelector('.member-state').textContent.includes('done')) throw new Error('Spawned worker state wrong: ' + sub.querySelector('.member-state').textContent);
               if (!sub.classList.contains('subagent')) throw new Error('Spawned worker card not styled as subagent');
+              if (!subFlashSeen) throw new Error('Finished subagent card did not flash');
+              if (getComputedStyle(sub).borderLeftWidth !== restingEdgeWidth()) throw new Error('Done subagent card must not keep a colored edge bar');
               const saved2 = await reachApi.agents.get(agent.agent.id);
               if (!saved2.messages.some(m => m.content.includes('Crew delegation finished.'))) throw new Error('Delegation answer not saved');
               await reachApi.teams.delete(td.team.id);

@@ -2153,6 +2153,23 @@ function subCard(agentId, name, model, depth) {
   return card;
 }
 
+/* Response-finish flash: the ONLY "finished" indicator on member cards — a
+ * one-shot border highlight that starts from nothing and returns to nothing
+ * (the card's own border never changes width, disappears, or lingers as a
+ * colored edge afterwards). Retrigger-safe: the class is dropped, layout is
+ * flushed, then re-added, so restarting the same member flashes again. */
+function flashMemberCard(card) {
+  if (!card) return;
+  card.classList.remove('just-finished');
+  void card.offsetWidth;
+  card.classList.add('just-finished');
+  card.addEventListener('animationend', function onEnd(e) {
+    if (e.animationName !== 'member-finish-flash') return;
+    card.classList.remove('just-finished');
+    card.removeEventListener('animationend', onEnd);
+  });
+}
+
 function addMemberControl(card, run, { index = null, agentId = null }) {
   const button = document.createElement('button');
   button.className = 'ghost small member-control';
@@ -2337,6 +2354,8 @@ function handleTeamEvent(ev) {
         clearTimeout(card._renderTimer);
         card.classList.remove('waiting');
         card.classList.add(ev.ok ? 'done' : 'failed');
+        // Finished (successful) response: flash the border once — no bar.
+        if (ev.ok) flashMemberCard(card);
         card.querySelector('.member-state').textContent = ev.ok ? `done (${ev.chars || 0} chars)` : `${ev.status || 'failed'}: ${ev.error || 'No completed answer.'}`;
       }
       break;
@@ -2366,6 +2385,7 @@ function handleTeamEvent(ev) {
             clearTimeout(card._renderTimer);
             card.classList.remove('running', 'waiting');
             card.classList.add(ev.status === 'completed' ? 'done' : 'failed');
+            if (ev.status === 'completed') flashMemberCard(card);
             state.textContent = ev.status === 'completed'
               ? `done (${ev.chars || 0} chars)`
               : `${ev.status}: ${ev.error || ''}`;
