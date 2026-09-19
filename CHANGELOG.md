@@ -1,5 +1,18 @@
 # Changelog
 
+## [26.9.5](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.4...v26.9.5) (2026-09-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **relay:** require an API key by default and harden access control ([#91](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/91))
+
+### Features
+
+* **relay:** require an API key by default and harden access control ([#91](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/91)) ([8e077a8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8e077a8109f2c84875fa99ac80355da3d7667259))
+* **studio:** crew roles, Links mode, output-dialect recovery and team tool protocols ([#90](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/90)) ([577dd58](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/577dd58829984492b12c19b1f9919205e554baa9))
+* **studio:** multiple endpoint connections with per-connection keys ([#88](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/88)) ([fce1b9c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/fce1b9c652dd8c57869a0e9b44b48120a457b0e6))
+
 ## [26.9.4](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.3...v26.9.4) (2026-09-18)
 
 
