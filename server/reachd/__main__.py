@@ -15,6 +15,30 @@ from reachd.settings import config_dir, load_config
 from reachd.state import RelayState
 
 
+def _report_access_posture(cfg, host):
+    """Say plainly, at startup, who can reach this relay. A relay that is quietly
+    open to everyone is the failure this exists to prevent."""
+    access = cfg.get("access") or {}
+    exposed = host not in ("127.0.0.1", "::1", "localhost") \
+        or cfg.get("tunnel", "ngrok") != "none" or cfg.get("public_url_override")
+    if access.get("key_required"):
+        active = sum(1 for k in access.get("keys") or []
+                     if k.get("enabled", True) and k.get("key"))
+        print("  access: API key required (%d active key%s)%s"
+              % (active, "" if active == 1 else "s",
+                 "; local tools bypass" if access.get("local_bypass", True) else ""),
+              flush=True)
+        if cfg.get("public_url_override") and access.get("local_bypass", True):
+            print("  WARNING: public_url_override is set. If a reverse proxy in front of "
+                  "this relay does not add X-Forwarded-For, its requests look local and "
+                  "skip the key. Set access.local_bypass to false.",
+                  file=sys.stderr, flush=True)
+    elif exposed:
+        print("  WARNING: this relay is reachable from outside but access.key_required "
+              "is OFF - anyone with the URL can use it.",
+              file=sys.stderr, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="SignalR.E.A.C.H relay server")
     parser.add_argument("--port", type=int, default=None)
@@ -86,6 +110,7 @@ def main():
     threading.Thread(target=publisher, daemon=True).start()
     print("SignalR.E.A.C.H %s listening on http://%s:%d" % (VERSION, host, core.PORT),
           flush=True)
+    _report_access_posture(cfg, host)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

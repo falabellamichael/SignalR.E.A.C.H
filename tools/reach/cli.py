@@ -34,6 +34,7 @@ import argparse
 import json
 import shutil
 import subprocess
+import sys
 import time
 
 from . import (
@@ -522,6 +523,21 @@ def cmd_settings(args):
                          % (result.get("error") or {}).get("message"))
 
 
+def cmd_key(args):
+    """Print an sk-reach client key for this relay, creating it on first use.
+    Only works on the machine running the relay: the relay hands secrets to a
+    local client and nobody else."""
+    require_relay()
+    try:
+        _, result = admin_request("/_reach/keys/ensure", "POST",
+                                  {"name": args.name})
+    except Exception as exc:
+        raise SystemExit("error: could not get a key from the local relay: %s" % exc)
+    print(result["key"])
+    if result.get("created"):
+        print("(created a new key named %r)" % args.name, file=sys.stderr)
+
+
 def cmd_models(args):
     require_relay()
     if args.action == "list":
@@ -730,6 +746,12 @@ def main():
     p_settings.add_argument("key", nargs="?", default=None)
     p_settings.add_argument("value", nargs="?", default=None)
     p_settings.set_defaults(func=cmd_settings)
+
+    p_key = sub.add_parser("key", help="print an sk-reach client key "
+                                       "(created on first use)")
+    p_key.add_argument("--name", default="Default",
+                       help="key name (default: Default; one key per name)")
+    p_key.set_defaults(func=cmd_key)
 
     p_models = sub.add_parser("models", help="manage model aliases (v2)")
     p_models.add_argument("action", choices=["list", "add", "remove"])

@@ -67,6 +67,60 @@ def _ip_in_list(ip, entries):
     return False
 
 
+def _is_loopback_ip(ip):
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return False
+    mapped = getattr(addr, "ipv4_mapped", None)
+    return (mapped or addr).is_loopback
+
+
+def _host_is_loopback(host):
+    """True when a Host header names this machine (any port). A missing header
+    passes — a bare HTTP/1.0 client — because every browser sends one, and a
+    DNS-rebinding page's Host is its own domain, which fails here."""
+    if not host:
+        return True
+    host = host.strip()
+    if host.startswith("["):
+        name = host[1:].split("]", 1)[0]
+    elif host.count(":") == 1:
+        name = host.rsplit(":", 1)[0]
+    else:
+        name = host
+    name = name.strip().lower()
+    return name == "localhost" or _is_loopback_ip(name)
+
+
+def _trusted_proxy(peer):
+    """May we believe the forwarding headers this peer sent? Loopback is the
+    local tunnel process; anything else must be listed in
+    access.trusted_proxies. Otherwise a direct client could write its own
+    X-Forwarded-For and pick which IP the allow/block lists and the rate
+    limiter see."""
+    if _is_loopback_ip(peer):
+        return True
+    state = core.STATE
+    if state is None:
+        return False
+    entries = (state.cfg.get("access") or {}).get("trusted_proxies") or []
+    return bool(entries) and _ip_in_list(peer, entries)
+
+
+def _secret_equal(known, presented):
+    """Constant-time secret comparison that cannot be crashed by the caller.
+    hmac.compare_digest on str raises for non-ASCII input, and an HTTP header
+    can carry latin-1 bytes, so compare encoded bytes instead. Empty or
+    non-string values never match: a blanked key placeholder must not be
+    satisfiable."""
+    if not isinstance(known, str) or not known:
+        return False
+    if not isinstance(presented, str) or not presented:
+        return False
+    return hmac.compare_digest(known.encode("utf-8"), presented.encode("utf-8"))
+
+
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SignalR.E.A.C.H/" + VERSION
     protocol_version = "HTTP/1.1"
@@ -97,6 +151,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-Type-Options", "nosniff")
+        if "Cache-Control" not in (extra_headers or {}):
+            self.send_header("Cache-Control", "no-store")
+        if self._request_body_unread():
+            self.close_connection = True
+            self.send_header("Connection", "close")
         self._cors()
         for key, value in (extra_headers or {}).items():
             self.send_header(key, str(value))
@@ -106,13 +166,38 @@ class RelayHandler(BaseHTTPRequestHandler):
         except CLIENT_DISCONNECT_ERRORS:
             pass
 
+    def parse_request(self):
+        # One handler serves every request on a keep-alive connection, so the
+        # "body consumed" flag has to be reset for each new request.
+        self._body_read = False
+        return super().parse_request()
+
+    def _read_exact(self, length):
+        data = self.rfile.read(length)
+        self._body_read = True
+        return data
+
     def _read_body(self):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
+            self._body_read = True
             return b""
         if length > MAX_BODY_BYTES:
             raise ValueError("request body too large")
-        return self.rfile.read(length)
+        return self._read_exact(length)
+
+    def _request_body_unread(self):
+        """True when the client sent a body we have not read. Answering without
+        reading it leaves those bytes on a keep-alive connection, where they are
+        parsed as the next request line and the client gets an HTML 400 for a
+        request that was fine. Every early refusal (rate limit, no key) hits
+        this, so the connection is closed instead."""
+        if getattr(self, "_body_read", False):
+            return False
+        try:
+            return int(self.headers.get("Content-Length") or 0) > 0                 or bool(self.headers.get("Transfer-Encoding"))
+        except ValueError:
+            return True
 
     def _client_ip(self):
         # The tunnel/proxy sets the trustworthy client IP; an attacker can only
@@ -120,25 +205,38 @@ class RelayHandler(BaseHTTPRequestHandler):
         # Cf-Connecting-Ip (cloudflared) or the LAST X-Forwarded-For hop, never
         # the first (finding: block/allow lists were bypassable via a spoofed
         # first XFF entry). Falls back to the socket peer for direct clients.
+        peer = (self.client_address[0] if self.client_address else "?")[:64]
+        if not _trusted_proxy(peer):
+            return peer
         cf = self.headers.get("Cf-Connecting-Ip")
         if cf:
             return cf.strip()[:64]
         forwarded = self.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[-1].strip()[:64]
-        return (self.client_address[0] if self.client_address else "?")[:64]
+        return peer
 
     def _is_loopback(self):
-        return self.client_address and self.client_address[0] in ("127.0.0.1", "::1")
+        return bool(self.client_address) and _is_loopback_ip(self.client_address[0])
 
     def _admin_local(self):
         """A genuine local admin client: connected over loopback AND carrying
         no proxy/forwarding headers. Tunnels (ngrok, cloudflared) always inject
         those headers and an attacker cannot strip them, so a tunnel-forwarded
-        request — which also arrives from 127.0.0.1 — is correctly rejected."""
+        request — which also arrives from 127.0.0.1 — is correctly rejected.
+
+        Loopback is not enough on its own: the owner's browser also connects
+        from 127.0.0.1, so any web page they visit could otherwise drive this
+        relay as "local". A browser cannot forge its Host or Origin, so a
+        request that names a foreign host (DNS rebinding) or comes from a
+        foreign page is not a local client."""
         if not self._is_loopback():
             return False
-        return not any(self.headers.get(h) for h in _FORWARD_HEADERS)
+        if any(self.headers.get(h) for h in _FORWARD_HEADERS):
+            return False
+        if not _host_is_loopback(self.headers.get("Host")):
+            return False
+        return allowed_origin(self.headers.get("Origin"))
 
     def _admin_token_ok(self):
         """Constant-time check of the X-Reach-Admin header against the
@@ -147,19 +245,62 @@ class RelayHandler(BaseHTTPRequestHandler):
         if not token:
             return False
         presented = (self.headers.get("X-Reach-Admin") or "").strip()
-        return bool(presented) and hmac.compare_digest(presented, token)
+        return _secret_equal(token, presented)
 
     def _require_admin(self):
         """Gate on /_reach/*: a genuine local client, OR a valid admin token.
         The token is the only way a non-local (remote-admin) request passes —
         peer address alone is never sufficient, because the tunnel makes every
         forwarded request look like loopback."""
-        if self._admin_local() or self._admin_token_ok():
+        if self._admin_local():
             return True
+        ip = self._guard_id()
+        guard = core.STATE.auth_guard
+        if self._deny_if_locked_out(ip):
+            return False
+        if self._admin_token_ok():
+            guard.record_success(ip)
+            return True
+        self._note_auth_failure(ip, "admin")
+        if self._deny_if_locked_out(ip):
+            return False
         self._json(403, {"error": {"message": "admin API requires a local client "
                                               "or a valid X-Reach-Admin token",
                                    "type": "forbidden"}})
         return False
+
+    def _guard_id(self):
+        """The identity lockouts are tracked under. A web page in the owner's
+        browser reaches this relay from the owner's own address, so its
+        failures must not be booked against that address, or a hostile page
+        could lock the owner's local tools out by spamming bad requests. It gets
+        its own bucket instead. Tunnel clients keep their real address."""
+        ip = self._client_ip()
+        if _is_loopback_ip(ip) and not self._admin_local():
+            return "web:" + ip
+        return ip
+
+    def _deny_if_locked_out(self, ip):
+        """Refuse a locked-out client before its credential is even compared."""
+        wait = core.STATE.auth_guard.retry_after(ip, core.STATE.cfg)
+        if not wait:
+            return False
+        self._json(429, {"error": {"message": "Too many failed attempts. Try again later.",
+                                    "type": "rate_limit_error", "code": "auth_locked"}},
+                   {"Retry-After": wait})
+        return True
+
+    def _note_auth_failure(self, ip, surface):
+        tripped = core.STATE.auth_guard.record_failure(ip, core.STATE.cfg)
+        if tripped:
+            core.log_error("auth lockout: %s locked out for %ds after repeated "
+                           "failed %s attempts" % (ip, tripped, surface))
+            try:
+                core.STATE.analytics.log_audit("auth.lockout", "system",
+                                               "ip=%s surface=%s seconds=%d"
+                                               % (ip, surface, tripped))
+            except Exception:
+                pass
 
     def _admin_actor(self):
         """Human-readable actor name for audit-trail entries: the local panel
@@ -177,10 +318,17 @@ class RelayHandler(BaseHTTPRequestHandler):
             pass
 
     def _check_access(self):
-        access = core.STATE.cfg.get("access", {})
-        key_required = access.get("key_required", False)
-        keys = access.get("keys", [])
-        legacy_key = access.get("access_key")
+        """Gate for the public surface (models + chat). Order matters:
+        address lists first, so a denied address learns nothing; then the
+        lockout, so a locked-out client cannot keep guessing; then the key."""
+        if not self._check_ip_lists():
+            return False
+        cfg = core.STATE.cfg
+        access = cfg.get("access", {})
+        ip = self._client_ip()
+        gid = self._guard_id()
+        if self._deny_if_locked_out(gid):
+            return False
 
         presented = (self.headers.get("X-Reach-Key") or "").strip()
         if not presented:
@@ -189,25 +337,43 @@ class RelayHandler(BaseHTTPRequestHandler):
 
         matched_key = None
         if presented:
-            for k in keys:
-                if k.get("enabled", True) and hmac.compare_digest(k.get("key", ""), presented):
+            for k in access.get("keys", []):
+                if k.get("enabled", True) and _secret_equal(k.get("key"), presented):
                     matched_key = k
                     break
-            if not matched_key and legacy_key and hmac.compare_digest(legacy_key, presented):
+            legacy_key = access.get("access_key")
+            if not matched_key and _secret_equal(legacy_key, presented):
                 matched_key = {"id": "legacy", "name": "Legacy Key", "key": legacy_key}
 
         if matched_key:
             self._auth_key_name = matched_key.get("name", "Key")
             self._auth_key_id = matched_key.get("id", "")
-            now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            matched_key["last_used_at"] = now_iso
+            matched_key["last_used_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            core.STATE.auth_guard.record_success(gid)
             return True
 
-        if not key_required:
+        if not access.get("key_required", False):
             self._auth_key_name = "anonymous"
             self._auth_key_id = ""
             return True
 
+        # The owner's own tools on this machine skip the key; see _admin_local
+        # for what "on this machine" has to prove.
+        if access.get("local_bypass", True) and self._admin_local():
+            self._auth_key_name = "local"
+            self._auth_key_id = ""
+            return True
+
+        self._note_auth_failure(gid, "key")
+        try:
+            self._log_chat(model=None, upstream_model=None, ip=ip,
+                           user_agent=self.headers.get("User-Agent"), status=401,
+                           error="auth_failed" if presented else "auth_missing",
+                           latency_ms=0, tokens_in=0, tokens_out=0, stream=False)
+        except Exception:
+            pass
+        if self._deny_if_locked_out(gid):
+            return False
         self._json(401, {"error": {"message": "Invalid SignalR.E.A.C.H API Key. Send 'Authorization: Bearer sk-reach-...' or 'X-Reach-Key'.",
                                     "type": "authentication_error",
                                     "code": "invalid_api_key"}},
@@ -276,7 +442,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         query = self._query_params()
         try:
             if path in ("/health", "/status"):
-                self._json(200, core.STATE.snapshot())
+                self._json(200, core.STATE.snapshot(redact=not self._admin_local()))
             elif path == "/public-url":
                 self._json(200, {"public_url": core.STATE.public_url,
                                  "source": core.STATE.public_url_source})
@@ -501,6 +667,13 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_create_key()
+            elif path == "/_reach/keys/ensure":
+                # Hands out a live secret, so a remote admin token is not
+                # enough: only the operator at this machine may ask.
+                if not self._admin_local():
+                    return self._json(403, {"error": {"message": "key hand-out requires a local client",
+                                                      "type": "forbidden"}})
+                self.handle_ensure_key()
             elif path == "/_reach/tray":
                 if not self._require_admin():
                     return
@@ -542,7 +715,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             if not 0 < length <= BROWSER_ENGINE_MAX_BODY:
                 self.close_connection = True
                 raise BrowserError("Browser command is empty or too large.", code="invalid_request")
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.loads(self._read_exact(length).decode("utf-8"))
             result = BROWSER_ENGINE.request(body)
         except BrowserError as exc:
             return self._json(exc.status, {"error": {"message": str(exc), "type": "browser_error", "code": exc.code}}, headers)
@@ -602,7 +775,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             if length <= 0 or length > 16 * 1024:
                 self.close_connection = True
                 raise BrowserError("Send a JSON object containing a page URL (maximum 16 KB).")
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.loads(self._read_exact(length).decode("utf-8"))
             if not isinstance(body, dict):
                 raise BrowserError("Send a JSON object containing a page URL.")
             if resource:
@@ -643,6 +816,33 @@ class RelayHandler(BaseHTTPRequestHandler):
             keys.append(new_key)
             save_config(core.STATE.cfg, core.STATE.cfg_path)
         self._json(201, {"created": True, "key": new_key})
+
+    def handle_ensure_key(self):
+        """Return the enabled client key with the given name, minting it on
+        first use. Lets a local tool (the panel's SimpleRAG hookup) obtain its
+        own key without the operator pasting one, and re-running it reuses the
+        key instead of piling up new ones."""
+        raw = self._read_body()
+        try:
+            body = json.loads(raw.decode("utf-8")) if raw else {}
+        except Exception:
+            body = {}
+        name = str((body or {}).get("name") or "SimpleRAG").strip()[:64] or "SimpleRAG"
+        created = False
+        with core.STATE._lock:
+            access = core.STATE.cfg.setdefault("access", {})
+            keys = access.setdefault("keys", [])
+            found = next((k for k in keys if k.get("name") == name
+                          and k.get("enabled", True) and k.get("key")), None)
+            if found is None:
+                found = generate_client_key(name)
+                keys.append(found)
+                save_config(core.STATE.cfg, core.STATE.cfg_path)
+                created = True
+        if created:
+            self._audit("key.create", "name=%s (local hookup)" % name)
+        self._json(200, {"name": found.get("name"), "key": found.get("key"),
+                         "created": created})
 
     def handle_tray(self):
         """Start the Copilot 365 system tray (invisible browser + in-process
@@ -702,12 +902,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": {"message": "settings must be an object",
                                               "type": "invalid_request"}})
         if patch.get("reset") is True:
-            keep = {"omniroute_key": core.STATE.cfg.get("omniroute_key", ""),
-                    "access": {"access_key": (core.STATE.cfg.get("access") or {})
-                               .get("access_key", "")},
-                    "system": {"admin_token": (core.STATE.cfg.get("system") or {})
-                               .get("admin_token", "")}}
-            patch = {**keep}
+            patch = self._reset_keep()
         if "omniroute_key" in patch and not patch.get("omniroute_key"):
             patch.pop("omniroute_key")  # blank means keep the existing key
         if isinstance(patch.get("omniroute_key"), str) \
@@ -730,21 +925,52 @@ class RelayHandler(BaseHTTPRequestHandler):
         except (OSError, SettingsError) as exc:
             return self._json(500, {"error": {"message": "could not persist: %s" % exc,
                                               "type": "server_error"}})
+        self._audit_access_change(core.STATE.cfg, next_cfg)
         core.STATE.cfg = next_cfg
         core.STATE.poll_public_url()
         self._json(200, {"saved": True, "settings": settings_public(next_cfg)})
 
+    def _audit_access_change(self, old_cfg, new_cfg):
+        """Leave a trail whenever the access posture changes, most of all when
+        it is loosened. Never records a key value."""
+        old = old_cfg.get("access") or {}
+        new = new_cfg.get("access") or {}
+        changes = []
+        for field in ("key_required", "local_bypass", "auth_fail_limit",
+                      "auth_lockout_s", "cors_origins"):
+            if old.get(field) != new.get(field):
+                changes.append("%s %r->%r" % (field, old.get(field), new.get(field)))
+        for field in ("ip_allowlist", "ip_blocklist", "trusted_proxies"):
+            if (old.get(field) or []) != (new.get(field) or []):
+                changes.append("%s %d->%d entries" % (field, len(old.get(field) or []),
+                                                      len(new.get(field) or [])))
+        if changes:
+            self._audit("access.change", "; ".join(changes))
+
     def handle_reset(self):
-        keep = {"omniroute_key": core.STATE.cfg.get("omniroute_key", ""),
-                "access": {"access_key": (core.STATE.cfg.get("access") or {})
-                           .get("access_key", "")},
-                "system": {"admin_token": (core.STATE.cfg.get("system") or {})
-                           .get("admin_token", "")}}
+        keep = self._reset_keep()
         next_cfg = merged_settings(DEFAULT_SETTINGS, keep)
         save_config(next_cfg, core.STATE.cfg_path)
         core.STATE.cfg = next_cfg
         core.STATE.poll_public_url()
+        self._audit("settings.reset", "access control preserved")
         self._json(200, {"saved": True, "settings": settings_public(next_cfg)})
+
+    @staticmethod
+    def _reset_keep():
+        """What survives a reset to defaults: the upstream credential and the
+        whole access section (keys, key_required, IP lists, trusted proxies).
+        Resetting model aliases and tuning must never re-open a relay the
+        operator locked down — the previous version kept only the legacy key
+        and silently switched key_required back off."""
+        cfg = core.STATE.cfg
+        system = cfg.get("system") or {}
+        return {
+            "omniroute_key": cfg.get("omniroute_key", ""),
+            "access": json.loads(json.dumps(cfg.get("access") or {})),
+            "system": {"admin_token": system.get("admin_token", ""),
+                       "security_revision": system.get("security_revision", 0)},
+        }
 
     def handle_settings_test(self):
         """Validate a patch WITHOUT persisting it (used by the settings UI)."""
@@ -958,7 +1184,14 @@ class RelayHandler(BaseHTTPRequestHandler):
         record = core.STATE.begin_request()
         self._reach_request = record
         try:
-            upstream, ctx = chat_execute(self)
+            # chat_execute answers the client itself on every early exit (rate
+            # limit, bad body, unknown model, upstream down) and returns None.
+            # Unpacking that used to raise, so the error handler then wrote a
+            # second 500 onto a connection that had already been answered.
+            result = chat_execute(self)
+            if result is None:
+                return
+            upstream, ctx = result
             if upstream is None:
                 return
             chat_finalize(self, upstream, ctx)

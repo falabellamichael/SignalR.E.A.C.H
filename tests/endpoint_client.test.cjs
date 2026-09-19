@@ -2,12 +2,12 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { createClient } = require('../tools/endpoint-client.cjs');
 
-async function fixture(t, upstream) {
+async function fixture(t, upstream, options = {}) {
  const calls=[];
  const server=createClient({pointer:'https://pointer.test/url',fetchImpl:async(url,options)=>{
   calls.push({url,options});
   return url==='https://pointer.test/url' ? new Response('https://hosted.test') : upstream(url,options);
- }});
+ },...options});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
  t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
  return {base:'http://127.0.0.1:'+server.address().port,calls};
@@ -44,4 +44,44 @@ test('upstream errors remain errors instead of reporting the endpoint as online'
  assert.equal((await fetch(h.base+'/status')).status,502);
  const r=await fetch(h.base+'/v1/chat/completions',{method:'POST',body:'{}'});
  assert.equal(r.status,503);assert.equal((await r.json()).error.message,'Unavailable');
+});
+
+// --- access key: the hosted relay requires one --------------------------------
+const httpRaw=(base,path,headers)=>new Promise((resolve,reject)=>{
+ const u=new URL(base+path);
+ const req=require('node:http').request({host:u.hostname,port:u.port,path:u.pathname,method:'GET',headers},res=>{
+  let body='';res.on('data',c=>body+=c);res.on('end',()=>resolve({status:res.statusCode,body}));});
+ req.on('error',reject);req.end();
+});
+const okModels=()=>new Response(JSON.stringify({data:[]}));
+test('a configured key is supplied for local programs that bring none',async t=>{
+ const h=await fixture(t,okModels,{key:'  sk-reach-friend  '});
+ assert.equal((await fetch(h.base+'/v1/models')).status,200);
+ assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer sk-reach-friend');
+});
+test('a caller with its own credentials keeps them over the configured key',async t=>{
+ const h=await fixture(t,okModels,{key:'sk-reach-friend'});
+ await fetch(h.base+'/v1/models',{headers:{Authorization:'Bearer sk-reach-theirs'}});
+ assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer sk-reach-theirs');
+ await fetch(h.base+'/v1/models',{headers:{'X-Reach-Key':'sk-reach-theirs'}});
+ assert.equal(h.calls.at(-1).options.headers['X-Reach-Key'],'sk-reach-theirs');
+ assert.equal(h.calls.at(-1).options.headers.Authorization,undefined);
+});
+test('nothing is added when no key is configured',async t=>{
+ const h=await fixture(t,okModels,{key:''});
+ await fetch(h.base+'/v1/models');
+ assert.equal(h.calls.at(-1).options.headers.Authorization,undefined);
+});
+test('a web page cannot borrow the configured key through the bridge',async t=>{
+ const h=await fixture(t,okModels,{key:'sk-reach-friend'});
+ const port=new URL(h.base).port;
+ // a page on another site: browsers attach its Origin
+ await httpRaw(h.base,'/v1/models',{Host:'127.0.0.1:'+port,Origin:'https://evil.example'});
+ assert.equal(h.calls.at(-1).options.headers.Authorization,undefined,'foreign Origin');
+ // DNS rebinding: the page is "same origin", so no Origin, but Host is its own domain
+ await httpRaw(h.base,'/v1/models',{Host:'rebind.evil.example:'+port});
+ assert.equal(h.calls.at(-1).options.headers.Authorization,undefined,'foreign Host');
+ // a genuine local program still gets it
+ await httpRaw(h.base,'/v1/models',{Host:'localhost:'+port});
+ assert.equal(h.calls.at(-1).options.headers.Authorization,'Bearer sk-reach-friend');
 });

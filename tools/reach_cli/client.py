@@ -24,6 +24,13 @@ class ReachApiError(RuntimeError):
     pass
 
 
+def _auth_headers(key, extra=None):
+    headers = dict(extra or {})
+    if key:
+        headers["Authorization"] = "Bearer " + key
+    return headers
+
+
 
 
 def _error_text(raw, base):
@@ -47,8 +54,11 @@ def _error_text(raw, base):
 
 
 class ReachClient:
-    def __init__(self, base, model=None, timeout=600, no_stream=False):
+    def __init__(self, base, model=None, timeout=600, no_stream=False, key=None):
         self.base = base.rstrip("/")
+        # An sk-reach key, needed for a hosted relay that requires one. A relay
+        # on this machine does not, so the default (no key) still works there.
+        self.key = (key or os.environ.get("REACH_KEY") or "").strip()
         self.model = model
         self.timeout = timeout
         self.no_stream = no_stream
@@ -58,30 +68,40 @@ class ReachClient:
         self.agent = False
         self.workpath = os.getcwd()
 
+    def _headers(self, extra=None):
+        return _auth_headers(self.key, extra)
+
     def resolve_base(self):
         """Fall back to the public pointer gist when the local relay is down."""
-        if self._reachable(self.base):
+        if self._reachable(self.base, self.key):
             return self.base
         try:
             with urllib.request.urlopen(POINTER_GIST, timeout=8) as resp:
                 url = resp.read().decode().strip()
-            if url and self._reachable(url):
+            if url and self._reachable(url, self.key):
                 return url.rstrip("/")
         except Exception:
             pass
         return None
 
     @staticmethod
-    def _reachable(base):
+    def _reachable(base, key=""):
         try:
-            request = urllib.request.Request(base.rstrip("/") + "/models")
+            request = urllib.request.Request(base.rstrip("/") + "/models",
+                                             headers=_auth_headers(key))
             with urllib.request.urlopen(request, timeout=5) as resp:
                 return resp.status == 200
+        except urllib.error.HTTPError as exc:
+            # 401/403 means a relay answered and wants a key. That is reachable;
+            # the real request will then report the key problem, instead of the
+            # CLI claiming nothing is there.
+            return exc.code in (401, 403)
         except Exception:
             return False
 
     def models(self):
-        request = urllib.request.Request(self.base + "/models")
+        request = urllib.request.Request(self.base + "/models",
+                                         headers=self._headers())
         with urllib.request.urlopen(request, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
         return [m.get("id") for m in data.get("data", []) if m.get("id")]
@@ -97,7 +117,7 @@ class ReachClient:
             self.base + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"),
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=self._headers({"Content-Type": "application/json"}),
         )
         if payload["stream"]:
             chunks = []

@@ -41,6 +41,9 @@ MODEL_SPEC_DEFAULTS = {
     "rate_limits": {"rpm": 0, "tokens_day": 0},   # 0 = inherit global
 }
 
+# Bump when load_config() gains another one-time security migration.
+SECURITY_REVISION = 1
+
 DEFAULT_SETTINGS = {
     # ---- relay core / upstream ----
     "omniroute_url": "http://127.0.0.1:20128/v1",
@@ -121,12 +124,28 @@ DEFAULT_SETTINGS = {
     },
     # ---- access & security ----
     "access": {
+        # False only in the raw schema default, because a config with no keys
+        # cannot validate as "required". load_config() turns it on for every new
+        # install and migrates old ones (system.security_revision).
         "key_required": False,
         "access_key": "",
         "keys": [],                    # client API keys: list of {"id", "name", "key", "created_at", "last_used_at", "enabled", "rate_limit_rpm"}
         "ip_allowlist": [],            # empty = everyone (loopback always ok)
         "ip_blocklist": [],
         "cors_origins": "*",           # "*" or comma-separated origins
+        # A genuine same-machine client (loopback, no proxy headers, loopback
+        # Host, no foreign Origin) may skip the key. Turn off to make even the
+        # owner's local tools present one.
+        "local_bypass": True,
+        # Peers whose X-Forwarded-For / Cf-Connecting-Ip is believed. Loopback
+        # (the local tunnel process) is always trusted; add a reverse proxy's
+        # address here. Anyone else's forwarding headers are ignored, so they
+        # cannot forge a client IP to dodge the allow/block lists.
+        "trusted_proxies": [],
+        # Failed key / admin-token attempts per client IP before it is locked
+        # out for auth_lockout_s seconds. 0 disables the lockout.
+        "auth_fail_limit": 8,
+        "auth_lockout_s": 300,
     },
     # ---- response caching ----
     "cache": {
@@ -148,6 +167,9 @@ DEFAULT_SETTINGS = {
     # ---- system ----
     "system": {
         "allow_remote_admin": False,   # _reach/* beyond loopback (DANGER)
+        # Bumped when load_config() applies a one-time security migration, so
+        # each migration runs once per install and never fights a later choice.
+        "security_revision": 0,
         "log_rotation_mb": 2,
         # Per-install secret for the admin API. Minted on first load; a
         # non-local /_reach/* request must present it as X-Reach-Admin.
@@ -570,6 +592,20 @@ def validate_settings(cfg):
             _expect(isinstance(item, str) and 1 <= len(item) <= 64,
                     "access.%s entries must be strings" % key)
     _str(access.get("cors_origins", "*"), "access.cors_origins", 1, 2000)
+    _bool(access.get("local_bypass", True), "access.local_bypass")
+    _int(access.get("auth_fail_limit", 8), 0, 1000, "access.auth_fail_limit")
+    _int(access.get("auth_lockout_s", 300), 1, 86400, "access.auth_lockout_s")
+    proxies = access.get("trusted_proxies", [])
+    _expect(isinstance(proxies, list) and len(proxies) <= 64,
+            "access.trusted_proxies must be a list of at most 64 addresses")
+    for item in proxies:
+        _expect(isinstance(item, str) and 1 <= len(item) <= 64,
+                "access.trusted_proxies entries must be strings")
+        try:
+            ipaddress.ip_network(item.strip(), strict=False)
+        except ValueError:
+            raise SettingsError(
+                "access.trusted_proxies entry %r is not an IP address or CIDR" % item)
 
     # cache
     _section_keys(cfg, "cache", set(DEFAULT_SETTINGS["cache"]), "cache")
@@ -600,6 +636,8 @@ def validate_settings(cfg):
     _int(cfg["system"].get("log_rotation_mb", 2), 1, 100,
          "system.log_rotation_mb")
     _str(cfg["system"].get("admin_token", ""), "system.admin_token", 0, 128)
+    _int(cfg["system"].get("security_revision", 0), 0, 1000,
+         "system.security_revision")
     _bool(cfg["system"].get("host_bind", True), "system.host_bind")
     _str(cfg["system"].get("host_salt", ""), "system.host_salt", 0, 64)
     _str(cfg["system"].get("host_machine_hint", ""),
@@ -857,6 +895,15 @@ def load_config(path):
             if not cfg.setdefault("system", {}).get("admin_token"):
                 cfg["system"]["admin_token"] = generate_admin_token()
                 dirty = True
+            # Security migration 1: installs from before keys were enforced
+            # served anyone who found the tunnel URL. Every install already has
+            # a minted key by this point, so requiring one locks out strangers
+            # without locking out the owner. Runs once; the operator can turn it
+            # back off afterwards and it will stay off.
+            if int(cfg["system"].get("security_revision") or 0) < SECURITY_REVISION:
+                access["key_required"] = True
+                cfg["system"]["security_revision"] = SECURITY_REVISION
+                dirty = True
             # Host binding: mint the per-install salt once. Every host secret
             # is sealed against (machine id + this salt), so the salt is what
             # makes two installs on the same machine independent.
@@ -900,6 +947,8 @@ def load_config(path):
     def_k = generate_client_key("Default")
     init_cfg["access"]["keys"] = [def_k]
     init_cfg["access"]["access_key"] = def_k["key"]
+    init_cfg["access"]["key_required"] = True
+    init_cfg["system"]["security_revision"] = SECURITY_REVISION
     init_cfg["system"]["admin_token"] = generate_admin_token()
     # Mint the host-binding salt here too: a brand-new install must seal its
     # secrets on the FIRST save, not only after an existing config is touched.

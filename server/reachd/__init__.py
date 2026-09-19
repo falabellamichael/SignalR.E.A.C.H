@@ -40,7 +40,7 @@ from reachd.const import (
     VERSION,
 )
 from reachd.handler import RelayHandler
-from reachd.limits import CounterGate, RateLimiter
+from reachd.limits import AuthGuard, CounterGate, RateLimiter
 from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
     CODEGPT_ECONOMY_MODELS,
@@ -93,6 +93,7 @@ __all__ = [
     "Analytics",
     "ResponseCache",
     "RateLimiter",
+    "AuthGuard",
     "CounterGate",
     "RelayState",
     "RelayHandler",

@@ -141,3 +141,79 @@ class CounterGate:
     def release(self):
         with self._lock:
             self._active = max(0, self._active - 1)
+
+
+# ----------------------------------------------------------------------
+# Failed-authentication lockout
+# ----------------------------------------------------------------------
+
+class AuthGuard:
+    """Locks a client IP out after repeated failed key / admin-token attempts.
+
+    The rate limiter only meters requests that got through; this meters the
+    ones that did not. A locked-out client is refused *before* its credential is
+    even compared, so a lockout cannot be ground down by guessing during it.
+    Success clears the record, so an owner who mistypes once is not punished.
+    """
+
+    MAX_TRACKED = 4096
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._fails = {}      # ip -> {"count", "first", "locked_until"}
+
+    @staticmethod
+    def _limits(settings):
+        access = (settings or {}).get("access", {}) or {}
+        return (int(access.get("auth_fail_limit", 8) or 0),
+                max(1, int(access.get("auth_lockout_s", 300) or 300)))
+
+    def retry_after(self, ip, settings):
+        """Seconds left on an active lockout for ip, or 0 when it may try."""
+        limit, _lockout = self._limits(settings)
+        if limit <= 0:
+            return 0
+        with self._lock:
+            entry = self._fails.get(ip)
+            if not entry:
+                return 0
+            remaining = entry["locked_until"] - time.time()
+            return max(1, int(remaining) + 1) if remaining > 0 else 0
+
+    def record_failure(self, ip, settings):
+        """Count a failed attempt. Returns the lockout length in seconds when
+        this failure tripped it, else 0."""
+        limit, lockout = self._limits(settings)
+        if limit <= 0:
+            return 0
+        now = time.time()
+        with self._lock:
+            entry = self._fails.get(ip)
+            if entry is None or (entry["locked_until"] <= now
+                                 and now - entry["first"] > lockout):
+                entry = {"count": 0, "first": now, "locked_until": 0.0}
+            entry["count"] += 1
+            self._fails[ip] = entry
+            tripped = 0
+            if entry["count"] >= limit and entry["locked_until"] <= now:
+                entry["locked_until"] = now + lockout
+                tripped = lockout
+            if len(self._fails) > self.MAX_TRACKED:
+                self._evict(now)
+            return tripped
+
+    def record_success(self, ip):
+        with self._lock:
+            self._fails.pop(ip, None)
+
+    def _evict(self, now):
+        # Same rule as the rate limiter: never wipe everything (that would
+        # hand an attacker a reset), drop expired records first, then the oldest.
+        expired = [k for k, e in self._fails.items()
+                   if e["locked_until"] <= now and now - e["first"] > STALE_BUCKET_S]
+        for k in expired:
+            del self._fails[k]
+        if len(self._fails) > self.MAX_TRACKED:
+            oldest = sorted(self._fails, key=lambda k: self._fails[k]["first"])
+            for k in oldest[: len(self._fails) - self.MAX_TRACKED]:
+                del self._fails[k]
