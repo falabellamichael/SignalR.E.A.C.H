@@ -39,6 +39,14 @@ const TRANSCRIPT_MESSAGES = 40;
 const TRANSCRIPT_CHARS = 4000;
 const OUTPUT_PREVIEW = 4000;
 
+/* Links-mode completion declaration: a member ends a message (or its final
+ * answer) with this line to say the WHOLE task is done. Scanned on every
+ * member-to-member message and on every harvested output. */
+const LINKS_COMPLETE_RE = /links\s*:\s*complete/i;
+function linksCompleteIn(text) {
+  return LINKS_COMPLETE_RE.test(String(text || ''));
+}
+
 /* Strip the run-control fence: relay only what a human would read. */
 function cleanOutput(text) {
   try {
@@ -78,11 +86,23 @@ class AgentNet {
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
     onSettled = () => {},
     auditLog = null,
+    /* Native (OpenAI) tool-calling protocol for spawned workers: set by the
+     * TeamRunner from the team's toolProtocol so a native crew's helpers run
+     * on the same contract as their parent. */
+    nativeTools = false,
+    /* Links mode: roster members that finished a turn accept messages into
+     * their inbox instead of refusing them (the TeamRunner's Links rounds wake
+     * them up). Off by default so parallel/chain behaviour is unchanged. */
+    rosterMailbox = false,
+    /* Links mode exchange budget: total member-to-member messages allowed in
+     * the run (3× a chain's rate). Null = unlimited (all other modes). */
+    linkBudget = null,
   } = {}) {
     this.budgets = budgets;
     this.agentSettings = agentSettings;
     // Subagents run tools too, so they share the same security audit log.
     this.auditLog = auditLog;
+    this.nativeTools = !!nativeTools;
     this.onSettled = onSettled;
     this.teamRunId = teamRunId;
     this.teamName = teamName;
@@ -109,6 +129,10 @@ class AgentNet {
     this.paused = false;
     this._stopDeferred = null;
     this.seq = 0;
+    this.rosterMailbox = rosterMailbox === true;
+    this.linkBudget = linkBudget == null ? null : Math.max(1, Number(linkBudget) || 1);
+    this.linkSends = 0;
+    this.linksComplete = null;
   }
 
   /* Resolves when stop() fires so pause waits can race it and unwind. */
@@ -265,6 +289,7 @@ class AgentNet {
       reachExecutor: this.reachExecutor,
       browserExecutor: this.browserExecutor,
       personaPrompt: String(prompt || ''),
+      nativeTools: this.nativeTools,
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets ? { ...this.budgets, maxRounds: this.budgets.subagentMaxRounds } : null,
       auditLog: this.auditLog,
@@ -393,13 +418,24 @@ class AgentNet {
     if (rec.ambiguous) return { ok: false, error: `"${to}" matches several agents: ${rec.ambiguous.map(a => a.agentId).join(', ')}. Address one by id.`, candidates: rec.ambiguous };
     if (rec.id === from) return { ok: false, error: 'An agent cannot message itself.' };
 
+    /* Links budget: bound the total crew conversation (3× a chain's rate). */
+    if (this.linkBudget != null && this.linkSends >= this.linkBudget) {
+      return { ok: false, error: `Link budget reached (${this.linkBudget} crew messages = 3× a chain's exchange rate). Finish with what the crew has; ask the Coordinator to declare completion.` };
+    }
+
     const sender = this.agents.get(from);
     if (sender) sender.messagesSent++;
     rec.messagesReceived++;
 
+    /* The Links completion declaration can also travel as a message. */
+    if (linksCompleteIn(text) && !this.linksComplete) {
+      this.linksComplete = { by: sender ? sender.name : String(from), to: rec.name };
+    }
+
     const prefixed = `MESSAGE FROM ${sender ? sender.name : from} (a crew member):\n${text}`;
     if (rec.control?.paused && rec.store) {
       rec.store.enqueue(rec.id, prefixed);
+      this._bumpLink();
       return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: 'paused' };
     }
     if (!rec.loop) {
@@ -407,14 +443,29 @@ class AgentNet {
       // it is prepended to the member's prompt when it starts.
       rec.inbox = rec.inbox || [];
       rec.inbox.push(prefixed);
+      this._bumpLink();
       this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'pending-start' });
       return { ok: true, delivered: 'pending-start', agentId: rec.id, name: rec.name, status: rec.status, note: `${rec.name} has not started yet; your message will be waiting when it does.` };
     }
     if (rec.loop.running) {
       // Fire-and-forget: AgentLoop enqueues internally while running.
       rec.loop.sendUserMessage(prefixed).catch((e) => this._settle(rec.id, 'failed', e.message));
+      this._bumpLink();
       this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'queued' });
       return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: rec.status, note: 'The agent is working; your message is queued and it will read it when the current turn ends.' };
+    }
+    if (rec.origin === 'roster' && this.rosterMailbox) {
+      // Links mode: a roster member that is NOT mid-turn accepts mail into its
+      // inbox — the TeamRunner's next Links round wakes it. This catches both
+      // a finished member AND the short window before the runner marks it
+      // finished (a message can be delivered from inside the member's own
+      // completion emit); without the second case the send would spawn a
+      // rogue concurrent turn on the same loop.
+      rec.inbox = rec.inbox || [];
+      rec.inbox.push(prefixed);
+      this._bumpLink();
+      this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'mailbox' });
+      return { ok: true, delivered: 'mailbox', agentId: rec.id, name: rec.name, status: rec.status, note: `${rec.name} is between Links rounds; your message is queued for its next turn.` };
     }
     if (rec.origin === 'roster' && FINISHED.has(rec.status)) {
       // Roster members are owned by the TeamRunner; waking one here would run
@@ -426,8 +477,14 @@ class AgentNet {
       return { ok: false, error: `${rec.name} already ${rec.status}${rec.error ? ': ' + rec.error : ''}. It cannot be woken.`, status: rec.status };
     }
     this.tasks.push(this._run(rec.id, prefixed));
+    this._bumpLink();
     this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'new-turn' });
     return { ok: true, delivered: 'new-turn', agentId: rec.id, name: rec.name, note: 'The agent was idle and has been woken with your message.' };
+  }
+
+  /* Links budget accounting: one unit per DELIVERED crew message. */
+  _bumpLink() {
+    if (this.linkBudget != null) this.linkSends++;
   }
 
   status(agentId, callerId) {
@@ -633,6 +690,8 @@ module.exports = {
   AgentNet,
   netForAgent,
   cleanOutput,
+  linksCompleteIn,
+  LINKS_COMPLETE_RE,
   MAX_AGENTS,
   MAX_DEPTH,
   SUBAGENT_MAX_ROUNDS,

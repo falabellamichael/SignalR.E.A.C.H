@@ -120,6 +120,9 @@ h1 { font-size: 22px; font-weight: normal; letter-spacing: 1px; color: var(--gol
 .chip.bad { color: var(--err); border-color: var(--error-line); }
 .chip.pending { color: var(--gold-dim); }
 .chip.dim { color: var(--dim); }
+/* Links-mode crews: a peer network, not a pipeline — gold like pinned, so the
+   mode reads as a deliberate choice next to parallel's green. */
+.chip.links { color: var(--gold); border-color: var(--gold-dim); }
 /* A persona pinned to one connection. Gold like .pending but with a border so it
    reads as an explicit user choice, not a transient state. */
 .chip.pinned { color: var(--gold); border-color: var(--gold-dim); }
@@ -687,6 +690,23 @@ body.resizing-y, body.resizing-y * {
 }
 .team-member-row strong { color: var(--gold); }
 .team-member-row .dim { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Per-row crew-role picker: the role is the member's behavior, so it must stay
+   visible next to the name and take the remaining width. */
+.team-member-row .row-role { flex: 1; min-width: 0; font-size: 12px; padding: 3px 6px; }
+/* The member add-row must FIT inside the modal box. Its four controls carry
+   intrinsic widths (longest option text, the input's default `size`) that total
+   ~690px — wider than the old 440px box — and flex refuses to shrink items below
+   their intrinsic minimum, so the picker/role/input spilled out over the scrim.
+   Fix: a wider team-modal box, min-width:0 so flex may shrink below intrinsic,
+   and the custom-role field collapses while it is disabled (it only applies to
+   the "Custom role…" choice), so the persona picker shows its full label. */
+#team-modal .modal-box { width: min(660px, 92vw); }
+#team-modal .row > select, #team-modal .row > input { min-width: 0; }
+#team-modal #team-member-pick { flex: 3 1 auto; }
+#team-modal #team-member-role-pick { flex: 2 1 auto; }
+#team-modal #team-member-role { flex: 2 1 auto; }
+#team-modal #team-member-role:disabled { display: none; }
+#team-modal #btn-team-add-member { flex: 0 0 auto; white-space: nowrap; }
 .member-idx {
   width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--gold-dim);
   color: var(--gold); font-size: 11px; display: flex; align-items: center; justify-content: center;
@@ -708,20 +728,32 @@ body.resizing-y, body.resizing-y * {
   border: 1px solid var(--line); border-radius: 10px; background: var(--card);
   overflow: hidden; flex-shrink: 0;
 }
-.member-card.done { border-left: 3px solid var(--ok); }
-.member-card.failed { border-left: 3px solid var(--err); }
-.member-card.waiting { border-left: 3px solid var(--gold); }
+/* No colored edge bars: status lives in the dot + state text, and a finished
+ * response shows ONE transient flash instead (below). The card's own 1px
+ * border is preserved the whole time and nothing remains after the flash. */
 .member-card.waiting .member-dot { background: var(--gold); }
 .member-card.running .member-dot { animation: pulse 1.2s infinite; }
 
-/* spawned workers (agent.spawn) nest under the crew */
-.member-card.subagent { margin-left: 26px; border-left: 3px solid var(--subagent-line); background: var(--subagent-bg); }
+/* Response-finish flash: starts from nothing and returns to nothing — the
+ * 0%/100% frames are exactly the resting style, so the border never appears,
+ * disappears or changes width. A soft ring + tint, then nothing. */
+@keyframes member-finish-flash {
+  0% { border-color: var(--line); box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+  30% {
+    border-color: color-mix(in srgb, var(--ok) 62%, var(--line));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 34%, transparent), 0 0 18px 0 color-mix(in srgb, var(--ok) 16%, transparent);
+  }
+  100% { border-color: var(--line); box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+}
+.member-card.just-finished { animation: member-finish-flash 1.05s ease-out; }
+
+/* spawned workers (agent.spawn) nest under the crew: indent + tinted
+   background carry the nesting — no colored edge. */
+.member-card.subagent { margin-left: 26px; background: var(--subagent-bg); }
 .member-card.subagent.depth-2 { margin-left: 52px; }
-.member-card.subagent.done { border-left-color: var(--ok); }
-.member-card.subagent.failed { border-left-color: var(--err); }
 .sub-badge { color: var(--gold); font-weight: 700; margin-right: 2px; }
 .member-head {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
   border-bottom: 1px solid var(--line); font-size: 12.5px;
 }
 .member-head strong { color: var(--gold); }
@@ -736,8 +768,10 @@ body.resizing-y, body.resizing-y * {
 .member-card.done .member-dot, .member-card.failed .member-dot { animation: none; }
 .member-card.done .member-dot { background: var(--ok); }
 .member-card.failed .member-dot { background: var(--err); }
+/* Horizontal inset keeps the hanging list markers (drawn ~11px left of the
+ * text column) clear of the card border. */
 .member-body {
-  padding: 10px 12px; font-size: 12.5px; line-height: 1.55; max-height: 220px;
+  padding: 12px 16px; font-size: 12.5px; line-height: 1.55; max-height: 220px;
   overflow-y: auto; color: var(--text);
 }
 .member-body pre.md-code { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow-x: auto; }
@@ -813,7 +847,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 @keyframes activity-pulse { 50% { opacity: .35; } }
 @keyframes activity-sheen { from { transform: translateX(-100%); } to { transform: translateX(440%); } }
 @media (prefers-reduced-motion: reduce) {
- .activity-spinner, .activity-progress i, .activity-step.running::before, .activity-busy::before, .tree-dot.run, .chat-msg.streaming::after { animation: none; }
+ .activity-spinner, .activity-progress i, .activity-step.running::before, .activity-busy::before, .tree-dot.run, .chat-msg.streaming::after, .member-card.just-finished { animation: none; }
 }
 
 .context-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; border:1px solid var(--line); border-radius:10px; color:var(--muted); font-size:12px; flex-wrap:wrap; }

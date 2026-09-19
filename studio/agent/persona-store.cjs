@@ -13,6 +13,11 @@
  *                      message is passed to the next as context, so the
  *                      crew communicates through the relayed transcript.
  *
+ *   mode 'links'     — members run simultaneously and talk to each other
+ *                      DIRECTLY (agent.send/status/await), deciding among
+ *                      themselves who does what, until the task is declared
+ *                      complete. Up to 3× a chain's exchange rate.
+ *
  * Stored in userData/personas.json alongside agents.json, atomic writes.
  */
 
@@ -120,6 +125,8 @@ class PersonaStore {
       // Older teams written before the toggle existed have no such field; report
       // it as off so the UI shows a definite state rather than undefined.
       spreadConnections: t.spreadConnections === true,
+      // Definite state for teams written before the protocol option existed.
+      toolProtocol: t.toolProtocol === 'native' ? 'native' : 'json',
       members: (t.members || []).map(m => {
         const p = this.getPersona(m.personaId);
         return {
@@ -138,12 +145,12 @@ class PersonaStore {
     return this.teams.find(t => t.id === id) || null;
   }
 
-  createTeam({ name, mode = 'parallel', members = [], spreadConnections = false }) {
+  createTeam({ name, mode = 'parallel', members = [], spreadConnections = false, toolProtocol = 'json' }) {
     if (this.teams.length >= MAX_TEAMS) {
       throw new Error(`Team limit reached (${MAX_TEAMS}).`);
     }
-    if (!['parallel', 'chain'].includes(mode)) {
-      throw new Error('Team mode must be "parallel" or "chain".');
+    if (!['parallel', 'chain', 'links'].includes(mode)) {
+      throw new Error('Team mode must be "parallel", "chain" or "links".');
     }
     const team = {
       id: newId('team'),
@@ -153,6 +160,12 @@ class PersonaStore {
        * running the whole crew on the active connection. Defaults to false so
        * existing teams keep their behaviour after an upgrade. */
       spreadConnections: spreadConnections === true,
+      /* 'json' = the universal prompt-enforced action contract (works on any
+       * endpoint); 'native' = advertise real OpenAI tools and execute the
+       * endpoint's tool_calls (with task_complete/task_blocked/ask_user
+       * controls). Anything unknown degrades to 'json' so old teams and old
+       * UIs keep working. */
+      toolProtocol: toolProtocol === 'native' ? 'native' : 'json',
       members: this._validateMembers(members),
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -173,12 +186,16 @@ class PersonaStore {
       }
       // The same persona may appear twice in a team (two roles), but the
       // (personaId, role) pair must be unique so runs stay attributable.
-      const key = personaId + '|' + String(m.role || '');
+      const key = personaId + '|' + (String(m.role || '') || String(m.roleId || ''));
       if (seen.has(key)) throw new Error(`Duplicate member (same persona + role) at position ${i + 1}.`);
       seen.add(key);
       return {
         personaId,
         role: String(m.role || '').slice(0, 120),
+        // Preset role id from agent/roles.cjs. Unknown ids are tolerated on
+        // purpose: presets evolve, and a stale id must degrade to the member's
+        // free-text role label instead of breaking an older team.
+        roleId: String(m.roleId || '').slice(0, 64),
       };
     });
   }
@@ -188,9 +205,10 @@ class PersonaStore {
     if (!t) return null;
     if (patch.name !== undefined) t.name = String(patch.name).slice(0, 60);
     if (patch.mode !== undefined) {
-      if (!['parallel', 'chain'].includes(patch.mode)) throw new Error('Team mode must be "parallel" or "chain".');
+      if (!['parallel', 'chain', 'links'].includes(patch.mode)) throw new Error('Team mode must be "parallel", "chain" or "links".');
       t.mode = patch.mode;
     }
+    if (patch.toolProtocol !== undefined) t.toolProtocol = patch.toolProtocol === 'native' ? 'native' : 'json';
     if (patch.members !== undefined) t.members = this._validateMembers(patch.members);
     if (patch.spreadConnections !== undefined) t.spreadConnections = patch.spreadConnections === true;
     t.updatedAt = Date.now();

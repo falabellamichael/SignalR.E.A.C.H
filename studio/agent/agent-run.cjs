@@ -72,6 +72,25 @@ function decide(run, input) {
   if (input.control?.status === 'complete' && !open.length && !input.invalid) {
     return end('completed', input.control.summary, 'complete');
   }
+  if (input.native) {
+    // Native tool protocol: recovery asks for another real tool call or a
+    // task_complete — it must NEVER switch the member into the JSON contract
+    // mid-run (that mix produced the dialect failures of 2026-09-19).
+    const count = (state.noActionRounds || 0) + 1;
+    state.noActionRounds = count;
+    const limit = Math.min(3, Number.isFinite(input.retryLimit) ? input.retryLimit + 1 : 3);
+    if (count >= limit || input.rounds >= input.roundLimit) {
+      return end('paused', input.rounds >= input.roundLimit
+        ? 'Agent round limit reached. Send continue to resume.'
+        : 'The model stopped calling tools without task_complete. The task is paused, not complete. The saved run will resume in action mode.', 'pause');
+    }
+    const reason = input.invalid ? 'The native tool call was invalid.'
+      : input.control?.status === 'complete' && open.length ? 'Completion was rejected: ' + open.length + ' plan item(s) remain open.'
+      : 'The response ended without a tool call or task_complete.';
+    const instruction = reason + '\nCall the tools you still need with real arguments now, or call task_complete with the final delivered answer if the work is finished; task_blocked for a concrete external blocker.'
+      + (open.length ? '\nOpen plan items: ' + JSON.stringify(open) + '\n' : '');
+    return { state: { ...state, status: 'running', reason }, action: 'continue', reason, instruction };
+  }
   const count = (state.noActionRounds || 0) + 1;
   state.noActionRounds = count;
   state.structuredActions = true;

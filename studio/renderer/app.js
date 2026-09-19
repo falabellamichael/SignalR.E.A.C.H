@@ -1162,6 +1162,13 @@ document.addEventListener('keydown', (e) => {
 let connDraft = [];        // working copy; only written to disk on Save
 let connActiveId = '';
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
+/* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
+ * a re-render (pool toggle, activation, Settings save) does not wipe the last
+ * "OK · 812 ms" off a card — and so auto-test on panel open knows which rows
+ * still need one. A row's entry is cleared the moment its URL or key is edited:
+ * a result describing values that no longer exist is a lie, not a cache. */
+const connStatus = new Map();   // id -> { text, cls }
+const connTesters = [];         // rebuilt by renderConnections: [{ id, running, run }]
 
 async function loadSettings() {
   const s = await reachApi.getSettings();
@@ -1169,6 +1176,11 @@ async function loadSettings() {
   // Draft from the normalized list so ids are stable and the active one is known.
   connDraft = (Array.isArray(s.connections) ? s.connections : []).map(c => ({ ...c }));
   connActiveId = s.activeConnection || (connDraft[0] ? connDraft[0].id : '');
+  // Drop test results for connections that no longer exist (removed here, in
+  // the status bar, or by a hand-edited settings.json).
+  for (const id of [...connStatus.keys()]) {
+    if (!connDraft.some(c => c.id === id)) connStatus.delete(id);
+  }
   renderConnections();
 }
 
@@ -1182,6 +1194,20 @@ function renderConnections() {
   const list = $('#conn-list');
   if (!list) return;
   list.replaceChildren();
+  // Each card registers its test runner here so "Test all" and the panel's
+  // auto-test can drive every row without re-querying handlers off the DOM.
+  connTesters.length = 0;
+
+  /* Clear a row's stored test result. Called the moment its URL or key changes:
+   * the old "OK" described values the user just replaced, and a stale success
+   * is worse than no result at all. */
+  function clearConnStatus(id) {
+    if (!connStatus.has(id)) return;
+    connStatus.delete(id);
+    const card = document.querySelector('#conn-list .conn-card[data-conn-id="' + id + '"]');
+    const status = card && card.querySelector('.conn-status');
+    if (status) { status.textContent = ''; status.classList.remove('ok', 'bad'); }
+  }
 
   connDraft.forEach((c, i) => {
     const card = document.createElement('div');
@@ -1215,7 +1241,7 @@ function renderConnections() {
 
     const badge = document.createElement('span');
     badge.className = 'conn-badge' + (c.id === connActiveId ? ' on' : '');
-    badge.textContent = c.id === connActiveId ? 'Fallback' : 'Select';
+    badge.textContent = c.id === connActiveId ? 'Active' : 'Select';
     badge.title = c.id === connActiveId
       ? 'Active connection: used by chats, playground and refactor, and the fallback every team member can use.'
       : 'Click the radio to make this the active connection.';
@@ -1310,7 +1336,7 @@ function renderConnections() {
       input.value = c.endpoint || '';
       input.placeholder = 'https://your-endpoint.example.com/v1';
       input.spellcheck = false;
-      input.oninput = () => { c.endpoint = input.value.trim(); markUnsaved(); };
+      input.oninput = () => { c.endpoint = input.value.trim(); clearConnStatus(c.id); markUnsaved(); };
       urlInput = input;
       return input;
     });
@@ -1324,7 +1350,7 @@ function renderConnections() {
       input.placeholder = 'leave blank for none';
       input.autocomplete = 'off';
       input.spellcheck = false;
-      input.oninput = () => { c.accessKey = input.value; markUnsaved(); };
+      input.oninput = () => { c.accessKey = input.value; clearConnStatus(c.id); markUnsaved(); };
       const reveal = document.createElement('button');
       reveal.type = 'button';
       reveal.className = 'ghost small';
@@ -1364,6 +1390,18 @@ function renderConnections() {
     });
 
     // --- footer: per-row test ---
+    /* One test path for the row button, "Test all" and the panel's auto-test.
+     *
+     * A SAVED row whose on-screen values still match the stored ones is pinged
+     * BY ID (connections:ping → GET /models): that returns the round-trip
+     * latency, which is also painted onto the status bar's latency chip when
+     * this row is the active connection. An edited row — or an unsaved draft
+     * row that has no id to ping yet — falls back to the ad-hoc models lookup,
+     * which validates exactly the values on screen rather than the stored ones.
+     *
+     * Results are stored per connection id (connStatus) and restored on every
+     * re-render, so a pool toggle or a save cannot wipe them; editing the URL
+     * or key clears the entry (clearConnStatus). */
     const foot = document.createElement('div');
     foot.className = 'conn-foot';
     const testBtn = document.createElement('button');
@@ -1372,28 +1410,77 @@ function renderConnections() {
     testBtn.textContent = 'Test';
     const status = document.createElement('span');
     status.className = 'dim conn-status';
-    testBtn.onclick = async () => {
-      // A draft row may have no saved endpoint, so test the URL on screen via the
-      // ad-hoc models lookup rather than connections:ping (which needs an id).
+    const tester = { id: c.id, running: false, run: null };
+
+    /* Write to this card's span AND the live one when they differ: a re-render
+     * replaces the card's DOM mid-test, and a result that lands only on the
+     * detached node would be invisible until the next render. */
+    const setStatus = (text, cls, store = true) => {
+      const apply = (el) => {
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove('ok', 'bad');
+        if (cls) el.classList.add(cls);
+      };
+      apply(status);
+      const live = document.querySelector('#conn-list .conn-card[data-conn-id="' + c.id + '"] .conn-status');
+      if (live && live !== status) apply(live);
+      if (store) {
+        if (text) connStatus.set(c.id, { text, cls: cls || '' });
+        else connStatus.delete(c.id);
+      }
+    };
+
+    const savedStatus = connStatus.get(c.id);
+    if (savedStatus) setStatus(savedStatus.text, savedStatus.cls, false);
+
+    tester.run = async () => {
+      if (tester.running) return { ok: false, skipped: true };
       // Read urlInput, not a CSS query: the model field is ALSO type=text, so
       // `.conn-field input[type=text]` only works by accident of append order.
-      const endpoint = urlInput ? urlInput.value : (c.endpoint || '');
-      if (!endpoint.trim()) { status.textContent = 'Enter a Base URL first.'; return; }
+      const endpoint = (urlInput ? urlInput.value : (c.endpoint || '')).trim();
+      if (!endpoint) { setStatus('Enter a Base URL first.', 'bad'); return { ok: false, err: 'no endpoint' }; }
+      tester.running = true;
       testBtn.disabled = true;
-      status.textContent = 'Testing…';
-      status.classList.remove('ok', 'bad');
+      setStatus('Testing…', '', false);
+      const stripSlash = value => String(value || '').trim().replace(/\/+$/, '');
       try {
-        const res = await reachApi.listModels({ endpoint: endpoint.trim(), accessKey: c.accessKey || '' });
-        status.textContent = res.ok
-          ? `OK · ${res.models.length} model(s)`
-          : `Failed · ${res.err || 'unreachable'}`;
-        status.classList.toggle('bad', !res.ok);
-        status.classList.toggle('ok', !!res.ok);
+        let earlier = null;
+        try { earlier = await reachApi.connections.list(); } catch { /* fall back to the ad-hoc lookup */ }
+        const rec = earlier && (earlier.connections || []).find(x => x.id === c.id);
+        const unchanged = !!rec
+          && stripSlash(rec.endpoint) === stripSlash(endpoint)
+          && (rec.accessKey || '') === (c.accessKey || '');
+        let result;
+        if (unchanged) {
+          const ping = await reachApi.connections.ping(c.id);
+          const ok = !!(ping && ping.ok);
+          if (ok) {
+            const models = ping.models === null || ping.models === undefined ? '' : ` · ${ping.models} model(s)`;
+            result = { ok: true, text: `OK · ${ping.latencyMs} ms${models}` };
+          } else {
+            result = { ok: false, text: `Failed · ${(ping && ping.err) || 'unreachable'}` };
+          }
+          // The latency chip speaks for the ACTIVE connection only.
+          if (c.id === connActiveId) window.ReachWorkspaceShell?.setLatency(ok ? ping.latencyMs : null, ok);
+        } else {
+          const res = await reachApi.listModels({ endpoint, accessKey: c.accessKey || '' });
+          result = res && res.ok
+            ? { ok: true, text: `OK · ${res.models.length} model(s)` }
+            : { ok: false, text: `Failed · ${(res && res.err) || 'unreachable'}` };
+        }
+        setStatus(result.text, result.ok ? 'ok' : 'bad');
+        return result;
       } catch (e) {
-        status.textContent = 'Failed · ' + e.message;
-        status.classList.add('bad');
-      } finally { testBtn.disabled = false; }
+        setStatus('Failed · ' + e.message, 'bad');
+        return { ok: false, err: e.message };
+      } finally {
+        tester.running = false;
+        testBtn.disabled = false;
+      }
     };
+    testBtn.onclick = () => { void tester.run(); };
+    connTesters.push(tester);
     foot.append(testBtn, status);
 
     // Append order defines layout: head, then fields, then the Test footer.
@@ -1411,12 +1498,46 @@ function renderConnections() {
   }
   const addBtn = $('#btn-add-connection');
   if (addBtn) addBtn.disabled = connDraft.length >= CONN_MAX;
+
+  /* One line stating what the app is actually configured to use — the same fact
+   * the status bar shows, painted from the DRAFT so edits appear before saving. */
+  const summary = $('#conn-summary');
+  if (summary) {
+    const active = connDraft.find(c => c.id === connActiveId) || null;
+    summary.textContent = active
+      ? `Active: ${active.name || active.endpoint || 'connection'}${active.model ? ' — model ' + active.model : ' — no default model'}. Used by every conversation, the playground and the refactor workbench.`
+      : 'No active connection yet. Add one below.';
+  }
 }
 
 function markUnsaved() {
   const el = $('#settings-status');
   if (el && !el.dataset.savedRecently) el.textContent = 'Unsaved changes.';
 }
+
+/* Cross-surface mirror for the status bar's quick-switch (workspace-shell.js).
+ *
+ * The footer persists activation and model picks straight through the
+ * connections IPC — this draft never sees those writes. Without the mirror the
+ * draft would keep the OLD active id / model, and the next Save Settings would
+ * silently write them back, reverting the switch the user just made.
+ *
+ * Deliberately minimal: only the fields the footer owns are copied, already
+ * typed card edits stay untouched, and nothing is marked unsaved — the switch
+ * is already on disk, the draft is just catching up to it. */
+window.ReachSettingsDraft = {
+  setActive(id) {
+    if (!id || !connDraft.some(c => c.id === id)) return;
+    connActiveId = id;
+    if ($('#page-settings')?.classList.contains('active')) renderConnections();
+  },
+  setModel(id, model) {
+    const row = connDraft.find(c => c.id === id);
+    if (!row) return;
+    row.model = model;
+    if ($('#page-settings')?.classList.contains('active')) renderConnections();
+  },
+};
 
 $('#btn-add-connection').onclick = () => {
   if (connDraft.length >= CONN_MAX) return;
@@ -1430,6 +1551,37 @@ $('#btn-add-connection').onclick = () => {
   const cards = document.querySelectorAll('#conn-list .conn-card');
   const last = cards[cards.length - 1];
   if (last) { const url = last.querySelector('.conn-field input[type=text]'); if (url) url.focus(); }
+};
+
+/* "Test all": ping every row with the values on screen, in parallel. Read-only
+ * (GET /models), so it cannot cost tokens or mutate anything. Each row writes
+ * its own status; nothing here waits on another row. */
+{
+  const testAllBtn = $('#btn-test-all');
+  if (testAllBtn) testAllBtn.onclick = async () => {
+    if (testAllBtn.disabled) return;
+    testAllBtn.disabled = true;
+    try { await Promise.allSettled(connTesters.map(t => t.run())); }
+    finally { testAllBtn.disabled = false; }
+  };
+}
+
+/* Auto-test hook for the Connection panel's open (called from settings.js):
+ * test every rendered row that has no stored result yet, so the page never
+ * looks the same whether or not any provider is reachable. Results persist per
+ * connection id until that row is edited, so reopening does not re-ping. Rows
+ * with no URL are skipped — there is nothing to test, and "Enter a Base URL
+ * first." on an untouched new row is noise, not information. */
+window.ReachConnPanel = {
+  autoTest() {
+    for (const tester of connTesters) {
+      if (connStatus.has(tester.id)) continue;
+      const card = document.querySelector('#conn-list .conn-card[data-conn-id="' + tester.id + '"]');
+      const url = card && card.querySelector('.conn-url');
+      if (!url || !url.value.trim()) continue;
+      void tester.run();
+    }
+  },
 };
 
 $('#btn-save-settings').onclick = async () => {
@@ -1468,6 +1620,9 @@ $('#btn-save-settings').onclick = async () => {
   // (draft ids are replaced by real ones for new rows).
   await loadSettings();
   refreshStatus();
+  // The status bar reads the same settings; repaint its chips so a switch or
+  // model change saved here shows up immediately instead of lagging behind.
+  window.ReachWorkspaceShell?.refreshEndpointChip();
   status.dataset.savedRecently = '1';
   status.textContent = 'Saved.';
   setTimeout(() => { status.textContent = ''; delete status.dataset.savedRecently; }, 2000);
@@ -1569,9 +1724,10 @@ $('#btn-model-cancel').onclick = () => $('#model-modal').classList.add('hidden')
 // ---------- Create page: custom agents (personas) + teams ----------
 let personas = [];
 let teams = [];
+let roles = [];                // preset crew roles (agent/roles.cjs) — the dropdown catalog
 let editingPersonaId = null;
 let editingTeamId = null;
-let teamBuilderMembers = [];   // [{personaId, role}] while the modal is open
+let teamBuilderMembers = [];   // [{personaId, roleId, role}] while the modal is open
 let activeTeamRun = null;      // { teamRunId, cards: Map(index -> {el, out}) }
 let teamDispatching = false;
 let pendingTeamEvents = [];
@@ -1579,6 +1735,7 @@ let pendingTeamEvents = [];
 async function loadCreatePage() {
   personas = await reachApi.personas.list();
   teams = await reachApi.teams.list();
+  roles = await reachApi.roles.list();
   /* Load connections too, so a persona card can NAME the connection it is pinned
    * to instead of showing a bare id. Best-effort: if the list cannot load the
    * cards still render, they just fall back to the id. */
@@ -1627,13 +1784,18 @@ function renderTeamList() {
   for (const t of teams) {
     const card = document.createElement('div');
     card.className = 'team-card';
-    const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : ' · ');
+    const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : t.mode === 'links' ? ' ⇄ ' : ' · ');
     /* A spread team runs on several providers, so say so on the card — otherwise
      * two identical-looking crews behave differently at run time. */
     const spreadChip = t.spreadConnections === true
       ? '<span class="chip ok" title="Members spread across the enabled connections">⇶ multi-endpoint</span>'
       : '';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : 'ok'}">${t.mode}</span>${spreadChip}</div>`
+    /* Which contract the crew runs on is a behavior difference, so the card
+     * carries it too (absent on legacy teams = JSON contract). */
+    const protoChip = t.toolProtocol === 'native'
+      ? '<span class="chip" title="Native OpenAI tool calls: member tool calls execute directly">native tools</span>'
+      : '';
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : t.mode === 'links' ? 'links' : 'ok'}">${t.mode}</span>${protoChip}${spreadChip}</div>`
       + `<div class="persona-card-prompt">${roster || '<span class="dim">no members</span>'}</div>`
       + `<div class="team-card-actions"><button class="ghost small" data-act="run">Run…</button><button class="ghost small" data-act="edit">Edit</button></div>`;
     card.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); openTeamModal(t); };
@@ -1764,9 +1926,16 @@ async function openTeamModal(t) {
   $('#team-modal-title').textContent = t ? 'Edit Team' : 'New Team';
   $('#team-name').value = t ? t.name : '';
   $('#team-mode').value = t ? t.mode : 'parallel';
-  teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, role: m.role || '' })) : [];
+  /* Tool protocol: how members turn model output into tool calls. New teams
+   * default to native (the endpoint's tool_calls run directly); the JSON
+   * contract stays available for endpoints without native tool support. Older
+   * teams report 'json' from the store unless they were switched over. */
+  $('#team-protocol').value = t ? (t.toolProtocol === 'native' ? 'native' : 'json') : 'native';
+  updateProtocolHint();
+  teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, roleId: m.roleId || '', role: m.role || '' })) : [];
   $('#team-spread').checked = !!(t && t.spreadConnections === true);
   await loadConnectionChoices();
+  fillRolePicker();
   updateSpreadHint();
   $('#btn-team-delete').classList.toggle('hidden', !t);
   renderTeamBuilder();
@@ -1800,6 +1969,45 @@ function updateSpreadHint() {
   hint.textContent = `On: ${spread} unpinned member(s) rotate across ${pool.length} pooled connections; ${pinned} pinned member(s) keep their own.`;
 }
 $('#team-spread').onchange = updateSpreadHint;
+/* Say what the chosen tool protocol does at run time — the two options fail in
+ * different places (a native endpoint without function-calling support vs a
+ * model that drifts off the JSON contract). */
+function updateProtocolHint() {
+  const hint = $('#team-protocol-hint');
+  if (!hint) return;
+  hint.textContent = $('#team-protocol').value === 'native'
+    ? 'Native: each member request advertises real OpenAI tools and the model\'s tool calls execute directly; task_complete ends the member. Needs a model with function-calling support on its endpoint.'
+    : 'JSON contract: the model answers with one structured actions object — works on any endpoint that can follow instructions, no function-calling support needed.';
+}
+$('#team-protocol').onchange = updateProtocolHint;
+/* Role picker helpers: the 20 presets (agent/roles.cjs) plus a free-text
+ * fallback. A preset stores its id AND its name (older surfaces still show
+ * `role`); Custom stores free text with no id; the runner turns either into
+ * real role behavior on every run. */
+function fillRoleOptions(sel, roleId = '', customText = '') {
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = 'no role';
+  sel.appendChild(none);
+  for (const r of roles) {
+    const opt = document.createElement('option');
+    opt.value = r.id; opt.textContent = r.name; opt.title = r.tagline;
+    sel.appendChild(opt);
+  }
+  const custom = document.createElement('option');
+  custom.value = '__custom';
+  custom.textContent = customText && !roleId ? `Custom: ${String(customText).slice(0, 28)}` : 'Custom role…';
+  sel.appendChild(custom);
+  sel.value = roleId && roles.some(r => r.id === roleId) ? roleId : (customText ? '__custom' : '');
+}
+
+function fillRolePicker() {
+  const pick = $('#team-member-role-pick');
+  if (!pick) return;
+  fillRoleOptions(pick);
+  $('#team-member-role').disabled = true;
+}
+
 function renderTeamBuilder() {
   const el = $('#team-members');
   el.innerHTML = '';
@@ -1807,7 +2015,24 @@ function renderTeamBuilder() {
     const p = personas.find(x => x.id === m.personaId);
     const row = document.createElement('div');
     row.className = 'team-member-row';
-    row.innerHTML = `<span class="member-idx">${i + 1}</span><strong>${escapeHtml(p ? p.name : '(deleted)')}</strong><span class="dim">${escapeHtml(m.role || '')}</span>`;
+    row.innerHTML = `<span class="member-idx">${i + 1}</span><strong>${escapeHtml(p ? p.name : '(deleted)')}</strong>`;
+    const roleSel = document.createElement('select');
+    roleSel.className = 'row-role';
+    roleSel.title = 'Crew role for this member — the role is behavior: it is injected into the member\'s prompt on every run.';
+    fillRoleOptions(roleSel, m.roleId, m.role);
+    roleSel.onchange = async () => {
+      if (roleSel.value === '__custom') {
+        const txt = await window.ReachDialogs.prompt('Custom role for this member (free text):', m.roleId ? '' : (m.role || ''));
+        const text = String(txt || '').trim();
+        if (text) { m.roleId = ''; m.role = text.slice(0, 120); }
+      } else {
+        const spec = roles.find(r => r.id === roleSel.value);
+        m.roleId = spec ? spec.id : '';
+        m.role = spec ? spec.name : '';
+      }
+      renderTeamBuilder();
+    };
+    row.appendChild(roleSel);
     const up = document.createElement('button');
     up.className = 'ghost tiny'; up.textContent = '↑'; up.title = 'Move earlier';
     up.onclick = () => { if (i > 0) { [teamBuilderMembers[i - 1], teamBuilderMembers[i]] = [teamBuilderMembers[i], teamBuilderMembers[i - 1]]; renderTeamBuilder(); } };
@@ -1845,9 +2070,24 @@ $('#btn-team-add-member').onclick = () => {
   const personaId = $('#team-member-pick').value;
   if (!personaId) return;
   if (teamBuilderMembers.length >= 8) { showNotice('A team can have at most 8 members.'); return; }
-  teamBuilderMembers.push({ personaId, role: $('#team-member-role').value.trim() });
+  const pick = $('#team-member-role-pick').value;
+  const spec = pick === '__custom' ? null : roles.find(r => r.id === pick);
+  const custom = pick === '__custom' ? $('#team-member-role').value.trim() : '';
+  teamBuilderMembers.push({
+    personaId,
+    roleId: spec ? spec.id : '',
+    role: spec ? spec.name : custom.slice(0, 120),
+  });
   $('#team-member-role').value = '';
+  $('#team-member-role-pick').value = '';
+  $('#team-member-role').disabled = true;
   renderTeamBuilder();
+};
+/* The free-text field only applies to the Custom choice. */
+$('#team-member-role-pick').onchange = () => {
+  const custom = $('#team-member-role-pick').value === '__custom';
+  $('#team-member-role').disabled = !custom;
+  if (custom) $('#team-member-role').focus();
 };
 $('#btn-team-save').onclick = async () => {
   const name = $('#team-name').value.trim();
@@ -1856,6 +2096,7 @@ $('#btn-team-save').onclick = async () => {
   const patch = {
     name,
     mode: $('#team-mode').value,
+    toolProtocol: $('#team-protocol').value,
     members: teamBuilderMembers,
     spreadConnections: $('#team-spread').checked,
   };
@@ -1878,7 +2119,7 @@ $('#btn-team-delete').onclick = async () => {
 let pendingRunTeam = null;
 function openTeamRunModal(t) {
   pendingRunTeam = t;
-  const roster = (t.members || []).map(m => m.personaName).join(t.mode === 'chain' ? ' → ' : ' · ');
+  const roster = (t.members || []).map(m => m.personaName).join(t.mode === 'chain' ? ' → ' : t.mode === 'links' ? ' ⇄ ' : ' · ');
   $('#team-run-info').textContent = `${t.name} (${t.mode}): ${roster}` + (currentAgent ? ` · project ${currentAgent.dir}` : '');
   $('#team-run-task').value = '';
   $('#team-run-modal').classList.remove('hidden');
@@ -1996,6 +2237,23 @@ function subCard(agentId, name, model, depth) {
   run.subCards.set(agentId, card);
   addMemberControl(card, run, { agentId });
   return card;
+}
+
+/* Response-finish flash: the ONLY "finished" indicator on member cards — a
+ * one-shot border highlight that starts from nothing and returns to nothing
+ * (the card's own border never changes width, disappears, or lingers as a
+ * colored edge afterwards). Retrigger-safe: the class is dropped, layout is
+ * flushed, then re-added, so restarting the same member flashes again. */
+function flashMemberCard(card) {
+  if (!card) return;
+  card.classList.remove('just-finished');
+  void card.offsetWidth;
+  card.classList.add('just-finished');
+  card.addEventListener('animationend', function onEnd(e) {
+    if (e.animationName !== 'member-finish-flash') return;
+    card.classList.remove('just-finished');
+    card.removeEventListener('animationend', onEnd);
+  });
 }
 
 function addMemberControl(card, run, { index = null, agentId = null }) {
@@ -2182,6 +2440,8 @@ function handleTeamEvent(ev) {
         clearTimeout(card._renderTimer);
         card.classList.remove('waiting');
         card.classList.add(ev.ok ? 'done' : 'failed');
+        // Finished (successful) response: flash the border once — no bar.
+        if (ev.ok) flashMemberCard(card);
         card.querySelector('.member-state').textContent = ev.ok ? `done (${ev.chars || 0} chars)` : `${ev.status || 'failed'}: ${ev.error || 'No completed answer.'}`;
       }
       break;
@@ -2211,6 +2471,7 @@ function handleTeamEvent(ev) {
             clearTimeout(card._renderTimer);
             card.classList.remove('running', 'waiting');
             card.classList.add(ev.status === 'completed' ? 'done' : 'failed');
+            if (ev.status === 'completed') flashMemberCard(card);
             state.textContent = ev.status === 'completed'
               ? `done (${ev.chars || 0} chars)`
               : `${ev.status}: ${ev.error || ''}`;
@@ -2290,6 +2551,27 @@ function handleTeamEvent(ev) {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `⛓ Chain broken at ${ev.name}: ${ev.error || 'member failed'} — remaining members skipped.`;
+      run.wrap.appendChild(note);
+      break;
+    }
+    case 'links-round': {
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links round ${ev.round}: ${(ev.waking || []).join(', ')} got crew messages — ${ev.exchanges}/${ev.budget} exchanges used.`;
+      run.wrap.appendChild(note);
+      break;
+    }
+    case 'links-synthesis': {
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links: no completion was declared — ${ev.name} synthesizes the final answer (${ev.budgetSpent} crew messages used).`;
+      run.wrap.appendChild(note);
+      break;
+    }
+    case 'links-stall': {
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — the crew carries on without it.`;
       run.wrap.appendChild(note);
       break;
     }

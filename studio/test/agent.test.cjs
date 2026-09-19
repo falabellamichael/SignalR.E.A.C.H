@@ -161,7 +161,145 @@ const { actionInstruction, parseActionResponse } = require('../agent/agent-actio
   assert.strictEqual(ok.actions.length, 1);
   const bad = parseActionResponse('not json');
   assert.ok(bad.error);
+  // Prose-wrapped contract JSON (deepseek-flash, 2026-09-19): the exact object
+  // after a status line must still run — pausing the run over a prefix helps nobody.
+  const prose = 'The build/ artifacts keep polluting results. Scoping searches to real source dirs only.\n'
+    + JSON.stringify({ status: 'actions', message: 'Scoping searches.', actions: [{ name: 'search', arguments: { pattern: 'chunk_size', include: 'GUI/py' } }], options: [] });
+  const recovered = parseActionResponse(prose);
+  assert.ok(!recovered.error && recovered.actions.length === 1, 'prose-wrapped contract JSON is recovered');
+  assert.strictEqual(recovered.actions[0].arguments.pattern, 'chunk_size');
+  assert.strictEqual(recovered.message, 'Scoping searches.', 'the message field becomes the display text');
+  // arguments may arrive as a JSON string (several models do this)
+  const strArgs = parseActionResponse(JSON.stringify({ status: 'actions', message: 'x', actions: [{ name: 'read', arguments: '{"path":"index.rsh"}' }], options: [] }));
+  assert.ok(!strArgs.error && strArgs.actions[0].arguments.path === 'index.rsh', 'string arguments are parsed');
+  // Two objects (an echoed example, then the real response): the last valid wins.
+  const twoObjects = JSON.stringify({ status: 'actions', message: 'example', actions: [{ name: 'read', arguments: { path: 'a.rsh' } }], options: [] })
+    + '\nNow the real response:\n' + JSON.stringify({ status: 'actions', message: 'real', actions: [{ name: 'read', arguments: { path: 'b.rsh' } }], options: [] });
+  const last = parseActionResponse(twoObjects);
+  assert.ok(!last.error && last.actions[0].arguments.path === 'b.rsh', 'the last valid object wins');
   console.log('✓ agent-action');
+}
+
+// ---------- agent-dsml: the DeepSeek native tool markup ----------
+const { parseDsmlActions } = require('../agent/agent-dsml.cjs');
+{
+  // Byte-exact capture from api.deepseek.com 'deepseek-flash' (2026-09-19):
+  // the token is '<' + U+FF5C x2 + 'DSML' + U+FF5C x2.
+  const T = '<\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const C = '</\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const fixture = [
+    "I'll read these files. Since they're independent, I'll batch the calls.",
+    '',
+    `${T} calls>`,
+    `${T} invoke name="read">`,
+    `${T} parameter name="path" string="true">tests/test_web_search_router.py${C} parameter>`,
+    `${T} parameter name="startLine" string="false">250${C} parameter>`,
+    `${T} parameter name="endLine" string="false">466${C} parameter>`,
+    `${C} invoke>`,
+    `${T} invoke name="read">`,
+    `${T} parameter name="path" string="true">GUI/workspace_embeddings.py${C} parameter>`,
+    `${T} parameter name="startLine" string="false">1${C} parameter>`,
+    `${T} parameter name="endLine" string="false">30${C} parameter>`,
+    `${C} invoke>`,
+    `${C} calls>`,
+  ].join('\n');
+  const d = parseDsmlActions(fixture);
+  assert.ok(d.detected && !d.error, 'DSML markup is detected');
+  assert.strictEqual(d.actions.length, 2, 'each invoke becomes an action');
+  assert.deepStrictEqual(d.actions[0].arguments, { path: 'tests/test_web_search_router.py', startLine: 250, endLine: 466 },
+    'string/number parameters coerce into the action arguments');
+  assert.ok(!d.display.includes('DSML') && !d.display.includes('\uFF5C'), 'markup is stripped from the display text');
+  assert.ok(d.display.includes('batch the calls'), 'prose before the markup survives for the card');
+  // The JSON-arguments variant seen in the app's own run:
+  const jsonArgs = parseDsmlActions(`${T} calls>\n${T} invoke name="read">\n${T} parameter name="arguments":{"path":"benchmarks/bench_hotpaths.py","endLine":15}${C} invoke>\n${C} calls>`);
+  assert.ok(!jsonArgs.error && jsonArgs.actions.length === 1 && jsonArgs.actions[0].arguments.path === 'benchmarks/bench_hotpaths.py',
+    'arguments given as JSON are parsed');
+  // Unknown tool names make the block unusable instead of silently doing nothing:
+  const unknown = parseDsmlActions(`${T} calls>\n${T} invoke name="teleport">\n${T} parameter name="path" string="true">x${C} parameter>\n${C} invoke>\n${C} calls>`);
+  assert.ok(unknown.detected && unknown.error && !unknown.actions.length, 'unknown tool names are rejected');
+  // ASCII-pipe tolerance (some proxies normalize the token):
+  const ascii = parseDsmlActions('<|DSML| calls>\n<|DSML| invoke name="read">\n<|DSML| parameter name="path" string="true">a.py</|DSML| parameter>\n</|DSML| invoke>\n</|DSML| calls>');
+  assert.ok(ascii.actions.length === 1 && ascii.actions[0].arguments.path === 'a.py', 'ASCII pipe variant parses');
+  console.log('✓ agent-dsml');
+}
+
+// ---------- agent-response: DSML recovery end to end ----------
+const { parseAgentResponse } = require('../agent/agent-response.cjs');
+{
+  const T = '<\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const C = '</\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const text = `Reading now.\n${T} calls>\n${T} invoke name="read">\n${T} parameter name="path" string="true">a.rsh${C} parameter>\n${C} invoke>\n${C} calls>`;
+  const parsed = parseAgentResponse(text);
+  assert.ok(!parsed.invalid, 'a DSML response is valid, not an error');
+  assert.strictEqual(parsed.actions.length, 1);
+  assert.strictEqual(parsed.actions[0].name, 'read');
+  assert.strictEqual(parsed.display, 'Reading now.', 'the card text is the prose only');
+  // Malformed DSML ⇒ invalid ⇒ structured recovery asks again (no silent pass)
+  const badMarkup = parseAgentResponse(`${T} calls>\n${T} invoke name="teleport">\n${C} invoke>\n${C} calls>`);
+  assert.ok(badMarkup.invalid && !badMarkup.actions.length, 'unknown DSML tools mark the response invalid');
+  console.log('✓ agent-response dsml');
+}
+
+// ---------- native tool contract (OpenAI tool_calls) ----------
+const { toolDefs, nativeInstruction, CONTROL_NAMES } = require('../agent/agent-action.cjs');
+{
+  const ALL = require('../agent/tool-registry.cjs').allowedNames();
+  const solo = toolDefs({});
+  const names = solo.map(d => d.function.name);
+  assert.ok(names.includes('read') && names.includes('edit_patch'), 'real tools advertised');
+  assert.ok(CONTROL_NAMES.every(n => names.includes(n)), 'the control tools are advertised');
+  assert.ok(solo.every(d => ALL.includes(d.function.name) || CONTROL_NAMES.includes(d.function.name)), 'every def is a real tool or a control');
+  const REG = require('../agent/tool-registry.cjs').TOOLS;
+  const expected = Object.entries(REG).filter(([, tool]) => tool.tier !== 'collab').map(([n]) => n).sort();
+  assert.deepStrictEqual(names.filter(n => !CONTROL_NAMES.includes(n)).sort(), expected, 'the native defs mirror the JSON contract visible set');
+  assert.ok(!names.some(n => n.startsWith('agent.')), 'solo agent: no crew tools');
+  const crew = toolDefs({ includeCollab: true }).map(d => d.function.name);
+  assert.ok(crew.includes('agent.send') && crew.includes('agent.await'), 'crew defs include the collab tools');
+  const limited = toolDefs({ disabled: ['read'] }).map(d => d.function.name);
+  assert.ok(!limited.includes('read'), 'disabled tools are not advertised');
+  const readDef = solo.find(d => d.function.name === 'read');
+  assert.strictEqual(readDef.type, 'function');
+  assert.ok(readDef.function.description.length > 10, 'description comes from the registry help line');
+  assert.strictEqual(readDef.function.parameters.properties.path.type, 'string', 'example args shape the parameter schema');
+  const inst = nativeInstruction({ includeCollab: true });
+  assert.ok(inst.includes('NATIVE TOOL CALLS') && inst.includes('task_complete') && inst.includes('agent.send'), 'native instruction names controls + crew tools');
+  assert.ok(!inst.includes('EXECUTABLE ACTION RESPONSE'), 'the JSON contract is not advertised in native mode');
+  console.log('\u2713 native tool contract');
+}
+
+// ---------- agent-response: native control tools ----------
+{
+  const fn = (name, args) => ({ type: 'function', function: { name, arguments: JSON.stringify(args) } });
+  const done = parseAgentResponse('', [fn('task_complete', { summary: 'Delivered.' })]);
+  assert.ok(!done.invalid, 'task_complete is a valid native response');
+  assert.strictEqual(done.control.status, 'complete');
+  assert.strictEqual(done.control.summary, 'Delivered.');
+  assert.strictEqual(done.actions.length, 0, 'controls never become executable tools');
+  const blocked = parseAgentResponse('', [fn('task_blocked', { reason: 'No credentials.' })]);
+  assert.ok(!blocked.invalid && blocked.control.status === 'blocked' && blocked.control.reason === 'No credentials.');
+  const asked = parseAgentResponse('', [fn('ask_user', { question: 'Which env?', options: ['dev', 'prod'] })]);
+  assert.ok(asked.confirm && asked.confirm.question === 'Which env?' && asked.confirm.options.length === 2, 'ask_user becomes the question state');
+  const read = parseAgentResponse('', [fn('read', { path: 'a.rsh' })]);
+  assert.ok(!read.invalid && read.actions.length === 1 && read.actions[0].name === 'read', 'native tool calls execute');
+  const mixed = parseAgentResponse('', [fn('read', { path: 'a.rsh' }), fn('task_complete', { summary: 'x' })]);
+  assert.ok(mixed.invalid, 'a control mixed with real work is invalid');
+  const empty = parseAgentResponse('', [fn('task_complete', {})]);
+  assert.ok(empty.invalid, 'task_complete without a summary is invalid');
+  console.log('\u2713 agent-response native controls');
+}
+
+// ---------- agent-run: native recovery never flips contracts ----------
+{
+  const { decide } = require('../agent/agent-run.cjs');
+  const cont = decide({ status: 'running', todos: [] }, { native: true, enabled: true, invalid: false, control: null, rounds: 1, roundLimit: 40, retryLimit: 2 });
+  assert.strictEqual(cont.action, 'continue');
+  assert.ok(cont.instruction.includes('task_complete'), 'native recovery asks for tools/task_complete, not JSON');
+  assert.ok(!cont.state.structuredActions, 'native recovery never flips into the JSON contract');
+  const paused = decide({ status: 'running', todos: [], noActionRounds: 2 }, { native: true, enabled: true, invalid: false, control: null, rounds: 4, roundLimit: 40, retryLimit: 2 });
+  assert.strictEqual(paused.action, 'pause', 'repeated prose-only turns pause the member');
+  const complete = decide({ status: 'running', todos: [] }, { native: true, enabled: true, invalid: false, control: { status: 'complete', summary: 'done' }, rounds: 2, roundLimit: 40, retryLimit: 2 });
+  assert.strictEqual(complete.action, 'complete');
+  console.log('\u2713 agent-run native recovery');
 }
 
 // ---------- tool-registry ----------
@@ -302,6 +440,78 @@ const { AgentLoop } = require('../agent/agent-loop.cjs');
   });
 }
 
+// ---------- AgentLoop native tool protocol (OpenAI tool_calls) ----------
+{
+  const tmp = path.join(os.tmpdir(), 'reach-studio-native-' + Date.now());
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'index.rsh'), "'reach 0.1';" + "\n");
+  const store = new AgentStore(path.join(tmp, 'agents.json'));
+  const agent = store.create({ name: 'native-test', dir: tmp, model: 'mock' });
+  const { createServer } = require('http');
+  const requests = [];
+  const server = createServer((req, res) => {
+    if (req.method !== 'POST') { res.writeHead(404); res.end(); return; }
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      const parsedBody = JSON.parse(body);
+      requests.push(parsedBody);
+      const all = parsedBody.messages.map(m => String(m.content || '')).join('\n');
+      const send = (deltas, finish) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        for (const delta of deltas) res.write(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finish }] })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      };
+      if (all.includes('TOOL RESULTS')) {
+        send([{ tool_calls: [{ index: 0, id: 'c2', type: 'function', function: { name: 'task_complete', arguments: JSON.stringify({ summary: 'Native run read index.rsh.' }) } }] }], 'tool_calls');
+      } else {
+        // Fragmented arguments across deltas, exactly like a real stream.
+        send([
+          { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'read', arguments: '{"path"' } }] },
+          { tool_calls: [{ index: 0, function: { arguments: ':"index.rsh"}' } }] },
+        ], 'tool_calls');
+      }
+    });
+  });
+  server.listen(0, '127.0.0.1', async () => {
+    const port = server.address().port;
+    const events = [];
+    const loop = new AgentLoop({
+      agentId: agent.id, store, endpoint: `http://127.0.0.1:${port}/v1`, model: 'mock',
+      projectDir: tmp, nativeTools: true,
+      sendEvent: (channel, payload) => events.push(payload),
+    });
+    try {
+      await loop.sendUserMessage('Read index.rsh with the native protocol.');
+      assert.strictEqual(requests.length, 2, 'native endpoint hit exactly twice');
+      const first = requests[0];
+      assert.ok(Array.isArray(first.tools) && first.tools.length > 5, 'native request advertises OpenAI tools');
+      const names = first.tools.map(x => x.function.name);
+      assert.ok(names.includes('read') && names.includes('task_complete') && names.includes('task_blocked') && names.includes('ask_user'), 'registry + controls advertised');
+      assert.ok(!names.some(n => n.startsWith('agent.')), 'solo agent native request excludes crew tools');
+      const sys = first.messages[0].content;
+      assert.ok(sys.includes('NATIVE TOOL CALLS') && sys.includes('task_complete'), 'system prompt teaches the native protocol');
+      assert.ok(!sys.includes('EXECUTABLE ACTION RESPONSE'), 'JSON contract not advertised in native mode');
+      const second = JSON.stringify(requests[1]);
+      assert.ok(second.includes('TOOL RESULTS') && second.includes('reach 0.1'), 'the native read executed and fed back');
+      const finalAgent = store.get(agent.id);
+      assert.strictEqual(finalAgent.runState.status, 'completed', 'task_complete completed the run');
+      assert.ok(String(finalAgent.runState.reason || '').includes('Native run read index.rsh.'), 'completion carries the summary');
+      const lastAssistant = finalAgent.messages.filter(m => m.role === 'assistant').pop();
+      assert.ok(lastAssistant.content.includes('Native run read index.rsh.'), 'the summary is stored as the final answer');
+      assert.ok(events.some(e => e.type === 'tool-call' && e.tool === 'read'), 'native tool-call event emitted');
+      assert.ok(!events.some(e => e.type === 'tool-call' && e.tool === 'task_complete'), 'controls never execute as tools');
+      console.log('\u2713 agent-loop native tool protocol');
+    } catch (e) {
+      console.error('\u2717 agent-loop native:', e);
+      process.exitCode = 1;
+    } finally {
+      server.close();
+    }
+  });
+}
+
 // ---------- persona-store ----------
 const { PersonaStore } = require('../agent/persona-store.cjs');
 {
@@ -349,6 +559,59 @@ const { MemoryStore } = require('../agent/memory-store.cjs');
   console.log('✓ memory-store');
 }
 
+// ---------- crew roles (agent/roles.cjs) ----------
+const { ROLES, getRole, listRoleChoices } = require('../agent/roles.cjs');
+{
+  assert.strictEqual(ROLES.length, 20, 'exactly 20 preset roles');
+  assert.strictEqual(new Set(ROLES.map(r => r.id)).size, 20, 'role ids are unique');
+  assert.strictEqual(new Set(ROLES.map(r => r.name)).size, 20, 'role names are unique');
+  assert.ok(ROLES.every(r => typeof r.tagline === 'string' && r.tagline.length > 10), 'every role carries a tagline');
+  assert.ok(ROLES.every(r => typeof r.protocol === 'string' && r.protocol.length > 120), 'every role carries a real protocol');
+  // Every protocol must reference crew collaboration, or the "web" is a menu.
+  assert.ok(ROLES.every(r => /agent\.(send|status|await|list)|Coordinator|peer|crew/i.test(r.protocol)), 'every protocol names crew interaction');
+  assert.ok(getRole('coordinator'), 'coordinator resolves by id');
+  assert.strictEqual(getRole('nope'), null, 'unknown role ids resolve to null');
+  assert.ok(listRoleChoices().every(c => !('protocol' in c)), 'UI choices carry no prompt text');
+  console.log('✓ crew roles (20 presets)');
+}
+
+// ---------- agent-net: links mailbox, budget, completion sentinel ----------
+const { AgentNet, linksCompleteIn } = require('../agent/agent-net.cjs');
+{
+  const net = new AgentNet({ rosterMailbox: true, linkBudget: 2 });
+  net.preRegister({ agentId: 'm0-a', name: 'Alpha' });
+  net.preRegister({ agentId: 'm1-b', name: 'Beta' });
+  const recB = net.attach('m1-b', { running: false }, { get: () => ({}) });
+  recB.status = 'completed';
+  const d1 = net.send({ from: 'm0-a', to: 'Beta', message: 'please verify my draft' });
+  assert.strictEqual(d1.delivered, 'mailbox', 'links mailbox accepts a message for a finished roster member');
+  assert.strictEqual(recB.inbox.length, 1, 'message buffered in the inbox');
+  const d2 = net.send({ from: 'm0-a', to: 'Beta', message: 'one more thing' });
+  assert.strictEqual(d2.ok, true, 'second exchange allowed');
+  const d3 = net.send({ from: 'm0-a', to: 'Beta', message: 'over budget' });
+  assert.strictEqual(d3.ok, false, 'links budget caps total exchanges');
+  assert.ok(/budget/i.test(d3.error || ''), 'budget refusal explains itself');
+  assert.strictEqual(net.linkSends, 2, 'exactly two exchanges counted');
+
+  const net2 = new AgentNet({ rosterMailbox: true });
+  net2.preRegister({ agentId: 'x-1', name: 'One' });
+  net2.preRegister({ agentId: 'x-2', name: 'Two' });
+  const recTwo = net2.attach('x-2', { running: false }, { get: () => ({}) });
+  recTwo.status = 'completed';
+  net2.send({ from: 'x-1', to: 'Two', message: 'all work verified\ndone\nLINKS: COMPLETE' });
+  assert.ok(net2.linksComplete && net2.linksComplete.by === 'One', 'completion declaration travels in messages');
+  assert.ok(linksCompleteIn('blah LINKS: complete blah'), 'sentinel matcher is case/space tolerant');
+  assert.ok(!linksCompleteIn('no declaration here'), 'matcher does not false-positive');
+
+  const net3 = new AgentNet({});
+  net3.preRegister({ agentId: 'y-1', name: 'One' });
+  const recC = net3.attach('y-1', { running: false }, { get: () => ({}) });
+  recC.status = 'completed';
+  const refused = net3.send({ from: 'y-0', to: 'One', message: 'hi' });
+  assert.strictEqual(refused.ok, false, 'without links mode, finished roster members stay un-wakeable');
+  console.log('✓ agent-net links mailbox + budget + sentinel');
+}
+
 // ---------- team-runner (parallel + chain, mock SSE endpoint) ----------
 const { TeamRunner } = require('../agent/team-runner.cjs');
 {
@@ -363,11 +626,21 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
       // Reply identifies the persona (from the system prompt) and echoes any
       // HANDOFF block so the chain test can prove relay happened.
       const sys = parsed.messages[0].content;
-      const who = /You are (Alpha|Beta)/.exec(sys);
+      const who = /You are (Alpha|Beta|Rogue)/.exec(sys);
       const userMsg = parsed.messages.filter(m => m.role === 'user').map(m => m.content).join('\n');
-      const relay = /HANDOFF FROM (\w+)[^\n]*:\n([\s\S]*)/.exec(userMsg);
-      const content = `I am ${who ? who[1] : 'unknown'}.` + (relay ? ` Relay from ${relay[1]}: ${relay[2].trim().slice(0, 40)}` : '')
-        + '\n```agent_status\n{"status":"complete","summary":"done"}\n```';
+      // 'Rogue' models a member that can never produce a usable action: the
+      // structured recovery asks, it answers prose every time, and the member
+      // ends paused. Links must carry on without it.
+      let content;
+      if (who && who[1] === 'Rogue') {
+        content = 'I could not decide what to do.';
+      } else {
+        const relay = /HANDOFF FROM (\w+)[^\n]*:\n([\s\S]*)/.exec(userMsg);
+        content = `I am ${who ? who[1] : 'unknown'}.` + (relay ? ` Relay from ${relay[1]}: ${relay[2].trim().slice(0, 40)}` : '')
+          + (/LINK MESSAGES from the crew/.test(userMsg) ? ' Reviewed the draft and I am satisfied.' : '')
+          + '\n```agent_status\n{"status":"complete","summary":"done"}\n```'
+          + (/LINK MESSAGES from the crew/.test(userMsg) ? '\nLINKS: COMPLETE' : '');
+      }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\n`);
       res.write('data: [DONE]\n\n');
@@ -426,6 +699,70 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.ok(cDone.results.every(r => r.ok));
     assert.ok(cDone.answer.includes('Relay from Alpha'), 'chain answer reflects relayed context');
     console.log('✓ team-runner chain');
+
+    // --- links: a peer network. A mid-run message (the delivery a member's
+    // agent.send tool makes) wakes the finished peer for one more turn; that
+    // turn declares LINKS: COMPLETE and ends the run. ---
+    events.length = 0;
+    const linksTeam = { id: 't3', name: 'Links', mode: 'links', members: [{ personaId: 'pa', roleId: 'coordinator' }, { personaId: 'pb' }] };
+    const linksRun = new TeamRunner({
+      team: linksTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'pb', name: 'Beta', model: 'm2', prompt: 'You are Beta.' },
+      ],
+      task: 'Draft then review.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
+      sendEvent: (channel, payload) => {
+        events.push(payload);
+        // Deterministic inject: the moment Beta finishes its first turn,
+        // "Alpha" messages it — exactly what Alpha's agent.send tool does.
+        if (payload && payload.type === 'member-done' && payload.index === 1 && payload.retake !== true) {
+          linksRun.net.send({ from: 'm0-pa', to: 'Beta', message: 'Review my draft please.' });
+        }
+      },
+    });
+    hits.length = 0;
+    await linksRun.run('run-l');
+    const lDone = events.filter(e => e.type === 'done').pop();
+    assert.strictEqual(lDone.mode, 'links', 'links run reports its mode');
+    assert.strictEqual(hits.length, 3, 'links: Beta ran a second turn after the message');
+    const wakePrompt = JSON.stringify(hits[2].messages);
+    assert.ok(wakePrompt.includes('Review my draft please.'), 'links: the message reached Beta\'s next turn');
+    assert.ok(wakePrompt.includes('OPEN PEER NETWORK') || wakePrompt.includes('LINKS MODE'), 'links: wake prompt carries the peer-network protocol');
+    assert.ok(lDone.links && lDone.links.rounds === 1 && lDone.links.exchanges === 1, 'links: one round, one exchange');
+    assert.strictEqual(lDone.links.completedBy, 'Beta', 'links: completion attributed to the declaring member');
+    assert.ok(lDone.answer.includes('LINKS: COMPLETE'), 'links: answer carries the completion declaration');
+    assert.ok(events.some(e => e.type === 'links-round' && (e.waking || []).includes('Beta')), 'links: the round event names the woken member');
+    console.log('✓ team-runner links');
+
+    // --- links: a stalled member must not sink the crew (2026-09-19). Rogue
+    // answers prose to the structured recovery until its member run pauses;
+    // the peer network must skip the dead node, keep the Coordinator alive,
+    // and still produce a real answer. ---
+    events.length = 0;
+    hits.length = 0;
+    const stallTeam = { id: 't4', name: 'LinksStall', mode: 'links', members: [{ personaId: 'pa', roleId: 'coordinator' }, { personaId: 'px' }] };
+    const stallRun = new TeamRunner({
+      team: stallTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'px', name: 'Rogue', model: 'm-bad', prompt: 'You are Rogue.' },
+      ],
+      task: 'Draft then review.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
+      sendEvent,
+    });
+    await stallRun.run('run-ls');
+    const stDone = events.filter(e => e.type === 'done').pop();
+    assert.strictEqual(stDone.mode, 'links');
+    assert.strictEqual(stDone.results[1].ok, false, 'the stalled member reports not-ok');
+    assert.ok(events.some(e => e.type === 'links-stall' && e.name === 'Rogue'), 'a links-stall event names the dead node');
+    assert.strictEqual(stDone.links.stalled, 1, 'links telemetry counts the stalled member');
+    assert.ok(events.some(e => e.type === 'links-synthesis' && e.name === 'Alpha'), 'the surviving Coordinator synthesizes');
+    assert.ok(stDone.answer.includes('I am Alpha'), 'the answer carries the live member output');
+    assert.ok(!stDone.answer.includes('(failed:'), 'no failure dump when a live member answered');
+    console.log('✓ team-runner links stall');
 
     // --- stop mid-run: chain with 2 members, stop after the first starts ---
     events.length = 0;

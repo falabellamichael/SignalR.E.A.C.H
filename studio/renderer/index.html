@@ -250,10 +250,13 @@
           <strong>Save Settings</strong>.
         </p>
 
+        <p id="conn-summary" class="settings-description conn-summary" role="status"></p>
+
         <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
 
         <div class="settings-actions conn-actions">
           <button id="btn-add-connection" class="ghost small" type="button">+ Add connection</button>
+          <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
           <span id="conn-count" class="dim"></span>
         </div>
 
@@ -600,17 +603,21 @@
        daemon, and the tray control opens Settings rather than toggling a
        background daemon. Both say what they actually are. -->
   <footer class="statusbar-bottom" id="statusbar-bottom">
+    <!-- Quick connection switcher: opens UPWARD from the endpoint chip. Rows are
+         built in workspace-shell.js with createElement — connection names and
+         endpoints are user input, so they are never interpolated into markup. -->
+    <div id="sb-conn-popover" class="sb-popover hidden" role="menu" aria-label="Switch connection"></div>
     <span id="conn-mode" class="dim"></span>
     <div class="sb-group">
-      <span id="sb-endpoint" class="sb-item sb-chip" title="Configured endpoint">
+      <button id="sb-endpoint" class="sb-item sb-chip sb-clickable" type="button" title="Configured endpoint" aria-haspopup="menu" aria-expanded="false" aria-controls="sb-conn-popover">
         <span class="sb-dot" id="sb-endpoint-dot" aria-hidden="true"></span><span id="sb-endpoint-text">no endpoint</span>
-      </span>
+      </button>
       <span id="sb-latency" class="sb-item sb-chip" title="Last measured round-trip latency" hidden>
         latency <b id="sb-latency-val">&mdash;</b>
       </span>
-      <span id="sb-model" class="sb-item sb-chip" title="Active model" hidden>
+      <button id="sb-model" class="sb-item sb-chip sb-clickable" type="button" title="Active model" hidden>
         model <b id="sb-model-val">&mdash;</b>
-      </span>
+      </button>
       <span id="sb-index" class="sb-item sb-chip" title="Codebase index" hidden>
         index <b id="sb-index-val">&mdash;</b>
       </span>
@@ -688,7 +695,14 @@
       <select id="team-mode">
         <option value="parallel">Parallel — all members work the same task simultaneously</option>
         <option value="chain">Chain — members work in order, passing results along</option>
+        <option value="links">Links — peer network: members message each other until the task is done (3× chain rate)</option>
       </select>
+      <label>Tool protocol</label>
+      <select id="team-protocol" title="How the crew's members turn model output into tool calls">
+        <option value="native">OpenAI tool calls — the model calls tools natively and results come back directly (endpoint must support tools)</option>
+        <option value="json">JSON contract — universal prompt-enforced action object; use when an endpoint has no native tool support</option>
+      </select>
+      <p id="team-protocol-hint" class="dim field-hint"></p>
       <label class="check team-spread-row">
         <input id="team-spread" type="checkbox" />
         <span>Spread members across the enabled connections</span>
@@ -698,7 +712,8 @@
       <div id="team-members" class="team-members"></div>
       <div class="row">
         <select id="team-member-pick"></select>
-        <input id="team-member-role" type="text" placeholder="role (optional, e.g. reviewer)" spellcheck="false" />
+        <select id="team-member-role-pick" title="Preset crew role — each of the 20 roles works differently and collaborates through the crew's agent links"></select>
+        <input id="team-member-role" type="text" placeholder="custom role (optional)" spellcheck="false" disabled />
         <button id="btn-team-add-member" class="ghost small">Add</button>
       </div>
       <div class="modal-actions">

@@ -11,6 +11,7 @@ const { parseAgentResponse } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
 const { TeamRunner } = require('./agent/team-runner.cjs');
+const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
 const { readTextFile, writeTextFile } = require('./agent/text-files.cjs');
@@ -450,6 +451,10 @@ function registerIpc() {
     return p ? { ok: true, persona: p } : { ok: false, err: 'Persona not found' };
   });
   ipcMain.handle('personas:delete', (_e, id) => ({ ok: getPersonaStore().removePersona(id) }));
+
+  /* Preset crew roles (agent/roles.cjs) — a static catalog the team editor
+   * renders as a dropdown; nothing here is persisted. */
+  ipcMain.handle('roles:list', () => listRoleChoices());
 
   ipcMain.handle('teams:list', () => getPersonaStore().listTeams());
   ipcMain.handle('teams:get', (_e, id) => getPersonaStore().getTeam(id));
@@ -2149,7 +2154,14 @@ app.whenReady().then(() => {
         // against synthetic files and a local endpoint, never private projects.
         fs.mkdirSync(path.join(smokeProject, 'slow'));
         fs.writeFileSync(path.join(smokeProject, 'slow', 'regex.txt'), 'a'.repeat(50000) + '!');
+        fs.writeFileSync(path.join(smokeProject, 'dsml-dialect.txt'), 'DSMLSMOKE read-through-ok\n');
+        fs.writeFileSync(path.join(smokeProject, 'native-fixture.txt'), 'NATIVEMARK native-ok\n');
         const { createServer } = require('node:http');
+        // Links-stage observations recorded by the fixture endpoint and
+        // asserted in the main process after the renderer block runs.
+        const linksChecks = { protocolSeen: false, roleSeen: false, messageSeen: false, dsmlToolRan: false, jsonCrewSawTools: false };
+        // Native-protocol observations (OpenAI tool_calls crew).
+        const nativeChecks = { toolsAdvertised: false, toolRan: false };
         const teamServer = createServer((req, res) => {
           let body = '';
           req.on('data', chunk => { body += chunk; });
@@ -2160,6 +2172,12 @@ app.whenReady().then(() => {
             // task, so the raw task text is a prefix of the member prompt.
             const cancel = request.messages.some(m => m.content.startsWith('Cancel the slow search'));
             const all = request.messages.map(m => String(m.content || '')).join('\n');
+            if (request.model === 'fixture-l1' || request.model === 'fixture-l2' || request.model === 'fixture-l3') {
+              if (Array.isArray(request.tools) && request.tools.length) linksChecks.jsonCrewSawTools = true;
+              if (all.includes('LINKS MODE')) linksChecks.protocolSeen = true;
+              if (all.includes('YOUR CREW ROLE')) linksChecks.roleSeen = true;
+              if (all.includes('Review my draft')) linksChecks.messageSeen = true;
+            }
             if (all.includes('Universal stop regular fixture') || (request.model === 'fixture-sub' && !all.includes('Continue the original task'))) {
               res.writeHead(200, { 'content-type': 'text/event-stream' });
               res.write(': waiting for stop\n\n');
@@ -2178,6 +2196,47 @@ app.whenReady().then(() => {
                 : hasResults
                   ? acts('Awaiting the spawned worker.', [{ name: 'agent.await', arguments: { agent: 'Sub Worker', timeoutMs: 8000 } }])
                   : acts('Delegating to a spawned worker.', [{ name: 'agent.spawn', arguments: { name: 'Sub Worker', task: 'Sub scan the fixture', model: 'fixture-sub' } }]);
+            } else if (request.model === 'fixture-l1') {
+              // Links member C: hands a real message to its peer via the
+              // collab tool, then finishes its own turn.
+              content = hasResults
+                ? complete('C draft finished.')
+                : acts('Handing my draft to D for review.', [{ name: 'agent.send', arguments: { to: 'Worker D', message: 'Review my draft.' } }]);
+            } else if (request.model === 'fixture-l2') {
+              // Links member D: idle until the peer's message arrives, then
+              // declares the crew complete (the LINKS: COMPLETE sentinel).
+              content = all.includes('Review my draft')
+                ? complete('Reviewed and verified. LINKS: COMPLETE')
+                : complete('D standing by.');
+            } else if (request.model === 'fixture-l3') {
+              // Links member E answers in the DeepSeek DSML native tool markup
+              // (byte-exact dialect captured 2026-09-19). The app must execute
+              // the read and strip the markup from the card, or the member
+              // stalls and the run pauses.
+              if (all.includes('DSMLSMOKE')) linksChecks.dsmlToolRan = true;
+              content = all.includes('DSMLSMOKE')
+                ? complete('DSML dialect executed.')
+                : 'Reading the dialect fixture.\n'
+                  + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>\n'
+                  + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke name="read">\n'
+                  + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C parameter name="path" string="true">dsml-dialect.txt</\uFF5C\uFF5CDSML\uFF5C\uFF5C parameter>\n'
+                  + '</\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke>\n'
+                  + '</\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>';
+            } else if (request.model === 'fixture-n1') {
+              // Native protocol member: the request must carry OpenAI tools; the
+              // member executes a real read, then ends via task_complete.
+              if (Array.isArray(request.tools) && request.tools.some(t => t.function && t.function.name === 'read')
+                && request.tools.some(t => t.function && t.function.name === 'task_complete')) nativeChecks.toolsAdvertised = true;
+              if (all.includes('NATIVEMARK')) nativeChecks.toolRan = true;
+              const ncall = all.includes('NATIVEMARK')
+                ? { name: 'task_complete', arguments: JSON.stringify({ summary: 'Native fixture done.' }) }
+                : { name: 'read', arguments: JSON.stringify({ path: 'native-fixture.txt' }) };
+              const ndelta = { tool_calls: [{ index: 0, id: 'call-native', type: 'function', function: ncall }] };
+              res.writeHead(200, { 'content-type': 'text/event-stream' });
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: ndelta, finish_reason: null }] }) + '\n\n');
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + '\n\n');
+              res.end('data: [DONE]\n\n');
+              return;
             } else {
               content = hasResults
                 ? complete('Fixture scan completed.')
@@ -2199,6 +2258,18 @@ app.whenReady().then(() => {
                   if (Date.now() > deadline) throw new Error('Team smoke timeout: ' + label + '; ' + (document.querySelector('dialog.app-dialog')?.textContent || chatLog.textContent.slice(-1600)) + '; renderer: ' + window.__errors.join('; '));
                   await new Promise(resolve => setTimeout(resolve, 20));
                 }
+              };
+              // Border widths are reported scaled by the display factor on some
+              // machines (a 1px border reads 0.571429px at 175% Windows
+              // scaling), so a finished card's left edge is compared against a
+              // freshly-created resting card instead of the literal '1px'.
+              const restingEdgeWidth = () => {
+                const probe = document.createElement('div');
+                probe.className = 'member-card';
+                document.body.appendChild(probe);
+                const width = getComputedStyle(probe).borderLeftWidth;
+                probe.remove();
+                return width;
               };
               await reachApi.saveSettings({ endpoint: 'http://127.0.0.1:${teamServer.address().port}/v1', model: 'fixture', accessKey: '' });
               const a = await reachApi.personas.create({ name: 'Worker A', model: 'fixture-a' });
@@ -2235,7 +2306,16 @@ app.whenReady().then(() => {
               if (slow.cards.get(1).dataset.paused === 'true') throw new Error('Individual Stop interrupted teammate');
               await new Promise(resolve => setTimeout(resolve, 100));
               slow.cards.get(0).querySelector('.member-control').click();
-              await until(() => slow.cards.get(0).classList.contains('done'), 'restart individual member');
+              // A finished response flashes the border once (just-finished) and
+              // keeps no colored edge bar afterwards.
+              let memberFlashSeen = false;
+              await until(() => {
+                const card = slow.cards.get(0);
+                if (card.classList.contains('just-finished')) memberFlashSeen = true;
+                return card.classList.contains('done');
+              }, 'restart individual member');
+              if (!memberFlashSeen) throw new Error('Finished member card did not flash');
+              if (getComputedStyle(slow.cards.get(0)).borderLeftWidth !== restingEdgeWidth()) throw new Error('Finished member card must not keep a colored edge bar');
               if (document.querySelector('#btn-send').textContent !== 'Stop') throw new Error('Send did not become universal Stop');
               await reachApi.agents.send(currentAgent.id, 'Universal stop regular fixture');
               await until(() => agentRunning, 'regular chat alongside team');
@@ -2253,6 +2333,9 @@ app.whenReady().then(() => {
               const good = await dispatch(t.team, 'Find hello in the fixture');
               await until(() => !activeTeamRun, 'successful parallel team');
               if (![...good.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Parallel scans did not complete');
+              for (const card of good.cards.values()) {
+                if (getComputedStyle(card).borderLeftWidth !== restingEdgeWidth()) throw new Error('Done member cards must not keep a colored edge bar');
+              }
               if ([...good.cards.values()].some(c => c.querySelector('.member-body').textContent !== 'Fixture scan completed.')) throw new Error('Team answer polluted by prior rounds or structured JSON');
               await new Promise(resolve => setTimeout(resolve, 150));
               const saved = await reachApi.agents.get(agent.agent.id);
@@ -2269,17 +2352,75 @@ app.whenReady().then(() => {
               workerCard.querySelector('.member-control').click();
               await until(() => workerCard.dataset.paused === 'true', 'stop spawned worker');
               workerCard.querySelector('.member-control').click();
-              await until(() => !activeTeamRun, 'delegation run');
+              let subFlashSeen = false;
+              await until(() => {
+                const card = [...del.subCards.values()][0];
+                if (card && card.classList.contains('just-finished')) subFlashSeen = true;
+                return !activeTeamRun;
+              }, 'delegation run');
               if (![...del.cards.values()].every(c => c.classList.contains('done'))) throw new Error('Delegator did not complete');
               const sub = del.subCards && [...del.subCards.values()][0];
               if (!sub) throw new Error('Spawned worker got no card');
               if (!sub.classList.contains('done')) throw new Error('Spawned worker did not complete');
               if (!sub.querySelector('.member-state').textContent.includes('done')) throw new Error('Spawned worker state wrong: ' + sub.querySelector('.member-state').textContent);
               if (!sub.classList.contains('subagent')) throw new Error('Spawned worker card not styled as subagent');
+              if (!subFlashSeen) throw new Error('Finished subagent card did not flash');
+              if (getComputedStyle(sub).borderLeftWidth !== restingEdgeWidth()) throw new Error('Done subagent card must not keep a colored edge bar');
               const saved2 = await reachApi.agents.get(agent.agent.id);
               if (!saved2.messages.some(m => m.content.includes('Crew delegation finished.'))) throw new Error('Delegation answer not saved');
               await reachApi.teams.delete(td.team.id);
               await reachApi.personas.delete(d.persona.id);
+
+              // LINKS mode: the 20-role catalog, role ids persisting on team
+              // members, and a peer network run where a member's agent.send
+              // reaches its peer and the peer's LINKS: COMPLETE declaration
+              // ends the crew — saved with the final answer.
+              const roleList = await reachApi.roles.list();
+              if (!Array.isArray(roleList) || roleList.length !== 20) throw new Error('roles:list must return the 20 presets, got ' + (roleList && roleList.length));
+              const c = await reachApi.personas.create({ name: 'Worker C', model: 'fixture-l1' });
+              const wd = await reachApi.personas.create({ name: 'Worker D', model: 'fixture-l2' });
+              const we = await reachApi.personas.create({ name: 'Worker E', model: 'fixture-l3' });
+              const lt = await reachApi.teams.create({
+                name: 'Links crew', mode: 'links',
+                members: [
+                  { personaId: c.persona.id, roleId: 'builder', role: 'Builder' },
+                  { personaId: wd.persona.id, roleId: 'verifier', role: 'Verifier' },
+                  { personaId: we.persona.id, roleId: 'tester', role: 'Tester' },
+                ],
+              });
+              if (lt.team.mode !== 'links') throw new Error('links team mode was not stored');
+              if (lt.team.members[0].roleId !== 'builder' || lt.team.members[1].roleId !== 'verifier' || lt.team.members[2].roleId !== 'tester') throw new Error('roleId was not stored on team members');
+              const lk = await dispatch(lt.team, 'Draft and review the fixture summary');
+              await until(() => !activeTeamRun, 'links crew finished');
+              if (![...lk.cards.values()].every(card => card.classList.contains('done'))) throw new Error('Links members did not complete');
+              if (!lk.cards.get(1).querySelector('.member-body').textContent.includes('LINKS: COMPLETE')) throw new Error('Links completion declaration missing from the declaring member answer');
+              const dsmlCard = lk.cards.get(2).querySelector('.member-body').textContent;
+              if (dsmlCard.includes('parameter name=') || dsmlCard.includes('invoke name=')) throw new Error('The DSML markup leaked into the member card');
+              if (!dsmlCard.includes('DSML dialect executed.')) throw new Error('The DSML member did not finish cleanly');
+              const savedL = await reachApi.agents.get(agent.agent.id);
+              if (!savedL.messages.some(m => m.content.includes('LINKS: COMPLETE'))) throw new Error('Links answer not saved');
+              await reachApi.teams.delete(lt.team.id);
+              await reachApi.personas.delete(c.persona.id);
+              await reachApi.personas.delete(wd.persona.id);
+              await reachApi.personas.delete(we.persona.id);
+
+              // NATIVE tool protocol: requests advertise real OpenAI tools, the
+              // model's tool_calls execute, and task_complete ends the member.
+              const wn = await reachApi.personas.create({ name: 'Worker N', model: 'fixture-n1' });
+              const nt = await reachApi.teams.create({
+                name: 'Native crew', mode: 'parallel', toolProtocol: 'native',
+                members: [{ personaId: wn.persona.id, roleId: 'builder', role: 'Builder' }],
+              });
+              if (nt.team.toolProtocol !== 'native') throw new Error('toolProtocol was not stored on the team');
+              const nv = await dispatch(nt.team, 'Run the native fixture');
+              await until(() => !activeTeamRun, 'native crew finished');
+              if (![...nv.cards.values()].every(card => card.classList.contains('done'))) throw new Error('Native member did not complete');
+              const nvCard = nv.cards.get(0).querySelector('.member-body').textContent;
+              if (!nvCard.includes('Native fixture done.')) throw new Error('Native completion summary missing from the card');
+              const savedN = await reachApi.agents.get(agent.agent.id);
+              if (!savedN.messages.some(m => m.content.includes('Native fixture done.'))) throw new Error('Native crew answer not saved');
+              await reachApi.teams.delete(nt.team.id);
+              await reachApi.personas.delete(wn.persona.id);
 
               await reachApi.agents.delete(agent.agent.id);
               await reachApi.teams.delete(t.team.id);
@@ -2287,6 +2428,13 @@ app.whenReady().then(() => {
               await reachApi.personas.delete(b.persona.id);
             })()
           `);
+          if (!linksChecks.protocolSeen) throw new Error('Links member prompts must carry the peer-network protocol');
+          if (!linksChecks.roleSeen) throw new Error('Preset crew roles must reach member prompts');
+          if (!linksChecks.messageSeen) throw new Error('The agent.send message never reached its peer');
+          if (!linksChecks.dsmlToolRan) throw new Error('The DSML native tool markup never executed in Links');
+          if (linksChecks.jsonCrewSawTools) throw new Error('The JSON-contract crew must not advertise native tools');
+          if (!nativeChecks.toolsAdvertised) throw new Error('Native crew requests must advertise OpenAI tools');
+          if (!nativeChecks.toolRan) throw new Error('The native tool call never executed in the Native crew');
           await win.webContents.executeJavaScript(`
             (async () => {
               const created = await reachApi.agents.create('Input verification', ${JSON.stringify(smokeProject)}, 'fixture');
@@ -2574,6 +2722,121 @@ app.whenReady().then(() => {
             if (!document.querySelector('#rf-conn')) throw new Error('Refactor page has no connection picker');
             if (document.querySelector('#rf-conn').options.length !== 1) throw new Error('Refactor picker should list the one connection');
             if (!document.querySelector('#pg-model-src') || !document.querySelector('#rf-model-src')) throw new Error('Model pickers lack a source caption');
+
+            // --- Status-bar quick-switch: connection + model from the footer ---
+            // The endpoint and model chips are buttons now: the endpoint chip
+            // opens a popover whose rows ACTIVATE a connection immediately (no
+            // Settings detour), and the model chip opens the shared picker to
+            // set the ACTIVE connection's default model. These assertions drive
+            // the real DOM handlers; persistence goes through connections:save.
+            await window.ReachWorkspaceShell.goView('settings');
+            await openSettingsPanel('connection');
+            await loadSettings();
+            const sbEndpointChip = document.querySelector('#sb-endpoint');
+            const sbModelChip = document.querySelector('#sb-model');
+            if (!sbEndpointChip || sbEndpointChip.tagName !== 'BUTTON') throw new Error('Endpoint status chip must be a button');
+            if (!sbModelChip || sbModelChip.tagName !== 'BUTTON') throw new Error('Model status chip must be a button');
+            // Opening the panel auto-tests rows that have no result yet (read-only
+            // GET /models). Wait for the single existing row to settle.
+            const connStatusTexts = () => [...document.querySelectorAll('#conn-list .conn-status')].map(el => el.textContent);
+            let footerDeadline = Date.now() + 8000;
+            while (connStatusTexts().some(t => !t || t === 'Testing…')) {
+              if (Date.now() > footerDeadline) throw new Error('Connection auto-test did not settle: ' + connStatusTexts().join(' | '));
+              await new Promise(r => setTimeout(r, 50));
+            }
+            if (!/^Failed/.test(connStatusTexts()[0])) throw new Error('Unreachable fixture endpoint must report a failure, got: ' + connStatusTexts()[0]);
+            // A second connection to switch to, added WITHOUT activating (:10
+            // cannot collide with the :9 fixture the suite already uses).
+            const footerAdd = await reachApi.connections.save({ action: 'add', endpoint: 'http://127.0.0.1:10/v1', name: 'Footer Switch Target', model: 'footer-model', activate: false });
+            if (!footerAdd.ok) throw new Error('Footer fixture connection failed: ' + footerAdd.err);
+            const footerTarget = footerAdd.connections.connections.find(c => c.endpoint.indexOf(':10') !== -1);
+            if (!footerTarget) throw new Error('Footer fixture connection missing');
+            await loadSettings();
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            // The popover lists every connection; picking the inactive row
+            // activates it and closes the popover. Opening is an async IPC
+            // round trip (the list is re-read on every open), so poll for it.
+            sbEndpointChip.click();
+            footerDeadline = Date.now() + 3000;
+            while (document.querySelector('#sb-conn-popover').classList.contains('hidden')) {
+              if (Date.now() > footerDeadline) throw new Error('Endpoint chip did not open the connection popover');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            const footerPop = document.querySelector('#sb-conn-popover');
+            // The popover anchors to the CHIP, not the window edge (a static
+            // offset once put it ~320px left of the pill — measured). Assert
+            // the clamped chip-aligned position and that it clears the chip.
+            const chipRect = sbEndpointChip.getBoundingClientRect();
+            const popRect = footerPop.getBoundingClientRect();
+            const expectedLeft = Math.max(8, Math.min(chipRect.left, window.innerWidth - popRect.width - 8));
+            if (Math.abs(popRect.left - expectedLeft) > 2) throw new Error('Connection popover must open above the chip: chip left ' + Math.round(chipRect.left) + ', popover left ' + Math.round(popRect.left) + ', expected ' + Math.round(expectedLeft));
+            if (popRect.bottom > chipRect.top) throw new Error('Connection popover must clear the chip: popover bottom ' + Math.round(popRect.bottom) + ' vs chip top ' + Math.round(chipRect.top));
+            const footerRows = [...footerPop.querySelectorAll('.sb-pop-row')];
+            if (footerRows.length !== 2) throw new Error('Connection popover must list both connections, got ' + footerRows.length);
+            const footerRow = footerRows.find(r => r.dataset.connId === footerTarget.id);
+            if (!footerRow) throw new Error('Popover is missing the inactive connection row');
+            footerRow.click();
+            footerDeadline = Date.now() + 3000;
+            while ((await reachApi.getSettings()).activeConnection !== footerTarget.id) {
+              if (Date.now() > footerDeadline) throw new Error('Footer popover did not activate the clicked connection');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            if (!document.querySelector('#sb-conn-popover').classList.contains('hidden')) throw new Error('Popover must close after a switch');
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            if (document.querySelector('#sb-endpoint-text').textContent.indexOf('127.0.0.1:10') === -1) throw new Error('Endpoint chip did not repaint after the switch: ' + document.querySelector('#sb-endpoint-text').textContent);
+            // The Settings draft followed the external switch WITHOUT a reload —
+            // the radio moved — so the next Save cannot revert the footer's pick.
+            const footerCard = document.querySelector('#conn-list .conn-card.active');
+            if (!footerCard || footerCard.dataset.connId !== footerTarget.id) throw new Error('Settings draft did not follow the footer switch');
+            if (!footerCard.querySelector('.conn-radio').checked) throw new Error('Settings draft radio did not move with the footer switch');
+            // Model chip: opens the shared picker, targeted at the ACTIVE row.
+            sbModelChip.click();
+            footerDeadline = Date.now() + 3000;
+            while (document.querySelector('#model-modal').classList.contains('hidden') || document.querySelector('#model-source').textContent.indexOf('Footer Switch Target') === -1) {
+              if (Date.now() > footerDeadline) throw new Error('Model chip did not open the picker for the active connection');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            // The fixture endpoint is unreachable by design, so the picker must
+            // settle into its failure state — proving it queried the ACTIVE row
+            // rather than some cached list.
+            footerDeadline = Date.now() + 5000;
+            while (document.querySelector('#model-source').textContent.indexOf('request failed') === -1) {
+              if (Date.now() > footerDeadline) throw new Error('Model picker did not settle on the fixture endpoint');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            document.querySelector('#btn-model-cancel').click();
+            // The pick path (what a model click runs) writes to the ACTIVE row.
+            const footerPick = await window.ReachWorkspaceShell.setConnectionModel(footerTarget.id, 'footer-picked');
+            if (!footerPick || footerPick.ok === false) throw new Error('Footer model pick failed: ' + (footerPick && footerPick.err));
+            if ((await reachApi.getSettings()).model !== 'footer-picked') throw new Error('Footer model pick did not persist');
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            if (document.querySelector('#sb-model-val').textContent !== 'footer-picked') throw new Error('Model chip did not repaint: ' + document.querySelector('#sb-model-val').textContent);
+            // Save Settings must not silently revert the footer's switch or model
+            // pick: the draft mirrors both, so save writes the same values back.
+            await document.querySelector('#btn-save-settings').onclick();
+            const footerAfterSave = await reachApi.getSettings();
+            if (footerAfterSave.activeConnection !== footerTarget.id) throw new Error('Settings save reverted the footer switch');
+            if (footerAfterSave.model !== 'footer-picked') throw new Error('Settings save reverted the footer model pick');
+            // Test all: every row pings with the values on screen, in parallel.
+            document.querySelector('#btn-test-all').click();
+            footerDeadline = Date.now() + 8000;
+            while (connStatusTexts().some(t => !t || t === 'Testing…')) {
+              if (Date.now() > footerDeadline) throw new Error('Test all did not settle: ' + connStatusTexts().join(' | '));
+              await new Promise(r => setTimeout(r, 50));
+            }
+            for (const text of connStatusTexts()) {
+              if (!/^Failed/.test(text)) throw new Error('Unreachable endpoint must report a failure, got: ' + text);
+            }
+            // Cleanup: drop the fixture row and restore the :9 connection as
+            // active (with its model), so later stages see the pre-block state.
+            const footerRemove = await reachApi.connections.save({ action: 'remove', id: footerTarget.id });
+            if (!footerRemove.ok) throw new Error('Footer fixture cleanup failed: ' + footerRemove.err);
+            const footerRestore = await reachApi.connections.save({ action: 'update', id: footerRemove.connections.activeConnection, model: 'fixture' });
+            if (!footerRestore.ok) throw new Error('Footer fixture model restore failed: ' + footerRestore.err);
+            await loadSettings();
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            if (document.querySelector('#sb-endpoint-text').textContent !== '127.0.0.1:9') throw new Error('Cleanup did not restore the endpoint chip: ' + document.querySelector('#sb-endpoint-text').textContent);
+
             await window.ReachWorkspaceShell.goView('settings');
             await openSettingsPanel('connection');
             await loadSettings();
@@ -2604,7 +2867,7 @@ app.whenReady().then(() => {
         // marker matters because the connection assertions sit INSIDE this call,
         // so without one their success is only inferable from later sections
         // having run — and this suite aborts early on the flaky browser stage.
-        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers, team-pool click-to-toggle with active-connection fallback guard, and persona-pin + team-spread persistence.');
+        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers, team-pool click-to-toggle with active-connection fallback guard, persona-pin + team-spread persistence, status-bar quick-switch (connection popover activation + footer model pick surviving a Settings save), and connection auto-test + Test all status.');
         // Exercise manual compression through the real preload/renderer and SSE path.
         let compressionReady, finishCompression;
         const compressionStarted = new Promise(resolve => { compressionReady = resolve; });

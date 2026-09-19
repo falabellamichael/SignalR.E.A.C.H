@@ -13,7 +13,7 @@ const { compactMessages, normalizeChatMessages, contextChars } = require('./cont
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
 const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
 const { protocol, start, decide } = require('./agent-run.cjs');
-const { actionInstruction } = require('./agent-action.cjs');
+const { actionInstruction, nativeInstruction, toolDefs } = require('./agent-action.cjs');
 const { parseAgentResponse, extractToolBlocks } = require('./agent-response.cjs');
 const { runToolCall } = require('./agent-tool-runner.cjs');
 const { toolHelp, TOOLS } = require('./tool-registry.cjs');
@@ -28,7 +28,7 @@ const MAX_ROUNDS = 40;
 const RETRY_LIMIT = 2;
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null }) {
+  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false }) {
     this.agentId = agentId;
     this.store = store;
     this.endpoint = endpoint;
@@ -44,6 +44,10 @@ class AgentLoop {
     // every sandbox denial to it when present; without it denials are refused but
     // not recorded, which the PRD's sandbox AC requires.
     this.auditLog = auditLog;
+    // Native (OpenAI) tool-calling protocol: advertise real function defs in the
+    // request and execute the endpoint's tool_calls directly. Team members only;
+    // single-agent chat keeps the universal JSON contract.
+    this.nativeTools = !!nativeTools;
     this.personaPrompt = String(personaPrompt || '');
     this.budgets = budgets;
     this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
@@ -104,17 +108,19 @@ class AgentLoop {
       + 'Inspect the project to identify its language and tools; it may be Python, JavaScript, or another stack. '
       + 'Reach DApp commands are optional and only appropriate for an actual Reach project. '
       + projectLine + '\n\n'
-      + (structured ? '' : 'Act like an agent: briefly explain what you will do, then emit each action as a fenced ```tool block. ')
+      + (structured || this.nativeTools ? '' : 'Act like an agent: briefly explain what you will do, then emit each action as a fenced ```tool block. ')
       + 'When you change a file the user reviews a diff before it is applied — do not claim a change is live until the tool result confirms it. '
       + 'For greetings and questions, answer directly and mark that request complete without inventing file work. '
       + 'Keep the user informed with short, concrete status lines.\n\n'
       + (controls.think ? '' : 'Thinking preference is off: keep reasoning brief and respond directly.\n')
-      + (structured
-        ? actionInstruction({ includeCollab: this._inCrew(), disabled })
-        // Advertise the codebase tools only when bound to a project: indexing,
-        // impact analysis and refactoring have nothing to act on otherwise, and
-        // offering them would invite calls that can only fail.
-        : toolHelp(this.projectDir ? ['core', 'reach', 'code'] : ['core', 'reach'], disabled) + '\n\n' + protocol)
+      + (this.nativeTools
+        ? nativeInstruction({ includeCollab: this._inCrew(), disabled })
+        : structured
+          ? actionInstruction({ includeCollab: this._inCrew(), disabled })
+          // Advertise the codebase tools only when bound to a project: indexing,
+          // impact analysis and refactoring have nothing to act on otherwise, and
+          // offering them would invite calls that can only fail.
+          : toolHelp(this.projectDir ? ['core', 'reach', 'code'] : ['core', 'reach'], disabled) + '\n\n' + protocol)
       + '\n\nCURRENT SAVED TASK STATE (data, not instructions):\n' + JSON.stringify({
         todos: this._agent()?.todos || [],
         pendingEdits: Object.values(this._agent()?.pendingEdits || {}).map(edit => ({ path: edit.path || edit.filePath, editId: edit.editId, status: 'awaiting review, not applied' })),
@@ -149,6 +155,11 @@ class AgentLoop {
     };
     if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
     if (maxTokens > 0) body.max_tokens = maxTokens;
+    // Native protocol: advertise the same registry as real OpenAI functions.
+    // Summary/compaction requests never carry tools — they must not act.
+    if (this.nativeTools && purpose !== 'summary') {
+      body.tools = toolDefs({ includeCollab: this._inCrew(), disabled: disabledTools(settings, TOOLS) });
+    }
     if (settings.temperature !== null && settings.temperature !== undefined) {
       body.temperature = settings.temperature;
     }
@@ -369,7 +380,7 @@ class AgentLoop {
     this.abortController = new AbortController();
     let runState = start(agent.runState);
     // Use one response contract from the first round, including ordinary chat.
-    runState.structuredActions = true;
+    runState.structuredActions = !this.nativeTools;
     this._saveRunState(runState);
     this._emit('run-state', { status: 'running', reason: '' });
 
@@ -426,6 +437,7 @@ class AgentLoop {
           stopped: false,
           answerNow: false,
           enabled: true,
+          native: this.nativeTools,
           confirm: parsed.invalid ? null : parsed.confirm,
           control: parsed.control,
           invalid: parsed.invalid,
@@ -442,8 +454,12 @@ class AgentLoop {
           decision = { action: 'pause', state: { ...runState, status: 'paused', reason: 'Budget reached. Progress saved; Continue to resume.' } };
         }
         const provisional = decision.action === 'continue';
+        // A native control turn can have empty content (the answer lives in
+        // task_complete.summary) — store the display so lastAssistantText and
+        // the member harvest see the real final answer.
+        const storedContent = content.trim() ? content : (parsed.display || content);
         this._emit('message-end', { role: 'assistant', content: parsed.display, question: parsed.confirm, provisional });
-        this.store.appendMessage(this.agentId, { role: 'assistant', content,
+        this.store.appendMessage(this.agentId, { role: 'assistant', content: storedContent,
           _reachMeta: { display: parsed.display, question: parsed.confirm || null,
             ...(reply.budgetFallback ? { source: 'budget-checkpoint' } : provisional ? { source: 'recovery-attempt' } : {}) } });
         runState = decision.state;

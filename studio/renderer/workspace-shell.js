@@ -141,6 +141,8 @@
     indexVal: $('#sb-index-val'),
     sync: $('#sb-sync'),
     syncVal: $('#sb-sync-val'),
+    popover: $('#sb-conn-popover'),
+    footer: $('#statusbar-bottom'),
   };
 
   function setChip(el, visible) { if (el) el.hidden = !visible; }
@@ -173,18 +175,24 @@
         : 'No endpoint configured';
       if (statusBar.endpointText) {
         statusBar.endpointText.textContent = endpointLabel(s.endpoint);
-        if (statusBar.endpoint) statusBar.endpoint.title = tip;
+        // The chip is a button now: say what clicking it does, not just what it
+        // shows. Without connections the click goes straight to Settings.
+        if (statusBar.endpoint) statusBar.endpoint.title = `${tip} — click to ${conns.length ? 'switch connection' : 'add one'}`;
       }
       if (statusBar.dot) {
         statusBar.dot.className = 'sb-dot' + (has ? ' on' : '');
       }
       if (statusBar.endpoint) statusBar.endpoint.classList.toggle('sb-off', !has);
-      if (statusBar.modelVal && s.model) {
-        statusBar.modelVal.textContent = s.model;
+      /* The model chip shows whenever a connection exists — a connection with
+       * no default model paints "—" instead of vanishing, because the chip is
+       * the quickest way to SET one (click → model picker). It only hides when
+       * there is no connection to attach a model to. */
+      if (statusBar.modelVal && active) {
+        statusBar.modelVal.textContent = s.model || '—';
         setChip(statusBar.model, true);
         // The model belongs to the active connection; say so, because the same
         // model id on a different provider is a different thing entirely.
-        statusBar.model.title = active ? `Model from ${active.name || endpointLabel(active.endpoint)}` : '';
+        statusBar.model.title = `Model from ${active.name || endpointLabel(active.endpoint)} — click to change`;
       } else setChip(statusBar.model, false);
       return s;
     } catch { return null; }
@@ -211,6 +219,196 @@
       statusBar.sync.classList.toggle('sb-bad', state === 'error');
       statusBar.sync.classList.toggle('sb-ok', state === 'ok');
     }
+  }
+
+  /* ---------------------------------------------- quick-switch (status bar) */
+
+  /* The two chips people actually manage mid-session — which provider is live
+   * and which model it runs — are buttons now. The endpoint chip opens a small
+   * popover listing every configured connection; picking one ACTIVATES it
+   * immediately through the connections IPC (the same write Settings performs),
+   * so there is exactly one source of truth. The model chip opens the shared
+   * model picker and writes the chosen id to the ACTIVE connection's default
+   * model.
+   *
+   * Both paths repaint from the server's answer, never optimistically: a chip
+   * showing a switch the backend refused is the one failure this bar must not
+   * have. Runs here rather than in app.js because the status bar owns its own
+   * chrome; it reuses app.js's openModelPicker and the Settings draft hook. */
+
+  let sbPopOpen = false;
+
+  function setPopOpen(open) {
+    sbPopOpen = open;
+    if (statusBar.popover) statusBar.popover.classList.toggle('hidden', !open);
+    if (statusBar.endpoint) statusBar.endpoint.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function openConnSettings() {
+    // openSettingsPanel() is a top-level function in settings.js => global.
+    const open = typeof openSettingsPanel === 'function'
+      ? openSettingsPanel('connection')
+      : goView('settings');
+    Promise.resolve(open).catch(e => window.ReachDialogs?.notice(e.message));
+  }
+
+  function renderConnPopover(data) {
+    const host = statusBar.popover;
+    if (!host) return;
+    host.replaceChildren();
+    const list = Array.isArray(data.connections) ? data.connections : [];
+
+    const head = document.createElement('div');
+    head.className = 'sb-pop-head';
+    head.textContent = 'Switch connection';
+    host.appendChild(head);
+
+    for (const c of list) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'sb-pop-row' + (c.id === data.activeConnection ? ' active' : '');
+      row.dataset.connId = c.id;
+      row.setAttribute('role', 'menuitemradio');
+      row.setAttribute('aria-checked', c.id === data.activeConnection ? 'true' : 'false');
+      row.title = (c.model ? 'Model: ' + c.model : 'No default model') + (c.id === data.activeConnection ? ' (active)' : '');
+      const check = document.createElement('span');
+      check.className = 'sb-pop-check';
+      check.textContent = c.id === data.activeConnection ? '✓' : '';
+      const name = document.createElement('span');
+      name.className = 'sb-pop-name';
+      name.textContent = c.name || endpointLabel(c.endpoint);
+      const hostSpan = document.createElement('span');
+      hostSpan.className = 'sb-pop-host dim';
+      hostSpan.textContent = endpointLabel(c.endpoint);
+      row.append(check, name, hostSpan);
+      row.addEventListener('click', () => { void activateConnection(c.id); });
+      host.appendChild(row);
+    }
+
+    const sep = document.createElement('div');
+    sep.className = 'sb-pop-sep';
+    host.appendChild(sep);
+
+    const manage = document.createElement('button');
+    manage.type = 'button';
+    manage.className = 'sb-pop-manage';
+    manage.textContent = 'Manage connections…';
+    manage.addEventListener('click', () => { setPopOpen(false); openConnSettings(); });
+    host.appendChild(manage);
+  }
+
+  async function toggleConnPopover() {
+    if (sbPopOpen) { setPopOpen(false); return; }
+    // Fresh read on every open: Settings, another window, or a removed
+    // connection can change the list between opens.
+    const data = await window.reach.connections.list().catch(() => null);
+    if (!data || !(data.connections || []).length) {
+      // Nothing to switch between — the useful click is the page that adds one.
+      openConnSettings();
+      return;
+    }
+    renderConnPopover(data);
+    setPopOpen(true);
+    // Position AFTER showing: offsetWidth/rect are only meaningful once the
+    // popover is displayed.
+    positionPopover();
+  }
+
+  /* Anchor the popover to the CHIP, not a static offset. The chips sit right of
+   * the empty connection-mode slot (the bar distributes its groups with
+   * space-between), so a fixed `left` put the menu ~320px to the left of the
+   * pill — measured, 2026-09-19. Recomputed on every open because the chip
+   * moves with the active host's text width and the window size, then clamped
+   * so the menu can never hang off the right edge. */
+  function positionPopover() {
+    const pop = statusBar.popover;
+    const chip = statusBar.endpoint;
+    if (!pop || !chip) return;
+    const cr = chip.getBoundingClientRect();
+    const fr = statusBar.footer ? statusBar.footer.getBoundingClientRect() : { left: 0, width: window.innerWidth };
+    const width = pop.getBoundingClientRect().width || 0;
+    const margin = 8;
+    let left = cr.left - fr.left;
+    const maxLeft = fr.width - width - margin;
+    if (left > maxLeft) left = maxLeft;
+    if (left < margin) left = margin;
+    pop.style.left = Math.round(left) + 'px';
+  }
+
+  /* Activate one connection. Persists first, then repaints: on failure the
+   * chips keep describing what the backend actually has. */
+  async function activateConnection(id) {
+    setPopOpen(false);
+    try {
+      const res = await window.reach.connections.save({ action: 'activate', id });
+      if (!res || res.ok === false) {
+        window.ReachDialogs?.notice((res && res.err) || 'Could not switch connection.');
+        return res || { ok: false };
+      }
+      // Mirror the switch into the Settings draft's radio (when that page has
+      // rendered it) so a later Save Settings cannot silently revert it — while
+      // any already-typed card edits stay untouched.
+      window.ReachSettingsDraft?.setActive?.(id);
+      await refreshEndpointChip();
+      void refreshLatencyChip();
+      return res;
+    } catch (e) {
+      window.ReachDialogs?.notice(e.message);
+      return { ok: false, err: e.message };
+    }
+  }
+
+  /* Ping the ACTIVE connection and paint the latency chip. Read-only (GET
+   * /models). Used after a switch so the bar shows the NEW provider's round
+   * trip — a stale latency from the previous endpoint is worse than none. */
+  async function refreshLatencyChip() {
+    try {
+      const res = await window.reach.connections.ping();
+      if (res && res.ok) setLatency(res.latencyMs, true);
+      else setLatency(null, false);
+      return res;
+    } catch { setLatency(null, false); return null; }
+  }
+
+  /* Model quick-switch: the same modal every "Browse…" button opens, targeted
+   * at the ACTIVE connection (the one the chip describes), with the pick
+   * written back to THAT connection's default model. */
+  async function openFooterModelPicker() {
+    if (typeof openModelPicker !== 'function') return;
+    let s = null;
+    try { s = await window.reach.getSettings(); } catch { /* fall back to the active connection */ }
+    const connId = s && s.activeConnection ? s.activeConnection : '';
+    const active = s && Array.isArray(s.connections)
+      ? (s.connections.find(c => c.id === connId) || null)
+      : null;
+    if (!connId) { openConnSettings(); return; }
+    openModelPicker({
+      target: { connectionId: connId },
+      label: active ? 'Models on ' + (active.name || endpointLabel(active.endpoint)) : 'Models on the active connection',
+      onPick: (id) => { void setConnectionModel(connId, id); },
+    });
+  }
+
+  /* Persist a model choice onto ONE connection — the write behind the footer
+   * model chip. Returns the IPC result so callers (and the smoke) can assert
+   * it; repaints the chips only after the backend confirms. */
+  async function setConnectionModel(connId, modelId) {
+    if (!connId || !modelId) return { ok: false, err: 'No connection or model to set.' };
+    let res = null;
+    try {
+      res = await window.reach.connections.save({ action: 'update', id: connId, model: modelId });
+    } catch (e) {
+      window.ReachDialogs?.notice(e.message);
+      return { ok: false, err: e.message };
+    }
+    if (!res || res.ok === false) {
+      window.ReachDialogs?.notice((res && res.err) || 'Could not set the model.');
+      return res || { ok: false, err: 'Could not set the model.' };
+    }
+    // Same draft-mirror as activation: the next Save writes the same value back.
+    window.ReachSettingsDraft?.setModel?.(connId, modelId);
+    await refreshEndpointChip();
+    return res;
   }
 
   if ($('#sb-settings')) {
@@ -602,6 +800,24 @@
   }
 
   function bind() {
+    // Provider + model quick-switch. The chips are buttons; the popover closes
+    // on a click outside itself or on Escape (which returns focus to the chip).
+    statusBar.endpoint?.addEventListener('click', () => { toggleConnPopover().catch(e => window.ReachDialogs?.notice(e.message)); });
+    statusBar.model?.addEventListener('click', () => { setPopOpen(false); openFooterModelPicker().catch(e => window.ReachDialogs?.notice(e.message)); });
+    document.addEventListener('click', (e) => {
+      if (!sbPopOpen) return;
+      const t = e.target;
+      if (t && t.closest && (t.closest('#sb-conn-popover') || t.closest('#sb-endpoint'))) return;
+      setPopOpen(false);
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && sbPopOpen) {
+        setPopOpen(false);
+        statusBar.endpoint?.focus();
+      }
+    });
+    // Keep the popover under the chip while an open menu meets a resize.
+    window.addEventListener('resize', () => { if (sbPopOpen) positionPopover(); });
     $('#ws-live')?.addEventListener('change', (e) => {
       state.live = e.target.checked;
       if (state.live) { sampleNow(); startLive(); } else stopLive();
@@ -626,7 +842,7 @@
     document.addEventListener('visibilitychange', () => { if (document.hidden) stopLive(); else if (state.live) startLive(); });
   }
 
-  window.ReachWorkspaceShell = { goView, markRail, activeView, VIEWS, refreshEndpointChip, setLatency, setIndex, setSync, setChip };
+  window.ReachWorkspaceShell = { goView, markRail, activeView, VIEWS, refreshEndpointChip, refreshLatencyChip, setLatency, setIndex, setSync, setChip, setConnectionModel };
   window.ReachWorkspaceDash = { sync, sampleNow, drawChart, indexProject, pingEndpoint };
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

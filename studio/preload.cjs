@@ -81,6 +81,9 @@ contextBridge.exposeInMainWorld('reach', {
     update: (id, patch) => ipcRenderer.invoke('personas:update', { id, ...patch }),
     delete: (id) => ipcRenderer.invoke('personas:delete', id),
   },
+  roles: {
+    list: () => ipcRenderer.invoke('roles:list'),
+  },
   teams: {
     list: () => ipcRenderer.invoke('teams:list'),
     get: (id) => ipcRenderer.invoke('teams:get', id),
