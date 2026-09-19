@@ -11,6 +11,7 @@ const { parseAgentResponse } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
 const { TeamRunner } = require('./agent/team-runner.cjs');
+const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
 const { readTextFile, writeTextFile } = require('./agent/text-files.cjs');
@@ -450,6 +451,10 @@ function registerIpc() {
     return p ? { ok: true, persona: p } : { ok: false, err: 'Persona not found' };
   });
   ipcMain.handle('personas:delete', (_e, id) => ({ ok: getPersonaStore().removePersona(id) }));
+
+  /* Preset crew roles (agent/roles.cjs) — a static catalog the team editor
+   * renders as a dropdown; nothing here is persisted. */
+  ipcMain.handle('roles:list', () => listRoleChoices());
 
   ipcMain.handle('teams:list', () => getPersonaStore().listTeams());
   ipcMain.handle('teams:get', (_e, id) => getPersonaStore().getTeam(id));
@@ -2150,6 +2155,9 @@ app.whenReady().then(() => {
         fs.mkdirSync(path.join(smokeProject, 'slow'));
         fs.writeFileSync(path.join(smokeProject, 'slow', 'regex.txt'), 'a'.repeat(50000) + '!');
         const { createServer } = require('node:http');
+        // Links-stage observations recorded by the fixture endpoint and
+        // asserted in the main process after the renderer block runs.
+        const linksChecks = { protocolSeen: false, roleSeen: false, messageSeen: false };
         const teamServer = createServer((req, res) => {
           let body = '';
           req.on('data', chunk => { body += chunk; });
@@ -2160,6 +2168,11 @@ app.whenReady().then(() => {
             // task, so the raw task text is a prefix of the member prompt.
             const cancel = request.messages.some(m => m.content.startsWith('Cancel the slow search'));
             const all = request.messages.map(m => String(m.content || '')).join('\n');
+            if (request.model === 'fixture-l1' || request.model === 'fixture-l2') {
+              if (all.includes('LINKS MODE')) linksChecks.protocolSeen = true;
+              if (all.includes('YOUR CREW ROLE')) linksChecks.roleSeen = true;
+              if (all.includes('Review my draft')) linksChecks.messageSeen = true;
+            }
             if (all.includes('Universal stop regular fixture') || (request.model === 'fixture-sub' && !all.includes('Continue the original task'))) {
               res.writeHead(200, { 'content-type': 'text/event-stream' });
               res.write(': waiting for stop\n\n');
@@ -2178,6 +2191,18 @@ app.whenReady().then(() => {
                 : hasResults
                   ? acts('Awaiting the spawned worker.', [{ name: 'agent.await', arguments: { agent: 'Sub Worker', timeoutMs: 8000 } }])
                   : acts('Delegating to a spawned worker.', [{ name: 'agent.spawn', arguments: { name: 'Sub Worker', task: 'Sub scan the fixture', model: 'fixture-sub' } }]);
+            } else if (request.model === 'fixture-l1') {
+              // Links member C: hands a real message to its peer via the
+              // collab tool, then finishes its own turn.
+              content = hasResults
+                ? complete('C draft finished.')
+                : acts('Handing my draft to D for review.', [{ name: 'agent.send', arguments: { to: 'Worker D', message: 'Review my draft.' } }]);
+            } else if (request.model === 'fixture-l2') {
+              // Links member D: idle until the peer's message arrives, then
+              // declares the crew complete (the LINKS: COMPLETE sentinel).
+              content = all.includes('Review my draft')
+                ? complete('Reviewed and verified. LINKS: COMPLETE')
+                : complete('D standing by.');
             } else {
               content = hasResults
                 ? complete('Fixture scan completed.')
@@ -2312,12 +2337,42 @@ app.whenReady().then(() => {
               await reachApi.teams.delete(td.team.id);
               await reachApi.personas.delete(d.persona.id);
 
+              // LINKS mode: the 20-role catalog, role ids persisting on team
+              // members, and a peer network run where a member's agent.send
+              // reaches its peer and the peer's LINKS: COMPLETE declaration
+              // ends the crew — saved with the final answer.
+              const roleList = await reachApi.roles.list();
+              if (!Array.isArray(roleList) || roleList.length !== 20) throw new Error('roles:list must return the 20 presets, got ' + (roleList && roleList.length));
+              const c = await reachApi.personas.create({ name: 'Worker C', model: 'fixture-l1' });
+              const wd = await reachApi.personas.create({ name: 'Worker D', model: 'fixture-l2' });
+              const lt = await reachApi.teams.create({
+                name: 'Links crew', mode: 'links',
+                members: [
+                  { personaId: c.persona.id, roleId: 'builder', role: 'Builder' },
+                  { personaId: wd.persona.id, roleId: 'verifier', role: 'Verifier' },
+                ],
+              });
+              if (lt.team.mode !== 'links') throw new Error('links team mode was not stored');
+              if (lt.team.members[0].roleId !== 'builder' || lt.team.members[1].roleId !== 'verifier') throw new Error('roleId was not stored on team members');
+              const lk = await dispatch(lt.team, 'Draft and review the fixture summary');
+              await until(() => !activeTeamRun, 'links crew finished');
+              if (![...lk.cards.values()].every(card => card.classList.contains('done'))) throw new Error('Links members did not complete');
+              if (!lk.cards.get(1).querySelector('.member-body').textContent.includes('LINKS: COMPLETE')) throw new Error('Links completion declaration missing from the declaring member answer');
+              const savedL = await reachApi.agents.get(agent.agent.id);
+              if (!savedL.messages.some(m => m.content.includes('LINKS: COMPLETE'))) throw new Error('Links answer not saved');
+              await reachApi.teams.delete(lt.team.id);
+              await reachApi.personas.delete(c.persona.id);
+              await reachApi.personas.delete(wd.persona.id);
+
               await reachApi.agents.delete(agent.agent.id);
               await reachApi.teams.delete(t.team.id);
               await reachApi.personas.delete(a.persona.id);
               await reachApi.personas.delete(b.persona.id);
             })()
           `);
+          if (!linksChecks.protocolSeen) throw new Error('Links member prompts must carry the peer-network protocol');
+          if (!linksChecks.roleSeen) throw new Error('Preset crew roles must reach member prompts');
+          if (!linksChecks.messageSeen) throw new Error('The agent.send message never reached its peer');
           await win.webContents.executeJavaScript(`
             (async () => {
               const created = await reachApi.agents.create('Input verification', ${JSON.stringify(smokeProject)}, 'fixture');

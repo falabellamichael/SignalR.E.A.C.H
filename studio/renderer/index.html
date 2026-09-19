@@ -695,6 +695,7 @@
       <select id="team-mode">
         <option value="parallel">Parallel — all members work the same task simultaneously</option>
         <option value="chain">Chain — members work in order, passing results along</option>
+        <option value="links">Links — peer network: members message each other until the task is done (3× chain rate)</option>
       </select>
       <label class="check team-spread-row">
         <input id="team-spread" type="checkbox" />
@@ -705,7 +706,8 @@
       <div id="team-members" class="team-members"></div>
       <div class="row">
         <select id="team-member-pick"></select>
-        <input id="team-member-role" type="text" placeholder="role (optional, e.g. reviewer)" spellcheck="false" />
+        <select id="team-member-role-pick" title="Preset crew role — each of the 20 roles works differently and collaborates through the crew's agent links"></select>
+        <input id="team-member-role" type="text" placeholder="custom role (optional)" spellcheck="false" disabled />
         <button id="btn-team-add-member" class="ghost small">Add</button>
       </div>
       <div class="modal-actions">

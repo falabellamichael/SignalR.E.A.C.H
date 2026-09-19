@@ -16,6 +16,13 @@
  *              accumulated crew transcript (bounded), not just the previous
  *              hop, so a documenter still sees the auditor's findings.
  *
+ *   links    — an open PEER NETWORK: members fan out like parallel, then
+ *              talk to each other directly (agent.send/status/await) across
+ *              rounds of the runner's wake loop — deciding among themselves
+ *              who does what next — until a member declares the task complete
+ *              ("LINKS: COMPLETE") or the exchange budget is spent. The
+ *              budget is 3× a chain crew's exchange rate (3·(N−1) messages).
+ *
  * Pause handling is what makes this a working multiagent runtime instead of a
  * batch script: a member that pauses for edit review (waiting_edits) or asks
  * a question (waiting_input) does NOT fail the run. The runner surfaces the
@@ -28,6 +35,8 @@ const { MemoryStore } = require('./memory-store.cjs');
 const { RunControl } = require('./run-control.cjs');
 const { parseAgentResponse } = require('./agent-response.cjs');
 const { AgentNet } = require('./agent-net.cjs');
+const { linksCompleteIn } = require('./agent-net.cjs');
+const { getRole } = require('./roles.cjs');
 const { runToTerminal, MAX_RESUME_CYCLES: DRIVER_MAX_CYCLES } = require('./pause-resume.cjs');
 
 const { resolveBudgets, cap } = require('./budgets.cjs');
@@ -35,6 +44,14 @@ const { resolveBudgets, cap } = require('./budgets.cjs');
 const PARALLEL_CONCURRENCY = 3;
 const MAX_RESUME_CYCLES = 6;
 const RELAY_CHAR_BUDGET = 24000;
+
+/* Links mode: the crew conversation allowance is 3× what a chain run would
+ * exchange (N−1 serial handoffs) — "triple the chain rate" — and every member
+ * may be re-woken for at most MEMBER_LINK_TURNS extra turns to answer its
+ * inbox. MAX_LINK_ROUNDS is a hard safety stop on top of both. */
+const LINKS_RATE = 3;
+const MAX_LINK_ROUNDS = 12;
+const MEMBER_LINK_TURNS = 4;
 
 /* The stored assistant message keeps its raw agent_status fence; relay only
  * the human-visible text so the next member in a chain gets clean context. */
@@ -121,6 +138,9 @@ class TeamRunner {
     this.running = true;
     // Resolves when stop() is called so pause waits can race it and unwind.
     this._stopDeferred = null;
+    this._linkDeclared = null;   // member declared LINKS: COMPLETE in its answer
+    this._linksAnswer = null;    // final crew answer for links runs
+    this._linksMeta = null;      // rounds / exchanges / completedBy telemetry
   }
 
   _stopSignal() {
@@ -176,8 +196,28 @@ class TeamRunner {
   }
 
   roleOf(index) {
-    const fromRoster = (this.team.members[index] || {}).role;
-    return String(fromRoster || this.roles[index] || '').trim();
+    const member = this.team.members[index] || {};
+    const spec = getRole(member.roleId);
+    return String(member.role || (spec ? spec.name : '') || this.roles[index] || '').trim();
+  }
+
+  /* The preset role record (agent/roles.cjs) for a roster position, if set. */
+  roleSpecOf(index) {
+    const member = this.team.members[index] || {};
+    return getRole(member.roleId);
+  }
+
+  /* The block that makes a role DO something: the preset protocol, or a
+   * directive built from the free-text label — custom roles are behaviors
+   * too, not adjectives. Empty for members with no role at all. */
+  _roleBlock(index) {
+    const spec = this.roleSpecOf(index);
+    if (spec) return `YOUR CREW ROLE — ${spec.name} (${spec.tagline}):\n${spec.protocol}`;
+    const label = this.roleOf(index);
+    if (label) {
+      return `YOUR CREW ROLE — ${label}:\nTake this role literally: do the work a ${label} does and produce the artifact a ${label} produces. Coordinate with the other members when your work touches theirs.`;
+    }
+    return '';
   }
 
   /* Crew awareness: who else is on the run and what they're for. Without
@@ -192,13 +232,15 @@ class TeamRunner {
     const you = `You are ${this.personas[index].name}${role ? `, and your role on this crew is: ${role}` : ''}.`;
     const shape = mode === 'chain'
       ? 'You are one member of a crew working in sequence. Earlier members\' work is included below as handoffs — build on it, do not redo it, and do not repeat their output verbatim. Finish YOUR part completely; a later member continues from your answer.'
-      : 'You are one member of a crew working the SAME task simultaneously. Produce your own complete, self-contained answer from your own perspective and role. Do not assume another member covers a part of it, and do not reference work you cannot see.';
+      : mode === 'links'
+        ? 'You are one member of a crew on an OPEN PEER NETWORK. All members work simultaneously and talk to each other directly — asking, handing off, reviewing, challenging — deciding among yourselves who does what next. There is no fixed order: keep peers unblocked, put what they need in front of them, and drive the task to completion together.'
+        : 'You are one member of a crew working the SAME task simultaneously. Produce your own complete, self-contained answer from your own perspective and role. Do not assume another member covers a part of it, and do not reference work you cannot see.';
     return `CREW CONTEXT (this run has ${this.personas.length} members, mode: ${mode}):\n${roster}\n\n${you}\n${shape}`;
   }
 
   async run(teamRunId) {
     this.teamRunId = teamRunId;
-    const mode = this.team.mode === 'chain' ? 'chain' : 'parallel';
+    const mode = this.team.mode === 'links' ? 'links' : this.team.mode === 'chain' ? 'chain' : 'parallel';
     // One network per crew run: roster members register into it, and any of
     // them may spawn/message/await peers through the agent.* collab tools.
     this.net = new AgentNet({
@@ -220,6 +262,11 @@ class TeamRunner {
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
       auditLog: this.auditLog,
+      /* Links owns the crew conversation: roster members accept messages
+       * between turns, and the total exchange count is capped at 3× a chain
+       * crew's rate. Both options are inert in the other modes. */
+      rosterMailbox: mode === 'links',
+      linkBudget: mode === 'links' ? LINKS_RATE * Math.max(1, this.personas.length - 1) : null,
     });
     this._emit('start', {
       teamName: this.team.name,
@@ -268,6 +315,9 @@ class TeamRunner {
         const settled = await mapWithConcurrency(this.personas, this.concurrency, (p, i) =>
           this._runMember(p, i, this._memberPrompt(i, mode, [])));
         for (const r of settled) results.push(r);
+      } else if (mode === 'links') {
+        const settled = await this._linksRun();
+        for (const r of settled) results.push(r);
       } else {
         const handoffs = [];
         for (let i = 0; i < this.personas.length; i++) {
@@ -304,7 +354,10 @@ class TeamRunner {
       // The crew answer: chain → last successful output; parallel → all outputs.
       answer: mode === 'chain'
         ? (results.length && results[results.length - 1].ok ? results[results.length - 1].output : '')
-        : results.map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n'),
+        : mode === 'links'
+          ? (this._linksAnswer || results.map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n'))
+          : results.map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n'),
+      links: mode === 'links' ? (this._linksMeta || null) : null,
     });
     return results;
   }
@@ -316,14 +369,59 @@ class TeamRunner {
   }
 
   _memberPrompt(index, mode, handoffs) {
-    const crew = this._crewContext(index, mode);
+    const parts = [this.task, this._crewContext(index, mode)];
+    const role = this._roleBlock(index);
+    if (role) parts.push(role);
+    if (mode === 'links') parts.push(this._linksBlock());
     if (mode === 'chain' && handoffs.length) {
-      return `${this.task}\n\n${crew}\n\n${boundedRelay(handoffs, this.budgets?.relayChars ?? RELAY_CHAR_BUDGET)}`;
+      parts.push(boundedRelay(handoffs, this.budgets?.relayChars ?? RELAY_CHAR_BUDGET));
     }
-    return `${this.task}\n\n${crew}`;
+    return parts.filter(Boolean).join('\n\n');
   }
 
-  async _runMember(persona, index, prompt) {
+  /* Links protocol: the rules of the peer network. Rendering per member so the
+   * budget line carries the actual number the crew has to spend. */
+  _linksBlock() {
+    const budget = LINKS_RATE * Math.max(1, this.personas.length - 1);
+    const peers = this.personas.length - 1;
+    return [
+      `LINKS MODE — an open peer network, not a pipeline. You have ${peers} peer(s).`,
+      '- Talk to peers at ANY time: agent.send (by name) to ask, hand off, review or challenge; agent.status to check on someone; agent.await to block for a peer\'s answer; agent.list for the whole crew.',
+      `- Budget: the crew gets ${budget} messages in total (3× what a chain crew would exchange). Spend them where they change the outcome — send what a peer needs EARLY, and prefer one complete message over three fragments.`,
+      '- Decide among yourselves: no fixed order. If you need a peer\'s work, message them; if you are blocked, say exactly what would unblock you.',
+      '- The task ends when a member declares completion: include the exact line "LINKS: COMPLETE" in a message or in your final answer, once the WHOLE task is done and verified against real evidence. Normally the Coordinator declares; any member may if the Coordinator is absent.',
+      '- If the network goes quiet before that, the crew will be asked for a final synthesis — so leave your best evidence in your answers.',
+    ].join('\n');
+  }
+
+  /* Shared pause/resume drive for one member turn — the first turn and every
+   * Links wake-up use the same callbacks, so resume behaviour cannot diverge. */
+  async _drive(key, index, persona, model, prompt, control) {
+    return runToTerminal({
+      loop: this.loops.get(key),
+      store: this.memberStores.get(key),
+      agentId: key,
+      firstPrompt: prompt,
+      control,
+      maxCycles: cap(this.budgets?.resumeCycles ?? MAX_RESUME_CYCLES),
+      isStopped: () => this.stopped,
+      stopSignal: () => this._stopSignal(),
+      getPendingEdits: () => this.memberEdits.get(key) || [],
+      clearPendingEdits: () => this.memberEdits.set(key, []),
+      awaitEditResolution: this.awaitEditResolution,
+      requestMemberAnswer: this.requestMemberAnswer
+        ? (q) => this.requestMemberAnswer({ ...q, index, name: persona.name, model })
+        : null,
+      onWaiting: (edits) => this._emit('member-waiting', {
+        index, name: persona.name, status: 'waiting_edits',
+        edits: edits.map(e => ({ editId: e.editId, path: e.path, stats: e.stats })),
+      }),
+      onQuestion: (questionId, question) => this._emit('member-question', { index, name: persona.name, questionId, question }),
+      onResumed: (cycle, status) => this._emit('member-resumed', { index, name: persona.name, cycle, status }),
+    });
+  }
+
+  async _runMember(persona, index, prompt, { keep = false } = {}) {
     const key = `m${index}-${persona.id}`;
     const store = new MemoryStore();
     Object.assign(store.get(key).settings, structuredClone(this.agentSettings));
@@ -398,30 +496,7 @@ class TeamRunner {
     this._emit('member-start', { index, name: persona.name, model, role: this.roleOf(index), promptChars: fullPrompt.length });
     let last = { index, name: persona.name, model, ok: false, output: '', status: 'error', error: 'member did not run' };
     try {
-      // Shared pause/resume driver (same one AgentNet workers use): drives the
-      // loop to a terminal state, surfacing edit-review and question pauses.
-      const end = await runToTerminal({
-        loop,
-        store,
-        agentId: key,
-        firstPrompt: fullPrompt,
-        control,
-        maxCycles: cap(this.budgets?.resumeCycles ?? MAX_RESUME_CYCLES),
-        isStopped: () => this.stopped,
-        stopSignal: () => this._stopSignal(),
-        getPendingEdits: () => this.memberEdits.get(key) || [],
-        clearPendingEdits: () => this.memberEdits.set(key, []),
-        awaitEditResolution: this.awaitEditResolution,
-        requestMemberAnswer: this.requestMemberAnswer
-          ? (q) => this.requestMemberAnswer({ ...q, index, name: persona.name, model })
-          : null,
-        onWaiting: (edits) => this._emit('member-waiting', {
-          index, name: persona.name, status: 'waiting_edits',
-          edits: edits.map(e => ({ editId: e.editId, path: e.path, stats: e.stats })),
-        }),
-        onQuestion: (questionId, question) => this._emit('member-question', { index, name: persona.name, questionId, question }),
-        onResumed: (cycle, status) => this._emit('member-resumed', { index, name: persona.name, cycle, status }),
-      });
+      const end = await this._drive(key, index, persona, model, fullPrompt, control);
       last = this._harvest(key, store, persona, index, model, end.error);
       this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error });
       return last;
@@ -431,8 +506,12 @@ class TeamRunner {
       return last;
     } finally {
       control.finished = true;
-      this.loops.delete(key);
-      this.memberStores.delete(key);
+      /* Links rounds re-use the member's loop/store across wake-ups; single
+       * turn modes release them here as always. */
+      if (!keep) {
+        this.loops.delete(key);
+        this.memberStores.delete(key);
+      }
       // Keep the crew net's view of this member truthful so peers that
       // agent.status / agent.await it see the real terminal state.
       if (this.net) {
@@ -447,6 +526,9 @@ class TeamRunner {
    * why a resume chain ended; runState alone can't tell those apart). */
   _harvest(key, store, persona, index, model, driverError = null) {
     const output = cleanOutput(store.lastAssistantText(key));
+    if (output && linksCompleteIn(output) && !this._linkDeclared) {
+      this._linkDeclared = { by: persona.name, index };
+    }
     const runState = store.get(key).runState;
     const status = runState?.status || 'unknown';
     const ok = !this.stopped && !!output && status === 'completed' && !driverError;
@@ -454,6 +536,146 @@ class TeamRunner {
       ? null
       : (this.stopped ? 'Stopped by you.' : driverError || runState?.reason || `Member ${status}; no completed answer.`);
     return { index, name: persona.name, model, ok, output, status, error, question: runState?.reason || null };
+  }
+
+  /* ---------- LINKS mode: the peer network ---------- */
+
+  /* Completion declared? By a member in its own answer (this._linkDeclared)
+   * or in a message to a peer (net.linksComplete set on send). */
+  _linksDone() {
+    return this._linkDeclared || (this.net ? this.net.linksComplete : null);
+  }
+
+  /* Drain a member's Links inbox (messages that arrived between its turns). */
+  _takeLinkInbox(index) {
+    if (!this.net) return [];
+    const rec = this.net.agents.get(`m${index}-${this.personas[index].id}`);
+    if (!rec || !Array.isArray(rec.inbox) || !rec.inbox.length) return [];
+    const box = rec.inbox.slice();
+    rec.inbox = [];
+    return box;
+  }
+
+  /* Wake a member for one more Links turn, re-using the SAME loop + store so
+   * the member keeps its full conversation and everything it learned. */
+  async _wakeMember(index, inbox, { synthesize = false, note = '' } = {}) {
+    const persona = this.personas[index];
+    const key = `m${index}-${persona.id}`;
+    const store = this.memberStores.get(key);
+    const conn = this._memberConn(index);
+    if (!store || !this.loops.has(key)) {
+      return { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: 'Member loop was not kept alive for the Links round.' };
+    }
+    const control = this.controls[index];
+    control.finished = false;
+    const parts = [`Original task:\n${this.task}`, this._crewContext(index, 'links')];
+    const role = this._roleBlock(index);
+    if (role) parts.push(role);
+    parts.push(this._linksBlock());
+    if (synthesize) {
+      parts.push(`${note} You are asked for the FINAL SYNTHESIS: using the real state and your peers' results (agent.list / agent.status to refresh), write the definitive answer to the original task now. State clearly what is DONE (with evidence), what is NOT, and what each unfinished piece still needs.`);
+    } else {
+      parts.push(`LINK MESSAGES from the crew (deliver on them, then continue your role's work):\n${inbox.join('\n\n')}`);
+    }
+    const prompt = parts.filter(Boolean).join('\n\n');
+    this._emit('member-start', { index, name: persona.name, model: conn.model, role: this.roleOf(index), promptChars: prompt.length, retake: true });
+    if (this.net) {
+      const rec = this.net.agents.get(key);
+      if (rec) rec.status = 'running';
+    }
+    let last;
+    try {
+      const end = await this._drive(key, index, persona, conn.model, prompt, control);
+      last = this._harvest(key, store, persona, index, conn.model, end.error);
+    } catch (e) {
+      last = { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: e.message };
+    }
+    this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, retake: true });
+    if (this.net) this.net.syncMember(key, { status: last.status, error: last.error, output: last.output });
+    control.finished = true;
+    this.updatePausedState();
+    return last;
+  }
+
+  /* Who synthesizes when nobody declared? The Coordinator if one exists,
+   * else the member that talked the most, else the last of the roster. */
+  _synthesisIndex() {
+    for (let i = 0; i < this.personas.length; i++) {
+      if ((this.team.members[i] || {}).roleId === 'coordinator') return i;
+    }
+    let best = this.personas.length - 1;
+    let bestSent = -1;
+    if (this.net) {
+      for (let i = 0; i < this.personas.length; i++) {
+        const rec = this.net.agents.get(`m${i}-${this.personas[i].id}`);
+        const sent = rec ? rec.messagesSent : 0;
+        if (sent > bestSent) { bestSent = sent; best = i; }
+      }
+    }
+    return best;
+  }
+
+  /* The Links engine: fan out like parallel, then keep the conversation
+   * alive. Rounds wake exactly the members that have mail; the run ends when
+   * completion is declared, the exchange budget is spent, or the network goes
+   * quiet (then the Coordinator / busiest member synthesizes the answer). */
+  async _linksRun() {
+    const n = this.personas.length;
+    const budget = LINKS_RATE * Math.max(1, n - 1);
+    const results = new Array(n);
+    const turns = new Array(n).fill(0);
+
+    const settled = await mapWithConcurrency(this.personas, this.concurrency, (p, i) =>
+      this._runMember(p, i, this._memberPrompt(i, 'links', []), { keep: true }));
+    settled.forEach((r, i) => { results[i] = r; turns[i] = 1; });
+
+    let rounds = 0;
+    while (!this.stopped && !this._linksDone() && rounds < MAX_LINK_ROUNDS) {
+      const pending = [];
+      for (let i = 0; i < n; i++) {
+        const box = this._takeLinkInbox(i);
+        if (box.length && turns[i] < MEMBER_LINK_TURNS + 1) pending.push({ index: i, box });
+      }
+      if (!pending.length) break;
+      rounds++;
+      this._emit('links-round', {
+        round: rounds,
+        waking: pending.map(x => this.personas[x.index].name),
+        exchanges: this.net ? this.net.linkSends : 0,
+        budget,
+      });
+      for (const { index, box } of pending) {
+        if (this.stopped || this._linksDone()) break;
+        results[index] = await this._wakeMember(index, box);
+        turns[index]++;
+      }
+    }
+
+    let synthesized = null;
+    let synthIndex = -1;
+    if (!this.stopped && !this._linksDone()) {
+      synthIndex = this._synthesisIndex();
+      const note = (this.net && this.net.linkSends >= budget)
+        ? 'The crew has spent its full Links exchange budget (3× the chain rate).'
+        : 'The crew has gone quiet without a completion declaration.';
+      synthesized = await this._wakeMember(synthIndex, [], { synthesize: true, note });
+      results[synthIndex] = synthesized;
+      this._emit('links-synthesis', { index: synthIndex, name: this.personas[synthIndex].name, budgetSpent: this.net ? this.net.linkSends : 0 });
+    }
+
+    const done = this._linksDone();
+    const declarerResult = results.find(r => r && r.ok && linksCompleteIn(r.output));
+    this._linksAnswer = (declarerResult && declarerResult.output)
+      || (synthesized && synthesized.output)
+      || results.filter(Boolean).map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n');
+    this._linksMeta = {
+      rounds,
+      budget,
+      exchanges: this.net ? this.net.linkSends : 0,
+      completedBy: done && done.by ? done.by : (synthIndex >= 0 ? this.personas[synthIndex].name : null),
+      synthesized: !!synthesized,
+    };
+    return results;
   }
 
   stop() {
@@ -492,4 +714,4 @@ class TeamRunner {
   }
 }
 
-module.exports = { TeamRunner, cleanOutput, boundedRelay, mapWithConcurrency, PARALLEL_CONCURRENCY, MAX_RESUME_CYCLES };
+module.exports = { TeamRunner, cleanOutput, boundedRelay, mapWithConcurrency, PARALLEL_CONCURRENCY, MAX_RESUME_CYCLES, LINKS_RATE, MAX_LINK_ROUNDS, MEMBER_LINK_TURNS };

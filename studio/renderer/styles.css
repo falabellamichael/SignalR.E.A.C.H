@@ -120,6 +120,9 @@ h1 { font-size: 22px; font-weight: normal; letter-spacing: 1px; color: var(--gol
 .chip.bad { color: var(--err); border-color: var(--error-line); }
 .chip.pending { color: var(--gold-dim); }
 .chip.dim { color: var(--dim); }
+/* Links-mode crews: a peer network, not a pipeline — gold like pinned, so the
+   mode reads as a deliberate choice next to parallel's green. */
+.chip.links { color: var(--gold); border-color: var(--gold-dim); }
 /* A persona pinned to one connection. Gold like .pending but with a border so it
    reads as an explicit user choice, not a transient state. */
 .chip.pinned { color: var(--gold); border-color: var(--gold-dim); }
@@ -687,6 +690,9 @@ body.resizing-y, body.resizing-y * {
 }
 .team-member-row strong { color: var(--gold); }
 .team-member-row .dim { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Per-row crew-role picker: the role is the member's behavior, so it must stay
+   visible next to the name and take the remaining width. */
+.team-member-row .row-role { flex: 1; min-width: 0; font-size: 12px; padding: 3px 6px; }
 .member-idx {
   width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--gold-dim);
   color: var(--gold); font-size: 11px; display: flex; align-items: center; justify-content: center;

@@ -1724,9 +1724,10 @@ $('#btn-model-cancel').onclick = () => $('#model-modal').classList.add('hidden')
 // ---------- Create page: custom agents (personas) + teams ----------
 let personas = [];
 let teams = [];
+let roles = [];                // preset crew roles (agent/roles.cjs) — the dropdown catalog
 let editingPersonaId = null;
 let editingTeamId = null;
-let teamBuilderMembers = [];   // [{personaId, role}] while the modal is open
+let teamBuilderMembers = [];   // [{personaId, roleId, role}] while the modal is open
 let activeTeamRun = null;      // { teamRunId, cards: Map(index -> {el, out}) }
 let teamDispatching = false;
 let pendingTeamEvents = [];
@@ -1734,6 +1735,7 @@ let pendingTeamEvents = [];
 async function loadCreatePage() {
   personas = await reachApi.personas.list();
   teams = await reachApi.teams.list();
+  roles = await reachApi.roles.list();
   /* Load connections too, so a persona card can NAME the connection it is pinned
    * to instead of showing a bare id. Best-effort: if the list cannot load the
    * cards still render, they just fall back to the id. */
@@ -1782,13 +1784,13 @@ function renderTeamList() {
   for (const t of teams) {
     const card = document.createElement('div');
     card.className = 'team-card';
-    const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : ' · ');
+    const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : t.mode === 'links' ? ' ⇄ ' : ' · ');
     /* A spread team runs on several providers, so say so on the card — otherwise
      * two identical-looking crews behave differently at run time. */
     const spreadChip = t.spreadConnections === true
       ? '<span class="chip ok" title="Members spread across the enabled connections">⇶ multi-endpoint</span>'
       : '';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : 'ok'}">${t.mode}</span>${spreadChip}</div>`
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : t.mode === 'links' ? 'links' : 'ok'}">${t.mode}</span>${spreadChip}</div>`
       + `<div class="persona-card-prompt">${roster || '<span class="dim">no members</span>'}</div>`
       + `<div class="team-card-actions"><button class="ghost small" data-act="run">Run…</button><button class="ghost small" data-act="edit">Edit</button></div>`;
     card.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); openTeamModal(t); };
@@ -1919,9 +1921,10 @@ async function openTeamModal(t) {
   $('#team-modal-title').textContent = t ? 'Edit Team' : 'New Team';
   $('#team-name').value = t ? t.name : '';
   $('#team-mode').value = t ? t.mode : 'parallel';
-  teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, role: m.role || '' })) : [];
+  teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, roleId: m.roleId || '', role: m.role || '' })) : [];
   $('#team-spread').checked = !!(t && t.spreadConnections === true);
   await loadConnectionChoices();
+  fillRolePicker();
   updateSpreadHint();
   $('#btn-team-delete').classList.toggle('hidden', !t);
   renderTeamBuilder();
@@ -1955,6 +1958,34 @@ function updateSpreadHint() {
   hint.textContent = `On: ${spread} unpinned member(s) rotate across ${pool.length} pooled connections; ${pinned} pinned member(s) keep their own.`;
 }
 $('#team-spread').onchange = updateSpreadHint;
+/* Role picker helpers: the 20 presets (agent/roles.cjs) plus a free-text
+ * fallback. A preset stores its id AND its name (older surfaces still show
+ * `role`); Custom stores free text with no id; the runner turns either into
+ * real role behavior on every run. */
+function fillRoleOptions(sel, roleId = '', customText = '') {
+  sel.innerHTML = '';
+  const none = document.createElement('option');
+  none.value = ''; none.textContent = 'no role';
+  sel.appendChild(none);
+  for (const r of roles) {
+    const opt = document.createElement('option');
+    opt.value = r.id; opt.textContent = r.name; opt.title = r.tagline;
+    sel.appendChild(opt);
+  }
+  const custom = document.createElement('option');
+  custom.value = '__custom';
+  custom.textContent = customText && !roleId ? `Custom: ${String(customText).slice(0, 28)}` : 'Custom role…';
+  sel.appendChild(custom);
+  sel.value = roleId && roles.some(r => r.id === roleId) ? roleId : (customText ? '__custom' : '');
+}
+
+function fillRolePicker() {
+  const pick = $('#team-member-role-pick');
+  if (!pick) return;
+  fillRoleOptions(pick);
+  $('#team-member-role').disabled = true;
+}
+
 function renderTeamBuilder() {
   const el = $('#team-members');
   el.innerHTML = '';
@@ -1962,7 +1993,24 @@ function renderTeamBuilder() {
     const p = personas.find(x => x.id === m.personaId);
     const row = document.createElement('div');
     row.className = 'team-member-row';
-    row.innerHTML = `<span class="member-idx">${i + 1}</span><strong>${escapeHtml(p ? p.name : '(deleted)')}</strong><span class="dim">${escapeHtml(m.role || '')}</span>`;
+    row.innerHTML = `<span class="member-idx">${i + 1}</span><strong>${escapeHtml(p ? p.name : '(deleted)')}</strong>`;
+    const roleSel = document.createElement('select');
+    roleSel.className = 'row-role';
+    roleSel.title = 'Crew role for this member — the role is behavior: it is injected into the member\'s prompt on every run.';
+    fillRoleOptions(roleSel, m.roleId, m.role);
+    roleSel.onchange = async () => {
+      if (roleSel.value === '__custom') {
+        const txt = await window.ReachDialogs.prompt('Custom role for this member (free text):', m.roleId ? '' : (m.role || ''));
+        const text = String(txt || '').trim();
+        if (text) { m.roleId = ''; m.role = text.slice(0, 120); }
+      } else {
+        const spec = roles.find(r => r.id === roleSel.value);
+        m.roleId = spec ? spec.id : '';
+        m.role = spec ? spec.name : '';
+      }
+      renderTeamBuilder();
+    };
+    row.appendChild(roleSel);
     const up = document.createElement('button');
     up.className = 'ghost tiny'; up.textContent = '↑'; up.title = 'Move earlier';
     up.onclick = () => { if (i > 0) { [teamBuilderMembers[i - 1], teamBuilderMembers[i]] = [teamBuilderMembers[i], teamBuilderMembers[i - 1]]; renderTeamBuilder(); } };
@@ -2000,9 +2048,24 @@ $('#btn-team-add-member').onclick = () => {
   const personaId = $('#team-member-pick').value;
   if (!personaId) return;
   if (teamBuilderMembers.length >= 8) { showNotice('A team can have at most 8 members.'); return; }
-  teamBuilderMembers.push({ personaId, role: $('#team-member-role').value.trim() });
+  const pick = $('#team-member-role-pick').value;
+  const spec = pick === '__custom' ? null : roles.find(r => r.id === pick);
+  const custom = pick === '__custom' ? $('#team-member-role').value.trim() : '';
+  teamBuilderMembers.push({
+    personaId,
+    roleId: spec ? spec.id : '',
+    role: spec ? spec.name : custom.slice(0, 120),
+  });
   $('#team-member-role').value = '';
+  $('#team-member-role-pick').value = '';
+  $('#team-member-role').disabled = true;
   renderTeamBuilder();
+};
+/* The free-text field only applies to the Custom choice. */
+$('#team-member-role-pick').onchange = () => {
+  const custom = $('#team-member-role-pick').value === '__custom';
+  $('#team-member-role').disabled = !custom;
+  if (custom) $('#team-member-role').focus();
 };
 $('#btn-team-save').onclick = async () => {
   const name = $('#team-name').value.trim();
@@ -2033,7 +2096,7 @@ $('#btn-team-delete').onclick = async () => {
 let pendingRunTeam = null;
 function openTeamRunModal(t) {
   pendingRunTeam = t;
-  const roster = (t.members || []).map(m => m.personaName).join(t.mode === 'chain' ? ' → ' : ' · ');
+  const roster = (t.members || []).map(m => m.personaName).join(t.mode === 'chain' ? ' → ' : t.mode === 'links' ? ' ⇄ ' : ' · ');
   $('#team-run-info').textContent = `${t.name} (${t.mode}): ${roster}` + (currentAgent ? ` · project ${currentAgent.dir}` : '');
   $('#team-run-task').value = '';
   $('#team-run-modal').classList.remove('hidden');
@@ -2465,6 +2528,20 @@ function handleTeamEvent(ev) {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `⛓ Chain broken at ${ev.name}: ${ev.error || 'member failed'} — remaining members skipped.`;
+      run.wrap.appendChild(note);
+      break;
+    }
+    case 'links-round': {
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links round ${ev.round}: ${(ev.waking || []).join(', ')} got crew messages — ${ev.exchanges}/${ev.budget} exchanges used.`;
+      run.wrap.appendChild(note);
+      break;
+    }
+    case 'links-synthesis': {
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links: no completion was declared — ${ev.name} synthesizes the final answer (${ev.budgetSpent} crew messages used).`;
       run.wrap.appendChild(note);
       break;
     }

@@ -13,6 +13,11 @@
  *                      message is passed to the next as context, so the
  *                      crew communicates through the relayed transcript.
  *
+ *   mode 'links'     — members run simultaneously and talk to each other
+ *                      DIRECTLY (agent.send/status/await), deciding among
+ *                      themselves who does what, until the task is declared
+ *                      complete. Up to 3× a chain's exchange rate.
+ *
  * Stored in userData/personas.json alongside agents.json, atomic writes.
  */
 
@@ -142,8 +147,8 @@ class PersonaStore {
     if (this.teams.length >= MAX_TEAMS) {
       throw new Error(`Team limit reached (${MAX_TEAMS}).`);
     }
-    if (!['parallel', 'chain'].includes(mode)) {
-      throw new Error('Team mode must be "parallel" or "chain".');
+    if (!['parallel', 'chain', 'links'].includes(mode)) {
+      throw new Error('Team mode must be "parallel", "chain" or "links".');
     }
     const team = {
       id: newId('team'),
@@ -173,12 +178,16 @@ class PersonaStore {
       }
       // The same persona may appear twice in a team (two roles), but the
       // (personaId, role) pair must be unique so runs stay attributable.
-      const key = personaId + '|' + String(m.role || '');
+      const key = personaId + '|' + (String(m.role || '') || String(m.roleId || ''));
       if (seen.has(key)) throw new Error(`Duplicate member (same persona + role) at position ${i + 1}.`);
       seen.add(key);
       return {
         personaId,
         role: String(m.role || '').slice(0, 120),
+        // Preset role id from agent/roles.cjs. Unknown ids are tolerated on
+        // purpose: presets evolve, and a stale id must degrade to the member's
+        // free-text role label instead of breaking an older team.
+        roleId: String(m.roleId || '').slice(0, 64),
       };
     });
   }
@@ -188,7 +197,7 @@ class PersonaStore {
     if (!t) return null;
     if (patch.name !== undefined) t.name = String(patch.name).slice(0, 60);
     if (patch.mode !== undefined) {
-      if (!['parallel', 'chain'].includes(patch.mode)) throw new Error('Team mode must be "parallel" or "chain".');
+      if (!['parallel', 'chain', 'links'].includes(patch.mode)) throw new Error('Team mode must be "parallel", "chain" or "links".');
       t.mode = patch.mode;
     }
     if (patch.members !== undefined) t.members = this._validateMembers(patch.members);

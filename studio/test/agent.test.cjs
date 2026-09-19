@@ -349,6 +349,59 @@ const { MemoryStore } = require('../agent/memory-store.cjs');
   console.log('✓ memory-store');
 }
 
+// ---------- crew roles (agent/roles.cjs) ----------
+const { ROLES, getRole, listRoleChoices } = require('../agent/roles.cjs');
+{
+  assert.strictEqual(ROLES.length, 20, 'exactly 20 preset roles');
+  assert.strictEqual(new Set(ROLES.map(r => r.id)).size, 20, 'role ids are unique');
+  assert.strictEqual(new Set(ROLES.map(r => r.name)).size, 20, 'role names are unique');
+  assert.ok(ROLES.every(r => typeof r.tagline === 'string' && r.tagline.length > 10), 'every role carries a tagline');
+  assert.ok(ROLES.every(r => typeof r.protocol === 'string' && r.protocol.length > 120), 'every role carries a real protocol');
+  // Every protocol must reference crew collaboration, or the "web" is a menu.
+  assert.ok(ROLES.every(r => /agent\.(send|status|await|list)|Coordinator|peer|crew/i.test(r.protocol)), 'every protocol names crew interaction');
+  assert.ok(getRole('coordinator'), 'coordinator resolves by id');
+  assert.strictEqual(getRole('nope'), null, 'unknown role ids resolve to null');
+  assert.ok(listRoleChoices().every(c => !('protocol' in c)), 'UI choices carry no prompt text');
+  console.log('✓ crew roles (20 presets)');
+}
+
+// ---------- agent-net: links mailbox, budget, completion sentinel ----------
+const { AgentNet, linksCompleteIn } = require('../agent/agent-net.cjs');
+{
+  const net = new AgentNet({ rosterMailbox: true, linkBudget: 2 });
+  net.preRegister({ agentId: 'm0-a', name: 'Alpha' });
+  net.preRegister({ agentId: 'm1-b', name: 'Beta' });
+  const recB = net.attach('m1-b', { running: false }, { get: () => ({}) });
+  recB.status = 'completed';
+  const d1 = net.send({ from: 'm0-a', to: 'Beta', message: 'please verify my draft' });
+  assert.strictEqual(d1.delivered, 'mailbox', 'links mailbox accepts a message for a finished roster member');
+  assert.strictEqual(recB.inbox.length, 1, 'message buffered in the inbox');
+  const d2 = net.send({ from: 'm0-a', to: 'Beta', message: 'one more thing' });
+  assert.strictEqual(d2.ok, true, 'second exchange allowed');
+  const d3 = net.send({ from: 'm0-a', to: 'Beta', message: 'over budget' });
+  assert.strictEqual(d3.ok, false, 'links budget caps total exchanges');
+  assert.ok(/budget/i.test(d3.error || ''), 'budget refusal explains itself');
+  assert.strictEqual(net.linkSends, 2, 'exactly two exchanges counted');
+
+  const net2 = new AgentNet({ rosterMailbox: true });
+  net2.preRegister({ agentId: 'x-1', name: 'One' });
+  net2.preRegister({ agentId: 'x-2', name: 'Two' });
+  const recTwo = net2.attach('x-2', { running: false }, { get: () => ({}) });
+  recTwo.status = 'completed';
+  net2.send({ from: 'x-1', to: 'Two', message: 'all work verified\ndone\nLINKS: COMPLETE' });
+  assert.ok(net2.linksComplete && net2.linksComplete.by === 'One', 'completion declaration travels in messages');
+  assert.ok(linksCompleteIn('blah LINKS: complete blah'), 'sentinel matcher is case/space tolerant');
+  assert.ok(!linksCompleteIn('no declaration here'), 'matcher does not false-positive');
+
+  const net3 = new AgentNet({});
+  net3.preRegister({ agentId: 'y-1', name: 'One' });
+  const recC = net3.attach('y-1', { running: false }, { get: () => ({}) });
+  recC.status = 'completed';
+  const refused = net3.send({ from: 'y-0', to: 'One', message: 'hi' });
+  assert.strictEqual(refused.ok, false, 'without links mode, finished roster members stay un-wakeable');
+  console.log('✓ agent-net links mailbox + budget + sentinel');
+}
+
 // ---------- team-runner (parallel + chain, mock SSE endpoint) ----------
 const { TeamRunner } = require('../agent/team-runner.cjs');
 {
@@ -367,7 +420,9 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
       const userMsg = parsed.messages.filter(m => m.role === 'user').map(m => m.content).join('\n');
       const relay = /HANDOFF FROM (\w+)[^\n]*:\n([\s\S]*)/.exec(userMsg);
       const content = `I am ${who ? who[1] : 'unknown'}.` + (relay ? ` Relay from ${relay[1]}: ${relay[2].trim().slice(0, 40)}` : '')
-        + '\n```agent_status\n{"status":"complete","summary":"done"}\n```';
+        + (/LINK MESSAGES from the crew/.test(userMsg) ? ' Reviewed the draft and I am satisfied.' : '')
+        + '\n```agent_status\n{"status":"complete","summary":"done"}\n```'
+        + (/LINK MESSAGES from the crew/.test(userMsg) ? '\nLINKS: COMPLETE' : '');
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\n`);
       res.write('data: [DONE]\n\n');
@@ -426,6 +481,42 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.ok(cDone.results.every(r => r.ok));
     assert.ok(cDone.answer.includes('Relay from Alpha'), 'chain answer reflects relayed context');
     console.log('✓ team-runner chain');
+
+    // --- links: a peer network. A mid-run message (the delivery a member's
+    // agent.send tool makes) wakes the finished peer for one more turn; that
+    // turn declares LINKS: COMPLETE and ends the run. ---
+    events.length = 0;
+    const linksTeam = { id: 't3', name: 'Links', mode: 'links', members: [{ personaId: 'pa', roleId: 'coordinator' }, { personaId: 'pb' }] };
+    const linksRun = new TeamRunner({
+      team: linksTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'pb', name: 'Beta', model: 'm2', prompt: 'You are Beta.' },
+      ],
+      task: 'Draft then review.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
+      sendEvent: (channel, payload) => {
+        events.push(payload);
+        // Deterministic inject: the moment Beta finishes its first turn,
+        // "Alpha" messages it — exactly what Alpha's agent.send tool does.
+        if (payload && payload.type === 'member-done' && payload.index === 1 && payload.retake !== true) {
+          linksRun.net.send({ from: 'm0-pa', to: 'Beta', message: 'Review my draft please.' });
+        }
+      },
+    });
+    hits.length = 0;
+    await linksRun.run('run-l');
+    const lDone = events.filter(e => e.type === 'done').pop();
+    assert.strictEqual(lDone.mode, 'links', 'links run reports its mode');
+    assert.strictEqual(hits.length, 3, 'links: Beta ran a second turn after the message');
+    const wakePrompt = JSON.stringify(hits[2].messages);
+    assert.ok(wakePrompt.includes('Review my draft please.'), 'links: the message reached Beta\'s next turn');
+    assert.ok(wakePrompt.includes('OPEN PEER NETWORK') || wakePrompt.includes('LINKS MODE'), 'links: wake prompt carries the peer-network protocol');
+    assert.ok(lDone.links && lDone.links.rounds === 1 && lDone.links.exchanges === 1, 'links: one round, one exchange');
+    assert.strictEqual(lDone.links.completedBy, 'Beta', 'links: completion attributed to the declaring member');
+    assert.ok(lDone.answer.includes('LINKS: COMPLETE'), 'links: answer carries the completion declaration');
+    assert.ok(events.some(e => e.type === 'links-round' && (e.waking || []).includes('Beta')), 'links: the round event names the woken member');
+    console.log('✓ team-runner links');
 
     // --- stop mid-run: chain with 2 members, stop after the first starts ---
     events.length = 0;
