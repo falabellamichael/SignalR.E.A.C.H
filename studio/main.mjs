@@ -2615,6 +2615,14 @@ app.whenReady().then(() => {
               await new Promise(r => setTimeout(r, 25));
             }
             const footerPop = document.querySelector('#sb-conn-popover');
+            // The popover anchors to the CHIP, not the window edge (a static
+            // offset once put it ~320px left of the pill — measured). Assert
+            // the clamped chip-aligned position and that it clears the chip.
+            const chipRect = sbEndpointChip.getBoundingClientRect();
+            const popRect = footerPop.getBoundingClientRect();
+            const expectedLeft = Math.max(8, Math.min(chipRect.left, window.innerWidth - popRect.width - 8));
+            if (Math.abs(popRect.left - expectedLeft) > 2) throw new Error('Connection popover must open above the chip: chip left ' + Math.round(chipRect.left) + ', popover left ' + Math.round(popRect.left) + ', expected ' + Math.round(expectedLeft));
+            if (popRect.bottom > chipRect.top) throw new Error('Connection popover must clear the chip: popover bottom ' + Math.round(popRect.bottom) + ' vs chip top ' + Math.round(chipRect.top));
             const footerRows = [...footerPop.querySelectorAll('.sb-pop-row')];
             if (footerRows.length !== 2) throw new Error('Connection popover must list both connections, got ' + footerRows.length);
             const footerRow = footerRows.find(r => r.dataset.connId === footerTarget.id);

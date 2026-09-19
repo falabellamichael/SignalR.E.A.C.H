@@ -142,6 +142,7 @@
     sync: $('#sb-sync'),
     syncVal: $('#sb-sync-val'),
     popover: $('#sb-conn-popover'),
+    footer: $('#statusbar-bottom'),
   };
 
   function setChip(el, visible) { if (el) el.hidden = !visible; }
@@ -308,6 +309,30 @@
     }
     renderConnPopover(data);
     setPopOpen(true);
+    // Position AFTER showing: offsetWidth/rect are only meaningful once the
+    // popover is displayed.
+    positionPopover();
+  }
+
+  /* Anchor the popover to the CHIP, not a static offset. The chips sit right of
+   * the empty connection-mode slot (the bar distributes its groups with
+   * space-between), so a fixed `left` put the menu ~320px to the left of the
+   * pill — measured, 2026-09-19. Recomputed on every open because the chip
+   * moves with the active host's text width and the window size, then clamped
+   * so the menu can never hang off the right edge. */
+  function positionPopover() {
+    const pop = statusBar.popover;
+    const chip = statusBar.endpoint;
+    if (!pop || !chip) return;
+    const cr = chip.getBoundingClientRect();
+    const fr = statusBar.footer ? statusBar.footer.getBoundingClientRect() : { left: 0, width: window.innerWidth };
+    const width = pop.getBoundingClientRect().width || 0;
+    const margin = 8;
+    let left = cr.left - fr.left;
+    const maxLeft = fr.width - width - margin;
+    if (left > maxLeft) left = maxLeft;
+    if (left < margin) left = margin;
+    pop.style.left = Math.round(left) + 'px';
   }
 
   /* Activate one connection. Persists first, then repaints: on failure the
@@ -791,6 +816,8 @@
         statusBar.endpoint?.focus();
       }
     });
+    // Keep the popover under the chip while an open menu meets a resize.
+    window.addEventListener('resize', () => { if (sbPopOpen) positionPopover(); });
     $('#ws-live')?.addEventListener('change', (e) => {
       state.live = e.target.checked;
       if (state.live) { sampleNow(); startLive(); } else stopLive();
