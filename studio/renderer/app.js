@@ -1790,7 +1790,12 @@ function renderTeamList() {
     const spreadChip = t.spreadConnections === true
       ? '<span class="chip ok" title="Members spread across the enabled connections">⇶ multi-endpoint</span>'
       : '';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : t.mode === 'links' ? 'links' : 'ok'}">${t.mode}</span>${spreadChip}</div>`
+    /* Which contract the crew runs on is a behavior difference, so the card
+     * carries it too (absent on legacy teams = JSON contract). */
+    const protoChip = t.toolProtocol === 'native'
+      ? '<span class="chip" title="Native OpenAI tool calls: member tool calls execute directly">native tools</span>'
+      : '';
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : t.mode === 'links' ? 'links' : 'ok'}">${t.mode}</span>${protoChip}${spreadChip}</div>`
       + `<div class="persona-card-prompt">${roster || '<span class="dim">no members</span>'}</div>`
       + `<div class="team-card-actions"><button class="ghost small" data-act="run">Run…</button><button class="ghost small" data-act="edit">Edit</button></div>`;
     card.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); openTeamModal(t); };
@@ -1921,6 +1926,12 @@ async function openTeamModal(t) {
   $('#team-modal-title').textContent = t ? 'Edit Team' : 'New Team';
   $('#team-name').value = t ? t.name : '';
   $('#team-mode').value = t ? t.mode : 'parallel';
+  /* Tool protocol: how members turn model output into tool calls. New teams
+   * default to native (the endpoint's tool_calls run directly); the JSON
+   * contract stays available for endpoints without native tool support. Older
+   * teams report 'json' from the store unless they were switched over. */
+  $('#team-protocol').value = t ? (t.toolProtocol === 'native' ? 'native' : 'json') : 'native';
+  updateProtocolHint();
   teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, roleId: m.roleId || '', role: m.role || '' })) : [];
   $('#team-spread').checked = !!(t && t.spreadConnections === true);
   await loadConnectionChoices();
@@ -1958,6 +1969,17 @@ function updateSpreadHint() {
   hint.textContent = `On: ${spread} unpinned member(s) rotate across ${pool.length} pooled connections; ${pinned} pinned member(s) keep their own.`;
 }
 $('#team-spread').onchange = updateSpreadHint;
+/* Say what the chosen tool protocol does at run time — the two options fail in
+ * different places (a native endpoint without function-calling support vs a
+ * model that drifts off the JSON contract). */
+function updateProtocolHint() {
+  const hint = $('#team-protocol-hint');
+  if (!hint) return;
+  hint.textContent = $('#team-protocol').value === 'native'
+    ? 'Native: each member request advertises real OpenAI tools and the model\'s tool calls execute directly; task_complete ends the member. Needs a model with function-calling support on its endpoint.'
+    : 'JSON contract: the model answers with one structured actions object — works on any endpoint that can follow instructions, no function-calling support needed.';
+}
+$('#team-protocol').onchange = updateProtocolHint;
 /* Role picker helpers: the 20 presets (agent/roles.cjs) plus a free-text
  * fallback. A preset stores its id AND its name (older surfaces still show
  * `role`); Custom stores free text with no id; the runner turns either into
@@ -2074,6 +2096,7 @@ $('#btn-team-save').onclick = async () => {
   const patch = {
     name,
     mode: $('#team-mode').value,
+    toolProtocol: $('#team-protocol').value,
     members: teamBuilderMembers,
     spreadConnections: $('#team-spread').checked,
   };

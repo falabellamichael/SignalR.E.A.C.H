@@ -2155,10 +2155,13 @@ app.whenReady().then(() => {
         fs.mkdirSync(path.join(smokeProject, 'slow'));
         fs.writeFileSync(path.join(smokeProject, 'slow', 'regex.txt'), 'a'.repeat(50000) + '!');
         fs.writeFileSync(path.join(smokeProject, 'dsml-dialect.txt'), 'DSMLSMOKE read-through-ok\n');
+        fs.writeFileSync(path.join(smokeProject, 'native-fixture.txt'), 'NATIVEMARK native-ok\n');
         const { createServer } = require('node:http');
         // Links-stage observations recorded by the fixture endpoint and
         // asserted in the main process after the renderer block runs.
-        const linksChecks = { protocolSeen: false, roleSeen: false, messageSeen: false, dsmlToolRan: false };
+        const linksChecks = { protocolSeen: false, roleSeen: false, messageSeen: false, dsmlToolRan: false, jsonCrewSawTools: false };
+        // Native-protocol observations (OpenAI tool_calls crew).
+        const nativeChecks = { toolsAdvertised: false, toolRan: false };
         const teamServer = createServer((req, res) => {
           let body = '';
           req.on('data', chunk => { body += chunk; });
@@ -2170,6 +2173,7 @@ app.whenReady().then(() => {
             const cancel = request.messages.some(m => m.content.startsWith('Cancel the slow search'));
             const all = request.messages.map(m => String(m.content || '')).join('\n');
             if (request.model === 'fixture-l1' || request.model === 'fixture-l2' || request.model === 'fixture-l3') {
+              if (Array.isArray(request.tools) && request.tools.length) linksChecks.jsonCrewSawTools = true;
               if (all.includes('LINKS MODE')) linksChecks.protocolSeen = true;
               if (all.includes('YOUR CREW ROLE')) linksChecks.roleSeen = true;
               if (all.includes('Review my draft')) linksChecks.messageSeen = true;
@@ -2218,6 +2222,21 @@ app.whenReady().then(() => {
                   + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C parameter name="path" string="true">dsml-dialect.txt</\uFF5C\uFF5CDSML\uFF5C\uFF5C parameter>\n'
                   + '</\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke>\n'
                   + '</\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>';
+            } else if (request.model === 'fixture-n1') {
+              // Native protocol member: the request must carry OpenAI tools; the
+              // member executes a real read, then ends via task_complete.
+              if (Array.isArray(request.tools) && request.tools.some(t => t.function && t.function.name === 'read')
+                && request.tools.some(t => t.function && t.function.name === 'task_complete')) nativeChecks.toolsAdvertised = true;
+              if (all.includes('NATIVEMARK')) nativeChecks.toolRan = true;
+              const ncall = all.includes('NATIVEMARK')
+                ? { name: 'task_complete', arguments: JSON.stringify({ summary: 'Native fixture done.' }) }
+                : { name: 'read', arguments: JSON.stringify({ path: 'native-fixture.txt' }) };
+              const ndelta = { tool_calls: [{ index: 0, id: 'call-native', type: 'function', function: ncall }] };
+              res.writeHead(200, { 'content-type': 'text/event-stream' });
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: ndelta, finish_reason: null }] }) + '\n\n');
+              res.write('data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + '\n\n');
+              res.end('data: [DONE]\n\n');
+              return;
             } else {
               content = hasResults
                 ? complete('Fixture scan completed.')
@@ -2385,6 +2404,24 @@ app.whenReady().then(() => {
               await reachApi.personas.delete(wd.persona.id);
               await reachApi.personas.delete(we.persona.id);
 
+              // NATIVE tool protocol: requests advertise real OpenAI tools, the
+              // model's tool_calls execute, and task_complete ends the member.
+              const wn = await reachApi.personas.create({ name: 'Worker N', model: 'fixture-n1' });
+              const nt = await reachApi.teams.create({
+                name: 'Native crew', mode: 'parallel', toolProtocol: 'native',
+                members: [{ personaId: wn.persona.id, roleId: 'builder', role: 'Builder' }],
+              });
+              if (nt.team.toolProtocol !== 'native') throw new Error('toolProtocol was not stored on the team');
+              const nv = await dispatch(nt.team, 'Run the native fixture');
+              await until(() => !activeTeamRun, 'native crew finished');
+              if (![...nv.cards.values()].every(card => card.classList.contains('done'))) throw new Error('Native member did not complete');
+              const nvCard = nv.cards.get(0).querySelector('.member-body').textContent;
+              if (!nvCard.includes('Native fixture done.')) throw new Error('Native completion summary missing from the card');
+              const savedN = await reachApi.agents.get(agent.agent.id);
+              if (!savedN.messages.some(m => m.content.includes('Native fixture done.'))) throw new Error('Native crew answer not saved');
+              await reachApi.teams.delete(nt.team.id);
+              await reachApi.personas.delete(wn.persona.id);
+
               await reachApi.agents.delete(agent.agent.id);
               await reachApi.teams.delete(t.team.id);
               await reachApi.personas.delete(a.persona.id);
@@ -2395,6 +2432,9 @@ app.whenReady().then(() => {
           if (!linksChecks.roleSeen) throw new Error('Preset crew roles must reach member prompts');
           if (!linksChecks.messageSeen) throw new Error('The agent.send message never reached its peer');
           if (!linksChecks.dsmlToolRan) throw new Error('The DSML native tool markup never executed in Links');
+          if (linksChecks.jsonCrewSawTools) throw new Error('The JSON-contract crew must not advertise native tools');
+          if (!nativeChecks.toolsAdvertised) throw new Error('Native crew requests must advertise OpenAI tools');
+          if (!nativeChecks.toolRan) throw new Error('The native tool call never executed in the Native crew');
           await win.webContents.executeJavaScript(`
             (async () => {
               const created = await reachApi.agents.create('Input verification', ${JSON.stringify(smokeProject)}, 'fixture');

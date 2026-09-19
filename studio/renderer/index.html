@@ -697,6 +697,12 @@
         <option value="chain">Chain — members work in order, passing results along</option>
         <option value="links">Links — peer network: members message each other until the task is done (3× chain rate)</option>
       </select>
+      <label>Tool protocol</label>
+      <select id="team-protocol" title="How the crew's members turn model output into tool calls">
+        <option value="native">OpenAI tool calls — the model calls tools natively and results come back directly (endpoint must support tools)</option>
+        <option value="json">JSON contract — universal prompt-enforced action object; use when an endpoint has no native tool support</option>
+      </select>
+      <p id="team-protocol-hint" class="dim field-hint"></p>
       <label class="check team-spread-row">
         <input id="team-spread" type="checkbox" />
         <span>Spread members across the enabled connections</span>

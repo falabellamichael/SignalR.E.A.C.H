@@ -1,9 +1,11 @@
 'use strict';
 
 const { parse } = require('./agent-run.cjs');
-const { parseActionResponse } = require('./agent-action.cjs');
+const { parseActionResponse, CONTROL_NAMES } = require('./agent-action.cjs');
 const { parseDsmlActions } = require('./agent-dsml.cjs');
 const { allowedNames } = require('./tool-registry.cjs');
+
+const nonEmpty = value => (typeof value === 'string' ? value.trim() : '');
 
 // Only closed, top-level protocol fences are executable. Quoted examples,
 // enclosing code fences and partially streamed JSON are never recovered.
@@ -74,14 +76,40 @@ function parseAgentResponse(content, nativeActions = []) {
     } catch { invalid = true; }
   }
   display = legacy.lines.filter((_, i) => !removed.has(i)).join('\n').trim();
+  // Native protocol: the model's tool_calls arrive as OpenAI function calls.
+  // Real tools execute; the synthetic control tools (task_complete /
+  // task_blocked / ask_user — advertised only on the native protocol) become
+  // the SAME terminal states the JSON contract's status field produces.
   if (nativeActions.length) {
     if (actions.length || confirm || terminal) invalid = true;
+    let controlCall = null;
     for (const call of nativeActions) {
       try {
-        const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments) : call.function?.arguments;
-        if (!allowedNames().includes(call.function?.name) || !args || Array.isArray(args) || typeof args !== 'object') throw Error();
-        actions.push({ name: call.function.name, arguments: args });
+        const name = call.function?.name;
+        const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments || '{}') : call.function?.arguments;
+        if (!args || Array.isArray(args) || typeof args !== 'object') throw Error();
+        if (CONTROL_NAMES.includes(name)) {
+          if (controlCall) throw Error();
+          if (name === 'task_complete' && !nonEmpty(args.summary)) throw Error();
+          if (name === 'task_blocked' && !nonEmpty(args.reason)) throw Error();
+          if (name === 'ask_user' && !nonEmpty(args.question)) throw Error();
+          controlCall = { name, args };
+          continue;
+        }
+        if (!allowedNames().includes(name)) throw Error();
+        actions.push({ name, arguments: args });
       } catch { invalid = true; }
+    }
+    if (controlCall) {
+      // A control call must be the whole response: mixed with real work the
+      // model contradicted itself, so recovery re-asks instead of guessing.
+      if (actions.length || confirm || terminal) invalid = true;
+      else if (controlCall.name === 'task_complete') terminal = { status: 'complete', summary: nonEmpty(controlCall.args.summary) || display || 'Task complete.' };
+      else if (controlCall.name === 'task_blocked') terminal = { status: 'blocked', reason: nonEmpty(controlCall.args.reason) || display || 'Blocked.' };
+      else confirm = {
+        question: nonEmpty(controlCall.args.question) || display || 'The agent needs your input.',
+        options: Array.isArray(controlCall.args.options) ? controlCall.args.options.filter(o => typeof o === 'string').slice(0, 8) : [],
+      };
     }
   }
   if (actions.length > 8 || (actions.length && (terminal || confirm)) || (terminal && confirm)) invalid = true;

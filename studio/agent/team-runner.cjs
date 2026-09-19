@@ -103,6 +103,9 @@ class TeamRunner {
     // sandbox denials must be recorded, not just the orchestrator's.
     this.auditLog = auditLog;
     this.team = team;
+    /* Native tool protocol (OpenAI tool_calls) vs the universal JSON contract.
+     * Absent/legacy teams stay on the JSON contract. */
+    this.nativeTools = team.toolProtocol === 'native';
     this.personas = personas;            // resolved persona objects in roster order
     this.roles = Array.isArray(roles) ? roles : [];
     this.task = String(task || '');
@@ -262,6 +265,7 @@ class TeamRunner {
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
       auditLog: this.auditLog,
+      nativeTools: this.nativeTools,
       /* Links owns the crew conversation: roster members accept messages
        * between turns, and the total exchange count is capped at 3× a chain
        * crew's rate. Both options are inert in the other modes. */
@@ -445,6 +449,7 @@ class TeamRunner {
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
       auditLog: this.auditLog,
+      nativeTools: this.nativeTools,
       sendEvent: (_channel, payload) => {
         // Tag every loop event with member identity and forward it.
         // Field order matters: spread the inner event FIRST, then override

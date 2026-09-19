@@ -86,6 +86,10 @@ class AgentNet {
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
     onSettled = () => {},
     auditLog = null,
+    /* Native (OpenAI) tool-calling protocol for spawned workers: set by the
+     * TeamRunner from the team's toolProtocol so a native crew's helpers run
+     * on the same contract as their parent. */
+    nativeTools = false,
     /* Links mode: roster members that finished a turn accept messages into
      * their inbox instead of refusing them (the TeamRunner's Links rounds wake
      * them up). Off by default so parallel/chain behaviour is unchanged. */
@@ -98,6 +102,7 @@ class AgentNet {
     this.agentSettings = agentSettings;
     // Subagents run tools too, so they share the same security audit log.
     this.auditLog = auditLog;
+    this.nativeTools = !!nativeTools;
     this.onSettled = onSettled;
     this.teamRunId = teamRunId;
     this.teamName = teamName;
@@ -284,6 +289,7 @@ class AgentNet {
       reachExecutor: this.reachExecutor,
       browserExecutor: this.browserExecutor,
       personaPrompt: String(prompt || ''),
+      nativeTools: this.nativeTools,
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets ? { ...this.budgets, maxRounds: this.budgets.subagentMaxRounds } : null,
       auditLog: this.auditLog,

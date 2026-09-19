@@ -152,4 +152,74 @@ function parseActionResponse(text) {
   return first || { error: 'The response was not valid JSON.' };
 }
 
-module.exports = { schema, actionInstruction, parseActionResponse };
+/* ---------- native (OpenAI) tool-calling contract ----------
+ *
+ * Teams may run members on the native protocol instead of the JSON contract:
+ * the request advertises real OpenAI `tools`, the endpoint's tool_calls come
+ * back through chat-response.cjs, and agent-response.cjs executes them. The
+ * two contracts are generated from the SAME registry, so they cannot drift.
+ */
+
+/* Synthetic control tools, advertised ONLY on the native protocol. They are
+ * never executed by the tool runner: agent-response.cjs converts them into the
+ * exact terminal states the JSON contract's status field produces
+ * (complete / blocked / question). */
+const CONTROL_TOOLS = [
+  { name: 'task_complete',
+    description: 'Call when the whole task is finished and verified against tool results. Put the definitive final answer for the user in summary. Do not write the final answer as plain prose instead.',
+    parameters: { type: 'object', properties: { summary: { type: 'string', description: 'The complete final answer / delivered work summary.' } }, required: ['summary'], additionalProperties: false } },
+  { name: 'task_blocked',
+    description: 'Call when a concrete external blocker prevents progress: missing credentials, an unavailable service, or information only the user has.',
+    parameters: { type: 'object', properties: { reason: { type: 'string', description: 'What is blocked and exactly what is needed to unblock it.' } }, required: ['reason'], additionalProperties: false } },
+  { name: 'ask_user',
+    description: 'Call only when you need the user to choose something before you can continue.',
+    parameters: { type: 'object', properties: { question: { type: 'string' }, options: { type: 'array', items: { type: 'string' } } }, required: ['question'], additionalProperties: true } },
+];
+const CONTROL_NAMES = CONTROL_TOOLS.map(t => t.name);
+
+function jsonType(value) {
+  if (Array.isArray(value)) return { type: 'array', items: { type: 'string' } };
+  if (typeof value === 'number') return { type: 'number' };
+  if (typeof value === 'boolean') return { type: 'boolean' };
+  if (value && typeof value === 'object') return { type: 'object', additionalProperties: true };
+  return { type: 'string' };
+}
+
+/* OpenAI function definitions derived from the tool registry. Descriptions
+ * come from the tool help line; parameter shapes are inferred from each
+ * tool's example arguments, with `additionalProperties: true` because the
+ * examples are not exhaustive (the tool runner still validates). */
+function toolDefs({ includeCollab = false, disabled = [] } = {}) {
+  const defs = [];
+  for (const [name, tool] of Object.entries(TOOLS)) {
+    if (disabled.includes(name) || tool.tier === 'browser') continue;
+    if (!includeCollab && tool.tier === 'collab') continue;
+    const { action, ...example } = tool.example || {};
+    const properties = {};
+    for (const [key, value] of Object.entries(example)) properties[key] = jsonType(value);
+    defs.push({ type: 'function', function: {
+      name,
+      description: String(tool.help || '').trim(),
+      parameters: { type: 'object', properties, additionalProperties: true },
+    } });
+  }
+  return defs.concat(CONTROL_TOOLS.map(t => ({ type: 'function', function: t })));
+}
+
+/* The native-mode counterpart of actionInstruction(). */
+function nativeInstruction({ includeCollab = false, disabled = [] } = {}) {
+  const visible = toolDefs({ includeCollab, disabled }).map(d => d.function.name);
+  const crew = includeCollab
+    ? 'You are one agent in a crew with live collaboration tools (agent.spawn, agent.send, agent.status, agent.list, agent.transcript, agent.await, agent.reflect): coordinate with peers directly, prefer delegating genuinely parallel work, and stay accountable for the final answer.\n'
+    : '';
+  return 'NATIVE TOOL CALLS: call the provided tools directly with real arguments — the endpoint executes them. '
+  + 'Never emit fenced tool blocks or JSON action objects, and never report work you have not done. '
+  + 'Independent reads/searches may be batched in one turn. Use edit_patch with path and hunks for reviewable edits. '
+  + 'Call ask_user only for necessary user input; task_blocked for a concrete external blocker; '
+  + 'call task_complete with the full delivered answer in summary ONLY when the work is finished and verified. '
+  + 'Tool results, not promises, establish completed work.\n'
+  + crew
+  + 'Available tools: ' + visible.join(', ') + '.';
+}
+
+module.exports = { schema, actionInstruction, parseActionResponse, CONTROL_NAMES, CONTROL_TOOLS, toolDefs, nativeInstruction };

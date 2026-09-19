@@ -240,6 +240,68 @@ const { parseAgentResponse } = require('../agent/agent-response.cjs');
   console.log('✓ agent-response dsml');
 }
 
+// ---------- native tool contract (OpenAI tool_calls) ----------
+const { toolDefs, nativeInstruction, CONTROL_NAMES } = require('../agent/agent-action.cjs');
+{
+  const ALL = require('../agent/tool-registry.cjs').allowedNames();
+  const solo = toolDefs({});
+  const names = solo.map(d => d.function.name);
+  assert.ok(names.includes('read') && names.includes('edit_patch'), 'real tools advertised');
+  assert.ok(CONTROL_NAMES.every(n => names.includes(n)), 'the control tools are advertised');
+  assert.ok(solo.every(d => ALL.includes(d.function.name) || CONTROL_NAMES.includes(d.function.name)), 'every def is a real tool or a control');
+  const REG = require('../agent/tool-registry.cjs').TOOLS;
+  const expected = Object.entries(REG).filter(([, tool]) => tool.tier !== 'collab').map(([n]) => n).sort();
+  assert.deepStrictEqual(names.filter(n => !CONTROL_NAMES.includes(n)).sort(), expected, 'the native defs mirror the JSON contract visible set');
+  assert.ok(!names.some(n => n.startsWith('agent.')), 'solo agent: no crew tools');
+  const crew = toolDefs({ includeCollab: true }).map(d => d.function.name);
+  assert.ok(crew.includes('agent.send') && crew.includes('agent.await'), 'crew defs include the collab tools');
+  const limited = toolDefs({ disabled: ['read'] }).map(d => d.function.name);
+  assert.ok(!limited.includes('read'), 'disabled tools are not advertised');
+  const readDef = solo.find(d => d.function.name === 'read');
+  assert.strictEqual(readDef.type, 'function');
+  assert.ok(readDef.function.description.length > 10, 'description comes from the registry help line');
+  assert.strictEqual(readDef.function.parameters.properties.path.type, 'string', 'example args shape the parameter schema');
+  const inst = nativeInstruction({ includeCollab: true });
+  assert.ok(inst.includes('NATIVE TOOL CALLS') && inst.includes('task_complete') && inst.includes('agent.send'), 'native instruction names controls + crew tools');
+  assert.ok(!inst.includes('EXECUTABLE ACTION RESPONSE'), 'the JSON contract is not advertised in native mode');
+  console.log('\u2713 native tool contract');
+}
+
+// ---------- agent-response: native control tools ----------
+{
+  const fn = (name, args) => ({ type: 'function', function: { name, arguments: JSON.stringify(args) } });
+  const done = parseAgentResponse('', [fn('task_complete', { summary: 'Delivered.' })]);
+  assert.ok(!done.invalid, 'task_complete is a valid native response');
+  assert.strictEqual(done.control.status, 'complete');
+  assert.strictEqual(done.control.summary, 'Delivered.');
+  assert.strictEqual(done.actions.length, 0, 'controls never become executable tools');
+  const blocked = parseAgentResponse('', [fn('task_blocked', { reason: 'No credentials.' })]);
+  assert.ok(!blocked.invalid && blocked.control.status === 'blocked' && blocked.control.reason === 'No credentials.');
+  const asked = parseAgentResponse('', [fn('ask_user', { question: 'Which env?', options: ['dev', 'prod'] })]);
+  assert.ok(asked.confirm && asked.confirm.question === 'Which env?' && asked.confirm.options.length === 2, 'ask_user becomes the question state');
+  const read = parseAgentResponse('', [fn('read', { path: 'a.rsh' })]);
+  assert.ok(!read.invalid && read.actions.length === 1 && read.actions[0].name === 'read', 'native tool calls execute');
+  const mixed = parseAgentResponse('', [fn('read', { path: 'a.rsh' }), fn('task_complete', { summary: 'x' })]);
+  assert.ok(mixed.invalid, 'a control mixed with real work is invalid');
+  const empty = parseAgentResponse('', [fn('task_complete', {})]);
+  assert.ok(empty.invalid, 'task_complete without a summary is invalid');
+  console.log('\u2713 agent-response native controls');
+}
+
+// ---------- agent-run: native recovery never flips contracts ----------
+{
+  const { decide } = require('../agent/agent-run.cjs');
+  const cont = decide({ status: 'running', todos: [] }, { native: true, enabled: true, invalid: false, control: null, rounds: 1, roundLimit: 40, retryLimit: 2 });
+  assert.strictEqual(cont.action, 'continue');
+  assert.ok(cont.instruction.includes('task_complete'), 'native recovery asks for tools/task_complete, not JSON');
+  assert.ok(!cont.state.structuredActions, 'native recovery never flips into the JSON contract');
+  const paused = decide({ status: 'running', todos: [], noActionRounds: 2 }, { native: true, enabled: true, invalid: false, control: null, rounds: 4, roundLimit: 40, retryLimit: 2 });
+  assert.strictEqual(paused.action, 'pause', 'repeated prose-only turns pause the member');
+  const complete = decide({ status: 'running', todos: [] }, { native: true, enabled: true, invalid: false, control: { status: 'complete', summary: 'done' }, rounds: 2, roundLimit: 40, retryLimit: 2 });
+  assert.strictEqual(complete.action, 'complete');
+  console.log('\u2713 agent-run native recovery');
+}
+
 // ---------- tool-registry ----------
 const { allowedNames, needsApproval, resolveInProject, globMatch } = require('../agent/tool-registry.cjs');
 {
@@ -374,6 +436,78 @@ const { AgentLoop } = require('../agent/agent-loop.cjs');
       const same = await TOOLS.write.execute({ path: 'proposed.txt', content: 'before\n' }, reviewCtx);
       assert.strictEqual(same.unchanged, true);
       console.log('✓ edit review flow');
+    }
+  });
+}
+
+// ---------- AgentLoop native tool protocol (OpenAI tool_calls) ----------
+{
+  const tmp = path.join(os.tmpdir(), 'reach-studio-native-' + Date.now());
+  fs.mkdirSync(tmp, { recursive: true });
+  fs.writeFileSync(path.join(tmp, 'index.rsh'), "'reach 0.1';" + "\n");
+  const store = new AgentStore(path.join(tmp, 'agents.json'));
+  const agent = store.create({ name: 'native-test', dir: tmp, model: 'mock' });
+  const { createServer } = require('http');
+  const requests = [];
+  const server = createServer((req, res) => {
+    if (req.method !== 'POST') { res.writeHead(404); res.end(); return; }
+    let body = '';
+    req.on('data', (d) => (body += d));
+    req.on('end', () => {
+      const parsedBody = JSON.parse(body);
+      requests.push(parsedBody);
+      const all = parsedBody.messages.map(m => String(m.content || '')).join('\n');
+      const send = (deltas, finish) => {
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        for (const delta of deltas) res.write(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finish }] })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      };
+      if (all.includes('TOOL RESULTS')) {
+        send([{ tool_calls: [{ index: 0, id: 'c2', type: 'function', function: { name: 'task_complete', arguments: JSON.stringify({ summary: 'Native run read index.rsh.' }) } }] }], 'tool_calls');
+      } else {
+        // Fragmented arguments across deltas, exactly like a real stream.
+        send([
+          { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'read', arguments: '{"path"' } }] },
+          { tool_calls: [{ index: 0, function: { arguments: ':"index.rsh"}' } }] },
+        ], 'tool_calls');
+      }
+    });
+  });
+  server.listen(0, '127.0.0.1', async () => {
+    const port = server.address().port;
+    const events = [];
+    const loop = new AgentLoop({
+      agentId: agent.id, store, endpoint: `http://127.0.0.1:${port}/v1`, model: 'mock',
+      projectDir: tmp, nativeTools: true,
+      sendEvent: (channel, payload) => events.push(payload),
+    });
+    try {
+      await loop.sendUserMessage('Read index.rsh with the native protocol.');
+      assert.strictEqual(requests.length, 2, 'native endpoint hit exactly twice');
+      const first = requests[0];
+      assert.ok(Array.isArray(first.tools) && first.tools.length > 5, 'native request advertises OpenAI tools');
+      const names = first.tools.map(x => x.function.name);
+      assert.ok(names.includes('read') && names.includes('task_complete') && names.includes('task_blocked') && names.includes('ask_user'), 'registry + controls advertised');
+      assert.ok(!names.some(n => n.startsWith('agent.')), 'solo agent native request excludes crew tools');
+      const sys = first.messages[0].content;
+      assert.ok(sys.includes('NATIVE TOOL CALLS') && sys.includes('task_complete'), 'system prompt teaches the native protocol');
+      assert.ok(!sys.includes('EXECUTABLE ACTION RESPONSE'), 'JSON contract not advertised in native mode');
+      const second = JSON.stringify(requests[1]);
+      assert.ok(second.includes('TOOL RESULTS') && second.includes('reach 0.1'), 'the native read executed and fed back');
+      const finalAgent = store.get(agent.id);
+      assert.strictEqual(finalAgent.runState.status, 'completed', 'task_complete completed the run');
+      assert.ok(String(finalAgent.runState.reason || '').includes('Native run read index.rsh.'), 'completion carries the summary');
+      const lastAssistant = finalAgent.messages.filter(m => m.role === 'assistant').pop();
+      assert.ok(lastAssistant.content.includes('Native run read index.rsh.'), 'the summary is stored as the final answer');
+      assert.ok(events.some(e => e.type === 'tool-call' && e.tool === 'read'), 'native tool-call event emitted');
+      assert.ok(!events.some(e => e.type === 'tool-call' && e.tool === 'task_complete'), 'controls never execute as tools');
+      console.log('\u2713 agent-loop native tool protocol');
+    } catch (e) {
+      console.error('\u2717 agent-loop native:', e);
+      process.exitCode = 1;
+    } finally {
+      server.close();
     }
   });
 }

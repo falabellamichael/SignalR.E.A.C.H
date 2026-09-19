@@ -125,6 +125,8 @@ class PersonaStore {
       // Older teams written before the toggle existed have no such field; report
       // it as off so the UI shows a definite state rather than undefined.
       spreadConnections: t.spreadConnections === true,
+      // Definite state for teams written before the protocol option existed.
+      toolProtocol: t.toolProtocol === 'native' ? 'native' : 'json',
       members: (t.members || []).map(m => {
         const p = this.getPersona(m.personaId);
         return {
@@ -143,7 +145,7 @@ class PersonaStore {
     return this.teams.find(t => t.id === id) || null;
   }
 
-  createTeam({ name, mode = 'parallel', members = [], spreadConnections = false }) {
+  createTeam({ name, mode = 'parallel', members = [], spreadConnections = false, toolProtocol = 'json' }) {
     if (this.teams.length >= MAX_TEAMS) {
       throw new Error(`Team limit reached (${MAX_TEAMS}).`);
     }
@@ -158,6 +160,12 @@ class PersonaStore {
        * running the whole crew on the active connection. Defaults to false so
        * existing teams keep their behaviour after an upgrade. */
       spreadConnections: spreadConnections === true,
+      /* 'json' = the universal prompt-enforced action contract (works on any
+       * endpoint); 'native' = advertise real OpenAI tools and execute the
+       * endpoint's tool_calls (with task_complete/task_blocked/ask_user
+       * controls). Anything unknown degrades to 'json' so old teams and old
+       * UIs keep working. */
+      toolProtocol: toolProtocol === 'native' ? 'native' : 'json',
       members: this._validateMembers(members),
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -200,6 +208,7 @@ class PersonaStore {
       if (!['parallel', 'chain', 'links'].includes(patch.mode)) throw new Error('Team mode must be "parallel", "chain" or "links".');
       t.mode = patch.mode;
     }
+    if (patch.toolProtocol !== undefined) t.toolProtocol = patch.toolProtocol === 'native' ? 'native' : 'json';
     if (patch.members !== undefined) t.members = this._validateMembers(patch.members);
     if (patch.spreadConnections !== undefined) t.spreadConnections = patch.spreadConnections === true;
     t.updatedAt = Date.now();
