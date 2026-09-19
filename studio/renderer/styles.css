@@ -733,7 +733,7 @@ body.resizing-y, body.resizing-y * {
 .member-card.subagent.depth-2 { margin-left: 52px; }
 .sub-badge { color: var(--gold); font-weight: 700; margin-right: 2px; }
 .member-head {
-  display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px; padding: 8px 16px;
   border-bottom: 1px solid var(--line); font-size: 12.5px;
 }
 .member-head strong { color: var(--gold); }
@@ -748,8 +748,10 @@ body.resizing-y, body.resizing-y * {
 .member-card.done .member-dot, .member-card.failed .member-dot { animation: none; }
 .member-card.done .member-dot { background: var(--ok); }
 .member-card.failed .member-dot { background: var(--err); }
+/* Horizontal inset keeps the hanging list markers (drawn ~11px left of the
+ * text column) clear of the card border. */
 .member-body {
-  padding: 10px 12px; font-size: 12.5px; line-height: 1.55; max-height: 220px;
+  padding: 12px 16px; font-size: 12.5px; line-height: 1.55; max-height: 220px;
   overflow-y: auto; color: var(--text);
 }
 .member-body pre.md-code { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow-x: auto; }
