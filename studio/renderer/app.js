@@ -1155,48 +1155,342 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- settings ----------
+/* Connection cards are built with createElement, never string interpolation:
+ * escapeHtml() escapes & < > but NOT quotes, so interpolating an endpoint or
+ * access key into a value="..." attribute would break on the first quote and
+ * could inject markup. Setting .value on a created element has no such hole. */
+let connDraft = [];        // working copy; only written to disk on Save
+let connActiveId = '';
+const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
+
 async function loadSettings() {
   const s = await reachApi.getSettings();
-  $('#set-endpoint').value = s.endpoint || '';
-  $('#set-accesskey').value = s.accessKey || '';
-  $('#set-model').value = s.model || '';
   $('#set-reach-cli').value = s.reachCli || '';
+  // Draft from the normalized list so ids are stable and the active one is known.
+  connDraft = (Array.isArray(s.connections) ? s.connections : []).map(c => ({ ...c }));
+  connActiveId = s.activeConnection || (connDraft[0] ? connDraft[0].id : '');
+  renderConnections();
 }
+
+function newConnId() {
+  // Client-side placeholder id for an unsaved row; the main process assigns the
+  // real one on save. Prefixed so it can never collide with a stored id.
+  return 'draft_' + Math.random().toString(36).slice(2, 10);
+}
+
+function renderConnections() {
+  const list = $('#conn-list');
+  if (!list) return;
+  list.replaceChildren();
+
+  connDraft.forEach((c, i) => {
+    const card = document.createElement('div');
+    card.className = 'conn-card';
+    card.dataset.connId = c.id;
+    if (c.id === connActiveId) card.classList.add('active');
+
+    // --- header: radio (active) + name + status pill ---
+    const head = document.createElement('div');
+    head.className = 'conn-head';
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'conn-active';
+    radio.className = 'conn-radio';
+    radio.checked = c.id === connActiveId;
+    radio.title = 'Use this connection';
+    radio.setAttribute('aria-label', `Use ${c.name || 'this connection'}`);
+    radio.onchange = () => { connActiveId = c.id; renderConnections(); markUnsaved(); };
+    head.appendChild(radio);
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'conn-name';
+    nameInput.value = c.name || '';
+    nameInput.placeholder = 'Connection name';
+    nameInput.spellcheck = false;
+    nameInput.setAttribute('aria-label', 'Connection name');
+    nameInput.oninput = () => { c.name = nameInput.value; markUnsaved(); };
+    head.appendChild(nameInput);
+
+    const badge = document.createElement('span');
+    badge.className = 'conn-badge' + (c.id === connActiveId ? ' on' : '');
+    badge.textContent = c.id === connActiveId ? 'Active' : 'Select';
+    head.appendChild(badge);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'icon-btn conn-remove';
+    removeBtn.textContent = '−';
+    removeBtn.title = connDraft.length <= 1 ? 'At least one connection must remain' : 'Remove connection';
+    removeBtn.disabled = connDraft.length <= 1;
+    removeBtn.setAttribute('aria-label', `Remove ${c.name || 'connection'}`);
+    removeBtn.onclick = () => {
+      if (connDraft.length <= 1) return;
+      connDraft.splice(i, 1);
+      if (connActiveId === c.id) connActiveId = connDraft[0] ? connDraft[0].id : '';
+      renderConnections();
+      markUnsaved();
+    };
+    head.appendChild(removeBtn);
+    card.appendChild(head);
+
+    // --- body: endpoint, key, model ---
+    const body = document.createElement('div');
+    body.className = 'conn-body';
+
+    const addField = (labelText, buildInput) => {
+      const row = document.createElement('div');
+      row.className = 'conn-field';
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      row.appendChild(label);
+      row.appendChild(buildInput());
+      body.appendChild(row);
+    };
+
+    // Keep a reference to the URL field so Browse and Test can read the value the
+    // user is currently looking at. (c.endpoint is kept live by its oninput, but
+    // reading the input directly is unambiguous and survives a re-render order
+    // change; an earlier draft of this grabbed the MODEL input by mistake and
+    // would have sent the model name as the endpoint.)
+    let urlInput = null;
+
+    addField('Base URL', () => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'conn-url';
+      input.value = c.endpoint || '';
+      input.placeholder = 'https://your-endpoint.example.com/v1';
+      input.spellcheck = false;
+      input.oninput = () => { c.endpoint = input.value.trim(); markUnsaved(); };
+      urlInput = input;
+      return input;
+    });
+
+    addField('Access Key', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      const input = document.createElement('input');
+      input.type = 'password';
+      input.value = c.accessKey || '';
+      input.placeholder = 'leave blank for none';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.oninput = () => { c.accessKey = input.value; markUnsaved(); };
+      const reveal = document.createElement('button');
+      reveal.type = 'button';
+      reveal.className = 'ghost small';
+      reveal.textContent = 'Show';
+      reveal.onclick = () => {
+        const showing = input.type === 'text';
+        input.type = showing ? 'password' : 'text';
+        reveal.textContent = showing ? 'Show' : 'Hide';
+      };
+      wrap.append(input, reveal);
+      return wrap;
+    });
+
+    addField('Default model', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = c.model || '';
+      input.placeholder = 'click Browse to pick from this endpoint';
+      input.spellcheck = false;
+      input.oninput = () => { c.model = input.value.trim(); markUnsaved(); };
+      const browse = document.createElement('button');
+      browse.type = 'button';
+      browse.className = 'ghost small';
+      browse.textContent = 'Browse…';
+      // Browse uses the URL CURRENTLY IN THE ROW, not the saved one: the user is
+      // configuring this connection and may not have saved it yet. Listing from
+      // the stored value would make the button appear broken on a new row.
+      browse.onclick = () => openModelPicker({
+        target: { endpoint: (urlInput ? urlInput.value : c.endpoint).trim(), accessKey: c.accessKey || '' },
+        onPick: (id) => { c.model = id; input.value = id; markUnsaved(); },
+        label: c.name || (urlInput ? urlInput.value : c.endpoint),
+      });
+      wrap.append(input, browse);
+      return wrap;
+    });
+
+    // --- footer: per-row test ---
+    const foot = document.createElement('div');
+    foot.className = 'conn-foot';
+    const testBtn = document.createElement('button');
+    testBtn.type = 'button';
+    testBtn.className = 'ghost small';
+    testBtn.textContent = 'Test';
+    const status = document.createElement('span');
+    status.className = 'dim conn-status';
+    testBtn.onclick = async () => {
+      // A draft row may have no saved endpoint, so test the URL on screen via the
+      // ad-hoc models lookup rather than connections:ping (which needs an id).
+      // Read urlInput, not a CSS query: the model field is ALSO type=text, so
+      // `.conn-field input[type=text]` only works by accident of append order.
+      const endpoint = urlInput ? urlInput.value : (c.endpoint || '');
+      if (!endpoint.trim()) { status.textContent = 'Enter a Base URL first.'; return; }
+      testBtn.disabled = true;
+      status.textContent = 'Testing…';
+      status.classList.remove('ok', 'bad');
+      try {
+        const res = await reachApi.listModels({ endpoint: endpoint.trim(), accessKey: c.accessKey || '' });
+        status.textContent = res.ok
+          ? `OK · ${res.models.length} model(s)`
+          : `Failed · ${res.err || 'unreachable'}`;
+        status.classList.toggle('bad', !res.ok);
+        status.classList.toggle('ok', !!res.ok);
+      } catch (e) {
+        status.textContent = 'Failed · ' + e.message;
+        status.classList.add('bad');
+      } finally { testBtn.disabled = false; }
+    };
+    foot.append(testBtn, status);
+
+    // Append order defines layout: head, then fields, then the Test footer.
+    card.appendChild(body);
+    card.appendChild(foot);
+    list.appendChild(card);
+  });
+
+  const count = $('#conn-count');
+  if (count) count.textContent = `${connDraft.length} of ${CONN_MAX} connection(s)`;
+  const addBtn = $('#btn-add-connection');
+  if (addBtn) addBtn.disabled = connDraft.length >= CONN_MAX;
+}
+
+function markUnsaved() {
+  const el = $('#settings-status');
+  if (el && !el.dataset.savedRecently) el.textContent = 'Unsaved changes.';
+}
+
+$('#btn-add-connection').onclick = () => {
+  if (connDraft.length >= CONN_MAX) return;
+  const c = { id: newConnId(), name: '', endpoint: '', accessKey: '', model: '' };
+  connDraft.push(c);
+  // Activating the new row matches the old single-endpoint behaviour (you are
+  // editing what you will use) and makes its Browse/Test target obvious.
+  connActiveId = c.id;
+  renderConnections();
+  markUnsaved();
+  const cards = document.querySelectorAll('#conn-list .conn-card');
+  const last = cards[cards.length - 1];
+  if (last) { const url = last.querySelector('.conn-field input[type=text]'); if (url) url.focus(); }
+};
+
 $('#btn-save-settings').onclick = async () => {
-  const s = {
+  // Validate before writing: a row with no endpoint is unusable, and saving one
+  // would silently drop it (normalize discards endpoint-less entries), which
+  // would look like the app ate the user's input.
+  const blanks = connDraft.filter(c => !String(c.endpoint || '').trim());
+  const status = $('#settings-status');
+  if (blanks.length) {
+    status.textContent = `Enter a Base URL for ${blanks.length} connection(s), or remove the empty row(s).`;
+    return;
+  }
+  const endpoints = connDraft.map(c => String(c.endpoint).trim().replace(/\/+$/, ''));
+  const dupe = endpoints.find((e, i) => endpoints.indexOf(e) !== i);
+  if (dupe) { status.textContent = `Two connections use the same endpoint: ${dupe}`; return; }
+  if (!connDraft.some(c => c.id === connActiveId)) connActiveId = connDraft[0].id;
+
+  const payload = {
     reachCli: $('#set-reach-cli').value.trim(),
-    endpoint: $('#set-endpoint').value.trim(),
-    accessKey: $('#set-accesskey').value.trim(),
-    model: $('#set-model').value.trim(),
+    // Sending `connections` makes the list authoritative (see settings:save), so
+    // the legacy endpoint/accessKey/model fields are recomputed from the active
+    // row instead of being folded back into it.
+    connections: connDraft.map(c => ({
+      id: c.id, name: c.name, endpoint: String(c.endpoint).trim(),
+      accessKey: c.accessKey || '', model: String(c.model || '').trim(),
+    })),
+    activeConnection: connActiveId,
   };
-  await reachApi.saveSettings(s);
+  const res = await reachApi.saveSettings(payload);
+  if (res && res.ok === false) { status.textContent = res.err || 'Could not save.'; return; }
+  // Re-read so the UI shows the ids and projection the main process settled on
+  // (draft ids are replaced by real ones for new rows).
+  await loadSettings();
   refreshStatus();
-  $('#settings-status').textContent = 'Saved.';
-  setTimeout(() => { $('#settings-status').textContent = ''; }, 2000);
+  status.dataset.savedRecently = '1';
+  status.textContent = 'Saved.';
+  setTimeout(() => { status.textContent = ''; delete status.dataset.savedRecently; }, 2000);
 };
 
 // ---------- model picker ----------
-let modelPickerTarget = null;
-async function openModelPicker(inputEl) {
-  modelPickerTarget = inputEl;
+/* `openModelPicker({target, onPick, label})` — or, for the legacy call sites,
+ * `openModelPicker(inputEl)` which writes the chosen id into that input.
+ *
+ * `target` decides WHICH endpoint is queried:
+ *   undefined            -> the active connection (playground, refactor, agent form)
+ *   'conn_x'             -> that saved connection
+ *   {endpoint, accessKey} -> an ad-hoc lookup for a row not yet saved
+ * The modal states which connection the list came from, because with several
+ * providers configured "Pick a Model" alone no longer says which one's models
+ * these are — picking a model that the active endpoint does not serve would fail
+ * at request time with a confusing error.
+ */
+let modelPickerPick = null;
+async function openModelPicker(arg) {
   const modal = $('#model-modal');
   const choices = $('#model-choices');
   const search = $('#model-search');
+  const source = $('#model-source');
+
+  let target;
+  let label = '';
+  let pick;
+  if (arg && typeof arg === 'object' && !(arg instanceof HTMLElement) && (arg.onPick || arg.target || arg.label)) {
+    target = arg.target;
+    label = arg.label || '';
+    pick = arg.onPick;
+  } else {
+    const inputEl = arg;
+    target = undefined;
+    pick = (id) => {
+      if (inputEl) {
+        inputEl.value = id;
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    };
+  }
+  modelPickerPick = pick;
+
   search.value = '';
-  choices.innerHTML = '<div class="dim" style="padding:12px">Loading models…</div>';
+  if (source) source.textContent = label ? `From: ${label}` : '';
+  choices.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'dim';
+  loading.style.padding = '12px';
+  loading.textContent = 'Loading models…';
+  choices.appendChild(loading);
   modal.classList.remove('hidden');
   search.focus();
-  const res = await reachApi.listModels();
-  choices.innerHTML = '';
+
+  const res = await reachApi.listModels(target);
+  choices.replaceChildren();
   if (!res.ok) {
-    choices.innerHTML = `<div class="dim" style="padding:12px">Could not load models: ${escapeHtml(res.err)}</div>`;
+    const err = document.createElement('div');
+    err.className = 'dim';
+    err.style.padding = '12px';
+    err.textContent = `Could not load models: ${res.err}`;
+    choices.appendChild(err);
+    if (source) source.textContent = label ? `From: ${label} — request failed` : '';
     return;
   }
+  // Prefer the server's own name for the connection; it is authoritative for
+  // saved rows and derived from the hostname for ad-hoc ones.
+  if (source) source.textContent = `From: ${res.connectionName || label || 'the active connection'}`;
+
   const render = (filter) => {
-    choices.innerHTML = '';
+    choices.replaceChildren();
     const filtered = res.models.filter(m => !filter || m.toLowerCase().includes(filter.toLowerCase()));
     if (!filtered.length) {
-      choices.innerHTML = '<div class="dim" style="padding:12px">No matches.</div>';
+      const none = document.createElement('div');
+      none.className = 'dim';
+      none.style.padding = '12px';
+      none.textContent = 'No matches.';
+      choices.appendChild(none);
       return;
     }
     for (const id of filtered) {
@@ -1204,10 +1498,7 @@ async function openModelPicker(inputEl) {
       btn.className = 'model-choice';
       btn.textContent = id;
       btn.onclick = () => {
-        if (modelPickerTarget) {
-          modelPickerTarget.value = id;
-          modelPickerTarget.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+        if (modelPickerPick) modelPickerPick(id);
         modal.classList.add('hidden');
       };
       choices.appendChild(btn);
@@ -1216,7 +1507,6 @@ async function openModelPicker(inputEl) {
   render('');
   search.oninput = () => render(search.value.trim());
 }
-$('#btn-browse-models').onclick = () => openModelPicker($('#set-model'));
 $('#btn-agent-set-browse').onclick = () => openModelPicker($('#agent-set-model'));
 $('#btn-model-cancel').onclick = () => $('#model-modal').classList.add('hidden');
 

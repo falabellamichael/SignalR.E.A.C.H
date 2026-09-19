@@ -30,7 +30,9 @@
     goProjects: $('#rf-go-projects'),
     body: $('#rf-body'),
     task: $('#rf-task'),
+    conn: $('#rf-conn'),
     model: $('#rf-model'),
+    modelSrc: $('#rf-model-src'),
     modelList: $('#rf-model-list'),
     browse: $('#rf-browse'),
     scope: $('#rf-scope'),
@@ -374,7 +376,11 @@
     if (!els.browse) return;
     els.browse.disabled = true;
     try {
-      const res = await window.reach.listModels();
+      // List from the connection THIS workbench is pointed at, not the globally
+      // active one: browsing the wrong endpoint yields model ids that then fail
+      // when the plan is generated.
+      const target = window.ReachConnections?.connectionId('refactor') || undefined;
+      const res = await window.reach.listModels(target);
       if (!res.ok) { setStatus(res.err || 'Could not list models.', 'bad'); return; }
       const models = res.models || [];
       if (els.modelList) {
@@ -386,7 +392,9 @@
         els.model.setAttribute('list', 'rf-model-list');
         if (!els.model.value && models.length) els.model.value = models[0];
       }
-      setStatus(models.length ? `${models.length} model(s) from the endpoint.` : 'Endpoint returned no models.', models.length ? 'ok' : 'bad');
+      const from = res.connectionName || window.ReachConnections?.currentLabel('refactor') || '';
+      if (els.modelSrc) els.modelSrc.textContent = from ? `from ${from}` : '';
+      setStatus(models.length ? `${models.length} model(s) from ${from || 'the endpoint'}.` : 'Endpoint returned no models.', models.length ? 'ok' : 'bad');
     } catch (e) {
       setStatus('Could not list models: ' + e.message, 'bad');
     } finally { els.browse.disabled = false; }
@@ -394,6 +402,9 @@
 
   async function loadDefaultModel() {
     try {
+      const conn = window.ReachConnections?.current('refactor');
+      if (els.model && conn && conn.model && !els.model.value) els.model.value = conn.model;
+      if (!els.model || els.model.value) return;
       const s = await window.reach.getSettings();
       if (els.model && s.model && !els.model.value) els.model.value = s.model;
     } catch { /* settings unavailable is not fatal */ }
@@ -426,6 +437,9 @@
     try {
       const res = await window.reach.refactor.generate({
         runId: state.runId, projectDir: dir, task, model, files: scopeList(),
+        // Route at the connection the workbench is pointed at, not the globally
+        // active one — otherwise the model shown may not be the one used.
+        connectionId: window.ReachConnections?.connectionId('refactor') || undefined,
       });
       if (!res.ok) { setStatus(res.err || 'Could not propose changes.', 'bad'); return; }
       if (!res.edits || !res.edits.length) {
@@ -648,6 +662,7 @@
     try {
       const res = await window.reach.refactor.selfCorrect({
         runId: state.runId, projectDir: dir, model, gates: state.gates, files: scopeList(),
+        connectionId: window.ReachConnections?.connectionId('refactor') || undefined,
       });
       if (!res.ok) { renderGates([], res.err || 'Self-correction failed.'); setStatus(res.err || 'Self-correction failed.', 'bad'); return; }
       state.lastSelfCorrect = res;
@@ -818,10 +833,25 @@
     // A plan is bound to one project directory; switching projects invalidates it.
     if (has && state.planId && state.planDir && state.planDir !== dir) clearReview();
     if (has) state.planDir = dir;
+    // Settings may have changed since this page was built (a connection added,
+    // renamed or removed), so re-populate the picker every time the view shows.
+    window.ReachConnections?.refresh('refactor').then(() => loadDefaultModel()).catch(() => {});
   }
 
   function init() {
     if (!els.body) return;   // page not present (older shell): stay inert
+    // Bind the connection picker BEFORE reading the default model: the model
+    // comes from whichever connection is selected, so the order matters.
+    window.ReachConnections?.bind('refactor', els.conn, {
+      onChange: () => {
+        // Models are per-endpoint: the previously fetched ids may not exist on
+        // the new one, so clear rather than leave a stale id that would fail.
+        if (els.modelList) els.modelList.textContent = '';
+        if (els.model) { els.model.value = ''; els.model.readOnly = true; els.model.removeAttribute('list'); }
+        if (els.modelSrc) els.modelSrc.textContent = '';
+        loadDefaultModel();
+      },
+    });
     loadDefaultModel();
     els.browse?.addEventListener('click', browseModels);
     els.generate?.addEventListener('click', generate);

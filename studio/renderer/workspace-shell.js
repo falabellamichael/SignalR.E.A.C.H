@@ -74,6 +74,10 @@
     markRail();
     if (view === 'workspace') window.ReachWorkspaceDash?.sync();
     if (view === 'about') window.ReachAbout?.sync();
+    // Both pages carry a connection picker that must reflect Settings as it is
+    // NOW, not as it was when the page first loaded.
+    if (view === 'playground') window.ReachPlayground?.sync?.();
+    if (view === 'refactor') window.ReachRefactor?.sync?.();
     return true;
   }
 
@@ -155,7 +159,22 @@
     try {
       const s = await window.reach.getSettings();
       const has = !!s.endpoint;
-      if (statusBar.endpointText) statusBar.endpointText.textContent = endpointLabel(s.endpoint);
+      /* With several connections configured the host alone no longer identifies
+       * which provider is live, so the chip's tooltip names the active
+       * connection and how many exist. The visible text stays the host: it is
+       * the compact form the status bar has room for. Never include the access
+       * key in either (endpointLabel already strips to host for that reason). */
+      const conns = Array.isArray(s.connections) ? s.connections : [];
+      const active = conns.find(c => c.id === s.activeConnection) || null;
+      const tip = active
+        ? (conns.length > 1
+          ? `${active.name || endpointLabel(active.endpoint)} — connection ${conns.indexOf(active) + 1} of ${conns.length}`
+          : (active.name || endpointLabel(active.endpoint)))
+        : 'No endpoint configured';
+      if (statusBar.endpointText) {
+        statusBar.endpointText.textContent = endpointLabel(s.endpoint);
+        if (statusBar.endpoint) statusBar.endpoint.title = tip;
+      }
       if (statusBar.dot) {
         statusBar.dot.className = 'sb-dot' + (has ? ' on' : '');
       }
@@ -163,6 +182,9 @@
       if (statusBar.modelVal && s.model) {
         statusBar.modelVal.textContent = s.model;
         setChip(statusBar.model, true);
+        // The model belongs to the active connection; say so, because the same
+        // model id on a different provider is a different thing entirely.
+        statusBar.model.title = active ? `Model from ${active.name || endpointLabel(active.endpoint)}` : '';
       } else setChip(statusBar.model, false);
       return s;
     } catch { return null; }
