@@ -148,12 +148,24 @@ jobs:
       - name: Boot relay container and verify from the host
         run: |
           docker run -d --name reachd -p 20777:20777 -v reachd-ci:/data signalreach-relay
+          # Readiness: /health answers 200 (its body is redacted for non-local
+          # callers, but it is reachable and that is the readiness signal).
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:20777/v1/models || true)
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:20777/health || true)
             [ "$code" = "200" ] && break
             sleep 2
           done
           [ "$code" = "200" ] || { docker logs reachd; exit 1; }
+          # The access model this branch ships: a request through the PUBLISHED
+          # port is not a local client, so /v1/models must refuse it (401).
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:20777/v1/models || true)
+          [ "$code" = "401" ] || { echo "expected 401 without a key, got $code"; docker logs reachd; exit 1; }
+          # A genuine local client (inside the container) can mint a key...
+          KEY=$(docker exec reachd python -c "import json,urllib.request; req=urllib.request.Request('http://127.0.0.1:20777/_reach/keys/ensure', data=json.dumps({'name': 'docker-ci'}).encode(), headers={'Content-Type': 'application/json'}, method='POST'); print(json.load(urllib.request.urlopen(req))['key'])")
+          case "$KEY" in sk-reach-*) ;; *) echo "no key minted: $KEY"; docker logs reachd; exit 1;; esac
+          # ...and that key unlocks the same route from the host.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $KEY" http://127.0.0.1:20777/v1/models || true)
+          [ "$code" = "200" ] || { echo "expected 200 with a key, got $code"; docker logs reachd; exit 1; }
           docker inspect --format '{{.State.Health.Status}}' reachd | grep -qE 'healthy|starting'
           docker rm -f reachd
       - name: Build GUI image
