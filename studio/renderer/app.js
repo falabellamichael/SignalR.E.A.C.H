@@ -1155,48 +1155,398 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ---------- settings ----------
+/* Connection cards are built with createElement, never string interpolation:
+ * escapeHtml() escapes & < > but NOT quotes, so interpolating an endpoint or
+ * access key into a value="..." attribute would break on the first quote and
+ * could inject markup. Setting .value on a created element has no such hole. */
+let connDraft = [];        // working copy; only written to disk on Save
+let connActiveId = '';
+const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
+
 async function loadSettings() {
   const s = await reachApi.getSettings();
-  $('#set-endpoint').value = s.endpoint || '';
-  $('#set-accesskey').value = s.accessKey || '';
-  $('#set-model').value = s.model || '';
   $('#set-reach-cli').value = s.reachCli || '';
+  // Draft from the normalized list so ids are stable and the active one is known.
+  connDraft = (Array.isArray(s.connections) ? s.connections : []).map(c => ({ ...c }));
+  connActiveId = s.activeConnection || (connDraft[0] ? connDraft[0].id : '');
+  renderConnections();
 }
+
+function newConnId() {
+  // Client-side placeholder id for an unsaved row; the main process assigns the
+  // real one on save. Prefixed so it can never collide with a stored id.
+  return 'draft_' + Math.random().toString(36).slice(2, 10);
+}
+
+function renderConnections() {
+  const list = $('#conn-list');
+  if (!list) return;
+  list.replaceChildren();
+
+  connDraft.forEach((c, i) => {
+    const card = document.createElement('div');
+    card.className = 'conn-card';
+    card.dataset.connId = c.id;
+    if (c.id === connActiveId) card.classList.add('active');
+
+    // --- header: radio (active) + name + status pill ---
+    const head = document.createElement('div');
+    head.className = 'conn-head';
+
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'conn-active';
+    radio.className = 'conn-radio';
+    radio.checked = c.id === connActiveId;
+    radio.title = 'Use this connection';
+    radio.setAttribute('aria-label', `Use ${c.name || 'this connection'}`);
+    radio.onchange = () => { connActiveId = c.id; renderConnections(); markUnsaved(); };
+    head.appendChild(radio);
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'conn-name';
+    nameInput.value = c.name || '';
+    nameInput.placeholder = 'Connection name';
+    nameInput.spellcheck = false;
+    nameInput.setAttribute('aria-label', 'Connection name');
+    nameInput.oninput = () => { c.name = nameInput.value; markUnsaved(); };
+    head.appendChild(nameInput);
+
+    const badge = document.createElement('span');
+    badge.className = 'conn-badge' + (c.id === connActiveId ? ' on' : '');
+    badge.textContent = c.id === connActiveId ? 'Fallback' : 'Select';
+    badge.title = c.id === connActiveId
+      ? 'Active connection: used by chats, playground and refactor, and the fallback every team member can use.'
+      : 'Click the radio to make this the active connection.';
+    head.appendChild(badge);
+
+    /* Pool toggle — click to include this connection in team runs, click again to
+     * take it out. This is the multi-select the user asked for: several
+     * connections can be in the pool at once, and Teams spreads members across
+     * them. Kept separate from the radio because they answer different questions:
+     * the radio picks THE active connection (one, always), this picks which
+     * connections teams may use (many).
+     *
+     * The active connection cannot leave the pool — it is the fallback, and a
+     * fallback that can be switched off is not a fallback. The last one in the
+     * pool cannot leave either, or a spread team would have nowhere to run. Both
+     * are enforced in the main process too; the checks here just explain instead
+     * of letting a click appear to do nothing. */
+    const isActive = c.id === connActiveId;
+    const enabled = c.enabled !== false;
+    const enabledCount = connDraft.filter(x => x.enabled !== false).length;
+    const poolBtn = document.createElement('button');
+    poolBtn.type = 'button';
+    poolBtn.className = 'conn-pool' + (enabled ? ' on' : '');
+    poolBtn.textContent = enabled ? '✓ In team pool' : 'Add to team pool';
+    poolBtn.setAttribute('aria-pressed', String(enabled));
+    poolBtn.dataset.connId = c.id;
+    poolBtn.title = isActive
+      ? 'The active connection is always in the team pool: it is the fallback.'
+      : (enabled
+        ? 'Click to stop teams using this connection.'
+        : 'Click to let teams spread members onto this connection.');
+    // Disabled only when the click is guaranteed to be refused, so the user gets a
+    // reason from the title rather than a control that silently does nothing.
+    poolBtn.disabled = isActive || (enabled && enabledCount <= 1);
+    if (!isActive && enabled && enabledCount <= 1) poolBtn.title = 'At least one connection must stay in the team pool.';
+    poolBtn.onclick = () => {
+      if (isActive) return;
+      const next = !(c.enabled !== false);
+      if (!next && connDraft.filter(x => x.enabled !== false).length <= 1) {
+        const st = $('#settings-status');
+        if (st) st.textContent = 'At least one connection must stay in the team pool.';
+        return;
+      }
+      c.enabled = next;
+      renderConnections();
+      markUnsaved();
+    };
+    head.appendChild(poolBtn);
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'icon-btn conn-remove';
+    removeBtn.textContent = '−';
+    removeBtn.title = connDraft.length <= 1 ? 'At least one connection must remain' : 'Remove connection';
+    removeBtn.disabled = connDraft.length <= 1;
+    removeBtn.setAttribute('aria-label', `Remove ${c.name || 'connection'}`);
+    removeBtn.onclick = () => {
+      if (connDraft.length <= 1) return;
+      connDraft.splice(i, 1);
+      if (connActiveId === c.id) connActiveId = connDraft[0] ? connDraft[0].id : '';
+      renderConnections();
+      markUnsaved();
+    };
+    head.appendChild(removeBtn);
+    card.appendChild(head);
+
+    // --- body: endpoint, key, model ---
+    const body = document.createElement('div');
+    body.className = 'conn-body';
+
+    const addField = (labelText, buildInput) => {
+      const row = document.createElement('div');
+      row.className = 'conn-field';
+      const label = document.createElement('label');
+      label.textContent = labelText;
+      row.appendChild(label);
+      row.appendChild(buildInput());
+      body.appendChild(row);
+    };
+
+    // Keep a reference to the URL field so Browse and Test can read the value the
+    // user is currently looking at. (c.endpoint is kept live by its oninput, but
+    // reading the input directly is unambiguous and survives a re-render order
+    // change; an earlier draft of this grabbed the MODEL input by mistake and
+    // would have sent the model name as the endpoint.)
+    let urlInput = null;
+
+    addField('Base URL', () => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'conn-url';
+      input.value = c.endpoint || '';
+      input.placeholder = 'https://your-endpoint.example.com/v1';
+      input.spellcheck = false;
+      input.oninput = () => { c.endpoint = input.value.trim(); markUnsaved(); };
+      urlInput = input;
+      return input;
+    });
+
+    addField('Access Key', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      const input = document.createElement('input');
+      input.type = 'password';
+      input.value = c.accessKey || '';
+      input.placeholder = 'leave blank for none';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.oninput = () => { c.accessKey = input.value; markUnsaved(); };
+      const reveal = document.createElement('button');
+      reveal.type = 'button';
+      reveal.className = 'ghost small';
+      reveal.textContent = 'Show';
+      reveal.onclick = () => {
+        const showing = input.type === 'text';
+        input.type = showing ? 'password' : 'text';
+        reveal.textContent = showing ? 'Show' : 'Hide';
+      };
+      wrap.append(input, reveal);
+      return wrap;
+    });
+
+    addField('Default model', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'row';
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = c.model || '';
+      input.placeholder = 'click Browse to pick from this endpoint';
+      input.spellcheck = false;
+      input.oninput = () => { c.model = input.value.trim(); markUnsaved(); };
+      const browse = document.createElement('button');
+      browse.type = 'button';
+      browse.className = 'ghost small';
+      browse.textContent = 'Browse…';
+      // Browse uses the URL CURRENTLY IN THE ROW, not the saved one: the user is
+      // configuring this connection and may not have saved it yet. Listing from
+      // the stored value would make the button appear broken on a new row.
+      browse.onclick = () => openModelPicker({
+        target: { endpoint: (urlInput ? urlInput.value : c.endpoint).trim(), accessKey: c.accessKey || '' },
+        onPick: (id) => { c.model = id; input.value = id; markUnsaved(); },
+        label: c.name || (urlInput ? urlInput.value : c.endpoint),
+      });
+      wrap.append(input, browse);
+      return wrap;
+    });
+
+    // --- footer: per-row test ---
+    const foot = document.createElement('div');
+    foot.className = 'conn-foot';
+    const testBtn = document.createElement('button');
+    testBtn.type = 'button';
+    testBtn.className = 'ghost small';
+    testBtn.textContent = 'Test';
+    const status = document.createElement('span');
+    status.className = 'dim conn-status';
+    testBtn.onclick = async () => {
+      // A draft row may have no saved endpoint, so test the URL on screen via the
+      // ad-hoc models lookup rather than connections:ping (which needs an id).
+      // Read urlInput, not a CSS query: the model field is ALSO type=text, so
+      // `.conn-field input[type=text]` only works by accident of append order.
+      const endpoint = urlInput ? urlInput.value : (c.endpoint || '');
+      if (!endpoint.trim()) { status.textContent = 'Enter a Base URL first.'; return; }
+      testBtn.disabled = true;
+      status.textContent = 'Testing…';
+      status.classList.remove('ok', 'bad');
+      try {
+        const res = await reachApi.listModels({ endpoint: endpoint.trim(), accessKey: c.accessKey || '' });
+        status.textContent = res.ok
+          ? `OK · ${res.models.length} model(s)`
+          : `Failed · ${res.err || 'unreachable'}`;
+        status.classList.toggle('bad', !res.ok);
+        status.classList.toggle('ok', !!res.ok);
+      } catch (e) {
+        status.textContent = 'Failed · ' + e.message;
+        status.classList.add('bad');
+      } finally { testBtn.disabled = false; }
+    };
+    foot.append(testBtn, status);
+
+    // Append order defines layout: head, then fields, then the Test footer.
+    card.appendChild(body);
+    card.appendChild(foot);
+    list.appendChild(card);
+  });
+
+  const count = $('#conn-count');
+  if (count) {
+    const inPool = connDraft.filter(c => c.enabled !== false).length;
+    // Two facts the user needs here: how many rows exist against the limit, and
+    // how many of them teams may actually use.
+    count.textContent = `${connDraft.length} of ${CONN_MAX} connection(s) · ${inPool} in team pool`;
+  }
+  const addBtn = $('#btn-add-connection');
+  if (addBtn) addBtn.disabled = connDraft.length >= CONN_MAX;
+}
+
+function markUnsaved() {
+  const el = $('#settings-status');
+  if (el && !el.dataset.savedRecently) el.textContent = 'Unsaved changes.';
+}
+
+$('#btn-add-connection').onclick = () => {
+  if (connDraft.length >= CONN_MAX) return;
+  const c = { id: newConnId(), name: '', endpoint: '', accessKey: '', model: '', enabled: true };
+  connDraft.push(c);
+  // Activating the new row matches the old single-endpoint behaviour (you are
+  // editing what you will use) and makes its Browse/Test target obvious.
+  connActiveId = c.id;
+  renderConnections();
+  markUnsaved();
+  const cards = document.querySelectorAll('#conn-list .conn-card');
+  const last = cards[cards.length - 1];
+  if (last) { const url = last.querySelector('.conn-field input[type=text]'); if (url) url.focus(); }
+};
+
 $('#btn-save-settings').onclick = async () => {
-  const s = {
+  // Validate before writing: a row with no endpoint is unusable, and saving one
+  // would silently drop it (normalize discards endpoint-less entries), which
+  // would look like the app ate the user's input.
+  const blanks = connDraft.filter(c => !String(c.endpoint || '').trim());
+  const status = $('#settings-status');
+  if (blanks.length) {
+    status.textContent = `Enter a Base URL for ${blanks.length} connection(s), or remove the empty row(s).`;
+    return;
+  }
+  const endpoints = connDraft.map(c => String(c.endpoint).trim().replace(/\/+$/, ''));
+  const dupe = endpoints.find((e, i) => endpoints.indexOf(e) !== i);
+  if (dupe) { status.textContent = `Two connections use the same endpoint: ${dupe}`; return; }
+  if (!connDraft.some(c => c.id === connActiveId)) connActiveId = connDraft[0].id;
+
+  const payload = {
     reachCli: $('#set-reach-cli').value.trim(),
-    endpoint: $('#set-endpoint').value.trim(),
-    accessKey: $('#set-accesskey').value.trim(),
-    model: $('#set-model').value.trim(),
+    // Sending `connections` makes the list authoritative (see settings:save), so
+    // the legacy endpoint/accessKey/model fields are recomputed from the active
+    // row instead of being folded back into it.
+    connections: connDraft.map(c => ({
+      id: c.id, name: c.name, endpoint: String(c.endpoint).trim(),
+      accessKey: c.accessKey || '', model: String(c.model || '').trim(),
+      /* `enabled` must be sent explicitly: this object literal is the whole row,
+       * so omitting it would reset every pool toggle on Save — and silently,
+       * because normalizeSettings treats a missing field as enabled. */
+      enabled: c.enabled !== false,
+    })),
+    activeConnection: connActiveId,
   };
-  await reachApi.saveSettings(s);
+  const res = await reachApi.saveSettings(payload);
+  if (res && res.ok === false) { status.textContent = res.err || 'Could not save.'; return; }
+  // Re-read so the UI shows the ids and projection the main process settled on
+  // (draft ids are replaced by real ones for new rows).
+  await loadSettings();
   refreshStatus();
-  $('#settings-status').textContent = 'Saved.';
-  setTimeout(() => { $('#settings-status').textContent = ''; }, 2000);
+  status.dataset.savedRecently = '1';
+  status.textContent = 'Saved.';
+  setTimeout(() => { status.textContent = ''; delete status.dataset.savedRecently; }, 2000);
 };
 
 // ---------- model picker ----------
-let modelPickerTarget = null;
-async function openModelPicker(inputEl) {
-  modelPickerTarget = inputEl;
+/* `openModelPicker({target, onPick, label})` — or, for the legacy call sites,
+ * `openModelPicker(inputEl)` which writes the chosen id into that input.
+ *
+ * `target` decides WHICH endpoint is queried:
+ *   undefined            -> the active connection (playground, refactor, agent form)
+ *   'conn_x'             -> that saved connection
+ *   {endpoint, accessKey} -> an ad-hoc lookup for a row not yet saved
+ * The modal states which connection the list came from, because with several
+ * providers configured "Pick a Model" alone no longer says which one's models
+ * these are — picking a model that the active endpoint does not serve would fail
+ * at request time with a confusing error.
+ */
+let modelPickerPick = null;
+async function openModelPicker(arg) {
   const modal = $('#model-modal');
   const choices = $('#model-choices');
   const search = $('#model-search');
+  const source = $('#model-source');
+
+  let target;
+  let label = '';
+  let pick;
+  if (arg && typeof arg === 'object' && !(arg instanceof HTMLElement) && (arg.onPick || arg.target || arg.label)) {
+    target = arg.target;
+    label = arg.label || '';
+    pick = arg.onPick;
+  } else {
+    const inputEl = arg;
+    target = undefined;
+    pick = (id) => {
+      if (inputEl) {
+        inputEl.value = id;
+        inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    };
+  }
+  modelPickerPick = pick;
+
   search.value = '';
-  choices.innerHTML = '<div class="dim" style="padding:12px">Loading models…</div>';
+  if (source) source.textContent = label ? `From: ${label}` : '';
+  choices.replaceChildren();
+  const loading = document.createElement('div');
+  loading.className = 'dim';
+  loading.style.padding = '12px';
+  loading.textContent = 'Loading models…';
+  choices.appendChild(loading);
   modal.classList.remove('hidden');
   search.focus();
-  const res = await reachApi.listModels();
-  choices.innerHTML = '';
+
+  const res = await reachApi.listModels(target);
+  choices.replaceChildren();
   if (!res.ok) {
-    choices.innerHTML = `<div class="dim" style="padding:12px">Could not load models: ${escapeHtml(res.err)}</div>`;
+    const err = document.createElement('div');
+    err.className = 'dim';
+    err.style.padding = '12px';
+    err.textContent = `Could not load models: ${res.err}`;
+    choices.appendChild(err);
+    if (source) source.textContent = label ? `From: ${label} — request failed` : '';
     return;
   }
+  // Prefer the server's own name for the connection; it is authoritative for
+  // saved rows and derived from the hostname for ad-hoc ones.
+  if (source) source.textContent = `From: ${res.connectionName || label || 'the active connection'}`;
+
   const render = (filter) => {
-    choices.innerHTML = '';
+    choices.replaceChildren();
     const filtered = res.models.filter(m => !filter || m.toLowerCase().includes(filter.toLowerCase()));
     if (!filtered.length) {
-      choices.innerHTML = '<div class="dim" style="padding:12px">No matches.</div>';
+      const none = document.createElement('div');
+      none.className = 'dim';
+      none.style.padding = '12px';
+      none.textContent = 'No matches.';
+      choices.appendChild(none);
       return;
     }
     for (const id of filtered) {
@@ -1204,10 +1554,7 @@ async function openModelPicker(inputEl) {
       btn.className = 'model-choice';
       btn.textContent = id;
       btn.onclick = () => {
-        if (modelPickerTarget) {
-          modelPickerTarget.value = id;
-          modelPickerTarget.dispatchEvent(new Event('change', { bubbles: true }));
-        }
+        if (modelPickerPick) modelPickerPick(id);
         modal.classList.add('hidden');
       };
       choices.appendChild(btn);
@@ -1216,7 +1563,6 @@ async function openModelPicker(inputEl) {
   render('');
   search.oninput = () => render(search.value.trim());
 }
-$('#btn-browse-models').onclick = () => openModelPicker($('#set-model'));
 $('#btn-agent-set-browse').onclick = () => openModelPicker($('#agent-set-model'));
 $('#btn-model-cancel').onclick = () => $('#model-modal').classList.add('hidden');
 
@@ -1233,8 +1579,19 @@ let pendingTeamEvents = [];
 async function loadCreatePage() {
   personas = await reachApi.personas.list();
   teams = await reachApi.teams.list();
+  /* Load connections too, so a persona card can NAME the connection it is pinned
+   * to instead of showing a bare id. Best-effort: if the list cannot load the
+   * cards still render, they just fall back to the id. */
+  await loadConnectionChoices();
   renderPersonaList();
   renderTeamList();
+}
+
+/** Connection display name for an id, or null when unknown/deleted. */
+function connectionLabel(id) {
+  if (!id) return null;
+  const c = (connChoices || []).find(x => x.id === id);
+  return c ? (c.name || c.endpoint) : null;
 }
 
 function renderPersonaList() {
@@ -1247,7 +1604,13 @@ function renderPersonaList() {
   for (const p of personas) {
     const card = document.createElement('div');
     card.className = 'persona-card';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(p.name)}</strong><span class="chip dim">${escapeHtml(p.model || 'default model')}</span></div>`
+    /* Show the pin: without a chip, a persona locked to one provider looks
+     * identical to one that follows the team spread, and the difference only
+     * becomes visible mid-run. Name the connection rather than its id. */
+    const pin = p.connectionId
+      ? `<span class="chip pinned" title="Pinned to one connection">⇢ ${escapeHtml(connectionLabel(p.connectionId) || 'deleted connection')}</span>`
+      : '';
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(p.name)}</strong><span class="chip dim">${escapeHtml(p.model || 'default model')}</span>${pin}</div>`
       + `<div class="persona-card-prompt">${escapeHtml((p.prompt || 'No custom instructions.').slice(0, 140))}${(p.prompt || '').length > 140 ? '…' : ''}</div>`;
     card.onclick = () => openPersonaModal(p);
     el.appendChild(card);
@@ -1265,7 +1628,12 @@ function renderTeamList() {
     const card = document.createElement('div');
     card.className = 'team-card';
     const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : ' · ');
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : 'ok'}">${t.mode}</span></div>`
+    /* A spread team runs on several providers, so say so on the card — otherwise
+     * two identical-looking crews behave differently at run time. */
+    const spreadChip = t.spreadConnections === true
+      ? '<span class="chip ok" title="Members spread across the enabled connections">⇶ multi-endpoint</span>'
+      : '';
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : 'ok'}">${t.mode}</span>${spreadChip}</div>`
       + `<div class="persona-card-prompt">${roster || '<span class="dim">no members</span>'}</div>`
       + `<div class="team-card-actions"><button class="ghost small" data-act="run">Run…</button><button class="ghost small" data-act="edit">Edit</button></div>`;
     card.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); openTeamModal(t); };
@@ -1276,23 +1644,105 @@ function renderTeamList() {
 }
 
 // ----- persona modal -----
-function openPersonaModal(p) {
+/* Cache of the connection list for the persona/team pickers. Loaded on demand:
+ * these modals open rarely and connections change in Settings, so a stale
+ * in-memory list would offer ids that no longer exist. */
+let connChoices = null;
+async function loadConnectionChoices() {
+  try {
+    const res = await reachApi.connections.list();
+    connChoices = (res && res.connections) || [];
+  } catch { connChoices = []; }
+  return connChoices;
+}
+
+/**
+ * Fill a <select> with "blank + one option per connection".
+ *
+ * `includeDisabled` matters: a persona pin is a promise about WHERE it runs, so
+ * it should survive a connection being switched out of the team pool — hiding it
+ * would silently drop the user's pin when they next saved the persona. Team
+ * spread, by contrast, only ever uses enabled connections, and its hint says so.
+ */
+function fillConnectionSelect(select, selectedId, { includeDisabled = true } = {}) {
+  if (!select) return;
+  select.replaceChildren();
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = 'Automatic (team decides)';
+  select.appendChild(auto);
+  let matched = false;
+  for (const c of connChoices || []) {
+    if (!includeDisabled && c.enabled === false) continue;
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    const pool = c.enabled === false ? ' — not in team pool' : '';
+    opt.textContent = `${c.name || c.endpoint}${pool}`;
+    if (c.id === selectedId) { opt.selected = true; matched = true; }
+    select.appendChild(opt);
+  }
+  /* A pin to a connection that has since been DELETED cannot be offered as an
+   * option, but must not be silently discarded either — that would change where
+   * the agent runs the moment the user saves an unrelated field. Show it as a
+   * distinct stale entry so the choice is visible and deliberate. */
+  if (selectedId && !matched) {
+    const opt = document.createElement('option');
+    opt.value = selectedId;
+    opt.textContent = '(connection no longer exists)';
+    opt.selected = true;
+    select.appendChild(opt);
+  }
+  if (!selectedId) select.value = '';
+}
+
+async function openPersonaModal(p) {
   editingPersonaId = p ? p.id : null;
   $('#persona-modal-title').textContent = p ? 'Edit Custom Agent' : 'New Custom Agent';
   $('#persona-name').value = p ? p.name : '';
   $('#persona-model').value = p ? (p.model || '') : '';
   $('#persona-prompt').value = p ? (p.prompt || '') : '';
+  await loadConnectionChoices();
+  fillConnectionSelect($('#persona-connection'), p ? (p.connectionId || '') : '');
   $('#btn-persona-delete').classList.toggle('hidden', !p);
   $('#persona-modal').classList.remove('hidden');
   $('#persona-name').focus();
 }
 $('#btn-new-persona').onclick = () => openPersonaModal(null);
 $('#btn-persona-cancel').onclick = () => $('#persona-modal').classList.add('hidden');
-$('#btn-persona-browse').onclick = () => openModelPicker($('#persona-model'));
+/* Browse must list the PINNED connection's models, not the active one's: model
+ * ids are per-endpoint, so picking from the wrong list yields an id the pinned
+ * provider rejects at request time. Clearing the pin returns to the active
+ * connection, which is what "Automatic" will resolve to outside a team. */
+$('#btn-persona-browse').onclick = () => {
+  const pin = $('#persona-connection').value;
+  const target = pin ? { connectionId: pin } : undefined;
+  openModelPicker({
+    target,
+    label: pin
+      ? `Models on ${(connChoices || []).find(c => c.id === pin)?.name || 'the pinned connection'}`
+      : 'Models on the active connection',
+    onPick: (id) => {
+      const input = $('#persona-model');
+      input.value = id;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+  });
+};
+$('#persona-connection').onchange = () => {
+  /* Models belong to an endpoint, so the previously chosen id may not exist on
+   * the newly pinned one. Clear it rather than leave a value that will 404 —
+   * blank means "that connection's default", which is always valid. */
+  $('#persona-model').value = '';
+};
 $('#btn-persona-save').onclick = async () => {
   const name = $('#persona-name').value.trim();
   if (!name) { $('#persona-name').focus(); return; }
-  const patch = { name, model: $('#persona-model').value.trim(), prompt: $('#persona-prompt').value };
+  const patch = {
+    name,
+    model: $('#persona-model').value.trim(),
+    prompt: $('#persona-prompt').value,
+    connectionId: $('#persona-connection').value,
+  };
   const res = editingPersonaId
     ? await reachApi.personas.update(editingPersonaId, patch)
     : await reachApi.personas.create(patch);
@@ -1309,17 +1759,47 @@ $('#btn-persona-delete').onclick = async () => {
 };
 
 // ----- team modal -----
-function openTeamModal(t) {
+async function openTeamModal(t) {
   editingTeamId = t ? t.id : null;
   $('#team-modal-title').textContent = t ? 'Edit Team' : 'New Team';
   $('#team-name').value = t ? t.name : '';
   $('#team-mode').value = t ? t.mode : 'parallel';
   teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, role: m.role || '' })) : [];
+  $('#team-spread').checked = !!(t && t.spreadConnections === true);
+  await loadConnectionChoices();
+  updateSpreadHint();
   $('#btn-team-delete').classList.toggle('hidden', !t);
   renderTeamBuilder();
   $('#team-modal').classList.remove('hidden');
   $('#team-name').focus();
 }
+
+/* Explain what the spread toggle will actually do with the CURRENT pool and the
+ * CURRENT roster. A bare checkbox labelled "spread across connections" leaves the
+ * user guessing when only one connection is enabled, or when every member is
+ * pinned — both cases where the toggle has no effect. Saying so here beats a
+ * confusing run later. */
+function updateSpreadHint() {
+  const hint = $('#team-spread-hint');
+  if (!hint) return;
+  const on = $('#team-spread').checked;
+  const pool = (connChoices || []).filter(c => c.enabled !== false);
+  if (!on) {
+    hint.textContent = 'Off: every unpinned member runs on the active connection (the fallback).';
+    return;
+  }
+  if (pool.length <= 1) {
+    hint.textContent = `On, but only ${pool.length} connection is in the team pool — enable more in Settings > Connections to actually spread.`;
+    return;
+  }
+  const pinned = teamBuilderMembers.filter(m => {
+    const p = personas.find(x => x.id === m.personaId);
+    return !!(p && p.connectionId);
+  }).length;
+  const spread = teamBuilderMembers.length - pinned;
+  hint.textContent = `On: ${spread} unpinned member(s) rotate across ${pool.length} pooled connections; ${pinned} pinned member(s) keep their own.`;
+}
+$('#team-spread').onchange = updateSpreadHint;
 function renderTeamBuilder() {
   const el = $('#team-members');
   el.innerHTML = '';
@@ -1355,6 +1835,9 @@ function renderTeamBuilder() {
     opt.value = '';
     pick.appendChild(opt);
   }
+  // The hint counts pinned vs unpinned members, so it must be recomputed whenever
+  // the roster changes — adding, removing or reordering can change both.
+  updateSpreadHint();
 }
 $('#btn-new-team').onclick = () => openTeamModal(null);
 $('#btn-team-cancel').onclick = () => $('#team-modal').classList.add('hidden');
@@ -1370,7 +1853,12 @@ $('#btn-team-save').onclick = async () => {
   const name = $('#team-name').value.trim();
   if (!name) { $('#team-name').focus(); return; }
   if (!teamBuilderMembers.length) { showNotice('Add at least one member.'); return; }
-  const patch = { name, mode: $('#team-mode').value, members: teamBuilderMembers };
+  const patch = {
+    name,
+    mode: $('#team-mode').value,
+    members: teamBuilderMembers,
+    spreadConnections: $('#team-spread').checked,
+  };
   const res = editingTeamId
     ? await reachApi.teams.update(editingTeamId, patch)
     : await reachApi.teams.create(patch);

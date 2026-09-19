@@ -155,7 +155,7 @@ class AgentNet {
   /* Pre-register a roster member BEFORE its loop exists, so the whole crew is
    * visible to agent.list / agent.send / agent.status from the first turn
    * (chain mode runs members later; they must still be addressable). */
-  preRegister({ agentId, name, model = '', prompt = '', depth = 0, task = '' }) {
+  preRegister({ agentId, name, model = '', prompt = '', depth = 0, task = '', endpoint = '', accessKey = '' }) {
     if (this.agents.has(agentId)) return this.agents.get(agentId);
     const rec = {
       id: agentId,
@@ -171,6 +171,13 @@ class AgentNet {
       output: '',
       error: null,
       task: String(task || ''),
+      /* Per-agent routing. A team member may be pinned to a different provider
+       * than the crew default, and anything IT spawns must inherit that provider
+       * — otherwise a helper spawned by a member on provider B silently runs on
+       * A, where its model may not exist. Empty means "use the network default".
+       * accessKey is never emitted in any event or log. */
+      endpoint: String(endpoint || ''),
+      accessKey: String(accessKey || ''),
       startedAt: Date.now(),
       finishedAt: null,
       messagesSent: 0,
@@ -230,12 +237,29 @@ class AgentNet {
     const id = `net-${(++this.seq).toString(36)}-${Date.now().toString(36)}`;
     const store = new MemoryStore();
     Object.assign(store.get(id).settings, structuredClone(this.agentSettings));
-    const useModel = String(model || '').trim() || this.defaultModel || 'gpt-4o-mini';
+
+    /* Inherit the PARENT's routing, not the network default.
+     *
+     * A team member can be pinned to a provider other than the crew default, and
+     * the helpers it spawns must run there too — otherwise they land on an
+     * endpoint that may not even have the model. Inheriting the parent's MODEL as
+     * well (when the caller did not name one) matters for the same reason:
+     * this.defaultModel is the team/global default, which is a valid id on the
+     * DEFAULT provider and may be nonsense on the parent's.
+     *
+     * Grandchildren inherit too, because the child's record stores what it got. */
+    const parentRec = parentId ? (this.agents.get(parentId) || null) : null;
+    const useEndpoint = (parentRec && parentRec.endpoint) || this.endpoint;
+    const useAccessKey = (parentRec && parentRec.accessKey) || this.accessKey;
+    const useModel = String(model || '').trim()
+      || (parentRec && parentRec.model)
+      || this.defaultModel
+      || 'gpt-4o-mini';
     const loop = new AgentLoop({
       agentId: id,
       store,
-      endpoint: this.endpoint,
-      accessKey: this.accessKey,
+      endpoint: useEndpoint,
+      accessKey: useAccessKey,
       model: useModel,
       projectDir: this.projectDir,
       reachExecutor: this.reachExecutor,
@@ -276,6 +300,8 @@ class AgentNet {
       id, name: String(name).trim(), model: useModel, prompt: String(prompt || ''),
       depth: childDepth, parentId: parentId || null, origin: 'spawned',
       loop, store, status: 'starting', output: '', error: null, task: cleanTask,
+      // Stored so a grandchild inherits the same provider (see spawn()).
+      endpoint: useEndpoint || '', accessKey: useAccessKey || '',
       startedAt: Date.now(), finishedAt: null, messagesSent: 0, messagesReceived: 0,
       spawnedBy: callerName || null,
     };

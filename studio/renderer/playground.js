@@ -15,7 +15,9 @@
   const $ = sel => document.querySelector(sel);
 
   const els = {
+    conn: $('#pg-conn'),
     model: $('#pg-model'),
+    modelSrc: $('#pg-model-src'),
     modelList: $('#pg-model-list'),
     browse: $('#pg-browse'),
     temp: $('#pg-temp'),
@@ -58,7 +60,11 @@
     if (!els.browse) return;
     els.browse.disabled = true;
     try {
-      const res = await window.reach.listModels();
+      // List from the connection THIS console is pointed at, not the globally
+      // active one: with several providers configured, browsing the wrong
+      // endpoint yields model ids that then fail at request time.
+      const target = window.ReachConnections?.connectionId('playground') || undefined;
+      const res = await window.reach.listModels(target);
       if (!res.ok) { setStatus(res.err || 'Could not list models.', 'bad'); return; }
       const models = res.models || [];
       if (els.modelList) {
@@ -71,7 +77,11 @@
         els.model.setAttribute('list', 'pg-model-list');
         if (!els.model.value && models.length) els.model.value = models[0];
       }
-      setStatus(models.length ? `${models.length} model(s) from the endpoint.` : 'Endpoint returned no models.', models.length ? 'ok' : 'bad');
+      // Say whose models these are. The server's own connection name is
+      // authoritative; fall back to the picker's label for an ad-hoc lookup.
+      const from = res.connectionName || window.ReachConnections?.currentLabel('playground') || '';
+      if (els.modelSrc) els.modelSrc.textContent = from ? `from ${from}` : '';
+      setStatus(models.length ? `${models.length} model(s) from ${from || 'the endpoint'}.` : 'Endpoint returned no models.', models.length ? 'ok' : 'bad');
     } catch (e) {
       setStatus('Could not list models: ' + e.message, 'bad');
     } finally { els.browse.disabled = false; }
@@ -79,6 +89,10 @@
 
   async function loadDefaultModel() {
     try {
+      // The selected connection's own default model, not the global one.
+      const conn = window.ReachConnections?.current('playground');
+      if (els.model && conn && conn.model && !els.model.value) els.model.value = conn.model;
+      if (!els.model || els.model.value) return;
       const s = await window.reach.getSettings();
       if (els.model && s.model && !els.model.value) els.model.value = s.model;
     } catch { /* settings unavailable is not fatal here */ }
@@ -99,6 +113,10 @@
     const payload = {
       runId: state.runId,
       model,
+      // Route at the connection the console is pointed at. Omitting this would
+      // run against the ACTIVE connection while the UI shows another one — the
+      // kind of mismatch that costs tokens on the wrong provider.
+      connectionId: window.ReachConnections?.connectionId('playground') || undefined,
       system: (els.system?.value || '').trim(),
       prompt,
       stream: els.stream?.checked !== false,
@@ -203,6 +221,17 @@
     els.run?.addEventListener('click', run);
     els.stop?.addEventListener('click', stop);
     els.clear?.addEventListener('click', clear);
+    // Changing connection invalidates the model list: models are per-endpoint, so
+    // the previously fetched ids may not exist on the new one. Clear the field and
+    // the datalist rather than let a stale id be submitted.
+    window.ReachConnections?.bind('playground', els.conn, {
+      onChange: () => {
+        if (els.modelList) els.modelList.textContent = '';
+        if (els.model) { els.model.value = ''; els.model.readOnly = true; els.model.removeAttribute('list'); }
+        if (els.modelSrc) els.modelSrc.textContent = '';
+        loadDefaultModel();
+      },
+    });
     els.temp?.addEventListener('input', () => { if (els.tempVal) els.tempVal.textContent = (parseFloat(els.temp.value) || 0).toFixed(2); });
     els.prompt?.addEventListener('keydown', (e) => {
       // Ctrl/Cmd+Enter runs, matching the composer's send shortcut elsewhere.
@@ -210,9 +239,16 @@
     });
   }
 
-  window.ReachPlayground = { run, stop, clear, browseModels };
+  window.ReachPlayground = { run, stop, clear, browseModels, sync };
 
-  function init() { bind(); loadDefaultModel(); }
+  // Repopulate the connection picker (settings may have changed since this page
+  // was built) and re-read the default model for whatever is now selected.
+  async function sync() {
+    await window.ReachConnections?.refresh('playground');
+    await loadDefaultModel();
+  }
+
+  function init() { bind(); sync(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
 })();

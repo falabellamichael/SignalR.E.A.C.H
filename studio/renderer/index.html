@@ -242,17 +242,21 @@
         <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
       </nav>
       <div class="settings-scroll">      <div id="settings-connection" class="settings-panel settings-content">
-        <h2>Endpoint</h2>
-        <label>Base URL</label>
-        <input id="set-endpoint" type="text" placeholder="https://your-endpoint.example.com/v1" spellcheck="false" />
-        <label>Access Key</label>
-        <input id="set-accesskey" type="password" placeholder="leave blank for none" spellcheck="false" />
-        <label>Default Model</label>
-        <div class="row">
-          <input id="set-model" type="text" readonly placeholder="click Browse to pick from the endpoint" spellcheck="false" />
-          <button id="btn-browse-models" class="ghost small">Browse&hellip;</button>
+        <h2>Connections</h2>
+        <p class="settings-description">
+          Each connection is one endpoint with its own access key and default model.
+          The selected connection is the one every conversation, the playground and
+          the refactor workbench use. Changes apply when you press
+          <strong>Save Settings</strong>.
+        </p>
+
+        <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
+
+        <div class="settings-actions conn-actions">
+          <button id="btn-add-connection" class="ghost small" type="button">+ Add connection</button>
+          <span id="conn-count" class="dim"></span>
         </div>
-        <datalist id="model-list"></datalist>
+
         <label for="set-reach-cli">Reach CLI executable (optional)</label>
         <input id="set-reach-cli" type="text" placeholder="Automatic discovery" spellcheck="false" />
         <p id="set-reach-cli-help" class="dim"></p>
@@ -362,7 +366,11 @@
 
         <div class="pg-controls">
           <div class="pg-field">
-            <label for="pg-model">Model</label>
+            <label for="pg-conn">Connection</label>
+            <select id="pg-conn"></select>
+          </div>
+          <div class="pg-field">
+            <label for="pg-model">Model <span id="pg-model-src" class="dim"></span></label>
             <div class="row">
               <input id="pg-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
               <button id="pg-browse" class="ghost small">Browse&hellip;</button>
@@ -457,7 +465,11 @@
               placeholder="e.g. Rename computeTotal to sumTotals everywhere it is used, and extract the duplicated formatting into a helper."></textarea>
             <div class="rf-task-row">
               <div class="rf-field">
-                <label for="rf-model">Model</label>
+                <label for="rf-conn">Connection</label>
+                <select id="rf-conn"></select>
+              </div>
+              <div class="rf-field">
+                <label for="rf-model">Model <span id="rf-model-src" class="dim"></span></label>
                 <div class="row">
                   <input id="rf-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
                   <button type="button" id="rf-browse" class="ghost small">Browse&hellip;</button>
@@ -648,9 +660,12 @@
       <h3 id="persona-modal-title">New Custom Agent</h3>
       <label>Name</label>
       <input id="persona-name" type="text" placeholder="e.g. Security Auditor" spellcheck="false" />
-      <label>Model (blank = default from Settings)</label>
+      <label>Connection (blank = let the team decide)</label>
+      <select id="persona-connection"></select>
+      <p class="dim field-hint persona-conn-hint">Pinning guarantees this agent always runs on that provider, even in a team that spreads across several. Leave it blank to use the team spread, or the active connection.</p>
+      <label>Model (blank = that connection's default)</label>
       <div class="row">
-        <input id="persona-model" type="text" readonly placeholder="click Browse to pick from the endpoint" spellcheck="false" />
+        <input id="persona-model" type="text" readonly placeholder="click Browse to pick from the connection" spellcheck="false" />
         <button id="btn-persona-browse" class="ghost small">Browse&hellip;</button>
       </div>
       <label>Instructions (system prompt for this agent)</label>
@@ -674,6 +689,11 @@
         <option value="parallel">Parallel — all members work the same task simultaneously</option>
         <option value="chain">Chain — members work in order, passing results along</option>
       </select>
+      <label class="check team-spread-row">
+        <input id="team-spread" type="checkbox" />
+        <span>Spread members across the enabled connections</span>
+      </label>
+      <p id="team-spread-hint" class="dim field-hint"></p>
       <label>Members (in order — for Chain, this is the pipeline)</label>
       <div id="team-members" class="team-members"></div>
       <div class="row">
@@ -707,6 +727,7 @@
   <div id="model-modal" class="modal hidden">
     <div class="modal-box">
       <h3>Pick a Model</h3>
+      <p id="model-source" class="dim model-source"></p>
       <input id="model-search" type="text" placeholder="filter&hellip;" spellcheck="false" />
       <div id="model-choices" class="model-choices"></div>
       <div class="modal-actions">
@@ -745,6 +766,7 @@
   <script src="workspace.js"></script>
   <script src="telemetry.js"></script>
   <script src="workspace-shell.js"></script>
+  <script src="connections-ui.js"></script>
   <script src="playground.js"></script>
   <script src="about.js"></script>
   <script src="refactor.js"></script>

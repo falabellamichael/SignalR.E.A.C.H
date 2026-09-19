@@ -120,6 +120,9 @@ h1 { font-size: 22px; font-weight: normal; letter-spacing: 1px; color: var(--gol
 .chip.bad { color: var(--err); border-color: var(--error-line); }
 .chip.pending { color: var(--gold-dim); }
 .chip.dim { color: var(--dim); }
+/* A persona pinned to one connection. Gold like .pending but with a border so it
+   reads as an explicit user choice, not a transient state. */
+.chip.pinned { color: var(--gold); border-color: var(--gold-dim); }
 
 /* layout */
 .app-body { flex: 1; display: flex; min-height: 0; }
@@ -635,6 +638,9 @@ body.resizing-y, body.resizing-y * {
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
   color: var(--text); padding: 9px 12px; font-size: 13px; outline: none;
 }
+/* Explanatory one-liner under a modal field. Tighter than a body paragraph and
+   dimmed so it reads as secondary, not as the field label above it. */
+.modal-box p.field-hint { margin: -2px 0 2px; font-size: 12px; line-height: 1.45; }
 
 /* model picker */
 .model-choices {
@@ -860,3 +866,62 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
   }
   #agent-activity[data-status="completed"] .activity-note, #agent-context .context-extra { display: none; }
 }
+
+/* ------------------------------------------------ endpoint connection cards */
+/* Settings > Connection. One card per provider; the radio picks which one the
+   app actually uses. Tokens reused from :root rather than a parallel palette:
+   --card/--line/--gold/--gold-dim/--ok/--err/--hover. */
+.conn-list { display: flex; flex-direction: column; gap: 12px; margin: 14px 0 4px; }
+.conn-card {
+  border: 1px solid var(--line); border-radius: 8px; background: var(--card);
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+}
+/* The active card is the one every conversation runs against, so it is the only
+   place a strong border is warranted — a subtle tint reads as "hovered". */
+.conn-card.active { border-color: var(--gold-dim); box-shadow: 0 0 0 1px var(--gold-dim); }
+
+.conn-head { display: flex; align-items: center; gap: 10px; }
+.conn-radio { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--gold); margin: 0; padding: 0; cursor: pointer; }
+.conn-name { flex: 1; min-width: 0; }
+.conn-badge {
+  flex: 0 0 auto; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--dim); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
+}
+.conn-badge.on { color: var(--gold); border-color: var(--gold-dim); }
+/* Team-pool toggle. Sits next to the badge, so it reuses the pill shape but reads
+   as a control rather than a status label: it is clickable, and its ON state is
+   filled rather than merely tinted so "in the pool" survives a glance at a list
+   of several connections. */
+.conn-pool {
+  flex: 0 0 auto; font-size: 10px; letter-spacing: .4px; white-space: nowrap;
+  color: var(--dim); background: transparent; border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 9px; cursor: pointer;
+}
+.conn-pool:hover:not(:disabled) { border-color: var(--gold-dim); color: var(--text); }
+.conn-pool.on { color: var(--gold); border-color: var(--gold-dim); background: var(--hover); }
+.conn-pool:disabled { cursor: not-allowed; opacity: .55; }
+.conn-pool:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 1px; }
+.conn-remove { flex: 0 0 26px; height: 26px; font-size: 18px; line-height: 1; }
+.conn-remove:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 1px; }
+
+.conn-body { display: flex; flex-direction: column; gap: 10px; }
+.conn-field { display: flex; flex-direction: column; gap: 5px; }
+/* .settings-panel label is already 12px uppercase-dim; keep the per-field labels
+   consistent with the rest of the page instead of re-styling them. */
+.conn-field .row { display: flex; gap: 8px; }
+.conn-field .row input { flex: 1; min-width: 0; }
+.conn-field .row button { flex: 0 0 auto; white-space: nowrap; }
+.conn-field input[type=password], .conn-field input[type=text] { width: 100%; }
+
+.conn-foot { display: flex; align-items: center; gap: 10px; }
+.conn-status { font-size: 12px; }
+.conn-status.ok { color: var(--ok); }
+.conn-status.bad { color: var(--err); }
+
+.conn-actions { margin-top: 2px; }
+
+/* The model picker now says which connection the list came from: with several
+   providers configured, "Pick a Model" alone does not say whose models these
+   are, and picking one the active endpoint does not serve fails confusingly at
+   request time. */
+.model-source { font-size: 12px; margin: 2px 0 10px; }

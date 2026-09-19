@@ -35,6 +35,8 @@ const { runCommand } = require('./agent/platform.cjs');
 // showing symbols the agent had already renamed or deleted.
 const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-context.cjs');
 const { AuditLog } = require('./agent/audit-log.cjs');
+const connections = require('./agent/connections.cjs');
+const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember } = require('./agent/team-connections.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 
@@ -88,13 +90,19 @@ let teamRuns = new Map();   // teamRunId -> TeamRunner
 
 // ---------- stores ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
+/* Settings are normalized on READ so every consumer sees a consistent shape:
+ * `connections` (the source of truth) plus the legacy endpoint/accessKey/model
+ * projection of whichever connection is active. Normalizing here rather than at
+ * each call site is what keeps the ~10 existing `settings.endpoint` readers
+ * correct without touching them. */
 function loadSettings() {
-  try { return JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); }
-  catch { return {}; }
+  let raw = {};
+  try { raw = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { /* first run or corrupt: fall back to {} */ }
+  return connections.normalizeSettings(raw).settings;
 }
 function saveSettings(s) {
   fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
-  fs.writeFileSync(settingsFile(), JSON.stringify(s, null, 2));
+  fs.writeFileSync(settingsFile(), JSON.stringify(connections.normalizeSettings(s).settings, null, 2));
 }
 
 const projectsFile = () => path.join(app.getPath('userData'), 'projects.json');
@@ -236,9 +244,21 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => loadSettings());
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
-    const next = { ...loadSettings(), ...s };
-    if (s.budgets !== undefined) next.budgets = { ...budgetDefaults, ...validateBudgets(s.budgets) };
-    saveSettings(next);
+    const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
+    const next = { ...loadSettings(), ...patch };
+    if (patch.budgets !== undefined) next.budgets = { ...budgetDefaults, ...validateBudgets(patch.budgets) };
+    /* Fold a legacy single-endpoint write into the active connection.
+     *
+     * The merged `next` always carries a `connections` array (loadSettings
+     * normalizes it in), so presence cannot mean "the caller manages
+     * connections" — only the PATCH can say that. Without this, a
+     * saveSettings({endpoint, accessKey, model}) call would report success and
+     * then be silently reverted on the next read, because those three fields are
+     * derived from the active connection. The smoke suite relies on exactly that
+     * call shape in several places.
+     */
+    const connectionsAuthoritative = Array.isArray(patch.connections);
+    saveSettings(connections.applyLegacyWrite(next, { connectionsAuthoritative }));
     // Settings drive every agent loop's endpoint + default model — drop the
     // cache so the next message builds a fresh loop with the new values.
     for (const [id, loop] of agentLoops) {
@@ -471,6 +491,44 @@ function registerIpc() {
       const personas = roster.map(r => r.persona);
       const roles = roster.map(r => r.role);
 
+      /* --- Teams are the multi-endpoint case ---------------------------------
+       * Everything else in the app runs against the single ACTIVE connection. A
+       * team may instead spread its members across the enabled pool, and any
+       * member may be pinned to one connection explicitly (persona.connectionId).
+       *
+       * Resolution happens HERE rather than inside TeamRunner because main.mjs is
+       * the only layer that owns settings; the runner stays settings-free and just
+       * consumes the roster it is handed. It runs once per run, not per member.
+       */
+      const memberConnections = resolveTeamConnections({
+        settings,
+        personas,
+        spread: team.spreadConnections === true,
+        defaultModel,
+      });
+      if (hasUnresolvableMember(memberConnections)) {
+        return { ok: false, err: 'No connection is available for every team member. Enable at least one connection in Settings > Connections.' };
+      }
+      /* resolveEndpoint() expands the auto-discovery placeholder and rejects a
+       * malformed URL, so each member's endpoint needs the same treatment the
+       * team-wide one got above. Distinct endpoints are resolved once each and
+       * cached: a 5-member crew on one connection must not resolve it 5 times,
+       * and a failure must name the connection that failed rather than surfacing
+       * as a mysterious member error mid-run. */
+      const resolvedEndpoints = new Map();
+      for (const mc of memberConnections) {
+        if (resolvedEndpoints.has(mc.endpoint)) continue;
+        try {
+          resolvedEndpoints.set(mc.endpoint, await resolveEndpoint(mc.endpoint));
+        } catch (err) {
+          const label = mc.connectionName || mc.endpoint || 'the selected connection';
+          return { ok: false, err: `Endpoint (${label}): ${err.message}` };
+        }
+      }
+      for (const mc of memberConnections) {
+        mc.endpoint = resolvedEndpoints.get(mc.endpoint) || mc.endpoint;
+      }
+
       // Project dir: explicit → the bound conversation's dir.
       let projectDir = dir || '';
       if (!projectDir && agentId) {
@@ -493,6 +551,10 @@ function registerIpc() {
         endpoint,
         accessKey,
         defaultModel,
+        /* Per-member routing. endpoint/accessKey above remain the crew default —
+         * used for anything the runner does not have a member resolution for, and
+         * as the documented fallback when a member's resolution is unusable. */
+        memberConnections,
         budgets,
         // Shared with the orchestrator loop: members and their subagents run
         // tools, and one hash-chained log means one chain to verify.
@@ -531,12 +593,19 @@ function registerIpc() {
       });
       runner.conversationId = agentId || null;
       teamRuns.set(teamRunId, runner);
+      /* Human-readable routing for this run: which connection each member ended
+       * up on and WHY (pinned / spread / fallback / stale-pin). Logged to the main
+       * process console and returned to the renderer so a team that silently ran
+       * three members against one endpoint is diagnosable instead of mysterious.
+       * summarizeResolutions names connections and models but NEVER access keys. */
+      const routing = summarizeResolutions(memberConnections);
+      console.log(`[teams] ${team.name} (${memberConnections.length} members): ${routing}`);
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
       }).finally(() => {
         teamRuns.delete(teamRunId);
       });
-      return { ok: true, teamRunId };
+      return { ok: true, teamRunId, routing };
     } catch (e) {
       return { ok: false, err: e.message };
     }
@@ -639,20 +708,164 @@ function registerIpc() {
   });
 
   // ---------- models ----------
-  ipcMain.handle('models:list', async () => {
+  ipcMain.handle('models:list', async (_e, payload = {}) => {
+    /* Three ways to pick the provider to list, in priority order:
+     *
+     *  1. `endpoint` (+ optional `accessKey`) — an AD-HOC lookup. Needed because
+     *     the Connection page edits rows in place: while the user is typing a new
+     *     URL there is nothing saved to resolve an id against, so Browse must be
+     *     able to list from the URL on screen. Without this, Browse only works
+     *     after saving, which reads as a broken button.
+     *  2. `connectionId` — a saved connection that is NOT the active one, so a
+     *     row's Browse does not have to activate that provider first.
+     *  3. neither — the active connection. This is what playground, refactor and
+     *     the agent settings form pass, so those callers are unchanged.
+     *
+     * An ad-hoc endpoint is validated exactly like a stored one (resolveEndpoint
+     * rejects non-HTTP and embedded credentials) and is never persisted.
+     */
     const settings = loadSettings();
-    if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
+    let endpoint = '';
+    let accessKey = '';
+    let label = '';
+    let connectionId = null;
+
+    const adHoc = payload && typeof payload.endpoint === 'string' && payload.endpoint.trim();
+    if (adHoc) {
+      endpoint = connections.normalizeEndpoint(payload.endpoint);
+      accessKey = String(payload.accessKey == null ? '' : payload.accessKey);
+      label = connections.defaultName(endpoint) || endpoint;
+    } else {
+      const requested = payload && typeof payload === 'object' ? payload.connectionId : null;
+      const connection = (requested && connections.findConnection(settings, requested))
+        || connections.activeConnection(settings);
+      if (!connection || !connection.endpoint) {
+        return { ok: false, err: 'No endpoint configured in Settings.' };
+      }
+      endpoint = connection.endpoint;
+      accessKey = connection.accessKey || '';
+      label = connection.name;
+      connectionId = connection.id;
+    }
+
     try {
-      const base = await resolveEndpoint(settings.endpoint);
+      const base = await resolveEndpoint(endpoint);
       const headers = {};
-      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
+      if (accessKey) headers.Authorization = 'Bearer ' + accessKey;
       const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
       if (!res.ok) return { ok: false, err: `HTTP ${res.status}` };
       const data = await res.json();
       const ids = (data.data || []).map(m => m.id).filter(Boolean).sort();
-      return { ok: true, models: ids };
+      // Tell the caller which connection these models came from, so the UI can
+      // say so instead of implying they came from the active one.
+      return { ok: true, models: ids, connectionId, connectionName: label, endpoint };
     } catch (e) {
       return { ok: false, err: e.message };
+    }
+  });
+
+  /* ---------------- multiple endpoint connections (VS Code parity) --------------
+   * The renderer gets the whole list INCLUDING access keys: unlike a web page,
+   * this is a local desktop app whose own settings form must be able to redisplay
+   * and re-save a key. The keys never leave the machine — they are read from and
+   * written to userData/settings.json, exactly as the single-endpoint form did.
+   */
+  ipcMain.handle('connections:list', () => connections.publicConnections(loadSettings()));
+
+  /* One handler for add/update/remove/activate rather than four, because all
+   * four are "change the list, persist, tell the loops". A per-action handler set
+   * would duplicate the persist-and-invalidate tail and drift.
+   *
+   * Every branch returns either {ok, connections} or {ok:false, err}. The caller
+   * never receives a partially applied change: mutations are pure until the
+   * write, so a validation error leaves settings.json untouched.
+   */
+  ipcMain.handle('connections:save', (_e, payload = {}) => {
+    const action = String(payload.action || '').trim();
+    const current = loadSettings();
+    let result;
+    switch (action) {
+      case 'add':
+        result = connections.addConnection(current, {
+          endpoint: payload.endpoint,
+          accessKey: payload.accessKey,
+          model: payload.model,
+          name: payload.name,
+          // Adding a connection while configuring the list should not yank the
+          // active provider out from under a running conversation unless asked.
+          activate: payload.activate !== false,
+        });
+        break;
+      case 'update':
+        result = connections.updateConnection(current, payload.id, {
+          name: payload.name,
+          endpoint: payload.endpoint,
+          accessKey: payload.accessKey,
+          model: payload.model,
+        });
+        break;
+      case 'remove':
+        result = connections.removeConnection(current, payload.id);
+        break;
+      case 'activate':
+        result = connections.setActiveConnection(current, payload.id);
+        break;
+      case 'enable':
+        // Pool membership: which connections a TEAM may spread across. Does not
+        // change the active connection, so existing conversations keep running.
+        result = connections.setConnectionEnabled(current, payload.id, payload.enabled !== false);
+        break;
+      default:
+        return { ok: false, err: 'Unknown connection action.' };
+    }
+    if (result.error) return { ok: false, err: result.error };
+    saveSettings(result.settings);
+    /* Switching provider changes endpoint AND access key, so cached loops must
+     * not keep talking to the old one. Same rule as settings:save.
+     *
+     * Compare rather than invalidate unconditionally: an `enable` toggle on a
+     * NON-active connection changes nothing a running chat uses, and marking
+     * every loop stale for a pool checkbox would needlessly interrupt work. */
+    const routingBefore = connections.activeConnection(current);
+    const routingAfter = connections.activeConnection(result.settings);
+    const routingChanged = !routingBefore || !routingAfter
+      || routingBefore.id !== routingAfter.id
+      || routingBefore.endpoint !== routingAfter.endpoint
+      || routingBefore.accessKey !== routingAfter.accessKey;
+    if (routingChanged) {
+      for (const [id, loop] of agentLoops) {
+        if (loop.running) loop.settingsStale = true;
+        else agentLoops.delete(id);
+      }
+    }
+    return { ok: true, connections: connections.publicConnections(result.settings) };
+  });
+
+  /* Ping one specific connection (default: the active one) so the Connection
+   * page can verify a row before the user switches to it. Read-only: it calls
+   * GET /models, never a completion, so it cannot cost tokens. */
+  ipcMain.handle('connections:ping', async (_e, payload = {}) => {
+    const settings = loadSettings();
+    const requested = payload && typeof payload === 'object' ? payload.connectionId : null;
+    const connection = (requested && connections.findConnection(settings, requested))
+      || connections.activeConnection(settings);
+    if (!connection || !connection.endpoint) return { ok: false, err: 'No endpoint configured.' };
+    const started = Date.now();
+    try {
+      const base = await resolveEndpoint(connection.endpoint);
+      const headers = {};
+      if (connection.accessKey) headers.Authorization = 'Bearer ' + connection.accessKey;
+      const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+      const latencyMs = Date.now() - started;
+      if (!res.ok) return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}` };
+      let modelCount = null;
+      try {
+        const data = await res.json();
+        modelCount = Array.isArray(data.data) ? data.data.length : null;
+      } catch { /* a non-JSON body still proved reachability */ }
+      return { ok: true, status: res.status, latencyMs, models: modelCount, connectionId: connection.id, connectionName: connection.name };
+    } catch (e) {
+      return { ok: false, err: e.message, latencyMs: Date.now() - started };
     }
   });
 
@@ -800,7 +1013,10 @@ function registerIpc() {
    * sees it. Reuses readChatResponse so streaming, usage accounting and
    * reasoning separation behave exactly as they do for agent conversations. */
   ipcMain.handle('playground:run', async (_e, payload = {}) => {
-    const settings = loadSettings();
+    // Scoped to the connection chosen in the console. An absent or stale id falls
+    // back to the active connection rather than failing, so a renderer holding an
+    // id for a connection that was since deleted still runs somewhere sane.
+    const settings = connections.scopedSettings(loadSettings(), payload.connectionId);
     if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
     const model = String(payload.model || settings.model || '').trim();
     if (!model) return { ok: false, err: 'No model selected.' };
@@ -1286,7 +1502,7 @@ function registerIpc() {
     let dir;
     try { dir = resolveIndexableDir(payload.projectDir); }
     catch (e) { return { ok: false, err: e.message }; }
-    const settings = loadSettings();
+    const settings = connections.scopedSettings(loadSettings(), payload.connectionId);
     if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
     const model = String(payload.model || settings.model || '').trim();
     if (!model) return { ok: false, err: 'No model selected.' };
@@ -1383,7 +1599,7 @@ function registerIpc() {
     let dir;
     try { dir = resolveIndexableDir(payload.projectDir); }
     catch (e) { return { ok: false, err: e.message }; }
-    const settings = loadSettings();
+    const settings = connections.scopedSettings(loadSettings(), payload.connectionId);
     if (!settings.endpoint) return { ok: false, err: 'No endpoint configured in Settings.' };
     const model = String(payload.model || settings.model || '').trim();
     if (!model) return { ok: false, err: 'No model selected.' };
@@ -2226,6 +2442,141 @@ app.whenReady().then(() => {
             await loadSettings();
             await document.querySelector('#btn-save-settings').onclick();
             if ((await reachApi.getSettings()).budgets.maxTokens !== 32768) throw new Error('Connection save lost budgets');
+
+            // --- Multiple endpoint connections (VS Code extension parity) ---
+            // Deliberately placed BEFORE the browser suite: browser/smoke.cjs is
+            // flaky on Windows and aborts the whole run, so anything after it is
+            // never exercised locally. No template literals below — this block
+            // lives inside main.mjs's template string.
+            const connFixtureKey = 'isolated-smoke-fixture';
+            const connSecond = 'https://second.example.com/v1';
+            await openSettingsPanel('connection');
+            await loadSettings();
+            if (document.querySelectorAll('#conn-list .conn-card').length !== 1) throw new Error('Connection list did not render the migrated single connection');
+            if (!document.querySelector('#conn-list .conn-url')) throw new Error('Connection card has no Base URL field');
+            if (!document.querySelector('#conn-list .conn-radio')) throw new Error('Connection card has no active-connection radio');
+            if (document.querySelector('#conn-list .conn-remove').disabled !== true) throw new Error('The only connection must not be removable');
+
+            // Add a second connection through the UI and save it.
+            document.querySelector('#btn-add-connection').onclick();
+            if (document.querySelectorAll('#conn-list .conn-card').length !== 2) throw new Error('Add connection did not append a card');
+            const connNewUrl = document.querySelector('#conn-list .conn-card:last-child .conn-url');
+            connNewUrl.value = connSecond;
+            connNewUrl.dispatchEvent(new Event('input', { bubbles: true }));
+            await document.querySelector('#btn-save-settings').onclick();
+            const connTwo = await reachApi.getSettings();
+            if (connTwo.connections.length !== 2) throw new Error('Second connection did not persist, got ' + connTwo.connections.length);
+            // Adding activates, so the legacy projection must follow the new row —
+            // that projection is what every agent/playground call reads.
+            if (connTwo.endpoint !== connSecond) throw new Error('Active projection did not follow the new connection: ' + connTwo.endpoint);
+            const connFirst = connTwo.connections.find(c => c.endpoint !== connSecond);
+            if (!connFirst || connFirst.accessKey !== connFixtureKey) throw new Error('Adding a connection clobbered the access key of the other connection');
+            if (connTwo.budgets.maxTokens !== 32768) throw new Error('Adding a connection lost the budget preset');
+
+            // Switching the active connection moves the projection, not the list.
+            await loadSettings();
+            const connRadio = document.querySelector('#conn-list .conn-card .conn-radio');
+            connRadio.checked = true;
+            connRadio.dispatchEvent(new Event('change', { bubbles: true }));
+            await document.querySelector('#btn-save-settings').onclick();
+            const connSwitched = await reachApi.getSettings();
+            if (connSwitched.connections.length !== 2) throw new Error('Activating a connection changed the count');
+            if (connSwitched.endpoint !== connFirst.endpoint) throw new Error('Activation did not move the projection: ' + connSwitched.endpoint + ' vs ' + connFirst.endpoint);
+            if (connSwitched.activeConnection !== connFirst.id) throw new Error('activeConnection did not follow the radio');
+
+            // A duplicate endpoint is refused rather than silently stored twice.
+            const connDup = await reachApi.connections.save({ action: 'add', endpoint: connFirst.endpoint });
+            if (connDup.ok !== false) throw new Error('A duplicate endpoint was accepted');
+            // An unknown id must not silently activate something else.
+            const connBad = await reachApi.connections.save({ action: 'activate', id: 'conn_does-not-exist' });
+            if (connBad.ok !== false) throw new Error('Activating an unknown connection succeeded');
+
+            // --- Team pool: click-to-toggle membership -----------------------
+            // Both connections start enabled. The pool button is how a user adds a
+            // connection to (or removes it from) what teams may spread across.
+            const connSecondIdForPool = connSwitched.connections.find(c => c.endpoint === connSecond).id;
+            await loadSettings();
+            const poolButtons = () => document.querySelectorAll('#conn-list .conn-pool');
+            if (poolButtons().length !== 2) throw new Error('Every connection card needs a pool toggle');
+            // The ACTIVE connection cannot leave the pool (it is the fallback), so
+            // its button is disabled; the non-active one is not.
+            const poolStates = [...poolButtons()].map(b => b.disabled);
+            if (poolStates[0] !== true) throw new Error('The active connection pool button must be disabled (it is the fallback)');
+            if (poolStates[1] !== false) throw new Error('The non-active connection pool button must be enabled');
+
+            // Click the second card's toggle to remove it from the pool, then save.
+            poolButtons()[1].onclick();
+            if (document.querySelectorAll('#conn-list .conn-pool.on').length !== 1) throw new Error('Toggling the pool must leave only the active connection in it');
+            await document.querySelector('#btn-save-settings').onclick();
+            const poolSaved = await reachApi.getSettings();
+            const enabledAfter = poolSaved.connections.filter(c => c.enabled !== false);
+            if (enabledAfter.length !== 1) throw new Error('Pool toggle did not persist, got ' + enabledAfter.length + ' enabled');
+            if (enabledAfter[0].id !== poolSaved.activeConnection) throw new Error('The surviving pool member must be the active connection');
+
+            // IPC refusal: disabling the ACTIVE connection must be rejected with a
+            // reason, not silently ignored (the checkbox would otherwise lie).
+            const disableActive = await reachApi.connections.save({ action: 'enable', id: poolSaved.activeConnection, enabled: false });
+            if (disableActive.ok !== false) throw new Error('Disabling the active connection must be refused');
+
+            // Re-enable the second connection so the two-connection state survives
+            // into the removal check that follows.
+            const reEnable = await reachApi.connections.save({ action: 'enable', id: connSecondIdForPool, enabled: true });
+            if (reEnable.ok !== true) throw new Error('Re-enabling a connection failed: ' + reEnable.err);
+
+            // --- Team spread + persona pin persistence -----------------------
+            // The resolver itself is unit-tested (25 cases); here we assert the
+            // fields actually round-trip through the IPC + store, because a field
+            // that renders but never persists is exactly the bug class that has
+            // shipped twice this session.
+            const connIds = (await reachApi.getSettings()).connections.map(c => c.id);
+            const pinP = await reachApi.personas.create({ name: 'Pool Pinner', model: '', prompt: 'pinned', connectionId: connIds[0] });
+            if (!pinP.ok || pinP.persona.connectionId !== connIds[0]) throw new Error('Persona connectionId did not persist');
+            const looseP = await reachApi.personas.create({ name: 'Pool Loose', model: '', prompt: 'loose', connectionId: '' });
+            if (!looseP.ok || looseP.persona.connectionId !== '') throw new Error('Empty persona connectionId did not persist');
+            const spreadTeam = await reachApi.teams.create({ name: 'Pool Crew', mode: 'parallel', members: [{ personaId: pinP.persona.id }, { personaId: looseP.persona.id }], spreadConnections: true });
+            if (!spreadTeam.ok || spreadTeam.team.spreadConnections !== true) throw new Error('Team spreadConnections did not persist');
+            const teamList = await reachApi.teams.list();
+            const listed = teamList.find(t => t.id === spreadTeam.team.id);
+            if (!listed || listed.spreadConnections !== true) throw new Error('listTeams did not surface spreadConnections');
+            if (listed.members.find(m => m.personaId === pinP.persona.id).personaConnectionId !== connIds[0]) throw new Error('listTeams did not surface the member pin');
+            // Clean up the fixtures so later smoke stages see a tidy store.
+            await reachApi.personas.delete(pinP.persona.id);
+            await reachApi.personas.delete(looseP.persona.id);
+            await reachApi.teams.delete(spreadTeam.team.id);
+
+            // Remove the second connection and confirm the UI follows.
+            const connSecondId = connSwitched.connections.find(c => c.endpoint === connSecond).id;
+            const connRm = await reachApi.connections.save({ action: 'remove', id: connSecondId });
+            if (connRm.ok !== true) throw new Error('Removing a connection failed: ' + connRm.err);
+            await loadSettings();
+            if (document.querySelectorAll('#conn-list .conn-card').length !== 1) throw new Error('Removed connection still rendered');
+            if (document.querySelector('#conn-list .conn-remove').disabled !== true) throw new Error('The last remaining connection must not be removable');
+            const connAfter = await reachApi.getSettings();
+            if (connAfter.connections.length !== 1) throw new Error('Expected one connection after cleanup');
+            if (connAfter.endpoint !== connFirst.endpoint) throw new Error('Cleanup changed the active endpoint');
+            if (connAfter.accessKey !== connFixtureKey) throw new Error('Cleanup lost the access key');
+            if (connAfter.budgets.maxTokens !== 32768) throw new Error('Connection edits lost the budget preset');
+
+            // Both model-driven pages carry a connection picker, and with a single
+            // connection it is present but disabled (nothing to choose).
+            // goView() fires the page's sync() WITHOUT awaiting it, so awaiting
+            // sync() again here is what makes the options count deterministic
+            // rather than a race against an in-flight IPC round trip.
+            await window.ReachWorkspaceShell.goView('playground');
+            await window.ReachPlayground.sync();
+            const pgConn = document.querySelector('#pg-conn');
+            if (!pgConn) throw new Error('Playground has no connection picker');
+            if (pgConn.options.length !== 1) throw new Error('Playground picker should list the one connection, got ' + pgConn.options.length);
+            if (pgConn.disabled !== true) throw new Error('A single-connection picker should be disabled, there is nothing to choose');
+            if (pgConn.value !== connAfter.connections[0].id) throw new Error('Playground picker did not select the active connection');
+            await window.ReachWorkspaceShell.goView('refactor');
+            await window.ReachRefactor.sync();
+            if (!document.querySelector('#rf-conn')) throw new Error('Refactor page has no connection picker');
+            if (document.querySelector('#rf-conn').options.length !== 1) throw new Error('Refactor picker should list the one connection');
+            if (!document.querySelector('#pg-model-src') || !document.querySelector('#rf-model-src')) throw new Error('Model pickers lack a source caption');
+            await window.ReachWorkspaceShell.goView('settings');
+            await openSettingsPanel('connection');
+            await loadSettings();
             await openSettingsPanel('budgeting');
             document.querySelector('#budget-scope').value = 'conversation';
             document.querySelector('#budget-scope').dispatchEvent(new Event('change'));
@@ -2248,6 +2599,12 @@ app.whenReady().then(() => {
             if (window.__errors.length) throw new Error('Renderer errors: ' + window.__errors.join('; '));
           })()
         `);
+        // Printed only if every assertion above passed: executeJavaScript rejects
+        // on a throw and the smoke exits with SMOKE FAIL instead. An explicit
+        // marker matters because the connection assertions sit INSIDE this call,
+        // so without one their success is only inferable from later sections
+        // having run — and this suite aborts early on the flaky browser stage.
+        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers, team-pool click-to-toggle with active-connection fallback guard, and persona-pin + team-spread persistence.');
         // Exercise manual compression through the real preload/renderer and SSE path.
         let compressionReady, finishCompression;
         const compressionStarted = new Promise(resolve => { compressionReady = resolve; });

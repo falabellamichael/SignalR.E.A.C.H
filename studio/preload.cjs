@@ -109,8 +109,28 @@ contextBridge.exposeInMainWorld('reach', {
     write: (agentId, relPath, content, projectDir) => ipcRenderer.invoke('files:write', { agentId, path: relPath, content, projectDir }),
   },
 
-  // Models
-  listModels: () => ipcRenderer.invoke('models:list'),
+  // Models. Pass nothing to list the ACTIVE connection's models (playground,
+  // refactor, agent settings). Pass { connectionId } to list a saved row without
+  // activating it, or { endpoint, accessKey } for an ad-hoc lookup while a row is
+  // still being typed and has nothing saved to resolve an id against.
+  listModels: (target) => {
+    if (!target) return ipcRenderer.invoke('models:list', {});
+    if (typeof target === 'string') return ipcRenderer.invoke('models:list', { connectionId: target });
+    return ipcRenderer.invoke('models:list', target);
+  },
+
+  // Endpoint connections (multiple providers, each with its own key + model).
+  connections: {
+    list: () => ipcRenderer.invoke('connections:list'),
+    // action: 'add' | 'update' | 'remove' | 'activate' | 'enable'
+    save: (payload) => ipcRenderer.invoke('connections:save', payload),
+    ping: (connectionId) => ipcRenderer.invoke('connections:ping', connectionId ? { connectionId } : {}),
+    /* Pool membership: whether a team may spread members onto this connection.
+     * Separate from `activate`, which decides the connection everything else
+     * uses. The active one cannot be disabled — it is the team fallback — and the
+     * handler returns ok:false with a reason in that case, which the UI shows. */
+    setEnabled: (id, enabled) => ipcRenderer.invoke('connections:save', { action: 'enable', id, enabled: !!enabled }),
+  },
 
   // Workspace dashboard (PRD: Studio Workspace Dashboard). Local system
   // telemetry only — no relay admin API is contacted.
