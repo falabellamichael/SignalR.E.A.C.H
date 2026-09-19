@@ -693,6 +693,20 @@ body.resizing-y, body.resizing-y * {
 /* Per-row crew-role picker: the role is the member's behavior, so it must stay
    visible next to the name and take the remaining width. */
 .team-member-row .row-role { flex: 1; min-width: 0; font-size: 12px; padding: 3px 6px; }
+/* The member add-row must FIT inside the modal box. Its four controls carry
+   intrinsic widths (longest option text, the input's default `size`) that total
+   ~690px — wider than the old 440px box — and flex refuses to shrink items below
+   their intrinsic minimum, so the picker/role/input spilled out over the scrim.
+   Fix: a wider team-modal box, min-width:0 so flex may shrink below intrinsic,
+   and the custom-role field collapses while it is disabled (it only applies to
+   the "Custom role…" choice), so the persona picker shows its full label. */
+#team-modal .modal-box { width: min(660px, 92vw); }
+#team-modal .row > select, #team-modal .row > input { min-width: 0; }
+#team-modal #team-member-pick { flex: 3 1 auto; }
+#team-modal #team-member-role-pick { flex: 2 1 auto; }
+#team-modal #team-member-role { flex: 2 1 auto; }
+#team-modal #team-member-role:disabled { display: none; }
+#team-modal #btn-team-add-member { flex: 0 0 auto; white-space: nowrap; }
 .member-idx {
   width: 20px; height: 20px; border-radius: 50%; border: 1px solid var(--gold-dim);
   color: var(--gold); font-size: 11px; display: flex; align-items: center; justify-content: center;
