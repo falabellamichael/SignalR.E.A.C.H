@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.9.6](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.5...v26.9.6) (2026-09-19)
+
+
+### Bug Fixes
+
+* **studio:** center cards and unblock Links completion ([0749309](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0749309c71379835566ffc60e1fb66ad3c0e4015))
+
 ## [26.9.5](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.4...v26.9.5) (2026-09-19)
 
 
