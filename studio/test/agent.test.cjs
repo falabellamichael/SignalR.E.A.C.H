@@ -161,7 +161,83 @@ const { actionInstruction, parseActionResponse } = require('../agent/agent-actio
   assert.strictEqual(ok.actions.length, 1);
   const bad = parseActionResponse('not json');
   assert.ok(bad.error);
+  // Prose-wrapped contract JSON (deepseek-flash, 2026-09-19): the exact object
+  // after a status line must still run — pausing the run over a prefix helps nobody.
+  const prose = 'The build/ artifacts keep polluting results. Scoping searches to real source dirs only.\n'
+    + JSON.stringify({ status: 'actions', message: 'Scoping searches.', actions: [{ name: 'search', arguments: { pattern: 'chunk_size', include: 'GUI/py' } }], options: [] });
+  const recovered = parseActionResponse(prose);
+  assert.ok(!recovered.error && recovered.actions.length === 1, 'prose-wrapped contract JSON is recovered');
+  assert.strictEqual(recovered.actions[0].arguments.pattern, 'chunk_size');
+  assert.strictEqual(recovered.message, 'Scoping searches.', 'the message field becomes the display text');
+  // arguments may arrive as a JSON string (several models do this)
+  const strArgs = parseActionResponse(JSON.stringify({ status: 'actions', message: 'x', actions: [{ name: 'read', arguments: '{"path":"index.rsh"}' }], options: [] }));
+  assert.ok(!strArgs.error && strArgs.actions[0].arguments.path === 'index.rsh', 'string arguments are parsed');
+  // Two objects (an echoed example, then the real response): the last valid wins.
+  const twoObjects = JSON.stringify({ status: 'actions', message: 'example', actions: [{ name: 'read', arguments: { path: 'a.rsh' } }], options: [] })
+    + '\nNow the real response:\n' + JSON.stringify({ status: 'actions', message: 'real', actions: [{ name: 'read', arguments: { path: 'b.rsh' } }], options: [] });
+  const last = parseActionResponse(twoObjects);
+  assert.ok(!last.error && last.actions[0].arguments.path === 'b.rsh', 'the last valid object wins');
   console.log('✓ agent-action');
+}
+
+// ---------- agent-dsml: the DeepSeek native tool markup ----------
+const { parseDsmlActions } = require('../agent/agent-dsml.cjs');
+{
+  // Byte-exact capture from api.deepseek.com 'deepseek-flash' (2026-09-19):
+  // the token is '<' + U+FF5C x2 + 'DSML' + U+FF5C x2.
+  const T = '<\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const C = '</\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const fixture = [
+    "I'll read these files. Since they're independent, I'll batch the calls.",
+    '',
+    `${T} calls>`,
+    `${T} invoke name="read">`,
+    `${T} parameter name="path" string="true">tests/test_web_search_router.py${C} parameter>`,
+    `${T} parameter name="startLine" string="false">250${C} parameter>`,
+    `${T} parameter name="endLine" string="false">466${C} parameter>`,
+    `${C} invoke>`,
+    `${T} invoke name="read">`,
+    `${T} parameter name="path" string="true">GUI/workspace_embeddings.py${C} parameter>`,
+    `${T} parameter name="startLine" string="false">1${C} parameter>`,
+    `${T} parameter name="endLine" string="false">30${C} parameter>`,
+    `${C} invoke>`,
+    `${C} calls>`,
+  ].join('\n');
+  const d = parseDsmlActions(fixture);
+  assert.ok(d.detected && !d.error, 'DSML markup is detected');
+  assert.strictEqual(d.actions.length, 2, 'each invoke becomes an action');
+  assert.deepStrictEqual(d.actions[0].arguments, { path: 'tests/test_web_search_router.py', startLine: 250, endLine: 466 },
+    'string/number parameters coerce into the action arguments');
+  assert.ok(!d.display.includes('DSML') && !d.display.includes('\uFF5C'), 'markup is stripped from the display text');
+  assert.ok(d.display.includes('batch the calls'), 'prose before the markup survives for the card');
+  // The JSON-arguments variant seen in the app's own run:
+  const jsonArgs = parseDsmlActions(`${T} calls>\n${T} invoke name="read">\n${T} parameter name="arguments":{"path":"benchmarks/bench_hotpaths.py","endLine":15}${C} invoke>\n${C} calls>`);
+  assert.ok(!jsonArgs.error && jsonArgs.actions.length === 1 && jsonArgs.actions[0].arguments.path === 'benchmarks/bench_hotpaths.py',
+    'arguments given as JSON are parsed');
+  // Unknown tool names make the block unusable instead of silently doing nothing:
+  const unknown = parseDsmlActions(`${T} calls>\n${T} invoke name="teleport">\n${T} parameter name="path" string="true">x${C} parameter>\n${C} invoke>\n${C} calls>`);
+  assert.ok(unknown.detected && unknown.error && !unknown.actions.length, 'unknown tool names are rejected');
+  // ASCII-pipe tolerance (some proxies normalize the token):
+  const ascii = parseDsmlActions('<|DSML| calls>\n<|DSML| invoke name="read">\n<|DSML| parameter name="path" string="true">a.py</|DSML| parameter>\n</|DSML| invoke>\n</|DSML| calls>');
+  assert.ok(ascii.actions.length === 1 && ascii.actions[0].arguments.path === 'a.py', 'ASCII pipe variant parses');
+  console.log('✓ agent-dsml');
+}
+
+// ---------- agent-response: DSML recovery end to end ----------
+const { parseAgentResponse } = require('../agent/agent-response.cjs');
+{
+  const T = '<\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const C = '</\uFF5C\uFF5CDSML\uFF5C\uFF5C';
+  const text = `Reading now.\n${T} calls>\n${T} invoke name="read">\n${T} parameter name="path" string="true">a.rsh${C} parameter>\n${C} invoke>\n${C} calls>`;
+  const parsed = parseAgentResponse(text);
+  assert.ok(!parsed.invalid, 'a DSML response is valid, not an error');
+  assert.strictEqual(parsed.actions.length, 1);
+  assert.strictEqual(parsed.actions[0].name, 'read');
+  assert.strictEqual(parsed.display, 'Reading now.', 'the card text is the prose only');
+  // Malformed DSML ⇒ invalid ⇒ structured recovery asks again (no silent pass)
+  const badMarkup = parseAgentResponse(`${T} calls>\n${T} invoke name="teleport">\n${C} invoke>\n${C} calls>`);
+  assert.ok(badMarkup.invalid && !badMarkup.actions.length, 'unknown DSML tools mark the response invalid');
+  console.log('✓ agent-response dsml');
 }
 
 // ---------- tool-registry ----------
@@ -416,13 +492,21 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
       // Reply identifies the persona (from the system prompt) and echoes any
       // HANDOFF block so the chain test can prove relay happened.
       const sys = parsed.messages[0].content;
-      const who = /You are (Alpha|Beta)/.exec(sys);
+      const who = /You are (Alpha|Beta|Rogue)/.exec(sys);
       const userMsg = parsed.messages.filter(m => m.role === 'user').map(m => m.content).join('\n');
-      const relay = /HANDOFF FROM (\w+)[^\n]*:\n([\s\S]*)/.exec(userMsg);
-      const content = `I am ${who ? who[1] : 'unknown'}.` + (relay ? ` Relay from ${relay[1]}: ${relay[2].trim().slice(0, 40)}` : '')
-        + (/LINK MESSAGES from the crew/.test(userMsg) ? ' Reviewed the draft and I am satisfied.' : '')
-        + '\n```agent_status\n{"status":"complete","summary":"done"}\n```'
-        + (/LINK MESSAGES from the crew/.test(userMsg) ? '\nLINKS: COMPLETE' : '');
+      // 'Rogue' models a member that can never produce a usable action: the
+      // structured recovery asks, it answers prose every time, and the member
+      // ends paused. Links must carry on without it.
+      let content;
+      if (who && who[1] === 'Rogue') {
+        content = 'I could not decide what to do.';
+      } else {
+        const relay = /HANDOFF FROM (\w+)[^\n]*:\n([\s\S]*)/.exec(userMsg);
+        content = `I am ${who ? who[1] : 'unknown'}.` + (relay ? ` Relay from ${relay[1]}: ${relay[2].trim().slice(0, 40)}` : '')
+          + (/LINK MESSAGES from the crew/.test(userMsg) ? ' Reviewed the draft and I am satisfied.' : '')
+          + '\n```agent_status\n{"status":"complete","summary":"done"}\n```'
+          + (/LINK MESSAGES from the crew/.test(userMsg) ? '\nLINKS: COMPLETE' : '');
+      }
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: 'stop' }] })}\n\n`);
       res.write('data: [DONE]\n\n');
@@ -517,6 +601,34 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.ok(lDone.answer.includes('LINKS: COMPLETE'), 'links: answer carries the completion declaration');
     assert.ok(events.some(e => e.type === 'links-round' && (e.waking || []).includes('Beta')), 'links: the round event names the woken member');
     console.log('✓ team-runner links');
+
+    // --- links: a stalled member must not sink the crew (2026-09-19). Rogue
+    // answers prose to the structured recovery until its member run pauses;
+    // the peer network must skip the dead node, keep the Coordinator alive,
+    // and still produce a real answer. ---
+    events.length = 0;
+    hits.length = 0;
+    const stallTeam = { id: 't4', name: 'LinksStall', mode: 'links', members: [{ personaId: 'pa', roleId: 'coordinator' }, { personaId: 'px' }] };
+    const stallRun = new TeamRunner({
+      team: stallTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'px', name: 'Rogue', model: 'm-bad', prompt: 'You are Rogue.' },
+      ],
+      task: 'Draft then review.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
+      sendEvent,
+    });
+    await stallRun.run('run-ls');
+    const stDone = events.filter(e => e.type === 'done').pop();
+    assert.strictEqual(stDone.mode, 'links');
+    assert.strictEqual(stDone.results[1].ok, false, 'the stalled member reports not-ok');
+    assert.ok(events.some(e => e.type === 'links-stall' && e.name === 'Rogue'), 'a links-stall event names the dead node');
+    assert.strictEqual(stDone.links.stalled, 1, 'links telemetry counts the stalled member');
+    assert.ok(events.some(e => e.type === 'links-synthesis' && e.name === 'Alpha'), 'the surviving Coordinator synthesizes');
+    assert.ok(stDone.answer.includes('I am Alpha'), 'the answer carries the live member output');
+    assert.ok(!stDone.answer.includes('(failed:'), 'no failure dump when a live member answered');
+    console.log('✓ team-runner links stall');
 
     // --- stop mid-run: chain with 2 members, stop after the first starts ---
     events.length = 0;

@@ -2154,10 +2154,11 @@ app.whenReady().then(() => {
         // against synthetic files and a local endpoint, never private projects.
         fs.mkdirSync(path.join(smokeProject, 'slow'));
         fs.writeFileSync(path.join(smokeProject, 'slow', 'regex.txt'), 'a'.repeat(50000) + '!');
+        fs.writeFileSync(path.join(smokeProject, 'dsml-dialect.txt'), 'DSMLSMOKE read-through-ok\n');
         const { createServer } = require('node:http');
         // Links-stage observations recorded by the fixture endpoint and
         // asserted in the main process after the renderer block runs.
-        const linksChecks = { protocolSeen: false, roleSeen: false, messageSeen: false };
+        const linksChecks = { protocolSeen: false, roleSeen: false, messageSeen: false, dsmlToolRan: false };
         const teamServer = createServer((req, res) => {
           let body = '';
           req.on('data', chunk => { body += chunk; });
@@ -2168,7 +2169,7 @@ app.whenReady().then(() => {
             // task, so the raw task text is a prefix of the member prompt.
             const cancel = request.messages.some(m => m.content.startsWith('Cancel the slow search'));
             const all = request.messages.map(m => String(m.content || '')).join('\n');
-            if (request.model === 'fixture-l1' || request.model === 'fixture-l2') {
+            if (request.model === 'fixture-l1' || request.model === 'fixture-l2' || request.model === 'fixture-l3') {
               if (all.includes('LINKS MODE')) linksChecks.protocolSeen = true;
               if (all.includes('YOUR CREW ROLE')) linksChecks.roleSeen = true;
               if (all.includes('Review my draft')) linksChecks.messageSeen = true;
@@ -2203,6 +2204,20 @@ app.whenReady().then(() => {
               content = all.includes('Review my draft')
                 ? complete('Reviewed and verified. LINKS: COMPLETE')
                 : complete('D standing by.');
+            } else if (request.model === 'fixture-l3') {
+              // Links member E answers in the DeepSeek DSML native tool markup
+              // (byte-exact dialect captured 2026-09-19). The app must execute
+              // the read and strip the markup from the card, or the member
+              // stalls and the run pauses.
+              if (all.includes('DSMLSMOKE')) linksChecks.dsmlToolRan = true;
+              content = all.includes('DSMLSMOKE')
+                ? complete('DSML dialect executed.')
+                : 'Reading the dialect fixture.\n'
+                  + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>\n'
+                  + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke name="read">\n'
+                  + '<\uFF5C\uFF5CDSML\uFF5C\uFF5C parameter name="path" string="true">dsml-dialect.txt</\uFF5C\uFF5CDSML\uFF5C\uFF5C parameter>\n'
+                  + '</\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke>\n'
+                  + '</\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>';
             } else {
               content = hasResults
                 ? complete('Fixture scan completed.')
@@ -2345,24 +2360,30 @@ app.whenReady().then(() => {
               if (!Array.isArray(roleList) || roleList.length !== 20) throw new Error('roles:list must return the 20 presets, got ' + (roleList && roleList.length));
               const c = await reachApi.personas.create({ name: 'Worker C', model: 'fixture-l1' });
               const wd = await reachApi.personas.create({ name: 'Worker D', model: 'fixture-l2' });
+              const we = await reachApi.personas.create({ name: 'Worker E', model: 'fixture-l3' });
               const lt = await reachApi.teams.create({
                 name: 'Links crew', mode: 'links',
                 members: [
                   { personaId: c.persona.id, roleId: 'builder', role: 'Builder' },
                   { personaId: wd.persona.id, roleId: 'verifier', role: 'Verifier' },
+                  { personaId: we.persona.id, roleId: 'tester', role: 'Tester' },
                 ],
               });
               if (lt.team.mode !== 'links') throw new Error('links team mode was not stored');
-              if (lt.team.members[0].roleId !== 'builder' || lt.team.members[1].roleId !== 'verifier') throw new Error('roleId was not stored on team members');
+              if (lt.team.members[0].roleId !== 'builder' || lt.team.members[1].roleId !== 'verifier' || lt.team.members[2].roleId !== 'tester') throw new Error('roleId was not stored on team members');
               const lk = await dispatch(lt.team, 'Draft and review the fixture summary');
               await until(() => !activeTeamRun, 'links crew finished');
               if (![...lk.cards.values()].every(card => card.classList.contains('done'))) throw new Error('Links members did not complete');
               if (!lk.cards.get(1).querySelector('.member-body').textContent.includes('LINKS: COMPLETE')) throw new Error('Links completion declaration missing from the declaring member answer');
+              const dsmlCard = lk.cards.get(2).querySelector('.member-body').textContent;
+              if (dsmlCard.includes('parameter name=') || dsmlCard.includes('invoke name=')) throw new Error('The DSML markup leaked into the member card');
+              if (!dsmlCard.includes('DSML dialect executed.')) throw new Error('The DSML member did not finish cleanly');
               const savedL = await reachApi.agents.get(agent.agent.id);
               if (!savedL.messages.some(m => m.content.includes('LINKS: COMPLETE'))) throw new Error('Links answer not saved');
               await reachApi.teams.delete(lt.team.id);
               await reachApi.personas.delete(c.persona.id);
               await reachApi.personas.delete(wd.persona.id);
+              await reachApi.personas.delete(we.persona.id);
 
               await reachApi.agents.delete(agent.agent.id);
               await reachApi.teams.delete(t.team.id);
@@ -2373,6 +2394,7 @@ app.whenReady().then(() => {
           if (!linksChecks.protocolSeen) throw new Error('Links member prompts must carry the peer-network protocol');
           if (!linksChecks.roleSeen) throw new Error('Preset crew roles must reach member prompts');
           if (!linksChecks.messageSeen) throw new Error('The agent.send message never reached its peer');
+          if (!linksChecks.dsmlToolRan) throw new Error('The DSML native tool markup never executed in Links');
           await win.webContents.executeJavaScript(`
             (async () => {
               const created = await reachApi.agents.create('Input verification', ${JSON.stringify(smokeProject)}, 'fixture');

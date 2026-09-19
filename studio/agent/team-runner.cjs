@@ -624,15 +624,25 @@ class TeamRunner {
     const budget = LINKS_RATE * Math.max(1, n - 1);
     const results = new Array(n);
     const turns = new Array(n).fill(0);
+    // A member that cannot produce a usable action is a dead node: it is not
+    // re-woken (re-driving a paused loop is exactly the rogue-turn hazard the
+    // crew net guards against), peers carry on without it, and the final
+    // answer says who dropped out instead of the whole run pausing.
+    const stalled = new Map();
+    const noteStall = (index, error) => {
+      stalled.set(index, error || 'member stalled');
+      this._emit('links-stall', { index, name: this.personas[index].name, error: stalled.get(index) });
+    };
 
     const settled = await mapWithConcurrency(this.personas, this.concurrency, (p, i) =>
       this._runMember(p, i, this._memberPrompt(i, 'links', []), { keep: true }));
-    settled.forEach((r, i) => { results[i] = r; turns[i] = 1; });
+    settled.forEach((r, i) => { results[i] = r; turns[i] = 1; if (r && !r.ok) noteStall(i, r.error); });
 
     let rounds = 0;
     while (!this.stopped && !this._linksDone() && rounds < MAX_LINK_ROUNDS) {
       const pending = [];
       for (let i = 0; i < n; i++) {
+        if (stalled.has(i)) continue;
         const box = this._takeLinkInbox(i);
         if (box.length && turns[i] < MEMBER_LINK_TURNS + 1) pending.push({ index: i, box });
       }
@@ -648,6 +658,7 @@ class TeamRunner {
         if (this.stopped || this._linksDone()) break;
         results[index] = await this._wakeMember(index, box);
         turns[index]++;
+        if (results[index] && !results[index].ok) noteStall(index, results[index].error);
       }
     }
 
@@ -655,25 +666,36 @@ class TeamRunner {
     let synthIndex = -1;
     if (!this.stopped && !this._linksDone()) {
       synthIndex = this._synthesisIndex();
+      if (stalled.has(synthIndex)) {
+        const alive = [...Array(n).keys()].filter(i => !stalled.has(i));
+        if (alive.length) synthIndex = alive[alive.length - 1];
+      }
       const note = (this.net && this.net.linkSends >= budget)
         ? 'The crew has spent its full Links exchange budget (3× the chain rate).'
         : 'The crew has gone quiet without a completion declaration.';
-      synthesized = await this._wakeMember(synthIndex, [], { synthesize: true, note });
+      const stallNote = stalled.size
+        ? ` Note: ${[...stalled.keys()].map(i => this.personas[i].name).join(', ')} stalled and produced no usable work — cover that gap or state it as missing.`
+        : '';
+      synthesized = await this._wakeMember(synthIndex, [], { synthesize: true, note: note + stallNote });
       results[synthIndex] = synthesized;
       this._emit('links-synthesis', { index: synthIndex, name: this.personas[synthIndex].name, budgetSpent: this.net ? this.net.linkSends : 0 });
     }
 
     const done = this._linksDone();
     const declarerResult = results.find(r => r && r.ok && linksCompleteIn(r.output));
+    const okResults = results.filter(r => r && r.ok);
     this._linksAnswer = (declarerResult && declarerResult.output)
       || (synthesized && synthesized.output)
-      || results.filter(Boolean).map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n');
+      || (okResults.length
+        ? okResults.map(r => `【${r.name}】\n${r.output}`).join('\n\n')
+        : results.filter(Boolean).map(r => `【${r.name}】\n(failed: ${r.error || 'unknown'})`).join('\n\n'));
     this._linksMeta = {
       rounds,
       budget,
       exchanges: this.net ? this.net.linkSends : 0,
       completedBy: done && done.by ? done.by : (synthIndex >= 0 ? this.personas[synthIndex].name : null),
       synthesized: !!synthesized,
+      stalled: stalled.size,
     };
     return results;
   }

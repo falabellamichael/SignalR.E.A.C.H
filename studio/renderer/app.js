@@ -2545,6 +2545,13 @@ function handleTeamEvent(ev) {
       run.wrap.appendChild(note);
       break;
     }
+    case 'links-stall': {
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — the crew carries on without it.`;
+      run.wrap.appendChild(note);
+      break;
+    }
     case 'done': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';

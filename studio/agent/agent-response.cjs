@@ -2,6 +2,7 @@
 
 const { parse } = require('./agent-run.cjs');
 const { parseActionResponse } = require('./agent-action.cjs');
+const { parseDsmlActions } = require('./agent-dsml.cjs');
 const { allowedNames } = require('./tool-registry.cjs');
 
 // Only closed, top-level protocol fences are executable. Quoted examples,
@@ -41,6 +42,18 @@ function parseAgentResponse(content, nativeActions = []) {
     if (structured.status === 'blocked') terminal = { status: 'blocked', reason: display };
     if (structured.status === 'question') confirm = { question: display, options: structured.options };
     return { actions, control: terminal, confirm, display: confirm ? '' : display, invalid: false };
+  }
+  // DeepSeek DSML dialect (byte-exact capture 2026-09-19): some endpoints
+  // stream the model's native tool markup as plain content because the app
+  // asks for JSON actions instead of advertising OpenAI `tools`. Recover the
+  // real actions and strip the markup from display; a malformed block marks
+  // the response invalid so the structured recovery asks again.
+  const dsml = parseDsmlActions(raw);
+  if (dsml.detected) {
+    if (!dsml.error && dsml.actions.length && !nativeActions.length) {
+      return { actions: dsml.actions, control: null, confirm: null, display: dsml.display, invalid: false };
+    }
+    invalid = true;
   }
   if (/^\s*\{/.test(wrapped ? wrapped[1] : raw)) invalid = true;
   const removed = new Set();

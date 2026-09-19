@@ -73,15 +73,34 @@ function actionInstruction({ includeCollab = false, disabled = [] } = {}) {
   + 'Schema: ' + JSON.stringify(promptSchema);
 }
 
-/* Parse a structured action response. Returns { actions, message, status }
- * or { error }. Accepts only the exact JSON object, no surrounding prose. */
-function parseActionResponse(text) {
-  let value;
-  try {
-    value = JSON.parse(String(text || '').trim());
-  } catch {
-    return { error: 'The response was not valid JSON.' };
+/* Balanced top-level object scan — candidates in document order. Recovery
+ * only: some models prepend a status line to the exact contract JSON
+ * (deepseek-flash via api.deepseek.com did it mid-Links on 2026-09-19), and
+ * pausing the run over a prose prefix helps nobody. Nested objects are not
+ * separate candidates; a malformed outer span simply yields none. */
+function extractObjects(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '{') continue;
+    let depth = 0, inStr = false, esc = false, end = -1;
+    for (let j = i; j < text.length; j++) {
+      const ch = text[j];
+      if (inStr) { if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') inStr = true;
+      else if (ch === '{') depth++;
+      else if (ch === '}') { if (--depth === 0) { end = j; break; } }
+    }
+    if (end < 0) break;
+    try {
+      const v = JSON.parse(text.slice(i, end + 1));
+      if (v && typeof v === 'object' && !Array.isArray(v)) out.push(v);
+    } catch { /* not JSON — keep scanning */ }
+    i = end;
   }
+  return out;
+}
+
+function validateStructured(value) {
   if (!value || Array.isArray(value) || typeof value !== 'object') {
     return { error: 'The response was not a single JSON object.' };
   }
@@ -97,15 +116,40 @@ function parseActionResponse(text) {
   if (status !== 'actions' && actions.length) return { error: 'Terminal responses cannot contain actions.' };
   if (options.some(o => typeof o !== 'string') || options.length > 8) return { error: 'options must contain at most eight strings.' };
   if (actions.length > 8) return { error: 'At most 8 actions are allowed per response.' };
+  const normalized = [];
   for (let i = 0; i < actions.length; i++) {
     const a = actions[i];
     if (!a || typeof a !== 'object') return { error: `Action ${i + 1} is not an object.` };
     if (!names.includes(a.name)) return { error: `Action ${i + 1} has an unknown tool name: ${a.name}` };
-    if (!a.arguments || typeof a.arguments !== 'object' || Array.isArray(a.arguments) || 'action' in a.arguments) {
+    let args = a.arguments;
+    if (typeof args === 'string') {
+      try { args = JSON.parse(args); } catch { return { error: `Action ${i + 1} arguments must be an object.` }; }
+    }
+    if (args === undefined || args === null) args = {};
+    if (typeof args !== 'object' || Array.isArray(args) || 'action' in args) {
       return { error: `Action ${i + 1} arguments must be an object.` };
     }
+    normalized.push({ name: a.name, arguments: args });
   }
-  return { status, message, actions, options };
+  return { status, message, actions: normalized, options };
+}
+
+/* Parse a structured action response. Returns { actions, message, status }
+ * or { error }. The exact contract JSON wins; when a model wraps it in prose,
+ * the last balanced object that fully validates is recovered instead. */
+function parseActionResponse(text) {
+  const raw = String(text || '').trim();
+  let direct = null;
+  try { direct = JSON.parse(raw); } catch { /* prose-wrapped or not JSON */ }
+  const first = direct ? validateStructured(direct) : null;
+  if (first && !first.error) return first;
+  let recovered = null;
+  for (const candidate of extractObjects(raw)) {
+    const res = validateStructured(candidate);
+    if (!res.error) recovered = res;
+  }
+  if (recovered) return recovered;
+  return first || { error: 'The response was not valid JSON.' };
 }
 
 module.exports = { schema, actionInstruction, parseActionResponse };
