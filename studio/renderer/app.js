@@ -1215,8 +1215,55 @@ function renderConnections() {
 
     const badge = document.createElement('span');
     badge.className = 'conn-badge' + (c.id === connActiveId ? ' on' : '');
-    badge.textContent = c.id === connActiveId ? 'Active' : 'Select';
+    badge.textContent = c.id === connActiveId ? 'Fallback' : 'Select';
+    badge.title = c.id === connActiveId
+      ? 'Active connection: used by chats, playground and refactor, and the fallback every team member can use.'
+      : 'Click the radio to make this the active connection.';
     head.appendChild(badge);
+
+    /* Pool toggle — click to include this connection in team runs, click again to
+     * take it out. This is the multi-select the user asked for: several
+     * connections can be in the pool at once, and Teams spreads members across
+     * them. Kept separate from the radio because they answer different questions:
+     * the radio picks THE active connection (one, always), this picks which
+     * connections teams may use (many).
+     *
+     * The active connection cannot leave the pool — it is the fallback, and a
+     * fallback that can be switched off is not a fallback. The last one in the
+     * pool cannot leave either, or a spread team would have nowhere to run. Both
+     * are enforced in the main process too; the checks here just explain instead
+     * of letting a click appear to do nothing. */
+    const isActive = c.id === connActiveId;
+    const enabled = c.enabled !== false;
+    const enabledCount = connDraft.filter(x => x.enabled !== false).length;
+    const poolBtn = document.createElement('button');
+    poolBtn.type = 'button';
+    poolBtn.className = 'conn-pool' + (enabled ? ' on' : '');
+    poolBtn.textContent = enabled ? '✓ In team pool' : 'Add to team pool';
+    poolBtn.setAttribute('aria-pressed', String(enabled));
+    poolBtn.dataset.connId = c.id;
+    poolBtn.title = isActive
+      ? 'The active connection is always in the team pool: it is the fallback.'
+      : (enabled
+        ? 'Click to stop teams using this connection.'
+        : 'Click to let teams spread members onto this connection.');
+    // Disabled only when the click is guaranteed to be refused, so the user gets a
+    // reason from the title rather than a control that silently does nothing.
+    poolBtn.disabled = isActive || (enabled && enabledCount <= 1);
+    if (!isActive && enabled && enabledCount <= 1) poolBtn.title = 'At least one connection must stay in the team pool.';
+    poolBtn.onclick = () => {
+      if (isActive) return;
+      const next = !(c.enabled !== false);
+      if (!next && connDraft.filter(x => x.enabled !== false).length <= 1) {
+        const st = $('#settings-status');
+        if (st) st.textContent = 'At least one connection must stay in the team pool.';
+        return;
+      }
+      c.enabled = next;
+      renderConnections();
+      markUnsaved();
+    };
+    head.appendChild(poolBtn);
 
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
@@ -1356,7 +1403,12 @@ function renderConnections() {
   });
 
   const count = $('#conn-count');
-  if (count) count.textContent = `${connDraft.length} of ${CONN_MAX} connection(s)`;
+  if (count) {
+    const inPool = connDraft.filter(c => c.enabled !== false).length;
+    // Two facts the user needs here: how many rows exist against the limit, and
+    // how many of them teams may actually use.
+    count.textContent = `${connDraft.length} of ${CONN_MAX} connection(s) · ${inPool} in team pool`;
+  }
   const addBtn = $('#btn-add-connection');
   if (addBtn) addBtn.disabled = connDraft.length >= CONN_MAX;
 }
@@ -1368,7 +1420,7 @@ function markUnsaved() {
 
 $('#btn-add-connection').onclick = () => {
   if (connDraft.length >= CONN_MAX) return;
-  const c = { id: newConnId(), name: '', endpoint: '', accessKey: '', model: '' };
+  const c = { id: newConnId(), name: '', endpoint: '', accessKey: '', model: '', enabled: true };
   connDraft.push(c);
   // Activating the new row matches the old single-endpoint behaviour (you are
   // editing what you will use) and makes its Browse/Test target obvious.
@@ -1403,6 +1455,10 @@ $('#btn-save-settings').onclick = async () => {
     connections: connDraft.map(c => ({
       id: c.id, name: c.name, endpoint: String(c.endpoint).trim(),
       accessKey: c.accessKey || '', model: String(c.model || '').trim(),
+      /* `enabled` must be sent explicitly: this object literal is the whole row,
+       * so omitting it would reset every pool toggle on Save — and silently,
+       * because normalizeSettings treats a missing field as enabled. */
+      enabled: c.enabled !== false,
     })),
     activeConnection: connActiveId,
   };
@@ -1523,8 +1579,19 @@ let pendingTeamEvents = [];
 async function loadCreatePage() {
   personas = await reachApi.personas.list();
   teams = await reachApi.teams.list();
+  /* Load connections too, so a persona card can NAME the connection it is pinned
+   * to instead of showing a bare id. Best-effort: if the list cannot load the
+   * cards still render, they just fall back to the id. */
+  await loadConnectionChoices();
   renderPersonaList();
   renderTeamList();
+}
+
+/** Connection display name for an id, or null when unknown/deleted. */
+function connectionLabel(id) {
+  if (!id) return null;
+  const c = (connChoices || []).find(x => x.id === id);
+  return c ? (c.name || c.endpoint) : null;
 }
 
 function renderPersonaList() {
@@ -1537,7 +1604,13 @@ function renderPersonaList() {
   for (const p of personas) {
     const card = document.createElement('div');
     card.className = 'persona-card';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(p.name)}</strong><span class="chip dim">${escapeHtml(p.model || 'default model')}</span></div>`
+    /* Show the pin: without a chip, a persona locked to one provider looks
+     * identical to one that follows the team spread, and the difference only
+     * becomes visible mid-run. Name the connection rather than its id. */
+    const pin = p.connectionId
+      ? `<span class="chip pinned" title="Pinned to one connection">⇢ ${escapeHtml(connectionLabel(p.connectionId) || 'deleted connection')}</span>`
+      : '';
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(p.name)}</strong><span class="chip dim">${escapeHtml(p.model || 'default model')}</span>${pin}</div>`
       + `<div class="persona-card-prompt">${escapeHtml((p.prompt || 'No custom instructions.').slice(0, 140))}${(p.prompt || '').length > 140 ? '…' : ''}</div>`;
     card.onclick = () => openPersonaModal(p);
     el.appendChild(card);
@@ -1555,7 +1628,12 @@ function renderTeamList() {
     const card = document.createElement('div');
     card.className = 'team-card';
     const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : ' · ');
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : 'ok'}">${t.mode}</span></div>`
+    /* A spread team runs on several providers, so say so on the card — otherwise
+     * two identical-looking crews behave differently at run time. */
+    const spreadChip = t.spreadConnections === true
+      ? '<span class="chip ok" title="Members spread across the enabled connections">⇶ multi-endpoint</span>'
+      : '';
+    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : 'ok'}">${t.mode}</span>${spreadChip}</div>`
       + `<div class="persona-card-prompt">${roster || '<span class="dim">no members</span>'}</div>`
       + `<div class="team-card-actions"><button class="ghost small" data-act="run">Run…</button><button class="ghost small" data-act="edit">Edit</button></div>`;
     card.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); openTeamModal(t); };
@@ -1566,23 +1644,105 @@ function renderTeamList() {
 }
 
 // ----- persona modal -----
-function openPersonaModal(p) {
+/* Cache of the connection list for the persona/team pickers. Loaded on demand:
+ * these modals open rarely and connections change in Settings, so a stale
+ * in-memory list would offer ids that no longer exist. */
+let connChoices = null;
+async function loadConnectionChoices() {
+  try {
+    const res = await reachApi.connections.list();
+    connChoices = (res && res.connections) || [];
+  } catch { connChoices = []; }
+  return connChoices;
+}
+
+/**
+ * Fill a <select> with "blank + one option per connection".
+ *
+ * `includeDisabled` matters: a persona pin is a promise about WHERE it runs, so
+ * it should survive a connection being switched out of the team pool — hiding it
+ * would silently drop the user's pin when they next saved the persona. Team
+ * spread, by contrast, only ever uses enabled connections, and its hint says so.
+ */
+function fillConnectionSelect(select, selectedId, { includeDisabled = true } = {}) {
+  if (!select) return;
+  select.replaceChildren();
+  const auto = document.createElement('option');
+  auto.value = '';
+  auto.textContent = 'Automatic (team decides)';
+  select.appendChild(auto);
+  let matched = false;
+  for (const c of connChoices || []) {
+    if (!includeDisabled && c.enabled === false) continue;
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    const pool = c.enabled === false ? ' — not in team pool' : '';
+    opt.textContent = `${c.name || c.endpoint}${pool}`;
+    if (c.id === selectedId) { opt.selected = true; matched = true; }
+    select.appendChild(opt);
+  }
+  /* A pin to a connection that has since been DELETED cannot be offered as an
+   * option, but must not be silently discarded either — that would change where
+   * the agent runs the moment the user saves an unrelated field. Show it as a
+   * distinct stale entry so the choice is visible and deliberate. */
+  if (selectedId && !matched) {
+    const opt = document.createElement('option');
+    opt.value = selectedId;
+    opt.textContent = '(connection no longer exists)';
+    opt.selected = true;
+    select.appendChild(opt);
+  }
+  if (!selectedId) select.value = '';
+}
+
+async function openPersonaModal(p) {
   editingPersonaId = p ? p.id : null;
   $('#persona-modal-title').textContent = p ? 'Edit Custom Agent' : 'New Custom Agent';
   $('#persona-name').value = p ? p.name : '';
   $('#persona-model').value = p ? (p.model || '') : '';
   $('#persona-prompt').value = p ? (p.prompt || '') : '';
+  await loadConnectionChoices();
+  fillConnectionSelect($('#persona-connection'), p ? (p.connectionId || '') : '');
   $('#btn-persona-delete').classList.toggle('hidden', !p);
   $('#persona-modal').classList.remove('hidden');
   $('#persona-name').focus();
 }
 $('#btn-new-persona').onclick = () => openPersonaModal(null);
 $('#btn-persona-cancel').onclick = () => $('#persona-modal').classList.add('hidden');
-$('#btn-persona-browse').onclick = () => openModelPicker($('#persona-model'));
+/* Browse must list the PINNED connection's models, not the active one's: model
+ * ids are per-endpoint, so picking from the wrong list yields an id the pinned
+ * provider rejects at request time. Clearing the pin returns to the active
+ * connection, which is what "Automatic" will resolve to outside a team. */
+$('#btn-persona-browse').onclick = () => {
+  const pin = $('#persona-connection').value;
+  const target = pin ? { connectionId: pin } : undefined;
+  openModelPicker({
+    target,
+    label: pin
+      ? `Models on ${(connChoices || []).find(c => c.id === pin)?.name || 'the pinned connection'}`
+      : 'Models on the active connection',
+    onPick: (id) => {
+      const input = $('#persona-model');
+      input.value = id;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+  });
+};
+$('#persona-connection').onchange = () => {
+  /* Models belong to an endpoint, so the previously chosen id may not exist on
+   * the newly pinned one. Clear it rather than leave a value that will 404 —
+   * blank means "that connection's default", which is always valid. */
+  $('#persona-model').value = '';
+};
 $('#btn-persona-save').onclick = async () => {
   const name = $('#persona-name').value.trim();
   if (!name) { $('#persona-name').focus(); return; }
-  const patch = { name, model: $('#persona-model').value.trim(), prompt: $('#persona-prompt').value };
+  const patch = {
+    name,
+    model: $('#persona-model').value.trim(),
+    prompt: $('#persona-prompt').value,
+    connectionId: $('#persona-connection').value,
+  };
   const res = editingPersonaId
     ? await reachApi.personas.update(editingPersonaId, patch)
     : await reachApi.personas.create(patch);
@@ -1599,17 +1759,47 @@ $('#btn-persona-delete').onclick = async () => {
 };
 
 // ----- team modal -----
-function openTeamModal(t) {
+async function openTeamModal(t) {
   editingTeamId = t ? t.id : null;
   $('#team-modal-title').textContent = t ? 'Edit Team' : 'New Team';
   $('#team-name').value = t ? t.name : '';
   $('#team-mode').value = t ? t.mode : 'parallel';
   teamBuilderMembers = t ? (t.members || []).map(m => ({ personaId: m.personaId, role: m.role || '' })) : [];
+  $('#team-spread').checked = !!(t && t.spreadConnections === true);
+  await loadConnectionChoices();
+  updateSpreadHint();
   $('#btn-team-delete').classList.toggle('hidden', !t);
   renderTeamBuilder();
   $('#team-modal').classList.remove('hidden');
   $('#team-name').focus();
 }
+
+/* Explain what the spread toggle will actually do with the CURRENT pool and the
+ * CURRENT roster. A bare checkbox labelled "spread across connections" leaves the
+ * user guessing when only one connection is enabled, or when every member is
+ * pinned — both cases where the toggle has no effect. Saying so here beats a
+ * confusing run later. */
+function updateSpreadHint() {
+  const hint = $('#team-spread-hint');
+  if (!hint) return;
+  const on = $('#team-spread').checked;
+  const pool = (connChoices || []).filter(c => c.enabled !== false);
+  if (!on) {
+    hint.textContent = 'Off: every unpinned member runs on the active connection (the fallback).';
+    return;
+  }
+  if (pool.length <= 1) {
+    hint.textContent = `On, but only ${pool.length} connection is in the team pool — enable more in Settings > Connections to actually spread.`;
+    return;
+  }
+  const pinned = teamBuilderMembers.filter(m => {
+    const p = personas.find(x => x.id === m.personaId);
+    return !!(p && p.connectionId);
+  }).length;
+  const spread = teamBuilderMembers.length - pinned;
+  hint.textContent = `On: ${spread} unpinned member(s) rotate across ${pool.length} pooled connections; ${pinned} pinned member(s) keep their own.`;
+}
+$('#team-spread').onchange = updateSpreadHint;
 function renderTeamBuilder() {
   const el = $('#team-members');
   el.innerHTML = '';
@@ -1645,6 +1835,9 @@ function renderTeamBuilder() {
     opt.value = '';
     pick.appendChild(opt);
   }
+  // The hint counts pinned vs unpinned members, so it must be recomputed whenever
+  // the roster changes — adding, removing or reordering can change both.
+  updateSpreadHint();
 }
 $('#btn-new-team').onclick = () => openTeamModal(null);
 $('#btn-team-cancel').onclick = () => $('#team-modal').classList.add('hidden');
@@ -1660,7 +1853,12 @@ $('#btn-team-save').onclick = async () => {
   const name = $('#team-name').value.trim();
   if (!name) { $('#team-name').focus(); return; }
   if (!teamBuilderMembers.length) { showNotice('Add at least one member.'); return; }
-  const patch = { name, mode: $('#team-mode').value, members: teamBuilderMembers };
+  const patch = {
+    name,
+    mode: $('#team-mode').value,
+    members: teamBuilderMembers,
+    spreadConnections: $('#team-spread').checked,
+  };
   const res = editingTeamId
     ? await reachApi.teams.update(editingTeamId, patch)
     : await reachApi.teams.create(patch);

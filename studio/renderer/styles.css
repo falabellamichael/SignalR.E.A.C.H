@@ -120,6 +120,9 @@ h1 { font-size: 22px; font-weight: normal; letter-spacing: 1px; color: var(--gol
 .chip.bad { color: var(--err); border-color: var(--error-line); }
 .chip.pending { color: var(--gold-dim); }
 .chip.dim { color: var(--dim); }
+/* A persona pinned to one connection. Gold like .pending but with a border so it
+   reads as an explicit user choice, not a transient state. */
+.chip.pinned { color: var(--gold); border-color: var(--gold-dim); }
 
 /* layout */
 .app-body { flex: 1; display: flex; min-height: 0; }
@@ -635,6 +638,9 @@ body.resizing-y, body.resizing-y * {
   background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
   color: var(--text); padding: 9px 12px; font-size: 13px; outline: none;
 }
+/* Explanatory one-liner under a modal field. Tighter than a body paragraph and
+   dimmed so it reads as secondary, not as the field label above it. */
+.modal-box p.field-hint { margin: -2px 0 2px; font-size: 12px; line-height: 1.45; }
 
 /* model picker */
 .model-choices {
@@ -882,6 +888,19 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
   color: var(--dim); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
 }
 .conn-badge.on { color: var(--gold); border-color: var(--gold-dim); }
+/* Team-pool toggle. Sits next to the badge, so it reuses the pill shape but reads
+   as a control rather than a status label: it is clickable, and its ON state is
+   filled rather than merely tinted so "in the pool" survives a glance at a list
+   of several connections. */
+.conn-pool {
+  flex: 0 0 auto; font-size: 10px; letter-spacing: .4px; white-space: nowrap;
+  color: var(--dim); background: transparent; border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 9px; cursor: pointer;
+}
+.conn-pool:hover:not(:disabled) { border-color: var(--gold-dim); color: var(--text); }
+.conn-pool.on { color: var(--gold); border-color: var(--gold-dim); background: var(--hover); }
+.conn-pool:disabled { cursor: not-allowed; opacity: .55; }
+.conn-pool:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 1px; }
 .conn-remove { flex: 0 0 26px; height: 26px; font-size: 18px; line-height: 1; }
 .conn-remove:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 1px; }
 

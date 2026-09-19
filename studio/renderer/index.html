@@ -660,9 +660,12 @@
       <h3 id="persona-modal-title">New Custom Agent</h3>
       <label>Name</label>
       <input id="persona-name" type="text" placeholder="e.g. Security Auditor" spellcheck="false" />
-      <label>Model (blank = default from Settings)</label>
+      <label>Connection (blank = let the team decide)</label>
+      <select id="persona-connection"></select>
+      <p class="dim field-hint persona-conn-hint">Pinning guarantees this agent always runs on that provider, even in a team that spreads across several. Leave it blank to use the team spread, or the active connection.</p>
+      <label>Model (blank = that connection's default)</label>
       <div class="row">
-        <input id="persona-model" type="text" readonly placeholder="click Browse to pick from the endpoint" spellcheck="false" />
+        <input id="persona-model" type="text" readonly placeholder="click Browse to pick from the connection" spellcheck="false" />
         <button id="btn-persona-browse" class="ghost small">Browse&hellip;</button>
       </div>
       <label>Instructions (system prompt for this agent)</label>
@@ -686,6 +689,11 @@
         <option value="parallel">Parallel — all members work the same task simultaneously</option>
         <option value="chain">Chain — members work in order, passing results along</option>
       </select>
+      <label class="check team-spread-row">
+        <input id="team-spread" type="checkbox" />
+        <span>Spread members across the enabled connections</span>
+      </label>
+      <p id="team-spread-hint" class="dim field-hint"></p>
       <label>Members (in order — for Chain, this is the pipeline)</label>
       <div id="team-members" class="team-members"></div>
       <div class="row">

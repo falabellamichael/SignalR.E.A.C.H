@@ -111,7 +111,11 @@ function sanitizeConnection(raw, index) {
   // A stored id wins; otherwise derive one from the endpoint so re-normalizing
   // the same object is stable (see derivedId).
   const id = typeof raw.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw.id) ? raw.id : derivedId(endpoint);
-  return { id, name, endpoint, accessKey, model };
+  // `enabled` membership in the team pool. Absent means enabled: connections
+  // written before the pool existed must keep working, and a hand-edited file
+  // that omits the field should not silently drop itself out of every team.
+  const enabled = raw.enabled === false ? false : true;
+  return { id, name, endpoint, accessKey, model, enabled };
 }
 
 /**
@@ -206,8 +210,59 @@ function normalizeSettings(settings) {
 
   out.connections = connections;
   out.activeConnection = activeId;
-  Object.assign(out, legacyProjection(connections.find(c => c.id === activeId) || null));
+  /* Invariant: the ACTIVE connection is always enabled. It doubles as the team
+   * fallback, and a fallback that can be switched off is not a fallback — a team
+   * with an unpinned member would then have no endpoint to run against. Enforced
+   * here (not only in setEnabled) so a hand-edited settings.json cannot put the
+   * app into a state where the active connection is disabled. */
+  const active = connections.find(c => c.id === activeId);
+  if (active) active.enabled = true;
+  Object.assign(out, legacyProjection(active || null));
   return { settings: out, migrated, dropped };
+}
+
+/**
+ * The enabled pool: connections a team may spread its members across.
+ *
+ * Order is the stored order, which is what round-robin iterates, so reordering
+ * the list in Settings changes the spread order. The active connection is always
+ * present and always first-class in the pool (normalizeSettings forces it on).
+ */
+function enabledPool(settings) {
+  const { settings: normalized } = normalizeSettings(settings);
+  return normalized.connections.filter(c => c.enabled);
+}
+
+/**
+ * Toggle one connection's pool membership.
+ *
+ * Refuses to disable the active connection — it is the team fallback, and the
+ * last enabled one must stay enabled so `enabledPool()` can never come back empty
+ * while any connection exists. Both refusals are errors, not silent no-ops: the
+ * UI shows them, and silently ignoring a click would leave the checkbox and the
+ * stored state disagreeing.
+ */
+function setConnectionEnabled(settings, id, enabled) {
+  const { settings: normalized } = normalizeSettings(settings);
+  const target = normalized.connections.find(c => c.id === id);
+  if (!target) return { ok: false, error: 'No connection with that id.', settings: normalized };
+  if (target.id === normalized.activeConnection && !enabled) {
+    return {
+      ok: false,
+      error: 'The active connection cannot be disabled: it is the fallback for teams. Activate another connection first.',
+      settings: normalized,
+    };
+  }
+  const want = !!enabled;
+  if (!want) {
+    const wouldRemain = normalized.connections.filter(c => c.enabled && c.id !== target.id).length;
+    if (wouldRemain < 1) {
+      return { ok: false, error: 'At least one connection must stay enabled.', settings: normalized };
+    }
+  }
+  target.enabled = want;
+  // Re-normalize so the projection and the invariant hold after the mutation.
+  return { ok: true, ...normalizeSettings(normalized) };
 }
 
 /**
@@ -384,11 +439,18 @@ function scopedSettings(settings, connectionId) {
 function publicConnections(settings) {
   const { settings: normalized } = normalizeSettings(settings);
   const active = activeConnection(normalized);
+  const enabled = normalized.connections.filter(c => c.enabled);
   return {
     connections: normalized.connections.map(c => ({ ...c })),
     activeConnection: normalized.activeConnection,
     activeEndpoint: active ? active.endpoint : '',
     activeName: active ? active.name : '',
+    /* The team pool. Computed here rather than in the renderer so "N of M
+     * enabled" and the spread preview cannot disagree with what a run will
+     * actually resolve. */
+    enabledCount: enabled.length,
+    enabledIds: enabled.map(c => c.id),
+    totalCount: normalized.connections.length,
   };
 }
 
@@ -481,6 +543,8 @@ module.exports = {
   updateConnection,
   removeConnection,
   setActiveConnection,
+  enabledPool,
+  setConnectionEnabled,
   publicConnections,
   applyLegacyWrite,
   scopedSettings,

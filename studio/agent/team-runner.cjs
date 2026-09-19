@@ -79,7 +79,7 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null }) {
     this.agentSettings = agentSettings;
     this.budgets = budgets;
     // Shared security audit log: every member runs tools, so every member's
@@ -93,6 +93,13 @@ class TeamRunner {
     this.endpoint = endpoint;
     this.accessKey = accessKey;
     this.defaultModel = defaultModel;
+    /* Per-member endpoint/key/model, resolved ONCE by main.mjs (which owns
+     * settings) via agent/team-connections.cjs and indexed by roster position.
+     * Teams are the one place that may use MULTIPLE endpoints; the runner itself
+     * stays settings-free and just consumes what it is handed. Null (the default,
+     * and what direct-construction tests pass) means "one endpoint for the whole
+     * crew", the pre-feature behaviour. */
+    this.memberConnections = Array.isArray(memberConnections) ? memberConnections : null;
     this.reachExecutor = reachExecutor;
     this.browserExecutor = browserExecutor;
     this.sendEvent = sendEvent;
@@ -127,6 +134,45 @@ class TeamRunner {
 
   _emit(type, payload = {}) {
     this.sendEvent('team:event', { teamRunId: this.teamRunId, type, ...payload });
+  }
+
+  /**
+   * Endpoint / key / model for ONE roster position.
+   *
+   * Every place that starts or describes a member must go through this, so the
+   * `start` event, preRegister and the AgentLoop can never disagree about where a
+   * member is running — a mismatch there is invisible until a model 404s.
+   *
+   * Falls back to the team-wide values when no resolution was supplied (direct
+   * construction in tests) or when a member has no usable resolution.
+   */
+  _memberConn(index) {
+    const resolved = this.memberConnections ? this.memberConnections[index] : null;
+    if (resolved && resolved.endpoint) {
+      return {
+        endpoint: resolved.endpoint,
+        accessKey: resolved.accessKey || '',
+        model: resolved.model || this.defaultModel || 'gpt-4o-mini',
+        connectionName: resolved.connectionName || '',
+        reason: resolved.reason || '',
+      };
+    }
+    /* Fallback: one endpoint for the whole crew (no resolution supplied, or the
+     * member's resolved endpoint was unusable). This must reproduce the
+     * PRE-feature model rule — persona.model || defaultModel — because a persona
+     * model override is not the same thing as an endpoint resolution: direct
+     * callers (and older tests) pass personas with their own models and expect
+     * each member to keep it. Dropping it here was the bug that sent every
+     * member the team default. */
+    const persona = this.personas[index] || null;
+    const personaModel = persona ? String(persona.model || '').trim() : '';
+    return {
+      endpoint: this.endpoint,
+      accessKey: this.accessKey,
+      model: personaModel || this.defaultModel || 'gpt-4o-mini',
+      connectionName: '',
+      reason: '',
+    };
   }
 
   roleOf(index) {
@@ -178,20 +224,41 @@ class TeamRunner {
     this._emit('start', {
       teamName: this.team.name,
       mode,
-      members: this.personas.map((p, i) => ({ index: i, name: p.name, model: p.model || this.defaultModel, role: this.roleOf(i) })),
+      /* model comes from _memberConn so the header shows the model each member
+       * will ACTUALLY use on its own endpoint, not the team-wide default. */
+      members: this.personas.map((p, i) => {
+        const conn = this._memberConn(i);
+        return {
+          index: i,
+          name: p.name,
+          model: conn.model,
+          role: this.roleOf(i),
+          // Lets the UI show "on <connection>" per member, and explain why a pin
+          // was ignored (reason: stale-pin / disabled-pin). Never the key.
+          connectionName: conn.connectionName,
+          connectionReason: conn.reason,
+        };
+      }),
       task: this.task,
     });
     // Pre-register the whole roster so every member can see and address its
     // peers from its FIRST turn (agent.list / agent.send / agent.status),
     // even chain members that have not started yet.
     this.personas.forEach((p, i) => {
+      const conn = this._memberConn(i);
       this.net.preRegister({
         agentId: `m${i}-${p.id}`,
         name: p.name,
-        model: p.model || this.defaultModel,
+        model: conn.model,
         prompt: p.prompt || '',
         depth: 0,
         task: this.task,
+        /* Hand the member's routing to the network so anything this member
+         * spawns inherits its provider. Without this the subagent would fall
+         * back to the crew default endpoint, where the member's model may not
+         * exist. The key travels in-process only and is never emitted. */
+        endpoint: conn.endpoint,
+        accessKey: conn.accessKey,
       });
     });
 
@@ -260,12 +327,18 @@ class TeamRunner {
     const key = `m${index}-${persona.id}`;
     const store = new MemoryStore();
     Object.assign(store.get(key).settings, structuredClone(this.agentSettings));
-    const model = persona.model || this.defaultModel || 'gpt-4o-mini';
+    /* THIS is the per-member routing that makes Teams the multi-endpoint case.
+     * Before this, every member shared one endpoint/accessKey and only the model
+     * varied, so a member whose model lived on another provider would 404.
+     * _memberConn falls back to the team-wide values when nothing was resolved,
+     * so single-endpoint teams behave exactly as they did. */
+    const conn = this._memberConn(index);
+    const model = conn.model;
     const loop = new AgentLoop({
       agentId: key,
       store,
-      endpoint: this.endpoint,
-      accessKey: this.accessKey,
+      endpoint: conn.endpoint,
+      accessKey: conn.accessKey,
       model,
       projectDir: this.projectDir,
       reachExecutor: this.reachExecutor,

@@ -63,7 +63,7 @@ class PersonaStore {
     return this.personas.find(p => p.id === id) || null;
   }
 
-  createPersona({ name, model = '', prompt = '', color = '' }) {
+  createPersona({ name, model = '', prompt = '', color = '', connectionId = '' }) {
     if (this.personas.length >= MAX_PERSONAS) {
       throw new Error(`Persona limit reached (${MAX_PERSONAS}).`);
     }
@@ -73,6 +73,14 @@ class PersonaStore {
       model: String(model || ''),
       prompt: String(prompt || '').slice(0, 8000),
       color: String(color || ''),
+      /* Optional pin to a connection in settings.json. Empty means "let the team
+       * decide" (spread, else the active fallback). The id is stored as-is and
+       * NOT validated against settings here: personas.json and settings.json are
+       * separate stores, the store has no access to settings, and a pin must
+       * survive a connection being temporarily absent. Resolution happens in
+       * team-connections.cjs, which treats a vanished id as STALE_PIN and
+       * degrades gracefully instead of failing the run. */
+      connectionId: String(connectionId || '').slice(0, 64),
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
@@ -88,6 +96,7 @@ class PersonaStore {
     if (patch.model !== undefined) p.model = String(patch.model);
     if (patch.prompt !== undefined) p.prompt = String(patch.prompt).slice(0, 8000);
     if (patch.color !== undefined) p.color = String(patch.color);
+    if (patch.connectionId !== undefined) p.connectionId = String(patch.connectionId || '').slice(0, 64);
     p.updatedAt = Date.now();
     this._save();
     return p;
@@ -108,9 +117,19 @@ class PersonaStore {
   listTeams() {
     return this.teams.map(t => ({
       ...t,
+      // Older teams written before the toggle existed have no such field; report
+      // it as off so the UI shows a definite state rather than undefined.
+      spreadConnections: t.spreadConnections === true,
       members: (t.members || []).map(m => {
         const p = this.getPersona(m.personaId);
-        return { ...m, personaName: p ? p.name : '(deleted)', personaModel: p ? p.model : '' };
+        return {
+          ...m,
+          personaName: p ? p.name : '(deleted)',
+          personaModel: p ? p.model : '',
+          // So the team editor can show which members are pinned without a
+          // second round trip for the persona list.
+          personaConnectionId: p ? (p.connectionId || '') : '',
+        };
       }),
     }));
   }
@@ -119,7 +138,7 @@ class PersonaStore {
     return this.teams.find(t => t.id === id) || null;
   }
 
-  createTeam({ name, mode = 'parallel', members = [] }) {
+  createTeam({ name, mode = 'parallel', members = [], spreadConnections = false }) {
     if (this.teams.length >= MAX_TEAMS) {
       throw new Error(`Team limit reached (${MAX_TEAMS}).`);
     }
@@ -130,6 +149,10 @@ class PersonaStore {
       id: newId('team'),
       name: String(name || 'Team').slice(0, 60),
       mode,
+      /* Spread unpinned members across the enabled connection pool instead of
+       * running the whole crew on the active connection. Defaults to false so
+       * existing teams keep their behaviour after an upgrade. */
+      spreadConnections: spreadConnections === true,
       members: this._validateMembers(members),
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -169,6 +192,7 @@ class PersonaStore {
       t.mode = patch.mode;
     }
     if (patch.members !== undefined) t.members = this._validateMembers(patch.members);
+    if (patch.spreadConnections !== undefined) t.spreadConnections = patch.spreadConnections === true;
     t.updatedAt = Date.now();
     this._save();
     return t;

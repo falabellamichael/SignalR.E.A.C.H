@@ -36,6 +36,7 @@ const { runCommand } = require('./agent/platform.cjs');
 const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-context.cjs');
 const { AuditLog } = require('./agent/audit-log.cjs');
 const connections = require('./agent/connections.cjs');
+const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember } = require('./agent/team-connections.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 
@@ -490,6 +491,44 @@ function registerIpc() {
       const personas = roster.map(r => r.persona);
       const roles = roster.map(r => r.role);
 
+      /* --- Teams are the multi-endpoint case ---------------------------------
+       * Everything else in the app runs against the single ACTIVE connection. A
+       * team may instead spread its members across the enabled pool, and any
+       * member may be pinned to one connection explicitly (persona.connectionId).
+       *
+       * Resolution happens HERE rather than inside TeamRunner because main.mjs is
+       * the only layer that owns settings; the runner stays settings-free and just
+       * consumes the roster it is handed. It runs once per run, not per member.
+       */
+      const memberConnections = resolveTeamConnections({
+        settings,
+        personas,
+        spread: team.spreadConnections === true,
+        defaultModel,
+      });
+      if (hasUnresolvableMember(memberConnections)) {
+        return { ok: false, err: 'No connection is available for every team member. Enable at least one connection in Settings > Connections.' };
+      }
+      /* resolveEndpoint() expands the auto-discovery placeholder and rejects a
+       * malformed URL, so each member's endpoint needs the same treatment the
+       * team-wide one got above. Distinct endpoints are resolved once each and
+       * cached: a 5-member crew on one connection must not resolve it 5 times,
+       * and a failure must name the connection that failed rather than surfacing
+       * as a mysterious member error mid-run. */
+      const resolvedEndpoints = new Map();
+      for (const mc of memberConnections) {
+        if (resolvedEndpoints.has(mc.endpoint)) continue;
+        try {
+          resolvedEndpoints.set(mc.endpoint, await resolveEndpoint(mc.endpoint));
+        } catch (err) {
+          const label = mc.connectionName || mc.endpoint || 'the selected connection';
+          return { ok: false, err: `Endpoint (${label}): ${err.message}` };
+        }
+      }
+      for (const mc of memberConnections) {
+        mc.endpoint = resolvedEndpoints.get(mc.endpoint) || mc.endpoint;
+      }
+
       // Project dir: explicit → the bound conversation's dir.
       let projectDir = dir || '';
       if (!projectDir && agentId) {
@@ -512,6 +551,10 @@ function registerIpc() {
         endpoint,
         accessKey,
         defaultModel,
+        /* Per-member routing. endpoint/accessKey above remain the crew default —
+         * used for anything the runner does not have a member resolution for, and
+         * as the documented fallback when a member's resolution is unusable. */
+        memberConnections,
         budgets,
         // Shared with the orchestrator loop: members and their subagents run
         // tools, and one hash-chained log means one chain to verify.
@@ -550,12 +593,19 @@ function registerIpc() {
       });
       runner.conversationId = agentId || null;
       teamRuns.set(teamRunId, runner);
+      /* Human-readable routing for this run: which connection each member ended
+       * up on and WHY (pinned / spread / fallback / stale-pin). Logged to the main
+       * process console and returned to the renderer so a team that silently ran
+       * three members against one endpoint is diagnosable instead of mysterious.
+       * summarizeResolutions names connections and models but NEVER access keys. */
+      const routing = summarizeResolutions(memberConnections);
+      console.log(`[teams] ${team.name} (${memberConnections.length} members): ${routing}`);
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
       }).finally(() => {
         teamRuns.delete(teamRunId);
       });
-      return { ok: true, teamRunId };
+      return { ok: true, teamRunId, routing };
     } catch (e) {
       return { ok: false, err: e.message };
     }
@@ -760,16 +810,33 @@ function registerIpc() {
       case 'activate':
         result = connections.setActiveConnection(current, payload.id);
         break;
+      case 'enable':
+        // Pool membership: which connections a TEAM may spread across. Does not
+        // change the active connection, so existing conversations keep running.
+        result = connections.setConnectionEnabled(current, payload.id, payload.enabled !== false);
+        break;
       default:
         return { ok: false, err: 'Unknown connection action.' };
     }
     if (result.error) return { ok: false, err: result.error };
     saveSettings(result.settings);
-    // Switching provider changes endpoint AND access key, so cached loops must
-    // not keep talking to the old one. Same rule as settings:save.
-    for (const [id, loop] of agentLoops) {
-      if (loop.running) loop.settingsStale = true;
-      else agentLoops.delete(id);
+    /* Switching provider changes endpoint AND access key, so cached loops must
+     * not keep talking to the old one. Same rule as settings:save.
+     *
+     * Compare rather than invalidate unconditionally: an `enable` toggle on a
+     * NON-active connection changes nothing a running chat uses, and marking
+     * every loop stale for a pool checkbox would needlessly interrupt work. */
+    const routingBefore = connections.activeConnection(current);
+    const routingAfter = connections.activeConnection(result.settings);
+    const routingChanged = !routingBefore || !routingAfter
+      || routingBefore.id !== routingAfter.id
+      || routingBefore.endpoint !== routingAfter.endpoint
+      || routingBefore.accessKey !== routingAfter.accessKey;
+    if (routingChanged) {
+      for (const [id, loop] of agentLoops) {
+        if (loop.running) loop.settingsStale = true;
+        else agentLoops.delete(id);
+      }
     }
     return { ok: true, connections: connections.publicConnections(result.settings) };
   });
@@ -2424,6 +2491,59 @@ app.whenReady().then(() => {
             const connBad = await reachApi.connections.save({ action: 'activate', id: 'conn_does-not-exist' });
             if (connBad.ok !== false) throw new Error('Activating an unknown connection succeeded');
 
+            // --- Team pool: click-to-toggle membership -----------------------
+            // Both connections start enabled. The pool button is how a user adds a
+            // connection to (or removes it from) what teams may spread across.
+            const connSecondIdForPool = connSwitched.connections.find(c => c.endpoint === connSecond).id;
+            await loadSettings();
+            const poolButtons = () => document.querySelectorAll('#conn-list .conn-pool');
+            if (poolButtons().length !== 2) throw new Error('Every connection card needs a pool toggle');
+            // The ACTIVE connection cannot leave the pool (it is the fallback), so
+            // its button is disabled; the non-active one is not.
+            const poolStates = [...poolButtons()].map(b => b.disabled);
+            if (poolStates[0] !== true) throw new Error('The active connection pool button must be disabled (it is the fallback)');
+            if (poolStates[1] !== false) throw new Error('The non-active connection pool button must be enabled');
+
+            // Click the second card's toggle to remove it from the pool, then save.
+            poolButtons()[1].onclick();
+            if (document.querySelectorAll('#conn-list .conn-pool.on').length !== 1) throw new Error('Toggling the pool must leave only the active connection in it');
+            await document.querySelector('#btn-save-settings').onclick();
+            const poolSaved = await reachApi.getSettings();
+            const enabledAfter = poolSaved.connections.filter(c => c.enabled !== false);
+            if (enabledAfter.length !== 1) throw new Error('Pool toggle did not persist, got ' + enabledAfter.length + ' enabled');
+            if (enabledAfter[0].id !== poolSaved.activeConnection) throw new Error('The surviving pool member must be the active connection');
+
+            // IPC refusal: disabling the ACTIVE connection must be rejected with a
+            // reason, not silently ignored (the checkbox would otherwise lie).
+            const disableActive = await reachApi.connections.save({ action: 'enable', id: poolSaved.activeConnection, enabled: false });
+            if (disableActive.ok !== false) throw new Error('Disabling the active connection must be refused');
+
+            // Re-enable the second connection so the two-connection state survives
+            // into the removal check that follows.
+            const reEnable = await reachApi.connections.save({ action: 'enable', id: connSecondIdForPool, enabled: true });
+            if (reEnable.ok !== true) throw new Error('Re-enabling a connection failed: ' + reEnable.err);
+
+            // --- Team spread + persona pin persistence -----------------------
+            // The resolver itself is unit-tested (25 cases); here we assert the
+            // fields actually round-trip through the IPC + store, because a field
+            // that renders but never persists is exactly the bug class that has
+            // shipped twice this session.
+            const connIds = (await reachApi.getSettings()).connections.map(c => c.id);
+            const pinP = await reachApi.personas.create({ name: 'Pool Pinner', model: '', prompt: 'pinned', connectionId: connIds[0] });
+            if (!pinP.ok || pinP.persona.connectionId !== connIds[0]) throw new Error('Persona connectionId did not persist');
+            const looseP = await reachApi.personas.create({ name: 'Pool Loose', model: '', prompt: 'loose', connectionId: '' });
+            if (!looseP.ok || looseP.persona.connectionId !== '') throw new Error('Empty persona connectionId did not persist');
+            const spreadTeam = await reachApi.teams.create({ name: 'Pool Crew', mode: 'parallel', members: [{ personaId: pinP.persona.id }, { personaId: looseP.persona.id }], spreadConnections: true });
+            if (!spreadTeam.ok || spreadTeam.team.spreadConnections !== true) throw new Error('Team spreadConnections did not persist');
+            const teamList = await reachApi.teams.list();
+            const listed = teamList.find(t => t.id === spreadTeam.team.id);
+            if (!listed || listed.spreadConnections !== true) throw new Error('listTeams did not surface spreadConnections');
+            if (listed.members.find(m => m.personaId === pinP.persona.id).personaConnectionId !== connIds[0]) throw new Error('listTeams did not surface the member pin');
+            // Clean up the fixtures so later smoke stages see a tidy store.
+            await reachApi.personas.delete(pinP.persona.id);
+            await reachApi.personas.delete(looseP.persona.id);
+            await reachApi.teams.delete(spreadTeam.team.id);
+
             // Remove the second connection and confirm the UI follows.
             const connSecondId = connSwitched.connections.find(c => c.endpoint === connSecond).id;
             const connRm = await reachApi.connections.save({ action: 'remove', id: connSecondId });
@@ -2484,7 +2604,7 @@ app.whenReady().then(() => {
         // marker matters because the connection assertions sit INSIDE this call,
         // so without one their success is only inferable from later sections
         // having run — and this suite aborts early on the flaky browser stage.
-        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers.');
+        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers, team-pool click-to-toggle with active-connection fallback guard, and persona-pin + team-spread persistence.');
         // Exercise manual compression through the real preload/renderer and SSE path.
         let compressionReady, finishCompression;
         const compressionStarted = new Promise(resolve => { compressionReady = resolve; });

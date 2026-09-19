@@ -122,9 +122,14 @@ contextBridge.exposeInMainWorld('reach', {
   // Endpoint connections (multiple providers, each with its own key + model).
   connections: {
     list: () => ipcRenderer.invoke('connections:list'),
-    // action: 'add' | 'update' | 'remove' | 'activate'
+    // action: 'add' | 'update' | 'remove' | 'activate' | 'enable'
     save: (payload) => ipcRenderer.invoke('connections:save', payload),
     ping: (connectionId) => ipcRenderer.invoke('connections:ping', connectionId ? { connectionId } : {}),
+    /* Pool membership: whether a team may spread members onto this connection.
+     * Separate from `activate`, which decides the connection everything else
+     * uses. The active one cannot be disabled — it is the team fallback — and the
+     * handler returns ok:false with a reason in that case, which the UI shows. */
+    setEnabled: (id, enabled) => ipcRenderer.invoke('connections:save', { action: 'enable', id, enabled: !!enabled }),
   },
 
   // Workspace dashboard (PRD: Studio Workspace Dashboard). Local system
