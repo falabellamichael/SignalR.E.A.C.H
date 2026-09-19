@@ -109,8 +109,23 @@ contextBridge.exposeInMainWorld('reach', {
     write: (agentId, relPath, content, projectDir) => ipcRenderer.invoke('files:write', { agentId, path: relPath, content, projectDir }),
   },
 
-  // Models
-  listModels: () => ipcRenderer.invoke('models:list'),
+  // Models. Pass nothing to list the ACTIVE connection's models (playground,
+  // refactor, agent settings). Pass { connectionId } to list a saved row without
+  // activating it, or { endpoint, accessKey } for an ad-hoc lookup while a row is
+  // still being typed and has nothing saved to resolve an id against.
+  listModels: (target) => {
+    if (!target) return ipcRenderer.invoke('models:list', {});
+    if (typeof target === 'string') return ipcRenderer.invoke('models:list', { connectionId: target });
+    return ipcRenderer.invoke('models:list', target);
+  },
+
+  // Endpoint connections (multiple providers, each with its own key + model).
+  connections: {
+    list: () => ipcRenderer.invoke('connections:list'),
+    // action: 'add' | 'update' | 'remove' | 'activate'
+    save: (payload) => ipcRenderer.invoke('connections:save', payload),
+    ping: (connectionId) => ipcRenderer.invoke('connections:ping', connectionId ? { connectionId } : {}),
+  },
 
   // Workspace dashboard (PRD: Studio Workspace Dashboard). Local system
   // telemetry only — no relay admin API is contacted.
