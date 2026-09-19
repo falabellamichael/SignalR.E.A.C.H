@@ -1162,6 +1162,13 @@ document.addEventListener('keydown', (e) => {
 let connDraft = [];        // working copy; only written to disk on Save
 let connActiveId = '';
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
+/* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
+ * a re-render (pool toggle, activation, Settings save) does not wipe the last
+ * "OK · 812 ms" off a card — and so auto-test on panel open knows which rows
+ * still need one. A row's entry is cleared the moment its URL or key is edited:
+ * a result describing values that no longer exist is a lie, not a cache. */
+const connStatus = new Map();   // id -> { text, cls }
+const connTesters = [];         // rebuilt by renderConnections: [{ id, running, run }]
 
 async function loadSettings() {
   const s = await reachApi.getSettings();
@@ -1169,6 +1176,11 @@ async function loadSettings() {
   // Draft from the normalized list so ids are stable and the active one is known.
   connDraft = (Array.isArray(s.connections) ? s.connections : []).map(c => ({ ...c }));
   connActiveId = s.activeConnection || (connDraft[0] ? connDraft[0].id : '');
+  // Drop test results for connections that no longer exist (removed here, in
+  // the status bar, or by a hand-edited settings.json).
+  for (const id of [...connStatus.keys()]) {
+    if (!connDraft.some(c => c.id === id)) connStatus.delete(id);
+  }
   renderConnections();
 }
 
@@ -1182,6 +1194,20 @@ function renderConnections() {
   const list = $('#conn-list');
   if (!list) return;
   list.replaceChildren();
+  // Each card registers its test runner here so "Test all" and the panel's
+  // auto-test can drive every row without re-querying handlers off the DOM.
+  connTesters.length = 0;
+
+  /* Clear a row's stored test result. Called the moment its URL or key changes:
+   * the old "OK" described values the user just replaced, and a stale success
+   * is worse than no result at all. */
+  function clearConnStatus(id) {
+    if (!connStatus.has(id)) return;
+    connStatus.delete(id);
+    const card = document.querySelector('#conn-list .conn-card[data-conn-id="' + id + '"]');
+    const status = card && card.querySelector('.conn-status');
+    if (status) { status.textContent = ''; status.classList.remove('ok', 'bad'); }
+  }
 
   connDraft.forEach((c, i) => {
     const card = document.createElement('div');
@@ -1215,7 +1241,7 @@ function renderConnections() {
 
     const badge = document.createElement('span');
     badge.className = 'conn-badge' + (c.id === connActiveId ? ' on' : '');
-    badge.textContent = c.id === connActiveId ? 'Fallback' : 'Select';
+    badge.textContent = c.id === connActiveId ? 'Active' : 'Select';
     badge.title = c.id === connActiveId
       ? 'Active connection: used by chats, playground and refactor, and the fallback every team member can use.'
       : 'Click the radio to make this the active connection.';
@@ -1310,7 +1336,7 @@ function renderConnections() {
       input.value = c.endpoint || '';
       input.placeholder = 'https://your-endpoint.example.com/v1';
       input.spellcheck = false;
-      input.oninput = () => { c.endpoint = input.value.trim(); markUnsaved(); };
+      input.oninput = () => { c.endpoint = input.value.trim(); clearConnStatus(c.id); markUnsaved(); };
       urlInput = input;
       return input;
     });
@@ -1324,7 +1350,7 @@ function renderConnections() {
       input.placeholder = 'leave blank for none';
       input.autocomplete = 'off';
       input.spellcheck = false;
-      input.oninput = () => { c.accessKey = input.value; markUnsaved(); };
+      input.oninput = () => { c.accessKey = input.value; clearConnStatus(c.id); markUnsaved(); };
       const reveal = document.createElement('button');
       reveal.type = 'button';
       reveal.className = 'ghost small';
@@ -1364,6 +1390,18 @@ function renderConnections() {
     });
 
     // --- footer: per-row test ---
+    /* One test path for the row button, "Test all" and the panel's auto-test.
+     *
+     * A SAVED row whose on-screen values still match the stored ones is pinged
+     * BY ID (connections:ping → GET /models): that returns the round-trip
+     * latency, which is also painted onto the status bar's latency chip when
+     * this row is the active connection. An edited row — or an unsaved draft
+     * row that has no id to ping yet — falls back to the ad-hoc models lookup,
+     * which validates exactly the values on screen rather than the stored ones.
+     *
+     * Results are stored per connection id (connStatus) and restored on every
+     * re-render, so a pool toggle or a save cannot wipe them; editing the URL
+     * or key clears the entry (clearConnStatus). */
     const foot = document.createElement('div');
     foot.className = 'conn-foot';
     const testBtn = document.createElement('button');
@@ -1372,28 +1410,77 @@ function renderConnections() {
     testBtn.textContent = 'Test';
     const status = document.createElement('span');
     status.className = 'dim conn-status';
-    testBtn.onclick = async () => {
-      // A draft row may have no saved endpoint, so test the URL on screen via the
-      // ad-hoc models lookup rather than connections:ping (which needs an id).
+    const tester = { id: c.id, running: false, run: null };
+
+    /* Write to this card's span AND the live one when they differ: a re-render
+     * replaces the card's DOM mid-test, and a result that lands only on the
+     * detached node would be invisible until the next render. */
+    const setStatus = (text, cls, store = true) => {
+      const apply = (el) => {
+        if (!el) return;
+        el.textContent = text;
+        el.classList.remove('ok', 'bad');
+        if (cls) el.classList.add(cls);
+      };
+      apply(status);
+      const live = document.querySelector('#conn-list .conn-card[data-conn-id="' + c.id + '"] .conn-status');
+      if (live && live !== status) apply(live);
+      if (store) {
+        if (text) connStatus.set(c.id, { text, cls: cls || '' });
+        else connStatus.delete(c.id);
+      }
+    };
+
+    const savedStatus = connStatus.get(c.id);
+    if (savedStatus) setStatus(savedStatus.text, savedStatus.cls, false);
+
+    tester.run = async () => {
+      if (tester.running) return { ok: false, skipped: true };
       // Read urlInput, not a CSS query: the model field is ALSO type=text, so
       // `.conn-field input[type=text]` only works by accident of append order.
-      const endpoint = urlInput ? urlInput.value : (c.endpoint || '');
-      if (!endpoint.trim()) { status.textContent = 'Enter a Base URL first.'; return; }
+      const endpoint = (urlInput ? urlInput.value : (c.endpoint || '')).trim();
+      if (!endpoint) { setStatus('Enter a Base URL first.', 'bad'); return { ok: false, err: 'no endpoint' }; }
+      tester.running = true;
       testBtn.disabled = true;
-      status.textContent = 'Testing…';
-      status.classList.remove('ok', 'bad');
+      setStatus('Testing…', '', false);
+      const stripSlash = value => String(value || '').trim().replace(/\/+$/, '');
       try {
-        const res = await reachApi.listModels({ endpoint: endpoint.trim(), accessKey: c.accessKey || '' });
-        status.textContent = res.ok
-          ? `OK · ${res.models.length} model(s)`
-          : `Failed · ${res.err || 'unreachable'}`;
-        status.classList.toggle('bad', !res.ok);
-        status.classList.toggle('ok', !!res.ok);
+        let earlier = null;
+        try { earlier = await reachApi.connections.list(); } catch { /* fall back to the ad-hoc lookup */ }
+        const rec = earlier && (earlier.connections || []).find(x => x.id === c.id);
+        const unchanged = !!rec
+          && stripSlash(rec.endpoint) === stripSlash(endpoint)
+          && (rec.accessKey || '') === (c.accessKey || '');
+        let result;
+        if (unchanged) {
+          const ping = await reachApi.connections.ping(c.id);
+          const ok = !!(ping && ping.ok);
+          if (ok) {
+            const models = ping.models === null || ping.models === undefined ? '' : ` · ${ping.models} model(s)`;
+            result = { ok: true, text: `OK · ${ping.latencyMs} ms${models}` };
+          } else {
+            result = { ok: false, text: `Failed · ${(ping && ping.err) || 'unreachable'}` };
+          }
+          // The latency chip speaks for the ACTIVE connection only.
+          if (c.id === connActiveId) window.ReachWorkspaceShell?.setLatency(ok ? ping.latencyMs : null, ok);
+        } else {
+          const res = await reachApi.listModels({ endpoint, accessKey: c.accessKey || '' });
+          result = res && res.ok
+            ? { ok: true, text: `OK · ${res.models.length} model(s)` }
+            : { ok: false, text: `Failed · ${(res && res.err) || 'unreachable'}` };
+        }
+        setStatus(result.text, result.ok ? 'ok' : 'bad');
+        return result;
       } catch (e) {
-        status.textContent = 'Failed · ' + e.message;
-        status.classList.add('bad');
-      } finally { testBtn.disabled = false; }
+        setStatus('Failed · ' + e.message, 'bad');
+        return { ok: false, err: e.message };
+      } finally {
+        tester.running = false;
+        testBtn.disabled = false;
+      }
     };
+    testBtn.onclick = () => { void tester.run(); };
+    connTesters.push(tester);
     foot.append(testBtn, status);
 
     // Append order defines layout: head, then fields, then the Test footer.
@@ -1411,12 +1498,46 @@ function renderConnections() {
   }
   const addBtn = $('#btn-add-connection');
   if (addBtn) addBtn.disabled = connDraft.length >= CONN_MAX;
+
+  /* One line stating what the app is actually configured to use — the same fact
+   * the status bar shows, painted from the DRAFT so edits appear before saving. */
+  const summary = $('#conn-summary');
+  if (summary) {
+    const active = connDraft.find(c => c.id === connActiveId) || null;
+    summary.textContent = active
+      ? `Active: ${active.name || active.endpoint || 'connection'}${active.model ? ' — model ' + active.model : ' — no default model'}. Used by every conversation, the playground and the refactor workbench.`
+      : 'No active connection yet. Add one below.';
+  }
 }
 
 function markUnsaved() {
   const el = $('#settings-status');
   if (el && !el.dataset.savedRecently) el.textContent = 'Unsaved changes.';
 }
+
+/* Cross-surface mirror for the status bar's quick-switch (workspace-shell.js).
+ *
+ * The footer persists activation and model picks straight through the
+ * connections IPC — this draft never sees those writes. Without the mirror the
+ * draft would keep the OLD active id / model, and the next Save Settings would
+ * silently write them back, reverting the switch the user just made.
+ *
+ * Deliberately minimal: only the fields the footer owns are copied, already
+ * typed card edits stay untouched, and nothing is marked unsaved — the switch
+ * is already on disk, the draft is just catching up to it. */
+window.ReachSettingsDraft = {
+  setActive(id) {
+    if (!id || !connDraft.some(c => c.id === id)) return;
+    connActiveId = id;
+    if ($('#page-settings')?.classList.contains('active')) renderConnections();
+  },
+  setModel(id, model) {
+    const row = connDraft.find(c => c.id === id);
+    if (!row) return;
+    row.model = model;
+    if ($('#page-settings')?.classList.contains('active')) renderConnections();
+  },
+};
 
 $('#btn-add-connection').onclick = () => {
   if (connDraft.length >= CONN_MAX) return;
@@ -1430,6 +1551,37 @@ $('#btn-add-connection').onclick = () => {
   const cards = document.querySelectorAll('#conn-list .conn-card');
   const last = cards[cards.length - 1];
   if (last) { const url = last.querySelector('.conn-field input[type=text]'); if (url) url.focus(); }
+};
+
+/* "Test all": ping every row with the values on screen, in parallel. Read-only
+ * (GET /models), so it cannot cost tokens or mutate anything. Each row writes
+ * its own status; nothing here waits on another row. */
+{
+  const testAllBtn = $('#btn-test-all');
+  if (testAllBtn) testAllBtn.onclick = async () => {
+    if (testAllBtn.disabled) return;
+    testAllBtn.disabled = true;
+    try { await Promise.allSettled(connTesters.map(t => t.run())); }
+    finally { testAllBtn.disabled = false; }
+  };
+}
+
+/* Auto-test hook for the Connection panel's open (called from settings.js):
+ * test every rendered row that has no stored result yet, so the page never
+ * looks the same whether or not any provider is reachable. Results persist per
+ * connection id until that row is edited, so reopening does not re-ping. Rows
+ * with no URL are skipped — there is nothing to test, and "Enter a Base URL
+ * first." on an untouched new row is noise, not information. */
+window.ReachConnPanel = {
+  autoTest() {
+    for (const tester of connTesters) {
+      if (connStatus.has(tester.id)) continue;
+      const card = document.querySelector('#conn-list .conn-card[data-conn-id="' + tester.id + '"]');
+      const url = card && card.querySelector('.conn-url');
+      if (!url || !url.value.trim()) continue;
+      void tester.run();
+    }
+  },
 };
 
 $('#btn-save-settings').onclick = async () => {
@@ -1468,6 +1620,9 @@ $('#btn-save-settings').onclick = async () => {
   // (draft ids are replaced by real ones for new rows).
   await loadSettings();
   refreshStatus();
+  // The status bar reads the same settings; repaint its chips so a switch or
+  // model change saved here shows up immediately instead of lagging behind.
+  window.ReachWorkspaceShell?.refreshEndpointChip();
   status.dataset.savedRecently = '1';
   status.textContent = 'Saved.';
   setTimeout(() => { status.textContent = ''; delete status.dataset.savedRecently; }, 2000);

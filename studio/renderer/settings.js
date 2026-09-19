@@ -35,6 +35,12 @@ async function openSettingsPanel(panel) {
     el.classList.toggle('active', el.dataset.settingsPanel === panel);
     el.setAttribute('aria-current', el.dataset.settingsPanel === panel ? 'page' : 'false');
   });
+  if (panel === 'connection') {
+    // Live status, not a page that looks identical whether or not a provider is
+    // reachable: test every row that has no result yet (read-only GET /models;
+    // results persist per row until it is edited, so reopening does not re-ping).
+    window.ReachConnPanel?.autoTest?.();
+  }
   settingsAgent = currentAgent ? await reachApi.agents.get(currentAgent.id) : null;
   if (panel === 'conversation') {
     $('#agent-settings-context').textContent = settingsAgent ? `${settingsAgent.name} · ${settingsAgent.dir}` : 'Select a conversation in Agents to change its settings.';

@@ -250,10 +250,13 @@
           <strong>Save Settings</strong>.
         </p>
 
+        <p id="conn-summary" class="settings-description conn-summary" role="status"></p>
+
         <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
 
         <div class="settings-actions conn-actions">
           <button id="btn-add-connection" class="ghost small" type="button">+ Add connection</button>
+          <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
           <span id="conn-count" class="dim"></span>
         </div>
 
@@ -600,17 +603,21 @@
        daemon, and the tray control opens Settings rather than toggling a
        background daemon. Both say what they actually are. -->
   <footer class="statusbar-bottom" id="statusbar-bottom">
+    <!-- Quick connection switcher: opens UPWARD from the endpoint chip. Rows are
+         built in workspace-shell.js with createElement — connection names and
+         endpoints are user input, so they are never interpolated into markup. -->
+    <div id="sb-conn-popover" class="sb-popover hidden" role="menu" aria-label="Switch connection"></div>
     <span id="conn-mode" class="dim"></span>
     <div class="sb-group">
-      <span id="sb-endpoint" class="sb-item sb-chip" title="Configured endpoint">
+      <button id="sb-endpoint" class="sb-item sb-chip sb-clickable" type="button" title="Configured endpoint" aria-haspopup="menu" aria-expanded="false" aria-controls="sb-conn-popover">
         <span class="sb-dot" id="sb-endpoint-dot" aria-hidden="true"></span><span id="sb-endpoint-text">no endpoint</span>
-      </span>
+      </button>
       <span id="sb-latency" class="sb-item sb-chip" title="Last measured round-trip latency" hidden>
         latency <b id="sb-latency-val">&mdash;</b>
       </span>
-      <span id="sb-model" class="sb-item sb-chip" title="Active model" hidden>
+      <button id="sb-model" class="sb-item sb-chip sb-clickable" type="button" title="Active model" hidden>
         model <b id="sb-model-val">&mdash;</b>
-      </span>
+      </button>
       <span id="sb-index" class="sb-item sb-chip" title="Codebase index" hidden>
         index <b id="sb-index-val">&mdash;</b>
       </span>

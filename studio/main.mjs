@@ -2574,6 +2574,113 @@ app.whenReady().then(() => {
             if (!document.querySelector('#rf-conn')) throw new Error('Refactor page has no connection picker');
             if (document.querySelector('#rf-conn').options.length !== 1) throw new Error('Refactor picker should list the one connection');
             if (!document.querySelector('#pg-model-src') || !document.querySelector('#rf-model-src')) throw new Error('Model pickers lack a source caption');
+
+            // --- Status-bar quick-switch: connection + model from the footer ---
+            // The endpoint and model chips are buttons now: the endpoint chip
+            // opens a popover whose rows ACTIVATE a connection immediately (no
+            // Settings detour), and the model chip opens the shared picker to
+            // set the ACTIVE connection's default model. These assertions drive
+            // the real DOM handlers; persistence goes through connections:save.
+            await window.ReachWorkspaceShell.goView('settings');
+            await openSettingsPanel('connection');
+            await loadSettings();
+            const sbEndpointChip = document.querySelector('#sb-endpoint');
+            const sbModelChip = document.querySelector('#sb-model');
+            if (!sbEndpointChip || sbEndpointChip.tagName !== 'BUTTON') throw new Error('Endpoint status chip must be a button');
+            if (!sbModelChip || sbModelChip.tagName !== 'BUTTON') throw new Error('Model status chip must be a button');
+            // Opening the panel auto-tests rows that have no result yet (read-only
+            // GET /models). Wait for the single existing row to settle.
+            const connStatusTexts = () => [...document.querySelectorAll('#conn-list .conn-status')].map(el => el.textContent);
+            let footerDeadline = Date.now() + 8000;
+            while (connStatusTexts().some(t => !t || t === 'Testing…')) {
+              if (Date.now() > footerDeadline) throw new Error('Connection auto-test did not settle: ' + connStatusTexts().join(' | '));
+              await new Promise(r => setTimeout(r, 50));
+            }
+            if (!/^Failed/.test(connStatusTexts()[0])) throw new Error('Unreachable fixture endpoint must report a failure, got: ' + connStatusTexts()[0]);
+            // A second connection to switch to, added WITHOUT activating (:10
+            // cannot collide with the :9 fixture the suite already uses).
+            const footerAdd = await reachApi.connections.save({ action: 'add', endpoint: 'http://127.0.0.1:10/v1', name: 'Footer Switch Target', model: 'footer-model', activate: false });
+            if (!footerAdd.ok) throw new Error('Footer fixture connection failed: ' + footerAdd.err);
+            const footerTarget = footerAdd.connections.connections.find(c => c.endpoint.indexOf(':10') !== -1);
+            if (!footerTarget) throw new Error('Footer fixture connection missing');
+            await loadSettings();
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            // The popover lists every connection; picking the inactive row
+            // activates it and closes the popover. Opening is an async IPC
+            // round trip (the list is re-read on every open), so poll for it.
+            sbEndpointChip.click();
+            footerDeadline = Date.now() + 3000;
+            while (document.querySelector('#sb-conn-popover').classList.contains('hidden')) {
+              if (Date.now() > footerDeadline) throw new Error('Endpoint chip did not open the connection popover');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            const footerPop = document.querySelector('#sb-conn-popover');
+            const footerRows = [...footerPop.querySelectorAll('.sb-pop-row')];
+            if (footerRows.length !== 2) throw new Error('Connection popover must list both connections, got ' + footerRows.length);
+            const footerRow = footerRows.find(r => r.dataset.connId === footerTarget.id);
+            if (!footerRow) throw new Error('Popover is missing the inactive connection row');
+            footerRow.click();
+            footerDeadline = Date.now() + 3000;
+            while ((await reachApi.getSettings()).activeConnection !== footerTarget.id) {
+              if (Date.now() > footerDeadline) throw new Error('Footer popover did not activate the clicked connection');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            if (!document.querySelector('#sb-conn-popover').classList.contains('hidden')) throw new Error('Popover must close after a switch');
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            if (document.querySelector('#sb-endpoint-text').textContent.indexOf('127.0.0.1:10') === -1) throw new Error('Endpoint chip did not repaint after the switch: ' + document.querySelector('#sb-endpoint-text').textContent);
+            // The Settings draft followed the external switch WITHOUT a reload —
+            // the radio moved — so the next Save cannot revert the footer's pick.
+            const footerCard = document.querySelector('#conn-list .conn-card.active');
+            if (!footerCard || footerCard.dataset.connId !== footerTarget.id) throw new Error('Settings draft did not follow the footer switch');
+            if (!footerCard.querySelector('.conn-radio').checked) throw new Error('Settings draft radio did not move with the footer switch');
+            // Model chip: opens the shared picker, targeted at the ACTIVE row.
+            sbModelChip.click();
+            footerDeadline = Date.now() + 3000;
+            while (document.querySelector('#model-modal').classList.contains('hidden') || document.querySelector('#model-source').textContent.indexOf('Footer Switch Target') === -1) {
+              if (Date.now() > footerDeadline) throw new Error('Model chip did not open the picker for the active connection');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            // The fixture endpoint is unreachable by design, so the picker must
+            // settle into its failure state — proving it queried the ACTIVE row
+            // rather than some cached list.
+            footerDeadline = Date.now() + 5000;
+            while (document.querySelector('#model-source').textContent.indexOf('request failed') === -1) {
+              if (Date.now() > footerDeadline) throw new Error('Model picker did not settle on the fixture endpoint');
+              await new Promise(r => setTimeout(r, 25));
+            }
+            document.querySelector('#btn-model-cancel').click();
+            // The pick path (what a model click runs) writes to the ACTIVE row.
+            const footerPick = await window.ReachWorkspaceShell.setConnectionModel(footerTarget.id, 'footer-picked');
+            if (!footerPick || footerPick.ok === false) throw new Error('Footer model pick failed: ' + (footerPick && footerPick.err));
+            if ((await reachApi.getSettings()).model !== 'footer-picked') throw new Error('Footer model pick did not persist');
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            if (document.querySelector('#sb-model-val').textContent !== 'footer-picked') throw new Error('Model chip did not repaint: ' + document.querySelector('#sb-model-val').textContent);
+            // Save Settings must not silently revert the footer's switch or model
+            // pick: the draft mirrors both, so save writes the same values back.
+            await document.querySelector('#btn-save-settings').onclick();
+            const footerAfterSave = await reachApi.getSettings();
+            if (footerAfterSave.activeConnection !== footerTarget.id) throw new Error('Settings save reverted the footer switch');
+            if (footerAfterSave.model !== 'footer-picked') throw new Error('Settings save reverted the footer model pick');
+            // Test all: every row pings with the values on screen, in parallel.
+            document.querySelector('#btn-test-all').click();
+            footerDeadline = Date.now() + 8000;
+            while (connStatusTexts().some(t => !t || t === 'Testing…')) {
+              if (Date.now() > footerDeadline) throw new Error('Test all did not settle: ' + connStatusTexts().join(' | '));
+              await new Promise(r => setTimeout(r, 50));
+            }
+            for (const text of connStatusTexts()) {
+              if (!/^Failed/.test(text)) throw new Error('Unreachable endpoint must report a failure, got: ' + text);
+            }
+            // Cleanup: drop the fixture row and restore the :9 connection as
+            // active (with its model), so later stages see the pre-block state.
+            const footerRemove = await reachApi.connections.save({ action: 'remove', id: footerTarget.id });
+            if (!footerRemove.ok) throw new Error('Footer fixture cleanup failed: ' + footerRemove.err);
+            const footerRestore = await reachApi.connections.save({ action: 'update', id: footerRemove.connections.activeConnection, model: 'fixture' });
+            if (!footerRestore.ok) throw new Error('Footer fixture model restore failed: ' + footerRestore.err);
+            await loadSettings();
+            await window.ReachWorkspaceShell.refreshEndpointChip();
+            if (document.querySelector('#sb-endpoint-text').textContent !== '127.0.0.1:9') throw new Error('Cleanup did not restore the endpoint chip: ' + document.querySelector('#sb-endpoint-text').textContent);
+
             await window.ReachWorkspaceShell.goView('settings');
             await openSettingsPanel('connection');
             await loadSettings();
@@ -2604,7 +2711,7 @@ app.whenReady().then(() => {
         // marker matters because the connection assertions sit INSIDE this call,
         // so without one their success is only inferable from later sections
         // having run — and this suite aborts early on the flaky browser stage.
-        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers, team-pool click-to-toggle with active-connection fallback guard, and persona-pin + team-spread persistence.');
+        console.log('SETTINGS + CONNECTIONS SMOKE OK: panels, budgets, scope inheritance, multi-connection add/activate/remove, duplicate and unknown-id refusal, legacy projection follow-through, per-page connection pickers, team-pool click-to-toggle with active-connection fallback guard, persona-pin + team-spread persistence, status-bar quick-switch (connection popover activation + footer model pick surviving a Settings save), and connection auto-test + Test all status.');
         // Exercise manual compression through the real preload/renderer and SSE path.
         let compressionReady, finishCompression;
         const compressionStarted = new Promise(resolve => { compressionReady = resolve; });
