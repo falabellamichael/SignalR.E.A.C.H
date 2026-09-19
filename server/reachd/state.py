@@ -15,7 +15,7 @@ from reachd.const import (
     SERVICE,
     VERSION,
 )
-from reachd.limits import CounterGate, RateLimiter
+from reachd.limits import AuthGuard, CounterGate, RateLimiter
 from reachd.settings import (
     DEFAULT_SETTINGS,
     _host_is_local,
@@ -31,6 +31,7 @@ class RelayState:
         self.cfg_path = cfg_path
         self.analytics = Analytics(config_dir() / "data" / "reach.db")
         self.limiter = RateLimiter()
+        self.auth_guard = AuthGuard()
         self.cache = ResponseCache()
         self.gate = CounterGate()
         self.latencies = collections.deque(maxlen=LATENCY_SAMPLE_LIMIT)
@@ -228,7 +229,11 @@ class RelayState:
                 return 0.0
             return round(sum(self.speeds) / len(self.speeds), 1)
 
-    def snapshot(self):
+    def snapshot(self, redact=False):
+        """Status for /health. redact=True is for anyone who is not the local
+        operator: the public tunnel serves this route unauthenticated, so it
+        must not hand strangers the internal upstream addresses, the config
+        error text, or the IP address of every request currently in flight."""
         with self._lock:
             stats = self.analytics.stats()
             today = stats.get("today", {})
@@ -236,7 +241,7 @@ class RelayState:
             today["tokens_per_sec"] = speed
             today["live_tps"] = speed
             in_flight = self.in_flight_snapshot()
-            return {
+            snap = {
                 "service": SERVICE,
                 "version": VERSION,
                 "ok": True,
@@ -278,6 +283,11 @@ class RelayState:
                                           default=0.0),
                 "config_error": self.cfg.get("_last_config_error"),
             }
+            if redact:
+                for field in ("upstream", "bridge_url", "config_error"):
+                    snap[field] = None
+                snap["in_flight"] = []
+            return snap
 
     def log_rotation(self, log_path):
         try:

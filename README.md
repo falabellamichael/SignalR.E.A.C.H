@@ -2,7 +2,7 @@
 
 **REACH** = **R**AG **E**ndpoint & **A**I **C**hat **H**ost
 
-A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint with **unlimited gpt-4o for everyone**. No API key, no quotas, no signup. Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
+A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint with **unlimited gpt-4o**. Access is by **API key** (`sk-reach-…`): the host decides who gets one, and nobody else can use the relay — see [Security](#security). Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
 
 The plugin installs a full **control panel** into SimpleRAG's app bar — a menu panel with eight pages: **Dashboard, Browser, Endpoint, Models, Usage, Logs, Settings, About** — plus a dependency-free relay server, hosting tunnel, and a pointer URL that always resolves the live endpoint.
 
@@ -11,7 +11,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Endpoint pointer (always current URL)** | <https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt> |
 | **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`, fully tunable per alias) |
 | **CodeGPT economy models** | `deepseek-v4.1-flash`, `ox-alpha`, `gemini-3.8-flash`, `gpt-5.6-luna`, `glm-5.2`, `MiniMax-M3` — see [CodeGPT economy models](#codegpt-economy-models) |
-| **Auth** | none by default (optional shared access key, IP allow/block lists) |
+| **Auth** | API key required by default (`sk-reach-…`), constant-time check, failed-attempt lockout, optional IP allow/block lists — see [Security](#security) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
 | **Version** | 26.9.4 <!-- x-release-please-version --> |
@@ -111,6 +111,7 @@ updating a client machine does not update that host. Its relay uses the existing
 
 ```bash
 curl "$(curl -s https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt)/v1/chat/completions" \
+  -H "Authorization: Bearer $REACH_KEY" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}'
 ```
@@ -118,7 +119,7 @@ curl "$(curl -s https://gist.githubusercontent.com/falabellamichael/e261e0c31ad0
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="<URL from the pointer above>/v1", api_key="not-needed")
+client = OpenAI(base_url="<URL from the pointer above>/v1", api_key="<your sk-reach key>")
 reply = client.chat.completions.create(
     model="gpt-4o",
     messages=[{"role": "user", "content": "Hello!"}],
@@ -126,7 +127,7 @@ reply = client.chat.completions.create(
 print(reply.choices[0].message.content)
 ```
 
-**In SimpleRAG:** open the REACH page → **Endpoint** → hit **Add to SimpleRAG** (one click), or do it manually: Endpoint settings → OpenAI-compatible → Base URL `<URL>/v1`, model `gpt-4o`, API key blank.
+**In SimpleRAG:** open the REACH page → **Endpoint** → hit **Add to SimpleRAG** (one click — it creates a key named `SimpleRAG` and fills it in), or do it manually: Endpoint settings → OpenAI-compatible → Base URL `<URL>/v1`, model `gpt-4o`, API key = your `sk-reach-…` key.
 
 > The public URL is a tunnel that changes when the host restarts it — always resolve it through the pointer gist above (the REACH panel and README do this automatically).
 
@@ -160,7 +161,7 @@ python tools/reach.py install
 
 ## Connect the SimpleRAG panel to the hosted endpoint
 
-On a client machine without OmniRoute, run `node tools/endpoint-client.cjs` (Node.js 22+).
+On a client machine without OmniRoute, run `REACH_KEY=sk-reach-… node tools/endpoint-client.cjs` (Node.js 22+; the host gives you the key). The bridge attaches that key for programs on your machine, but never for a web page in your browser.
 This loopback-only bridge serves the panel at `127.0.0.1:20777`, follows the published
 endpoint pointer, and forwards status, models, and streaming chat to SignalREACH.
 It does not start a public tunnel or publish a new endpoint. Hosting settings and
@@ -475,7 +476,7 @@ python tools/reach.py uninstall --all        # remove panel + stop everything
 
 ### The chat CLI (`tools/reach-cli.py`)
 
-A terminal suite for using the endpoint — stdlib-only, keyless, streaming:
+A terminal suite for using the endpoint — stdlib-only, streaming. Against a hosted relay pass your key with `--key` or `REACH_KEY`; a relay on the same machine needs none:
 
 ```bash
 python tools/reach-cli.py chat                # interactive REPL (/help for commands)
@@ -483,7 +484,7 @@ python tools/reach-cli.py ask "question"      # one-shot answer
 python tools/reach-cli.py ask "…" --web       # grounded in live web search
 python tools/reach-cli.py web "question"      # search → read top pages → cited answer
 python tools/reach-cli.py models              # list served aliases
-# flags: --model gpt-4o | --base URL | --system "…" | --no-stream | --no-color
+# flags: --model gpt-4o | --base URL | --key sk-reach-… | --system "…" | --no-stream | --no-color
 ```
 
 Web mode ports SimpleRAG's websearch: DuckDuckGo HTML scraping (lite
@@ -495,13 +496,13 @@ and a grounding prompt with `[n]` citations. Auto-discovers the endpoint
 ## Architecture
 
 ```
-any OpenAI client ──► https://<tunnel>/v1  (public · no auth · CORS *)
+any OpenAI client ──► https://<tunnel>/v1  (public URL · API key required)
                           │
                  reachd.py  (127.0.0.1:20777, stdlib-only relay)
                           │  injects OmniRoute key server-side
                           │  alias → codegpt/codegpt-gpt-4o pinning
                           │  token-bucket rate limits (per-IP + global + daily)
-                          │  optional shared access key
+                          │  API-key check + failed-attempt lockout + IP lists
                           │  SQLite analytics (requests, tokens, latency)
                           │  upstream retry + circuit breaker + concurrency cap
                           ▼
@@ -510,10 +511,87 @@ any OpenAI client ──► https://<tunnel>/v1  (public · no auth · CORS *)
               codegpt free tier (gpt-4o)
 ```
 
-- The relay binds **loopback only**; the tunnel exposes just the keyless relay surface. OmniRoute's dashboard and API keys are never reachable from outside, and the relay's admin API (`/_reach/*`) refuses non-loopback clients even if the bind host is widened.
+- The relay binds **loopback only**; the tunnel exposes just the key-gated relay surface. OmniRoute's dashboard and API keys are never reachable from outside, and the relay's admin API (`/_reach/*`) refuses non-local clients even if the bind host is widened.
 - `/v1/models` serves exactly the enabled aliases; anything else returns `model_not_found`.
 - Rate limiting protects the free upstream: per-IP requests/minute + daily token budget, a global cap, and burst headroom (all tunable in Settings).
 - Requests are logged locally (IP, model, tokens, latency) for the Usage/Logs pages and pruned on the configured retention.
+
+## Security
+
+The relay is meant to be reachable by the people its host chooses and nobody
+else. The defaults are set up that way; nothing here needs to be switched on.
+
+**Who can use it**
+
+- **API key required.** Every request to `/v1/models` and `/v1/chat/completions`
+  needs `Authorization: Bearer sk-reach-…` (or `X-Reach-Key`). Keys are 128-bit
+  random, compared in constant time, and can be created, disabled and named in
+  Settings → *Client API Keys*. Give each person their own key so you can turn
+  one off without touching the rest.
+- **You, on the host machine, need no key.** A request counts as local only if
+  it comes over loopback, carries no proxy headers, names a loopback `Host`, and
+  has no foreign `Origin`. The last two matter: your own browser also connects
+  from `127.0.0.1`, so without them any web page you visit could drive the relay
+  (or its admin API) as you, including through DNS rebinding. Set
+  `access.local_bypass` to `false` if you want local tools to present a key too.
+- **The admin API (`/_reach/*`) is local-only**, or needs the per-install
+  `X-Reach-Admin` token. Handing out a key (`/_reach/keys/ensure`) is local-only
+  even with that token.
+
+**Getting a key**
+
+```bash
+python tools/reach.py key                  # prints the default key (run on the host)
+python tools/reach.py key --name alice     # a separate key for one person
+```
+
+In Docker there is no panel, so ask the relay from inside the container:
+
+```bash
+docker exec reachd python -c 'import urllib.request as u,json;r=u.Request("http://127.0.0.1:20777/_reach/keys/ensure",data=b"{\"name\":\"Default\"}",headers={"Content-Type":"application/json"});print(json.load(u.urlopen(r))["key"])'
+```
+
+Change `Default` to any name for a separate key. The container's port is only
+reachable with a key from outside; the container's own healthcheck runs locally
+and needs none.
+
+**Hardening that is on by default**
+
+- **Lockout.** Eight wrong keys or admin tokens from one address locks it out
+  for five minutes (`access.auth_fail_limit`, `access.auth_lockout_s`). A locked
+  address is refused *before* its credential is compared, so it cannot keep
+  guessing. A page in your browser is counted separately from you, so it cannot
+  lock you out of your own relay.
+- **Client IPs can't be forged.** `X-Forwarded-For` / `Cf-Connecting-Ip` are
+  believed only from loopback (the local tunnel) or `access.trusted_proxies`.
+  Otherwise a direct client could claim any address and slip past the IP lists.
+- **IP allow / block lists** (addresses or CIDR) apply to every public route,
+  checked before the key.
+- **`/health` is redacted for remote callers** — no internal upstream addresses,
+  config errors, or the addresses of in-flight requests.
+- **`reset` keeps your access control.** It used to drop your keys and turn the
+  key requirement off.
+- **Audit trail.** Lockouts, key creation and any loosening of access settings
+  are recorded (never key values) and shown under `/_reach/audit`.
+- Refused requests appear in the request log as `auth_failed` / `auth_missing`.
+
+**Upgrading an existing install.** The first start after upgrading switches
+`key_required` on once, since older installs served anyone with the URL. Your
+existing key keeps working. If you want it open again, turn it off in Settings;
+it will stay off. Re-run `python tools/reach.py install` so the panel picks up
+the new Settings fields and the fixed *Add to SimpleRAG* button, then restart.
+
+**If you put your own reverse proxy in front** (nginx, Caddy, a Tailscale
+funnel via `public_url_override`): a proxy that adds no `X-Forwarded-For` makes
+its traffic look local and skip the key. Either make it add the header, or set
+`access.local_bypass` to `false`. The relay warns at startup when
+`public_url_override` is set with the bypass on.
+
+**What this does not do.** A key is a bearer secret: anyone you give it to can
+use it, from anywhere, until you disable it. There is no per-key quota or expiry
+yet, and the shared rate limits are per address rather than per key. The tunnel
+URL is published to a public gist, so assume it is known — the key, not the URL,
+is what protects the relay. TLS comes from the tunnel.
 
 ## Requirements (self-hosting)
 

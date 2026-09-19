@@ -385,16 +385,32 @@
             if (!url) { toast('No public URL yet', 'error'); return; }
             addBtn.disabled = true;
             addBtn.textContent = 'Adding…';
-            fetch(core.API_BASE + '/model-endpoints', {
+            // The relay requires a key, so ask it (locally) for one named
+            // "SimpleRAG" - it is created on first use and reused afterwards.
+            // If this panel cannot reach a local relay, register without one and
+            // say so, rather than failing the hookup outright.
+            core.relayFetch('/_reach/keys/ensure', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    name: 'SignalR.E.A.C.H (REACH)',
-                    base_url: url + '/v1',
-                    api_key: '',
-                    default_model: 'gpt-4o'
+                body: JSON.stringify({ name: 'SimpleRAG' })
+            }, 5000)
+                .then(res => (res.ok ? res.json() : null))
+                .catch(() => null)
+                .then(minted => {
+                    if (!minted || !minted.key) {
+                        toast('No key available from a local relay - add your sk-reach key to the SimpleRAG endpoint by hand', 'error');
+                    }
+                    return fetch(core.API_BASE + '/model-endpoints', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: 'SignalR.E.A.C.H (REACH)',
+                            base_url: url + '/v1',
+                            api_key: (minted && minted.key) || '',
+                            default_model: 'gpt-4o'
+                        })
+                    });
                 })
-            })
                 .then(res => res.json().then(data => ({ ok: res.ok, data: data })))
                 .then(({ ok, data }) => {
                     if (ok) {
@@ -415,9 +431,9 @@
         docsCard.appendChild(el('header', 'reach-card-head', 'Routes'));
         const table = el('table', 'reach-table');
         table.innerHTML = '<thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead><tbody>' +
-            '<tr><td>GET</td><td><code>/health</code></td><td>liveness + status (never gated)</td></tr>' +
-            '<tr><td>GET</td><td><code>/v1/models</code></td><td>enabled model aliases</td></tr>' +
-            '<tr><td>POST</td><td><code>/v1/chat/completions</code></td><td>chat — stream &amp; non-stream, rate-limited</td></tr>' +
+            '<tr><td>GET</td><td><code>/health</code></td><td>liveness (public; internal details hidden from remote callers)</td></tr>' +
+            '<tr><td>GET</td><td><code>/v1/models</code></td><td>enabled model aliases &mdash; needs an API key</td></tr>' +
+            '<tr><td>POST</td><td><code>/v1/chat/completions</code></td><td>chat — stream &amp; non-stream, rate-limited, needs an API key</td></tr>' +
             '<tr><td>GET</td><td><code>/status</code></td><td>rich status snapshot</td></tr>' +
             '</tbody>';
         docsCard.appendChild(table);
@@ -440,10 +456,10 @@
         const U = () => (core.store.pointerUrl || 'https://YOUR-PUBLIC-URL');
         const renderedUrl = U();
         const snips = [
-            { id: 'curl', text: 'curl ' + renderedUrl + '/v1/chat/completions \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}\'' },
-            { id: 'python', text: 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + renderedUrl + '/v1", api_key="not-needed")\nreply = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)' },
-            { id: 'javascript', text: 'const res = await fetch("' + renderedUrl + '/v1/chat/completions", {\n  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({ model: "gpt-4o",\n    messages: [{ role: "user", content: "Hello!" }] }),\n});\nconst data = await res.json();\nconsole.log(data.choices[0].message.content);' },
-            { id: 'simplerag', text: '1. Endpoint settings → add OpenAI-compatible\n2. Base URL: ' + renderedUrl + '/v1\n3. Model: gpt-4o\n4. API key: leave blank\n5. Save + select as active model\n(or just hit "Add to SimpleRAG" above)' }
+            { id: 'curl', text: 'curl ' + renderedUrl + '/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_SK_REACH_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}\'' },
+            { id: 'python', text: 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + renderedUrl + '/v1", api_key="YOUR_SK_REACH_KEY")\nreply = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)' },
+            { id: 'javascript', text: 'const res = await fetch("' + renderedUrl + '/v1/chat/completions", {\n  method: "POST",\n  headers: { "Content-Type": "application/json", "Authorization": "Bearer YOUR_SK_REACH_KEY" },\n  body: JSON.stringify({ model: "gpt-4o",\n    messages: [{ role: "user", content: "Hello!" }] }),\n});\nconst data = await res.json();\nconsole.log(data.choices[0].message.content);' },
+            { id: 'simplerag', text: '1. Endpoint settings → add OpenAI-compatible\n2. Base URL: ' + renderedUrl + '/v1\n3. Model: gpt-4o\n4. API key: your sk-reach key (Settings → Client API Keys)\n5. Save + select as active model\n(or just hit "Add to SimpleRAG" above)' }
         ];
         snips.forEach(s => {
             const pre = el('pre', 'reach-snippet');

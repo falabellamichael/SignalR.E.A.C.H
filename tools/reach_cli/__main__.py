@@ -19,7 +19,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="reach-cli",
         description="SignalR.E.A.C.H CLI — terminal chat + web-grounded answers "
-        "over the REACH endpoint (keyless).",
+        "over the REACH endpoint. A hosted relay needs an sk-reach key "
+        "(--key or REACH_KEY); a relay on this machine does not.",
     )
     parser.add_argument(
         "command", nargs="?", choices=("chat", "ask", "web", "models"), default="chat"
@@ -30,6 +31,10 @@ def main(argv=None):
         default=None,
         help="endpoint base URL (default: local relay, "
         "falls back to the public pointer)",
+    )
+    parser.add_argument(
+        "--key", default=None,
+        help="sk-reach API key for a hosted relay (or set REACH_KEY)",
     )
     parser.add_argument("--model", default=None, help="model alias")
     parser.add_argument("--system", default=None, help="session system prompt")
@@ -57,7 +62,8 @@ def main(argv=None):
         sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 
     client = ReachClient(
-        args.base or DEFAULT_BASE, model=args.model, no_stream=args.no_stream
+        args.base or DEFAULT_BASE, model=args.model, no_stream=args.no_stream,
+        key=args.key,
     )
     if args.system:
         client.system = args.system

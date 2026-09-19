@@ -4,7 +4,15 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const POINTER = 'https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt';
 
-function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } = {}) {
+// A page in the user's browser also reaches this bridge from 127.0.0.1, and CORS
+// is open, so a configured key must only ever be used for a genuine local
+// program: no Origin (browsers always send one on POST) and a loopback Host
+// (a DNS-rebinding page carries its own domain there).
+const LOOPBACK_HOST = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(:\d+)?$/i;
+const isLocalCaller = req => !req.headers.origin && LOOPBACK_HOST.test(req.headers.host || '');
+
+function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now, key = process.env.REACH_KEY || '' } = {}) {
+  const accessKey = String(key).trim();
   let endpoint, expires = 0, resolving;
   async function resolveEndpoint() {
     if (endpoint && now() < expires) return endpoint;
@@ -69,6 +77,11 @@ function createClient({ fetchImpl = fetch, pointer = POINTER, now = Date.now } =
       // Only the caller's endpoint credentials are forwarded; never local host secrets.
       if (req.headers.authorization) headers.Authorization = req.headers.authorization;
       if (req.headers['x-reach-key']) headers['X-Reach-Key'] = req.headers['x-reach-key'];
+      // The hosted relay wants an sk-reach key. Supply the configured one for local
+      // programs that did not bring their own.
+      if (accessKey && !headers.Authorization && !headers['X-Reach-Key'] && isLocalCaller(req)) {
+        headers.Authorization = 'Bearer ' + accessKey;
+      }
       const started = now();
       const upstream = await fetchImpl(base + (isStatus ? '/health' : isModels ? '/v1/models' : '/v1/chat/completions'), {
         method: body ? 'POST' : 'GET', headers, body, signal: abort.signal,

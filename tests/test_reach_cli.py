@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import unittest
+import unittest.mock
 
 TOOLS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                      "tools")
@@ -133,6 +134,62 @@ class BuildManifestTests(unittest.TestCase):
 def time_placeholder_ok(system_prompt):
     """The system prompt embeds today's date; assert it rendered."""
     return re.search(r"\d{4}-\d{2}-\d{2}", system_prompt) is not None
+
+
+class ClientKeyTests(unittest.TestCase):
+    """A hosted relay requires an sk-reach key; the CLI must be able to send it."""
+
+    def test_key_is_sent_as_bearer(self):
+        from reach_cli.client import ReachClient
+        client = ReachClient("http://relay/v1", key="sk-reach-abc")
+        self.assertEqual(client._headers({"Content-Type": "application/json"}),
+                         {"Content-Type": "application/json",
+                          "Authorization": "Bearer sk-reach-abc"})
+
+    def test_no_key_sends_no_authorization_header(self):
+        from reach_cli.client import ReachClient
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REACH_KEY", None)
+            self.assertNotIn("Authorization", ReachClient("http://relay/v1")._headers())
+
+    def test_key_falls_back_to_the_environment(self):
+        from reach_cli.client import ReachClient
+        with unittest.mock.patch.dict(os.environ, {"REACH_KEY": " sk-reach-env "}):
+            self.assertEqual(ReachClient("http://relay/v1").key, "sk-reach-env")
+
+    def test_explicit_key_beats_the_environment(self):
+        from reach_cli.client import ReachClient
+        with unittest.mock.patch.dict(os.environ, {"REACH_KEY": "sk-reach-env"}):
+            self.assertEqual(ReachClient("http://relay/v1", key="sk-reach-arg").key,
+                             "sk-reach-arg")
+
+    def test_a_relay_that_answers_401_counts_as_reachable(self):
+        # It is up and wants a key. Reporting "no endpoint found" would send the
+        # user hunting for the wrong problem.
+        import urllib.error
+        from reach_cli.client import ReachClient
+        err = urllib.error.HTTPError("http://relay/v1/models", 401, "unauthorized", {}, None)
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=err):
+            self.assertTrue(ReachClient._reachable("http://relay/v1"))
+        err500 = urllib.error.HTTPError("http://relay/v1/models", 500, "boom", {}, None)
+        with unittest.mock.patch("urllib.request.urlopen", side_effect=err500):
+            self.assertFalse(ReachClient._reachable("http://relay/v1"))
+
+
+class KeyCommandTests(unittest.TestCase):
+    def test_key_command_prints_only_the_key_on_stdout(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from types import SimpleNamespace
+        from reach import cli
+        with unittest.mock.patch.object(cli, "require_relay"),                 unittest.mock.patch.object(cli, "admin_request", return_value=(
+                    200, {"name": "Default", "key": "sk-reach-xyz", "created": True})) as call:
+            out, err = io.StringIO(), io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                cli.cmd_key(SimpleNamespace(name="Default"))
+        call.assert_called_once_with("/_reach/keys/ensure", "POST", {"name": "Default"})
+        self.assertEqual(out.getvalue().strip(), "sk-reach-xyz")
+        self.assertIn("created", err.getvalue())
 
 
 class AgentEditTests(unittest.TestCase):

@@ -578,12 +578,19 @@
             // 6. Access & security
             const ac = section('Access & security', 'fa-key', 'Who may call the endpoint and from where.');
             ac.appendChild(buildInput('checkbox', 'access', 'key_required', 'Require access key',
-                'Clients send X-Reach-Key (or Bearer).'));
+                'Clients send X-Reach-Key (or Bearer). Turn this off only if you want anyone with the URL to use the relay.'));
+            ac.appendChild(buildInput('checkbox', 'access', 'local_bypass', 'Local tools skip the key',
+                'Tools on this machine (panel, VS Code, Studio) need no key. Turn off if a reverse proxy that adds no X-Forwarded-For sits in front of the relay.'));
             ac.appendChild(buildInput('password', 'access', 'access_key', 'Access key',
                 'Blank keeps the current key; min 6 chars when required.'));
             ac.appendChild(buildInput('csv', 'access', 'ip_allowlist', 'IP allowlist',
-                'Empty = everyone. Loopback is always allowed.'));
+                'Empty = everyone. Addresses or CIDR ranges. Genuine local clients are always allowed.'));
             ac.appendChild(buildInput('csv', 'access', 'ip_blocklist', 'IP blocklist'));
+            ac.appendChild(buildInput('csv', 'access', 'trusted_proxies', 'Trusted proxies',
+                'Reverse-proxy addresses whose X-Forwarded-For is believed. The local tunnel is always trusted; leave empty otherwise.'));
+            ac.appendChild(buildInput('number', 'access', 'auth_fail_limit', 'Failed attempts before lockout',
+                'Per client IP, for wrong keys and admin tokens. 0 disables the lockout.'));
+            ac.appendChild(buildInput('number', 'access', 'auth_lockout_s', 'Lockout length (seconds)'));
             ac.appendChild(buildInput('text', 'access', 'cors_origins', 'CORS origins',
                 '"*" or comma-separated origins.'));
 
