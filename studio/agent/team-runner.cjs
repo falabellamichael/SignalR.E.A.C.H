@@ -144,6 +144,7 @@ class TeamRunner {
     this._linkDeclared = null;   // member declared LINKS: COMPLETE in its answer
     this._linksAnswer = null;    // final crew answer for links runs
     this._linksMeta = null;      // rounds / exchanges / completedBy telemetry
+    this._linksSuperseded = new Map(); // live peers cancelled after another member completes
   }
 
   _stopSignal() {
@@ -354,7 +355,8 @@ class TeamRunner {
     this._emit('done', {
       mode,
       stopped: this.stopped,
-      results: results.map(r => ({ index: r.index, name: r.name, ok: r.ok, status: r.status || null, error: r.error || null, chars: (r.output || '').length })),
+      results: results.map(r => ({ index: r.index, name: r.name, ok: r.ok, status: r.status || null, error: r.error || null,
+        completionReason: r.completionReason || null, chars: (r.output || '').length })),
       // The crew answer: chain → last successful output; parallel → all outputs.
       answer: mode === 'chain'
         ? (results.length && results[results.length - 1].ok ? results[results.length - 1].output : '')
@@ -503,7 +505,7 @@ class TeamRunner {
     try {
       const end = await this._drive(key, index, persona, model, fullPrompt, control);
       last = this._harvest(key, store, persona, index, model, end.error);
-      this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error });
+      this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, completionReason: last.completionReason });
       return last;
     } catch (e) {
       last = { index, name: persona.name, model, ok: false, output: '', status: 'error', error: e.message };
@@ -533,6 +535,15 @@ class TeamRunner {
     const output = cleanOutput(store.lastAssistantText(key));
     if (output && linksCompleteIn(output) && !this._linkDeclared) {
       this._linkDeclared = { by: persona.name, index };
+      this._concludeLinkPeers(key, persona.name);
+    }
+    const completedByPeer = this._linksSuperseded.get(key);
+    if (completedByPeer) {
+      return {
+        index, name: persona.name, model, ok: true, output,
+        status: 'completed', error: null,
+        completionReason: `Links completed by ${completedByPeer}`,
+      };
     }
     const runState = store.get(key).runState;
     const status = runState?.status || 'unknown';
@@ -544,6 +555,18 @@ class TeamRunner {
   }
 
   /* ---------- LINKS mode: the peer network ---------- */
+
+  /* A completion declaration is terminal for the whole peer network. Abort
+   * only the other in-flight roster requests so an endpoint that never sends
+   * headers cannot hold the initial fan-out barrier open forever. This is not
+   * a user Stop and is reported as successful team completion, not failure. */
+  _concludeLinkPeers(declarerKey, declarerName) {
+    for (const [key, loop] of this.loops) {
+      if (key === declarerKey || !loop.running) continue;
+      this._linksSuperseded.set(key, declarerName);
+      loop.stop();
+    }
+  }
 
   /* Completion declared? By a member in its own answer (this._linkDeclared)
    * or in a message to a peer (net.linksComplete set on send). */
@@ -595,7 +618,7 @@ class TeamRunner {
     } catch (e) {
       last = { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: e.message };
     }
-    this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, retake: true });
+    this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, completionReason: last.completionReason, retake: true });
     if (this.net) this.net.syncMember(key, { status: last.status, error: last.error, output: last.output });
     control.finished = true;
     this.updatePausedState();

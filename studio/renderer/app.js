@@ -2442,7 +2442,9 @@ function handleTeamEvent(ev) {
         card.classList.add(ev.ok ? 'done' : 'failed');
         // Finished (successful) response: flash the border once — no bar.
         if (ev.ok) flashMemberCard(card);
-        card.querySelector('.member-state').textContent = ev.ok ? `done (${ev.chars || 0} chars)` : `${ev.status || 'failed'}: ${ev.error || 'No completed answer.'}`;
+        card.querySelector('.member-state').textContent = ev.completionReason
+          ? ev.completionReason
+          : ev.ok ? `done (${ev.chars || 0} chars)` : `${ev.status || 'failed'}: ${ev.error || 'No completed answer.'}`;
       }
       break;
     }

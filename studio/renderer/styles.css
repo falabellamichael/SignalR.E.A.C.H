@@ -576,7 +576,7 @@ body.resizing-y, body.resizing-y * {
 
 /* tool cards */
 .tool-card {
-  align-self: stretch; max-width: 92%; border: 1px solid var(--line); border-radius: 8px;
+  align-self: center; width: 92%; border: 1px solid var(--line); border-radius: 8px;
   background: var(--card); font-size: 12px; flex-shrink: 0;
 }
 .tool-card.ok { border-left: 3px solid var(--ok); }
@@ -597,7 +597,7 @@ body.resizing-y, body.resizing-y * {
 
 /* diff review cards */
 .edit-card {
-  align-self: stretch; max-width: 92%; border: 1px solid var(--gold-dim); border-radius: 10px;
+  align-self: center; width: 92%; border: 1px solid var(--gold-dim); border-radius: 10px;
   background: var(--edit-bg); font-size: 12px; overflow: hidden; flex-shrink: 0;
 }
 .edit-card.accepted { border-color: var(--ok); }
@@ -721,8 +721,8 @@ body.resizing-y, body.resizing-y * {
 
 /* ---------- team run: live member cards ---------- */
 .team-run {
-  align-self: stretch; display: flex; flex-direction: column; gap: 8px;
-  max-width: 96%; flex-shrink: 0;
+  align-self: center; display: flex; flex-direction: column; gap: 8px;
+  width: 96%; flex-shrink: 0;
 }
 .member-card {
   border: 1px solid var(--line); border-radius: 10px; background: var(--card);
@@ -747,10 +747,10 @@ body.resizing-y, body.resizing-y * {
 }
 .member-card.just-finished { animation: member-finish-flash 1.05s ease-out; }
 
-/* spawned workers (agent.spawn) nest under the crew: indent + tinted
-   background carry the nesting — no colored edge. */
-.member-card.subagent { margin-left: 26px; background: var(--subagent-bg); }
-.member-card.subagent.depth-2 { margin-left: 52px; }
+/* Spawned workers stay progressively narrower than their parent cards, but
+   use symmetric insets so every level remains centered in the run. */
+.member-card.subagent { margin-inline: 13px; background: var(--subagent-bg); }
+.member-card.subagent.depth-2 { margin-inline: 26px; }
 .sub-badge { color: var(--gold); font-weight: 700; margin-right: 2px; }
 .member-head {
   display: flex; align-items: center; gap: 8px; padding: 8px 16px;

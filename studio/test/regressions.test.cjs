@@ -317,6 +317,49 @@ for (const bodyStarted of [false, true]) {
   });
 }
 
+test('Links completion cancels a peer request that never sends headers', async t => {
+  let stalledStarted = false, stalledClosed = false;
+  const endpoint = await localEndpoint(t, (body, res) => {
+    if (body.model === 'stalled') {
+      stalledStarted = true;
+      res.on('close', () => { stalledClosed = true; });
+      return;
+    }
+    setTimeout(() => jsonReply(res, 'The crew result is complete and verified.\nLINKS: COMPLETE\n```agent_status\n{"status":"complete","summary":"Crew result delivered."}\n```'), 20);
+  });
+  const events = [];
+  const runner = new TeamRunner({
+    team: { name: 'Links finish barrier', mode: 'links', members: [{}, {}] },
+    personas: [
+      { id: 'slow', name: 'Stalled', model: 'stalled' },
+      { id: 'done', name: 'Finisher', model: 'finisher' },
+    ],
+    endpoint,
+    task: 'Complete as a crew.',
+    requestTimeoutMs: 0,
+    sendEvent: (_, event) => events.push(event),
+  });
+
+  const result = await Promise.race([
+    runner.run('links-never-responds'),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('Links run remained blocked by the stalled peer.')), 2000)),
+  ]);
+
+  assert.equal(result.length, 2);
+  assert.equal(result[0].ok, true);
+  assert.match(result[0].completionReason, /Finisher/);
+  assert.equal(result[1].ok, true);
+  for (let attempt = 0; attempt < 20 && !stalledClosed; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.ok(stalledStarted, 'the stalled peer reached its endpoint');
+  assert.ok(stalledClosed, 'the pending HTTP request was aborted');
+  const done = events.findLast(event => event.type === 'done');
+  assert.equal(done.links.completedBy, 'Finisher');
+  assert.equal(done.links.stalled, 0);
+  assert.match(done.answer, /LINKS: COMPLETE/);
+});
+
 test('team stop cancels both members waiting on model streams', async t => {
   let started = 0, ready;
   const bothStarted = new Promise(resolve => { ready = resolve; });
