@@ -36,6 +36,7 @@ const { RunControl } = require('./run-control.cjs');
 const { parseAgentResponse } = require('./agent-response.cjs');
 const { AgentNet } = require('./agent-net.cjs');
 const { linksCompleteIn } = require('./agent-net.cjs');
+const { TeamNurse } = require('./team-nurse.cjs');
 const { getRole } = require('./roles.cjs');
 const { runToTerminal, MAX_RESUME_CYCLES: DRIVER_MAX_CYCLES } = require('./pause-resume.cjs');
 
@@ -53,6 +54,11 @@ const LINKS_RATE = 3;
 const MAX_LINK_ROUNDS = 12;
 const MEMBER_LINK_TURNS = 4;
 const LINKS_COMPLETION_GRACE_MS = 250;
+/* Interactive chats may wait forever when requestTimeoutMs is 0. A crew cannot:
+ * one silent provider would otherwise prevent every other member from reaching
+ * the Links wake/synthesis phase. Preserve any explicit positive deadline and
+ * give unlimited settings a finite team-only fallback. */
+const TEAM_REQUEST_TIMEOUT_MS = 180000;
 
 /* The stored assistant message keeps its raw agent_status fence; relay only
  * the human-visible text so the next member in a chain gets clean context. */
@@ -63,6 +69,20 @@ function cleanOutput(text) {
   } catch {
     return String(text || '').trim();
   }
+}
+
+/* A kept-alive Links member has assistant messages from earlier turns. Harvest
+ * only the answer produced after the current send/wake began, otherwise a
+ * failed provider request can accidentally reuse an older successful answer. */
+function assistantTextSince(store, agentId, messageBoundary) {
+  const messages = store.get(agentId).messages || [];
+  for (let i = messages.length - 1; i >= Math.max(0, messageBoundary); i--) {
+    const message = messages[i];
+    if (message?.role === 'assistant' && typeof message.content === 'string' && message.content.trim()) {
+      return message.content.trim();
+    }
+  }
+  return '';
 }
 
 /* Keep the most recent entries within the relay budget. Dropping the OLDEST
@@ -126,7 +146,10 @@ class TeamRunner {
     this.sendEvent = sendEvent;
     this.requestApproval = requestApproval;
     this.requestEditReview = requestEditReview;
-    this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
+    const requestedTimeout = budgets?.requestTimeoutMs ?? requestTimeoutMs;
+    this.requestTimeoutMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+      ? requestedTimeout
+      : TEAM_REQUEST_TIMEOUT_MS;
     this.awaitEditResolution = awaitEditResolution;
     this.requestMemberAnswer = requestMemberAnswer;
     this.concurrency = budgets ? cap(budgets.teamConcurrency) : Math.max(1, Number(concurrency) || PARALLEL_CONCURRENCY);
@@ -135,6 +158,7 @@ class TeamRunner {
     this.memberEdits = new Map();        // memberKey -> [edit] proposed this pause cycle
     this.stopped = false;
     this.paused = false;
+    this.userPaused = false;
     this.controls = this.personas.map((persona, index) => new RunControl(null, paused => {
       this.net?.syncMember(`m${index}-${persona.id}`, { status: paused ? 'paused' : 'running' });
       this._emit('member-control', { index, name: persona.name, paused });
@@ -147,6 +171,10 @@ class TeamRunner {
     this._linksMeta = null;      // rounds / exchanges / completedBy telemetry
     this._linksSuperseded = new Map(); // live peers cancelled after another member completes
     this._linksConclusionTimer = null; // short grace for productive in-flight peers
+    this.nurse = null;             // heuristic, no-model Links supervisor
+    this._linksActivityVersion = 0; // event-driven scheduler pulse (no polling timer)
+    this._linksActivityLast = null;
+    this._linksActivityDeferred = null;
   }
 
   _stopSignal() {
@@ -158,8 +186,30 @@ class TeamRunner {
     return this._stopDeferred.promise;
   }
 
+  _signalLinksActivity(activity = {}) {
+    this._linksActivityVersion++;
+    this._linksActivityLast = activity;
+    if (this._linksActivityDeferred) {
+      const deferred = this._linksActivityDeferred;
+      this._linksActivityDeferred = null;
+      deferred.resolve({ version: this._linksActivityVersion, activity });
+    }
+  }
+
+  _waitForLinksActivity(afterVersion = 0) {
+    if (this._linksActivityVersion > afterVersion) {
+      return Promise.resolve({ version: this._linksActivityVersion, activity: this._linksActivityLast });
+    }
+    if (!this._linksActivityDeferred) {
+      let resolve;
+      const promise = new Promise(r => { resolve = r; });
+      this._linksActivityDeferred = { promise, resolve };
+    }
+    return this._linksActivityDeferred.promise;
+  }
+
   _emit(type, payload = {}) {
-    this.sendEvent('team:event', { teamRunId: this.teamRunId, type, ...payload });
+    this.sendEvent('team:event', { teamRunId: this.teamRunId, type, ...payload, at: payload.at ?? Date.now() });
   }
 
   /**
@@ -253,7 +303,16 @@ class TeamRunner {
       agentSettings: this.agentSettings,
       teamRunId,
       teamName: this.team.name,
-      onSettled: () => this.updatePausedState(),
+      onSettled: () => {
+        this.updatePausedState();
+        this._signalLinksActivity({ type: 'worker-settled' });
+      },
+      onActivity: activity => {
+        if (mode === 'links' && activity?.linksComplete) {
+          this._concludeLinkPeers(activity.from, activity.fromName || String(activity.from || 'crew member'), { includeDeclarer: true });
+        }
+        this._signalLinksActivity(activity);
+      },
       endpoint: this.endpoint,
       accessKey: this.accessKey,
       defaultModel: this.defaultModel,
@@ -405,9 +464,11 @@ class TeamRunner {
   /* Shared pause/resume drive for one member turn — the first turn and every
    * Links wake-up use the same callbacks, so resume behaviour cannot diverge. */
   async _drive(key, index, persona, model, prompt, control) {
-    return runToTerminal({
+    const store = this.memberStores.get(key);
+    const messageBoundary = store.get(key).messages.length;
+    const end = await runToTerminal({
       loop: this.loops.get(key),
-      store: this.memberStores.get(key),
+      store,
       agentId: key,
       firstPrompt: prompt,
       control,
@@ -427,6 +488,7 @@ class TeamRunner {
       onQuestion: (questionId, question) => this._emit('member-question', { index, name: persona.name, questionId, question }),
       onResumed: (cycle, status) => this._emit('member-resumed', { index, name: persona.name, cycle, status }),
     });
+    return { ...end, messageBoundary };
   }
 
   async _runMember(persona, index, prompt, { keep = false } = {}) {
@@ -506,12 +568,14 @@ class TeamRunner {
     let last = { index, name: persona.name, model, ok: false, output: '', status: 'error', error: 'member did not run' };
     try {
       const end = await this._drive(key, index, persona, model, fullPrompt, control);
-      last = this._harvest(key, store, persona, index, model, end.error);
+      last = this._asLinksResult(this._harvest(key, store, persona, index, model, end.error, end.messageBoundary));
+      last.completedAt = Date.now();
       this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, completionReason: last.completionReason });
       return last;
     } catch (e) {
-      last = { index, name: persona.name, model, ok: false, output: '', status: 'error', error: e.message };
-      this._emit('member-done', { index, name: persona.name, ok: false, error: e.message });
+      last = this._asLinksResult({ index, name: persona.name, model, ok: false, output: '', status: 'error', error: e.message });
+      last.completedAt = Date.now();
+      this._emit('member-done', { index, name: persona.name, ok: false, status: last.status, error: e.message });
       return last;
     } finally {
       control.finished = true;
@@ -533,8 +597,8 @@ class TeamRunner {
   /* Read the member's terminal state + cleaned answer out of its store.
    * driverError: the pause/resume driver's failure reason, if any (it knows
    * why a resume chain ended; runState alone can't tell those apart). */
-  _harvest(key, store, persona, index, model, driverError = null) {
-    const output = cleanOutput(store.lastAssistantText(key));
+  _harvest(key, store, persona, index, model, driverError = null, messageBoundary = 0) {
+    const output = cleanOutput(assistantTextSince(store, key, messageBoundary));
     if (output && linksCompleteIn(output) && !this._linkDeclared) {
       this._linkDeclared = { by: persona.name, index };
       this._concludeLinkPeers(key, persona.name);
@@ -556,6 +620,15 @@ class TeamRunner {
     return { index, name: persona.name, model, ok, output, status, error, question: runState?.reason || null };
   }
 
+  /* A failed Links turn is terminal for that turn, but not permanently dead:
+   * peers can see the stalled status and revive it by sending new instructions.
+   * User waits and explicit Stop retain their distinct meanings. */
+  _asLinksResult(result) {
+    if (this.team.mode !== 'links' || !result || result.ok) return result;
+    if (['waiting_input', 'waiting_edits', 'stopped'].includes(result.status)) return result;
+    return { ...result, status: 'stalled' };
+  }
+
   /* ---------- LINKS mode: the peer network ---------- */
 
   /* A completion declaration is terminal for the whole peer network, but an
@@ -563,12 +636,12 @@ class TeamRunner {
    * its final response. Give active peers one short grace window, then abort
    * anything still hanging (including endpoints that never send headers).
    * This is not a user Stop and is reported as successful team completion. */
-  _concludeLinkPeers(declarerKey, declarerName) {
+  _concludeLinkPeers(declarerKey, declarerName, { includeDeclarer = false } = {}) {
     if (this._linksConclusionTimer) return;
     this._linksConclusionTimer = setTimeout(() => {
       this._linksConclusionTimer = null;
       for (const [key, loop] of this.loops) {
-        if (key === declarerKey || !loop.running) continue;
+        if ((!includeDeclarer && key === declarerKey) || !loop.running) continue;
         this._linksSuperseded.set(key, declarerName);
         loop.stop();
       }
@@ -591,9 +664,16 @@ class TeamRunner {
     return box;
   }
 
+  _restoreLinkInbox(index, messages) {
+    if (!this.net || !messages?.length) return;
+    const rec = this.net.agents.get(`m${index}-${this.personas[index].id}`);
+    if (!rec) return;
+    rec.inbox = [...messages, ...(rec.inbox || [])];
+  }
+
   /* Wake a member for one more Links turn, re-using the SAME loop + store so
    * the member keeps its full conversation and everything it learned. */
-  async _wakeMember(index, inbox, { synthesize = false, note = '' } = {}) {
+  async _wakeMember(index, inbox, { synthesize = false, note = '', handoff = '' } = {}) {
     const persona = this.personas[index];
     const key = `m${index}-${persona.id}`;
     const store = this.memberStores.get(key);
@@ -603,12 +683,27 @@ class TeamRunner {
     }
     const control = this.controls[index];
     control.finished = false;
+    // A queued Links batch may outlive the first active wake. If the user
+    // pauses while another slot is still pending, do not let that later item
+    // begin a provider request just because its previous turn was marked
+    // finished (RunControl.pause intentionally ignores finished controls).
+    if (this.userPaused) control.pause();
+    await control.wait(() => this._stopSignal());
+    if (this.stopped) {
+      control.finished = true;
+      return { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'stopped', error: 'Stopped by you.', completedAt: Date.now(), wakeDeferred: true };
+    }
     const parts = [`Original task:\n${this.task}`, this._crewContext(index, 'links')];
     const role = this._roleBlock(index);
     if (role) parts.push(role);
     parts.push(this._linksBlock());
     if (synthesize) {
-      parts.push(`${note} You are asked for the FINAL SYNTHESIS: using the real state and your peers' results (agent.list / agent.status to refresh), write the definitive answer to the original task now. State clearly what is DONE (with evidence), what is NOT, and what each unfinished piece still needs.`);
+      if (handoff) {
+        parts.push(handoff);
+        parts.push(`${note} You are asked for the FINAL SYNTHESIS: use the Team Nurse handoff above as the current crew state. Call agent.list / agent.status only if something is genuinely missing, then write the definitive answer to the original task now. State clearly what is DONE (with evidence), what is NOT, and what each unfinished piece still needs.`);
+      } else {
+        parts.push(`${note} You are asked for the FINAL SYNTHESIS: use the real crew state and agent.list / agent.status to collect any missing peer results, then write the definitive answer to the original task now. State clearly what is DONE (with evidence), what is NOT, and what each unfinished piece still needs.`);
+      }
     } else {
       parts.push(`LINK MESSAGES from the crew (deliver on them, then continue your role's work):\n${inbox.join('\n\n')}`);
     }
@@ -616,15 +711,16 @@ class TeamRunner {
     this._emit('member-start', { index, name: persona.name, model: conn.model, role: this.roleOf(index), promptChars: prompt.length, retake: true });
     if (this.net) {
       const rec = this.net.agents.get(key);
-      if (rec) rec.status = 'running';
+      if (rec) rec.status = control.paused ? 'paused' : 'running';
     }
     let last;
     try {
       const end = await this._drive(key, index, persona, conn.model, prompt, control);
-      last = this._harvest(key, store, persona, index, conn.model, end.error);
+      last = this._asLinksResult(this._harvest(key, store, persona, index, conn.model, end.error, end.messageBoundary));
     } catch (e) {
-      last = { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: e.message };
+      last = this._asLinksResult({ index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: e.message });
     }
+    last.completedAt = Date.now();
     this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, completionReason: last.completionReason, retake: true });
     if (this.net) this.net.syncMember(key, { status: last.status, error: last.error, output: last.output });
     control.finished = true;
@@ -659,84 +755,282 @@ class TeamRunner {
     const budget = LINKS_RATE * Math.max(1, n - 1);
     const results = new Array(n);
     const turns = new Array(n).fill(0);
-    // A member that cannot produce a usable action is a dead node: it is not
-    // re-woken (re-driving a paused loop is exactly the rogue-turn hazard the
-    // crew net guards against), peers carry on without it, and the final
-    // answer says who dropped out instead of the whole run pausing.
+    // A failed turn stalls the member. Peers carry on, but an explicit message
+    // to that member is a bounded recovery signal: the next Links round wakes
+    // it with the new instruction instead of silently leaving mail undelivered.
     const stalled = new Map();
+    const nurse = new TeamNurse({
+      personas: this.personas,
+      team: this.team,
+      net: this.net,
+      enabled: this.team.nurse !== false,
+      policy: this.team.nursePolicy || null,
+      emit: (_type, payload) => this._emit('nurse', { ...payload, nurseType: payload.action, silent: true }),
+    });
+    this.nurse = nurse;
     const noteStall = (index, error) => {
       stalled.set(index, error || 'member stalled');
+      this.net?.syncMember(`m${index}-${this.personas[index].id}`, { status: 'stalled', error: stalled.get(index) });
       this._emit('links-stall', { index, name: this.personas[index].name, error: stalled.get(index) });
     };
 
-    const settled = await mapWithConcurrency(this.personas, this.concurrency, (p, i) =>
-      this._runMember(p, i, this._memberPrompt(i, 'links', []), { keep: true }));
-    settled.forEach((r, i) => { results[i] = r; turns[i] = 1; if (r && !r.ok) noteStall(i, r.error); });
-
+    /* One event-driven pool owns both initial turns and Links wake-ups. The old
+     * pair of mapWithConcurrency barriers left fast, recoverable members idle
+     * behind one unrelated provider timeout. Here every settlement immediately
+     * pulses the Nurse and refills any free slot, while the same concurrency,
+     * message, round, and per-member turn caps remain in force. */
+    const maxTurns = MEMBER_LINK_TURNS + 1;
+    const jobQueue = this.personas.map((_, index) => ({ kind: 'initial', index, generation: 0 }));
+    const activeJobs = new Map();
+    const memberBusy = new Set();
+    const queuedWake = new Set();
+    const memberGeneration = new Array(n).fill(0);
+    let nextJobId = 0;
     let rounds = 0;
-    while (!this.stopped && !this._linksDone() && rounds < MAX_LINK_ROUNDS) {
-      const pending = [];
-      for (let i = 0; i < n; i++) {
-        if (stalled.has(i)) continue;
-        const box = this._takeLinkInbox(i);
-        if (box.length && turns[i] < MEMBER_LINK_TURNS + 1) pending.push({ index: i, box });
+    let seenActivityVersion = this._linksActivityVersion;
+
+    const failedJobResult = (index, error) => ({
+      index,
+      name: this.personas[index].name,
+      model: this._memberConn(index).model,
+      ok: false,
+      output: '',
+      status: this.stopped ? 'stopped' : 'stalled',
+      error: error?.message || String(error || 'Links member job failed.'),
+      completedAt: Date.now(),
+    });
+
+    const queueReadyWakes = (triggerGeneration = 0) => {
+      if (this.stopped || this._linksDone()) return 0;
+      const queued = [];
+      for (let index = 0; index < n; index++) {
+        // A pending roster member consumes its mail in the initial prompt. A
+        // busy or already-queued member keeps accumulating mail for one bounded
+        // coalesced follow-up rather than starting a concurrent turn.
+        if (!turns[index] || turns[index] >= maxTurns || memberBusy.has(index) || queuedWake.has(index)) continue;
+        const rec = this.net?.agents.get(`m${index}-${this.personas[index].id}`);
+        if (!rec?.inbox?.length) continue;
+        const generation = Math.max(memberGeneration[index] + 1, triggerGeneration + 1);
+        if (generation > MAX_LINK_ROUNDS) continue; // preserve over-cap mail for status/diagnostics
+        const job = { kind: 'wake', index, generation };
+        jobQueue.push(job);
+        queuedWake.add(index);
+        queued.push(job);
       }
-      if (!pending.length) break;
-      rounds++;
-      this._emit('links-round', {
-        round: rounds,
-        waking: pending.map(x => this.personas[x.index].name),
-        exchanges: this.net ? this.net.linkSends : 0,
-        budget,
-      });
-      for (const { index, box } of pending) {
-        if (this.stopped || this._linksDone()) break;
-        results[index] = await this._wakeMember(index, box);
+      if (queued.length) rounds = Math.max(rounds, ...queued.map(job => job.generation));
+      return queued.length;
+    };
+
+    const launchJob = (job) => {
+      const { index } = job;
+      if (this.stopped || this._linksDone() || memberBusy.has(index)) return false;
+
+      let box = [];
+      let nurseWake = false;
+      let reviving = false;
+      if (job.kind === 'initial') {
+        if (turns[index]) return false;
+        turns[index] = 1;
+      } else {
+        queuedWake.delete(index);
+        if (!turns[index] || turns[index] >= maxTurns || job.generation > MAX_LINK_ROUNDS) return false;
+        // Drain only when the slot is actually reserved. Until this point the
+        // inbox stays visible to the Nurse, coalesces new mail, and survives a
+        // Stop/completion without any restoration bookkeeping.
+        box = this._takeLinkInbox(index);
+        if (!box.length) return false;
+        nurseWake = box.some(message => String(message).startsWith('TEAM NURSE RECOVERY'));
+        reviving = stalled.has(index);
+        this._emit('links-round', {
+          round: job.generation,
+          waking: [this.personas[index].name],
+          nurseWaking: nurseWake ? [this.personas[index].name] : [],
+          silent: nurseWake,
+          exchanges: this.net ? this.net.linkSends : 0,
+          budget,
+        });
+        if (reviving) {
+          stalled.delete(index);
+          this._emit('links-revive', { index, name: this.personas[index].name, messages: box.length, source: nurseWake ? 'nurse' : 'peer', silent: nurseWake });
+        }
+        if (nurseWake) nurse.recordWakeStarted(index);
         turns[index]++;
-        if (results[index] && !results[index].ok) noteStall(index, results[index].error);
       }
+
+      memberBusy.add(index);
+      memberGeneration[index] = Math.max(memberGeneration[index], job.generation);
+      const jobId = ++nextJobId;
+      job.nurse = nurseWake;
+      const running = (async () => {
+        if (job.kind === 'initial') {
+          return this._runMember(this.personas[index], index, this._memberPrompt(index, 'links', []), { keep: true });
+        }
+        const result = await this._wakeMember(index, box);
+        if (result?.wakeDeferred) this._restoreLinkInbox(index, box);
+        return result;
+      })();
+      const tracked = Promise.resolve(running)
+        .then(result => ({ type: 'settled', jobId, job, result }))
+        .catch(error => ({ type: 'settled', jobId, job, result: failedJobResult(index, error) }));
+      activeJobs.set(jobId, tracked);
+      return true;
+    };
+
+    const pump = () => {
+      let launched = 0;
+      while (!this.stopped && !this._linksDone() && activeJobs.size < this.concurrency && jobQueue.length) {
+        if (launchJob(jobQueue.shift())) launched++;
+      }
+      return launched;
+    };
+
+    const settleJob = ({ jobId, job, result }) => {
+      activeJobs.delete(jobId);
+      memberBusy.delete(job.index);
+      results[job.index] = result || failedJobResult(job.index, 'Member returned no result.');
+      memberGeneration[job.index] = Math.max(memberGeneration[job.index], job.generation);
+      if (job.nurse) nurse.recordWakeResult(job.index, results[job.index]);
+      if (results[job.index]?.status === 'stalled') noteStall(job.index, results[job.index].error);
+      else stalled.delete(job.index);
+    };
+
+    const pulse = (triggerGeneration = 0) => {
+      if (this.stopped || this._linksDone()) return;
+      nurse.stageRecoveries({ results, stalled, turns, maxTurns });
+      queueReadyWakes(triggerGeneration);
+      pump();
+    };
+
+    pump();
+    for (;;) {
+      if (this.stopped || this._linksDone()) {
+        // Existing Stop/conclusion-grace handling unwinds running loops. Never
+        // launch queued work after the terminal signal, but do harvest anything
+        // that was already in flight so result state remains truthful.
+        if (!activeJobs.size) break;
+        settleJob(await Promise.race(activeJobs.values()));
+        continue;
+      }
+
+      pulse(0);
+      if (activeJobs.size) {
+        const activityWait = this._waitForLinksActivity(seenActivityVersion)
+          .then(({ version, activity }) => ({ type: 'activity', version, activity }));
+        const event = await Promise.race([...activeJobs.values(), activityWait]);
+        if (event.type === 'activity') {
+          seenActivityVersion = Math.max(seenActivityVersion, event.version);
+          const senderIndex = event.activity?.from
+            ? this.personas.findIndex((persona, index) => `m${index}-${persona.id}` === event.activity.from)
+            : -1;
+          pulse(senderIndex >= 0 ? memberGeneration[senderIndex] : 0);
+          continue;
+        }
+        settleJob(event);
+        pulse(event.job.generation);
+        continue;
+      }
+
+      // `pump` can discard a stale queued job (for example, an inbox consumed
+      // by its initial turn). Re-scan before declaring the roster quiescent.
+      pulse(0);
+      if (activeJobs.size || jobQueue.length) {
+        pump();
+        if (activeJobs.size) continue;
+      }
+
+      // A roster member may have delegated useful work and finished before its
+      // worker. Await already-paid work (event-driven, no polling); its mail or
+      // completed output is then considered before paying for synthesis.
+      const waited = this.net ? await this.net.drainActiveSpawned() : 0;
+      if (waited && !this.stopped && !this._linksDone()) {
+        pulse(0);
+        if (activeJobs.size || jobQueue.length) continue;
+      }
+      break;
     }
 
+    // Completion/Stop may deliberately leave not-yet-started initial jobs.
+    // Keep the result array dense so final event serialization cannot trip on
+    // sparse entries, and keep the network roster consistent for diagnostics.
+    for (let index = 0; index < n; index++) {
+      if (results[index]) continue;
+      const result = {
+        index,
+        name: this.personas[index].name,
+        model: this._memberConn(index).model,
+        ok: false,
+        output: '',
+        status: this.stopped ? 'stopped' : 'skipped',
+        error: this.stopped ? 'Stopped by you.' : 'Links completed before this member started.',
+        completedAt: Date.now(),
+      };
+      results[index] = result;
+      this.net?.syncMember(`m${index}-${this.personas[index].id}`, { status: result.status, error: result.error, output: '' });
+    }
+    this._linksActivityDeferred = null;
+
+    // Synthesis reuses (and then replaces) a roster result. Retain every
+    // usable pre-synthesis answer so a failed synthesis cannot erase it.
+    const preSynthesisOkResults = results.filter(result => result?.ok && result.output);
     let synthesized = null;
     let synthIndex = -1;
     if (!this.stopped && !this._linksDone()) {
       synthIndex = this._synthesisIndex();
-      if (stalled.has(synthIndex)) {
-        const alive = [...Array(n).keys()].filter(i => !stalled.has(i));
-        if (alive.length) synthIndex = alive[alive.length - 1];
+      const viable = [...Array(n).keys()].filter(i => results[i]?.ok && results[i]?.status === 'completed' && !stalled.has(i));
+      if (!viable.includes(synthIndex)) {
+        const coordinator = viable.find(i => (this.team.members[i] || {}).roleId === 'coordinator');
+        synthIndex = coordinator ?? (viable.length ? viable[viable.length - 1] : -1);
       }
-      const note = (this.net && this.net.linkSends >= budget)
-        ? 'The crew has spent its full Links exchange budget (3× the chain rate).'
-        : 'The crew has gone quiet without a completion declaration.';
-      const stallNote = stalled.size
-        ? ` Note: ${[...stalled.keys()].map(i => this.personas[i].name).join(', ')} stalled and produced no usable work — cover that gap or state it as missing.`
-        : '';
-      synthesized = await this._wakeMember(synthIndex, [], { synthesize: true, note: note + stallNote });
-      results[synthIndex] = synthesized;
-      this._emit('links-synthesis', { index: synthIndex, name: this.personas[synthIndex].name, budgetSpent: this.net ? this.net.linkSends : 0 });
+      if (synthIndex >= 0) {
+        const note = (this.net && this.net.linkSends >= budget)
+          ? 'The crew has spent its full Links exchange budget (3× the chain rate).'
+          : 'The crew has gone quiet without a completion declaration.';
+        const stallNote = stalled.size
+          ? ` Note: ${[...stalled.keys()].map(i => this.personas[i].name).join(', ')} stalled and produced no usable work — cover that gap or state it as missing.`
+          : '';
+        const workerResults = this.net
+          ? this.net.snapshot().filter(worker => worker.origin === 'spawned')
+          : [];
+        const pendingMail = this.net
+          ? this.personas.map((persona, index) => {
+              const rec = this.net.agents.get(`m${index}-${persona.id}`);
+              return rec?.inbox?.length ? { name: persona.name, messages: rec.inbox.slice() } : null;
+            }).filter(Boolean)
+          : [];
+        const handoff = nurse.synthesisHandoff(results, stalled, workerResults, pendingMail);
+        synthesized = await this._wakeMember(synthIndex, [], { synthesize: true, note: note + stallNote, handoff });
+        results[synthIndex] = synthesized;
+        this._emit('links-synthesis', { index: synthIndex, name: this.personas[synthIndex].name, budgetSpent: this.net ? this.net.linkSends : 0, nurseHandoffs: nurse.meta().handoffs });
+      }
     }
 
     const done = this._linksDone();
     const declarerResult = results.find(r => r && r.ok && linksCompleteIn(r.output));
+    const declarationMessage = done?.message ? cleanOutput(done.message) : '';
     const okResults = results.filter(r => r && r.ok);
+    const fallbackResults = synthesized && !synthesized.ok ? preSynthesisOkResults : okResults;
     this._linksAnswer = (declarerResult && declarerResult.output)
-      || (synthesized && synthesized.output)
-      || (okResults.length
-        ? okResults.map(r => `【${r.name}】\n${r.output}`).join('\n\n')
+      || declarationMessage
+      || (synthesized && synthesized.ok && synthesized.output)
+      || (fallbackResults.length
+        ? fallbackResults.map(r => `【${r.name}】\n${r.output}`).join('\n\n')
         : results.filter(Boolean).map(r => `【${r.name}】\n(failed: ${r.error || 'unknown'})`).join('\n\n'));
     this._linksMeta = {
       rounds,
       budget,
       exchanges: this.net ? this.net.linkSends : 0,
-      completedBy: done && done.by ? done.by : (synthIndex >= 0 ? this.personas[synthIndex].name : null),
-      synthesized: !!synthesized,
+      completedBy: done && done.by ? done.by : (synthesized?.ok && synthIndex >= 0 ? this.personas[synthIndex].name : null),
+      synthesized: !!synthesized?.ok,
+      synthesisAttempted: !!synthesized,
       stalled: stalled.size,
+      nurse: nurse.meta(),
     };
     return results;
   }
 
   stop() {
     this.stopped = true;
+    this._signalLinksActivity({ type: 'stop' });
     if (this._linksConclusionTimer) {
       globalThis.clearTimeout(this._linksConclusionTimer);
       this._linksConclusionTimer = null;
@@ -747,6 +1041,7 @@ class TeamRunner {
   }
 
   pause() {
+    this.userPaused = true;
     this.paused = true;
     for (const control of this.controls) control.pause();
     this.net?.pause();
@@ -754,9 +1049,11 @@ class TeamRunner {
   }
 
   resume() {
+    this.userPaused = false;
     this.paused = false;
     for (const control of this.controls) control.resume();
     this.net?.resume();
+    this._signalLinksActivity({ type: 'resume' });
     this._emit('control', { paused: false });
   }
 
@@ -775,4 +1072,4 @@ class TeamRunner {
   }
 }
 
-module.exports = { TeamRunner, cleanOutput, boundedRelay, mapWithConcurrency, PARALLEL_CONCURRENCY, MAX_RESUME_CYCLES, LINKS_RATE, MAX_LINK_ROUNDS, MEMBER_LINK_TURNS };
+module.exports = { TeamRunner, cleanOutput, boundedRelay, mapWithConcurrency, PARALLEL_CONCURRENCY, MAX_RESUME_CYCLES, LINKS_RATE, MAX_LINK_ROUNDS, MEMBER_LINK_TURNS, TEAM_REQUEST_TIMEOUT_MS };

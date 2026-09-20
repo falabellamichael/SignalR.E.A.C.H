@@ -840,9 +840,10 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
   width: 8px; height: 8px; border-radius: 50%; background: var(--gold);
   animation: pulse 1.2s infinite; flex-shrink: 0;
 }
-.member-card.done .member-dot, .member-card.failed .member-dot { animation: none; }
+.member-card.done .member-dot, .member-card.failed .member-dot, .member-card.stalled .member-dot { animation: none; }
 .member-card.done .member-dot { background: var(--ok); }
 .member-card.failed .member-dot { background: var(--err); }
+.member-card.stalled .member-dot { background: var(--gold-dim); }
 /* Horizontal inset keeps the hanging list markers (drawn ~11px left of the
  * text column) clear of the card border. */
 .member-body {

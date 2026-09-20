@@ -77,6 +77,13 @@ draft is preserved.
   conversation. Teams support parallel reviews and sequential handoffs.
 - Team members can create background workers, send messages, inspect progress,
   and await peers. Stop cancels active model requests and filesystem scans.
+- Links teams include a silent, event-driven Team Nurse. It coalesces peer mail,
+  hands completed evidence to stalled members, and refills a free team slot on
+  each settlement or mailbox arrival instead of waiting for the slowest member.
+  Independent recoveries run in parallel; active workers finish before synthesis;
+  supervision itself never spends a model call. Provider/transport failures and
+  user input/edit gates are not retried; every automatic wake requires new
+  evidence and is strictly capped.
 - **Send becomes Stop** while agents or a team are active. It stops all active
   regular chats and the team without sending or clearing the composer draft.
 - Each team member and spawned worker has its own **Stop / Start** control.
@@ -252,6 +259,7 @@ when its last window closes; clicking the Dock icon reopens the workspace.
 
 ```powershell
 npm test
+npm run bench:nurse
 npm run smoke
 npm run dist
 ```
@@ -259,6 +267,9 @@ npm run dist
 - `npm test` runs the agent, protocol, file handling, team/network, and budgeting
   tests against temporary fixtures and local mock endpoints. It does not require
   a live AI provider or WSL.
+- `npm run bench:nurse` runs the deterministic virtual-time Nurse policy search.
+  Its result is the fastest feasible policy on the declared scenario corpus,
+  not a claim of universal scheduler optimality.
 - `npm run smoke` runs the actual Electron renderer, IPC, team, settings,
   editor and keyboard checks in an isolated temporary profile. It also checks the
   optional CLI status without requiring the external toolchain. An

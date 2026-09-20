@@ -95,7 +95,7 @@
     const waiting = active && step?.status === 'waiting';
     const silent = active && !waiting && now - state.updatedAt >= 30000;
     return { active, waiting, silent,
-      title: !active ? ({ completed:'Completed', paused:'Paused', stopped:'Stopped', waiting_input:'Waiting for your answer', waiting_edits:'Waiting for edit review', error:'Failed' }[state.status] || state.status)
+      title: !active ? ({ completed:'Completed', paused:'Paused', stopped:'Stopped', stalled:'Stalled', waiting_input:'Waiting for your answer', waiting_edits:'Waiting for edit review', error:'Failed' }[state.status] || state.status)
         : waiting ? 'Waiting for your approval' : silent ? 'Waiting for an update' : step?.note?.startsWith('Model is reasoning') ? 'Thinking' : step?.title || 'Working',
       detail: active ? (silent ? `No new activity for ${duration(now - state.updatedAt)} · request is still pending` : step?.note || 'Preparing request') : state.status === 'completed' ? 'Response saved in the conversation.' : state.reason || 'Activity saved',
       elapsed: duration((state.endedAt || now) - state.startedAt),

@@ -368,7 +368,7 @@ const COLLAB_TOOLS = {
   },
   'agent.send': {
     class: 'write', tier: 'collab', approval: false, budget: 40000,
-    help: 'sends a message to another crew agent (by agentId or exact name). A working agent gets it queued; an idle one is woken with it. Args: to, message.',
+    help: 'sends a message to another crew agent (by agentId or exact name). In Links mode, messages are coalesced into one bounded follow-up turn; sending useful new information to a stalled member wakes it. Args: to, message.',
     example: { action: 'agent.send', to: 'Contract Auditor', message: 'Focus on the withdraw path first.' },
     async execute(args, ctx) {
       const net = netFromCtx(ctx);
@@ -378,7 +378,7 @@ const COLLAB_TOOLS = {
   },
   'agent.status': {
     class: 'read', tier: 'collab', approval: false, budget: 40000,
-    help: 'returns one crew agent\'s status: running/completed/failed, its open todos, how long it has run, and a preview of its output. Args: agent (id or name). Use agent.list for the whole crew.',
+    help: 'returns one crew agent\'s status: running/completed/stalled/failed, queued inbox count, message counts, open todos, elapsed time, and an output preview. Args: agent (id or name). Use agent.list for the whole crew.',
     example: { action: 'agent.status', agent: 'Contract Auditor' },
     async execute(args, ctx) {
       const net = netFromCtx(ctx);
@@ -388,7 +388,7 @@ const COLLAB_TOOLS = {
   },
   'agent.list': {
     class: 'read', tier: 'collab', approval: false, budget: 40000,
-    help: 'lists every agent in this crew run (roster members + spawned workers) with their status and task. Args: none.',
+    help: 'lists every agent in this crew run (roster members + spawned workers) with status, task, message counts and queued inbox work. A stalled entry is retryable only when agent.send or the Team Nurse has useful new evidence. Args: none.',
     example: { action: 'agent.list' },
     async execute(args, ctx) {
       const net = netFromCtx(ctx);

@@ -352,6 +352,14 @@ function teamFixture(endpoint, overrides = {}) {
   return { runner, events };
 }
 
+test('team requests keep a finite deadline when interactive timeout is unlimited', () => {
+  const { TEAM_REQUEST_TIMEOUT_MS } = require('../agent/team-runner.cjs');
+  const unlimited = teamFixture('http://127.0.0.1:1/v1', { requestTimeoutMs: 0 });
+  const explicit = teamFixture('http://127.0.0.1:1/v1', { requestTimeoutMs: 4321 });
+  assert.equal(unlimited.runner.requestTimeoutMs, TEAM_REQUEST_TIMEOUT_MS);
+  assert.equal(explicit.runner.requestTimeoutMs, 4321);
+});
+
 for (const bodyStarted of [false, true]) {
   test(`model deadline covers ${bodyStarted ? 'a stalled response body' : 'missing response headers'}`, async t => {
     const endpoint = await localEndpoint(t, (_, res) => {

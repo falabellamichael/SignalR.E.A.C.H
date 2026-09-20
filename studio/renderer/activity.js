@@ -103,7 +103,7 @@
       ingest(normalized, key);
     }
     if (['done','error','control'].includes(event.type)) {
-      for (const [key, state] of states) if (key.startsWith(prefix) && !['completed', 'error'].includes(state.status)) {
+      for (const [key, state] of states) if (key.startsWith(prefix) && !['completed', 'error', 'stalled'].includes(state.status)) {
         // Team-wide stop/start should also update paused members; finished
         // members must retain their outcome and never regain a live spinner.
         if (event.type === 'control' && !['running', 'paused'].includes(state.status)) continue;

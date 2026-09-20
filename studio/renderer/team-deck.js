@@ -4,7 +4,7 @@
 (() => {
   let serial = 0;
   const icons = { queued: 'clock', working: 'circle-notch', waiting: 'pause-circle',
-    silent: 'clock', paused: 'pause-circle', completed: 'check-circle', error: 'warning-circle' };
+    silent: 'clock', paused: 'pause-circle', stalled: 'warning-circle', completed: 'check-circle', error: 'warning-circle' };
   const setText = (node, value) => { if (node.textContent !== value) node.textContent = value; };
   function icon(name, className = '') {
     const el = document.createElement('span');
@@ -16,15 +16,17 @@
   function create({ team, task }) {
     const id = 'team-deck-' + ++serial;
     const entries = new Map();
+    const nurseStats = { handoffs: 0, wakes: 0, wakeStarted: 0, wakeSucceeded: 0, wakeFailed: 0, skips: 0, quiet: 0 };
     let selected = null, ended = false;
     const element = document.createElement('section');
     element.className = 'team-run team-deck';
     element.setAttribute('aria-label', `${team.name} deployed team`);
-    element.innerHTML = '<div class="team-deck-nav"><div class="team-deck-heading"><strong></strong><span class="team-deck-mode"></span><span class="team-deck-count"></span></div><div class="team-tab-strip"><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs left"></button><div class="team-tabs" role="tablist" aria-label="Deployed team members" aria-orientation="horizontal"></div><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs right"></button></div></div><div class="team-panels"></div><div class="team-reviews"></div>';
+    element.innerHTML = '<div class="team-deck-nav"><div class="team-deck-heading"><strong></strong><span class="team-deck-mode"></span><span class="team-deck-nurse" aria-live="off" hidden></span><span class="team-deck-count"></span></div><div class="team-tab-strip"><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs left"></button><div class="team-tabs" role="tablist" aria-label="Deployed team members" aria-orientation="horizontal"></div><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs right"></button></div></div><div class="team-panels"></div><div class="team-reviews"></div>';
     const banner = element.querySelector('.team-deck-heading');
     setText(banner.querySelector('strong'), team.name || 'Team');
     setText(banner.querySelector('.team-deck-mode'), team.mode || 'parallel');
     banner.title = task;
+    const nurseBadge = banner.querySelector('.team-deck-nurse');
     const count = element.querySelector('.team-deck-count');
     const tabs = element.querySelector('.team-tabs');
     const panels = element.querySelector('.team-panels');
@@ -85,9 +87,56 @@
       if (counts.silent) bits.push(`${counts.silent} awaiting update`);
       if (counts.waiting) bits.push(`${counts.waiting} ${counts.waiting === 1 ? 'needs' : 'need'} attention`);
       if (counts.error) bits.push(`${counts.error} failed`);
+      if (counts.stalled) bits.push(`${counts.stalled} stalled`);
       if (counts.paused) bits.push(`${counts.paused} paused`);
       if (counts.completed) bits.push(`${counts.completed} complete`);
       setText(count, bits.join(' · '));
+    }
+    function noteNurse(event = {}) {
+      const action = String(event.nurseType || event.action || 'monitoring');
+      const name = String(event.name || '').trim();
+      let last = 'Nurse · monitoring';
+      if (action === 'handoff') {
+        nurseStats.handoffs += Math.max(1, Number(event.count) || 1);
+        last = 'Nurse · context handed off';
+      } else if (action === 'wake-staged' || action === 'wake') {
+        nurseStats.wakes++;
+        last = `Nurse · wake queued${name ? ` for ${name}` : ''}`;
+      } else if (action === 'wake-started') {
+        nurseStats.wakeStarted++;
+        last = `Nurse · waking${name ? ` ${name}` : ' member'}`;
+      } else if (action === 'wake-succeeded') {
+        nurseStats.wakeSucceeded++;
+        last = `Nurse · recovery succeeded${name ? ` for ${name}` : ''}`;
+      } else if (action === 'wake-failed') {
+        nurseStats.wakeFailed++;
+        last = `Nurse · recovery ended${name ? ` for ${name}` : ''}`;
+      } else if (action === 'skip' || action === 'retry-suppressed' || action === 'quarantine') {
+        nurseStats.skips++;
+        last = action === 'quarantine'
+          ? `Nurse · unsafe retry avoided${name ? ` for ${name}` : ''}`
+          : 'Nurse · retry avoided';
+      } else if (action === 'quiet' || action === 'no-useful-work') {
+        nurseStats.quiet++;
+        last = event.reason === 'complete' ? 'Nurse · team complete'
+          : event.reason === 'budget' ? 'Nurse · budget protected'
+          : 'Nurse · no useful work';
+      }
+      const bits = [];
+      if (nurseStats.handoffs) bits.push(`${nurseStats.handoffs} handoff${nurseStats.handoffs === 1 ? '' : 's'}`);
+      if (nurseStats.wakes) bits.push(`${nurseStats.wakes} wake${nurseStats.wakes === 1 ? '' : 's'} queued`);
+      if (nurseStats.wakeStarted) bits.push(`${nurseStats.wakeStarted} started`);
+      if (nurseStats.wakeSucceeded) bits.push(`${nurseStats.wakeSucceeded} succeeded`);
+      if (nurseStats.wakeFailed) bits.push(`${nurseStats.wakeFailed} ended without completion`);
+      if (nurseStats.skips) bits.push(`${nurseStats.skips} ${nurseStats.skips === 1 ? 'retry' : 'retries'} avoided`);
+      if (nurseStats.quiet) bits.push(`${nurseStats.quiet} quiet decision${nurseStats.quiet === 1 ? '' : 's'}`);
+      const description = `Team Nurse: ${bits.length ? bits.join(', ') : 'monitoring'}. Last: ${last.replace(/^Nurse · /, '')}.`;
+      setText(nurseBadge, last);
+      nurseBadge.hidden = false;
+      nurseBadge.title = description;
+      nurseBadge.setAttribute('aria-label', description);
+      nurseBadge.dataset.action = action;
+      for (const [key, value] of Object.entries(nurseStats)) nurseBadge.dataset[key] = String(value);
     }
     function identify(card, name, model) {
       const entry = entries.get(card);
@@ -135,10 +184,11 @@
     function update(card, state, now = Date.now()) {
       const entry = entries.get(card);
       if (!entry) return;
+      card._teamActivity = state;
       entry.state = state;
       const summary = window.ReachActivityState.summary(state, now);
       const status = !state ? 'queued' : state.status === 'completed' ? 'completed'
-        : state.status === 'error' ? 'error' : ['paused', 'stopped'].includes(state.status) ? 'paused'
+        : state.status === 'error' ? 'error' : state.status === 'stalled' ? 'stalled' : ['paused', 'stopped'].includes(state.status) ? 'paused'
         : ['waiting_edits', 'waiting_input'].includes(state.status) || summary.waiting ? 'waiting'
         : summary.silent ? 'silent' : summary.active ? 'working' : 'queued';
       entry.status = status;
@@ -150,7 +200,7 @@
       entry.ring.dataset.icon = icons[status];
       entry.initial.hidden = status !== 'working';
       const metadata = card.querySelector('.member-meta');
-      if (metadata) setText(metadata, [state?.round ? `Round ${state.round}` : '', summary.elapsed || ''].filter(Boolean).join(' · '));
+      if (metadata) setText(metadata, [state?.round ? `Round ${state.round}` : '', summary.elapsed || '', card.dataset.crewMeta || ''].filter(Boolean).join(' · '));
       // A small, event-driven signal, not a fabricated continuous waveform.
       if (entry.updatedAt !== state?.updatedAt) {
         entry.updatedAt = state?.updatedAt;
@@ -169,11 +219,11 @@
         if (button) button.disabled = true;
         card.dataset.finished = 'true';
         // Do not imply skipped/pending members completed on a failed run.
-        if (!['completed', 'error'].includes(entry.status)) update(card, { startedAt: Date.now(), steps: [], count: 0, ...entry.state,
+        if (!['completed', 'error', 'stalled'].includes(entry.status)) update(card, { startedAt: Date.now(), steps: [], count: 0, ...entry.state,
           status: status === 'error' ? 'error' : 'stopped', endedAt: Date.now() });
       }
     }
-    const api = { element, banner, reviews, add, identify, update, select, finish,
+    const api = { element, banner, reviews, add, identify, update, select, finish, noteNurse,
       dispose: () => resize.disconnect(), get ended() { return ended; } };
     return api;
   }

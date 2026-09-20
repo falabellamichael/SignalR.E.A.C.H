@@ -61,7 +61,7 @@ function cleanOutput(text) {
 const NET_BY_AGENT = new Map();
 function netForAgent(agentId) { return NET_BY_AGENT.get(agentId) || null; }
 
-const FINISHED = new Set(['completed', 'failed', 'stopped', 'abandoned']);
+const FINISHED = new Set(['completed', 'failed', 'stopped', 'abandoned', 'stalled', 'skipped']);
 
 class AgentNet {
   constructor({
@@ -85,6 +85,7 @@ class AgentNet {
     maxDepth = MAX_DEPTH,
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
     onSettled = () => {},
+    onActivity = () => {},
     auditLog = null,
     /* Native (OpenAI) tool-calling protocol for spawned workers: set by the
      * TeamRunner from the team's toolProtocol so a native crew's helpers run
@@ -104,6 +105,7 @@ class AgentNet {
     this.auditLog = auditLog;
     this.nativeTools = !!nativeTools;
     this.onSettled = onSettled;
+    this.onActivity = onActivity;
     this.teamRunId = teamRunId;
     this.teamName = teamName;
     this.endpoint = endpoint;
@@ -125,6 +127,7 @@ class AgentNet {
     this.awaiting = new Map(); // callerId -> targetId (cycle detection)
     this.spawnedEdits = new Map(); // agentId -> [edit] awaiting review
     this.tasks = [];           // background run promises
+    this.activeTasks = new Map(); // spawned agentId -> current background promise
     this.stopped = false;
     this.paused = false;
     this._stopDeferred = null;
@@ -146,7 +149,7 @@ class AgentNet {
   }
 
   _emit(netType, payload = {}) {
-    this.sendEvent('team:event', { teamRunId: this.teamRunId, type: 'subagent', netType, ...payload });
+    this.sendEvent('team:event', { teamRunId: this.teamRunId, type: 'subagent', netType, ...payload, at: payload.at ?? Date.now() });
   }
 
   /* Register an agent the net did not create itself (a roster member). The
@@ -236,6 +239,15 @@ class AgentNet {
   _notFound(agentId) {
     const known = [...this.agents.values()].map(a => `${a.name} (${a.id})`).join(', ') || 'none';
     return { ok: false, error: `No agent "${agentId}" in this crew. Known agents: ${known}.` };
+  }
+
+  _trackTask(agentId, promise) {
+    const tracked = Promise.resolve(promise).finally(() => {
+      if (this.activeTasks.get(agentId) === tracked) this.activeTasks.delete(agentId);
+    });
+    this.activeTasks.set(agentId, tracked);
+    this.tasks.push(tracked);
+    return tracked;
   }
 
   depthOf(agentId) {
@@ -340,7 +352,7 @@ class AgentNet {
       agentId: id, name: rec.name, model: useModel, depth: childDepth,
       parentId: rec.parentId, spawnedBy: rec.spawnedBy, task: cleanTask,
     });
-    this.tasks.push(this._run(id, cleanTask));
+    this._trackTask(id, this._run(id, cleanTask));
     return { ok: true, agentId: id, name: rec.name, model: useModel, depth: childDepth, task: cleanTask, async: true };
   }
 
@@ -409,6 +421,20 @@ class AgentNet {
 
   /* Deliver a message to a peer. Running peer → queued into its loop (the
    * loop's own running flag decides); idle peer → woken for a new turn. */
+  _emitDelivery(sender, rec, from, text, delivered) {
+    this._emit('agent-message', {
+      from,
+      fromName: sender ? sender.name : String(from),
+      to: rec.id,
+      toName: rec.name,
+      chars: text.length,
+      delivered,
+      inbox: (rec.inbox || []).length,
+      messagesSent: sender ? sender.messagesSent : 0,
+      messagesReceived: rec.messagesReceived,
+    });
+  }
+
   send({ from, to, message }) {
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
     const text = String(message || '').trim();
@@ -429,13 +455,59 @@ class AgentNet {
 
     /* The Links completion declaration can also travel as a message. */
     if (linksCompleteIn(text) && !this.linksComplete) {
-      this.linksComplete = { by: sender ? sender.name : String(from), to: rec.name };
+      this.linksComplete = { by: sender ? sender.name : String(from), to: rec.name, message: text };
+      /* A message declaration is terminal even though its sender is still in a
+       * tool turn. Tell the runner immediately so it can apply the same short
+       * completion grace used for declarations in final answers. */
+      try {
+        this.onActivity({
+          type: 'links-complete',
+          agentId: rec.id,
+          from,
+          fromName: sender ? sender.name : String(from),
+          linksComplete: true,
+        });
+      } catch { /* scheduler hook is advisory */ }
     }
 
     const prefixed = `MESSAGE FROM ${sender ? sender.name : from} (a crew member):\n${text}`;
+    if (rec.origin === 'roster' && this.rosterMailbox) {
+      /* Links owns roster scheduling. Coalesce ALL peer mail in the roster
+       * inbox—even while its loop is running—so the bounded Links wake loop
+       * accounts for one follow-up turn instead of AgentLoop secretly draining
+       * each queued message as an uncounted conversation. */
+      rec.inbox = rec.inbox || [];
+      rec.inbox.push(prefixed);
+      this._bumpLink();
+      const delivered = rec.status === 'stalled' ? 'stalled-wake'
+        : !rec.loop ? 'pending-start'
+          : rec.loop.running ? 'mailbox-running'
+            : 'mailbox';
+      this._emitDelivery(sender, rec, from, text, delivered);
+      /* Wake the Links scheduler without polling. A roster member can finish
+       * while another peer is still working, leaving spare capacity; mailbox
+       * arrival is therefore a scheduling event in its own right. */
+      try { this.onActivity({ type: 'roster-mail', agentId: rec.id, from, delivered }); } catch { /* scheduler hook is advisory */ }
+      return {
+        ok: true,
+        delivered,
+        agentId: rec.id,
+        name: rec.name,
+        status: rec.status,
+        inbox: rec.inbox.length,
+        note: rec.status === 'stalled'
+          ? `${rec.name} was stalled. Your message is queued and Links will wake it for another bounded turn.`
+          : rec.loop?.running
+            ? `${rec.name} is working. Links coalesced your message for one bounded follow-up turn.`
+            : !rec.loop
+              ? `${rec.name} has not started yet; your message will be waiting when it does.`
+              : `${rec.name} is between Links rounds; your message is queued for its next turn.`,
+      };
+    }
     if (rec.control?.paused && rec.store) {
       rec.store.enqueue(rec.id, prefixed);
       this._bumpLink();
+      this._emitDelivery(sender, rec, from, text, 'queued');
       return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: 'paused' };
     }
     if (!rec.loop) {
@@ -444,28 +516,15 @@ class AgentNet {
       rec.inbox = rec.inbox || [];
       rec.inbox.push(prefixed);
       this._bumpLink();
-      this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'pending-start' });
+      this._emitDelivery(sender, rec, from, text, 'pending-start');
       return { ok: true, delivered: 'pending-start', agentId: rec.id, name: rec.name, status: rec.status, note: `${rec.name} has not started yet; your message will be waiting when it does.` };
     }
     if (rec.loop.running) {
       // Fire-and-forget: AgentLoop enqueues internally while running.
       rec.loop.sendUserMessage(prefixed).catch((e) => this._settle(rec.id, 'failed', e.message));
       this._bumpLink();
-      this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'queued' });
+      this._emitDelivery(sender, rec, from, text, 'queued');
       return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: rec.status, note: 'The agent is working; your message is queued and it will read it when the current turn ends.' };
-    }
-    if (rec.origin === 'roster' && this.rosterMailbox) {
-      // Links mode: a roster member that is NOT mid-turn accepts mail into its
-      // inbox — the TeamRunner's next Links round wakes it. This catches both
-      // a finished member AND the short window before the runner marks it
-      // finished (a message can be delivered from inside the member's own
-      // completion emit); without the second case the send would spawn a
-      // rogue concurrent turn on the same loop.
-      rec.inbox = rec.inbox || [];
-      rec.inbox.push(prefixed);
-      this._bumpLink();
-      this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'mailbox' });
-      return { ok: true, delivered: 'mailbox', agentId: rec.id, name: rec.name, status: rec.status, note: `${rec.name} is between Links rounds; your message is queued for its next turn.` };
     }
     if (rec.origin === 'roster' && FINISHED.has(rec.status)) {
       // Roster members are owned by the TeamRunner; waking one here would run
@@ -476,9 +535,9 @@ class AgentNet {
     if (FINISHED.has(rec.status) && rec.status !== 'completed') {
       return { ok: false, error: `${rec.name} already ${rec.status}${rec.error ? ': ' + rec.error : ''}. It cannot be woken.`, status: rec.status };
     }
-    this.tasks.push(this._run(rec.id, prefixed));
+    this._trackTask(rec.id, this._run(rec.id, prefixed));
     this._bumpLink();
-    this._emit('agent-message', { from, to: rec.id, toName: rec.name, chars: text.length, delivered: 'new-turn' });
+    this._emitDelivery(sender, rec, from, text, 'new-turn');
     return { ok: true, delivered: 'new-turn', agentId: rec.id, name: rec.name, note: 'The agent was idle and has been woken with your message.' };
   }
 
@@ -512,6 +571,7 @@ class AgentNet {
       ms: (rec.finishedAt || Date.now()) - rec.startedAt,
       messagesSent: rec.messagesSent,
       messagesReceived: rec.messagesReceived,
+      inbox: (rec.inbox || []).length,
       todos,
       output: rec.output ? rec.output.slice(0, OUTPUT_PREVIEW) : '',
       error: rec.error,
@@ -587,8 +647,21 @@ class AgentNet {
       isSelf: a.id === callerId,
       task: a.task.slice(0, 300),
       chars: a.output.length,
+      messagesSent: a.messagesSent,
+      messagesReceived: a.messagesReceived,
+      inbox: (a.inbox || []).length,
     }));
-    return { ok: true, team: this.teamName, count: agents.length, maxAgents: this.maxAgents, agents };
+    const stalled = agents.filter(a => a.status === 'stalled');
+    return {
+      ok: true,
+      team: this.teamName,
+      count: agents.length,
+      maxAgents: this.maxAgents,
+      agents,
+      guidance: stalled.length
+        ? `Stalled members can be retried. Send one a concrete instruction with agent.send; Links will wake it for a bounded recovery turn.`
+        : undefined,
+    };
   }
 
   /* Self-check before claiming done: the caller's own plan, recent work and
@@ -657,13 +730,38 @@ class AgentNet {
   /* Update a REGISTERED (roster) member's record when its runner finishes it.
    * No subagent event: the renderer tracks roster members by index, and an
    * agent-state emit would spawn a phantom worker card. */
-  syncMember(agentId, { status, error = null, output = null }) {
+  syncMember(agentId, update = {}) {
     const rec = this.agents.get(agentId);
     if (!rec || rec.origin !== 'roster') return;
+    const { status, error, output } = update;
     rec.status = status;
-    if (error !== null) rec.error = error;
+    if (Object.hasOwn(update, 'error')) rec.error = error ?? null;
     if (output) rec.output = output;
     rec.finishedAt = Date.now();
+  }
+
+  hasActiveSpawned() {
+    return [...this.agents.values()].some(rec =>
+      rec.origin === 'spawned'
+      && (rec.status === 'starting' || rec.status === 'running')
+      && this.activeTasks.has(rec.id));
+  }
+
+  /* Await already-paid-for background work without unregistering the crew.
+   * Links calls this at a quiet boundary before buying a synthesis request.
+   * Re-scan after each batch because a worker may spawn a child while ending. */
+  async drainActiveSpawned() {
+    let waited = 0;
+    for (let pass = 0; pass < 8; pass++) {
+      const active = [...this.agents.values()]
+        .filter(rec => rec.origin === 'spawned' && (rec.status === 'starting' || rec.status === 'running'))
+        .map(rec => this.activeTasks.get(rec.id))
+        .filter(Boolean);
+      if (!active.length) break;
+      waited += active.length;
+      await Promise.allSettled(active);
+    }
+    return waited;
   }
 
   /* Wait for background work to drain, then release the id registry. Workers

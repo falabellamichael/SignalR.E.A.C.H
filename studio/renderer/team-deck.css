@@ -19,6 +19,12 @@
 .team-deck-heading { display: flex; align-items: baseline; gap: 9px; padding: 12px 0 9px; font-size: 12px; min-width: 0; }
 .team-deck-heading strong { font-size: 12px; font-weight: 600; white-space: nowrap; }
 .team-deck-mode { color: var(--deck-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+.team-deck-nurse {
+  max-width: min(34vw, 260px); padding: 2px 7px; overflow: hidden;
+  color: var(--deck-muted); border: 1px solid var(--deck-line); border-radius: 999px;
+  font-size: 10px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap;
+}
+.team-deck-nurse[hidden] { display: none; }
 .team-deck-count { margin-left: auto; color: var(--deck-muted); font-size: 11px; text-align: right; }
 .team-tab-strip { display: flex; align-items: stretch; gap: 5px; min-width: 0; border-top: 1px solid var(--deck-line); }
 .team-tabs { display: flex; gap: 6px; flex: 1 1 0; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; scrollbar-color: var(--deck-line) transparent; padding-bottom: 4px; }
@@ -55,6 +61,7 @@
 .team-initial[hidden] { display: none; }
 .team-tab[data-status="working"] .team-orbit-icon { animation: activity-spin 3s linear infinite; }
 .team-tab[data-status="waiting"] .team-orbit { color: var(--gold-dim); }
+.team-tab[data-status="stalled"] .team-orbit { color: var(--gold-dim); }
 .team-tab[data-status="completed"] .team-orbit { color: var(--ok); }
 .team-tab[data-status="error"] .team-orbit { color: var(--err); }
 .team-tab-scroll { width: 26px; flex: 0 0 26px; display: grid; place-items: center; padding: 0; margin-bottom: 4px; color: var(--deck-muted); background: transparent; border: 0; border-radius: 0 0 6px 6px; }

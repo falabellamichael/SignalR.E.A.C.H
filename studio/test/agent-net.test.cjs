@@ -107,6 +107,73 @@ test('agent.send wakes an idle worker; agent.await returns its output', async t 
   assert.match(leadText, /Acknowledged and done\./);
 });
 
+test('quiet-boundary drain awaits active workers without unregistering the crew', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const endpoint = await localEndpoint(t, async (_, res) => {
+    await gate;
+    jsonReply(res, action('complete', 'Late but useful worker evidence.'));
+  });
+  const net = new AgentNet({ teamRunId: 'net-drain', endpoint, sendEvent: () => {} });
+  const spawned = net.spawn({ name: 'LateWorker', task: 'Finish the delegated proof.', depth: 0 });
+  assert.equal(net.hasActiveSpawned(), true);
+
+  const draining = net.drainActiveSpawned();
+  release();
+  assert.equal(await draining, 1, 'one active worker promise is awaited');
+  assert.equal(net.hasActiveSpawned(), false);
+  assert.equal(net.agents.get(spawned.agentId).status, 'completed');
+  assert.equal(net.agents.get(spawned.agentId).output, 'Late but useful worker evidence.');
+  assert.equal(netForAgent(spawned.agentId), net, 'quiet-boundary drain keeps collaboration registered for synthesis');
+
+  await net.settle();
+  assert.equal(netForAgent(spawned.agentId), null, 'final settle releases the crew registry');
+});
+
+test('Links coalesces mail for a running roster member without starting hidden turns', async () => {
+  const events = [];
+  const activities = [];
+  let sendUserMessageCalls = 0;
+  const net = new AgentNet({
+    teamRunId: 'net-links-coalesce',
+    rosterMailbox: true,
+    linkBudget: 4,
+    sendEvent: (_channel, event) => events.push(event),
+    onActivity: activity => activities.push(activity),
+  });
+  net.preRegister({ agentId: 'm0-sender', name: 'Sender' });
+  net.preRegister({ agentId: 'm1-target', name: 'Target' });
+  const loop = {
+    running: true,
+    sendUserMessage() {
+      sendUserMessageCalls++;
+      return Promise.resolve({ queued: true });
+    },
+    stop() {},
+  };
+  const rec = net.attach('m1-target', loop, new MemoryStore());
+  rec.status = 'running';
+  rec.control = { paused: false };
+
+  const first = net.send({ from: 'm0-sender', to: 'Target', message: 'Evidence revision one.' });
+  const second = net.send({ from: 'm0-sender', to: 'Target', message: 'Evidence revision two.' });
+
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(sendUserMessageCalls, 0, 'Links roster mail must stay under TeamRunner accounting');
+  assert.equal(rec.inbox.length, 2, 'both messages are coalesced for one counted scheduler wake');
+  assert.match(rec.inbox[0], /Evidence revision one/);
+  assert.match(rec.inbox[1], /Evidence revision two/);
+  assert.equal(rec.messagesReceived, 2);
+  assert.equal(net.linkSends, 2);
+  assert.equal(events.filter(event => event.netType === 'agent-message').length, 2);
+  assert.deepEqual(activities.map(activity => activity.type), ['roster-mail', 'roster-mail'], 'each mailbox arrival wakes the event-driven Links scheduler');
+  assert.ok(activities.every(activity => activity.agentId === 'm1-target' && activity.from === 'm0-sender'));
+
+  net.stop();
+  await net.settle();
+});
+
 test('spawn limits: max agents and depth are enforced with clear errors', async t => {
   const endpoint = await localEndpoint(t, (_, res) => jsonReply(res, action('complete', 'ok')));
   const net = new AgentNet({ teamRunId: 'net-3', endpoint, maxAgents: 1, maxDepth: 1, sendEvent: () => {} });

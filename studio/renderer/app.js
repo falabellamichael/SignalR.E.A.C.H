@@ -2584,6 +2584,20 @@ function setMemberControl(card, paused, finished = false) {
   else if (!finished) card.querySelector('.member-state').textContent = 'resuming…';
 }
 
+function memberIndexFromAgentId(agentId) {
+  const match = /^m(\d+)-/.exec(String(agentId || ''));
+  return match ? Number(match[1]) : null;
+}
+
+function updateCrewComms(card, changes = {}) {
+  if (!card) return;
+  const counts = card._crewComms || { sent: 0, received: 0, inbox: 0 };
+  Object.assign(counts, changes);
+  card._crewComms = counts;
+  card.dataset.crewMeta = `${counts.sent} sent · ${counts.received} received${counts.inbox ? ` · ${counts.inbox} queued` : ''}`;
+  card._teamDeck?.update(card, card._teamActivity);
+}
+
 /* Inline question box shared by roster members and spawned workers: the run
  * stays paused until the user answers (or skips, failing that agent). */
 function attachAskBox(card, questionId, name, question) {
@@ -2626,7 +2640,14 @@ function handleTeamEvent(ev) {
   if (teamDispatching && !activeTeamRun) { pendingTeamEvents.push(ev); return; }
   if (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId) return;
   const run = activeTeamRun;
-  const activityCard = ev.type === 'subagent' ? subCard(ev.agentId, ev.name, ev.model || '', ev.depth) : ev.index !== undefined ? teamCard(ev.index, ev.name, ev.model) : null;
+  // Nurse telemetry is coordination metadata, not provider/tool activity.
+  // Keep it out of member construction and the activity reducer so it cannot
+  // fabricate a worker or make a genuinely silent request look active.
+  if (ev.type === 'nurse') {
+    run.deck.noteNurse(ev);
+    return;
+  }
+  const activityCard = ev.type === 'subagent' && ev.agentId ? subCard(ev.agentId, ev.name, ev.model || '', ev.depth) : ev.index !== undefined ? teamCard(ev.index, ev.name, ev.model) : null;
   window.ReachActivity.team(ev, activityCard);
   switch (ev.type) {
     case 'start':
@@ -2656,6 +2677,8 @@ function handleTeamEvent(ev) {
       const state = card.querySelector('.member-state');
       if (ev.memberType === 'round') {
         state.textContent = `Round ${ev.round} · waiting for model…`;
+      } else if (ev.memberType === 'request-start') {
+        state.textContent = `Waiting on ${ev.model || 'provider'} response headers…`;
       } else if (ev.memberType === 'reasoning') {
         state.textContent = `Model is thinking… (${ev.chars} characters received)`;
       } else if (ev.memberType === 'retry') {
@@ -2736,10 +2759,19 @@ function handleTeamEvent(ev) {
     case 'member-done': {
       const card = teamCard(ev.index, ev.name, ev.model || '');
       if (card) {
+        const terminalStatus = ev.status || (ev.ok ? 'completed' : 'error');
+        card._teamDeck?.update(card, {
+          startedAt: Date.now(), steps: [], count: 0,
+          ...(card._teamActivity || {}),
+          status: terminalStatus,
+          reason: ev.error || '',
+          endedAt: Date.now(),
+        });
         setMemberControl(card, false, true);
         clearTimeout(card._renderTimer);
         card.classList.remove('waiting');
-        card.classList.add(ev.ok ? 'done' : 'failed');
+        card.classList.remove('done', 'failed', 'stalled');
+        card.classList.add(ev.ok ? 'done' : ev.status === 'stalled' ? 'stalled' : 'failed');
         // Completion remains visible on the tab even while another is open.
         if (ev.ok) flashMemberCard(card);
         card.querySelector('.member-state').textContent = ev.completionReason
@@ -2750,6 +2782,24 @@ function handleTeamEvent(ev) {
     }
     /* ---------- spawned workers (agent.spawn — Grok-Bot-style subagents) ---------- */
     case 'subagent': {
+      if (ev.netType === 'agent-message') {
+        const fromIndex = memberIndexFromAgentId(ev.from);
+        const toIndex = memberIndexFromAgentId(ev.to);
+        const fromCard = fromIndex === null ? run.subCards?.get(ev.from) : teamCard(fromIndex, ev.fromName || '', '');
+        const toCard = toIndex === null ? run.subCards?.get(ev.to) : teamCard(toIndex, ev.toName || '', '');
+        updateCrewComms(fromCard, { sent: ev.messagesSent || 0 });
+        updateCrewComms(toCard, { received: ev.messagesReceived || 0, inbox: ev.inbox || 0 });
+        if (fromCard) {
+          const line = document.createElement('div');
+          line.className = 'member-tool dim';
+          line.textContent = ev.delivered === 'stalled-wake'
+            ? `✉ waking stalled ${ev.toName} (${ev.chars} chars)`
+            : `✉ ${['queued', 'pending-start', 'mailbox', 'mailbox-running'].includes(ev.delivered) ? 'queued for' : 'woke'} ${ev.toName} (${ev.chars} chars)`;
+          fromCard.querySelector('.member-body')?.appendChild(line);
+        }
+        if (toCard && ev.delivered === 'stalled-wake') toCard.querySelector('.member-state').textContent = 'stalled · wake-up queued…';
+        break;
+      }
       const card = subCard(ev.agentId, ev.name, ev.model || '', ev.depth);
       if (!card) break;
       const body = card.querySelector('.member-body');
@@ -2857,9 +2907,12 @@ function handleTeamEvent(ev) {
       break;
     }
     case 'links-round': {
+      const nurseNames = new Set(ev.nurseWaking || []);
+      const waking = (ev.waking || []).filter(name => !nurseNames.has(name));
+      if (ev.silent || !waking.length) break;
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      note.textContent = `🔗 Links round ${ev.round}: ${(ev.waking || []).join(', ')} got crew messages — ${ev.exchanges}/${ev.budget} exchanges used.`;
+      note.textContent = `🔗 Links round ${ev.round}: ${waking.join(', ')} got crew messages — ${ev.exchanges}/${ev.budget} exchanges used.`;
       run.wrap.appendChild(note);
       break;
     }
@@ -2873,7 +2926,21 @@ function handleTeamEvent(ev) {
     case 'links-stall': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — the crew carries on without it.`;
+      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — a teammate can wake it with agent.send; the crew continues meanwhile.`;
+      run.wrap.appendChild(note);
+      break;
+    }
+    case 'links-revive': {
+      const card = teamCard(ev.index, ev.name, ev.model || '');
+      if (card) {
+        card.classList.remove('stalled', 'failed');
+        setMemberControl(card, false, false);
+        card.querySelector('.member-state').textContent = `waking with ${ev.messages || 1} crew message${ev.messages === 1 ? '' : 's'}…`;
+      }
+      if (ev.silent || ev.source === 'nurse') break;
+      const note = document.createElement('div');
+      note.className = 'chat-msg system';
+      note.textContent = `🔗 Links: ${ev.name} was stalled; a teammate sent new work, so it is waking for another bounded turn.`;
       run.wrap.appendChild(note);
       break;
     }

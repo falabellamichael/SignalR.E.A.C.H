@@ -67,3 +67,11 @@ test('completed activity summarizes status without duplicating a long final answ
   assert.equal(state.reason, answer);
   assert.ok(summary(state).detail.length < 100);
 });
+
+test('stalled is a distinct terminal activity state', () => {
+  let state = reduce(null, { type: 'run-state', status: 'running' }, 1000);
+  state = reduce(state, { type: 'run-state', status: 'stalled', reason: 'Provider timed out.' }, 2000);
+  assert.equal(summary(state, 3000).title, 'Stalled');
+  assert.equal(summary(state, 3000).active, false);
+  assert.equal(summary(state, 3000).detail, 'Provider timed out.');
+});

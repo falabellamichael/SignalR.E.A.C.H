@@ -597,6 +597,17 @@ const { AgentNet, linksCompleteIn } = require('../agent/agent-net.cjs');
   assert.ok(/budget/i.test(d3.error || ''), 'budget refusal explains itself');
   assert.strictEqual(net.linkSends, 2, 'exactly two exchanges counted');
 
+  const stalledNet = new AgentNet({ rosterMailbox: true });
+  stalledNet.preRegister({ agentId: 's-1', name: 'Sender' });
+  stalledNet.preRegister({ agentId: 's-2', name: 'Stalled' });
+  const stalledRec = stalledNet.attach('s-2', { running: false }, { get: () => ({ todos: [] }) });
+  stalledRec.status = 'stalled';
+  const wake = stalledNet.send({ from: 's-1', to: 'Stalled', message: 'Retry with a narrower task.' });
+  assert.strictEqual(wake.delivered, 'stalled-wake');
+  assert.strictEqual(wake.inbox, 1);
+  assert.strictEqual(stalledNet.status('s-2', 's-1').inbox, 1);
+  assert.match(stalledNet.list('s-1').guidance || '', /agent\.send/);
+
   const net2 = new AgentNet({ rosterMailbox: true });
   net2.preRegister({ agentId: 'x-1', name: 'One' });
   net2.preRegister({ agentId: 'x-2', name: 'Two' });
@@ -627,6 +638,13 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     req.on('end', () => {
       const parsed = JSON.parse(body);
       hits.push(parsed);
+      // Deterministic non-retryable provider failure for the Nurse quarantine
+      // contract. New peer evidence cannot repair a dead provider route.
+      if (parsed.model === 'm-hard') {
+        res.writeHead(503, { 'Content-Type': 'text/plain' });
+        res.end('provider unavailable');
+        return;
+      }
       // Reply identifies the persona (from the system prompt) and echoes any
       // HANDOFF block so the chain test can prove relay happened.
       const sys = parsed.messages[0].content;
@@ -636,7 +654,7 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
       // structured recovery asks, it answers prose every time, and the member
       // ends paused. Links must carry on without it.
       let content;
-      if (who && who[1] === 'Rogue') {
+      if (who && who[1] === 'Rogue' && !/LINK MESSAGES from the crew/.test(userMsg)) {
         content = 'I could not decide what to do.';
       } else {
         const relay = /HANDOFF FROM (\w+)[^\n]*:\n([\s\S]*)/.exec(userMsg);
@@ -751,7 +769,7 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
       team: stallTeam,
       personas: [
         { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
-        { id: 'px', name: 'Rogue', model: 'm-bad', prompt: 'You are Rogue.' },
+        { id: 'px', name: 'Rogue', model: 'm-hard', prompt: 'You are Rogue.' },
       ],
       task: 'Draft then review.',
       projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
@@ -763,10 +781,82 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.strictEqual(stDone.results[1].ok, false, 'the stalled member reports not-ok');
     assert.ok(events.some(e => e.type === 'links-stall' && e.name === 'Rogue'), 'a links-stall event names the dead node');
     assert.strictEqual(stDone.links.stalled, 1, 'links telemetry counts the stalled member');
+    assert.strictEqual(stDone.links.nurse.quarantined, 1, 'the Nurse quarantines one hard provider failure');
+    assert.strictEqual(stDone.links.nurse.wakeStarted, 0, 'the Nurse never retries a hard provider failure');
+    assert.ok(events.some(e => e.type === 'nurse' && e.nurseType === 'quarantine' && e.name === 'Rogue'), 'the quarantine is observable without a chat turn');
     assert.ok(events.some(e => e.type === 'links-synthesis' && e.name === 'Alpha'), 'the surviving Coordinator synthesizes');
+    assert.ok(hits.some(hit => hit.model === 'm1' && /TEAM NURSE HANDOFF/.test(JSON.stringify(hit.messages))), 'the synthesis request receives member evidence directly');
+    assert.ok(!hits.some(hit => hit.model === 'm-hard' && /TEAM NURSE RECOVERY/.test(JSON.stringify(hit.messages))), 'no Nurse recovery request reaches the failed route');
     assert.ok(stDone.answer.includes('I am Alpha'), 'the answer carries the live member output');
     assert.ok(!stDone.answer.includes('(failed:'), 'no failure dump when a live member answered');
-    console.log('✓ team-runner links stall');
+    console.log('✓ team-runner links hard-provider quarantine');
+
+    // --- links: a protocol-stalled member is silently recovered once when a
+    // healthy peer has NEW evidence. This is the Nurse path (no peer send). ---
+    events.length = 0;
+    hits.length = 0;
+    const nurseRun = new TeamRunner({
+      team: { id: 't4n', name: 'LinksNurse', mode: 'links', members: [{ personaId: 'pa', roleId: 'coordinator' }, { personaId: 'px' }] },
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'px', name: 'Rogue', model: 'm-bad', prompt: 'You are Rogue.' },
+      ],
+      task: 'Draft then review.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
+      sendEvent,
+    });
+    await nurseRun.run('run-ln');
+    const nurseDone = events.filter(e => e.type === 'done').pop();
+    assert.ok(nurseDone.results[1].ok, 'the Nurse-recovered member completes');
+    assert.strictEqual(nurseDone.results[1].status, 'completed');
+    assert.strictEqual(nurseDone.links.stalled, 0, 'successful Nurse recovery clears stalled telemetry');
+    assert.strictEqual(nurseDone.links.nurse.stagedWakes, 1, 'exactly one evidence-backed wake is staged');
+    assert.strictEqual(nurseDone.links.nurse.wakeStarted, 1, 'exactly one Nurse wake starts');
+    assert.strictEqual(nurseDone.links.nurse.wakeSucceeded, 1, 'the bounded Nurse wake succeeds');
+    assert.ok(events.some(e => e.type === 'nurse' && e.nurseType === 'wake-staged' && e.name === 'Rogue'), 'the silent scheduler exposes the staged wake');
+    assert.ok(events.some(e => e.type === 'nurse' && e.nurseType === 'wake-started' && e.name === 'Rogue'), 'the silent scheduler exposes the real wake start');
+    assert.ok(events.some(e => e.type === 'nurse' && e.nurseType === 'wake-succeeded' && e.name === 'Rogue'), 'the silent scheduler records success');
+    assert.strictEqual(events.filter(e => e.type === 'links-revive' && e.source === 'nurse').length, 1, 'one Nurse revival enters the bounded Links loop');
+    assert.strictEqual(hits.filter(hit => /TEAM NURSE RECOVERY/.test(JSON.stringify(hit.messages))).length, 1, 'new evidence causes one model recovery request, not a retry storm');
+    console.log('✓ team-runner silent Nurse recovery');
+
+    // --- links: a teammate may revive a stalled member with agent.send. The
+    // message is delivered through the normal mailbox and existing bounded
+    // Links wake loop; no concurrent rogue turn is spawned. ---
+    events.length = 0;
+    hits.length = 0;
+    let wakeDelivery = null;
+    const reviveRun = new TeamRunner({
+      team: { id: 't5', name: 'LinksRevive', mode: 'links', members: [{ personaId: 'pa', roleId: 'coordinator' }, { personaId: 'px' }] },
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'px', name: 'Rogue', model: 'm-bad', prompt: 'You are Rogue.' },
+      ],
+      task: 'Draft then review.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0',
+      sendEvent: (channel, payload) => {
+        events.push(payload);
+        if (payload && payload.type === 'links-stall' && payload.name === 'Rogue' && !wakeDelivery) {
+          const listed = reviveRun.net.list('m0-pa');
+          const rogue = listed.agents.find(agent => agent.name === 'Rogue');
+          assert.strictEqual(rogue.status, 'stalled', 'peers see the member as stalled');
+          assert.match(listed.guidance || '', /agent\.send/, 'the roster tells peers how to revive a stall');
+          wakeDelivery = reviveRun.net.send({ from: 'm0-pa', to: 'Rogue', message: 'Retry the review with this concrete instruction.' });
+        }
+      },
+    });
+    await reviveRun.run('run-lr');
+    const rvDone = events.filter(e => e.type === 'done').pop();
+    assert.strictEqual(wakeDelivery.delivered, 'stalled-wake', 'agent.send identifies a stalled wake-up');
+    assert.strictEqual(wakeDelivery.inbox, 1, 'the recovery message is queued exactly once');
+    assert.ok(events.some(e => e.type === 'links-revive' && e.name === 'Rogue'), 'the wake loop reports the revived member');
+    assert.ok(rvDone.results[1].ok, 'the revived member completes its recovery turn');
+    assert.strictEqual(rvDone.results[1].status, 'completed');
+    assert.strictEqual(rvDone.links.stalled, 0, 'successful recovery clears stalled telemetry');
+    assert.strictEqual(rvDone.links.nurse.stagedWakes, 0, 'an intentional peer message takes precedence over automatic Nurse mail');
+    assert.strictEqual(rvDone.links.completedBy, 'Rogue', 'the revived member may finish the Links task');
+    assert.ok(hits.some(hit => /Retry the review with this concrete instruction/.test(JSON.stringify(hit.messages))), 'the stalled member receives the teammate instruction');
+    console.log('✓ team-runner links stalled-member revival');
 
     // --- stop mid-run: chain with 2 members, stop after the first starts ---
     events.length = 0;

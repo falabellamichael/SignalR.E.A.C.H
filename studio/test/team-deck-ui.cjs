@@ -86,6 +86,7 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`document.querySelectorAll('.member-card:not([hidden])').length`), 1);
   assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent`), 'Seeker');
   assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-step').textContent`), 'Step 5');
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-deck-nurse').hidden`), true);
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=working] .team-orbit-icon')).animationName`), 'activity-spin');
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=waiting] .team-orbit-icon')).animationName`), 'none');
   await capture('desktop-dark');
@@ -148,6 +149,63 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{name:'prefers-reduced-motion',value:'reduce'}] });
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=working] .team-orbit-icon')).animationName`), 'none');
   win.webContents.debugger.detach();
+  // Nurse telemetry is one quiet heading badge. It must not create cards,
+  // touch real provider activity/status, append chat/tool rows, or move tabs.
+  const nurseBefore = await run(`(() => {
+    const card = previewRun.cards.get(0), activity = card._teamActivity;
+    return { cards:previewRun.cards.size, subCards:previewRun.subCards.size,
+      tabs:previewRun.wrap.querySelectorAll('[role=tab]').length,
+      updatedAt:activity.updatedAt, steps:activity.count, status:card.dataset.teamStatus,
+      chatRows:previewRun.wrap.querySelectorAll('.chat-msg.system').length,
+      toolRows:previewRun.wrap.querySelectorAll('.member-tool').length,
+      selected:previewRun.wrap.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent };
+  })()`);
+  await run(`
+    previewEvent({type:'nurse',nurseType:'handoff',action:'handoff',index:99,name:'Phantom',count:2,chars:900,silent:true,at:Date.now()+10000});
+    previewEvent({type:'nurse',nurseType:'quarantine',action:'quarantine',index:0,name:'CEO',failureKind:'hard-provider',silent:true,at:Date.now()+20000});
+    previewEvent({type:'nurse',nurseType:'quiet',action:'quiet',reason:'no-useful-work',silent:true,at:Date.now()+30000});
+  `);
+  const nurseAfter = await run(`(() => {
+    const card = previewRun.cards.get(0), activity = card._teamActivity;
+    return { cards:previewRun.cards.size, subCards:previewRun.subCards.size,
+      tabs:previewRun.wrap.querySelectorAll('[role=tab]').length,
+      updatedAt:activity.updatedAt, steps:activity.count, status:card.dataset.teamStatus,
+      chatRows:previewRun.wrap.querySelectorAll('.chat-msg.system').length,
+      toolRows:previewRun.wrap.querySelectorAll('.member-tool').length,
+      selected:previewRun.wrap.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent };
+  })()`);
+  assert.deepEqual(nurseAfter, nurseBefore);
+  assert.equal(await run(`previewRun.cards.has(99) || previewRun.subCards.has('Phantom')`), false);
+  assert.equal(await run(`(() => { const b=previewRun.wrap.querySelector('.team-deck-nurse'); return !b.hidden && b.getAttribute('aria-live')==='off' && b.dataset.handoffs==='2' && b.dataset.wakes==='0' && b.dataset.skips==='1' && b.dataset.quiet==='1'; })()`), true);
+  assert.match(await run(`previewRun.wrap.querySelector('.team-deck-nurse').textContent`), /no useful work/i);
+  assert.match(await run(`previewRun.wrap.querySelector('.team-deck-nurse').getAttribute('aria-label')`), /2 handoffs.*1 retry avoided.*1 quiet decision/i);
+  // A failed Links member remains visibly stalled. A Nurse wake uses the same
+  // roster tab, while Nurse-origin round/revive notices stay out of chat.
+  await run(`
+    previewEvent({type:'member-start',index:4,name:'Reviewer',model:'qwen-32b'});
+    previewEvent({type:'member-done',index:4,name:'Reviewer',model:'qwen-32b',ok:false,status:'stalled',error:'Provider timed out'});
+  `);
+  await until(`previewRun.cards.get(4).dataset.teamStatus === 'stalled'`, 'Stalled member state was not retained');
+  assert.match(await run(`previewRun.deck.banner.textContent`), /1 stalled/);
+  const nurseNoticeCount = await run(`previewRun.wrap.querySelectorAll('.chat-msg.system').length`);
+  await run(`
+    previewEvent({type:'subagent',netType:'agent-message',from:'m0-ceo',fromName:'CEO',to:'m1-architect',toName:'Architect',delivered:'mailbox-running',chars:33,messagesSent:1,messagesReceived:1,inbox:1});
+    previewEvent({type:'subagent',netType:'agent-message',from:'m0-ceo',fromName:'CEO',to:'m4-reviewer',toName:'Reviewer',delivered:'stalled-wake',chars:42,messagesSent:1,messagesReceived:1,inbox:1});
+    previewEvent({type:'nurse',nurseType:'wake-staged',action:'wake-staged',index:4,name:'Reviewer',sourceName:'CEO',silent:true});
+    previewEvent({type:'links-round',round:1,waking:['Reviewer'],nurseWaking:['Reviewer'],silent:true,exchanges:0,budget:12});
+    previewEvent({type:'links-revive',index:4,name:'Reviewer',model:'qwen-32b',messages:1,source:'nurse',silent:true});
+    previewEvent({type:'nurse',nurseType:'wake-started',action:'wake-started',index:4,name:'Reviewer',silent:true});
+    previewEvent({type:'member-start',index:4,name:'Reviewer',model:'qwen-32b',retake:true});
+  `);
+  await until(`previewRun.cards.get(4).dataset.teamStatus === 'working'`, 'Revived member did not return to working state');
+  assert.equal(await run(`previewRun.wrap.querySelectorAll('.chat-msg.system').length`), nurseNoticeCount);
+  assert.equal(await run(`(() => { const b=previewRun.wrap.querySelector('.team-deck-nurse'); return b.dataset.wakes==='1' && b.dataset.wakeStarted==='1'; })()`), true);
+  assert.match(await run(`previewRun.wrap.querySelector('.team-deck-nurse').textContent`), /waking Reviewer/i);
+  assert.match(await run(`previewRun.cards.get(0).querySelector('.member-body').textContent`), /queued for Architect/);
+  assert.doesNotMatch(await run(`previewRun.cards.get(0).querySelector('.member-body').textContent`), /woke Architect/);
+  assert.match(await run(`previewRun.cards.get(0).dataset.crewMeta`), /1 sent/);
+  assert.match(await run(`previewRun.cards.get(4).dataset.crewMeta`), /1 received.*1 queued/);
+  assert.equal(await run(`previewRun.subCards.has(undefined)`), false);
   // Existing bulk reviews still resolve exactly once through the shared group.
   await run(`previewGroup.rejectAll.click()`);
   await until(`previewDecisions.length === 3`, 'Bulk reject did not reach all files');
@@ -165,7 +223,7 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`previewRun.wrap.querySelectorAll('.member-card:not([hidden])').length`), 1);
   await capture('finished');
   assert.deepEqual(errors, []);
-  fs.writeFileSync(path.join(root,'results.json'), JSON.stringify({checks:['state fidelity','single panel','keyboard and overflow','background questions','draft preservation','pause/resume','history remount','spawned workers','narrow/light/dark','reduced motion','bulk review','terminal outcomes'],errors},null,2));
+  fs.writeFileSync(path.join(root,'results.json'), JSON.stringify({checks:['state fidelity','single panel','keyboard and overflow','background questions','draft preservation','pause/resume','history remount','spawned workers','narrow/light/dark','reduced motion','silent team nurse','bulk review','terminal outcomes'],errors},null,2));
   console.log('TEAM DECK UI PASS', root);
   clearTimeout(timeout); app.exit(0);
 })().catch(error => { console.error(error.stack); console.error('Evidence:', root); clearTimeout(timeout); app.exit(1); });
