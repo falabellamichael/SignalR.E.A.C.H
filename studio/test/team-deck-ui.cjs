@@ -166,7 +166,8 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.deepEqual(await run(`({draft:composerInput.value,active:composerInput.getAttribute('aria-activedescendant'),selected:previewRun.wrap.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent})`), completionBeforeEvent);
   assert.equal(await run(`document.querySelector('#btn-send').textContent`), 'Send', 'An explicit @ route remains actionable while the team works');
   await run(`composerInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
-  assert.match(await run(`composerInput.value`), /^@team:"Reviewer"#deck-preview\/m4-reviewer /);
+  // Team suggestions sort by name: Reviewer first, Seeker after ArrowDown.
+  assert.match(await run(`composerInput.value`), /^@team:"Seeker"#deck-preview\/m2-seeker /);
   assert.equal(await run(`document.activeElement === composerInput && composerInput.getAttribute('aria-expanded') === 'false'`), true);
   await run(`composerInput.value='ordinary unsent draft'; composerInput.dispatchEvent(new Event('input',{bubbles:true}))`);
   assert.equal(await run(`document.querySelector('#btn-send').textContent`), 'Stop', 'Ordinary text retains the existing stop control while work is active');

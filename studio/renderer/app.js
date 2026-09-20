@@ -1028,7 +1028,7 @@ composerInput.addEventListener('keydown', (e) => {
 });
 
 async function sendComposer() {
-  if (composerIntentPending) return;
+  if (composerIntentPending || window.ReachTeamComposer?.saving()) return;
   const raw = composerInput.value;
   const parsed = composerIntents.parse(raw);
   const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
@@ -1108,6 +1108,9 @@ async function sendComposer() {
     }
     return;
   }
+  if (window.ReachTeamComposer?.enabled() && raw.trim()) {
+    return window.ReachTeamComposer.send(raw);
+  }
   if (agentRunning || runningAgentIds.size || (activeTeamRun && !activeTeamRun.paused)) {
     return stopAllRuns();
   }
@@ -1154,12 +1157,14 @@ function updateSendControl() {
   const parsed = composerIntents.parse(composerInput.value);
   const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
     || /^[\s]*[\/@]/.test(composerInput.value);
-  const stopMode = busy && !explicitIntent;
+  const teamMessage = window.ReachTeamComposer?.enabled() && composerInput.value.trim();
+  const stopMode = busy && !explicitIntent && !teamMessage;
+  const command = parsed.kind === 'command' || (parsed.error && /^\s*\//.test(composerInput.value));
   const button = $('#btn-send');
-  button.textContent = stoppingAll ? 'Stopping…' : composerIntentPending ? 'Running…' : stopMode ? 'Stop' : parsed.kind === 'command' || parsed.error ? 'Run' : 'Send';
-  button.title = stopMode ? 'Stop all active agents and pause the team' : parsed.kind === 'command' || parsed.error ? 'Run composer command' : 'Send message';
+  button.textContent = stoppingAll ? 'Stopping…' : composerIntentPending ? 'Running…' : stopMode ? 'Stop' : command ? 'Run' : 'Send';
+  button.title = stopMode ? 'Stop all active agents and pause the team' : command ? 'Run composer command' : teamMessage ? 'Send to the selected team' : 'Send message';
   button.classList.toggle('danger', stopMode);
-  button.disabled = stoppingAll || composerIntentPending;
+  button.disabled = stoppingAll || composerIntentPending || window.ReachTeamComposer?.saving();
   $('#btn-attach').disabled = busy || !currentAgent || stoppingAll;
   window.ReachWorkspace?.syncControls();
 }
@@ -2275,6 +2280,7 @@ async function loadCreatePage() {
   await loadConnectionChoices();
   renderPersonaList();
   renderTeamList();
+  window.ReachTeamComposer?.sync();
 }
 
 /** Connection display name for an id, or null when unknown/deleted. */
@@ -2663,17 +2669,7 @@ $('#btn-team-run-cancel').onclick = () => $('#team-run-modal').classList.add('hi
 /* Dispatch a team from inside a conversation: pick the crew first. */
 $('#btn-dispatch-team').onclick = async () => {
   if (!currentAgent) { showNotice('Open a conversation first.'); return; }
-  await loadCreatePage();
-  if (!teams.length) {
-    showNotice('No teams yet — create one on the Create page first.');
-    showTab('create');
-    return;
-  }
-  if (teams.length === 1) { openTeamRunModal(teams[0]); return; }
-  const labels = teams.map((t, i) => `${i + 1}. ${t.name} (${t.mode}, ${t.members.length} members)`).join('\n');
-  const pick = await window.ReachDialogs.prompt('Which team?\n\n' + labels + '\n\nEnter the number:');
-  const idx = parseInt(pick, 10) - 1;
-  if (Number.isInteger(idx) && idx >= 0 && idx < teams.length) openTeamRunModal(teams[idx]);
+  await window.ReachTeamComposer.open();
 };
 
 $('#btn-team-run-go').onclick = async () => {
@@ -2714,8 +2710,12 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   // Never mount conversation A's team deck inside conversation B. The retained
   // deck DOM moves into its bound chat through renderChatHistory when selected.
   const boundToCurrent = !!agentId && currentAgent?.id === agentId;
+  if (boundToCurrent && team.id) {
+    currentAgent.settings = { ...currentAgent.settings, teamChat: { ...currentAgent.settings?.teamChat, enabled: true, teamId: team.id } };
+    appendChatMessage('user', task);
+  }
   const host = boundToCurrent ? chatLog : noAgent;
-  if (!boundToCurrent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
+  if (!boundToCurrent && !currentAgent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
   run.deck = window.ReachTeamDeck.create({ team, task });
   run.banner = run.deck.banner;
   const stop = document.createElement('button');
@@ -4078,13 +4078,14 @@ function handleTeamEvent(ev) {
       note.className = 'chat-msg system';
       const okCount = (ev.results || []).filter(r => r.ok).length;
       note.textContent = `🏁 Team run ${ev.stopped ? 'stopped' : 'finished'}: ${okCount}/${(ev.results || []).length} members succeeded.`;
+      if (run.team?.id && run.agentId) note.textContent += ' Send a follow-up with Teams on to continue this conversation.';
       run.wrap.appendChild(note);
       // Persist a compact record into the conversation history so a reload
       // still shows the run happened and what the crew answered.
       if (run.agentId && ev.answer) {
         const summary = `【Team ${(run.team || {}).name || ''} · ${ev.mode}】\n${String(ev.answer).slice(0, 12000)}`;
         if (currentAgent?.id === run.agentId) appendChatMessage('assistant', summary);
-        reachApi.agents.appendNote(run.agentId, summary).catch(error => { note.textContent += ' Could not save: ' + error.message; });
+        if (!ev.historySaved) reachApi.agents.appendNote(run.agentId, summary).catch(error => { note.textContent += ' Could not save: ' + error.message; });
       }
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);

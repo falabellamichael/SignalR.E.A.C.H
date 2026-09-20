@@ -30,6 +30,23 @@
 .composer-attachment button { border: 0; padding: 0 3px; color: var(--dim); font-size: 13px; line-height: 1; }
 .composer-footer { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--line); padding-top: 7px; min-width: 0; }
 .composer-tools { flex: 1; display: flex; align-items: center; gap: 4px; overflow-x: auto; scrollbar-width: none; min-width: 0; }
+.team-composer-pill { display: flex; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 18px; overflow: hidden; }
+.team-composer-pill:has([aria-checked="true"]) { border-color: var(--gold-dim); background: var(--hover); }
+.team-composer-pill button { border: 0; border-radius: 0; font-size: 12px; padding: 6px 8px; }
+#team-chat-toggle span { max-width: 125px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#team-chat-menu-button { border-left: 1px solid var(--line); min-width: 28px; }
+#team-chat-menu-button[aria-expanded="true"] { color: var(--gold); background: var(--hover); }
+.team-chat-menu { position: absolute; z-index: 150; bottom: calc(100% + 6px); left: 8px; width: min(350px, calc(100% - 16px)); max-height: min(530px, 65vh); overflow: auto; box-sizing: border-box; padding: 14px; background: var(--panel2); border: 1px solid var(--gold-dim); border-radius: 12px; box-shadow: 0 12px 32px var(--shadow); }
+.team-chat-menu.hidden { display: none; }
+.team-chat-menu-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.team-chat-menu select { width: 100%; margin: 6px 0; font: inherit; font-size: 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+.team-chat-menu p { font-size: 12px; line-height: 1.45; margin: 4px 0 14px; }
+.team-chat-menu label { font-size: 12px; }
+.team-chat-check { display: flex; align-items: center; gap: 8px; }
+.team-chat-check input { width: auto; accent-color: var(--gold); }
+.team-chat-menu-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.team-chat-menu :focus-visible, .team-composer-pill :focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+@media (max-width: 1100px) { #team-chat-toggle span { max-width: 75px; } }
 .composer-tools > button { flex: 0 0 auto; white-space: nowrap; padding: 6px 8px; font: inherit; font-size: 12px; }
 .feature-switch { display: inline-flex; position: relative; align-items: center; gap: 7px; border-color: transparent; }
 .feature-switch::after { content: ''; width: 24px; height: 14px; background: var(--dim); border-radius: 8px; opacity: .45; }

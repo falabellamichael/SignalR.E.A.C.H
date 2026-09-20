@@ -216,6 +216,10 @@
               </div>
               <div id="composer-attachments" class="composer-attachments hidden" aria-live="polite"></div>
               <div class="composer-footer" aria-label="Conversation controls">
+                <div class="team-composer-pill" role="group" aria-label="Team chat">
+                  <button id="team-chat-toggle" class="ghost small feature-switch" type="button" role="switch" aria-checked="false" title="Send normal messages to a team"><span>Teams</span></button>
+                  <button id="team-chat-menu-button" class="ghost small" type="button" aria-label="Team chat options" aria-haspopup="dialog" aria-expanded="false" aria-controls="team-chat-menu" title="Choose a team and conversation options">▾</button>
+                </div>
                 <div id="composer-tools" class="composer-tools"></div>
                 <div class="telemetry-control">
                   <button id="telemetry-toggle" type="button" class="ghost small" aria-pressed="true">Telemetry</button>
@@ -225,6 +229,18 @@
                     <option value="models">Models &amp; Memory</option>
                   </select>
                 </div>
+              </div>
+              <div id="team-chat-menu" class="team-chat-menu hidden" role="dialog" aria-label="Team chat options">
+                <div class="team-chat-menu-head"><strong>Team chat</strong><button id="team-chat-close" class="ghost small" type="button" aria-label="Close team chat options">✕</button></div>
+                <label for="team-chat-select">Team</label>
+                <select id="team-chat-select" aria-describedby="team-chat-description"></select>
+                <p id="team-chat-description" class="dim"></p>
+                <label class="team-chat-check"><input id="team-chat-history" type="checkbox" checked /> Include recent conversation</label>
+                <p class="dim">Follow-ups include your earlier messages and team answers. Turn this off to send only the new message.</p>
+                <label for="team-chat-recipient">While the team is running, send to</label>
+                <select id="team-chat-recipient"><option value="coordinator">Coordinator (or first member)</option><option value="selected">Selected member tab</option></select>
+                <p id="team-chat-live-status" class="dim" role="status"></p>
+                <div class="team-chat-menu-actions"><button id="team-chat-pause" class="ghost small" type="button">Pause team</button><button id="team-chat-edit" class="ghost small" type="button">Edit team…</button><button id="team-chat-manage" class="ghost small" type="button">Manage teams…</button></div>
               </div>
             </div>
           </div>
@@ -784,6 +800,7 @@
   <script src="settings.js"></script>
   <script src="browser.js"></script>
   <script src="workspace.js"></script>
+  <script src="team-composer.js"></script>
   <script src="telemetry.js"></script>
   <script src="workspace-shell.js"></script>
   <script src="connections-ui.js"></script>

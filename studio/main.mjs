@@ -12,6 +12,7 @@ const { parseAgentResponse } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
 const { TeamRunner } = require('./agent/team-runner.cjs');
+const { teamConversationTask, teamAnswerNote, teamFollowupTarget } = require('./agent/team-conversation.cjs');
 const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
@@ -633,13 +634,17 @@ function registerIpc() {
   });
   ipcMain.handle('teams:delete', (_e, id) => ({ ok: getPersonaStore().removeTeam(id) }));
 
-  ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId }) => {
+  ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId, useHistory = true }) => {
     try {
       const ps = getPersonaStore();
       const team = ps.getTeam(teamId);
       if (!team) return { ok: false, err: 'Team not found.' };
       if (!team.members || !team.members.length) return { ok: false, err: 'The team has no members.' };
       if (!String(task || '').trim()) return { ok: false, err: 'A task is required.' };
+      const conversation = agentId ? getAgentStore().get(agentId) : null;
+      if (agentId && !conversation) return { ok: false, err: 'Conversation not found.' };
+      if (agentLoops.get(agentId)?.running) return { ok: false, err: 'Wait for this conversation to finish before starting the team.' };
+      const conversationTask = teamConversationTask(conversation?.messages, task, useHistory !== false);
 
       const settings = loadSettings();
       let endpoint = settings.endpoint || '';
@@ -653,7 +658,7 @@ function registerIpc() {
       // Keep persona+role PAIRED while filtering — filtering personas alone
       // would misalign roles against indexes after a deletion.
       const roster = team.members
-        .map(m => ({ persona: ps.getPersona(m.personaId), role: String(m.role || '') }))
+        .map(m => ({ persona: ps.getPersona(m.personaId), role: String(m.role || ''), member: m }))
         .filter(r => r.persona);
       if (!roster.length) return { ok: false, err: 'All team personas were deleted.' };
       const personas = roster.map(r => r.persona);
@@ -742,15 +747,24 @@ function registerIpc() {
 
       const teamRunId = 'teamrun-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
       const sendEvent = (channel, payload) => {
+        // Save before announcing completion so a follow-up sees the answer
+        // even after the user switches views or reloads the renderer.
+        if (payload.type === 'done' && agentId && payload.answer) {
+          getAgentStore().appendMessage(agentId, {
+            role: 'assistant', content: teamAnswerNote(team, payload),
+            _reachMeta: { source: 'team-run', teamId, teamRunId },
+          });
+          payload = { ...payload, historySaved: true };
+        }
         if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
       };
       const budgets = resolveBudgets(settings, agentId ? getAgentStore().get(agentId)?.settings : {});
       const runner = new TeamRunner({
         agentSettings: structuredClone(agentId ? getAgentStore().get(agentId)?.settings || {} : {}),
-        team: { ...team, members: team.members },
+        team: { ...team, members: roster.map(r => r.member) },
         personas,
         roles,
-        task,
+        task: conversationTask,
         projectDir,
         endpoint,
         accessKey,
@@ -809,6 +823,10 @@ function registerIpc() {
        * summarizeResolutions names connections and models but NEVER access keys. */
       const routing = summarizeResolutions(memberConnections);
       console.log(`[teams] ${team.name} (${memberConnections.length} members): ${routing}`);
+      if (conversation) {
+        getAgentStore().appendMessage(agentId, { role: 'user', content: String(task).trim(), _reachMeta: { source: 'team-user', teamId, teamRunId } });
+        getAgentStore().update(agentId, { settings: { teamChat: { ...conversation.settings?.teamChat, enabled: true, teamId, useHistory: useHistory !== false } } });
+      }
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
       }).finally(() => {
@@ -852,6 +870,21 @@ function registerIpc() {
     if (!runner) return { ok: false, err: 'Team run is no longer available.' };
     const result = runner.members();
     return result.ok ? result : { ok: false, err: result.error };
+  });
+
+  ipcMain.handle('teams:followup', (_e, { teamRunId, agentId, teamId, target, message }) => {
+    try {
+      const runner = teamRuns.get(String(teamRunId || ''));
+      if (!runner || runner.conversationId !== agentId || runner.team.id !== teamId) throw new Error('This team run does not belong to the selected conversation and team.');
+      if (runner.team.mode !== 'links') throw new Error('Wait for this run to finish, then send your follow-up. Live team messages require Links mode.');
+      const text = String(message || '').trim();
+      if (!text || text.length > 20000) throw new Error('Team messages must contain 1–20,000 characters.');
+      const recipient = teamFollowupTarget(runner, target);
+      const result = runner.messageMember(recipient, text);
+      if (!result.ok) return { ok: false, err: result.error };
+      getAgentStore().appendMessage(agentId, { role: 'user', content: text, _reachMeta: { source: 'team-user', teamId, teamRunId } });
+      return { ok: true, name: runner.net.agents.get(recipient)?.name, paused: runner.paused };
+    } catch (error) { return { ok: false, err: error.message }; }
   });
 
   ipcMain.handle('teams:message', (_e, { teamRunId, target, message }) => {

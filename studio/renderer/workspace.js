@@ -83,6 +83,7 @@
     $('#composer-model').title = currentAgent?.model || 'Choose a model for this conversation';
     $('#composer-model').disabled = !currentAgent || saving;
     $('#btn-clear-chat').disabled = !currentAgent || saving || agentRunning || !!activeTeamRun;
+    window.ReachTeamComposer?.sync();
   }
   function sync() { syncControls(); resizeComposer(); window.ReachTelemetry?.sync(); }
   async function save(id, patch) {
