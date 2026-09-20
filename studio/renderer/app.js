@@ -3002,6 +3002,7 @@ function renderComposerSuggestions(context) {
     option.id = `composer-suggestion-${index}`;
     option.setAttribute('role', 'option');
     option.setAttribute('aria-selected', String(index === composerSuggestionIndex));
+    option.title = composerIntents.suggestionTooltip(item);
     const label = document.createElement('span');
     label.className = 'composer-suggestion-label';
     const kind = document.createElement('span');

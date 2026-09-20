@@ -157,6 +157,7 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`composerInput.getAttribute('aria-activedescendant')`), 'composer-suggestion-0');
   assert.equal(await run(`composerSuggestionsEl.querySelector('img,script') === null && window.__mentionXss === undefined`), true);
   assert.match(await run(`[...composerSuggestionsEl.querySelectorAll('.composer-suggestion-label')].map(x=>x.textContent).join('|')`), /<img src=x/);
+  assert.match(await run(`document.querySelector('#composer-suggestions [role=option]').title`), /Live member/);
   assert.ok(Math.abs((await run(`document.querySelector('.composer').getBoundingClientRect().height`)) - composerHeight) <= 1, 'Popup must not resize composer');
   await run(`composerInput.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))`);
   assert.equal(await run(`composerInput.getAttribute('aria-activedescendant')`), 'composer-suggestion-1');

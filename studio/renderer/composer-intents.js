@@ -242,6 +242,7 @@
         candidates.push({
           kind: 'command', id: `${command.id}:${form}`, label: form,
           detail: command.description, insert: form + ' ', search: `${form} ${command.usage} ${command.description}`,
+          tooltip: `${form}\nUsage: ${command.usage}\n${command.description}`,
         });
       }
     }
@@ -258,6 +259,11 @@
     if (kind === 'model') return `@model:${quote(label)}`;
     const prefix = kind === 'team-template' ? 'team-template' : kind;
     return `@${prefix}:${quote(label)}${id ? `#${id}` : ''}`;
+  }
+
+  function suggestionTooltip(item) {
+    if (item?.tooltip) return String(item.tooltip);
+    return [item?.label, item?.detail].filter(Boolean).map(String).join(' — ');
   }
 
   function replaceCompletion(text, context, insert) {
@@ -353,6 +359,7 @@
     completionContext,
     filterCandidates,
     commandCandidates,
+    suggestionTooltip,
     mentionInsert,
     replaceCompletion,
     takeTargetAndMessage,

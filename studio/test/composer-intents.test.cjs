@@ -103,6 +103,14 @@ test('command completion comes from the execution registry', () => {
   assert.ok(results.some(item => item.label === '/team add'));
   assert.ok(results.some(item => item.label === '/team message'));
   assert.ok(results.every(item => intents.parse(item.label).kind === 'command'));
+  const add = results.find(item => item.label === '/team add');
+  assert.match(add.tooltip, /^\/team add\nUsage: \/team add @persona/);
+  assert.match(add.tooltip, /Add a temporary working agent/);
+  assert.equal(intents.suggestionTooltip(add), add.tooltip);
+  assert.equal(
+    intents.suggestionTooltip({ label: 'Reviewer', detail: 'Live member · working' }),
+    'Reviewer — Live member · working',
+  );
 });
 
 test('every advertised command has a renderer execution branch', () => {
@@ -114,4 +122,9 @@ test('every advertised command has a renderer execution branch', () => {
   for (const command of intents.COMMANDS) {
     assert.match(dispatcher, new RegExp(`case ['"]${command.id.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}['"]\\s*:`), `${command.path} is advertised but has no execution branch`);
   }
+});
+
+test('renderer exposes the complete suggestion tooltip on every row', () => {
+  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  assert.match(renderer, /option\.title\s*=\s*composerIntents\.suggestionTooltip\(item\)/);
 });
