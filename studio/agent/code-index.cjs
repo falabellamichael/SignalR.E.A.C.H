@@ -291,6 +291,16 @@ function extractSymbols(file, content) {
   const scopeStack = [];
   const inFunctionBody = () => scopeStack.some(e => e.fn);
   const inTypeBody = () => scopeStack.some(e => e.type);
+  // Signature-only members (`method(x): void;`) are valid ONLY inside an
+  // interface / type-literal body. Inside a CLASS body that same shape is an
+  // ordinary call statement — `queueReadyWakes(gen);` must not be indexed as a
+  // method. The nearest enclosing type scope decides.
+  const inSignatureTypeBody = () => {
+    for (let k = scopeStack.length - 1; k >= 0; k--) {
+      if (scopeStack[k].type) return scopeStack[k].kind === 'interface';
+    }
+    return false;
+  };
   const enclosingTypeName = () => {
     for (let k = scopeStack.length - 1; k >= 0; k--) {
       if (scopeStack[k].type && scopeStack[k].name) return scopeStack[k].name;
@@ -313,6 +323,7 @@ function extractSymbols(file, content) {
     const trimmed = line.trim();
     const moduleScope = language === 'python' ? indent === 0 : !inFunctionBody();
     const typeBody = language === 'python' ? false : inTypeBody();
+    const signatureTypeBody = language === 'python' ? false : inSignatureTypeBody();
 
     let produced = null;
     for (const rule of rules) {
@@ -321,7 +332,7 @@ function extractSymbols(file, content) {
       // Signature-only members (`method(x: number): void;`) are meaningful only
       // inside an interface or type literal. Elsewhere that shape is an
       // ordinary call statement, and indexing it would invent symbols.
-      if (rule.typeBodyOnly && !typeBody) continue;
+      if (rule.typeBodyOnly && !signatureTypeBody) continue;
       const m = rule.re.exec(line);
       if (!m) continue;
       const rawName = (m[rule.name] || '').trim();
@@ -390,6 +401,7 @@ function extractSymbols(file, content) {
       const entry = {
         fn: opensFn && !isIife,
         type: opensType,
+        kind: opensType ? produced.kind : null,
         name: opensType ? produced.name : null,
         exported: opensType ? /\bexport\b/.test(rawLines[i] || '') : false,
       };

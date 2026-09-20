@@ -1,4 +1,4 @@
-import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell, safeStorage, Notification } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -39,6 +39,9 @@ const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-cont
 const { AuditLog } = require('./agent/audit-log.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
+const { createSettingsStore } = require('./agent/settings-store.cjs');
+const { resolveEndpoint } = require('./agent/endpoint.cjs');
+const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
@@ -86,6 +89,7 @@ const smokeProject = smokeRoot ? path.join(smokeRoot, 'project') : null;
 if (smokeRoot) app.setPath('userData', path.join(smokeRoot, 'profile'));
 
 let win = null;
+const attention = createAttention({ Notification, app, shell, getWindow: () => win });
 let agentStore = null;
 let personaStore = null;
 let agentLoops = new Map(); // agentId -> AgentLoop
@@ -173,18 +177,17 @@ function attachmentMessage(text, staged) {
 
 // ---------- stores ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
+const settingsStore = createSettingsStore({ file: settingsFile, safeStorage });
 /* Settings are normalized on READ so every consumer sees a consistent shape:
  * `connections` (the source of truth) plus the legacy endpoint/accessKey/model
  * projection of whichever connection is active. Normalizing here rather than at
  * each call site is what keeps the ~10 existing `settings.endpoint` readers
  * correct without touching them. */
 function loadSettings() {
-  let raw = {};
-  try { raw = JSON.parse(fs.readFileSync(settingsFile(), 'utf8')); } catch { /* first run or corrupt: fall back to {} */ }
-  return connections.normalizeSettings(raw).settings;
+  return settingsStore.load();
 }
 function saveSettings(s) {
-  atomicWriteJson(settingsFile(), connections.normalizeSettings(s).settings);
+  settingsStore.save(s);
 }
 
 const projectsFile = () => path.join(app.getPath('userData'), 'projects.json');
@@ -227,10 +230,11 @@ function requestApprovalFromRenderer(payload, timeoutMs = 300000) {
     if (!win || win.isDestroyed()) return resolve(false);
     const requestId = 'req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     pendingApprovals.set(requestId, resolve);
+    attention.request(requestId, 'approval');
     win.webContents.send('agent:approval-request', { requestId, ...payload });
     // Zero removes the app's approval deadline; Stop still cancels the run.
     if (timeoutMs > 0) setTimeout(() => {
-      if (pendingApprovals.delete(requestId)) resolve(false);
+      if (pendingApprovals.delete(requestId)) { attention.resolve(requestId); resolve(false); }
     }, timeoutMs);
   });
 }
@@ -272,6 +276,7 @@ async function getAgentLoop(agentId) {
     auditLog: getAuditLog(),
     requestEditReview: (edit) => {
       store.addPendingEdit(agentId, edit);
+      attention.request(edit.editId, 'edit');
       if (win && !win.isDestroyed()) {
         win.webContents.send('agent:edit-pending', { agentId, edit });
       }
@@ -279,25 +284,6 @@ async function getAgentLoop(agentId) {
   });
   agentLoops.set(agentId, loop);
   return loop;
-}
-
-/* Endpoint resolution: follow gist/.txt pointers like the VS Code extension. */
-async function resolveEndpoint(raw, depth = 0) {
-  if (depth > 3) throw new Error('Endpoint pointer redirects in a loop.');
-  const url = new URL(raw);
-  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-    throw new Error('Use an HTTP or HTTPS endpoint without embedded credentials.');
-  }
-  if (url.hostname === 'gist.githubusercontent.com' || /\.txt(?:\/v1)?\/?$/.test(url.pathname)) {
-    url.pathname = url.pathname.replace(/\/v1\/?$/, '');
-    const response = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });
-    if (!response.ok) throw new Error(`Endpoint pointer returned HTTP ${response.status}`);
-    const target = (await response.text()).trim();
-    return resolveEndpoint(target, depth + 1);
-  }
-  url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
-  url.search = ''; url.hash = '';
-  return url.toString().replace(/\/$/, '');
 }
 
 // ---------- ipc ----------
@@ -578,11 +564,13 @@ function registerIpc() {
     const resolve = pendingApprovals.get(requestId);
     if (resolve) {
       pendingApprovals.delete(requestId);
-      resolve(!!approved);
+      attention.resolve(requestId);
+      resolve(approved === true);
     }
     return { ok: true };
   });
   ipcMain.handle('agents:resolveEdit', async (_e, { id, editId, accepted }) => {
+    if (typeof accepted !== 'boolean') return { ok: false, err: 'Edit decision must be a boolean.' };
     const store = getAgentStore();
     const edit = store.getPendingEdit(id, editId);
     if (!edit) return { ok: false, err: 'Edit not found (already resolved?)' };
@@ -602,6 +590,7 @@ function registerIpc() {
     // response. Do not await the whole model run: the review button should
     // acknowledge the verdict immediately while normal activity events stream.
     let resuming = false;
+    attention.resolve(editId);
     const agent = store.get(id);
     if (agent?.runState?.status === 'waiting_edits' && !Object.keys(agent.pendingEdits || {}).length) {
       const loop = await getAgentLoop(id);
@@ -780,6 +769,7 @@ function registerIpc() {
         requestApproval: payload => requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs),
         requestEditReview: (edit) => {
           pendingTeamEdits.set(edit.editId, { edit, teamRunId });
+          attention.request(edit.editId, 'edit');
           sendEvent('team:edit-pending', { teamRunId, edit });
         },
         // A member paused on waiting_edits: block until the user resolves
@@ -921,6 +911,7 @@ function registerIpc() {
   });
 
   ipcMain.handle('teams:resolveEdit', (_e, { editId, accepted }) => {
+    if (typeof accepted !== 'boolean') return { ok: false, err: 'Edit decision must be a boolean.' };
     const entry = pendingTeamEdits.get(editId);
     if (!entry) return { ok: false, err: 'Edit not found (already resolved?)' };
     if (accepted) {
@@ -934,6 +925,7 @@ function registerIpc() {
       }
     }
     pendingTeamEdits.delete(editId);
+    attention.resolve(editId);
     // Unblock the paused team member (if this edit belongs to one).
     const resolver = pendingEditResolvers.get(editId);
     if (resolver) { pendingEditResolvers.delete(editId); resolver(!!accepted); }
@@ -3491,6 +3483,12 @@ app.whenReady().then(() => {
           openFiles.get('hello.py').dirty = false;
         })()`);
         if (loadSettings().theme !== 'light' || loadSettings().accessKey !== beforeTheme.accessKey || cachedLoops.some(([id, loop]) => agentLoops.get(id) !== loop)) throw new Error('Theme save changed connection or agent state');
+        const credentialCheck = loadSettings();
+        const settingsOnDisk = JSON.parse(fs.readFileSync(settingsFile(), 'utf8'));
+        if (settingsOnDisk.schemaVersion !== 1 || settingsOnDisk.accessKey !== undefined) throw new Error('Settings schema or legacy credential projection persisted incorrectly');
+        if (credentialCheck.credentialStorage.encrypted && settingsOnDisk.connections.some(connection => connection.accessKey)) throw new Error('Plaintext connection key remained in settings');
+        if (settingsOnDisk.credentialStorage !== undefined) throw new Error('Transient credential status persisted');
+        console.log('CREDENTIAL STORAGE SMOKE OK: schema, disk projection, OS vault/fallback, and decrypted settings preservation.');
         await new Promise(resolve => setTimeout(resolve, 150));
         await win.webContents.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
         await new Promise(resolve => setTimeout(resolve, 350));

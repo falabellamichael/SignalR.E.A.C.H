@@ -1,26 +1,38 @@
 # Studio IPC contract
 
-**Generated from the working tree, item 2.3 / 7.2 of [`IMPROVEMENTS.md`](./IMPROVEMENTS.md).**
+**Generated from the working tree, item 1.4 of
+[`IMPROVEMENTS_VERIFIED.md`](./IMPROVEMENTS_VERIFIED.md) — the source of truth for the plan.**
 
 This is the authoritative list of the main↔renderer channel surface. `studio/preload.cjs`
 is the de-facto API contract; this document is the readable half of it. The machine-checked
-half is item 3.3's manifest test.
+half is item 1.2's manifest test.
+
+**Implementation update (2026-09-20):** `studio/ipc-manifest.json` and
+`studio/test/ipc-manifest.test.cjs` now check invocation/handler set equality,
+duplicate registration, module ownership, and the explicit dynamic exception.
+Argument entries record current handler signatures; result shapes are still
+untyped. This is a coverage check, not a claim that every input is validated.
+Edit-review handlers now reject non-boolean decisions; approval is granted only
+for literal `true`. Other gaps listed below remain open.
 
 | Field | Value | Command |
 | --- | --- | --- |
-| Registered handlers | **74** | `grep -oE "^\s*ipcMain\.handle\('[^']+'" studio/main.mjs \| sort -u \| wc -l` |
-| Preload invoke channels | **75** (74 static + 1 dynamic) | `grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs \| sort -u \| wc -l` |
-| Event listeners (main→renderer) | 14 | `grep -c "ipcRenderer.on(" studio/preload.cjs` |
+| Registered handlers | **80** | `grep -oE "ipcMain\.handle\('[^']+'" studio/main.mjs \| sort -u \| wc -l` |
+| Preload invoke channels | **81** (80 static + 1 dynamic) | `grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs \| sort -u \| wc -l` |
+| Event listeners (main→renderer) | 16 | `grep -c "ipcRenderer.on(" studio/preload.cjs` |
 | Synchronous channels | 1 (`theme:get`) | `grep -c "sendSync" studio/preload.cjs` |
 
-> **Counting caution — this is how the baseline got its "75 vs 74".** A bare
-> `grep -c "ipcMain.handle"` returns **75**, because `main.mjs:195` is a *doc comment*
-> that contains the literal string. Count registrations, not mentions:
+> **Counting caution.** A bare `grep -c "ipcMain.handle"` over-counts, because a *doc comment*
+> in `main.mjs` contains the literal string. Count registrations, not mentions:
 >
 > ```bash
-> grep -oE "^\s*ipcMain\.handle\('[^']+'" studio/main.mjs | sort -u | wc -l   # → 74
-> grep -c "ipcMain.handle('agents:respondApproval'" studio/main.mjs           # → 2 (one is the comment)
+> grep -oE "ipcMain\.handle\('[^']+'" studio/main.mjs | sort -u | wc -l              # → 80
+> grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs | sort -u | wc -l       # → 81
 > ```
+>
+> Earlier revisions of this file said 74/75 and 14 listeners. Those numbers had drifted by six
+> handlers and two listeners; the invariant (delta = `{browser:command}`) never moved. If you
+> re-measure and get something else, **fix the table**, do not trust the prose.
 
 ## 1. The one dynamic channel
 
@@ -33,14 +45,17 @@ ipcMain.handle('browser:command', async (event, action, args = {}) => { … });
 win.webContents.once('destroyed', () => { ipcMain.removeHandler('browser:command'); this.dispose(); });
 ```
 
-**Invariant the manifest test must honor:** the static handler set is 74 and the channel set
-is 75. A naive set-equality test (item 3.3) will false-fail on this unless `browser:command`
+**Invariant the manifest test must honor:** the static handler set is 80 and the channel set
+is 81. A naive set-equality test (item 1.2) will false-fail on this unless `browser:command`
 is whitelisted as `dynamic: true`. The inverse check — every registered handler has a
-channel — must exempt it too.
+channel — must exempt it too. Verified today: `comm -13 handlers channels` returns exactly
+`browser:command` and `comm -23 handlers channels` returns nothing.
 
-**Failure mode if it drifts:** the renderer invokes `browser:command` before a tab exists and
-gets `Error: No handler registered for 'browser:command'`, which surfaces as an unhandled
-rejection in the renderer. The preload wrapper does not guard this today.
+**Handled failure:** invoking `browser:command` before its handler exists now
+returns `{ok:false, err:'The browser is not ready. Open a browser tab and try again.'}`.
+Other command failures also use the established `err` field. The preload regression
+test verifies that callers receive a resolved failure object rather than an
+unhandled missing-handler rejection.
 
 ## 2. Validation verdict by channel
 
@@ -69,6 +84,8 @@ because its callee does. **GAP**: no check on this argument; see §3.
 | `agents:resolveEdit` | `{id, editId, accepted}` | **OK** — edit resolved from the store by id |
 | `agents:toolSchema` | (none) | OK |
 | `agents:pickAttachments` | `id: string` | **OK** — `String(id)`, agent must exist, ≤20 files |
+| `agents:export` | `id: string` | PAREN (unknown id → `{ok:false,err}`) |
+| `agents:import` | `payload: object` | **OK** — `importConversation` whitelists fields and mints a fresh id |
 
 ### Teams, personas, roles
 
@@ -199,8 +216,8 @@ missing `cwd` as a hard error rather than inheriting the process CWD.
 
 ## 4. Invariants a reviewer can check cheaply
 
-1. **Count discipline.** `74` unique registered handlers, `75` unique invoke channels,
-   difference exactly `{browser:command}`. (Item 3.3)
+1. **Count discipline.** `80` unique registered handlers, `81` unique invoke channels,
+   difference exactly `{browser:command}`. (Item 1.2)
 2. **Containment.** Every channel that turns a renderer string into a filesystem path either
    calls `resolveInProject`/`resolveIndexableDir` or appears in §3. (`files:read`,
    `files:write`, `workspace:*`, `refactor:*` are the conforming set.)
@@ -222,5 +239,6 @@ grep -oE "^\s*ipcMain\.handle\('[^']+'" studio/main.mjs | sed "s/.*('//;s/'//" |
 grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs | sed "s/.*('//;s/'//" | sort -u
 ```
 
-Once item 3.3 lands, `docs/STUDIO_IPC.md` becomes a generated artifact — the manifest is the
-source and this file is its rendering.
+Once item 1.2 lands, `docs/STUDIO_IPC.md` becomes a generated artifact — the manifest is the
+source and this file is its rendering. Until then this file is **maintained by hand** and is
+the only place the argument shapes are written down.

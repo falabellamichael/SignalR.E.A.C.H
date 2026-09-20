@@ -5,6 +5,8 @@
   "main": "main.js",
   "private": true,
   "scripts": {
+    "test": "node ../../tools/test-product.cjs tray",
+    "lint": "node ../../tools/check-javascript.cjs copilot/tray",
     "start": "electron .",
     "gen-icon": "node gen-icon.mjs",
     "dist": "electron-builder --publish never"

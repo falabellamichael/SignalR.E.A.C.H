@@ -1,7 +1,7 @@
 'use strict';
 // Real Electron layout and wheel input with an isolated profile. No provider
 // requests, user conversations or installed-app state are touched.
-const { app } = require('electron');
+const { app, ipcMain } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
@@ -172,7 +172,38 @@ const timeout = setTimeout(() => { console.error('Agents scroll UI timed out'); 
   await run(`ReachActivity.ingest({agentId:currentAgent.id,type:'run-state',status:'running'});`);
   await delay(200);
   assert.equal(await run(`document.querySelector('#agent-activity .activity-details').open`), false, 'The next run resets activity to collapsed');
-  console.log('AGENTS SCROLL UI OK: collapsed activity for agents, teams and workers; bounded mouse/keyboard scrolling with page chaining; manual disclosure choice; stationary live headers; readable history, minimum window and zoom.');
+  const controls = [];
+  ipcMain.removeHandler('teams:controlMember');
+  ipcMain.handle('teams:controlMember', (_event, payload) => { controls.push(payload); return {ok:true}; });
+  await run(`handleTeamEvent({teamRunId:'scroll-team',type:'member-done',index:0,status:'stalled',error:'Protocol stalled'});`);
+  await until(`scrollTeam.wrap.querySelector('.team-model-control').textContent === 'Start'`, 'Stalled agent must show Start');
+  assert.equal(await run(`scrollTeam.wrap.querySelector('.team-model-control').disabled`), false);
+  await run(`scrollTeam.wrap.querySelector('.team-model-control').click()`);
+  await delay(100);
+  assert.equal(controls.length, 1);
+  assert.equal(controls[0].start, true);
+  assert.equal(controls[0].index, 0);
+  await run(`handleTeamEvent({teamRunId:'scroll-team',type:'member-wake-queued',index:0});`);
+  await until(`scrollTeam.wrap.querySelector('.team-model-control').textContent === 'Starting…'`, 'Queued wake must be visible');
+  assert.equal(await run(`scrollTeam.wrap.querySelector('.team-model-control').disabled`), true);
+  await run(`scrollTeam.wrap.querySelector('.team-model-control').click(); handleTeamEvent({teamRunId:'scroll-team',type:'member-start',index:0,retake:true});`);
+  await until(`scrollTeam.wrap.querySelector('.team-model-control').textContent === 'Stop'`, 'Running agent must return to Stop');
+  assert.equal(controls.length, 1);
+  assert.equal(await run(`scrollTeam.wrap.querySelector('.team-model-control').disabled`), false);
+  await run(`handleTeamEvent({teamRunId:'scroll-team',type:'member-done',index:0,status:'completed',ok:true});`);
+  await until(`scrollTeam.wrap.querySelector('.team-model-control').disabled`, 'Completed member cannot restart');
+  let credentialLocked = true;
+  ipcMain.removeHandler('settings:get');
+  ipcMain.handle('settings:get', () => ({ connections: [], credentialStorage: { locked: credentialLocked,
+    warning: credentialLocked ? 'Fixture: unlock the system keychain.' : '' } }));
+  await run('loadSettings()');
+  assert.equal(await run(`document.querySelector('#btn-save-settings').disabled`), true, 'Locked credentials cannot be accidentally saved as empty');
+  assert.equal(await run(`document.querySelector('#credential-storage-warning').classList.contains('hidden')`), false);
+  credentialLocked = false;
+  await run('loadSettings()');
+  assert.equal(await run(`document.querySelector('#btn-save-settings').disabled`), false, 'Reloading unlocked settings restores editing');
+  assert.equal(await run(`document.querySelector('#credential-storage-warning').classList.contains('hidden')`), true);
+  console.log('AGENTS SCROLL UI OK: bounded collapsed activity, scrolling, stalled member Start / Starting / Stop, and locked-key settings controls.');
   console.log('Evidence: ' + root);
   clearTimeout(timeout); app.exit(0);
 })().catch(async error => { console.error(error.stack || error); if (win && !win.isDestroyed()) fs.writeFileSync(path.join(root,'failure.png'),(await win.capturePage()).toPNG()); console.error('Evidence: ' + root); clearTimeout(timeout); app.exit(1); });

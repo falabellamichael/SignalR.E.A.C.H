@@ -456,8 +456,8 @@ function updateStatusPill(status, reason) {
   summaryStatus.textContent = s;
   summaryStatus.dataset.status = s;
   $('#btn-agent-stop').classList.toggle('hidden', s !== 'running');
-  $('#btn-agent-continue').classList.toggle('hidden', !['stopped', 'paused', 'waiting_edits'].includes(s));
-  $('#btn-agent-continue').textContent = s === 'stopped' ? 'Start' : 'Continue';
+  $('#btn-agent-continue').classList.toggle('hidden', !['stopped', 'stalled', 'paused', 'waiting_edits'].includes(s));
+  $('#btn-agent-continue').textContent = ['stopped', 'stalled'].includes(s) ? 'Start' : 'Continue';
   $('#btn-agent-compact').disabled = s === 'running';
   updateSendControl();
   if (reason) pill.title = reason;
@@ -1696,6 +1696,8 @@ const connTesters = [];         // rebuilt by renderConnections: [{ id, running,
 
 async function loadSettings() {
   const s = await reachApi.getSettings();
+  $('#credential-storage-warning').textContent = s.credentialStorage?.warning || '';
+  $('#credential-storage-warning').classList.toggle('hidden', !s.credentialStorage?.warning);
   $('#set-reach-cli').value = s.reachCli || '';
   // Draft from the normalized list so ids are stable and the active one is known.
   connDraft = (Array.isArray(s.connections) ? s.connections : []).map(c => ({ ...c }));
@@ -1706,6 +1708,11 @@ async function loadSettings() {
     if (!connDraft.some(c => c.id === id)) connStatus.delete(id);
   }
   renderConnections();
+  for (const control of $('#settings-connection').querySelectorAll('input, select, button')) {
+    if (s.credentialStorage?.locked) control.disabled = true;
+    else if (control.dataset.credentialLocked === 'true') control.disabled = false;
+    control.dataset.credentialLocked = String(!!s.credentialStorage?.locked);
+  }
 }
 
 function newConnId() {
@@ -2782,17 +2789,19 @@ function addMemberControl(card, run, { index = null, agentId = null }) {
   button.textContent = 'Stop';
   button.title = 'Stop this agent';
   button.onclick = async () => {
+    if (button.disabled) return;
     button.disabled = true;
     try {
       const res = await reachApi.teams.controlMember(run.teamRunId, index, agentId, card.dataset.paused === 'true');
       if (!res.ok) showNotice(res.err);
     } catch (error) { showNotice(error.message); }
-    finally { button.disabled = card.dataset.finished === 'true'; }
+    finally { button.disabled = card.dataset.finished === 'true' || card.dataset.wakePending === 'true'; }
   };
   card.querySelector('.member-head').appendChild(button);
 }
 
 function setMemberControl(card, paused, finished = false) {
+  card.dataset.wakePending = 'false';
   card.dataset.paused = String(paused);
   card.dataset.finished = String(finished);
   card.classList.toggle('paused', paused);
@@ -3761,7 +3770,22 @@ function handleTeamEvent(ev) {
     }
     case 'member-start': {
       const card = teamCard(ev.index, ev.name, ev.model);
-      if (card && card.dataset.paused !== 'true') card.querySelector('.member-state').textContent = 'working…';
+      if (card && (ev.retake || card.dataset.paused !== 'true')) {
+        card.classList.remove('stalled', 'failed', 'done');
+        setMemberControl(card, false, false);
+        card.querySelector('.member-state').textContent = 'working…';
+      }
+      break;
+    }
+    case 'member-wake-queued': {
+      const card = teamCard(ev.index, ev.name, ev.model);
+      if (card) {
+        card.dataset.wakePending = 'true';
+        const button = card.querySelector('.member-control');
+        button.textContent = 'Starting…';
+        button.disabled = true;
+        card.querySelector('.member-state').textContent = 'wake-up queued · waiting for team capacity';
+      }
       break;
     }
     case 'member': {
@@ -3863,7 +3887,7 @@ function handleTeamEvent(ev) {
           reason: ev.error || '',
           endedAt: Date.now(),
         });
-        setMemberControl(card, false, true);
+        setMemberControl(card, terminalStatus === 'stalled', terminalStatus !== 'stalled');
         clearTimeout(card._renderTimer);
         card.classList.remove('waiting');
         card.classList.remove('done', 'failed', 'stalled');
@@ -4030,7 +4054,7 @@ function handleTeamEvent(ev) {
     case 'links-stall': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — a teammate can wake it with agent.send; the crew continues meanwhile.`;
+      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — press Start to wake it, or a teammate can send new work; the crew continues meanwhile.`;
       run.wrap.appendChild(note);
       break;
     }

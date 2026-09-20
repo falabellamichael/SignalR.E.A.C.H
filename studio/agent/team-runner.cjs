@@ -180,6 +180,7 @@ class TeamRunner {
     // operator-added helper asks this pump for capacity instead of starting an
     // independent AgentNet task outside the roster semaphore.
     this._linksPump = null;
+    this._requestLinksWake = null;
   }
 
   _stopSignal() {
@@ -418,6 +419,7 @@ class TeamRunner {
     } finally {
       this.acceptingRuntimeAgents = false;
       this._linksPump = null;
+      this._requestLinksWake = null;
       this._cancelQueuedOperatorAgents(this.stopped
         ? 'Stopped by you before this helper started.'
         : 'The team finalized before this helper started.');
@@ -833,6 +835,7 @@ class TeamRunner {
     const activeJobs = new Map();
     const memberBusy = new Set();
     const queuedWake = new Set();
+    const operatorWakes = new Set();
     const memberGeneration = new Array(n).fill(0);
     let nextJobId = 0;
     let rounds = 0;
@@ -885,6 +888,7 @@ class TeamRunner {
         turns[index] = 1;
       } else {
         queuedWake.delete(index);
+        operatorWakes.delete(index);
         if (!turns[index] || turns[index] >= maxTurns || job.generation > MAX_LINK_ROUNDS) return false;
         // Drain only when the slot is actually reserved. Until this point the
         // inbox stays visible to the Nurse, coalesces new mail, and survives a
@@ -960,6 +964,23 @@ class TeamRunner {
       return launched;
     };
     this._linksPump = pump;
+    this._requestLinksWake = index => {
+      if (!this.running || this.stopped || !this.acceptingRuntimeAgents || this._linksDone()) {
+        throw new Error('The team run is finalizing. Start a new team run to retry this member.');
+      }
+      if (this.userPaused) throw new Error('Start the team before waking this stalled member.');
+      if (turns[index] >= maxTurns || memberGeneration[index] >= MAX_LINK_ROUNDS) {
+        throw new Error('This member reached its recovery limit. Start a new team run to retry it.');
+      }
+      // Coalesce repeated clicks and existing recovery mail into one scheduled
+      // turn. Never run a second loop outside the team's concurrency pool.
+      if (operatorWakes.has(index) || queuedWake.has(index)) return;
+      operatorWakes.add(index);
+      const result = this.messageMember(`m${index}-${this.personas[index].id}`,
+        'The user pressed Start to wake you after a stall. Resume your original task using your saved context. Take a concrete next action, or explain any blocker that still needs user input.');
+      if (!result.ok) { operatorWakes.delete(index); throw new Error(result.error); }
+      this._emit('member-wake-queued', { index, name: this.personas[index].name });
+    };
 
     const settleJob = ({ jobId, job, result }) => {
       activeJobs.delete(jobId);
@@ -1057,6 +1078,7 @@ class TeamRunner {
     // work in the answer it is already constructing.
     this.acceptingRuntimeAgents = false;
     this._linksPump = null;
+    this._requestLinksWake = null;
     this._cancelQueuedOperatorAgents('Links finalized before this helper started.');
 
     // Synthesis reuses (and then replaces) a roster result. Retain every
@@ -1150,6 +1172,11 @@ class TeamRunner {
   controlMember(index, start) {
     if (!Number.isInteger(index) || !this.controls[index]) throw new Error('Team member not found.');
     const control = this.controls[index];
+    const rec = this.net?.agents.get(`m${index}-${this.personas[index].id}`);
+    if (start && rec?.status === 'stalled') {
+      if (!this._requestLinksWake) throw new Error('The team run is no longer accepting recovery turns. Start a new team run.');
+      return this._requestLinksWake(index);
+    }
     if (control.finished) throw new Error('This member has already finished.');
     if (start) { if (this.net) this.net.paused = false; control.resume(); }
     else control.pause();

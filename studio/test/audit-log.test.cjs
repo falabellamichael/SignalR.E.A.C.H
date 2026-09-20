@@ -85,7 +85,12 @@ test('rotation is a no-op below the cap', () => {
 test('an explicit write-time cap rotates automatically', () => {
   const dir = tmpDir();
   const file = path.join(dir, 'security-audit.jsonl');
-  const log = new AuditLog(file, { maxBytes: 64, keep: 2 });
+  // keep is set high enough that none of the 10 records' archives are dropped,
+  // so "no records are lost" is asserted against a retention bound the caller
+  // actually asked for. With keep: 2 the oldest archives are deliberately
+  // deleted and read() returns fewer than 10 — that is bounded retention, not
+  // data loss.
+  const log = new AuditLog(file, { maxBytes: 64, keep: 20 });
   for (let i = 0; i < 10; i++) log.write({ event: 'exec', command: `cmd-${i}` });
 
   assert.ok(fs.existsSync(`${file}.1`), 'a file past the cap rotates on write');

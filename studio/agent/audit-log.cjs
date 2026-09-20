@@ -56,6 +56,7 @@ function canonical(record) {
     seq: record.seq,
     ts: record.ts,
     prev: record.prev,
+    carry: record.carry,
     event: record.event,
     agent: record.agent,
     command: record.command,
@@ -127,6 +128,11 @@ class AuditLog {
       findings: Array.isArray(entry.findings) ? entry.findings.slice(0, 50) : [],
       detail: detail === null ? null : detail.slice(0, MAX_DETAIL_CHARS),
     };
+    // A `rotate` marker is a LINK record (Invariant A3): carry === prev so
+    // verify() can treat a rotated/bounded file as a legal chain start. carry
+    // is present only on link records, so existing records' hash preimage is
+    // byte-for-byte unchanged (JSON.stringify omits an undefined key).
+    if (entry.event === 'rotate') record.carry = record.prev;
     record.hash = hashRecord(record);
     return record;
   }
@@ -267,6 +273,15 @@ class AuditLog {
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
       if (rec.error) return { ok: false, count: records.length, brokenAt: i, reason: `Line ${i + 1} is not valid JSON: ${rec.error}` };
+      // Invariant A3: a link record (carry === prev) is a legal chain start.
+      // Retention drops the oldest archives, so the first surviving record can
+      // be a `rotate` marker whose seq is far above 1; anchor at its own seq
+      // and prev instead of forcing 1 / GENESIS. A non-link first record still
+      // anchors at GENESIS exactly as before.
+      if (i === 0 && typeof rec.carry === 'string' && rec.carry.length === 64 && rec.carry === rec.prev) {
+        expectedPrev = rec.prev;
+        expectedSeq = rec.seq;
+      }
       if (rec.seq !== expectedSeq) {
         return { ok: false, count: records.length, brokenAt: i, reason: `Sequence gap at line ${i + 1}: expected seq ${expectedSeq}, found ${rec.seq}. A record was removed or inserted.` };
       }

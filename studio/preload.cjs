@@ -14,7 +14,14 @@ contextBridge.exposeInMainWorld('reach', {
     onSelectionCleared: cb => ipcRenderer.on('browser:selection-cleared', (_e, tabId) => cb(tabId)),
     onReveal: cb => ipcRenderer.on('browser:reveal', () => cb()),
     onError: cb => ipcRenderer.on('browser:error', (_e, message) => cb(message)),
-    command: (action, args = {}) => ipcRenderer.invoke('browser:command', action, args),
+    command: async (action, args = {}) => {
+      try { return await ipcRenderer.invoke('browser:command', action, args); }
+      catch (error) {
+        return { ok: false, err: /No handler registered/.test(error.message)
+          ? 'The browser is not ready. Open a browser tab and try again.'
+          : error.message || 'The browser command failed.' };
+      }
+    },
     onState: cb => ipcRenderer.on('browser:state', (_e, state) => cb(state)),
     onContext: cb => ipcRenderer.on('browser:context', (_e, context) => cb(context)),
     onShortcut: cb => ipcRenderer.on('browser:shortcut', (_e, key) => cb(key)),

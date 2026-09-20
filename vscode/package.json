@@ -20,6 +20,10 @@
     "openai-compatible"
   ],
   "main": "./extension.js",
+  "scripts": {
+    "test": "node ../tools/test-product.cjs vscode",
+    "lint": "node ../tools/check-javascript.cjs vscode"
+  },
   "contributes": {
     "commands": [
       {

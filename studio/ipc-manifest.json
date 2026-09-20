@@ -1,0 +1,538 @@
+{
+  "about:info": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:appendNote": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, content }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:clear": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:compact": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:context": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:create": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:delete": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:export": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:fork": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, upToIndex, name }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:get": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:import": {
+    "module": "main.mjs",
+    "args": [
+      "payload"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:list": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:pickAttachments": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:resolveEdit": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, editId, accepted }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:respondApproval": {
+    "module": "main.mjs",
+    "args": [
+      "{ requestId, approved }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:send": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, text, attachmentIds = [] }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:setTodos": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, todos }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:stop": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:toolSchema": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:tree": {
+    "module": "main.mjs",
+    "args": [
+      "dir"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "agents:update": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, ...patch }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "browser:command": {
+    "module": "browser/host.cjs",
+    "args": [
+      "action, args = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated",
+    "dynamic": true
+  },
+  "connections:list": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "connections:ping": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "connections:save": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "dialog:pickDir": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "files:read": {
+    "module": "main.mjs",
+    "args": [
+      "{ agentId, projectDir, path: rel }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "files:tree": {
+    "module": "main.mjs",
+    "args": [
+      "{ agentId, projectDir, directory, offset }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "files:write": {
+    "module": "main.mjs",
+    "args": [
+      "{ agentId, projectDir, path: rel, content }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "models:list": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "personas:create": {
+    "module": "main.mjs",
+    "args": [
+      "p"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "personas:delete": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "personas:get": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "personas:list": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "personas:update": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, ...patch }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "playground:run": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "playground:stop": {
+    "module": "main.mjs",
+    "args": [
+      "runId"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "project:create": {
+    "module": "main.mjs",
+    "args": [
+      "{ name, parent }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "project:list": {
+    "module": "main.mjs",
+    "args": [
+      "dir"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "projects:get": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "projects:save": {
+    "module": "main.mjs",
+    "args": [
+      "ps"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "reach:kill": {
+    "module": "main.mjs",
+    "args": [
+      "runId"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "reach:run": {
+    "module": "main.mjs",
+    "args": [
+      "{ cwd, args }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "reach:version": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:apply": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:defaultGates": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:gates": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:generate": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:plan": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:revert": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:selfCorrect": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "refactor:stop": {
+    "module": "main.mjs",
+    "args": [
+      "runId"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "roles:list": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "runs:stop": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "settings:budgetSchema": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "settings:get": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "settings:save": {
+    "module": "main.mjs",
+    "args": [
+      "s"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "shell:openDir": {
+    "module": "main.mjs",
+    "args": [
+      "dir"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:addAgent": {
+    "module": "main.mjs",
+    "args": [
+      "payload = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:answerMember": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId, agentId, answer }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:answerQuestion": {
+    "module": "main.mjs",
+    "args": [
+      "{ questionId, answer }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:controlMember": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId, index, agentId, start }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:create": {
+    "module": "main.mjs",
+    "args": [
+      "t"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:delete": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:get": {
+    "module": "main.mjs",
+    "args": [
+      "id"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:list": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:members": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:message": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId, target, message }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:resolveEdit": {
+    "module": "main.mjs",
+    "args": [
+      "{ editId, accepted }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:run": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamId, task, dir, agentId }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:start": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:stop": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:update": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, ...patch }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "telemetry:sample": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "telemetry:saveSources": {
+    "module": "main.mjs",
+    "args": [
+      "sources"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "telemetry:sources": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "theme:set": {
+    "module": "main.mjs",
+    "args": [
+      "theme"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "workspace:extractContext": {
+    "module": "main.mjs",
+    "args": [
+      "{ projectDir, query, maxChars = 6000, maxSymbols = 12 } = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "workspace:indexCode": {
+    "module": "main.mjs",
+    "args": [
+      "{ projectDir } = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "workspace:pingEndpoint": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "workspace:searchSymbols": {
+    "module": "main.mjs",
+    "args": [
+      "{ projectDir, query, limit = 20 } = {}"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  }
+}

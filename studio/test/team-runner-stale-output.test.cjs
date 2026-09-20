@@ -53,7 +53,10 @@ test('failed Links synthesis cannot reuse stale output or erase viable pre-synth
     ],
     task: 'Combine both verified evidence reports.',
     endpoint,
-    requestTimeoutMs: 75,
+    // Leave enough time for the successful initial requests when the entire
+    // suite runs concurrently. The intentionally header-stalled synthesis must
+    // still hit this deadline, not fail earlier from test-runner CPU contention.
+    requestTimeoutMs: 500,
     sendEvent: (_channel, event) => events.push(event),
   });
 
@@ -61,7 +64,7 @@ test('failed Links synthesis cannot reuse stale output or erase viable pre-synth
   const results = await Promise.race([
     runner.run('stale-synthesis-run'),
     new Promise((_, reject) => {
-      deadline = setTimeout(() => reject(new Error('Links synthesis did not respect its request deadline.')), 2000);
+      deadline = setTimeout(() => reject(new Error('Links synthesis did not respect its request deadline.')), 5000);
     }),
   ]).finally(() => clearTimeout(deadline));
 

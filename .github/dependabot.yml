@@ -6,3 +6,15 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/studio"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/vscode"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "npm"
+    directory: "/copilot/tray"
+    schedule:
+      interval: "weekly"

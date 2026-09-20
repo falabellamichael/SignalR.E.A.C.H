@@ -25,6 +25,12 @@ in Electron's user-data directory, normally `%APPDATA%\Reach Studio` on
 Windows, `~/Library/Application Support/Reach Studio` on macOS, and
 `~/.config/Reach Studio` on Linux.
 
+Connection keys use the OS credential vault when available. Settings displays a
+warning if encryption is unavailable; locked saved keys are protected from being
+overwritten. See the [security policy](../SECURITY.md) for migration backups and
+what is—and is not—encrypted. For development and tests, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 Use **Open Folder** to work with an existing project. **New Project → Create & Init**
 creates a new Reach DApp scaffold; it does not import another project's files.
 The Files panel loads the selected directory and expands folders on demand.

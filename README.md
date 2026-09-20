@@ -2,6 +2,20 @@
 
 **REACH** = **R**AG **E**ndpoint & **A**I **C**hat **H**ost
 
+## Choose your workspace
+
+This repository ships four user-facing products:
+
+| Product | Start here |
+| --- | --- |
+| REACH Studio — standalone macOS, Windows and Linux agent workspace | [Run and build Studio](studio/README.md), [contribute](studio/CONTRIBUTING.md) |
+| SimpleRAG panel + Python relay — host and manage endpoints | Continue with this README; implementation in `src/` and `server/reachd/` |
+| VS Code extension — chat and coding inside your editor | [Extension guide](#vs-code); `cd vscode && npm test` |
+| Desktop tray + Copilot bridge — local endpoint access | [Tray guide](#desktop-tray-macos-windows-and-linux); `cd copilot/tray && npm test` |
+
+See the [documentation index](docs/README.md) for the improvement backlog and
+[security policy](SECURITY.md) for credential storage and vulnerability reporting.
+
 A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint with **unlimited gpt-4o**. Access is by **API key** (`sk-reach-…`): the host decides who gets one, and nobody else can use the relay — see [Security](#security). Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
 
 The plugin installs a full **control panel** into SimpleRAG's app bar — a menu panel with eight pages: **Dashboard, Browser, Endpoint, Models, Usage, Logs, Settings, About** — plus a dependency-free relay server, hosting tunnel, and a pointer URL that always resolves the live endpoint.
@@ -18,7 +32,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 
 ## Standalone REACH Studio desktop app
 
-The Windows desktop app is in [`studio/`](studio/README.md). It provides project
+The macOS, Windows, and Linux desktop app is in [`studio/`](studio/README.md). It provides project
 files and editing, AI conversations, custom personas, collaborating agent teams,
 and a dedicated Budgeting settings page with global defaults, conversation
 overrides, and unrestricted testing controls. It connects to an OpenAI-compatible

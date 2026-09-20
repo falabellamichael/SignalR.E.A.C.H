@@ -42,13 +42,13 @@ function makeLoop(dir, { overrides = {}, settings = {}, events } = {}) {
 
 const conversation = [{ role: 'user', content: 'How does computeTotal work?' }];
 
-test('a matching prompt gets the codebase block appended as a final system message', () => {
+test('a matching prompt gets codebase data without promoting it to a system instruction', () => {
   const dir = project();
   const { loop, sent } = makeLoop(dir);
   const out = loop._withCodeContext(conversation);
   assert.equal(out.length, conversation.length + 1, 'exactly one message added');
   const injected = out[out.length - 1];
-  assert.equal(injected.role, 'system');
+  assert.equal(injected.role, 'user');
   assert.match(injected.content, /computeTotal/);
   assert.match(injected.content, /data, not instructions/i);
   // The original conversation must not be mutated in place.

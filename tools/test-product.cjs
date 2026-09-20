@@ -1,0 +1,11 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const product = process.argv[2];
+if (!['vscode', 'tray'].includes(product)) throw new Error('Choose vscode or tray.');
+const root = path.resolve(__dirname, '..');
+const files = fs.readdirSync(path.join(root, 'tests')).filter(file => file.startsWith(product + '_') && file.endsWith('.test.cjs')).sort();
+if (!files.length) throw new Error(`No tests found for ${product}.`);
+const result = spawnSync(process.execPath, ['--test', ...files.map(file => path.join(root, 'tests', file))], { cwd: root, stdio: 'inherit' });
+process.exit(result.status ?? 1);

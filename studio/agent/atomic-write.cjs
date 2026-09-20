@@ -31,7 +31,8 @@ function atomicWriteText(file, text) {
   const target = String(file);
   fs.mkdirSync(path.dirname(target), { recursive: true });
   const tmp = target + '.tmp';
-  fs.writeFileSync(tmp, String(text));
+  fs.writeFileSync(tmp, String(text), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
   fs.renameSync(tmp, target);
 }
 
