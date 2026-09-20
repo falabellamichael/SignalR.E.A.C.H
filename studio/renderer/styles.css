@@ -421,8 +421,8 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
 
 /* workbench split */
 .workbench { padding: 14px 16px; container-type: inline-size; }
-/* Only the conversation/model header and composer stay stationary. Everything
- * between them shares one vertical scroller, including expanded work details. */
+/* Only the conversation/model header and composer stay stationary. Messages
+ * and reviews share the conversation scroller; expanded activity is bounded. */
 .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 10px; }
 .chat-scroll { flex: 1 1 0; min-width: 0; min-height: 72px; overflow: auto; scrollbar-gutter: stable; display: flex; flex-direction: column; gap: 10px; }
 .chat-scroll > * { flex-shrink: 0; }
@@ -941,7 +941,8 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 .activity-panel[data-active="false"] .activity-progress i { animation: none; width: 100%; opacity: .35; }
 .activity-details > summary { cursor: pointer; color: var(--gold-dim); font-size: 11px; }
 .activity-count { color: var(--dim); }
-.activity-steps { margin-top: 8px; padding-left: 6px; }
+.activity-steps { max-height: min(320px, 35vh); overflow-y: auto; margin-top: 8px; padding-left: 6px; scrollbar-gutter: stable; }
+.activity-steps:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: -1px; }
 .activity-step { position: relative; border-left: 2px solid var(--line); padding: 3px 0 10px 14px; font-size: 12px; }
 .activity-step::before { content: ''; position: absolute; width: 8px; height: 8px; top: 7px; left: -5px; border-radius: 50%; border: 1px solid var(--gold-dim); background: var(--panel); }
 .activity-step.running { border-left-color: var(--gold); }

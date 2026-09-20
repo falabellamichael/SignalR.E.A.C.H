@@ -6,7 +6,7 @@
   const badge = document.querySelector('#activity-global');
   function createView(host) {
     host.classList.add('activity-panel');
-    host.innerHTML = '<div class="activity-head"><span class="activity-spinner" aria-hidden="true"></span><strong class="activity-title" role="status" aria-live="polite"></strong><span class="activity-time"></span></div><p class="activity-note"></p><div class="activity-progress" aria-hidden="true"><i></i></div><details class="activity-details" open><summary>Agent activity <span class="activity-count"></span></summary><div class="activity-steps"></div></details>';
+    host.innerHTML = '<div class="activity-head"><span class="activity-spinner" aria-hidden="true"></span><strong class="activity-title" role="status" aria-live="polite"></strong><span class="activity-time"></span></div><p class="activity-note"></p><div class="activity-progress" aria-hidden="true"><i></i></div><details class="activity-details"><summary>Agent activity <span class="activity-count"></span></summary><div class="activity-steps" tabindex="0" role="region" aria-label="Agent activity steps"></div></details>';
     return { host, rows: new Map() };
   }
   const mainView = createView(panel);
@@ -19,10 +19,10 @@
     view.card?._teamDeck?.update(view.card, state, now);
     const session = key + ':' + state.startedAt;
     const details = host.querySelector('.activity-details');
-    if (view.session !== session) details.open = state.status !== 'completed';
-    else if (view.status !== 'completed' && state.status === 'completed') details.open = false;
+    // Every new trace starts compact; updates (including completion) respect
+    // the user's choice to open or close it. Shared by agents and team workers.
+    if (view.session !== session) details.open = false;
     view.session = session;
-    view.status = state.status;
     host.dataset.status = state.status;
     host.dataset.active = String(summary.active && !summary.waiting);
     host.dataset.waiting = String(summary.waiting || summary.silent);
