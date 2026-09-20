@@ -12,7 +12,7 @@
     "dist": "electron-builder --publish never"
   },
   "devDependencies": {
-    "electron": "30.5.1",
+    "electron": "44.4.1",
     "electron-builder": "26.15.3"
   },
   "allowScripts": {
