@@ -17,7 +17,7 @@ const assert = require('node:assert/strict');
 const C = require('../agent/connections.cjs');
 const T = require('../agent/team-connections.cjs');
 
-const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, REASON } = T;
+const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels, REASON } = T;
 
 /** Build settings with N connections; connection 1 is active unless told. */
 function settingsWith(specs, { active = 0, enabled } = {}) {
@@ -256,6 +256,23 @@ test('each member carries its OWN connection access key', () => {
   const res = resolveTeamConnections({ settings: s, personas: [persona('p1'), persona('p2')], spread: true });
   assert.equal(res[0].accessKey, 'A-FIXTURE');
   assert.equal(res[1].accessKey, 'B-FIXTURE', 'member 2 must not inherit member 1 key');
+});
+
+test('advertised model catalogs catch cross-provider persona routing before launch', () => {
+  const s = settingsWith([
+    { endpoint: 'https://a.example.com/v1', model: 'm-a' },
+    { endpoint: 'https://b.example.com/v1', model: 'm-b' },
+  ], { active: 1 });
+  const res = resolveTeamConnections({
+    settings: s,
+    personas: [persona('wrong-provider', { model: 'm-a' }), persona('valid', { model: 'm-b' })],
+    spread: false,
+  });
+  const catalogs = new Map([
+    ['https://b.example.com/v1', new Set(['m-b', 'm-b-pro'])],
+  ]);
+  assert.deepEqual(unsupportedTeamModels(res, catalogs).map(r => r.personaId), ['wrong-provider']);
+  assert.deepEqual(unsupportedTeamModels(res, new Map()), [], 'an unavailable /models catalog is not treated as proof of incompatibility');
 });
 
 /* --------------------------------------------------- resolution: edge cases --- */

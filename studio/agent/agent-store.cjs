@@ -189,6 +189,56 @@ class AgentStore {
     return child;
   }
 
+  /* Import a previously exported conversation snapshot (item 4.4).
+   *
+   * Never trusts an incoming id — a fresh one is minted so a malicious or
+   * duplicated export cannot overwrite an existing conversation. Every field is
+   * whitelisted/sanitized, so a malformed file rejects with a clear error
+   * instead of injecting arbitrary keys into the store. */
+  importConversation(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Not a conversation export (expected an object).');
+    }
+    if (typeof data.dir !== 'string' || !data.dir) {
+      throw new Error('Conversation export is missing its project directory (dir).');
+    }
+    const maxAgents = resolveBudgets(this.getSettings()).maxConversations;
+    if (maxAgents > 0 && this.agents.length >= maxAgents) {
+      throw new Error(`Conversation limit reached (${maxAgents}). Change Settings > Budgeting or delete a conversation.`);
+    }
+    const now = Date.now();
+    const messages = Array.isArray(data.messages)
+      ? data.messages.filter(m => m && typeof m === 'object' && !Array.isArray(m)).map(m => ({ ...m }))
+      : [];
+    const todos = Array.isArray(data.todos)
+      ? data.todos.map(t => ({
+        text: String(t && t.text || '').slice(0, 500),
+        status: ['pending', 'in_progress', 'completed', 'cancelled'].includes(t && t.status) ? t.status : 'pending',
+      }))
+      : [];
+    const agent = {
+      id: 'agent-' + now.toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      name: String(data.name || 'Imported chat').slice(0, 80),
+      dir: data.dir,
+      model: String(data.model || ''),
+      createdAt: now,
+      updatedAt: now,
+      parentChatId: null,
+      forkIndex: null,
+      messages,
+      todos,
+      runState: null,
+      pendingEdits: data.pendingEdits && typeof data.pendingEdits === 'object' && !Array.isArray(data.pendingEdits) ? { ...data.pendingEdits } : {},
+      queue: Array.isArray(data.queue) ? data.queue.map(String) : [],
+      settings: data.settings && typeof data.settings === 'object' && !Array.isArray(data.settings) ? { ...data.settings } : {},
+    };
+    if (data.context !== undefined) agent.context = data.context;
+    if (data.activity !== undefined) agent.activity = data.activity;
+    this.agents.push(agent);
+    this._save();
+    return agent;
+  }
+
   update(id, patch) {
     const agent = this.get(id);
     if (!agent) return null;

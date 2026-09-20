@@ -16,6 +16,7 @@
     host.classList.toggle('hidden', !state);
     if (!state) return;
     const summary = model.summary(state, now);
+    view.card?._teamDeck?.update(view.card, state, now);
     const session = key + ':' + state.startedAt;
     const details = host.querySelector('.activity-details');
     if (view.session !== session) details.open = state.status !== 'completed';
@@ -58,7 +59,13 @@
     const now = Date.now();
     paint(mainView, states.get(selected), now, selected);
     for (const [key, view] of views) {
-      if (!view.host.isConnected) { views.delete(key); states.delete(key); continue; }
+      if (!view.host.isConnected) {
+        // Switching conversations temporarily detaches a live team. Its tabs
+        // must recover the same activity when the user switches back.
+        if (view.card?._teamDeck && !view.card._teamDeck.ended) continue;
+        view.card?._teamDeck?.dispose();
+        views.delete(key); states.delete(key); continue;
+      }
       paint(view, states.get(key), now, key);
     }
     const count = [...states.values()].filter(s => s?.status === 'running').length;
@@ -86,17 +93,22 @@
     const prefix = 'team:' + event.teamRunId + ':';
     if (card) {
       const key = prefix + (event.type === 'subagent' ? event.agentId : event.index);
-      if (!views.has(key)) { const host = document.createElement('div'); card.appendChild(host); views.set(key, createView(host)); }
+      if (!views.has(key)) { const host = document.createElement('div'); card.appendChild(host); views.set(key, { ...createView(host), card }); }
       const type = event.memberType || event.netType || event.type;
       let normalized = { ...event, type };
-      if (['member-start','agent-started','agent-resumed'].includes(type)) normalized = { type:'run-state', status:'running' };
+      if (['member-start','member-resumed','agent-started','agent-resumed'].includes(type)) normalized = { type:'run-state', status:'running' };
       if (['member-done','agent-state'].includes(type)) normalized = { type:'run-state', status:event.status || (event.ok ? 'completed' : 'error'), reason:event.error };
       if (['member-control','agent-control'].includes(type)) normalized = { type:'run-state', status:event.paused ? 'paused' : 'running' };
       if (['member-waiting','agent-waiting','member-question','agent-question'].includes(type)) normalized = { type:'run-state', status: type.includes('question') ? 'waiting_input' : 'waiting_edits' };
       ingest(normalized, key);
     }
     if (['done','error','control'].includes(event.type)) {
-      for (const [key, state] of states) if (key.startsWith(prefix) && state.status === 'running') ingest({ type:'run-state', status:event.type === 'control' ? (event.paused ? 'paused' : 'running') : event.type === 'error' ? 'error' : event.stopped ? 'stopped' : 'completed' }, key);
+      for (const [key, state] of states) if (key.startsWith(prefix) && !['completed', 'error'].includes(state.status)) {
+        // Team-wide stop/start should also update paused members; finished
+        // members must retain their outcome and never regain a live spinner.
+        if (event.type === 'control' && !['running', 'paused'].includes(state.status)) continue;
+        ingest({ type:'run-state', status:event.type === 'control' ? (event.paused ? 'paused' : 'running') : event.type === 'error' ? 'error' : 'stopped' }, key);
+      }
     }
   }
   window.ReachActivity = { ingest, select, team };

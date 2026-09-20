@@ -52,6 +52,7 @@ const RELAY_CHAR_BUDGET = 24000;
 const LINKS_RATE = 3;
 const MAX_LINK_ROUNDS = 12;
 const MEMBER_LINK_TURNS = 4;
+const LINKS_COMPLETION_GRACE_MS = 250;
 
 /* The stored assistant message keeps its raw agent_status fence; relay only
  * the human-visible text so the next member in a chain gets clean context. */
@@ -145,6 +146,7 @@ class TeamRunner {
     this._linksAnswer = null;    // final crew answer for links runs
     this._linksMeta = null;      // rounds / exchanges / completedBy telemetry
     this._linksSuperseded = new Map(); // live peers cancelled after another member completes
+    this._linksConclusionTimer = null; // short grace for productive in-flight peers
   }
 
   _stopSignal() {
@@ -556,16 +558,21 @@ class TeamRunner {
 
   /* ---------- LINKS mode: the peer network ---------- */
 
-  /* A completion declaration is terminal for the whole peer network. Abort
-   * only the other in-flight roster requests so an endpoint that never sends
-   * headers cannot hold the initial fan-out barrier open forever. This is not
-   * a user Stop and is reported as successful team completion, not failure. */
+  /* A completion declaration is terminal for the whole peer network, but an
+   * immediate abort can cut off a peer between a successful tool result and
+   * its final response. Give active peers one short grace window, then abort
+   * anything still hanging (including endpoints that never send headers).
+   * This is not a user Stop and is reported as successful team completion. */
   _concludeLinkPeers(declarerKey, declarerName) {
-    for (const [key, loop] of this.loops) {
-      if (key === declarerKey || !loop.running) continue;
-      this._linksSuperseded.set(key, declarerName);
-      loop.stop();
-    }
+    if (this._linksConclusionTimer) return;
+    this._linksConclusionTimer = setTimeout(() => {
+      this._linksConclusionTimer = null;
+      for (const [key, loop] of this.loops) {
+        if (key === declarerKey || !loop.running) continue;
+        this._linksSuperseded.set(key, declarerName);
+        loop.stop();
+      }
+    }, LINKS_COMPLETION_GRACE_MS);
   }
 
   /* Completion declared? By a member in its own answer (this._linkDeclared)
@@ -730,6 +737,10 @@ class TeamRunner {
 
   stop() {
     this.stopped = true;
+    if (this._linksConclusionTimer) {
+      globalThis.clearTimeout(this._linksConclusionTimer);
+      this._linksConclusionTimer = null;
+    }
     for (const loop of this.loops.values()) loop.stop();
     if (this.net) this.net.stop();
     if (this._stopDeferred) this._stopDeferred.resolve();

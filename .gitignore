@@ -19,3 +19,25 @@ copilot/tray/dist/
 .vscode/
 # Isolated local browser runtime state (never publish browsing data)
 /browser-profile/
+
+# Local runtime state written by the app/tray/CLI. This is machine-specific
+# (attachments, caches, endpoint pointers) and must never be committed. It was
+# untracked but NOT ignored, so it showed up in every `git status` and could be
+# staged by accident. (IMPROVEMENTS 1.4)
+/.reach/
+
+# Python virtualenvs. `.venv/` stayed clean only because a virtualenv ships its
+# own `.gitignore` containing `*`; delete that one file and the whole environment
+# becomes stageable. Ignore the directory itself. (IMPROVEMENTS 1.4)
+/.venv/
+.venv/
+venv/
+
+# Built desktop-app output, in case a dist dir is ever created outside studio/.
+dist/
+
+# Stale sideloaded extension binaries carry a version number that drifts from
+# the manifest; they are built artifacts, never sources. (IMPROVEMENTS 1.4)
+*.vsix
+*.dmg
+*.AppImage

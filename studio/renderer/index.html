@@ -2,12 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
   <title>Reach Studio</title>
+  <script src="boot.js"></script>
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="workspace.css" />
   <link rel="stylesheet" href="studio-prd.css" />
+  <link rel="stylesheet" href="team-deck.css" />
 </head>
 <body>
   <header>
@@ -189,12 +191,14 @@
             </div>
             <div id="queued-indicator" class="queued hidden"></div>
             <div class="composer">
+              <button id="btn-attach" class="ghost" type="button" aria-label="Attach files" title="Attach files">+</button>
               <textarea id="composer-input" aria-label="Message" placeholder="Ask the agent to inspect, edit, or debug your project&hellip; (Ctrl+Enter sends)" rows="1"></textarea>
               <div class="composer-actions">
                 <input id="composer-model-value" type="hidden" />
                 <button id="composer-model" class="ghost small" title="Choose a model for this conversation">Default model ▾</button>
                 <button id="btn-send" class="gold">Send</button>
               </div>
+              <div id="composer-attachments" class="composer-attachments hidden" aria-live="polite"></div>
               <div class="composer-footer" aria-label="Conversation controls">
                 <div id="composer-tools" class="composer-tools"></div>
                 <div class="telemetry-control">
@@ -751,29 +755,12 @@
     </div>
   </div>
 
-  <script>
-    window.__errors = [];
-    // Unhandled renderer errors surface as a system chat line — invisible
-    // failures are how the preview looked broken while only the list was stale.
-    window.addEventListener('error', (e) => {
-      window.__errors.push(String(e.message || e.error));
-      const log = document.querySelector('#chat-log');
-      if (log) {
-        const div = document.createElement('div');
-        div.className = 'chat-msg system';
-        div.textContent = '[renderer error] ' + (e.message || e.error);
-        log.appendChild(div);
-      }
-    });
-    window.addEventListener('unhandledrejection', (e) => {
-      window.__errors.push('unhandledrejection: ' + String(e.reason && e.reason.message || e.reason));
-    });
-  </script>
   <script src="markdown.js"></script>
   <script src="dialogs.js"></script>
   <script src="editor.bundle.js"></script>
   <script src="activity-state.js"></script>
   <script src="activity.js"></script>
+  <script src="team-deck.js"></script>
   <script src="app.js"></script>
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>

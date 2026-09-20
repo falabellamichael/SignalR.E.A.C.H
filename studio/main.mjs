@@ -2,6 +2,7 @@ import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell } from 'electro
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { randomUUID } from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -36,8 +37,9 @@ const { runCommand } = require('./agent/platform.cjs');
 // showing symbols the agent had already renamed or deleted.
 const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-context.cjs');
 const { AuditLog } = require('./agent/audit-log.cjs');
+const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
-const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember } = require('./agent/team-connections.cjs');
+const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 
@@ -89,6 +91,86 @@ let personaStore = null;
 let agentLoops = new Map(); // agentId -> AgentLoop
 let teamRuns = new Map();   // teamRunId -> TeamRunner
 
+/* Crash recovery: an unhandled exception or rejection must never silently kill
+ * the app mid-run. Log to userData/crash.log, mark any running conversation
+ * `failed` in the store (so it is not stuck `running` after a reload), and keep
+ * the process alive. Only genuinely fatal errors should quit the app — this
+ * handler never does. */
+function appendCrashLog(err) {
+  try {
+    const message = err && err.stack ? String(err.stack)
+      : err && err.message ? String(err.message)
+      : String(err);
+    const line = `${new Date().toISOString()} ${message}\n`;
+    const target = path.join(app.getPath('userData'), 'crash.log');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.appendFileSync(target, line, 'utf8');
+    // A crash attributable to a running agent run should mark that run failed.
+    for (const [id, loop] of agentLoops) {
+      if (loop && loop.running && agentStore) {
+        try { agentStore.setRunState(id, { status: 'failed', reason: 'Unhandled error: ' + message.slice(0, 200) }); }
+        catch { /* a failed store write must not mask the crash */ }
+      }
+    }
+  } catch { /* never throw from a crash handler */ }
+}
+process.on('uncaughtException', (err) => { console.error('Uncaught exception:', err); appendCrashLog(err); });
+process.on('unhandledRejection', (reason) => { console.error('Unhandled rejection:', reason); appendCrashLog(reason); });
+
+const pendingAttachments = new Map(); // opaque picker token -> local file until message send
+const MAX_PENDING_ATTACHMENTS = 100;
+const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
+
+const IMAGE_MIME = new Map([
+  ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'],
+  ['.gif', 'image/gif'], ['.webp', 'image/webp'], ['.bmp', 'image/bmp'],
+]);
+
+function safeAttachmentName(value) {
+  const name = path.basename(String(value || '')).replace(/[\u0000-\u001f\\/:*?"<>|]/g, '_').trim();
+  return name && name !== '.' && name !== '..' ? name.slice(0, 180) : 'attachment';
+}
+
+function stageAgentAttachments(agent, ids) {
+  const chosen = [...new Set(Array.isArray(ids) ? ids.map(String) : [])].slice(0, 20);
+  if (!chosen.length) return { content: null, display: '', attachments: [] };
+  if (!agent?.dir) throw new Error('This conversation is not bound to a project directory.');
+  const root = path.join(agent.dir, '.reach', 'attachments', safeAttachmentName(agent.id));
+  fs.mkdirSync(root, { recursive: true });
+  const files = [];
+  for (let index = 0; index < chosen.length; index++) {
+    const token = chosen[index], pending = pendingAttachments.get(token);
+    if (!pending || pending.agentId !== agent.id) throw new Error('An attachment selection expired. Choose the file again.');
+    const stat = fs.statSync(pending.sourcePath);
+    if (!stat.isFile()) throw new Error(`${pending.name} is no longer a regular file.`);
+    const base = safeAttachmentName(pending.name);
+    const destination = path.join(root, `${Date.now()}-${index + 1}-${base}`);
+    fs.copyFileSync(pending.sourcePath, destination);
+    const relativePath = path.relative(agent.dir, destination).split(path.sep).join('/');
+    const mime = IMAGE_MIME.get(path.extname(base).toLowerCase()) || '';
+    files.push({ token, name: base, path: relativePath, size: stat.size, mime, destination });
+  }
+  for (const file of files) pendingAttachments.delete(file.token);
+  return { attachments: files };
+}
+
+function attachmentMessage(text, staged) {
+  const files = staged.attachments || [];
+  const prompt = [String(text || '').trim() || 'Inspect the attached file(s).', '',
+    'USER-ATTACHED FILES (copied into the project; inspect these exact paths with the available tools):',
+    ...files.map(file => `- ${file.path} (${file.size} bytes${file.mime ? `, ${file.mime}` : ''})`),
+  ].join('\n');
+  const display = [String(text || '').trim(), files.length ? `Attachments: ${files.map(file => file.name).join(', ')}` : ''].filter(Boolean).join('\n\n');
+  const images = files.filter(file => file.mime && file.size <= MAX_INLINE_IMAGE_BYTES).map(file => ({
+    type: 'image_url', image_url: { url: `data:${file.mime};base64,${fs.readFileSync(file.destination).toString('base64')}` },
+  }));
+  return {
+    content: images.length ? [{ type: 'text', text: prompt }, ...images] : prompt,
+    display,
+    meta: { source: 'user', attachments: files.map(({ name, path: filePath, size, mime }) => ({ name, path: filePath, size, mime })) },
+  };
+}
+
 // ---------- stores ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 /* Settings are normalized on READ so every consumer sees a consistent shape:
@@ -102,8 +184,7 @@ function loadSettings() {
   return connections.normalizeSettings(raw).settings;
 }
 function saveSettings(s) {
-  fs.mkdirSync(path.dirname(settingsFile()), { recursive: true });
-  fs.writeFileSync(settingsFile(), JSON.stringify(connections.normalizeSettings(s).settings, null, 2));
+  atomicWriteJson(settingsFile(), connections.normalizeSettings(s).settings);
 }
 
 const projectsFile = () => path.join(app.getPath('userData'), 'projects.json');
@@ -112,8 +193,7 @@ function loadProjects() {
   catch { return []; }
 }
 function saveProjects(ps) {
-  fs.mkdirSync(path.dirname(projectsFile()), { recursive: true });
-  fs.writeFileSync(projectsFile(), JSON.stringify(ps, null, 2));
+  atomicWriteJson(projectsFile(), ps);
 }
 
 // ---------- agent helpers ----------
@@ -274,6 +354,31 @@ function registerIpc() {
     return r.canceled ? null : r.filePaths[0];
   });
 
+  ipcMain.handle('agents:pickAttachments', async (_e, id) => {
+    try {
+      const agent = getAgentStore().get(String(id || ''));
+      if (!agent) throw new Error('Select a conversation before attaching files.');
+      const result = await dialog.showOpenDialog(win, {
+        title: 'Attach files to this chat',
+        properties: ['openFile', 'multiSelections'],
+      });
+      if (result.canceled) return { ok: true, attachments: [] };
+      const attachments = [];
+      for (const sourcePath of result.filePaths.slice(0, 20)) {
+        const stat = fs.statSync(sourcePath);
+        if (!stat.isFile()) continue;
+        const attachmentId = randomUUID();
+        const name = safeAttachmentName(sourcePath);
+        pendingAttachments.set(attachmentId, { attachmentId, agentId: agent.id, sourcePath, name, size: stat.size, selectedAt: Date.now() });
+        attachments.push({ attachmentId, name, size: stat.size });
+      }
+      while (pendingAttachments.size > MAX_PENDING_ATTACHMENTS) pendingAttachments.delete(pendingAttachments.keys().next().value);
+      return { ok: true, attachments };
+    } catch (error) {
+      return { ok: false, err: error.message };
+    }
+  });
+
   ipcMain.handle('project:create', async (_e, { name, parent }) => {
     if (!name || !/^[A-Za-z0-9 _-]+$/.test(name)) return { ok: false, err: 'Invalid project name' };
     const dir = path.join(parent, name);
@@ -314,6 +419,32 @@ function registerIpc() {
     }) };
   });
   ipcMain.handle('agents:tree', (_e, dir) => ({ ok: true, tree: getAgentStore().tree(dir) }));
+  /* Conversation export/import (item 4.4). Export returns a full, self-contained
+   * snapshot; import validates + sanitizes it and mints a fresh id so an imported
+   * file can never overwrite an existing conversation. */
+  ipcMain.handle('agents:export', (_e, id) => {
+    const agent = getAgentStore().get(id);
+    if (!agent) return { ok: false, err: 'Conversation not found.' };
+    const { id: _exportedId, ...agentData } = agent;
+    return {
+      ok: true,
+      conversation: {
+        format: 'reach-studio.conversation',
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        agent: agentData,
+      },
+    };
+  });
+  ipcMain.handle('agents:import', (_e, payload) => {
+    try {
+      const data = payload && payload.format === 'reach-studio.conversation' ? payload.agent : payload;
+      const agent = getAgentStore().importConversation(data);
+      return { ok: true, agent };
+    } catch (e) {
+      return { ok: false, err: e.message };
+    }
+  });
   ipcMain.handle('agents:create', (_e, { name, dir, model }) => {
     try {
       const agent = getAgentStore().create({ name, dir, model });
@@ -360,23 +491,29 @@ function registerIpc() {
       return agent ? { ok: true, agent } : { ok: false, err: 'Conversation not found.' };
     } catch (error) { return { ok: false, err: error.message }; }
   });
-  ipcMain.handle('agents:send', async (_e, { id, text }) => {
+  ipcMain.handle('agents:send', async (_e, { id, text, attachmentIds = [] }) => {
     try {
       const loop = await getAgentLoop(id);
+      if (loop.running && Array.isArray(attachmentIds) && attachmentIds.length) {
+        throw new Error('Wait for the current run to finish before sending attachments.');
+      }
       // Auto-title: the first user message names an untitled chat.
       const store = getAgentStore();
       const agent = store.get(id);
+      const staged = stageAgentAttachments(agent, attachmentIds);
+      const message = staged.attachments.length ? attachmentMessage(text, staged) : String(text || '');
       if (agent && (!agent.name || agent.name === 'Chat' || agent.name.startsWith('Chat '))) {
-        const title = String(text).trim().replace(/\s+/g, ' ').slice(0, 42) || 'Chat';
+        const title = String(text).trim().replace(/\s+/g, ' ').slice(0, 42)
+          || staged.attachments.map(file => file.name).join(', ').slice(0, 42) || 'Chat';
         store.update(id, { name: title });
         if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'renamed', name: title });
       }
-      loop.sendUserMessage(text).catch((err) => {
+      loop.sendUserMessage(message).catch((err) => {
         if (win && !win.isDestroyed()) {
           win.webContents.send('agent:event', { agentId: id, type: 'error', message: err.message });
         }
       });
-      return { ok: true };
+      return { ok: true, display: staged.attachments.length ? message.display : String(text || '') };
     } catch (e) {
       return { ok: false, err: e.message };
     }
@@ -423,8 +560,9 @@ function registerIpc() {
     }
     return { ok: true };
   });
-  ipcMain.handle('agents:resolveEdit', (_e, { id, editId, accepted }) => {
-    const edit = getAgentStore().getPendingEdit(id, editId);
+  ipcMain.handle('agents:resolveEdit', async (_e, { id, editId, accepted }) => {
+    const store = getAgentStore();
+    const edit = store.getPendingEdit(id, editId);
     if (!edit) return { ok: false, err: 'Edit not found (already resolved?)' };
     if (accepted) {
       try {
@@ -434,9 +572,23 @@ function registerIpc() {
         return { ok: false, err: e.message };
       }
     }
-    getAgentStore().resolvePendingEdit(id, editId, accepted);
-    getAgentStore().appendMessage(id, { role: 'user', content: `TOOL RESULTS\nEdit ${edit.path}: ${accepted ? 'accepted and written to disk' : 'rejected by the user'}.`, _reachMeta: { source: 'tool-summary' } });
-    return { ok: true, accepted: !!accepted };
+    store.resolvePendingEdit(id, editId, accepted);
+    store.appendMessage(id, { role: 'user', content: `TOOL RESULTS\nEdit ${edit.path}: ${accepted ? 'accepted and written to disk' : 'rejected by the user'}.`, _reachMeta: { source: 'tool-summary' } });
+
+    // A model turn may propose several files. Resume only after the final card
+    // is resolved, then let the model validate, do more work, or give its final
+    // response. Do not await the whole model run: the review button should
+    // acknowledge the verdict immediately while normal activity events stream.
+    let resuming = false;
+    const agent = store.get(id);
+    if (agent?.runState?.status === 'waiting_edits' && !Object.keys(agent.pendingEdits || {}).length) {
+      const loop = await getAgentLoop(id);
+      resuming = true;
+      void loop.resumeAfterEditReview().catch((error) => {
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'error', message: error.message });
+      });
+    }
+    return { ok: true, accepted: !!accepted, resuming };
   });
 
   // ---------- persona + team ipc ----------
@@ -532,6 +684,42 @@ function registerIpc() {
       }
       for (const mc of memberConnections) {
         mc.endpoint = resolvedEndpoints.get(mc.endpoint) || mc.endpoint;
+      }
+
+      /* Fail before launching a crew when a successful OpenAI-compatible
+       * /models response proves that a persona model belongs to a different
+       * endpoint. Failed/unimplemented catalog requests do not block the run;
+       * they provide no evidence either way. Requests are per connection, in
+       * parallel, and credentials never enter the returned error or logs. */
+      const catalogEntries = new Map();
+      for (const mc of memberConnections) {
+        if (!catalogEntries.has(mc.endpoint)) catalogEntries.set(mc.endpoint, mc);
+      }
+      const catalogs = new Map();
+      await Promise.all([...catalogEntries.entries()].map(async ([memberEndpoint, mc]) => {
+        try {
+          const headers = {};
+          if (mc.accessKey) headers.Authorization = 'Bearer ' + mc.accessKey;
+          const response = await fetch(memberEndpoint.replace(/\/+$/, '') + '/models', {
+            headers,
+            // A catalog is an optional safety check, never a reason to make the
+            // Run button feel hung on an endpoint that omits GET /models.
+            signal: AbortSignal.timeout(3000),
+          });
+          if (!response.ok) return;
+          const data = await response.json();
+          const ids = new Set((Array.isArray(data?.data) ? data.data : []).map(model => model?.id).filter(id => typeof id === 'string' && id));
+          if (ids.size) catalogs.set(memberEndpoint, ids);
+        } catch { /* No usable catalog: let the normal chat request decide. */ }
+      }));
+      const unsupported = unsupportedTeamModels(memberConnections, catalogs);
+      if (unsupported.length) {
+        const detail = unsupported.map(mc => {
+          const name = personas[mc.index]?.name || `Member ${mc.index + 1}`;
+          const connection = mc.connectionName || mc.endpoint;
+          return `${name}: model "${mc.model}" is not advertised by ${connection}`;
+        }).join('; ');
+        return { ok: false, err: `Team model routing check failed before launch. ${detail}. Choose a model from that connection or pin the member to the connection that serves it.` };
       }
 
       // Project dir: explicit → the bound conversation's dir.
@@ -641,18 +829,17 @@ function registerIpc() {
   ipcMain.handle('teams:resolveEdit', (_e, { editId, accepted }) => {
     const entry = pendingTeamEdits.get(editId);
     if (!entry) return { ok: false, err: 'Edit not found (already resolved?)' };
-    pendingTeamEdits.delete(editId);
     if (accepted) {
       try {
         fs.mkdirSync(path.dirname(entry.edit.absPath), { recursive: true });
         writeTextFile(entry.edit.absPath, entry.edit.proposed);
       } catch (e) {
-        // The write failed — tell the member it was rejected, not accepted.
-        const resolver = pendingEditResolvers.get(editId);
-        if (resolver) { pendingEditResolvers.delete(editId); resolver(false); }
+        // Keep the proposal pending so the review card can report the error
+        // and let the user retry after fixing the underlying filesystem issue.
         return { ok: false, err: e.message };
       }
     }
+    pendingTeamEdits.delete(editId);
     // Unblock the paused team member (if this edit belongs to one).
     const resolver = pendingEditResolvers.get(editId);
     if (resolver) { pendingEditResolvers.delete(editId); resolver(!!accepted); }
@@ -2103,6 +2290,59 @@ app.whenReady().then(() => {
             if (ch < 20) throw new Error('composer collapsed (height=' + ch + 'px)');
             const composerVisible = composer.getBoundingClientRect().top < window.innerHeight;
             if (!composerVisible) throw new Error('composer is off-screen (top=' + composer.getBoundingClientRect().top + ')');
+            const attach = document.querySelector('#btn-attach');
+            const attachRect = attach.getBoundingClientRect();
+            const inputRect = document.querySelector('#composer-input').getBoundingClientRect();
+            if (attach.textContent.trim() !== '+' || attach.getAttribute('aria-label') !== 'Attach files') throw new Error('attachment control is not the simple accessible + button');
+            if (attachRect.right > inputRect.left + 1 || attachRect.bottom < inputRect.top || attachRect.top > inputRect.bottom) {
+              throw new Error('attachment + is not directly left of the chatbox: ' + JSON.stringify({ attach: attachRect.toJSON(), input: inputRect.toJSON() }));
+            }
+            const existingToolCalls = document.querySelectorAll('.tool-call-message').length;
+            handleAgentEvent({ agentId: currentAgent.id, type: 'tool-call', tool: 'write', arguments: { path: 'large.txt', content: 'large payload '.repeat(240) } });
+            const longToolCall = [...document.querySelectorAll('.tool-call-message')].at(-1);
+            const dropdown = longToolCall.querySelector('.tool-call-dropdown');
+            if (!dropdown || dropdown.open) throw new Error('tool calls over three lines must start in a closed dropdown');
+            if (getComputedStyle(dropdown.querySelector('.tool-call-text')).webkitLineClamp !== '3') throw new Error('closed tool-call dropdown is not clamped to three lines');
+            dropdown.querySelector('summary').click();
+            if (!dropdown.open) throw new Error('long tool-call dropdown cannot be expanded');
+            handleAgentEvent({ agentId: currentAgent.id, type: 'tool-call', tool: 'read', arguments: { path: 'short.txt' } });
+            const shortToolCall = [...document.querySelectorAll('.tool-call-message')].at(-1);
+            if (shortToolCall.querySelector('.tool-call-dropdown')) throw new Error('short tool calls should not become dropdowns');
+            if (document.querySelectorAll('.tool-call-message').length !== existingToolCalls + 2) throw new Error('tool-call smoke messages were not rendered');
+
+            // Edit review regression: all files from one AI work batch live in
+            // one outer dropdown, and each detailed file review is a nested
+            // dropdown. Exercise the bulk resolver without touching disk.
+            const reviewDecisions = [];
+            const reviewGroup = createEditReviewGroup({
+              key: 'smoke:grouped-review', host: chatLog, title: 'Proposed changes', actor: 'Smoke AI',
+              resolve: async (editId, accepted) => { reviewDecisions.push({ editId, accepted }); return { ok: true, accepted }; },
+            });
+            appendEditCardToGroup(reviewGroup, {
+              editId: 'smoke-edit-one', path: 'src/one.js', isNew: false,
+              stats: { added: 3, removed: 1 }, hunks: [{ type: 'add', text: 'const one = 1;' }],
+            });
+            appendEditCardToGroup(reviewGroup, {
+              editId: 'smoke-edit-two', path: 'src/two.js', isNew: true, memberName: 'Builder',
+              stats: { added: 2, removed: 0 }, hunks: [{ type: 'add', text: 'const two = 2;' }],
+            });
+            if (!reviewGroup.element.open) throw new Error('edit review batch must start expanded');
+            const reviewFiles = reviewGroup.element.querySelectorAll('.edit-review-file');
+            if (reviewFiles.length !== 2 || [...reviewFiles].some(file => file.open)) throw new Error('edit files must be grouped as closed nested dropdowns');
+            if (reviewGroup.count.textContent !== '2 files' || reviewGroup.added.textContent !== '+5' || reviewGroup.removed.textContent !== '−1') throw new Error('edit review batch metadata is wrong');
+            if (!reviewGroup.guidance.textContent.includes('continues automatically')) throw new Error('edit review batch does not explain how the run resumes');
+            const firstReview = reviewFiles[0];
+            firstReview.querySelector('summary').click();
+            if (!firstReview.open || !firstReview.querySelector('.edit-review-file-meta')) throw new Error('edit file details cannot be expanded');
+            reviewGroup.element.querySelector('.edit-review-summary').click();
+            if (reviewGroup.element.open) throw new Error('edit review batch cannot be collapsed');
+            reviewGroup.element.querySelector('.edit-review-summary').click();
+            if (!reviewGroup.element.open) throw new Error('edit review batch cannot be reopened');
+            await reviewGroup.acceptAll.onclick();
+            if (reviewDecisions.length !== 2 || reviewDecisions.some(item => !item.accepted)) throw new Error('Accept all did not resolve every edit');
+            if (reviewGroup.element.querySelectorAll('.edit-review-file.accepted').length !== 2 || !reviewGroup.acceptAll.disabled || !reviewGroup.rejectAll.disabled) throw new Error('bulk edit verdict state is wrong');
+            reviewGroup.element.remove();
+
             if (drawer.classList.contains('closed')) throw new Error('drawer should start open');
             toggle.click();
             if (document.querySelector('#drawer-menu').classList.contains('hidden')) throw new Error('Files/Browser menu did not open');
@@ -2163,6 +2403,13 @@ app.whenReady().then(() => {
         // Native-protocol observations (OpenAI tool_calls crew).
         const nativeChecks = { toolsAdvertised: false, toolRan: false };
         const teamServer = createServer((req, res) => {
+          if (req.method === 'GET' && /\/models\/?$/.test(req.url || '')) {
+            const ids = ['fixture', 'fixture-a', 'fixture-b', 'fixture-d', 'fixture-sub',
+              'fixture-l1', 'fixture-l2', 'fixture-l3', 'fixture-n1'];
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'list', data: ids.map(id => ({ id, object: 'model' })) }));
+            return;
+          }
           let body = '';
           req.on('data', chunk => { body += chunk; });
           req.on('end', () => {

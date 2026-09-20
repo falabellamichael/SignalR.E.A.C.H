@@ -1,7 +1,7 @@
 'use strict';
 
 const { parse } = require('./agent-run.cjs');
-const { parseActionResponse, CONTROL_NAMES } = require('./agent-action.cjs');
+const { parseActionResponse, CONTROL_NAMES, canonicalToolName } = require('./agent-action.cjs');
 const { parseDsmlActions } = require('./agent-dsml.cjs');
 const { allowedNames } = require('./tool-registry.cjs');
 
@@ -85,7 +85,9 @@ function parseAgentResponse(content, nativeActions = []) {
     let controlCall = null;
     for (const call of nativeActions) {
       try {
-        const name = call.function?.name;
+        const wireName = call.function?.name;
+        const name = canonicalToolName(wireName);
+        if (!name) throw Error();
         const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments || '{}') : call.function?.arguments;
         if (!args || Array.isArray(args) || typeof args !== 'object') throw Error();
         if (CONTROL_NAMES.includes(name)) {

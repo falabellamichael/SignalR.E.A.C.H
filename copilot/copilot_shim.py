@@ -34,11 +34,27 @@ logging.basicConfig(filename=LOG, level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("copilot_shim")
 
+def _warn_if_token_world_readable():
+    """Loudly flag a token file that any other local user could read."""
+    try:
+        mode = os.stat(TOKEN_PATH).st_mode
+        if mode & 0o077:
+            print(
+                "WARNING: %s is readable by group/others (mode %o). "
+                "Run: chmod 600 %s"
+                % (TOKEN_PATH, mode & 0o777, TOKEN_PATH),
+                file=__import__("sys").stderr,
+            )
+            log.warning("copilot token file has group/other permissions (mode %o)", mode & 0o777)
+    except OSError:
+        pass
+
 try:
     TOKEN = open(TOKEN_PATH, encoding="utf-8").read().strip()
 except OSError:
     TOKEN = ""
 log.info("copilot token %s", "present" if TOKEN else "MISSING")
+_warn_if_token_world_readable()
 
 TOKEN_LOCK = __import__("threading").Lock()
 
@@ -61,6 +77,13 @@ def _save_token(token):
     try:
         with open(TOKEN_PATH, "w", encoding="utf-8") as handle:
             handle.write(token)
+        # A Copilot web token is a bearer credential: keep it private to the
+        # owning user (0600). Windows has no chmod; on POSIX the umask could
+        # otherwise leave it group/world-readable.
+        try:
+            os.chmod(TOKEN_PATH, 0o600)
+        except OSError:
+            pass
         log.info("refreshed copilot token persisted (%d chars)", len(token))
     except OSError as exc:
         log.warning("could not persist refreshed token: %s", exc)

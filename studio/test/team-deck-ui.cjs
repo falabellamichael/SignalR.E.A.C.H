@@ -1,0 +1,171 @@
+'use strict';
+// Real Electron renderer, disposable profile, deterministic team events.
+// No inference requests, saved conversations, or installed app are touched.
+const { app, ipcMain } = require('electron');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const assert = require('node:assert/strict');
+const { pathToFileURL } = require('node:url');
+const { AgentStore } = require('../agent/agent-store.cjs');
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-team-deck-ui-'));
+const profile = path.join(root, 'profile'), project = path.join(root, 'project');
+fs.mkdirSync(profile); fs.mkdirSync(project);
+app.setPath('userData', profile);
+app.commandLine.appendSwitch('force-device-scale-factor', '1');
+fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({ theme: 'dark', telemetrySources: [] }));
+fs.writeFileSync(path.join(profile, 'projects.json'), JSON.stringify([{ name: 'Team UI fixture', dir: project }]));
+const store = new AgentStore(path.join(profile, 'agents.json'));
+const fixture = store.create({ name: 'Team interface preview', dir: project });
+store.appendMessage(fixture.id, { role: 'user', content: 'Review the repository cleanup.' });
+let win;
+const errors = [];
+app.on('browser-window-created', (_event, window) => {
+  win = window;
+  setImmediate(() => window.removeAllListeners('ready-to-show'));
+  window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) errors.push(message); });
+});
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const run = code => win.webContents.executeJavaScript(code, true);
+async function until(code, message) {
+  for (let attempt = 0; attempt < 100; attempt++) { if (await run(code)) return; await delay(50); }
+  throw new Error(message);
+}
+async function capture(name) {
+  await delay(180);
+  fs.writeFileSync(path.join(root, name + '.png'), (await win.capturePage()).toPNG());
+  const rect = await run(`(() => { const r = previewRun.wrap.getBoundingClientRect(); return { x: Math.ceil(r.x), y: Math.ceil(r.y), width: Math.floor(r.width), height: Math.min(Math.floor(r.height), innerHeight - Math.ceil(r.y) - 100) }; })()`);
+  if (rect.height > 0) fs.writeFileSync(path.join(root, name + '-deck.png'), (await win.capturePage(rect)).toPNG());
+}
+const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.exit(1); }, 60000);
+(async () => {
+  await import(pathToFileURL(path.resolve(__dirname, '../main.mjs')).href);
+  await app.whenReady();
+  while (!win || win.webContents.isLoading()) await delay(50);
+  await until('typeof ReachTeamDeck !== "undefined" && document.querySelector("#agent-project-select option") !== null', 'Renderer did not initialize');
+  win.setContentSize(1440, 1024);
+  await run(`(async () => { setDrawer(false); await showTab('agents'); await selectAgent({id:${JSON.stringify(fixture.id)}}); })()`);
+  await run(`(() => {
+    startTeamRunView('deck-preview', { name: 'Team 1', mode: 'parallel' }, 'Repository cleanup · isolated preview');
+    window.previewRun = activeTeamRun;
+    window.previewEvent = event => handleTeamEvent({ teamRunId: 'deck-preview', ...event });
+    previewEvent({ type: 'start', members: [
+      { index: 0, name: 'CEO', model: 'qwen-27b' }, { index: 1, name: 'Thinker', model: 'qwen-35b' },
+      { index: 2, name: 'Seeker', model: 'deepseek-flash' }, { index: 3, name: 'Builder', model: 'deepseek-flash' },
+      { index: 4, name: 'Reviewer', model: 'qwen-32b' }
+    ] });
+    for (const index of [0, 1, 2, 3]) {
+      previewEvent({ type: 'member-start', index });
+      previewEvent({ type: 'member', index, memberType: 'round', round: 2 });
+      previewEvent({ type: 'member', index, memberType: 'request-start' });
+    }
+    previewEvent({ type: 'member', index: 0, memberType: 'tool-call', tool: 'agent.await' });
+    previewEvent({ type: 'member', index: 1, memberType: 'reasoning', chars: 1248 });
+    previewEvent({ type: 'member', index: 2, memberType: 'message-end', content: 'Repository settings read.' });
+    previewEvent({ type: 'member', index: 2, memberType: 'tool-call', tool: 'read', arguments: {path: '.gitignore'} });
+    previewEvent({ type: 'member', index: 2, memberType: 'tool-result', tool: 'read', ok: true, result: 'Read repository settings.' });
+    previewEvent({ type: 'member', index: 2, memberType: 'request-start' });
+    previewEvent({ type: 'member', index: 2, memberType: 'message-end', content: 'I’ve finished the repository cleanup. Three changes are ready for review.' });
+    previewEvent({ type: 'member', index: 2, memberType: 'tool-call', tool: 'edit', arguments: {path: 'README.md'} });
+    previewEvent({ type: 'member', index: 2, memberType: 'tool-result', tool: 'edit', ok: true, pending: true });
+    previewEvent({ type: 'member-waiting', index: 2, edits: [{}, {}, {}] });
+    previewEvent({ type: 'member', index: 3, memberType: 'message-end', content: 'Validation complete. All checks passed.' });
+    previewEvent({ type: 'member-done', index: 3, ok: true, chars: 46 });
+    window.previewDecisions = [];
+    window.previewGroup = ensureEditReviewGroup({ key: 'team:deck-preview', host: previewRun.deck.reviews,
+      title: 'Proposed changes', actor: 'Team 1', resolve: async (id, accepted) => { previewDecisions.push({id, accepted}); return {ok: true, accepted}; } });
+    for (const [index, file] of ['.gitignore', 'README.md', 'docs/IMPROVEMENTS.md'].entries()) {
+      appendEditCardToGroup(previewGroup, { editId: 'preview-edit-' + index, path: file, memberName: 'Seeker',
+        stats: {added: [12,58,14][index], removed: [3,21,5][index]}, isNew: false,
+        hunks: [{type:'del',text:'Clone the repository and install dependencies.'}, {type:'add',text:'Clone the repository, install dependencies, and run the setup script.'}] });
+    }
+    previewRun.deck.select(previewRun.cards.get(2));
+    chatScroll.scrollTop = 0;
+  })()`);
+  await until(`document.querySelectorAll('.team-tab[data-status=working]').length === 2 && document.querySelector('.team-tab[data-status=waiting]')`, 'Tab states did not render');
+  assert.equal(await run(`document.querySelectorAll('.member-card:not([hidden])').length`), 1);
+  assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent`), 'Seeker');
+  assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-step').textContent`), 'Step 5');
+  assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=working] .team-orbit-icon')).animationName`), 'activity-spin');
+  assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=waiting] .team-orbit-icon')).animationName`), 'none');
+  await capture('desktop-dark');
+  await run(`previewRun.cards.get(2).querySelector('.activity-details').open=false; previewGroup.cards.get('preview-edit-1').element.open=true;`);
+  await capture('desktop-review');
+  await run(`previewRun.cards.get(2).querySelector('.activity-details').open=true; previewGroup.cards.get('preview-edit-1').element.open=false;`);
+  // Roving focus, Home/End, wraparound, and selection never scroll the chat.
+  await run(`document.querySelector('.team-tab[aria-selected=true]').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}))`);
+  assert.equal(await run(`document.activeElement.querySelector('.team-tab-name').textContent`), 'Reviewer');
+  assert.ok(await run(`previewRun.wrap.querySelector('.team-tabs').scrollLeft > 0`));
+  await run(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}))`);
+  assert.equal(await run(`document.activeElement.querySelector('.team-tab-name').textContent`), 'CEO');
+  assert.equal(await run(`chatScroll.scrollTop`), 0);
+  await run(`previewRun.wrap.querySelectorAll('.team-tab-scroll')[1].click()`);
+  await until(`previewRun.wrap.querySelector('.team-tabs').scrollLeft > 100`, 'Scroll arrow did not move rail');
+  await run(`previewRun.wrap.querySelector('.team-tabs').dispatchEvent(new WheelEvent('wheel',{deltaY:240,cancelable:true}))`);
+  assert.ok(await run(`previewRun.wrap.querySelector('.team-tabs').scrollLeft > 200`));
+  assert.equal(await run(`chatScroll.scrollTop`), 0);
+  assert.equal(await run(`previewGroup.element.isConnected && previewGroup.element.getBoundingClientRect().height > 0`), true);
+  // A background question must not steal the current tab, focus or text draft.
+  await run(`composerInput.value = 'Keep this draft'; composerInput.focus(); previewEvent({type:'member-question',index:1,questionId:'preview-question',name:'Thinker',question:'Which test suite should I use?'});`);
+  await until(`previewRun.wrap.querySelectorAll('.team-tab[data-status=waiting]').length === 2`, 'Question badge missing');
+  assert.equal(await run(`document.activeElement === composerInput && composerInput.value === 'Keep this draft'`), true);
+  await run(`previewRun.deck.select(previewRun.cards.get(1)); previewRun.cards.get(1).querySelector('textarea').value='Run unit tests'; previewRun.deck.select(previewRun.cards.get(2)); previewRun.deck.select(previewRun.cards.get(1));`);
+  assert.equal(await run(`previewRun.cards.get(1).querySelector('textarea').value`), 'Run unit tests');
+  await run(`previewEvent({type:'member-control',index:0,paused:true})`);
+  await until(`previewRun.cards.get(0).dataset.teamStatus === 'paused'`, 'Paused tab missing');
+  assert.equal(await run(`previewRun.cards.get(0).querySelector('.member-control').textContent`), 'Start');
+  await run(`previewEvent({type:'member-control',index:0,paused:false})`);
+  await until(`previewRun.cards.get(0).dataset.teamStatus === 'working'`, 'Resumed tab missing');
+  // A live run temporarily detached from the chat keeps its activity history.
+  await run(`previewRun.wrap.remove(); ReachActivity.select(null)`);
+  await delay(200);
+  assert.equal(await run(`ensureEditReviewGroup({key:'team:deck-preview',host:previewRun.deck.reviews}) === previewGroup`), true, 'Detached live reviews must retain their batch');
+  await run(`renderChatHistory(); ReachActivity.select(currentAgent)`);
+  await delay(200);
+  assert.equal(await run(`previewRun.cards.get(2).querySelector('.activity-count').textContent.includes('5 steps')`), true);
+  // Spawned workers use their own tab, and cannot switch the selected agent.
+  await run(`previewRun.deck.select(previewRun.cards.get(2)); previewEvent({type:'subagent',agentId:'spawned',name:'A very long worker name',model:'provider/an-extremely-long-model-name-for-truncation',depth:2,netType:'agent-created'}); previewEvent({type:'subagent',agentId:'spawned',netType:'agent-state',status:'running'});`);
+  assert.equal(await run(`previewRun.wrap.querySelectorAll('[role=tab]').length`), 6);
+  assert.equal(await run(`previewRun.cards.get(2).hidden`), false);
+  await run(`previewRun.deck.identify(previewRun.subCards.get('spawned'), '<b>literal name</b>', '<script>literal model</script>')`);
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-tab[data-worker=true] b, .team-tab[data-worker=true] script') === null`), true);
+  await run(`previewRun.deck.identify(previewRun.subCards.get('spawned'), 'A very long worker name', 'provider/an-extremely-long-model-name-for-truncation')`);
+  // Both minimum window and light theme keep the composer and tabs reachable.
+  for (const theme of ['light', 'dark']) {
+    win.setContentSize(1000, 640);
+    await run(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}; composerInput.value=''; previewRun.deck.select(previewRun.cards.get(2)); chatScroll.scrollTop=0;`);
+    await delay(180);
+    const geometry = await run(`(() => { const send = document.querySelector('#btn-send').getBoundingClientRect(); const deck = previewRun.wrap.getBoundingClientRect(); const panel = previewRun.cards.get(2).getBoundingClientRect(); return { overflow:document.body.scrollWidth>innerWidth, sendBottom:send.bottom, height:innerHeight, deck:deck.width, panel:panel.width, tabs:previewRun.wrap.querySelector('.team-tabs').clientWidth }; })()`);
+    assert.equal(geometry.overflow, false);
+    assert.ok(geometry.sendBottom <= geometry.height);
+    assert.ok(Math.abs(geometry.deck - geometry.panel) <= 1);
+    assert.ok(geometry.tabs > 150);
+    await capture('narrow-' + theme);
+  }
+  // Reduced motion disables the ring, without removing readable state labels.
+  win.webContents.setBackgroundThrottling(false);
+  await win.webContents.debugger.attach('1.3');
+  await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', { features: [{name:'prefers-reduced-motion',value:'reduce'}] });
+  assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=working] .team-orbit-icon')).animationName`), 'none');
+  win.webContents.debugger.detach();
+  // Existing bulk reviews still resolve exactly once through the shared group.
+  await run(`previewGroup.rejectAll.click()`);
+  await until(`previewDecisions.length === 3`, 'Bulk reject did not reach all files');
+  assert.equal(await run(`previewDecisions.every(item => item.accepted === false)`), true);
+  await run(`previewEvent({type:'member-resumed',index:2})`);
+  await until(`previewRun.cards.get(2).dataset.teamStatus === 'working'`, 'Reviewed member did not regain live state');
+  await run(`previewEvent({type:'member-done',index:2,ok:false,status:'error',error:'Fixture provider failed'}); previewEvent({type:'done',results:[{ok:true},{ok:false}],mode:'parallel'});`);
+  await delay(200);
+  assert.equal(await run(`activeTeamRun === null`), true);
+  assert.equal(await run(`previewRun.wrap.querySelectorAll('.team-tab[data-status=working]').length`), 0);
+  assert.equal(await run(`previewRun.cards.get(2).dataset.teamStatus`), 'error');
+  assert.equal(await run(`previewRun.wrap.querySelectorAll('.member-control:not(:disabled)').length`), 0);
+  await run(`previewRun.deck.select(previewRun.cards.get(3))`);
+  assert.equal(await run(`previewRun.cards.get(3).querySelector('.member-body').textContent`), 'Validation complete. All checks passed.');
+  assert.equal(await run(`previewRun.wrap.querySelectorAll('.member-card:not([hidden])').length`), 1);
+  await capture('finished');
+  assert.deepEqual(errors, []);
+  fs.writeFileSync(path.join(root,'results.json'), JSON.stringify({checks:['state fidelity','single panel','keyboard and overflow','background questions','draft preservation','pause/resume','history remount','spawned workers','narrow/light/dark','reduced motion','bulk review','terminal outcomes'],errors},null,2));
+  console.log('TEAM DECK UI PASS', root);
+  clearTimeout(timeout); app.exit(0);
+})().catch(error => { console.error(error.stack); console.error('Evidence:', root); clearTimeout(timeout); app.exit(1); });

@@ -91,6 +91,24 @@ test('greeting with a valid completion does not trigger recovery', async () => {
   assert.equal(f.agent.runState.status, 'completed');
 });
 
+test('attached images reach the model while saved chat history keeps a readable display', async () => {
+  const f = fixture([complete]);
+  const content = [
+    { type: 'text', text: 'Inspect .reach/attachments/example.png' },
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } },
+  ];
+  const display = 'Review this image\n\nAttachments: example.png';
+  const attachments = [{ name: 'example.png', path: '.reach/attachments/example.png', size: 1, mime: 'image/png' }];
+  await f.loop.sendUserMessage({ content, display, meta: { source: 'user', attachments } });
+  const requestUser = f.requests[0].findLast(message => message.role === 'user');
+  assert.deepEqual(requestUser.content, content);
+  const savedUser = f.store.get(f.agent.id).messages.find(message => message.role === 'user');
+  assert.deepEqual(savedUser.content, content);
+  assert.equal(savedUser._reachMeta.display, display);
+  assert.deepEqual(savedUser._reachMeta.attachments, attachments);
+  assert.ok(f.events.some(event => event.type === 'message' && event.content === display));
+});
+
 test('heyy screenshot: two unmarked replies are provisional, final answer appears once', async () => {
   const f = fixture(["Hello! I'm REACH Studio, ready to help with your project. How can I assist you today?",
     'Hello! How can I help you with your project today?',
@@ -159,6 +177,36 @@ test('pending edits pause for review before another request and preserve origina
   assert.equal(f.requests.length, 1);
   assert.equal(fs.readFileSync(path.join(f.dir, 'hello.py'), 'utf8'), 'print("hello")\n');
   assert.equal(Object.keys(f.agent.pendingEdits).length, 1);
+});
+
+test('resolving the final edit resumes the saved turn through its final response', async () => {
+  const f = fixture([
+    action('actions', 'Proposing both edits.', [
+      tool('write', { path: 'hello.py', content: 'print("updated")\n' }),
+      tool('write', { path: 'second.py', content: 'print("second")\n' }),
+    ]),
+    action('complete', 'Both review decisions were handled and the work is finished.'),
+  ]);
+  f.loop.requestEditReview = edit => f.store.addPendingEdit(f.agent.id, edit);
+
+  await f.loop.sendUserMessage('Update both files.');
+  const edits = Object.values(f.agent.pendingEdits);
+  assert.equal(edits.length, 2);
+  assert.equal(f.agent.runState.status, 'waiting_edits');
+
+  f.store.resolvePendingEdit(f.agent.id, edits[0].editId, true);
+  f.store.appendMessage(f.agent.id, { role: 'user', content: `TOOL RESULTS\nEdit ${edits[0].path}: accepted and written to disk.`, _reachMeta: { source: 'tool-summary' } });
+  assert.deepEqual(await f.loop.resumeAfterEditReview(), { resumed: false, reason: 'pending-edits' });
+  assert.equal(f.requests.length, 1, 'one accepted card must not resume ahead of another pending card');
+
+  f.store.resolvePendingEdit(f.agent.id, edits[1].editId, false);
+  f.store.appendMessage(f.agent.id, { role: 'user', content: `TOOL RESULTS\nEdit ${edits[1].path}: rejected by the user.`, _reachMeta: { source: 'tool-summary' } });
+  assert.deepEqual(await f.loop.resumeAfterEditReview(), { resumed: true });
+  assert.equal(f.requests.length, 2);
+  assert.equal(f.agent.runState.status, 'completed');
+  assert.ok(f.events.some(e => e.type === 'message-end' && e.content.includes('work is finished')));
+  assert.equal(f.agent.messages.filter(m => m.role === 'user' && m._reachMeta?.source !== 'tool-summary').length, 1,
+    'automatic resume must not add a visible synthetic user message');
 });
 
 test('open todos prevent completion, cancelled todos do not', async () => {
@@ -358,6 +406,35 @@ test('Links completion cancels a peer request that never sends headers', async t
   assert.equal(done.links.completedBy, 'Finisher');
   assert.equal(done.links.stalled, 0);
   assert.match(done.answer, /LINKS: COMPLETE/);
+});
+
+test('Links completion lets an active peer finish during the completion grace window', async t => {
+  let peerClosed = false;
+  const endpoint = await localEndpoint(t, (body, res) => {
+    if (body.model === 'finisher') {
+      setTimeout(() => jsonReply(res, 'Verified crew result.\nLINKS: COMPLETE\n```agent_status\n{"status":"complete","summary":"Crew result delivered."}\n```'), 20);
+      return;
+    }
+    res.on('close', () => { peerClosed = true; });
+    setTimeout(() => jsonReply(res, 'Peer validation finished.\n```agent_status\n{"status":"complete","summary":"Peer evidence delivered."}\n```'), 80);
+  });
+  const runner = new TeamRunner({
+    team: { name: 'Links completion grace', mode: 'links', members: [{}, {}] },
+    personas: [
+      { id: 'done', name: 'Finisher', model: 'finisher' },
+      { id: 'active', name: 'Active peer', model: 'active' },
+    ],
+    endpoint,
+    task: 'Complete as a crew.',
+    requestTimeoutMs: 0,
+    sendEvent: () => {},
+  });
+  const result = await runner.run('links-completion-grace');
+  assert.equal(result[0].ok, true);
+  assert.equal(result[1].ok, true);
+  assert.match(result[1].output, /Peer validation finished/);
+  assert.equal(peerClosed, true, 'the response closes normally after delivering the peer result');
+  assert.equal(result[1].completionReason, undefined, 'a peer that finished naturally is not mislabeled as cancelled');
 });
 
 test('team stop cancels both members waiting on model streams', async t => {

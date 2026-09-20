@@ -5,6 +5,7 @@
  * the model is asked for exactly one JSON object naming the next tool calls.
  */
 
+const crypto = require('node:crypto');
 const { allowedNames, TOOLS } = require('./tool-registry.cjs');
 const names = allowedNames();
 
@@ -177,6 +178,45 @@ const CONTROL_TOOLS = [
 ];
 const CONTROL_NAMES = CONTROL_TOOLS.map(t => t.name);
 
+/* OpenAI function names may contain only letters, digits, underscores and
+ * dashes (maximum 64 characters). The internal registry deliberately uses
+ * dotted namespaces such as agent.send and patch.review, so native mode needs
+ * a reversible wire-name adapter. Reserve already-valid names first, then give
+ * dotted names readable aliases; a stable hash resolves any future collision
+ * such as a real `agent_send` tool being added alongside `agent.send`. */
+const NATIVE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const canonicalNames = [...Object.keys(TOOLS), ...CONTROL_NAMES];
+const nativeByCanonical = new Map();
+const canonicalByNative = new Map();
+
+for (const name of canonicalNames.filter(name => NATIVE_NAME_PATTERN.test(name))) {
+  if (canonicalByNative.has(name) && canonicalByNative.get(name) !== name) {
+    throw new Error(`Native tool-name collision: ${name}`);
+  }
+  nativeByCanonical.set(name, name);
+  canonicalByNative.set(name, name);
+}
+for (const name of canonicalNames.filter(name => !NATIVE_NAME_PATTERN.test(name))) {
+  let wire = name.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64) || 'tool';
+  if (canonicalByNative.has(wire)) {
+    const suffix = '_' + crypto.createHash('sha256').update(name).digest('hex').slice(0, 8);
+    wire = wire.slice(0, 64 - suffix.length) + suffix;
+  }
+  if (!NATIVE_NAME_PATTERN.test(wire) || canonicalByNative.has(wire)) {
+    throw new Error(`Could not create a unique OpenAI-compatible name for tool: ${name}`);
+  }
+  nativeByCanonical.set(name, wire);
+  canonicalByNative.set(wire, name);
+}
+
+function nativeToolName(canonicalName) {
+  return nativeByCanonical.get(String(canonicalName || '')) || null;
+}
+
+function canonicalToolName(nativeName) {
+  return canonicalByNative.get(String(nativeName || '')) || null;
+}
+
 function jsonType(value) {
   if (Array.isArray(value)) return { type: 'array', items: { type: 'string' } };
   if (typeof value === 'number') return { type: 'number' };
@@ -198,7 +238,7 @@ function toolDefs({ includeCollab = false, disabled = [] } = {}) {
     const properties = {};
     for (const [key, value] of Object.entries(example)) properties[key] = jsonType(value);
     defs.push({ type: 'function', function: {
-      name,
+      name: nativeToolName(name),
       description: String(tool.help || '').trim(),
       parameters: { type: 'object', properties, additionalProperties: true },
     } });
@@ -210,7 +250,7 @@ function toolDefs({ includeCollab = false, disabled = [] } = {}) {
 function nativeInstruction({ includeCollab = false, disabled = [] } = {}) {
   const visible = toolDefs({ includeCollab, disabled }).map(d => d.function.name);
   const crew = includeCollab
-    ? 'You are one agent in a crew with live collaboration tools (agent.spawn, agent.send, agent.status, agent.list, agent.transcript, agent.await, agent.reflect): coordinate with peers directly, prefer delegating genuinely parallel work, and stay accountable for the final answer.\n'
+    ? `You are one agent in a crew with live collaboration tools (${['agent.spawn', 'agent.send', 'agent.status', 'agent.list', 'agent.transcript', 'agent.await', 'agent.reflect'].map(nativeToolName).join(', ')}): coordinate with peers directly, prefer delegating genuinely parallel work, and stay accountable for the final answer.\n`
     : '';
   return 'NATIVE TOOL CALLS: call the provided tools directly with real arguments — the endpoint executes them. '
   + 'Never emit fenced tool blocks or JSON action objects, and never report work you have not done. '
@@ -222,4 +262,5 @@ function nativeInstruction({ includeCollab = false, disabled = [] } = {}) {
   + 'Available tools: ' + visible.join(', ') + '.';
 }
 
-module.exports = { schema, actionInstruction, parseActionResponse, CONTROL_NAMES, CONTROL_TOOLS, toolDefs, nativeInstruction };
+module.exports = { schema, actionInstruction, parseActionResponse, CONTROL_NAMES, CONTROL_TOOLS,
+  NATIVE_NAME_PATTERN, nativeToolName, canonicalToolName, toolDefs, nativeInstruction };

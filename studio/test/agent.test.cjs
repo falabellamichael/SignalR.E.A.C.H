@@ -241,20 +241,22 @@ const { parseAgentResponse } = require('../agent/agent-response.cjs');
 }
 
 // ---------- native tool contract (OpenAI tool_calls) ----------
-const { toolDefs, nativeInstruction, CONTROL_NAMES } = require('../agent/agent-action.cjs');
+const { toolDefs, nativeInstruction, CONTROL_NAMES, NATIVE_NAME_PATTERN,
+  nativeToolName, canonicalToolName } = require('../agent/agent-action.cjs');
 {
   const ALL = require('../agent/tool-registry.cjs').allowedNames();
   const solo = toolDefs({});
   const names = solo.map(d => d.function.name);
   assert.ok(names.includes('read') && names.includes('edit_patch'), 'real tools advertised');
   assert.ok(CONTROL_NAMES.every(n => names.includes(n)), 'the control tools are advertised');
-  assert.ok(solo.every(d => ALL.includes(d.function.name) || CONTROL_NAMES.includes(d.function.name)), 'every def is a real tool or a control');
+  assert.ok(solo.every(d => ALL.includes(canonicalToolName(d.function.name)) || CONTROL_NAMES.includes(canonicalToolName(d.function.name))), 'every def maps to a real tool or a control');
   const REG = require('../agent/tool-registry.cjs').TOOLS;
   const expected = Object.entries(REG).filter(([, tool]) => tool.tier !== 'collab').map(([n]) => n).sort();
-  assert.deepStrictEqual(names.filter(n => !CONTROL_NAMES.includes(n)).sort(), expected, 'the native defs mirror the JSON contract visible set');
+  assert.deepStrictEqual(names.filter(n => !CONTROL_NAMES.includes(n)).map(canonicalToolName).sort(), expected, 'the native defs mirror the JSON contract visible set');
+  assert.ok(names.every(n => NATIVE_NAME_PATTERN.test(n)), 'every advertised name satisfies the OpenAI function-name contract');
   assert.ok(!names.some(n => n.startsWith('agent.')), 'solo agent: no crew tools');
   const crew = toolDefs({ includeCollab: true }).map(d => d.function.name);
-  assert.ok(crew.includes('agent.send') && crew.includes('agent.await'), 'crew defs include the collab tools');
+  assert.ok(crew.includes(nativeToolName('agent.send')) && crew.includes(nativeToolName('agent.await')), 'crew defs include OpenAI-safe collab aliases');
   const limited = toolDefs({ disabled: ['read'] }).map(d => d.function.name);
   assert.ok(!limited.includes('read'), 'disabled tools are not advertised');
   const readDef = solo.find(d => d.function.name === 'read');
@@ -262,7 +264,7 @@ const { toolDefs, nativeInstruction, CONTROL_NAMES } = require('../agent/agent-a
   assert.ok(readDef.function.description.length > 10, 'description comes from the registry help line');
   assert.strictEqual(readDef.function.parameters.properties.path.type, 'string', 'example args shape the parameter schema');
   const inst = nativeInstruction({ includeCollab: true });
-  assert.ok(inst.includes('NATIVE TOOL CALLS') && inst.includes('task_complete') && inst.includes('agent.send'), 'native instruction names controls + crew tools');
+  assert.ok(inst.includes('NATIVE TOOL CALLS') && inst.includes('task_complete') && inst.includes(nativeToolName('agent.send')), 'native instruction names controls + crew aliases');
   assert.ok(!inst.includes('EXECUTABLE ACTION RESPONSE'), 'the JSON contract is not advertised in native mode');
   console.log('\u2713 native tool contract');
 }
@@ -281,6 +283,8 @@ const { toolDefs, nativeInstruction, CONTROL_NAMES } = require('../agent/agent-a
   assert.ok(asked.confirm && asked.confirm.question === 'Which env?' && asked.confirm.options.length === 2, 'ask_user becomes the question state');
   const read = parseAgentResponse('', [fn('read', { path: 'a.rsh' })]);
   assert.ok(!read.invalid && read.actions.length === 1 && read.actions[0].name === 'read', 'native tool calls execute');
+  const relayed = parseAgentResponse('', [fn(nativeToolName('agent.send'), { to: 'Peer', message: 'Check this.' })]);
+  assert.ok(!relayed.invalid && relayed.actions[0].name === 'agent.send', 'OpenAI-safe wire aliases decode to dotted registry names');
   const mixed = parseAgentResponse('', [fn('read', { path: 'a.rsh' }), fn('task_complete', { summary: 'x' })]);
   assert.ok(mixed.invalid, 'a control mixed with real work is invalid');
   const empty = parseAgentResponse('', [fn('task_complete', {})]);

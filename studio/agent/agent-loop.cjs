@@ -16,7 +16,7 @@ const { protocol, start, decide } = require('./agent-run.cjs');
 const { actionInstruction, nativeInstruction, toolDefs } = require('./agent-action.cjs');
 const { parseAgentResponse, extractToolBlocks } = require('./agent-response.cjs');
 const { runToolCall } = require('./agent-tool-runner.cjs');
-const { toolHelp, TOOLS } = require('./tool-registry.cjs');
+const { toolHelp, TOOLS, needsApproval } = require('./tool-registry.cjs');
 const { features, disabledTools } = require('./tool-policy.cjs');
 
 const { budgetPolicy, reserveGuard, checkpoint } = require('./budget-awareness.cjs');
@@ -26,6 +26,17 @@ const { buildCodeContext, formatInjection } = require('./code-context.cjs');
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_ROUNDS = 40;
 const RETRY_LIMIT = 2;
+
+function normalizeUserInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    const text = String(value || '');
+    return { content: text, display: text, meta: null };
+  }
+  const content = typeof value.content === 'string' || Array.isArray(value.content) ? value.content : '';
+  const display = String(value.display || (typeof content === 'string' ? content : content.find(part => part?.type === 'text')?.text || ''));
+  const meta = value.meta && typeof value.meta === 'object' && !Array.isArray(value.meta) ? value.meta : null;
+  return { content, display, meta };
+}
 
 class AgentLoop {
   constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false }) {
@@ -359,20 +370,40 @@ class AgentLoop {
     const agent = this._agent();
     if (!agent) throw new Error('Agent not found.');
     if (this.running) {
-      const depth = this.store.enqueue(this.agentId, text);
-      this._emit('queued', { text: String(text), depth });
+      const user = normalizeUserInput(text);
+      if (Array.isArray(user.content)) throw new Error('Wait for the current run to finish before sending attachments.');
+      const depth = this.store.enqueue(this.agentId, user.content);
+      this._emit('queued', { text: user.display, depth });
       return { queued: true, depth };
     }
-    await this._runConversation(String(text));
+    await this._runConversation(text);
     return { queued: false };
+  }
+
+  /* Continue the same turn after the user has resolved every proposed edit.
+   * Review verdicts are already persisted as tool-summary messages by main;
+   * resuming must not append a synthetic user chat message or start while a
+   * sibling edit is still awaiting a verdict. */
+  async resumeAfterEditReview() {
+    const agent = this._agent();
+    if (!agent) throw new Error('Agent not found.');
+    if (this.running) return { resumed: false, reason: 'already-running' };
+    if (Object.keys(agent.pendingEdits || {}).length) return { resumed: false, reason: 'pending-edits' };
+    if (agent.runState?.status !== 'waiting_edits') return { resumed: false, reason: 'not-waiting' };
+    await this._runConversation(null, { appendUser: false });
+    return { resumed: true };
   }
 
   /* One full conversation: the user message followed by as many agent rounds
    * as the run-control state machine needs, then the next queued message. */
-  async _runConversation(text) {
+  async _runConversation(input, { appendUser = true } = {}) {
     const agent = this._agent();
-    this.store.appendMessage(this.agentId, { role: 'user', content: text });
-    this._emit('message', { role: 'user', content: text });
+    if (appendUser) {
+      const user = normalizeUserInput(input);
+      this.store.appendMessage(this.agentId, { role: 'user', content: user.content,
+        ...(user.meta || user.display !== user.content ? { _reachMeta: { ...(user.meta || {}), display: user.display } } : {}) });
+      this._emit('message', { role: 'user', content: user.display });
+    }
 
     this.running = true;
     this.turnResults = [];
@@ -479,31 +510,45 @@ class AgentLoop {
           const results = [];
           const calls = parsed.actions.map(a => ({ name: a.name, args: a.arguments }));
 
-          for (const call of calls) {
+          // Read-only calls are independent, so they run concurrently. Writes,
+          // exec and browse calls stay sequential so approvals, ordering, and
+          // review cards are never interleaved or reordered.
+          const contextFor = (call) => ({
+            projectDir: this.projectDir,
+            agentId: this.agentId,
+            agentStore: this.store,
+            auditLog: this.auditLog,
+            reachExecutor: this.reachExecutor,
+            browserExecutor: this.browserExecutor,
+            browserTimeoutMs: this.requestTimeoutMs,
+            sendEvent: this.sendEvent,
+            requestApproval: this.requestApproval ? async payload => {
+              const approvalSignal = this.abortController.signal;
+              this._emit('approval-wait', {});
+              const approved = await this.requestApproval(payload);
+              if (!approvalSignal.aborted && approved) this._emit('approval-end', {});
+              return approved;
+            } : undefined,
+            requestEditReview: this.requestEditReview,
+            signal: this.abortController.signal,
+          });
+          const record = async (call) => {
             this.abortController.signal.throwIfAborted();
             this._emit('tool-call', { tool: call.name, arguments: call.args });
-            const result = await runToolCall(this.agentId, call.name, call.args, {
-              projectDir: this.projectDir,
-              agentId: this.agentId,
-              agentStore: this.store,
-              auditLog: this.auditLog,
-              reachExecutor: this.reachExecutor,
-              browserExecutor: this.browserExecutor,
-              browserTimeoutMs: this.requestTimeoutMs,
-              sendEvent: this.sendEvent,
-              requestApproval: this.requestApproval ? async payload => {
-                const approvalSignal = this.abortController.signal;
-                this._emit('approval-wait', {});
-                const approved = await this.requestApproval(payload);
-                if (!approvalSignal.aborted && approved) this._emit('approval-end', {});
-                return approved;
-              } : undefined,
-              requestEditReview: this.requestEditReview,
-              signal: this.abortController.signal,
-            });
+            const result = await runToolCall(this.agentId, call.name, call.args, contextFor(call));
             this.turnResults.push({ tool: call.name, path: String(call.args?.path || call.args?.filePath || '').slice(0, 300), ok: result.ok, pending: !!result.pending });
-            results.push({ tool: call.name, result });
             this._emit('tool-result', { tool: call.name, ok: result.ok, pending: !!result.pending, error: result.error, result });
+            return { tool: call.name, result };
+          };
+          const isReadOnly = (call) => TOOLS[call.name] && TOOLS[call.name].class === 'read' && !needsApproval(call.name);
+
+          if (calls.length > 1 && calls.every(isReadOnly)) {
+            // Run the whole read-only batch at once, then restore the
+            // model's original call order before persisting the summary.
+            const settled = await Promise.all(calls.map((call, index) => record(call).then(r => ({ index, ...r }))));
+            for (const entry of settled.sort((a, b) => a.index - b.index)) results.push(entry);
+          } else {
+            for (const call of calls) results.push(await record(call));
           }
 
           const resultText = results.map(r => {

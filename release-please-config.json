@@ -16,6 +16,14 @@
         "src/reach-core.js",
         "README.md"
       ]
+    },
+    "studio": {
+      "release-type": "node",
+      "package-name": "reach-studio",
+      "changelog-path": "studio/CHANGELOG.md",
+      "extra-files": [
+        { "type": "json", "path": "studio/package.json", "jsonpath": "$.version" }
+      ]
     }
   }
 }

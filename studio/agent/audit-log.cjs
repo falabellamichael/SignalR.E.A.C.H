@@ -11,6 +11,11 @@
  *   - Hash-chained. Each record stores the SHA-256 of the previous record, so
  *     deleting or editing any line in the middle breaks every hash after it and
  *     verify() reports exactly where the chain was tampered with.
+ *   - Bounded (IMPROVEMENTS 2.4). The log would otherwise grow without limit.
+ *     Once the active file passes `maxBytes` it is rotated to `<path>.<n>` and a
+ *     fresh active file opens with a `rotate` marker record chaining to the
+ *     previous tip. Only the newest `keep` archives are retained, so total disk
+ *     is bounded by roughly maxBytes * (keep + 1).
  *   - Tamper-evident, not tamper-proof. A determined attacker with filesystem
  *     access can recompute a chain. That is out of scope for a local desktop
  *     tool; what this defends against is silent edits, truncation, and a
@@ -27,6 +32,11 @@ const crypto = require('node:crypto');
 const VERSION = 1;
 const GENESIS = '0'.repeat(64);
 const MAX_DETAIL_CHARS = 16000;
+/* Default cap for the active file. main.mjs constructs this class with no
+ * options, so the default is what makes 2.4 live rather than dead code. */
+const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+/* How many rotated archives survive. Oldest (lowest suffix) is dropped first. */
+const DEFAULT_KEEP = 3;
 
 function sha256(text) {
   return crypto.createHash('sha256').update(String(text), 'utf8').digest('hex');
@@ -35,10 +45,14 @@ function sha256(text) {
 /**
  * The exact string a record's hash covers. Keep this stable: changing it
  * invalidates every previously written log.
+ *
+ * `v` is read from the RECORD, not the VERSION constant, so a future schema
+ * bump cannot silently invalidate existing logs (IMPROVEMENTS 2.4, invariant
+ * A2). Today both are 1 and hash identically to the pre-rotation file.
  */
 function canonical(record) {
   return JSON.stringify({
-    v: VERSION,
+    v: Number.isSafeInteger(record.v) ? record.v : VERSION,
     seq: record.seq,
     ts: record.ts,
     prev: record.prev,
@@ -63,10 +77,16 @@ function hashRecord(record) {
  * to load the existing chain length and tip hash.
  */
 class AuditLog {
-  constructor(filePath, { now = Date.now, fsImpl = fs } = {}) {
+  constructor(filePath, { now = Date.now, fsImpl = fs, maxBytes = DEFAULT_MAX_BYTES, keep = DEFAULT_KEEP } = {}) {
     this.filePath = filePath ? String(filePath) : null;
     this.now = now;
     this.fs = fsImpl;
+    // Rotation cap (bytes) for the ACTIVE file. 0 = never rotate. On overflow the
+    // active file is renamed to <path>.<n> and a fresh active file is started with
+    // a `rotate` marker record chaining to the previous file's tip hash. Archived
+    // files are retained so verify() can still walk the chain across the boundary.
+    this.maxBytes = Number.isSafeInteger(maxBytes) && maxBytes > 0 ? maxBytes : 0;
+    this.keep = Number.isSafeInteger(keep) && keep > 0 ? keep : DEFAULT_KEEP;
     this.seq = 0;
     this.prev = GENESIS;
     this.opened = false;
@@ -77,7 +97,7 @@ class AuditLog {
     if (this.opened) return this;
     this.seq = 0;
     this.prev = GENESIS;
-    if (this.filePath && this.fs.existsSync(this.filePath)) {
+    if (this.filePath) {
       const records = this.read();
       if (records.length) {
         const last = records[records.length - 1];
@@ -89,13 +109,8 @@ class AuditLog {
     return this;
   }
 
-  /**
-   * Append one event. Returns the stored record (with seq, ts, prev, hash).
-   * Fields are whitelisted so a caller cannot inject arbitrary keys or a
-   * forged prev/hash that would break the chain.
-   */
-  write(entry = {}) {
-    this.open();
+  /** Build a record with the next seq and the current tip hash. Does not write. */
+  _buildRecord(entry = {}) {
     const detail = entry.detail === undefined ? null
       : (typeof entry.detail === 'string' ? entry.detail : JSON.stringify(entry.detail));
     const record = {
@@ -113,21 +128,56 @@ class AuditLog {
       detail: detail === null ? null : detail.slice(0, MAX_DETAIL_CHARS),
     };
     record.hash = hashRecord(record);
-
-    if (this.filePath) {
-      this.fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      // Append synchronously so a crash cannot interleave two records.
-      this.fs.appendFileSync(this.filePath, JSON.stringify(record) + '\n', 'utf8');
-    }
-    this.seq = record.seq;
-    this.prev = record.hash;
     return record;
   }
 
-  /** Read all records (parsed). Malformed lines are returned as {error}. */
-  read() {
-    if (!this.filePath || !this.fs.existsSync(this.filePath)) return [];
-    const text = this.fs.readFileSync(this.filePath, 'utf8');
+  /** Append one record and advance the chain tip. Append-only, never rewrite. */
+  _appendRecord(record) {
+    this.fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+    // Append synchronously so a crash cannot interleave two records.
+    this.fs.appendFileSync(this.filePath, JSON.stringify(record) + '\n', 'utf8');
+    this.seq = record.seq;
+    this.prev = record.hash;
+  }
+
+  write(entry = {}) {
+    this.open();
+    // Rotate the active file once it reaches the size cap, BEFORE the next
+    // record is appended, so a single file never grows past ~maxBytes.
+    if (this.filePath && this.maxBytes && this._activeBytes() >= this.maxBytes) {
+      this._rotate();
+    }
+    const record = this._buildRecord(entry);
+    if (this.filePath) this._appendRecord(record);
+    else { this.seq = record.seq; this.prev = record.hash; }
+    return record;
+  }
+
+  /* Size of the active file only (archives excluded). */
+  _activeBytes() {
+    if (!this.filePath || !this.fs.existsSync(this.filePath)) return 0;
+    return this.fs.statSync(this.filePath).size;
+  }
+
+  /* Count of archived files (<path>.1, <path>.2, …). */
+  _archiveCount() {
+    let i = 0;
+    while (this.fs.existsSync(`${this.filePath}.${i + 1}`)) i++;
+    return i;
+  }
+
+  /* All chain files in chronological order: oldest archive → active. */
+  _allFiles() {
+    const files = [];
+    let i = 1;
+    while (this.fs.existsSync(`${this.filePath}.${i}`)) { files.push(`${this.filePath}.${i}`); i++; }
+    if (this.fs.existsSync(this.filePath)) files.push(this.filePath);
+    return files;
+  }
+
+  /* Parse one file into records (malformed lines become {error}). */
+  _readFile(file) {
+    const text = this.fs.readFileSync(file, 'utf8');
     const out = [];
     for (const line of text.split('\n')) {
       const trimmed = line.trim();
@@ -138,10 +188,77 @@ class AuditLog {
     return out;
   }
 
+  read() {
+    if (!this.filePath) return [];
+    const out = [];
+    for (const file of this._allFiles()) out.push(...this._readFile(file));
+    return out;
+  }
+
+  /**
+   * Rotate on demand. Returns a descriptor; safe to call at any time.
+   *
+   * Rotation is size-gated by default so a caller writing in a loop can just
+   * call it. Pass `force: true` to rotate regardless of size (tests, manual
+   * "archive now" affordance).
+   */
+  rotate({ maxBytes = this.maxBytes, keep = this.keep, force = false } = {}) {
+    if (!this.filePath) return { rotated: false, reason: 'no-file' };
+    if (!this.fs.existsSync(this.filePath)) return { rotated: false, reason: 'missing' };
+    const size = this._activeBytes();
+    if (!force && (!maxBytes || size < maxBytes)) {
+      return { rotated: false, reason: 'under-cap', size, maxBytes };
+    }
+    return { rotated: true, ...this._rotate({ keep }) };
+  }
+
+  /**
+   * Rotate the active file to <path>.<n> and start a fresh active file whose
+   * first record is a `rotate` marker chaining to the previous file's tip hash.
+   * The marker is an ordinary hash-chained record, so verify() walks the
+   * rotation boundary without special-casing it.
+   *
+   * Archive retention: only the newest `keep` archives survive. The OLDEST
+   * archive is `.1` (see _allFiles), so when at capacity the lowest suffix is
+   * deleted and the rest are renumbered down — which keeps "lowest = oldest"
+   * true and leaves _allFiles() chronological. Without this the "bound the
+   * audit log" item would bound a single file while total disk grew forever.
+   */
+  _rotate({ keep = this.keep } = {}) {
+    const bytes = this._activeBytes();
+    // Capture the pre-rotation archive count ONCE. _archiveCount() counts
+    // CONTIGUOUS suffixes from .1, so re-reading it after deleting .1 returns 0
+    // (the .2/.3 files no longer form a contiguous run from .1) and the renumber
+    // loop would never run — scrambling the chain order. The captured value is
+    // what makes "drop oldest, shift the rest down, newest lands at the old top"
+    // land on the correct suffix every time.
+    let count = this._archiveCount();
+    if (count >= keep) {
+      this.fs.rmSync(`${this.filePath}.1`, { force: true });
+      for (let n = 2; n <= count; n++) {
+        const from = `${this.filePath}.${n}`;
+        if (this.fs.existsSync(from)) this.fs.renameSync(from, `${this.filePath}.${n - 1}`);
+      }
+      count -= 1;
+    }
+    // The active file becomes the newest archive (suffix `count + 1`).
+    const archive = `${this.filePath}.${count + 1}`;
+    this.fs.renameSync(this.filePath, archive);
+    this._appendRecord(this._buildRecord({
+      event: 'rotate',
+      reason: `Rotated at ${bytes} bytes; previous chain archived as ${path.basename(archive)}`,
+      detail: { from: path.basename(archive), bytes },
+    }));
+    return { archive, bytes, keep: this.keep };
+  }
+
   /**
    * Verify the whole chain. Returns {ok, count, brokenAt, reason}. ok is true
    * only when every record's hash recomputes and links to its predecessor with
    * no gaps — so truncation, edits and deletions all fail here.
+   *
+   * Because read() walks archives oldest-first, a rotated file is verified as
+   * one continuous chain and rotation needs no special case.
    */
   verify() {
     const records = this.read();
@@ -166,6 +283,33 @@ class AuditLog {
     }
     return { ok: true, count: records.length, brokenAt: null, reason: null };
   }
+
+  /** Verify only the active file; used to prove an archive boundary is legal. */
+  verifyActive() {
+    if (!this.filePath || !this.fs.existsSync(this.filePath)) return { ok: true, count: 0, brokenAt: null, reason: null };
+    const records = this._readFile(this.filePath);
+    let expectedPrev = this.prev;
+    let expectedSeq = 1;
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      if (rec.error) return { ok: false, count: records.length, brokenAt: i, reason: `Line ${i + 1} is not valid JSON: ${rec.error}` };
+      if (rec.prev !== expectedPrev) {
+        return { ok: false, count: records.length, brokenAt: i, reason: `Chain break at line ${i + 1}.` };
+      }
+      expectedPrev = rec.hash;
+      expectedSeq++;
+    }
+    return { ok: true, count: records.length, brokenAt: null, reason: null };
+  }
 }
 
-module.exports = { AuditLog, hashRecord, canonical, sha256, VERSION, GENESIS };
+module.exports = {
+  AuditLog,
+  hashRecord,
+  canonical,
+  sha256,
+  VERSION,
+  GENESIS,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_KEEP,
+};

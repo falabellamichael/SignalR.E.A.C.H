@@ -1,3 +1,118 @@
+# Deployed team tabs design QA — September 19, 2026
+
+final result: passed
+
+## Target and scope
+
+User direction: Orbit Deck (#3) architecture and activity rings, Relay Rail (#1)
+compactness, useful step metadata, and neutral professional borders.
+
+Source visual truth:
+`/Users/macbooka12/.codex/generated_images/01a0bc39-3425-7652-8918-89bd881f542c/exec-5da1402e-dbd2-4267-9e8a-f58a9805f759.png`
+
+This is an integration into the existing Electron app, not a replacement of its
+navigation, 960px chat column, typography system, composer, or backend. The shared
+review group remains outside the selected member panel so pending team edits
+remain accessible on every tab. This is an intentional safety/usability adaptation
+of the mock. Model names, steps, elapsed times and statuses come from actual events;
+illustrative counts and invented roles in the concept are not production data.
+
+## Evidence and normalization
+
+Final native-renderer evidence directory:
+`/var/folders/m3/c4cpqbvj4b52ms8181btf7v80000gn/T/reach-team-deck-ui-mwKzGe/`
+
+- `desktop-dark.png`: five members, Seeker selected, two working, one awaiting
+  review, one completed, one queued; activity expanded, three pending files.
+- `desktop-review.png`: same selection, README diff expanded, activity collapsed.
+- `desktop-dark-deck.png`, `desktop-review-deck.png`: focused native captures.
+- `narrow-light.png`, `narrow-dark.png`: minimum window with six members.
+- `finished.png`: final outcomes remain inspectable after the active run ends.
+
+Source raster: 1487×1058. Desktop CSS viewport: 1440×1024, native screenshot
+2880×2048 at macOS compositor density 2. Minimum CSS viewport: 1000×640,
+native screenshot 2000×1280. Compare the implementation at half its raster
+dimensions and align corresponding chat regions rather than the concept's
+invented outer navigation. The native capture rectangle is in CSS coordinates.
+The source and rendered captures were opened together in the same comparison
+input, including a full-window pair and a focused deck comparison. This was a
+paired-image review, not a claim of pixel-identical full-window composition.
+
+In-app Browser tooling was unavailable after discovery. These are native
+Electron/Chromium captures from the real app renderer and isolated preload/IPC,
+using the repository's existing native integration-test approach, not a web mock.
+
+## Findings and comparison history
+
+- [P2, resolved] Initial 180px activity viewport crowded out review controls.
+  Evidence: `reach-team-deck-ui-qlZiqO/desktop-dark.png` in the same temporary
+  parent. Reduced it to 96px, preserving every step/result in its scrollable
+  disclosure. Post-fix: `reach-team-deck-ui-W8gd6g/desktop-review.png` and final
+  focused deck capture.
+- [P2, resolved] Review summary and toolbar retained gold-heavy outlines and
+  excess padding. Scoped neutral structural borders and tighter spacing to team
+  reviews; removed a redundant eyebrow. Post-fix captures show neutral selected,
+  waiting and completed panels, with semantic color only on small indicators
+  and diff text.
+- No remaining actionable P0/P1/P2 visual findings. Scrolling long histories and
+  expanded reviews is intentional; the composer stays visible at both sizes.
+  The existing app shell takes more vertical space than the concept's invented
+  shell, so the entire expanded batch is not expected above the fold.
+
+## Required fidelity surfaces
+
+- Fonts/typography: existing system sans for team tabs, 12px member names,
+  10px model metadata, 10.5px action labels and 14px selected-member heading.
+  This intentionally scales the mock down for #1's compactness. Long labels
+  truncate in the rail with full accessible names/tooltips; panel metadata wraps.
+- Spacing/layout: 230×82px hanging tabs (214px wide at smaller windows), lower
+  corner rounding, one full-width selected panel. Horizontal overflow has
+  arrows, wheel/trackpad scrolling, and roving keyboard focus. Tabs remain
+  attached to a neutral top rule; status does not move or resize the layout.
+- Colors/tokens: graphite outlines and neutral selected surface. Small sage,
+  amber and error icons carry semantic state; words and icon shapes ensure
+  status does not depend on color alone. Light theme retains the app palette.
+- Assets: locally packaged, unmodified Phosphor 2.1.1 regular SVG icons with MIT
+  license. Rings are actual library icons; initials are editable name metadata.
+  No decorative raster asset is required in this control-only design. No fake
+  waveform or percentage is substituted for real progress.
+- Copy/content: model, action, step, round, elapsed time, transcript, tools,
+  expanded results, review decisions and controls remain available. Background
+  questions show “Answer needed” without stealing focus or discarding a draft.
+  Source mock's illustrative Share/menu/role labels are intentionally omitted.
+
+## Verification
+
+- `npm run test:teams-ui`: passed. Single visible panel, actual event-derived
+  statuses/steps, click/keyboard tabs, scroll arrows/wheel, background questions,
+  draft preservation, pause/resume, detached conversation restoration, spawned
+  workers, literal untrusted metadata, both themes, minimum window, reduced
+  motion, bulk review, and terminal outcomes. Zero renderer console errors.
+- `npm run smoke`: passed, including real local fixture teams, individual/team
+  Stop/Resume, spawned workers, links mode, native tools, reviews and saved answers.
+- `npm run check` and `git diff --check`: passed.
+- Full `npm test`: 414 passed, 5 failed in existing audit-log/rotation tests.
+  Those backend files were already modified outside this task and were not
+  changed for the redesign. This is a repository-wide test limitation, not a
+  passing full-suite claim.
+
+## Implementation checklist
+
+- [x] Neutral medium tabs and full-width member panel.
+- [x] Real status rings, step metadata and reduced-motion behavior.
+- [x] Shared batch approvals and individual controls retained.
+- [x] Native functional verification and post-fix visual comparison.
+- [x] Earlier workspace QA preserved below.
+- [ ] Rebuild/reinstall the user's installed app separately; it was not replaced.
+
+## Follow-up polish
+
+P3 only: the compact tab action can expose a raw tool name such as
+`agent.await`; a future shared tool-label dictionary could make these friendlier.
+This does not obscure status or results.
+
+---
+
 # Agents workspace design QA
 
 final result: passed

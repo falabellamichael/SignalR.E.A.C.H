@@ -183,9 +183,25 @@ function hasUnresolvableMember(resolutions) {
   return Array.isArray(resolutions) && resolutions.some(r => !r || !r.endpoint);
 }
 
+/**
+ * Compare resolved member models with successful `GET /models` catalogs.
+ * Missing catalogs are deliberately ignored: some otherwise-compatible
+ * providers do not implement model listing, so only positive evidence of a
+ * mismatch may block a run.
+ */
+function unsupportedTeamModels(resolutions, catalogsByEndpoint) {
+  if (!Array.isArray(resolutions) || !(catalogsByEndpoint instanceof Map)) return [];
+  return resolutions.filter(r => {
+    if (!r || !r.endpoint || !r.model) return false;
+    const advertised = catalogsByEndpoint.get(r.endpoint);
+    return advertised instanceof Set && advertised.size > 0 && !advertised.has(r.model);
+  });
+}
+
 module.exports = {
   REASON,
   resolveTeamConnections,
   summarizeResolutions,
   hasUnresolvableMember,
+  unsupportedTeamModels,
 };

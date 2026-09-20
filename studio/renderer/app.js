@@ -59,6 +59,8 @@ const agentMetaEl = $('#agent-meta');
 const chatLog = $('#chat-log');
 const chatScroll = $('#chat-scroll');
 const composerInput = $('#composer-input');
+const composerAttachmentsEl = $('#composer-attachments');
+let composerAttachments = [];
 const todosPanel = $('#agent-todos');
 const todoList = $('#agent-todo-list');
 const queuedIndicator = $('#queued-indicator');
@@ -348,6 +350,8 @@ async function selectAgent(a) {
     dir: selected.dir,
   })) return;
   currentAgent = selected;
+  composerAttachments = [];
+  renderComposerAttachments();
   window.ReachActivity.select(currentAgent);
   agentNameEl.textContent = agentNameEl.title = currentAgent.name;
   const lineage = currentAgent.parentChatId ? ' · ⑂ branch' : '';
@@ -465,6 +469,33 @@ function appendChatMessage(role, text, msgIndex = null) {
   return div;
 }
 
+function appendToolCallMessage(tool, args) {
+  const div = document.createElement('div');
+  div.className = 'chat-msg system tool-call-message';
+  const content = document.createElement('span');
+  content.className = 'tool-call-text';
+  content.textContent = `→ ${tool}(${JSON.stringify(args)})`;
+  div.appendChild(content);
+  const ts = document.createElement('span');
+  ts.className = 'msg-ts';
+  ts.textContent = timeStamp();
+  div.appendChild(ts);
+  chatLog.appendChild(div);
+
+  const lineHeight = Number.parseFloat(getComputedStyle(content).lineHeight) || 18;
+  if (content.scrollHeight > lineHeight * 3 + 1) {
+    const details = document.createElement('details');
+    details.className = 'tool-call-dropdown';
+    const summary = document.createElement('summary');
+    summary.title = 'Show or hide the complete tool call';
+    summary.appendChild(content);
+    details.appendChild(summary);
+    div.insertBefore(details, ts);
+  }
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+  return div;
+}
+
 function appendQuestion(question) {
   if (!question) return;
   const card = document.createElement('div');
@@ -498,17 +529,246 @@ function appendToolCard(tool, ok, pending, error, result) {
   chatScroll.scrollTop = chatScroll.scrollHeight;
 }
 
-function appendEditCard(edit) {
-  const card = document.createElement('div');
-  card.className = 'edit-card';
+const activeEditReviewGroups = new Map();
+
+function appendReviewMeta(parent, label, value) {
+  const item = document.createElement('span');
+  item.className = 'edit-review-meta-item';
+  const key = document.createElement('span');
+  key.className = 'edit-review-meta-key';
+  key.textContent = label;
+  const text = document.createElement('span');
+  text.textContent = value;
+  item.append(key, text);
+  parent.appendChild(item);
+  return text;
+}
+
+function updateEditReviewGroup(group) {
+  const cards = [...group.cards.values()];
+  const pending = cards.filter(card => card.state === 'pending' || card.state === 'resolving').length;
+  const accepted = cards.filter(card => card.state === 'accepted').length;
+  const rejected = cards.filter(card => card.state === 'rejected').length;
+  const added = cards.reduce((total, card) => total + Number(card.edit.stats?.added || 0), 0);
+  const removed = cards.reduce((total, card) => total + Number(card.edit.stats?.removed || 0), 0);
+  const contributors = new Set(cards.map(card => card.edit.memberName).filter(Boolean));
+
+  group.count.textContent = `${cards.length} ${cards.length === 1 ? 'file' : 'files'}`;
+  group.added.textContent = `+${added}`;
+  group.removed.textContent = `−${removed}`;
+  group.pending.textContent = pending ? `${pending} awaiting review` : `${accepted} accepted${rejected ? ` · ${rejected} rejected` : ''}`;
+  const batchState = pending ? 'pending' : rejected && accepted ? 'mixed' : rejected ? 'rejected' : 'accepted';
+  group.pending.className = `edit-review-state ${batchState}`;
+  group.guidance.textContent = pending
+    ? 'The run continues automatically after every pending file has a decision.'
+    : 'All decisions submitted. The AI run is continuing automatically.';
+  group.acceptAll.disabled = group.bulkBusy || !pending;
+  group.rejectAll.disabled = group.bulkBusy || !pending;
+  group.acceptAll.textContent = group.bulkBusy === 'accept' ? 'Accepting…' : 'Accept all';
+  group.rejectAll.textContent = group.bulkBusy === 'reject' ? 'Rejecting…' : 'Reject all';
+  group.contributorMeta.textContent = contributors.size
+    ? `${contributors.size} ${contributors.size === 1 ? 'contributor' : 'contributors'}`
+    : group.actor;
+  for (const card of cards) {
+    if (card.state !== 'pending') continue;
+    card.acceptBtn.disabled = !!group.bulkBusy;
+    card.rejectBtn.disabled = !!group.bulkBusy;
+  }
+
+  if (!pending) {
+    group.element.classList.add('settled');
+    if (activeEditReviewGroups.get(group.key) === group) activeEditReviewGroups.delete(group.key);
+  }
+}
+
+async function resolveReviewCard(group, reviewCard, accepted, { refresh = true } = {}) {
+  if (reviewCard.state !== 'pending') return { ok: false, skipped: true };
+  reviewCard.state = 'resolving';
+  reviewCard.element.classList.add('resolving');
+  reviewCard.acceptBtn.disabled = true;
+  reviewCard.rejectBtn.disabled = true;
+  reviewCard.status.textContent = accepted ? 'Accepting…' : 'Rejecting…';
+  reviewCard.status.className = 'edit-review-file-state pending';
+  updateEditReviewGroup(group);
+
+  let res;
+  try {
+    res = await group.resolve(reviewCard.edit.editId, accepted);
+  } catch (error) {
+    res = { ok: false, err: error.message };
+  }
+
+  reviewCard.element.classList.remove('resolving');
+  if (!res?.ok) {
+    reviewCard.state = 'pending';
+    reviewCard.acceptBtn.disabled = false;
+    reviewCard.rejectBtn.disabled = false;
+    reviewCard.status.textContent = 'Needs review';
+    reviewCard.status.className = 'edit-review-file-state pending';
+    reviewCard.verdict.hidden = false;
+    reviewCard.verdict.className = 'edit-verdict error';
+    reviewCard.verdict.textContent = `Could not ${accepted ? 'accept' : 'reject'}: ${res?.err || 'Unknown error'}`;
+    updateEditReviewGroup(group);
+    return res || { ok: false };
+  }
+
+  const didAccept = !!res.accepted;
+  reviewCard.state = didAccept ? 'accepted' : 'rejected';
+  reviewCard.actions.remove();
+  reviewCard.status.textContent = didAccept ? 'Accepted' : 'Rejected';
+  reviewCard.status.className = `edit-review-file-state ${reviewCard.state}`;
+  reviewCard.verdict.hidden = false;
+  reviewCard.verdict.className = `edit-verdict ${reviewCard.state}`;
+  reviewCard.verdict.textContent = didAccept ? 'Accepted — written to disk.' : 'Rejected — no files changed.';
+  reviewCard.element.classList.add(reviewCard.state);
+  updateEditReviewGroup(group);
+  if (didAccept && refresh) await refreshFileTree();
+  return res;
+}
+
+async function resolveAllReviewCards(group, accepted) {
+  if (group.bulkBusy) return;
+  const pending = [...group.cards.values()].filter(card => card.state === 'pending');
+  if (!pending.length) return;
+  group.bulkBusy = accepted ? 'accept' : 'reject';
+  updateEditReviewGroup(group);
+  let wroteFile = false;
+  for (const card of pending) {
+    const res = await resolveReviewCard(group, card, accepted, { refresh: false });
+    if (res?.ok && res.accepted) wroteFile = true;
+  }
+  group.bulkBusy = null;
+  updateEditReviewGroup(group);
+  if (wroteFile) await refreshFileTree();
+}
+
+function createEditReviewGroup({ key, host, title, actor, resolve }) {
+  const element = document.createElement('details');
+  element.className = 'edit-review-group';
+  element.open = true;
+  element.dataset.reviewKey = key;
+
+  const summary = document.createElement('summary');
+  summary.className = 'edit-review-summary';
+  const chevron = document.createElement('span');
+  chevron.className = 'edit-review-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = '›';
+  const heading = document.createElement('span');
+  heading.className = 'edit-review-heading';
+  const eyebrow = document.createElement('span');
+  eyebrow.className = 'edit-review-eyebrow';
+  eyebrow.textContent = 'AI work · review required';
+  const name = document.createElement('strong');
+  name.textContent = title;
+  heading.append(eyebrow, name);
+  const summaryMeta = document.createElement('span');
+  summaryMeta.className = 'edit-review-summary-meta';
+  const count = document.createElement('span');
+  count.className = 'edit-review-count';
+  const added = document.createElement('span');
+  added.className = 'diff-stat add';
+  const removed = document.createElement('span');
+  removed.className = 'diff-stat del';
+  const pendingState = document.createElement('span');
+  summaryMeta.append(count, added, removed, pendingState);
+  summary.append(chevron, heading, summaryMeta);
+  element.appendChild(summary);
+
+  const content = document.createElement('div');
+  content.className = 'edit-review-content';
+  const toolbar = document.createElement('div');
+  toolbar.className = 'edit-review-toolbar';
+  const metadata = document.createElement('div');
+  metadata.className = 'edit-review-metadata';
+  appendReviewMeta(metadata, 'Source', actor);
+  appendReviewMeta(metadata, 'Scope', 'Current review batch');
+  const contributorMeta = appendReviewMeta(metadata, 'By', '');
+  const bulkActions = document.createElement('div');
+  bulkActions.className = 'edit-review-bulk-actions';
+  const rejectAll = document.createElement('button');
+  rejectAll.className = 'ghost small';
+  rejectAll.textContent = 'Reject all';
+  rejectAll.setAttribute('aria-label', `Reject every file in ${title}`);
+  const acceptAll = document.createElement('button');
+  acceptAll.className = 'gold small';
+  acceptAll.textContent = 'Accept all';
+  acceptAll.setAttribute('aria-label', `Accept every file in ${title}`);
+  bulkActions.append(rejectAll, acceptAll);
+  toolbar.append(metadata, bulkActions);
+  const files = document.createElement('div');
+  files.className = 'edit-review-files';
+  const guidance = document.createElement('div');
+  guidance.className = 'edit-review-guidance';
+  guidance.setAttribute('aria-live', 'polite');
+  content.append(toolbar, guidance, files);
+  element.appendChild(content);
+  host.appendChild(element);
+
+  const group = {
+    key, element, files, cards: new Map(), resolve, actor, count, added, removed,
+    pending: pendingState, contributorMeta, guidance, acceptAll, rejectAll, bulkBusy: null,
+  };
+  acceptAll.onclick = () => resolveAllReviewCards(group, true);
+  rejectAll.onclick = () => resolveAllReviewCards(group, false);
+  activeEditReviewGroups.set(key, group);
+  return group;
+}
+
+function ensureEditReviewGroup(options) {
+  const active = activeEditReviewGroups.get(options.key);
+  if ((active?.element.isConnected || active?.element.parentElement === options.host) && !active.element.classList.contains('settled')) return active;
+  return createEditReviewGroup(options);
+}
+
+function appendEditCardToGroup(group, edit) {
+  if (!edit?.editId || group.cards.has(edit.editId)) return group.cards.get(edit.editId)?.element || null;
+  const card = document.createElement('details');
+  card.className = 'edit-card edit-review-file';
   card.dataset.editId = edit.editId;
-  const head = document.createElement('div');
-  head.className = 'edit-head';
-  head.innerHTML = `<strong>${edit.isNew ? 'New file' : 'Edit'}</strong> ${escapeHtml(edit.path)} <span class="diff-stat add">+${edit.stats.added}</span> <span class="diff-stat del">−${edit.stats.removed}</span>`;
-  card.appendChild(head);
+
+  const summary = document.createElement('summary');
+  summary.className = 'edit-head';
+  const chevron = document.createElement('span');
+  chevron.className = 'edit-review-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = '›';
+  const operation = document.createElement('strong');
+  operation.textContent = edit.isNew ? 'New file' : 'Edit';
+  const filePath = document.createElement('span');
+  filePath.className = 'edit-review-path';
+  filePath.textContent = edit.path;
+  filePath.title = edit.path;
+  const add = document.createElement('span');
+  add.className = 'diff-stat add';
+  add.textContent = `+${Number(edit.stats?.added || 0)}`;
+  const del = document.createElement('span');
+  del.className = 'diff-stat del';
+  del.textContent = `−${Number(edit.stats?.removed || 0)}`;
+  const status = document.createElement('span');
+  status.className = 'edit-review-file-state pending';
+  status.textContent = 'Needs review';
+  summary.append(chevron, operation, filePath, add, del);
+  if (edit.memberName) {
+    const member = document.createElement('span');
+    member.className = 'chip dim';
+    member.textContent = edit.memberName;
+    summary.appendChild(member);
+  }
+  summary.appendChild(status);
+  card.appendChild(summary);
+
+  const detailMeta = document.createElement('div');
+  detailMeta.className = 'edit-review-file-meta';
+  appendReviewMeta(detailMeta, 'Operation', edit.isNew ? 'Create file' : 'Modify file');
+  appendReviewMeta(detailMeta, 'AI', edit.memberName || group.actor);
+  appendReviewMeta(detailMeta, 'Changes', `${Number(edit.stats?.added || 0)} added · ${Number(edit.stats?.removed || 0)} removed`);
+  appendReviewMeta(detailMeta, 'Review ID', String(edit.editId).slice(-10));
+  card.appendChild(detailMeta);
+
   const body = document.createElement('div');
   body.className = 'diff-body';
-  for (const h of edit.hunks) {
+  for (const h of edit.hunks || []) {
     const line = document.createElement('div');
     if (h.type === 'gap') {
       line.className = 'diff-line gap';
@@ -520,40 +780,49 @@ function appendEditCard(edit) {
     body.appendChild(line);
   }
   card.appendChild(body);
+
   const actions = document.createElement('div');
   actions.className = 'edit-actions';
-  const acceptBtn = document.createElement('button');
-  acceptBtn.className = 'gold small';
-  acceptBtn.textContent = 'Accept';
   const rejectBtn = document.createElement('button');
   rejectBtn.className = 'ghost small';
   rejectBtn.textContent = 'Reject';
-  actions.appendChild(acceptBtn);
-  actions.appendChild(rejectBtn);
+  const acceptBtn = document.createElement('button');
+  acceptBtn.className = 'gold small';
+  acceptBtn.textContent = 'Accept';
+  actions.append(rejectBtn, acceptBtn);
   card.appendChild(actions);
-  acceptBtn.onclick = () => resolveEditCard(card, edit.editId, true);
-  rejectBtn.onclick = () => resolveEditCard(card, edit.editId, false);
-  chatLog.appendChild(card);
-  chatScroll.scrollTop = chatScroll.scrollHeight;
+  const verdict = document.createElement('div');
+  verdict.className = 'edit-verdict';
+  verdict.hidden = true;
+  card.appendChild(verdict);
+
+  const reviewCard = { element: card, edit, actions, acceptBtn, rejectBtn, verdict, status, state: 'pending' };
+  acceptBtn.onclick = () => resolveReviewCard(group, reviewCard, true);
+  rejectBtn.onclick = () => resolveReviewCard(group, reviewCard, false);
+  group.cards.set(edit.editId, reviewCard);
+  group.files.appendChild(card);
+  updateEditReviewGroup(group);
+  return card;
 }
 
-async function resolveEditCard(card, editId, accepted) {
-  if (!currentAgent) return;
-  const res = await reachApi.agents.resolveEdit(currentAgent.id, editId, accepted);
-  const actions = card.querySelector('.edit-actions');
-  if (actions) actions.remove();
-  const verdict = document.createElement('div');
-  verdict.className = 'edit-verdict ' + (res.ok && res.accepted ? 'accepted' : 'rejected');
-  verdict.textContent = res.ok ? (res.accepted ? 'Accepted — written to disk.' : 'Rejected.') : ('Error: ' + res.err);
-  card.appendChild(verdict);
-  card.classList.add(res.ok && res.accepted ? 'accepted' : 'rejected');
-  if (res.ok && res.accepted) {
-    // Refresh the tree + any open editor showing that file.
-    await refreshFileTree();
-  }
+function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
+  if (!agent) return null;
+  const group = ensureEditReviewGroup({
+    key: `agent:${agent.id}`,
+    host,
+    title: 'Proposed changes',
+    actor: agent.name || 'AI agent',
+    resolve: (editId, accepted) => reachApi.agents.resolveEdit(agent.id, editId, accepted),
+  });
+  const card = appendEditCardToGroup(group, edit);
+  chatScroll.scrollTop = chatScroll.scrollHeight;
+  return card;
 }
 
 function renderChatHistory() {
+  for (const deck of chatLog.querySelectorAll('.team-deck')) {
+    if (deck !== activeTeamRun?.wrap) deck._teamDeck?.dispose();
+  }
   chatLog.innerHTML = '';
   if (!currentAgent || !currentAgent.messages) return;
   currentAgent.messages.forEach((m, idx) => {
@@ -576,7 +845,7 @@ function renderChatHistory() {
     chatLog.insertBefore(note, chatLog.firstChild);
   }
   if (activeTeamRun?.agentId === currentAgent.id) {
-    chatLog.append(activeTeamRun.banner, activeTeamRun.wrap);
+    chatLog.prepend(activeTeamRun.wrap);
   }
 }
 
@@ -605,6 +874,44 @@ function renderTodos() {
 function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
+
+function attachmentSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.ceil(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderComposerAttachments() {
+  composerAttachmentsEl.replaceChildren();
+  composerAttachmentsEl.classList.toggle('hidden', !composerAttachments.length);
+  for (const attachment of composerAttachments) {
+    const chip = document.createElement('span');
+    chip.className = 'composer-attachment';
+    chip.title = `${attachment.name} · ${attachmentSize(attachment.size)}`;
+    const label = document.createElement('span');
+    label.textContent = attachment.name;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.setAttribute('aria-label', `Remove ${attachment.name}`);
+    remove.title = `Remove ${attachment.name}`;
+    remove.textContent = '×';
+    remove.onclick = () => {
+      composerAttachments = composerAttachments.filter(item => item.attachmentId !== attachment.attachmentId);
+      renderComposerAttachments();
+    };
+    chip.append(label, remove);
+    composerAttachmentsEl.appendChild(chip);
+  }
+}
+
+$('#btn-attach').onclick = async () => {
+  if (!currentAgent || agentRunning || runningAgentIds.size || activeTeamRun && !activeTeamRun.paused) return;
+  const result = await reachApi.agents.pickAttachments(currentAgent.id);
+  if (!result.ok) { showNotice(result.err); return; }
+  composerAttachments.push(...result.attachments);
+  renderComposerAttachments();
+  composerInput.focus();
+};
 
 // ---------- chat CRUD ----------
 $('#btn-new-chat').onclick = async () => {
@@ -638,13 +945,17 @@ async function sendComposer() {
     return stopAllRuns();
   }
   const text = composerInput.value.trim();
-  if (!text || !currentAgent) return;
+  if ((!text && !composerAttachments.length) || !currentAgent) return;
+  const attachments = composerAttachments;
+  const display = [text, attachments.length ? `Attachments: ${attachments.map(file => file.name).join(', ')}` : ''].filter(Boolean).join('\n\n');
   composerInput.value = '';
   composerInput.dispatchEvent(new Event('input'));
-  appendChatMessage('user', text);
+  composerAttachments = [];
+  renderComposerAttachments();
+  appendChatMessage('user', display);
   agentRunning = true;
   updateStatusPill('running');
-  const res = await reachApi.agents.send(currentAgent.id, text);
+  const res = await reachApi.agents.send(currentAgent.id, text, attachments.map(file => file.attachmentId));
   if (!res.ok) { agentRunning = false; updateStatusPill('paused', res.err); appendChatMessage('system', `Error: ${res.err}`); }
   loadAgentTree(); // auto-title + message count may have changed
 }
@@ -660,6 +971,7 @@ function updateSendControl() {
   button.title = busy ? 'Stop all active agents and the team' : 'Send message';
   button.classList.toggle('danger', busy);
   button.disabled = stoppingAll;
+  $('#btn-attach').disabled = busy || !currentAgent || stoppingAll;
   window.ReachWorkspace?.syncControls();
 }
 
@@ -752,7 +1064,7 @@ function handleAgentEvent(ev) {
       queuedIndicator.classList.remove('hidden');
       break;
     case 'tool-call':
-      appendChatMessage('system', `→ ${ev.tool}(${JSON.stringify(ev.arguments)})`);
+      appendToolCallMessage(ev.tool, ev.arguments);
       break;
     case 'tool-result':
       appendToolCard(ev.tool, ev.ok, ev.pending, ev.error, ev.result);
@@ -2167,21 +2479,19 @@ $('#btn-team-run-go').onclick = async () => {
   }
 };
 
-/* Team run view: a banner + one live card per member, rendered into the
- * chat log of the current conversation (or the no-agent area if none). */
+/* Deployed team tabs hang from the top of the chat. Member DOM stays alive
+ * behind each tab, preserving tool results and unanswered questions. */
 function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   if (activeTeamRun) {
     activeTeamRun.stop.remove();
-    for (const button of activeTeamRun.wrap.querySelectorAll('.member-control')) button.disabled = true;
+    activeTeamRun.deck.finish('stopped');
   }
   const run = { teamRunId, team, agentId, cards: new Map(), subCards: new Map(), buffer: new Map() };
   activeTeamRun = run;
   const host = currentAgent ? chatLog : noAgent;
   if (!currentAgent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
-  const banner = document.createElement('div');
-  banner.className = 'chat-msg system';
-  banner.textContent = `⚡ Team run: ${team.name} (${team.mode}) — ${task.slice(0, 120)}`;
-  run.banner = banner;
+  run.deck = window.ReachTeamDeck.create({ team, task });
+  run.banner = run.deck.banner;
   const stop = document.createElement('button');
   stop.id = 'btn-stop-team';
   stop.className = 'danger small';
@@ -2197,63 +2507,53 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   };
   document.querySelector('header .statusbar').prepend(stop);
   run.stop = stop;
-  host.appendChild(banner);
-  const wrap = document.createElement('div');
-  wrap.className = 'team-run';
+  const wrap = run.deck.element;
+  wrap._teamDeck = run.deck;
   wrap.dataset.teamRunId = teamRunId;
-  host.appendChild(wrap);
+  host.prepend(wrap);
   activeTeamRun.wrap = wrap;
   updateSendControl();
-  host.scrollTop = host.scrollHeight;
+  (currentAgent ? chatScroll : host).scrollTop = 0;
 }
 
 function teamCard(index, name, model) {
   if (!activeTeamRun) return null;
   let card = activeTeamRun.cards.get(index);
-  if (card) return card;
+  if (card) { activeTeamRun.deck.identify(card, name, model); return card; }
   card = document.createElement('div');
   card.className = 'member-card';
-  card.innerHTML = `<div class="member-head"><span class="member-dot"></span><strong>${escapeHtml(name)}</strong><span class="dim">${escapeHtml(model || '')}</span><span class="member-state dim">starting…</span></div>`
+  card.innerHTML = `<div class="member-head"><div class="member-identity"><strong class="member-name"></strong><span class="member-model"></span></div><span class="member-state dim">starting…</span><span class="member-meta"></span></div>`
     + `<div class="member-body"></div>`;
-  activeTeamRun.wrap.appendChild(card);
   activeTeamRun.cards.set(index, card);
   addMemberControl(card, activeTeamRun, { index });
+  activeTeamRun.deck.add(card, { name, model });
   return card;
 }
 
-/* Card for a SPAWNED worker (agent.spawn) — the Grok-Bot-style subagent.
- * Keyed by net agentId, visually nested under the crew with a ⑂ badge. */
+/* Spawned workers join the same rail and retain their own independent panel. */
 function subCard(agentId, name, model, depth) {
   if (!activeTeamRun) return null;
   const run = activeTeamRun;
   if (!run.subCards) run.subCards = new Map();
   let card = run.subCards.get(agentId);
-  if (card) return card;
+  if (card) { run.deck.identify(card, name, model); return card; }
   card = document.createElement('div');
   card.className = 'member-card subagent depth-' + Math.min(Number(depth) || 1, 2);
-  card.innerHTML = `<div class="member-head"><span class="member-dot"></span><span class="sub-badge">⑂</span><strong>${escapeHtml(name)}</strong><span class="dim">${escapeHtml(model || '')}</span><span class="member-state dim">spawned…</span></div>`
+  card.innerHTML = `<div class="member-head"><div class="member-identity"><strong class="member-name"></strong><span class="member-model"></span></div><span class="member-state dim">spawned…</span><span class="member-meta"></span></div>`
     + `<div class="member-body"></div>`;
-  run.wrap.appendChild(card);
   run.subCards.set(agentId, card);
   addMemberControl(card, run, { agentId });
+  run.deck.add(card, { name, model, worker: true });
   return card;
 }
 
-/* Response-finish flash: the ONLY "finished" indicator on member cards — a
- * one-shot border highlight that starts from nothing and returns to nothing
- * (the card's own border never changes width, disappears, or lingers as a
- * colored edge afterwards). Retrigger-safe: the class is dropped, layout is
- * flushed, then re-added, so restarting the same member flashes again. */
+/* Keep a short-lived completion marker; the tab's status icon now conveys
+ * completion. No colored panel outline or layout-flushing border animation. */
 function flashMemberCard(card) {
   if (!card) return;
-  card.classList.remove('just-finished');
-  void card.offsetWidth;
+  clearTimeout(card._finishTimer);
   card.classList.add('just-finished');
-  card.addEventListener('animationend', function onEnd(e) {
-    if (e.animationName !== 'member-finish-flash') return;
-    card.classList.remove('just-finished');
-    card.removeEventListener('animationend', onEnd);
-  });
+  card._finishTimer = setTimeout(() => card.classList.remove('just-finished'), 1100);
 }
 
 function addMemberControl(card, run, { index = null, agentId = null }) {
@@ -2318,7 +2618,7 @@ function attachAskBox(card, questionId, name, question) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(input.value.trim()); }
   });
-  input.focus();
+  if (!card.hidden) input.focus();
   return ask;
 }
 
@@ -2440,7 +2740,7 @@ function handleTeamEvent(ev) {
         clearTimeout(card._renderTimer);
         card.classList.remove('waiting');
         card.classList.add(ev.ok ? 'done' : 'failed');
-        // Finished (successful) response: flash the border once — no bar.
+        // Completion remains visible on the tab even while another is open.
         if (ev.ok) flashMemberCard(card);
         card.querySelector('.member-state').textContent = ev.completionReason
           ? ev.completionReason
@@ -2591,6 +2891,8 @@ function handleTeamEvent(ev) {
         reachApi.agents.appendNote(run.agentId, summary).catch(error => { note.textContent += ' Could not save: ' + error.message; });
       }
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
+      for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
+      run.deck.finish(ev.stopped ? 'stopped' : 'completed');
       run.stop.remove();
       activeTeamRun = null;
       updateSendControl();
@@ -2602,6 +2904,8 @@ function handleTeamEvent(ev) {
       note.textContent = 'Team error: ' + ev.message;
       run.wrap.appendChild(note);
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
+      for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
+      run.deck.finish('error');
       run.stop.remove();
       activeTeamRun = null;
       updateSendControl();
@@ -2611,46 +2915,19 @@ function handleTeamEvent(ev) {
 }
 reachApi.teams.onEvent(handleTeamEvent);
 
-// Team member edit review cards (members run on ephemeral stores).
+// Team member edit reviews use the same grouped, nested dropdown as the main
+// agent. The run id keeps simultaneous/later crews in distinct review batches.
 reachApi.teams.onEditPending(({ teamRunId, edit }) => {
-  const card = document.createElement('div');
-  card.className = 'edit-card';
-  const head = document.createElement('div');
-  head.className = 'edit-head';
-  head.innerHTML = `<strong>${edit.isNew ? 'New file' : 'Edit'}</strong> ${escapeHtml(edit.path)} <span class="diff-stat add">+${edit.stats.added}</span> <span class="diff-stat del">−${edit.stats.removed}</span>`
-    + (edit.memberName ? ` <span class="chip dim">${escapeHtml(edit.memberName)}</span>` : '');
-  card.appendChild(head);
-  const body = document.createElement('div');
-  body.className = 'diff-body';
-  for (const h of edit.hunks) {
-    const line = document.createElement('div');
-    if (h.type === 'gap') { line.className = 'diff-line gap'; line.textContent = `··· ${h.text} unchanged lines ···`; }
-    else { line.className = 'diff-line ' + h.type; line.textContent = (h.type === 'add' ? '+ ' : h.type === 'del' ? '− ' : '  ') + h.text; }
-    body.appendChild(line);
-  }
-  card.appendChild(body);
-  const actions = document.createElement('div');
-  actions.className = 'edit-actions';
-  const acceptBtn = document.createElement('button');
-  acceptBtn.className = 'gold small'; acceptBtn.textContent = 'Accept';
-  const rejectBtn = document.createElement('button');
-  rejectBtn.className = 'ghost small'; rejectBtn.textContent = 'Reject';
-  actions.appendChild(acceptBtn); actions.appendChild(rejectBtn);
-  card.appendChild(actions);
-  const resolve = async (accepted) => {
-    const res = await reachApi.teams.resolveEdit(edit.editId, accepted);
-    actions.remove();
-    const verdict = document.createElement('div');
-    verdict.className = 'edit-verdict ' + (res.ok && res.accepted ? 'accepted' : 'rejected');
-    verdict.textContent = res.ok ? (res.accepted ? 'Accepted — written to disk.' : 'Rejected.') : ('Error: ' + res.err);
-    card.appendChild(verdict);
-    card.classList.add(res.ok && res.accepted ? 'accepted' : 'rejected');
-    if (res.ok && res.accepted) refreshFileTree();
-  };
-  acceptBtn.onclick = () => resolve(true);
-  rejectBtn.onclick = () => resolve(false);
-  const host = (activeTeamRun && activeTeamRun.wrap) ? activeTeamRun.wrap : chatLog;
-  host.appendChild(card);
+  const host = activeTeamRun?.teamRunId === teamRunId ? activeTeamRun.deck.reviews : chatLog;
+  const teamName = activeTeamRun?.team?.name || 'AI team';
+  const group = ensureEditReviewGroup({
+    key: `team:${teamRunId}`,
+    host,
+    title: `${teamName} proposed changes`,
+    actor: teamName,
+    resolve: (editId, accepted) => reachApi.teams.resolveEdit(editId, accepted),
+  });
+  appendEditCardToGroup(group, edit);
   host.scrollTop = host.scrollHeight;
 });
 

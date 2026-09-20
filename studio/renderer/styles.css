@@ -322,6 +322,13 @@ footer {
   align-self: center; background: transparent; border: none; color: var(--gold-dim);
   font-size: 12px; font-style: italic; max-width: 90%; text-align: center;
 }
+.tool-call-message { width: 90%; }
+.tool-call-text { display: block; min-width: 0; overflow-wrap: anywhere; }
+.tool-call-dropdown { width: 100%; text-align: left; }
+.tool-call-dropdown summary { cursor: pointer; }
+.tool-call-dropdown:not([open]) .tool-call-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden;
+}
 .chat-msg.tool {
   align-self: flex-start; background: var(--card); border: 1px solid var(--line);
   color: var(--dim); font-family: Consolas, monospace; font-size: 12px;
@@ -595,18 +602,74 @@ body.resizing-y, body.resizing-y * {
   max-height: 240px; overflow-y: auto;
 }
 
-/* diff review cards */
+/* Grouped edit review: one batch dropdown with nested file dropdowns. */
+.edit-review-group {
+  align-self: center; width: 94%; border: 1px solid var(--gold-dim); border-radius: 12px;
+  background: var(--card); font-size: 12px; overflow: hidden; flex-shrink: 0;
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--bg) 68%, transparent);
+}
+.team-run .edit-review-group { width: 100%; }
+.edit-review-group.settled { border-color: var(--line); }
+.edit-review-summary {
+  min-height: 62px; padding: 10px 14px; display: flex; align-items: center; gap: 11px;
+  cursor: pointer; list-style: none; background: color-mix(in srgb, var(--edit-bg) 72%, var(--card));
+}
+.edit-review-summary::-webkit-details-marker, .edit-head::-webkit-details-marker { display: none; }
+.edit-review-summary:hover, .edit-head:hover { background: var(--hover); }
+.edit-review-chevron {
+  color: var(--gold); flex: 0 0 auto; font-size: 22px; line-height: 1;
+  transform: rotate(0deg); transition: transform .16s ease;
+}
+details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
+.edit-review-heading { display: flex; flex-direction: column; gap: 2px; min-width: 150px; }
+.edit-review-heading strong { color: var(--text); font-size: 14px; font-weight: 600; }
+.edit-review-eyebrow {
+  color: var(--gold-dim); font-size: 9px; font-weight: 600; letter-spacing: 1.1px; text-transform: uppercase;
+}
+.edit-review-summary-meta {
+  margin-left: auto; display: flex; align-items: center; justify-content: flex-end;
+  gap: 10px; min-width: 0; flex-wrap: wrap;
+}
+.edit-review-count { color: var(--dim); }
+.edit-review-state, .edit-review-file-state {
+  border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px;
+  color: var(--dim); font-size: 10px; white-space: nowrap;
+}
+.edit-review-state.pending, .edit-review-file-state.pending { color: var(--gold); border-color: var(--gold-dim); }
+.edit-review-state.accepted, .edit-review-file-state.accepted { color: var(--ok); border-color: var(--success-line); }
+.edit-review-state.rejected, .edit-review-file-state.rejected { color: var(--err); border-color: var(--error-line); }
+.edit-review-state.mixed { color: var(--dim); border-color: var(--gold-dim); }
+.edit-review-content { border-top: 1px solid var(--line); }
+.edit-review-toolbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.edit-review-metadata, .edit-review-file-meta { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; min-width: 0; }
+.edit-review-meta-item { color: var(--dim); display: inline-flex; align-items: baseline; gap: 5px; min-width: 0; }
+.edit-review-meta-key { color: var(--muted); font-size: 9px; letter-spacing: .7px; text-transform: uppercase; }
+.edit-review-bulk-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.edit-review-guidance {
+  padding: 8px 12px; color: var(--gold-dim); background: var(--surface);
+  border-bottom: 1px solid var(--line); font-size: 11px;
+}
+.edit-review-files { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
 .edit-card {
-  align-self: center; width: 92%; border: 1px solid var(--gold-dim); border-radius: 10px;
+  width: 100%; border: 1px solid var(--line); border-radius: 9px;
   background: var(--edit-bg); font-size: 12px; overflow: hidden; flex-shrink: 0;
 }
-.edit-card.accepted { border-color: var(--ok); }
-.edit-card.rejected { border-color: var(--err); opacity: 0.75; }
+.edit-card.accepted { border-color: var(--success-line); }
+.edit-card.rejected { border-color: var(--error-line); opacity: 0.8; }
+.edit-card.resolving { opacity: 0.72; }
 .edit-head {
-  padding: 10px 14px; border-bottom: 1px solid var(--line); color: var(--text);
-  font-family: Consolas, monospace; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; color: var(--text); cursor: pointer; list-style: none;
+  font-family: Consolas, monospace; display: flex; align-items: center; gap: 9px;
 }
 .edit-head strong { color: var(--gold); font-weight: 600; }
+.edit-review-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.edit-head .edit-review-file-state { margin-left: auto; }
+.edit-head .chip { padding: 2px 8px; font-family: inherit; font-size: 10px; }
+.edit-review-file[open] > .edit-head { border-bottom: 1px solid var(--line); }
+.edit-review-file-meta { padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
 .diff-stat.add { color: var(--ok); }
 .diff-stat.del { color: var(--err); }
 .diff-body {
@@ -625,6 +688,18 @@ body.resizing-y, body.resizing-y * {
 .edit-verdict { padding: 8px 14px; font-size: 12px; }
 .edit-verdict.accepted { color: var(--ok); }
 .edit-verdict.rejected { color: var(--err); }
+.edit-verdict.error { color: var(--err); border-top: 1px solid var(--error-line); }
+
+@container (max-width: 620px) {
+  .edit-review-group { width: 100%; }
+  .edit-review-summary { align-items: flex-start; }
+  .edit-review-heading { min-width: 0; }
+  .edit-review-summary-meta { gap: 6px; }
+  .edit-review-toolbar { align-items: stretch; flex-direction: column; }
+  .edit-review-bulk-actions { justify-content: flex-end; }
+  .edit-head { flex-wrap: wrap; }
+  .edit-review-path { flex: 1 1 180px; }
+}
 
 /* queued indicator */
 .queued {

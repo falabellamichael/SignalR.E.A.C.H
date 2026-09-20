@@ -48,6 +48,15 @@ function groupsFor(messages) {
   }
   return groups;
 }
+/* Internal agent-control notices (the "your last reply had no action, continue"
+ * recovery prompt, the "answer now" directive) are delivered as user-role messages
+ * to nudge the model. They are NOT the user's request, so the compressor must not
+ * mistake one for "the last request": doing so archives the genuine ask into the
+ * summary and leaves the model staring at only a recovery notice. */
+function isInternalControl(message) {
+  const source = messageMeta(message) && messageMeta(message).source;
+  return source === 'recovery' || source === 'answer-now';
+}
 
 async function compactMessages(messages, summarize, options = {}) {
   const trigger = options.trigger || 240000;
@@ -67,7 +76,7 @@ async function compactMessages(messages, summarize, options = {}) {
         && !m.content.startsWith(MEMORY_PREFIX) && messageChars(m) < 16000
         && keep.size < 16 && used + messageChars(m) < target / 3) add(i);
   }
-  const lastRequest = messages.findLastIndex(m => m.role === 'user'
+  const lastRequest = messages.findLastIndex(m => m.role === 'user' && !isInternalControl(m)
     && (typeof m.content !== 'string' || !m.content.startsWith('TOOL RESULTS')));
   if (lastRequest >= 0 && messageChars(messages[lastRequest]) < target / 3) add(lastRequest);
   const groups = groupsFor(messages);
