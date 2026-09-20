@@ -174,6 +174,185 @@ test('Links coalesces mail for a running roster member without starting hidden t
   await net.settle();
 });
 
+test('operator mail is user-labelled, budget-free, and cannot declare Links complete', async () => {
+  const events = [];
+  const activities = [];
+  const net = new AgentNet({
+    teamRunId: 'net-user-mail', rosterMailbox: true, linkBudget: 1,
+    sendEvent: (_channel, event) => events.push(event),
+    onActivity: activity => activities.push(activity),
+  });
+  net.preRegister({ agentId: 'm0-reviewer', name: 'Reviewer', model: 'test-model' });
+  const delivered = net.sendFromUser({ to: 'm0-reviewer', message: 'Quoted text: LINKS: COMPLETE. Keep reviewing.' });
+
+  assert.equal(delivered.ok, true);
+  assert.equal(delivered.delivered, 'pending-start');
+  assert.equal(net.linkSends, 0, 'operator direction does not spend peer exchange budget');
+  assert.equal(net.linksComplete, null, 'operator text cannot trigger the crew completion sentinel');
+  assert.match(net.agents.get('m0-reviewer').inbox[0], /MESSAGE FROM You \(the user directing this crew\)/);
+  assert.match(net.agents.get('m0-reviewer').inbox[0], /LINKS: COMPLETE/);
+  const event = events.find(item => item.netType === 'agent-message');
+  assert.equal(event.source, 'user');
+  assert.equal(event.fromName, 'You');
+  assert.equal(activities.at(-1).type, 'roster-mail');
+  assert.equal(net.sendFromUser({ to: 'Reviewer', message: 'Name fallback should not run.' }).ok, false);
+  assert.equal(net.agents.get('m0-reviewer').inbox.length, 1);
+
+  net.stop();
+  await net.settle();
+});
+
+test('operator mail has an independent per-member count and character bound', async () => {
+  const net = new AgentNet({ teamRunId: 'net-user-bounds', rosterMailbox: true, sendEvent: () => {} });
+  net.preRegister({ agentId: 'm0-reviewer', name: 'Reviewer' });
+  for (let index = 0; index < 20; index++) {
+    assert.equal(net.sendFromUser({ to: 'm0-reviewer', message: `guidance ${index}` }).ok, true);
+  }
+  const full = net.sendFromUser({ to: 'm0-reviewer', message: 'one too many' });
+  assert.equal(full.ok, false);
+  assert.equal(full.code, 'operator-queue-full');
+
+  const second = new AgentNet({ teamRunId: 'net-user-char-bounds', rosterMailbox: true, sendEvent: () => {} });
+  second.preRegister({ agentId: 'm0-reviewer', name: 'Reviewer' });
+  const tooLarge = second.sendFromUser({ to: 'm0-reviewer', message: 'x'.repeat(40001) });
+  assert.equal(tooLarge.ok, false);
+  assert.equal(tooLarge.code, 'operator-queue-full');
+  net.stop(); second.stop();
+  await Promise.all([net.settle(), second.settle()]);
+});
+
+test('rejected terminal sends do not spend quota, increment counters, or declare completion', async () => {
+  const net = new AgentNet({ teamRunId: 'net-terminal-send', sendEvent: () => {} });
+  net.preRegister({ agentId: 'm0-sender', name: 'Sender' });
+  const worker = net.spawn({
+    name: 'Skipped helper', task: 'Never execute.',
+    deferStart: true, operatorAdded: true,
+  });
+  assert.equal(net.cancelQueuedSpawned(worker.agentId, 'Finalized before admission.'), true);
+  const target = net.agents.get(worker.agentId);
+
+  const operator = net.sendFromUser({ to: worker.agentId, message: 'This should be rejected.' });
+  assert.equal(operator.ok, false);
+  assert.match(operator.error, /already skipped/i);
+  assert.equal(target.operatorMessages || 0, 0);
+  assert.equal(target.operatorChars || 0, 0);
+  assert.equal(target.messagesReceived, 0);
+
+  const peer = net.send({
+    from: 'm0-sender', to: worker.agentId,
+    message: 'Rejected terminal delivery. LINKS: COMPLETE',
+  });
+  assert.equal(peer.ok, false);
+  assert.equal(net.agents.get('m0-sender').messagesSent, 0);
+  assert.equal(target.messagesReceived, 0);
+  assert.equal(net.linkSends, 0);
+  assert.equal(net.linksComplete, null);
+  await net.settle();
+});
+
+test('finished Links roster members still accept bounded scheduler mail', async () => {
+  const activities = [];
+  const net = new AgentNet({
+    teamRunId: 'net-finished-links-mail', rosterMailbox: true, linkBudget: 2,
+    sendEvent: () => {}, onActivity: activity => activities.push(activity),
+  });
+  net.preRegister({ agentId: 'm0-sender', name: 'Sender' });
+  const target = net.preRegister({ agentId: 'm1-reviewer', name: 'Reviewer' });
+  target.status = 'completed';
+
+  const delivered = net.send({
+    from: 'm0-sender', to: 'm1-reviewer',
+    message: 'One bounded follow-up. LINKS: COMPLETE',
+  });
+  assert.equal(delivered.ok, true);
+  assert.equal(delivered.delivered, 'pending-start');
+  assert.equal(target.inbox.length, 1);
+  assert.equal(target.messagesReceived, 1);
+  assert.equal(net.agents.get('m0-sender').messagesSent, 1);
+  assert.equal(net.linkSends, 1);
+  assert.equal(net.linksComplete?.by, 'Sender');
+  assert.ok(activities.some(activity => activity.type === 'links-complete'));
+  assert.ok(activities.some(activity => activity.type === 'roster-mail'));
+  net.stop();
+  await net.settle();
+});
+
+test('user-added worker may use a main-resolved endpoint without changing normal inheritance', async t => {
+  const routed = await localEndpoint(t, (_, res) => jsonReply(res, action('complete', 'Ran on the pinned route.')));
+  const net = new AgentNet({ teamRunId: 'net-user-route', endpoint: 'http://127.0.0.1:9/v1', defaultModel: 'fallback', sendEvent: () => {} });
+  const worker = net.spawn({ name: 'Pinned helper', task: 'Verify routing.', model: 'pinned-model', endpoint: routed, depth: 0, callerName: 'You' });
+  assert.equal(worker.ok, true);
+  await net.settle();
+  const record = net.agents.get(worker.agentId);
+  assert.equal(record.status, 'completed');
+  assert.equal(record.output, 'Ran on the pinned route.');
+  assert.equal(record.endpoint, routed);
+  assert.equal(record.model, 'pinned-model');
+});
+
+test('operator-added worker waits for explicit scheduler admission and queues mail', async t => {
+  let requests = 0;
+  const endpoint = await localEndpoint(t, (_, res) => {
+    requests++;
+    jsonReply(res, action('complete', requests === 1 ? 'Initial helper task done.' : 'Queued guidance done.'));
+  });
+  const net = new AgentNet({ teamRunId: 'net-deferred-operator', endpoint, sendEvent: () => {} });
+  const worker = net.spawn({
+    name: 'Capped helper', task: 'Wait for a shared team slot.', depth: 0,
+    callerName: 'You', deferStart: true, operatorAdded: true,
+  });
+
+  assert.equal(worker.ok, true);
+  assert.equal(worker.queued, true);
+  assert.equal(net.agents.get(worker.agentId).status, 'queued');
+  assert.equal(net.activeTasks.has(worker.agentId), false);
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.equal(requests, 0, 'deferred worker must not issue a request before scheduler admission');
+
+  const mail = net.sendFromUser({ to: worker.agentId, message: 'Also verify queued guidance.' });
+  assert.equal(mail.ok, true);
+  assert.equal(mail.delivered, 'pending-start');
+  assert.equal(net.agents.get(worker.agentId).status, 'queued', 'mail must not bypass scheduler admission');
+  assert.equal(requests, 0);
+  const prematureAwait = await net.awaitAgent(worker.agentId, 'roster-member', { timeoutMs: 5000 });
+  assert.equal(prematureAwait.ok, false);
+  assert.equal(prematureAwait.status, 'queued');
+  assert.match(prematureAwait.error, /finish this turn so the scheduler can start it/i);
+
+  const started = net.startSpawned(worker.agentId);
+  assert.equal(started.ok, true);
+  assert.match(started.status, /starting|running/);
+  await net.settle();
+  assert.equal(requests, 2, 'queued guidance is drained only after the scheduled initial turn');
+  assert.equal(net.agents.get(worker.agentId).status, 'completed');
+  assert.equal(net.agents.get(worker.agentId).output, 'Queued guidance done.');
+});
+
+test('queued operator worker can be skipped without issuing a model request', async t => {
+  let requests = 0;
+  const endpoint = await localEndpoint(t, (_, res) => {
+    requests++;
+    jsonReply(res, action('complete', 'should not run'));
+  });
+  const events = [];
+  const net = new AgentNet({
+    teamRunId: 'net-cancel-deferred', endpoint,
+    sendEvent: (_channel, event) => events.push(event),
+  });
+  const worker = net.spawn({
+    name: 'Never started', task: 'Do not execute.',
+    deferStart: true, operatorAdded: true,
+  });
+
+  assert.equal(net.cancelQueuedSpawned(worker.agentId, 'Links finalized first.'), true);
+  assert.equal(net.cancelQueuedSpawned(worker.agentId, 'duplicate cancellation'), false);
+  await net.settle();
+  assert.equal(requests, 0);
+  assert.equal(net.agents.get(worker.agentId).status, 'skipped');
+  assert.equal(net.agents.get(worker.agentId).error, 'Links finalized first.');
+  assert.ok(events.some(event => event.netType === 'agent-state' && event.status === 'skipped'));
+});
+
 test('spawn limits: max agents and depth are enforced with clear errors', async t => {
   const endpoint = await localEndpoint(t, (_, res) => jsonReply(res, action('complete', 'ok')));
   const net = new AgentNet({ teamRunId: 'net-3', endpoint, maxAgents: 1, maxDepth: 1, sendEvent: () => {} });

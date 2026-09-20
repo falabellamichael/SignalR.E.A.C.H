@@ -45,14 +45,22 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   await until('typeof ReachTeamDeck !== "undefined" && document.querySelector("#agent-project-select option") !== null', 'Renderer did not initialize');
   win.setContentSize(1440, 1024);
   await run(`(async () => { setDrawer(false); await showTab('agents'); await selectAgent({id:${JSON.stringify(fixture.id)}}); })()`);
+  assert.equal(await run(`document.querySelector('#agent-model-info').open`), true);
+  assert.equal(await run(`document.querySelector('#agent-info-summary-name').textContent`), 'Team interface preview');
+  assert.equal(await run(`document.querySelector('#agent-info-summary-model').textContent`), 'Default model');
+  assert.equal(await run(`getComputedStyle(document.querySelector('#agent-model-info')).position !== 'absolute'`), true);
+  await run(`document.querySelector('#agent-model-info > summary').click()`);
+  assert.equal(await run(`document.querySelector('#agent-model-info').open`), false);
+  assert.equal(await run(`document.querySelector('#agent-name').textContent`), 'Team interface preview');
+  await run(`document.querySelector('#agent-model-info > summary').click()`);
   await run(`(() => {
     startTeamRunView('deck-preview', { name: 'Team 1', mode: 'parallel' }, 'Repository cleanup · isolated preview');
     window.previewRun = activeTeamRun;
     window.previewEvent = event => handleTeamEvent({ teamRunId: 'deck-preview', ...event });
     previewEvent({ type: 'start', members: [
-      { index: 0, name: 'CEO', model: 'qwen-27b' }, { index: 1, name: 'Thinker', model: 'qwen-35b' },
-      { index: 2, name: 'Seeker', model: 'deepseek-flash' }, { index: 3, name: 'Builder', model: 'deepseek-flash' },
-      { index: 4, name: 'Reviewer', model: 'qwen-32b' }
+      { index: 0, agentId: 'm0-ceo', name: 'CEO', model: 'qwen-27b' }, { index: 1, agentId: 'm1-thinker', name: 'Thinker', model: 'qwen-35b' },
+      { index: 2, agentId: 'm2-seeker', name: 'Seeker', model: 'deepseek-flash' }, { index: 3, agentId: 'm3-builder', name: 'Builder', model: 'deepseek-flash' },
+      { index: 4, agentId: 'm4-reviewer', name: 'Reviewer', model: 'qwen-32b' }
     ] });
     for (const index of [0, 1, 2, 3]) {
       previewEvent({ type: 'member-start', index });
@@ -86,6 +94,25 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`document.querySelectorAll('.member-card:not([hidden])').length`), 1);
   assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent`), 'Seeker');
   assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-step').textContent`), 'Step 5');
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-model-info').open`), true);
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-model-summary-copy strong').textContent`), 'Seeker');
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-model-summary-model').textContent`), 'deepseek-flash');
+  assert.match(await run(`previewRun.wrap.querySelector('.team-model-expanded-state').textContent`), /waiting|review/i);
+  assert.equal(await run(`getComputedStyle(previewRun.cards.get(2).querySelector('.member-head')).display`), 'none');
+  await run(`previewRun.wrap.querySelector('.team-model-info > summary').click()`);
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-model-info').open`), false);
+  assert.equal(await run(`previewRun.cards.get(2).querySelector('.member-model').textContent`), 'deepseek-flash');
+  await capture('desktop-collapsed');
+  await run(`previewRun.wrap.querySelector('.team-model-info > summary').click()`);
+  const sticky = await run(`(() => {
+    const scroller = chatScroll, nav = previewRun.wrap.querySelector('.team-deck-nav');
+    scroller.scrollTop = Math.min(180, scroller.scrollHeight - scroller.clientHeight);
+    const scrollTop = scroller.getBoundingClientRect().top, navTop = nav.getBoundingClientRect().top;
+    return { scrollTop, navTop, amount: scroller.scrollTop };
+  })()`);
+  assert.ok(sticky.amount > 0, 'Fixture must scroll to verify the stationary team information');
+  assert.ok(sticky.navTop >= sticky.scrollTop - 1 && sticky.navTop <= sticky.scrollTop + 2, 'Team information stays pinned while the conversation scrolls');
+  await run(`chatScroll.scrollTop=0`);
   assert.equal(await run(`previewRun.wrap.querySelector('.team-deck-nurse').hidden`), true);
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=working] .team-orbit-icon')).animationName`), 'activity-spin');
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=waiting] .team-orbit-icon')).animationName`), 'none');
@@ -110,6 +137,43 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   await run(`composerInput.value = 'Keep this draft'; composerInput.focus(); previewEvent({type:'member-question',index:1,questionId:'preview-question',name:'Thinker',question:'Which test suite should I use?'});`);
   await until(`previewRun.wrap.querySelectorAll('.team-tab[data-status=waiting]').length === 2`, 'Question badge missing');
   assert.equal(await run(`document.activeElement === composerInput && composerInput.value === 'Keep this draft'`), true);
+  // @ completion is a real combobox, keeps focus/draft ownership, and stable
+  // ids distinguish duplicate/markup-like display names without creating HTML.
+  const composerHeight = await run(`document.querySelector('.composer').getBoundingClientRect().height`);
+  await run(`(() => {
+    composerCatalog = [
+      targetCandidate('team','deck-preview/m2-seeker','Seeker','Live member · working · deepseek-flash',{agentId:'m2-seeker',teamRunId:'deck-preview'}),
+      targetCandidate('team','deck-preview/m4-reviewer','Reviewer','Live member · pending · qwen-32b',{agentId:'m4-reviewer',teamRunId:'deck-preview'}),
+      targetCandidate('persona','persona-xss','<img src=x onerror="window.__mentionXss=1">','Custom agent · default model',{})
+    ];
+    composerCatalogKey = currentAgent.id + ':deck-preview'; composerCatalogAt = Date.now();
+    composerInput.value='@'; composerInput.setSelectionRange(1,1); composerInput.focus();
+    composerInput.dispatchEvent(new Event('input',{bubbles:true}));
+  })()`);
+  await until(`composerInput.getAttribute('aria-expanded') === 'true' && document.querySelectorAll('#composer-suggestions [role=option]').length === 3`, 'Composer suggestions did not open');
+  assert.equal(await run(`document.activeElement === composerInput`), true);
+  assert.equal(await run(`composerSuggestionsEl.getAttribute('role')`), 'listbox');
+  assert.equal(await run(`composerInput.getAttribute('aria-controls')`), 'composer-suggestions');
+  assert.equal(await run(`composerInput.getAttribute('aria-activedescendant')`), 'composer-suggestion-0');
+  assert.equal(await run(`composerSuggestionsEl.querySelector('img,script') === null && window.__mentionXss === undefined`), true);
+  assert.match(await run(`[...composerSuggestionsEl.querySelectorAll('.composer-suggestion-label')].map(x=>x.textContent).join('|')`), /<img src=x/);
+  assert.ok(Math.abs((await run(`document.querySelector('.composer').getBoundingClientRect().height`)) - composerHeight) <= 1, 'Popup must not resize composer');
+  await run(`composerInput.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))`);
+  assert.equal(await run(`composerInput.getAttribute('aria-activedescendant')`), 'composer-suggestion-1');
+  const completionBeforeEvent = await run(`({draft:composerInput.value,active:composerInput.getAttribute('aria-activedescendant'),selected:previewRun.wrap.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent})`);
+  await run(`previewEvent({type:'member',index:0,memberType:'reasoning',chars:1400})`);
+  assert.deepEqual(await run(`({draft:composerInput.value,active:composerInput.getAttribute('aria-activedescendant'),selected:previewRun.wrap.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent})`), completionBeforeEvent);
+  assert.equal(await run(`document.querySelector('#btn-send').textContent`), 'Send', 'An explicit @ route remains actionable while the team works');
+  await run(`composerInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))`);
+  assert.match(await run(`composerInput.value`), /^@team:"Reviewer"#deck-preview\/m4-reviewer /);
+  assert.equal(await run(`document.activeElement === composerInput && composerInput.getAttribute('aria-expanded') === 'false'`), true);
+  await run(`composerInput.value='ordinary unsent draft'; composerInput.dispatchEvent(new Event('input',{bubbles:true}))`);
+  assert.equal(await run(`document.querySelector('#btn-send').textContent`), 'Stop', 'Ordinary text retains the existing stop control while work is active');
+  await run(`composerInput.value='@'; composerInput.setSelectionRange(1,1); composerInput.dispatchEvent(new Event('input',{bubbles:true}))`);
+  await until(`composerInput.getAttribute('aria-expanded') === 'true'`, 'Composer suggestions did not reopen');
+  await run(`composerInput.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))`);
+  assert.equal(await run(`composerInput.value === '@' && composerInput.getAttribute('aria-expanded') === 'false'`), true);
+  await run(`composerInput.value='Keep this draft'; composerInput.dispatchEvent(new Event('input',{bubbles:true})); composerInput.focus();`);
   await run(`previewRun.deck.select(previewRun.cards.get(1)); previewRun.cards.get(1).querySelector('textarea').value='Run unit tests'; previewRun.deck.select(previewRun.cards.get(2)); previewRun.deck.select(previewRun.cards.get(1));`);
   assert.equal(await run(`previewRun.cards.get(1).querySelector('textarea').value`), 'Run unit tests');
   await run(`previewEvent({type:'member-control',index:0,paused:true})`);

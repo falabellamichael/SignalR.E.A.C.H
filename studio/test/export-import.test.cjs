@@ -20,7 +20,10 @@ function tmpStore() {
 
 test('export/import round-trips messages, todos and pending edits', () => {
   const store = tmpStore();
-  const original = store.create({ name: 'Round Trip', dir: 'D:/proj', model: 'demo' });
+  const original = store.create({
+    name: 'Round Trip', dir: 'D:/proj', model: 'demo',
+    personaId: 'persona-reviewer', personaPrompt: 'Review changes carefully.', connectionId: 'connection-local',
+  });
   store.appendMessage(original.id, { role: 'user', content: 'hello' });
   store.appendMessage(original.id, { role: 'assistant', content: 'hi there' });
   store.setTodos(original.id, [
@@ -37,6 +40,9 @@ test('export/import round-trips messages, todos and pending edits', () => {
   assert.notEqual(imported.id, original.id, 'import must mint a fresh id');
   assert.equal(imported.name, 'Round Trip');
   assert.equal(imported.dir, 'D:/proj');
+  assert.equal(imported.personaId, 'persona-reviewer');
+  assert.equal(imported.personaPrompt, 'Review changes carefully.');
+  assert.equal(imported.connectionId, 'connection-local');
   assert.equal(imported.messages.length, 2);
   assert.deepEqual(imported.todos.map(t => t.text), ['step one', 'step two']);
   assert.equal(imported.pendingEdits.e1.path, 'a.js');

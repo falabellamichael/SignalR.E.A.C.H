@@ -136,6 +136,7 @@
       <aside>
         <div class="side-title">Conversations</div>
         <select id="agent-project-select" title="Conversations stem from a project"></select>
+        <div id="background-agent-alerts" class="background-agent-alerts hidden" role="status" aria-live="polite"></div>
         <div id="agent-tree" class="agent-tree"></div>
         <div class="side-actions">
           <button id="btn-new-chat" class="gold">+ New Chat</button>
@@ -152,36 +153,49 @@
         </div>
 
         <div id="agent-view" class="hidden">
-          <div class="project-head">
-            <div>
-              <h2 id="agent-name"></h2>
-              <div id="agent-meta" class="path"></div>
+          <details id="agent-model-info" class="model-info-disclosure" open>
+            <summary aria-label="Toggle conversation and model information">
+              <span class="model-info-summary-copy">
+                <strong id="agent-info-summary-name">Conversation</strong>
+                <span id="agent-info-summary-model">Default model</span>
+              </span>
+              <span id="agent-info-summary-status" class="model-info-summary-status">idle</span>
+              <span class="model-info-caret" aria-hidden="true"></span>
+            </summary>
+            <div class="model-info-content">
+              <div class="project-head">
+                <div>
+                  <h2 id="agent-name"></h2>
+                  <div id="agent-meta" class="path"></div>
+                </div>
+                <div class="project-actions">
+                  <span id="agent-status" class="chip dim">idle</span>
+                  <button id="btn-dispatch-team" class="ghost" title="Send a task to a team of custom agents">⚡ Team…</button>
+                  <button id="btn-agent-continue" class="ghost hidden">Continue</button>
+                  <button id="btn-agent-stop" class="ghost hidden">Stop</button>
+                  <div class="settings-menu">
+                    <button id="btn-agent-settings" class="ghost" aria-expanded="false" aria-controls="btn-agent-settings-menu">Settings &#9662;</button>
+                    <div id="btn-agent-settings-menu" class="settings-dropdown hidden">
+                      <button data-settings-panel="connection">Connection &amp; default model</button>
+                      <button data-settings-panel="conversation">Conversation &amp; permissions</button>
+                      <button data-settings-panel="budgeting">Budgeting</button>
+                    </div>
+                  </div>
+                  <button id="btn-agent-delete" class="ghost danger">Delete</button>
+                </div>
+              </div>
+
+              <div class="chat-status">
+                <div class="context-bar">
+                  <span id="agent-context" role="status" title="Estimate uses three characters per token. Actual provider token counts vary.">Conversation context</span>
+                  <button id="btn-agent-compact" class="ghost" title="Summarize older context while preserving your saved chat">Compress now</button>
+                </div>
+                <section id="agent-activity" class="hidden" aria-label="Agent activity"></section>
+              </div>
             </div>
-            <div class="project-actions">
-              <span id="agent-status" class="chip dim">idle</span>
-              <button id="btn-dispatch-team" class="ghost" title="Send a task to a team of custom agents">⚡ Team…</button>
-              <button id="btn-agent-continue" class="ghost hidden">Continue</button>
-              <button id="btn-agent-stop" class="ghost hidden">Stop</button>
-              <div class="settings-menu">
-        <button id="btn-agent-settings" class="ghost" aria-expanded="false" aria-controls="btn-agent-settings-menu">Settings &#9662;</button>
-        <div id="btn-agent-settings-menu" class="settings-dropdown hidden">
-          <button data-settings-panel="connection">Connection &amp; default model</button>
-          <button data-settings-panel="conversation">Conversation &amp; permissions</button>
-          <button data-settings-panel="budgeting">Budgeting</button>
-        </div>
-      </div>
-              <button id="btn-agent-delete" class="ghost danger">Delete</button>
-            </div>
-          </div>
+          </details>
 
           <div class="chat-pane">
-            <div class="chat-status">
-              <div class="context-bar">
-                <span id="agent-context" role="status" title="Estimate uses three characters per token. Actual provider token counts vary.">Conversation context</span>
-                <button id="btn-agent-compact" class="ghost" title="Summarize older context while preserving your saved chat">Compress now</button>
-              </div>
-              <section id="agent-activity" class="hidden" aria-label="Agent activity"></section>
-            </div>
             <div id="chat-scroll" class="chat-scroll" tabindex="0" aria-label="Conversation">
               <div id="agent-todos" class="todos hidden">
                 <div class="todos-title">Plan</div>
@@ -192,7 +206,9 @@
             <div id="queued-indicator" class="queued hidden"></div>
             <div class="composer">
               <button id="btn-attach" class="ghost" type="button" aria-label="Attach files" title="Attach files">+</button>
-              <textarea id="composer-input" aria-label="Message" placeholder="Ask the agent to inspect, edit, or debug your project&hellip; (Ctrl+Enter sends)" rows="1"></textarea>
+              <textarea id="composer-input" aria-label="Message" placeholder="Start with @ to route, or / for commands&hellip; (Ctrl+Enter sends)" rows="1" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="composer-suggestions"></textarea>
+              <div id="composer-suggestions" class="composer-suggestions hidden" role="listbox" aria-label="Composer suggestions"></div>
+              <span id="composer-suggestion-status" class="sr-only" role="status" aria-live="polite"></span>
               <div class="composer-actions">
                 <input id="composer-model-value" type="hidden" />
                 <button id="composer-model" class="ghost small" title="Choose a model for this conversation">Default model ▾</button>
@@ -761,6 +777,7 @@
   <script src="activity-state.js"></script>
   <script src="activity.js"></script>
   <script src="team-deck.js"></script>
+  <script src="composer-intents.js"></script>
   <script src="app.js"></script>
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>

@@ -38,6 +38,8 @@ const DEFAULT_AWAIT_TIMEOUT = 120000;
 const TRANSCRIPT_MESSAGES = 40;
 const TRANSCRIPT_CHARS = 4000;
 const OUTPUT_PREVIEW = 4000;
+const MAX_OPERATOR_MESSAGES_PER_AGENT = 20;
+const MAX_OPERATOR_CHARS_PER_AGENT = 40000;
 
 /* Links-mode completion declaration: a member ends a message (or its final
  * answer) with this line to say the WHOLE task is done. Scanned on every
@@ -256,7 +258,7 @@ class AgentNet {
 
   /* Spawn a background worker. Returns immediately with an id — the caller
    * keeps working and can poll (agent.status), await, or message it. */
-  spawn({ name, model = '', prompt = '', task, parentId = null, depth = 0, callerName = '' }) {
+  spawn({ name, model = '', prompt = '', task, parentId = null, depth = 0, callerName = '', endpoint = '', accessKey = '', deferStart = false, operatorAdded = false }) {
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
     if (this.paused) return { ok: false, error: 'The crew is paused by the user.' };
     const cleanTask = String(task || '').trim();
@@ -285,8 +287,11 @@ class AgentNet {
      *
      * Grandchildren inherit too, because the child's record stores what it got. */
     const parentRec = parentId ? (this.agents.get(parentId) || null) : null;
-    const useEndpoint = (parentRec && parentRec.endpoint) || this.endpoint;
-    const useAccessKey = (parentRec && parentRec.accessKey) || this.accessKey;
+    // Main/TeamRunner may supply a resolved route for a user-added helper. The
+    // renderer never sees the key. Model-created workers omit these fields and
+    // retain the established parent-inheritance rule.
+    const useEndpoint = String(endpoint || '') || (parentRec && parentRec.endpoint) || this.endpoint;
+    const useAccessKey = String(accessKey || '') || (parentRec && parentRec.accessKey) || this.accessKey;
     const useModel = String(model || '').trim()
       || (parentRec && parentRec.model)
       || this.defaultModel
@@ -333,14 +338,20 @@ class AgentNet {
     // Tighter budget than an interactive chat: a worker has one job.
     store.get(id).settings.maxRounds = SUBAGENT_MAX_ROUNDS;
 
+    const queuedForTeam = deferStart === true && operatorAdded === true;
     const rec = {
       id, name: String(name).trim(), model: useModel, prompt: String(prompt || ''),
       depth: childDepth, parentId: parentId || null, origin: 'spawned',
-      loop, store, status: 'starting', output: '', error: null, task: cleanTask,
+      loop, store, status: queuedForTeam ? 'queued' : 'starting', output: '', error: null, task: cleanTask,
       // Stored so a grandchild inherits the same provider (see spawn()).
       endpoint: useEndpoint || '', accessKey: useAccessKey || '',
       startedAt: Date.now(), finishedAt: null, messagesSent: 0, messagesReceived: 0,
       spawnedBy: callerName || null,
+      // Only user-added Links helpers opt into the TeamRunner's roster
+      // semaphore. Model-created workers intentionally retain their established
+      // asynchronous behavior so agent.await graphs cannot starve one another.
+      operatorAdded: queuedForTeam,
+      queuedPrompt: queuedForTeam ? cleanTask : '',
     };
     this.agents.set(id, rec);
     rec.control = new RunControl(loop, paused => {
@@ -351,9 +362,49 @@ class AgentNet {
     this._emit('agent-created', {
       agentId: id, name: rec.name, model: useModel, depth: childDepth,
       parentId: rec.parentId, spawnedBy: rec.spawnedBy, task: cleanTask,
+      status: rec.status, queued: queuedForTeam,
     });
-    this._trackTask(id, this._run(id, cleanTask));
-    return { ok: true, agentId: id, name: rec.name, model: useModel, depth: childDepth, task: cleanTask, async: true };
+    if (!queuedForTeam) this._trackTask(id, this._run(id, cleanTask));
+    return {
+      ok: true, agentId: id, name: rec.name, model: useModel, depth: childDepth,
+      task: cleanTask, async: true, queued: queuedForTeam,
+    };
+  }
+
+  /* Start a worker that was deliberately admitted without running. This is
+   * used only by the Links scheduler for operator-added helpers, keeping that
+   * work inside the configured roster concurrency cap. */
+  startSpawned(agentId) {
+    if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
+    if (this.paused) return { ok: false, error: 'The crew is paused by the user.' };
+    const rec = this.agents.get(String(agentId || ''));
+    if (!rec || rec.origin !== 'spawned') return this._notFound(agentId);
+    if (!rec.operatorAdded || rec.status !== 'queued') {
+      return { ok: false, error: `${rec.name} is not a queued operator-added helper.`, status: rec.status };
+    }
+    rec.status = 'starting';
+    rec.startedAt = Date.now();
+    const prompt = String(rec.queuedPrompt || rec.task || 'Continue the assigned team task.');
+    rec.queuedPrompt = '';
+    this._trackTask(rec.id, this._run(rec.id, prompt));
+    return { ok: true, agentId: rec.id, name: rec.name, status: rec.status };
+  }
+
+  /* Terminal Links transitions must not leave admitted helpers permanently
+   * queued. Mark them as skipped without ever issuing a model request. */
+  cancelQueuedSpawned(agentId, reason = 'The team finalized before this helper started.') {
+    const rec = this.agents.get(String(agentId || ''));
+    if (!rec || rec.origin !== 'spawned' || !rec.operatorAdded || rec.status !== 'queued') return false;
+    if (rec.control) rec.control.finished = true;
+    rec.status = 'skipped';
+    rec.error = String(reason || 'The team finalized before this helper started.');
+    rec.finishedAt = Date.now();
+    this._emit('agent-state', {
+      agentId: rec.id, name: rec.name, status: rec.status,
+      chars: 0, error: rec.error, outputPreview: '',
+    });
+    this.onSettled();
+    return true;
   }
 
   /* One background turn. No semaphore: awaiting happens INSIDE a turn, so a
@@ -383,7 +434,7 @@ class AgentNet {
         clearPendingEdits: () => this.spawnedEdits.set(id, []),
         awaitEditResolution: this.awaitEditResolution,
         requestMemberAnswer: this.requestMemberAnswer
-          ? (q) => this.requestMemberAnswer({ ...q, name: rec.name, model: rec.model, subagent: true })
+          ? (q) => this.requestMemberAnswer({ ...q, agentId: id, name: rec.name, model: rec.model, subagent: true })
           : null,
         onWaiting: (edits) => this._emit('agent-waiting', {
           agentId: id, name: rec.name, status: 'waiting_edits',
@@ -421,10 +472,11 @@ class AgentNet {
 
   /* Deliver a message to a peer. Running peer → queued into its loop (the
    * loop's own running flag decides); idle peer → woken for a new turn. */
-  _emitDelivery(sender, rec, from, text, delivered) {
+  _emitDelivery(sender, rec, from, text, delivered, { fromName = '', source = 'agent' } = {}) {
     this._emit('agent-message', {
       from,
-      fromName: sender ? sender.name : String(from),
+      fromName: sender ? sender.name : (fromName || String(from)),
+      source,
       to: rec.id,
       toName: rec.name,
       chars: text.length,
@@ -435,18 +487,46 @@ class AgentNet {
     });
   }
 
-  send({ from, to, message }) {
+  send({ from, to, message, fromName = '', source = 'agent', countAgainstBudget = true, allowCompletion = true, exact = false }) {
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
     const text = String(message || '').trim();
     if (!text) return { ok: false, error: 'A message is required.' };
-    const rec = this._resolve(to, from);
+    // Renderer/operator routes carry a main-validated stable id and must never
+    // fall back to a display name. Model-facing peer tools retain name lookup.
+    const rec = exact ? this.agents.get(String(to || '')) : this._resolve(to, from);
     if (!rec) return this._notFound(to);
     if (rec.ambiguous) return { ok: false, error: `"${to}" matches several agents: ${rec.ambiguous.map(a => a.agentId).join(', ')}. Address one by id.`, candidates: rec.ambiguous };
     if (rec.id === from) return { ok: false, error: 'An agent cannot message itself.' };
 
+    /* Reject a terminal recipient before touching quota, message counters, or
+     * the LINKS completion sentinel. Links roster mail is the deliberate
+     * exception: completed/stalled roster members remain addressable because
+     * TeamRunner owns their bounded wake-up accounting. */
+    const linksRosterMailbox = rec.origin === 'roster' && this.rosterMailbox;
+    if (!linksRosterMailbox && rec.origin === 'roster' && FINISHED.has(rec.status)) {
+      return { ok: false, error: `${rec.name} already finished (${rec.status}) and its answer is part of the crew's results. It cannot be woken.` };
+    }
+    if (!linksRosterMailbox && FINISHED.has(rec.status) && rec.status !== 'completed') {
+      return { ok: false, error: `${rec.name} already ${rec.status}${rec.error ? ': ' + rec.error : ''}. It cannot be woken.`, status: rec.status };
+    }
+
     /* Links budget: bound the total crew conversation (3× a chain's rate). */
-    if (this.linkBudget != null && this.linkSends >= this.linkBudget) {
+    if (countAgainstBudget && this.linkBudget != null && this.linkSends >= this.linkBudget) {
       return { ok: false, error: `Link budget reached (${this.linkBudget} crew messages = 3× a chain's exchange rate). Finish with what the crew has; ask the Coordinator to declare completion.` };
+    }
+
+    if (source === 'user') {
+      const messages = Number(rec.operatorMessages || 0);
+      const chars = Number(rec.operatorChars || 0);
+      if (messages >= MAX_OPERATOR_MESSAGES_PER_AGENT || chars + text.length > MAX_OPERATOR_CHARS_PER_AGENT) {
+        return {
+          ok: false,
+          error: `Operator mailbox limit reached for ${rec.name} (${MAX_OPERATOR_MESSAGES_PER_AGENT} messages or ${MAX_OPERATOR_CHARS_PER_AGENT.toLocaleString()} characters). Wait for it to process the current guidance.`,
+          code: 'operator-queue-full',
+        };
+      }
+      rec.operatorMessages = messages + 1;
+      rec.operatorChars = chars + text.length;
     }
 
     const sender = this.agents.get(from);
@@ -454,8 +534,9 @@ class AgentNet {
     rec.messagesReceived++;
 
     /* The Links completion declaration can also travel as a message. */
-    if (linksCompleteIn(text) && !this.linksComplete) {
-      this.linksComplete = { by: sender ? sender.name : String(from), to: rec.name, message: text };
+    const senderName = sender ? sender.name : (fromName || String(from));
+    if (allowCompletion && linksCompleteIn(text) && !this.linksComplete) {
+      this.linksComplete = { by: senderName, to: rec.name, message: text };
       /* A message declaration is terminal even though its sender is still in a
        * tool turn. Tell the runner immediately so it can apply the same short
        * completion grace used for declarations in final answers. */
@@ -464,26 +545,28 @@ class AgentNet {
           type: 'links-complete',
           agentId: rec.id,
           from,
-          fromName: sender ? sender.name : String(from),
+          fromName: senderName,
           linksComplete: true,
         });
       } catch { /* scheduler hook is advisory */ }
     }
 
-    const prefixed = `MESSAGE FROM ${sender ? sender.name : from} (a crew member):\n${text}`;
-    if (rec.origin === 'roster' && this.rosterMailbox) {
+    const prefixed = source === 'user'
+      ? `MESSAGE FROM ${senderName} (the user directing this crew):\n${text}`
+      : `MESSAGE FROM ${senderName} (a crew member):\n${text}`;
+    if (linksRosterMailbox) {
       /* Links owns roster scheduling. Coalesce ALL peer mail in the roster
        * inbox—even while its loop is running—so the bounded Links wake loop
        * accounts for one follow-up turn instead of AgentLoop secretly draining
        * each queued message as an uncounted conversation. */
       rec.inbox = rec.inbox || [];
       rec.inbox.push(prefixed);
-      this._bumpLink();
+      if (countAgainstBudget) this._bumpLink();
       const delivered = rec.status === 'stalled' ? 'stalled-wake'
         : !rec.loop ? 'pending-start'
           : rec.loop.running ? 'mailbox-running'
             : 'mailbox';
-      this._emitDelivery(sender, rec, from, text, delivered);
+      this._emitDelivery(sender, rec, from, text, delivered, { fromName: senderName, source });
       /* Wake the Links scheduler without polling. A roster member can finish
        * while another peer is still working, leaving spare capacity; mailbox
        * arrival is therefore a scheduling event in its own right. */
@@ -504,10 +587,41 @@ class AgentNet {
               : `${rec.name} is between Links rounds; your message is queued for its next turn.`,
       };
     }
+    if (rec.origin === 'spawned' && rec.operatorAdded && rec.status === 'completed') {
+      // Every turn of an operator-added helper shares the Links roster pool,
+      // not just its first one. Preserve this message as the scheduled prompt;
+      // later messages received while queued go through the queue branch below.
+      rec.status = 'queued';
+      rec.queuedPrompt = prefixed;
+      rec.finishedAt = null;
+      if (countAgainstBudget) this._bumpLink();
+      this._emitDelivery(sender, rec, from, text, 'pending-start', { fromName: senderName, source });
+      try {
+        this.onActivity({
+          type: 'operator-helper-queued', agentId: rec.id, from,
+          fromName: senderName, delivered: 'pending-start',
+        });
+      } catch { /* scheduler hook is advisory */ }
+      return {
+        ok: true, delivered: 'pending-start', agentId: rec.id, name: rec.name,
+        status: rec.status,
+        note: `${rec.name}'s next turn is queued for shared team capacity.`,
+      };
+    }
+    if (rec.origin === 'spawned' && rec.operatorAdded && rec.status === 'queued' && rec.store) {
+      const depth = rec.store.enqueue(rec.id, prefixed);
+      if (countAgainstBudget) this._bumpLink();
+      this._emitDelivery(sender, rec, from, text, 'pending-start', { fromName: senderName, source });
+      return {
+        ok: true, delivered: 'pending-start', agentId: rec.id, name: rec.name,
+        status: rec.status, inbox: depth,
+        note: `${rec.name} is waiting for team capacity; your message is queued for its scheduled turn.`,
+      };
+    }
     if (rec.control?.paused && rec.store) {
       rec.store.enqueue(rec.id, prefixed);
-      this._bumpLink();
-      this._emitDelivery(sender, rec, from, text, 'queued');
+      if (countAgainstBudget) this._bumpLink();
+      this._emitDelivery(sender, rec, from, text, 'queued', { fromName: senderName, source });
       return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: 'paused' };
     }
     if (!rec.loop) {
@@ -515,30 +629,37 @@ class AgentNet {
       // it is prepended to the member's prompt when it starts.
       rec.inbox = rec.inbox || [];
       rec.inbox.push(prefixed);
-      this._bumpLink();
-      this._emitDelivery(sender, rec, from, text, 'pending-start');
+      if (countAgainstBudget) this._bumpLink();
+      this._emitDelivery(sender, rec, from, text, 'pending-start', { fromName: senderName, source });
       return { ok: true, delivered: 'pending-start', agentId: rec.id, name: rec.name, status: rec.status, note: `${rec.name} has not started yet; your message will be waiting when it does.` };
     }
     if (rec.loop.running) {
       // Fire-and-forget: AgentLoop enqueues internally while running.
       rec.loop.sendUserMessage(prefixed).catch((e) => this._settle(rec.id, 'failed', e.message));
-      this._bumpLink();
-      this._emitDelivery(sender, rec, from, text, 'queued');
+      if (countAgainstBudget) this._bumpLink();
+      this._emitDelivery(sender, rec, from, text, 'queued', { fromName: senderName, source });
       return { ok: true, delivered: 'queued', agentId: rec.id, name: rec.name, status: rec.status, note: 'The agent is working; your message is queued and it will read it when the current turn ends.' };
     }
-    if (rec.origin === 'roster' && FINISHED.has(rec.status)) {
-      // Roster members are owned by the TeamRunner; waking one here would run
-      // it outside the crew's result accounting. Its answer is already in the
-      // handoff relay / parallel results.
-      return { ok: false, error: `${rec.name} already finished (${rec.status}) and its answer is part of the crew's results. It cannot be woken.` };
-    }
-    if (FINISHED.has(rec.status) && rec.status !== 'completed') {
-      return { ok: false, error: `${rec.name} already ${rec.status}${rec.error ? ': ' + rec.error : ''}. It cannot be woken.`, status: rec.status };
-    }
     this._trackTask(rec.id, this._run(rec.id, prefixed));
-    this._bumpLink();
-    this._emitDelivery(sender, rec, from, text, 'new-turn');
+    if (countAgainstBudget) this._bumpLink();
+    this._emitDelivery(sender, rec, from, text, 'new-turn', { fromName: senderName, source });
     return { ok: true, delivered: 'new-turn', agentId: rec.id, name: rec.name, note: 'The agent was idle and has been woken with your message.' };
+  }
+
+  /* User/operator mail is deliberately distinct from peer mail:
+   * - it cannot trip the LINKS: COMPLETE sentinel;
+   * - it does not spend the agents' bounded peer-exchange budget;
+   * - it is labelled as user direction in the receiving prompt and telemetry.
+   * Existing pause/finished/inbox rules still apply, so this cannot silently
+   * revoke an explicit user pause or resurrect a terminal failed worker. */
+  sendFromUser({ to, message }) {
+    return this.send({
+      from: '__user__', to, message,
+      fromName: 'You', source: 'user',
+      countAgainstBudget: false,
+      allowCompletion: false,
+      exact: true,
+    });
   }
 
   /* Links budget accounting: one unit per DELIVERED crew message. */
@@ -600,6 +721,16 @@ class AgentNet {
     if (!rec) return this._notFound(agentId);
     if (rec.ambiguous) return { ok: false, error: `"${agentId}" is ambiguous.`, candidates: rec.ambiguous };
     if (rec.id === callerId) return { ok: false, error: 'An agent cannot await itself.' };
+    // A queued operator helper is waiting for a slot currently held by one or
+    // more roster turns. Letting such a roster member block in agent.await can
+    // deadlock a concurrency-1 team, so it must finish/yield its turn first.
+    if (rec.operatorAdded && rec.status === 'queued') {
+      return {
+        ok: false,
+        status: 'queued',
+        error: `${rec.name} is queued for team capacity. Do not await it while holding a team slot; continue useful work or finish this turn so the scheduler can start it.`,
+      };
+    }
     const cycle = this._awaitCycle(callerId, rec.id);
     if (cycle) return { ok: false, error: `Circular await refused: ${cycle.join(' → ')}. Await something else or use agent.status to poll.` };
 
@@ -712,17 +843,22 @@ class AgentNet {
 
   pause() {
     this.paused = true;
-    for (const rec of this.agents.values()) if (rec.origin === 'spawned') rec.control?.pause();
+    for (const rec of this.agents.values()) {
+      if (rec.origin === 'spawned' && rec.status !== 'queued') rec.control?.pause();
+    }
   }
 
   resume() {
     this.paused = false;
-    for (const rec of this.agents.values()) if (rec.origin === 'spawned') rec.control?.resume();
+    for (const rec of this.agents.values()) {
+      if (rec.origin === 'spawned' && rec.status !== 'queued') rec.control?.resume();
+    }
   }
 
   controlWorker(id, start) {
     const rec = this.agents.get(id);
     if (rec?.origin !== 'spawned' || !rec.control || rec.control.finished) throw new Error('No unfinished worker with this id.');
+    if (rec.status === 'queued') throw new Error('This helper is queued for team capacity and has not started yet.');
     if (start) { this.paused = false; rec.control.resume(); }
     else rec.control.pause();
   }

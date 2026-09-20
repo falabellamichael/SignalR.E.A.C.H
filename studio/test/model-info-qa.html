@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>REACH model information QA</title>
+  <link rel="stylesheet" href="../renderer/styles.css">
+  <link rel="stylesheet" href="../renderer/team-deck.css">
+  <style>
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body { background: #050505; }
+    .qa-shell { width: 100%; height: 100%; padding: 16px 22px; display: flex; flex-direction: column; gap: 12px; }
+    .qa-caption { display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 12px; }
+    .qa-caption strong { color: var(--text); font-size: 14px; }
+    .qa-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+    .qa-view[hidden] { display: none; }
+    .qa-agent { width: min(100%, 960px); margin-inline: auto; min-height: 0; display: flex; flex: 1; flex-direction: column; gap: 10px; }
+    .qa-agent .chat-pane { min-height: 0; }
+    .qa-team-scroll { min-height: 0; flex: 1; overflow: auto; padding-bottom: 300px; }
+    .qa-team-scroll .team-deck { width: 100%; }
+    .qa-message { align-self: flex-start; max-width: 78%; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; line-height: 1.55; }
+    .qa-spacer { height: 700px; flex: 0 0 700px; padding: 18px 14px; color: var(--dim); }
+  </style>
+</head>
+<body>
+  <main class="qa-shell">
+    <div class="qa-caption"><strong>REACH Studio</strong><span id="qa-label">Regular agent chat · expanded model information</span></div>
+    <section id="regular-view" class="qa-view">
+      <div id="agent-view" class="qa-agent">
+        <details id="agent-model-info" class="model-info-disclosure" open>
+          <summary aria-label="Toggle conversation and model information">
+            <span class="model-info-summary-copy"><strong>Research Agent</strong><span>Qwen3.6-35B-A3B-MTP-GGUF</span></span>
+            <span class="model-info-summary-status" data-status="running">running</span>
+            <span class="model-info-caret" aria-hidden="true"></span>
+          </summary>
+          <div class="model-info-content">
+            <div class="project-head">
+              <div><h2 id="agent-name">Research Agent</h2><div id="agent-meta" class="path">D:\SimpleREACH · Qwen3.6-35B-A3B-MTP-GGUF</div></div>
+              <div class="project-actions"><span class="chip pending">running</span><button class="ghost">Team…</button><button class="ghost">Stop</button><button class="ghost">Settings ▾</button></div>
+            </div>
+            <div class="chat-status">
+              <div class="context-bar"><span>Context ≈ 18,420 tokens · Auto on</span><button class="ghost">Compress now</button></div>
+              <section id="agent-activity" class="activity-panel" data-status="running">
+                <div class="activity-head"><strong class="activity-title">Generate response</strong><span class="activity-time">3m 35s elapsed</span></div>
+                <p class="activity-note">Receiving response · 128 characters received</p>
+              </section>
+            </div>
+          </div>
+        </details>
+        <div class="chat-pane">
+          <div id="chat-scroll" class="chat-scroll" tabindex="0" aria-label="Conversation">
+            <div class="qa-message">I need to explore the codebase to find additional areas for the document.</div>
+            <div class="qa-message">The model information above stays attached while this conversation scrolls.</div>
+            <div class="qa-spacer">More conversation history…</div>
+          </div>
+          <div class="composer"><textarea rows="1" placeholder="Ask the agent…"></textarea><button class="gold">Send</button></div>
+        </div>
+      </div>
+    </section>
+    <section id="team-view" class="qa-view" hidden>
+      <div id="team-scroll" class="qa-team-scroll"></div>
+    </section>
+  </main>
+  <script src="../renderer/team-deck.js"></script>
+  <script>
+    window.ReachActivityState = { summary: state => ({
+      title: state && state.title || 'Waiting for an update', elapsed: state && state.elapsed || '3m 35s',
+      active: state && state.status === 'running', waiting: state && state.waiting, silent: false
+    }) };
+    const deck = window.ReachTeamDeck.create({ team: { name: 'Team1', mode: 'links' }, task: 'Expanded model information remains stationary' });
+    const members = [
+      ['Thinker', 'Qwen3.6-35B-A3B-MTP-GGUF', 'running', 'Generate response'],
+      ['Seeker', 'deepseek-flash', 'running', 'Waiting for an update'],
+      ['Assistant', 'deepseek-flash', 'waiting_input', 'Waiting for your approval'],
+      ['SeekBosss', 'deepseek-v4-pro', 'running', 'Thinking']
+    ];
+    members.forEach(([name, model, status, title], index) => {
+      const card = document.createElement('div');
+      card.className = 'member-card';
+      card.innerHTML = '<div class="member-head"><div class="member-identity"><strong class="member-name"></strong><span class="member-model"></span></div><span class="member-state dim"></span><span class="member-meta"></span><button class="ghost small member-control" type="button">Stop</button></div><div class="member-body"><p>I need to explore the codebase to gather more evidence. The team activity remains scrollable below the pinned information.</p></div>';
+      card.querySelector('.member-state').textContent = title;
+      card.querySelector('.member-meta').textContent = 'Round 2 · 3m 35s';
+      deck.add(card, { name, model });
+      deck.update(card, { status, title, elapsed: '3m 35s', round: 2, count: index + 5, startedAt: Date.now() - 215000, steps: [] });
+      if (index === 0) deck.select(card);
+    });
+    deck.element.append(Object.assign(document.createElement('div'), { className: 'qa-spacer', textContent: 'More team activity and conversation history…' }));
+    document.querySelector('#team-scroll').append(deck.element);
+    const teamMode = location.hash === '#team';
+    document.querySelector('#regular-view').hidden = teamMode;
+    document.querySelector('#team-view').hidden = !teamMode;
+    document.querySelector('#qa-label').textContent = teamMode ? 'Teams · expanded selected model information' : 'Regular agent chat · expanded model information';
+  </script>
+</body>
+</html>

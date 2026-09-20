@@ -59,6 +59,8 @@ class AgentStore {
       name: a.name,
       dir: a.dir,
       model: a.model || '',
+      personaId: a.personaId || '',
+      connectionId: a.connectionId || '',
       createdAt: a.createdAt,
       updatedAt: a.updatedAt,
       messageCount: Array.isArray(a.messages) ? a.messages.length : 0,
@@ -131,7 +133,7 @@ class AgentStore {
     return a;
   }
 
-  create({ name, dir, model, parentChatId = null, forkIndex = null }) {
+  create({ name, dir, model, personaId = '', personaPrompt = '', connectionId = '', parentChatId = null, forkIndex = null }) {
     const maxAgents = resolveBudgets(this.getSettings()).maxConversations;
     if (maxAgents > 0 && this.agents.length >= maxAgents) {
       throw new Error(`Conversation limit reached (${maxAgents}). Change Settings > Budgeting or delete a conversation.`);
@@ -142,6 +144,13 @@ class AgentStore {
       name: String(name || 'Chat').slice(0, 80),
       dir: String(dir || ''),
       model: String(model || ''),
+      // A reusable custom agent can be materialized as a normal independent
+      // conversation. Keep the template provenance and instructions with the
+      // chat so later messages use the same identity without depending on the
+      // persona still existing.
+      personaId: String(personaId || '').slice(0, 96),
+      personaPrompt: String(personaPrompt || '').slice(0, 8000),
+      connectionId: String(connectionId || '').slice(0, 64),
       createdAt: now,
       updatedAt: now,
       // Branch lineage: a forked chat copies history up to forkIndex.
@@ -179,6 +188,9 @@ class AgentStore {
       name: name || `${parent.name} (branch ${siblings + 1})`,
       dir: parent.dir,
       model: parent.model,
+      personaId: parent.personaId || '',
+      personaPrompt: parent.personaPrompt || '',
+      connectionId: parent.connectionId || '',
       parentChatId: id,
       forkIndex: cut,
     });
@@ -221,6 +233,9 @@ class AgentStore {
       name: String(data.name || 'Imported chat').slice(0, 80),
       dir: data.dir,
       model: String(data.model || ''),
+      personaId: String(data.personaId || '').slice(0, 96),
+      personaPrompt: String(data.personaPrompt || '').slice(0, 8000),
+      connectionId: String(data.connectionId || '').slice(0, 64),
       createdAt: now,
       updatedAt: now,
       parentChatId: null,
@@ -245,6 +260,9 @@ class AgentStore {
     if (patch.name !== undefined) agent.name = String(patch.name).slice(0, 80);
     if (patch.dir !== undefined) agent.dir = String(patch.dir);
     if (patch.model !== undefined) agent.model = String(patch.model);
+    if (patch.personaId !== undefined) agent.personaId = String(patch.personaId || '').slice(0, 96);
+    if (patch.personaPrompt !== undefined) agent.personaPrompt = String(patch.personaPrompt || '').slice(0, 8000);
+    if (patch.connectionId !== undefined) agent.connectionId = String(patch.connectionId || '').slice(0, 64);
     if (patch.settings && typeof patch.settings === 'object') {
       agent.settings = { ...agent.settings, ...patch.settings };
     }

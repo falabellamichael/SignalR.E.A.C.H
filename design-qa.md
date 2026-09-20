@@ -1,7 +1,6 @@
 # Deployed team tabs design QA — September 19, 2026
 
 final result: passed
-
 ## Target and scope
 
 User direction: Orbit Deck (#3) architecture and activity rings, Relay Rail (#1)
@@ -229,3 +228,76 @@ No actionable P0/P1/P2 findings remain. Expected limits: minimum-height windows
 require scrolling the dashboard; model-memory availability depends on the provider;
 non-Windows GPU/network/disk counters are explicitly unavailable. macOS native
 hardware behavior was not exercised on this Windows machine.
+
+---
+
+# Model information disclosure design QA
+
+**Source visual truth**
+
+- `C:\Users\Falab\AppData\Local\Temp\codex-clipboard-9dd7b0d0-97c5-4055-9f26-4e25fcc15250.png`
+- Source pixels: 1661 × 792 PNG.
+
+**Rendered implementation evidence**
+
+- Teams expanded: `C:\Users\Falab\AppData\Local\Temp\qa-model-info-team.png`
+- Teams collapsed: `C:\Users\Falab\AppData\Local\Temp\qa-model-info-team-collapsed.png`
+- Teams scrolled 504px with header pinned: `C:\Users\Falab\AppData\Local\Temp\qa-model-info-team-scrolled.png`
+- Regular chat expanded: `C:\Users\Falab\AppData\Local\Temp\qa-model-info-regular.png`
+- Regular chat collapsed: `C:\Users\Falab\AppData\Local\Temp\qa-model-info-regular-collapsed.png`
+- Source/Teams composite: `C:\Users\Falab\AppData\Local\Temp\qa-model-info-comparison.png`
+- Implementation pixels: 1661 × 792 for every capture. Browser CSS viewport: 1661 × 792. Device scale factor: 1. No density normalization was required.
+- State: dark theme; populated regular conversation; active four-member Links team; expanded, collapsed, selected-member-change, and scrolled states.
+
+**Findings**
+
+- No actionable P0, P1, or P2 difference remains for the requested model-information behavior.
+- The source hierarchy is retained: team identity/counts, member rail, selected model identity, live state, timing, and control remain above member output.
+- The intentional difference is the new disclosure summary above the expanded information. It gives both regular chat and Teams the requested compact dropdown state without removing any information.
+
+**Required fidelity surfaces**
+
+- Fonts and typography: existing REACH font stack, weights, truncation, and small metadata hierarchy are preserved. Long model names truncate in the compact summary and remain readable in the expanded row.
+- Spacing and layout rhythm: the new 40–42px summary rows align with the existing compact controls; expanded details retain the existing 8–14px spacing scale. No horizontal viewport overflow was visible at the reference width.
+- Colors and visual tokens: the disclosure uses the existing surface, card, line, text, dim, gold, success, and error tokens. No parallel palette was introduced.
+- Image and icon fidelity: no raster assets were added. Both disclosures reuse the existing Phosphor caret-right asset and rotate it for expanded state.
+- Copy and content: agent/team names, full model names, current state, round/timing metadata, context information, and Stop/Start controls remain present. The compact summaries provide the same information at a glance.
+
+**Interaction and accessibility evidence**
+
+- Native `details`/`summary` semantics expose expanded and collapsed state to keyboard and assistive technology.
+- Regular chat: collapsing hid the expanded content while the retained DOM still contained `Research Agent`; scrolling the conversation from 0 to 330.29px left the disclosure top unchanged at 46.29px.
+- Teams: collapsing hid the expanded selected-member row; selecting Seeker updated the summary and expanded row to `Seeker`, `deepseek-flash`, `Waiting for an update`, `Round 2 · 3m 35s`, and `Stop`.
+- Teams: scrolling team activity from 0 to 504px left the sticky header top unchanged at 46.29px.
+- Browser console: zero warnings or errors in the QA fixture.
+- At the app's 1000 × 640 minimum test viewport, neither surface overflowed horizontally; the team Stop/Start control and regular Send control both remained inside the viewport.
+
+**Full-view comparison evidence**
+
+- The 3322 × 792 side-by-side composite compares the 1661 × 792 source and implementation at equal size. The existing dark visual language, team hierarchy, member cards, state treatment, and selected-model information remain consistent. The new summary/expanded split is an intentional functional addition.
+
+**Focused region comparison evidence**
+
+- Separate expanded, collapsed, and scrolled captures were required because disclosure state and stickiness cannot be judged from one still image. These focused states verify the selected-model area rather than relying only on the full-view composite.
+
+**Comparison history**
+
+- Initial behavior capture placed the artificial scroll filler after the team component, which tested scrolling beyond the component rather than scrolling its activity. The QA fixture was corrected so the filler represents team-run content. The post-fix capture and geometry check show the header pinned during a 504px team-content scroll. This was a test-fixture alignment correction, not a production UI defect.
+- No production P0/P1/P2 visual finding required a second implementation iteration.
+
+**Implementation checklist**
+
+- [x] Regular-agent model/run information is a native dropdown.
+- [x] Regular conversation scrolls independently beneath stationary information.
+- [x] Teams selected-member information is a native dropdown inside the sticky team header.
+- [x] Team member selection keeps the pinned information synchronized.
+- [x] Stop/Start control state is mirrored into the visible pinned information.
+- [x] Expanded information remains in the DOM when collapsed.
+- [x] Reference-width expanded, collapsed, selection, scroll, and console checks completed.
+- [x] Minimum-viewport overflow and persistent-control checks completed.
+
+**Follow-up polish**
+
+- No P3 follow-up is required for this scoped change.
+
+final result: passed

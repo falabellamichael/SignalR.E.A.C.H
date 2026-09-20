@@ -215,7 +215,7 @@ function getPersonaStore() {
  * pending edits live here (main process) keyed by editId until resolved. */
 const pendingTeamEdits = new Map(); // editId -> { edit, teamRunId }
 const pendingEditResolvers = new Map(); // editId -> fn(accepted) that unblocks a paused member
-const pendingMemberAnswers = new Map(); // questionId -> fn(answer) that unblocks a waiting_input member
+const pendingMemberAnswers = new Map(); // questionId -> {resolve, teamRunId, agentId, name}
 
 /* Approval bus: the main process owns the map of pending approval requests.
  * Renderer responses arrive over ipcMain.handle('agents:respondApproval')
@@ -243,12 +243,15 @@ async function getAgentLoop(agentId) {
   if (!agent) throw new Error('Agent not found.');
 
   const settings = loadSettings();
+  const pinnedCandidate = agent.connectionId ? connections.findConnection(settings, agent.connectionId) : null;
+  const pinnedConnection = pinnedCandidate?.enabled === false ? null : pinnedCandidate;
+  const selectedConnection = pinnedConnection || connections.activeConnection(settings);
   // Follow gist/.txt endpoint pointers (same rule as models:list) so the
   // agent runs against the same endpoint the user sees in Settings.
-  let endpoint = settings.endpoint || '';
+  let endpoint = selectedConnection?.endpoint || settings.endpoint || '';
   try { endpoint = await resolveEndpoint(endpoint); }
   catch (e) { console.warn('endpoint resolve failed, using raw:', e.message); }
-  const accessKey = settings.accessKey || '';
+  const accessKey = selectedConnection?.accessKey || settings.accessKey || '';
 
   const budgets = resolveBudgets(settings, agent.settings);
   const loop = new AgentLoop({
@@ -256,7 +259,8 @@ async function getAgentLoop(agentId) {
     store,
     endpoint,
     accessKey,
-    model: agent.model || settings.model || 'gpt-4o-mini',
+    model: agent.model || selectedConnection?.model || settings.model || 'gpt-4o-mini',
+    personaPrompt: agent.personaPrompt || '',
     budgets,
     projectDir: agent.dir,
     reachExecutor: createReachToolExecutor(),
@@ -445,9 +449,27 @@ function registerIpc() {
       return { ok: false, err: e.message };
     }
   });
-  ipcMain.handle('agents:create', (_e, { name, dir, model }) => {
+  ipcMain.handle('agents:create', (_e, payload = {}) => {
     try {
-      const agent = getAgentStore().create({ name, dir, model });
+      const { name, dir, model, personaId, personaPrompt, connectionId } = payload;
+      let spec = { name, dir, model, personaId, personaPrompt, connectionId };
+      if (personaId) {
+        // Persona identity is authoritative in main. A stale or tampered
+        // renderer snapshot cannot pair one persona id with different prompts
+        // or connection credentials.
+        const persona = getPersonaStore().getPersona(String(personaId));
+        if (!persona) throw new Error('Custom agent not found. Refresh the @ menu and try again.');
+        const modelOverride = Object.hasOwn(payload, 'modelOverride') ? String(payload.modelOverride || '') : null;
+        spec = {
+          name: persona.name,
+          dir,
+          model: modelOverride === null ? persona.model || '' : modelOverride,
+          personaId: persona.id,
+          personaPrompt: persona.prompt || '',
+          connectionId: persona.connectionId || '',
+        };
+      }
+      const agent = getAgentStore().create(spec);
       return { ok: true, agent };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -779,9 +801,13 @@ function registerIpc() {
             win.once('closed', () => { for (const id of pending.keys()) pendingEditResolvers.delete(id); resolve([]); });
           }
         }),
-        requestMemberAnswer: ({ questionId, index, name, question }) => new Promise((resolve) => {
-          pendingMemberAnswers.set(questionId, resolve);
-          if (budgets.questionTimeoutMs > 0) setTimeout(() => { if (pendingMemberAnswers.delete(questionId)) resolve(null); }, budgets.questionTimeoutMs);
+        requestMemberAnswer: ({ questionId, agentId: waitingAgentId, index, name, question }) => new Promise((resolve) => {
+          const agentKey = String(waitingAgentId || (Number.isInteger(index) ? `m${index}-${personas[index]?.id || ''}` : ''));
+          pendingMemberAnswers.set(questionId, { resolve, teamRunId, agentId: agentKey, name: String(name || agentKey) });
+          if (budgets.questionTimeoutMs > 0) setTimeout(() => {
+            const pending = pendingMemberAnswers.get(questionId);
+            if (pending && pendingMemberAnswers.delete(questionId)) pending.resolve(null);
+          }, budgets.questionTimeoutMs);
         }),
       });
       runner.conversationId = agentId || null;
@@ -796,6 +822,11 @@ function registerIpc() {
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
       }).finally(() => {
+        for (const [questionId, pending] of pendingMemberAnswers) {
+          if (pending.teamRunId !== teamRunId) continue;
+          pendingMemberAnswers.delete(questionId);
+          pending.resolve(null);
+        }
         teamRuns.delete(teamRunId);
       });
       return { ok: true, teamRunId, routing };
@@ -826,6 +857,69 @@ function registerIpc() {
     } catch (error) { return { ok: false, err: error.message }; }
   });
 
+  ipcMain.handle('teams:members', (_e, { teamRunId }) => {
+    const runner = teamRuns.get(String(teamRunId || ''));
+    if (!runner) return { ok: false, err: 'Team run is no longer available.' };
+    const result = runner.members();
+    return result.ok ? result : { ok: false, err: result.error };
+  });
+
+  ipcMain.handle('teams:message', (_e, { teamRunId, target, message }) => {
+    try {
+      const runner = teamRuns.get(String(teamRunId || ''));
+      if (!runner) throw new Error('Team run is no longer available.');
+      const text = String(message || '').trim();
+      if (!text) throw new Error('A message is required.');
+      if (text.length > 20000) throw new Error('Team messages are limited to 20,000 characters.');
+      const result = runner.messageMember(String(target || ''), text);
+      return result.ok ? result : { ok: false, err: result.error, candidates: result.candidates };
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
+
+  ipcMain.handle('teams:addAgent', async (_e, payload = {}) => {
+    try {
+      const runner = teamRuns.get(String(payload.teamRunId || ''));
+      if (!runner) throw new Error('Team run is no longer available.');
+      if (runner.team.mode !== 'links') throw new Error('Run-only agents can join Links teams. Parallel and chain teams have a fixed result roster.');
+      const ps = getPersonaStore();
+      const saved = payload.agentId ? getAgentStore().get(String(payload.agentId)) : null;
+      const persona = payload.personaId ? ps.getPersona(String(payload.personaId)) : null;
+      if (payload.personaId && !persona) throw new Error('Custom agent not found. Refresh the @ menu and try again.');
+      if (payload.agentId && !saved) throw new Error('Saved conversation not found. Refresh the @ menu and try again.');
+      const template = persona || saved || {};
+      const name = String(payload.name || template.name || '').trim().slice(0, 80);
+      if (!name) throw new Error('Choose a custom agent or provide a name.');
+      const task = String(payload.task || '').trim().slice(0, 20000);
+      const role = String(payload.role || '').trim().slice(0, 240);
+      const modelOverride = String(payload.model || '').trim().slice(0, 240);
+      const routePersona = {
+        id: persona?.id || saved?.personaId || '',
+        name,
+        model: modelOverride || template.model || '',
+        connectionId: persona?.connectionId || saved?.connectionId || '',
+      };
+      const settings = loadSettings();
+      const [route] = resolveTeamConnections({ settings, personas: [routePersona], spread: false, defaultModel: settings.model || runner.defaultModel });
+      if (!route?.endpoint) throw new Error('No enabled connection is available for this agent.');
+      route.endpoint = await resolveEndpoint(route.endpoint);
+      const result = runner.addRuntimeAgent({
+        name,
+        model: modelOverride || route.model,
+        prompt: persona?.prompt || saved?.personaPrompt || '',
+        role,
+        task,
+        endpoint: route.endpoint,
+        accessKey: route.accessKey,
+      });
+      if (!result.ok) return { ok: false, err: result.error };
+      return {
+        ...result,
+        connectionName: route.connectionName || '',
+        connectionReason: route.reason || '',
+      };
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
+
   ipcMain.handle('teams:resolveEdit', (_e, { editId, accepted }) => {
     const entry = pendingTeamEdits.get(editId);
     if (!entry) return { ok: false, err: 'Edit not found (already resolved?)' };
@@ -847,11 +941,27 @@ function registerIpc() {
   });
 
   ipcMain.handle('teams:answerQuestion', (_e, { questionId, answer }) => {
-    const resolver = pendingMemberAnswers.get(questionId);
-    if (!resolver) return { ok: false, err: 'No member is waiting for this question (expired or already answered).' };
+    const pending = pendingMemberAnswers.get(questionId);
+    if (!pending) return { ok: false, err: 'No member is waiting for this question (expired or already answered).' };
     pendingMemberAnswers.delete(questionId);
-    resolver(String(answer === undefined ? '' : answer));
+    pending.resolve(String(answer === undefined ? '' : answer));
     return { ok: true };
+  });
+
+  ipcMain.handle('teams:answerMember', (_e, { teamRunId, agentId, answer }) => {
+    const runId = String(teamRunId || '');
+    const targetId = String(agentId || '');
+    if (!teamRuns.has(runId)) return { ok: false, err: 'Team run is no longer available.' };
+    const matches = [...pendingMemberAnswers.entries()].filter(([, pending]) => pending.teamRunId === runId && pending.agentId === targetId);
+    if (!matches.length) return { ok: false, err: 'That member is not waiting for a structured answer. Use /reply for ordinary guidance.' };
+    if (matches.length > 1) return { ok: false, err: 'That member has more than one pending question. Answer it from the visible question card.' };
+    const [questionId, pending] = matches[0];
+    const text = String(answer || '').trim();
+    if (!text) return { ok: false, err: 'An answer is required.' };
+    if (text.length > 20000) return { ok: false, err: 'Answers are limited to 20,000 characters.' };
+    pendingMemberAnswers.delete(questionId);
+    pending.resolve(text);
+    return { ok: true, questionId, name: pending.name };
   });
 
   // ---------- file ipc (scoped to an agent's project directory) ----------

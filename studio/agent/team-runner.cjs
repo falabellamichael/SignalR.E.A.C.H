@@ -164,6 +164,7 @@ class TeamRunner {
       this._emit('member-control', { index, name: persona.name, paused });
     }));
     this.running = true;
+    this.acceptingRuntimeAgents = false;
     // Resolves when stop() is called so pause waits can race it and unwind.
     this._stopDeferred = null;
     this._linkDeclared = null;   // member declared LINKS: COMPLETE in its answer
@@ -175,6 +176,10 @@ class TeamRunner {
     this._linksActivityVersion = 0; // event-driven scheduler pulse (no polling timer)
     this._linksActivityLast = null;
     this._linksActivityDeferred = null;
+    // Installed only while the Links work-conserving scheduler is alive. An
+    // operator-added helper asks this pump for capacity instead of starting an
+    // independent AgentNet task outside the roster semaphore.
+    this._linksPump = null;
   }
 
   _stopSignal() {
@@ -304,12 +309,19 @@ class TeamRunner {
       teamRunId,
       teamName: this.team.name,
       onSettled: () => {
+        // A finished operator helper releases one of the shared Links slots.
+        // Refill it immediately rather than waiting for an unrelated roster
+        // event. Model-created workers are not counted by this scheduler.
+        if (this._linksPump) this._linksPump();
         this.updatePausedState();
         this._signalLinksActivity({ type: 'worker-settled' });
       },
       onActivity: activity => {
         if (mode === 'links' && activity?.linksComplete) {
           this._concludeLinkPeers(activity.from, activity.fromName || String(activity.from || 'crew member'), { includeDeclarer: true });
+        }
+        if (mode === 'links' && activity?.type === 'operator-helper-queued' && this._linksPump) {
+          this._linksPump();
         }
         this._signalLinksActivity(activity);
       },
@@ -334,6 +346,7 @@ class TeamRunner {
       rosterMailbox: mode === 'links',
       linkBudget: mode === 'links' ? LINKS_RATE * Math.max(1, this.personas.length - 1) : null,
     });
+    this.acceptingRuntimeAgents = true;
     this._emit('start', {
       teamName: this.team.name,
       mode,
@@ -343,6 +356,7 @@ class TeamRunner {
         const conn = this._memberConn(i);
         return {
           index: i,
+          agentId: `m${i}-${p.id}`,
           name: p.name,
           model: conn.model,
           role: this.roleOf(i),
@@ -397,9 +411,16 @@ class TeamRunner {
           handoffs.push(this._handoffEntry(i, r.output));
         }
       }
+      this.acceptingRuntimeAgents = false;
+      this._cancelQueuedOperatorAgents('The team finalized before this helper started.');
     } catch (e) {
       this._emit('error', { message: e.message });
     } finally {
+      this.acceptingRuntimeAgents = false;
+      this._linksPump = null;
+      this._cancelQueuedOperatorAgents(this.stopped
+        ? 'Stopped by you before this helper started.'
+        : 'The team finalized before this helper started.');
       // Let members' spawned workers finish, then release the id registry.
       if (this.net) {
         if (!this.stopped) {
@@ -479,7 +500,7 @@ class TeamRunner {
       clearPendingEdits: () => this.memberEdits.set(key, []),
       awaitEditResolution: this.awaitEditResolution,
       requestMemberAnswer: this.requestMemberAnswer
-        ? (q) => this.requestMemberAnswer({ ...q, index, name: persona.name, model })
+        ? (q) => this.requestMemberAnswer({ ...q, agentId: key, index, name: persona.name, model })
         : null,
       onWaiting: (edits) => this._emit('member-waiting', {
         index, name: persona.name, status: 'waiting_edits',
@@ -631,12 +652,40 @@ class TeamRunner {
 
   /* ---------- LINKS mode: the peer network ---------- */
 
+  _operatorHelpers(status) {
+    if (!this.net) return [];
+    return [...this.net.agents.values()].filter(rec =>
+      rec.origin === 'spawned'
+      && rec.operatorAdded === true
+      && (!status || rec.status === status));
+  }
+
+  _activeOperatorHelperCount() {
+    const terminal = new Set(['completed', 'failed', 'stopped', 'abandoned', 'stalled', 'skipped']);
+    return this._operatorHelpers().filter(rec =>
+      !terminal.has(rec.status) && this.net.activeTasks.has(rec.id)).length;
+  }
+
+  _cancelQueuedOperatorAgents(reason) {
+    if (!this.net?.cancelQueuedSpawned) return 0;
+    let cancelled = 0;
+    for (const rec of this._operatorHelpers('queued')) {
+      if (this.net.cancelQueuedSpawned(rec.id, reason)) cancelled++;
+    }
+    return cancelled;
+  }
+
   /* A completion declaration is terminal for the whole peer network, but an
    * immediate abort can cut off a peer between a successful tool result and
    * its final response. Give active peers one short grace window, then abort
    * anything still hanging (including endpoints that never send headers).
    * This is not a user Stop and is reported as successful team completion. */
   _concludeLinkPeers(declarerKey, declarerName, { includeDeclarer = false } = {}) {
+    // Completion is terminal for operator admission too. Do not accept mail or
+    // launch paid helper work during the short grace used only to harvest
+    // already-running peers.
+    this.acceptingRuntimeAgents = false;
+    this._cancelQueuedOperatorAgents('Links completed before this helper started.');
     if (this._linksConclusionTimer) return;
     this._linksConclusionTimer = setTimeout(() => {
       this._linksConclusionTimer = null;
@@ -788,6 +837,9 @@ class TeamRunner {
     let nextJobId = 0;
     let rounds = 0;
     let seenActivityVersion = this._linksActivityVersion;
+    // Alternate helper and roster admission when both are queued. This lets a
+    // newly-added specialist join promptly without starving the fixed roster.
+    let preferOperatorHelper = true;
 
     const failedJobResult = (index, error) => ({
       index,
@@ -878,11 +930,36 @@ class TeamRunner {
 
     const pump = () => {
       let launched = 0;
-      while (!this.stopped && !this._linksDone() && activeJobs.size < this.concurrency && jobQueue.length) {
-        if (launchJob(jobQueue.shift())) launched++;
+      while (!this.stopped && !this.userPaused && this.acceptingRuntimeAgents && !this._linksDone()
+        && activeJobs.size + this._activeOperatorHelperCount() < this.concurrency) {
+        const queuedHelper = this._operatorHelpers('queued')[0] || null;
+        const tryHelper = queuedHelper && (preferOperatorHelper || !jobQueue.length);
+        if (tryHelper) {
+          const started = this.net.startSpawned(queuedHelper.id);
+          if (!started.ok) break;
+          preferOperatorHelper = false;
+          launched++;
+          continue;
+        }
+        if (jobQueue.length) {
+          if (launchJob(jobQueue.shift())) {
+            preferOperatorHelper = true;
+            launched++;
+          }
+          continue;
+        }
+        if (queuedHelper) {
+          const started = this.net.startSpawned(queuedHelper.id);
+          if (!started.ok) break;
+          preferOperatorHelper = false;
+          launched++;
+          continue;
+        }
+        break;
       }
       return launched;
     };
+    this._linksPump = pump;
 
     const settleJob = ({ jobId, job, result }) => {
       activeJobs.delete(jobId);
@@ -941,10 +1018,16 @@ class TeamRunner {
       // A roster member may have delegated useful work and finished before its
       // worker. Await already-paid work (event-driven, no polling); its mail or
       // completed output is then considered before paying for synthesis.
-      const waited = this.net ? await this.net.drainActiveSpawned() : 0;
-      if (waited && !this.stopped && !this._linksDone()) {
+      if (this.net) await this.net.drainActiveSpawned();
+      if (!this.stopped && !this._linksDone()) {
+        // A very fast helper can settle between drainActiveSpawned's final
+        // scan and this continuation. Its onSettled hook may already have
+        // launched a roster job, so always re-pump and inspect the whole pool
+        // before declaring Links quiescent.
         pulse(0);
-        if (activeJobs.size || jobQueue.length) continue;
+        if (activeJobs.size || jobQueue.length
+          || this._activeOperatorHelperCount()
+          || this._operatorHelpers('queued').length) continue;
       }
       break;
     }
@@ -968,6 +1051,13 @@ class TeamRunner {
       this.net?.syncMember(`m${index}-${this.personas[index].id}`, { status: result.status, error: result.error, output: '' });
     }
     this._linksActivityDeferred = null;
+
+    // The roster is quiescent. Do not accept an operator helper after this
+    // boundary: Links may now synthesize/finalize and cannot safely enroll new
+    // work in the answer it is already constructing.
+    this.acceptingRuntimeAgents = false;
+    this._linksPump = null;
+    this._cancelQueuedOperatorAgents('Links finalized before this helper started.');
 
     // Synthesis reuses (and then replaces) a roster result. Retain every
     // usable pre-synthesis answer so a failed synthesis cannot erase it.
@@ -1064,6 +1154,58 @@ class TeamRunner {
     if (start) { if (this.net) this.net.paused = false; control.resume(); }
     else control.pause();
     this.updatePausedState();
+  }
+
+  members() {
+    if (!this.net) return { ok: false, error: 'The team network has not started yet.' };
+    const snapshot = this.net.list('__user__');
+    return {
+      ...snapshot,
+      mode: this.team.mode,
+      running: this.running && !this.stopped,
+      paused: this.paused,
+      teamRunId: this.teamRunId,
+    };
+  }
+
+  messageMember(target, message) {
+    if (!this.net || !this.running || this.stopped || !this.acceptingRuntimeAgents || this.team.mode === 'links' && this._linksDone()) return { ok: false, error: 'The team run is finalizing and is no longer accepting messages.' };
+    return this.net.sendFromUser({ to: target, message });
+  }
+
+  /* Join-this-run-only helper. It is intentionally a spawned network worker,
+   * not a mutation of the fixed saved roster: parallel/chain/Links schedulers
+   * snapshot roster indexes at dispatch. The worker still has tools, its own
+   * tab/control, direct team messaging, and is awaited before run finalization;
+   * Links synthesis also incorporates spawned-worker results. */
+  addRuntimeAgent({ name, model = '', prompt = '', task = '', role = '', endpoint = '', accessKey = '' } = {}) {
+    if (this.team.mode !== 'links') return { ok: false, error: 'Run-only agents can join Links teams. Parallel and chain teams have a fixed result roster.' };
+    if (!this.net || !this.running || this.stopped || !this.acceptingRuntimeAgents || this._linksDone()) return { ok: false, error: 'The team run is finalizing and is no longer accepting agents.' };
+    if (this.paused || this.userPaused) return { ok: false, error: 'Resume the team before adding an agent.' };
+    const roleText = String(role || '').trim();
+    const instructions = [String(prompt || '').trim(), roleText ? `YOUR ROLE ON THIS RUN: ${roleText}` : ''].filter(Boolean).join('\n\n');
+    const assignment = String(task || '').trim() || `Join ${this.team.name} and help complete its active task:\n${this.task}`;
+    const result = this.net.spawn({
+      name, model, prompt: instructions, task: assignment,
+      parentId: null, depth: 0, callerName: 'You', endpoint, accessKey,
+      deferStart: true, operatorAdded: true,
+    });
+    if (result.ok) {
+      if (this._linksPump) this._linksPump();
+      this._signalLinksActivity({ type: 'operator-agent-added', agentId: result.agentId });
+    }
+    if (!result.ok) return result;
+    const liveStatus = this.net.agents?.get(result.agentId)?.status || result.status || '';
+    const stillQueued = liveStatus ? liveStatus === 'queued' : result.queued === true;
+    return {
+      ...result,
+      status: liveStatus || (stillQueued ? 'queued' : 'starting'),
+      queued: stillQueued,
+      transient: true,
+      note: stillQueued
+        ? 'Joined this run only and queued for team capacity; the saved team roster is unchanged.'
+        : 'Joined this run only and started in an available team slot; the saved team roster is unchanged.',
+    };
   }
 
   updatePausedState() {

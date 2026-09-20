@@ -10,6 +10,7 @@ $('#set-reach-cli-help').textContent = reachApi.platform === 'win32'
   ? 'Optional Reach language toolchain: path inside WSL Ubuntu. Leave blank for /usr/local/bin/reach.'
   : 'Optional Reach language toolchain: executable path. Leave blank to find reach on PATH, including Homebrew and ~/.local/bin.';
 const md = window.ReachMarkdown;
+const composerIntents = window.ReachComposerIntents;
 const showNotice = message => window.ReachDialogs.notice(message);
 const confirmAction = message => window.ReachDialogs.confirm(message);
 
@@ -59,8 +60,21 @@ const agentMetaEl = $('#agent-meta');
 const chatLog = $('#chat-log');
 const chatScroll = $('#chat-scroll');
 const composerInput = $('#composer-input');
+const composerSuggestionsEl = $('#composer-suggestions');
+const composerSuggestionStatus = $('#composer-suggestion-status');
+const backgroundAgentAlertsEl = $('#background-agent-alerts');
 const composerAttachmentsEl = $('#composer-attachments');
 let composerAttachments = [];
+let composerIntentPending = false;
+let composerSuggestionItems = [];
+let composerSuggestionIndex = 0;
+let composerSuggestionContext = null;
+let composerCatalogRevision = 0;
+let composerCatalog = [];
+let composerModelsCache = { key: '', at: 0, items: [] };
+const backgroundAgentGates = new Map();
+let composerMentionRetry = null;
+let composerOutputContextAgentId = null;
 const todosPanel = $('#agent-todos');
 const todoList = $('#agent-todo-list');
 const queuedIndicator = $('#queued-indicator');
@@ -257,6 +271,46 @@ $('#btn-create').onclick = async () => {
 let agentProjectDir = null;   // project the sidebar tree is scoped to
 let agentTreeRevision = 0;
 
+function renderBackgroundAgentGates() {
+  backgroundAgentAlertsEl.replaceChildren();
+  backgroundAgentAlertsEl.classList.toggle('hidden', !backgroundAgentGates.size);
+  for (const gate of backgroundAgentGates.values()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'background-agent-alert';
+    button.title = `${gate.name} — ${gate.detail}`;
+    const name = document.createElement('strong');
+    name.textContent = gate.name;
+    const state = document.createElement('span');
+    state.textContent = gate.action || 'Open';
+    button.append(name, state);
+    button.onclick = async () => {
+      backgroundAgentGates.delete(gate.agentId);
+      renderBackgroundAgentGates();
+      await showTab('agents');
+      await selectAgent({ id: gate.agentId });
+    };
+    backgroundAgentAlertsEl.appendChild(button);
+  }
+}
+
+function setBackgroundAgentGate(agentId, detail, { clear = false, action = 'Open' } = {}) {
+  const id = String(agentId || '');
+  if (!id) return;
+  if (clear) backgroundAgentGates.delete(id);
+  else {
+    const known = agents.find(agent => agent.id === id);
+    backgroundAgentGates.set(id, { agentId: id, name: known?.name || 'Background agent', detail: String(detail || 'Needs attention'), action });
+    if (!known) void reachApi.agents.get(id).then(agent => {
+      const gate = backgroundAgentGates.get(id);
+      if (!agent || !gate) return;
+      gate.name = agent.name || gate.name;
+      renderBackgroundAgentGates();
+    }).catch(() => {});
+  }
+  renderBackgroundAgentGates();
+}
+
 async function loadAgentProjectSelect() {
   const revision = projectSelectionRevision;
   // Options = remembered projects ∪ dirs that already have chats.
@@ -310,7 +364,8 @@ async function loadAgentTree() {
     const label = document.createElement('div');
     label.className = 'tree-label';
     const dot = document.createElement('span');
-    dot.className = 'tree-dot ' + (node.status === 'running' ? 'run' : node.messageCount ? 'ok' : 'idle');
+    const attention = ['waiting_input', 'waiting_edits', 'paused', 'failed', 'error'].includes(node.status);
+    dot.className = 'tree-dot ' + (node.status === 'running' ? 'run' : attention ? 'attention' : node.messageCount ? 'ok' : 'idle');
     label.appendChild(dot);
     const name = document.createElement('span');
     name.className = 'tree-name';
@@ -337,10 +392,13 @@ async function loadAgentTree() {
 }
 
 async function selectAgent(a) {
+  closeComposerSuggestions();
+  invalidateComposerCatalog();
   if ([...openFiles.values()].some(f => f.dirty) && !await confirmAction('There are unsaved editor changes. Discard them and switch conversation?')) return;
   const revision = ++projectSelectionRevision;
   const selected = await reachApi.agents.get(a.id);
   if (!selected || revision !== projectSelectionRevision) return;
+  setBackgroundAgentGate(selected.id, '', { clear: true });
   streamBubble = null;
   recoveryBubble = null;
   resetEditors();
@@ -357,6 +415,8 @@ async function selectAgent(a) {
   const lineage = currentAgent.parentChatId ? ' · ⑂ branch' : '';
   agentMetaEl.textContent = `${currentAgent.dir} · ${currentAgent.model || 'default model'}${lineage}`;
   agentMetaEl.title = agentMetaEl.textContent;
+  $('#agent-info-summary-name').textContent = currentAgent.name;
+  $('#agent-info-summary-model').textContent = currentAgent.model || 'Default model';
   noAgent.classList.add('hidden');
   agentView.classList.remove('hidden');
   agentRunning = currentAgent.runState && currentAgent.runState.status === 'running';
@@ -391,6 +451,9 @@ function updateStatusPill(status, reason) {
   currentAgent.runState = { ...currentAgent.runState, status: s };
   pill.textContent = s;
   pill.className = 'chip ' + (s === 'running' ? 'pending' : s === 'completed' ? 'ok' : s === 'paused' || s === 'waiting_input' ? 'bad' : 'dim');
+  const summaryStatus = $('#agent-info-summary-status');
+  summaryStatus.textContent = s;
+  summaryStatus.dataset.status = s;
   $('#btn-agent-stop').classList.toggle('hidden', s !== 'running');
   $('#btn-agent-continue').classList.toggle('hidden', !['stopped', 'paused', 'waiting_edits'].includes(s));
   $('#btn-agent-continue').textContent = s === 'stopped' ? 'Start' : 'Continue';
@@ -882,6 +945,9 @@ function attachmentSize(bytes) {
 }
 
 function renderComposerAttachments() {
+  if (composerMentionRetry && composerMentionRetry.attachmentsKey !== composerAttachmentKey(composerAttachments)) {
+    composerMentionRetry = null;
+  }
   composerAttachmentsEl.replaceChildren();
   composerAttachmentsEl.classList.toggle('hidden', !composerAttachments.length);
   for (const attachment of composerAttachments) {
@@ -937,27 +1003,130 @@ $('#btn-new-chat').onclick = async () => {
 
 $('#btn-send').onclick = sendComposer;
 composerInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendComposer(); }
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    closeComposerSuggestions();
+    sendComposer();
+  }
 });
 
 async function sendComposer() {
+  if (composerIntentPending) return;
+  const raw = composerInput.value;
+  const parsed = composerIntents.parse(raw);
+  const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
+    || /^[\s]*[\/@]/.test(raw);
+  if (explicitIntent) {
+    const snapshot = {
+      text: raw,
+      attachments: [...composerAttachments],
+      attachmentsKey: composerAttachmentKey(composerAttachments),
+      contextAgentId: currentAgent?.id || '',
+      contextAgentName: currentAgent?.name || '',
+      contextProjectDir: currentAgent?.dir || agentProjectDir || '',
+      teamRunId: activeTeamRun?.teamRunId || '',
+      teamName: activeTeamRun?.team?.name || '',
+      selectedTeamAgentId: selectedLiveMemberAgentId(),
+    };
+    composerIntentPending = true;
+    composerOutputContextAgentId = snapshot.contextAgentId;
+    closeComposerSuggestions();
+    updateSendControl();
+    try {
+      if (parsed.error) {
+        const shown = parsed.input || parsed.token || raw.trim().split(/\s+/)[0];
+        throw new Error(`Unknown or malformed composer action “${shown}”. Type /help, or choose an @ target from the menu.`);
+      }
+      if (parsed.kind === 'command') {
+        const consumesMessage = new Set(['say', 'message', 'reply', 'answer', 'team-message', 'team-add', 'team-run', 'agent-new', 'agent-message', 'agent-open']);
+        if (snapshot.attachments.length && consumesMessage.has(parsed.id)) {
+          throw new Error('This command targets another agent or changes views. Remove the current-chat attachments first; they have not been discarded.');
+        }
+        const outcome = await executeComposerCommand(parsed, snapshot);
+        clearSuccessfulComposer(snapshot, { attachments: false, allowContextChange: outcome?.allowContextChange === true });
+      } else {
+        const retryContextKey = JSON.stringify({
+          agentId: parsed.mentions.some(mention => ['current', 'model', 'default'].includes(mention.kind))
+            ? snapshot.contextAgentId
+            : '',
+          projectDir: parsed.mentions.some(mention => mention.kind === 'persona' || mention.kind === 'any')
+            ? snapshot.contextProjectDir
+            : '',
+        });
+        const priorRetry = composerMentionRetry?.text === snapshot.text
+          && composerMentionRetry?.attachmentsKey === snapshot.attachmentsKey
+          ? composerMentionRetry
+          : null;
+        if (priorRetry && priorRetry.contextKey !== retryContextKey) {
+          throw new Error('This exact draft was partly delivered from another chat or project. Return to that context to retry, or edit the draft to begin a new dispatch.');
+        }
+        const retry = priorRetry || {
+          text: snapshot.text,
+          attachmentsKey: snapshot.attachmentsKey,
+          contextKey: retryContextKey,
+          delivered: new Set(),
+          routes: [],
+        };
+        try {
+          await executeMentionRouting(parsed, snapshot, retry);
+          composerMentionRetry = null;
+          clearSuccessfulComposer(snapshot, { attachments: true });
+        } catch (error) {
+          if (retry.delivered.size
+            && composerInput.value === snapshot.text
+            && composerAttachmentKey(composerAttachments) === snapshot.attachmentsKey) {
+            composerMentionRetry = retry;
+            error.message += ` ${retry.delivered.size} target(s) already accepted this exact draft; Retry will skip them.`;
+          }
+          throw error;
+        }
+      }
+    } catch (error) {
+      commandOutput(`Command not sent: ${error.message}`, true);
+    } finally {
+      composerIntentPending = false;
+      composerOutputContextAgentId = null;
+      updateSendControl();
+      composerInput.focus();
+    }
+    return;
+  }
   if (agentRunning || runningAgentIds.size || (activeTeamRun && !activeTeamRun.paused)) {
     return stopAllRuns();
   }
-  const text = composerInput.value.trim();
+  const text = raw.trim();
   if ((!text && !composerAttachments.length) || !currentAgent) return;
-  const attachments = composerAttachments;
+  const attachments = [...composerAttachments];
+  const contextAgentId = currentAgent.id;
+  const contextAgentName = currentAgent.name;
   const display = [text, attachments.length ? `Attachments: ${attachments.map(file => file.name).join(', ')}` : ''].filter(Boolean).join('\n\n');
-  composerInput.value = '';
-  composerInput.dispatchEvent(new Event('input'));
-  composerAttachments = [];
-  renderComposerAttachments();
-  appendChatMessage('user', display);
-  agentRunning = true;
-  updateStatusPill('running');
-  const res = await reachApi.agents.send(currentAgent.id, text, attachments.map(file => file.attachmentId));
-  if (!res.ok) { agentRunning = false; updateStatusPill('paused', res.err); appendChatMessage('system', `Error: ${res.err}`); }
-  loadAgentTree(); // auto-title + message count may have changed
+  composerIntentPending = true;
+  updateSendControl();
+  try {
+    const res = await reachApi.agents.send(contextAgentId, text, attachments.map(file => file.attachmentId));
+    if (!res.ok) throw new Error(res.err);
+    if (currentAgent?.id === contextAgentId) {
+      clearSuccessfulComposer({ text: raw, attachments, contextAgentId }, { attachments: true });
+      appendChatMessage('user', display);
+      agentRunning = true;
+      updateStatusPill('running');
+    }
+    loadAgentTree(); // auto-title + message count may have changed
+  } catch (error) {
+    // Keep the exact draft and attachment chips on every rejected or failed IPC
+    // path. A transport exception must not leave the composer permanently busy.
+    if (currentAgent?.id === contextAgentId) {
+      updateStatusPill('paused', error.message);
+      appendChatMessage('system', `Error: ${error.message}`);
+    } else {
+      setBackgroundAgentGate(contextAgentId, `Message failed: ${error.message}`, { action: 'Inspect' });
+      showNotice(`${contextAgentName}: ${error.message}`);
+    }
+  } finally {
+    composerIntentPending = false;
+    updateSendControl();
+  }
 }
 
 $('#btn-agent-stop').onclick = async () => {
@@ -966,11 +1135,15 @@ $('#btn-agent-stop').onclick = async () => {
 
 function updateSendControl() {
   const busy = agentRunning || runningAgentIds.size > 0 || !!(activeTeamRun && !activeTeamRun.paused);
+  const parsed = composerIntents.parse(composerInput.value);
+  const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
+    || /^[\s]*[\/@]/.test(composerInput.value);
+  const stopMode = busy && !explicitIntent;
   const button = $('#btn-send');
-  button.textContent = stoppingAll ? 'Stopping…' : busy ? 'Stop' : 'Send';
-  button.title = busy ? 'Stop all active agents and the team' : 'Send message';
-  button.classList.toggle('danger', busy);
-  button.disabled = stoppingAll;
+  button.textContent = stoppingAll ? 'Stopping…' : composerIntentPending ? 'Running…' : stopMode ? 'Stop' : parsed.kind === 'command' || parsed.error ? 'Run' : 'Send';
+  button.title = stopMode ? 'Stop all active agents and pause the team' : parsed.kind === 'command' || parsed.error ? 'Run composer command' : 'Send message';
+  button.classList.toggle('danger', stopMode);
+  button.disabled = stoppingAll || composerIntentPending;
   $('#btn-attach').disabled = busy || !currentAgent || stoppingAll;
   window.ReachWorkspace?.syncControls();
 }
@@ -1021,7 +1194,26 @@ function handleAgentEvent(ev) {
     else runningAgentIds.delete(ev.agentId);
     updateSendControl();
   }
-  if (!currentAgent || ev.agentId !== currentAgent.id) return;
+  if (!currentAgent || ev.agentId !== currentAgent.id) {
+    if (ev.type === 'run-state') {
+      if (ev.status === 'running') setBackgroundAgentGate(ev.agentId, '', { clear: true });
+      else if (['waiting_input', 'waiting_edits', 'paused'].includes(ev.status)) {
+        setBackgroundAgentGate(ev.agentId, ev.reason || ev.status.replace('_', ' '), { action: 'Respond' });
+      } else if (ev.status === 'completed') {
+        setBackgroundAgentGate(ev.agentId, 'Finished independently.', { action: 'Review' });
+      } else if (['failed', 'error', 'stopped'].includes(ev.status)) {
+        setBackgroundAgentGate(ev.agentId, ev.reason || ev.status, { action: 'Inspect' });
+      }
+      loadAgentTree();
+    } else if (ev.type === 'message-end' && ev.question) {
+      setBackgroundAgentGate(ev.agentId, ev.question, { action: 'Answer' });
+      loadAgentTree();
+    } else if (ev.type === 'error') {
+      setBackgroundAgentGate(ev.agentId, ev.message || 'Run failed.', { action: 'Inspect' });
+      loadAgentTree();
+    } else if (ev.type === 'renamed' || ev.type === 'queued') loadAgentTree();
+    return;
+  }
   switch (ev.type) {
     case 'message-start':
       if (ev.role === 'assistant') {
@@ -1121,7 +1313,11 @@ reachApi.agents.onApprovalRequest(({ requestId, tool, arguments: args, help }) =
 });
 
 reachApi.agents.onEditPending(({ agentId, edit }) => {
-  if (!currentAgent || agentId !== currentAgent.id) return;
+  if (!currentAgent || agentId !== currentAgent.id) {
+    setBackgroundAgentGate(agentId, `${edit?.path || 'A file edit'} needs review.`, { action: 'Review' });
+    loadAgentTree();
+    return;
+  }
   appendEditCard(edit);
 });
 
@@ -1928,6 +2124,8 @@ $('#btn-save-settings').onclick = async () => {
   };
   const res = await reachApi.saveSettings(payload);
   if (res && res.ok === false) { status.textContent = res.err || 'Could not save.'; return; }
+  composerModelsCache = { key: '', at: 0, items: [] };
+  invalidateComposerCatalog();
   // Re-read so the UI shows the ids and projection the main process settled on
   // (draft ids are replaced by real ones for new rows).
   await loadSettings();
@@ -2463,8 +2661,8 @@ $('#btn-team-run-go').onclick = async () => {
   const team = pendingRunTeam;
   const agent = currentAgent;
   $('#team-run-modal').classList.add('hidden');
-  // The run shows up as member cards in the CURRENT conversation (if any);
-  // otherwise switch to Agents with no chat selected — cards render standalone.
+  // The run shows up in the conversation captured above; otherwise its cards
+  // render standalone until that bound conversation is selected again.
   try {
     const res = await reachApi.teams.run(team.id, task, agent?.dir, agent?.id);
     if (!res.ok) { showNotice('Could not run team: ' + res.err); return; }
@@ -2488,8 +2686,13 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   }
   const run = { teamRunId, team, agentId, cards: new Map(), subCards: new Map(), buffer: new Map() };
   activeTeamRun = run;
-  const host = currentAgent ? chatLog : noAgent;
-  if (!currentAgent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
+  invalidateComposerCatalog();
+  // Endpoint/model validation can take long enough for the user to navigate.
+  // Never mount conversation A's team deck inside conversation B. The retained
+  // deck DOM moves into its bound chat through renderChatHistory when selected.
+  const boundToCurrent = !!agentId && currentAgent?.id === agentId;
+  const host = boundToCurrent ? chatLog : noAgent;
+  if (!boundToCurrent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
   run.deck = window.ReachTeamDeck.create({ team, task });
   run.banner = run.deck.banner;
   const stop = document.createElement('button');
@@ -2539,6 +2742,7 @@ function subCard(agentId, name, model, depth) {
   if (card) { run.deck.identify(card, name, model); return card; }
   card = document.createElement('div');
   card.className = 'member-card subagent depth-' + Math.min(Number(depth) || 1, 2);
+  card.dataset.agentId = agentId;
   card.innerHTML = `<div class="member-head"><div class="member-identity"><strong class="member-name"></strong><span class="member-model"></span></div><span class="member-state dim">spawned…</span><span class="member-meta"></span></div>`
     + `<div class="member-body"></div>`;
   run.subCards.set(agentId, card);
@@ -2582,6 +2786,868 @@ function setMemberControl(card, paused, finished = false) {
   button.disabled = finished;
   if (paused) card.querySelector('.member-state').textContent = 'stopped · ready to start';
   else if (!finished) card.querySelector('.member-state').textContent = 'resuming…';
+}
+
+// ---------- @ targets + / commands ----------
+let composerCatalogAt = 0;
+let composerCatalogKey = '';
+let composerCatalogPromise = null;
+let composerCatalogPromiseKey = '';
+
+function commandOutput(text, isError = false) {
+  const message = String(text || '');
+  if (composerOutputContextAgentId !== null && (currentAgent?.id || '') !== composerOutputContextAgentId) {
+    showNotice(message);
+    return;
+  }
+  if (currentAgent && chatLog) {
+    const bubble = appendChatMessage('system', message);
+    bubble.classList.toggle('bad', isError);
+  } else {
+    showNotice(message);
+  }
+}
+
+function invalidateComposerCatalog() {
+  composerCatalogRevision++;
+  composerCatalogAt = 0;
+  composerCatalogKey = '';
+  composerCatalogPromise = null;
+  composerCatalogPromiseKey = '';
+}
+
+function targetCandidate(kind, id, label, detail, data = {}) {
+  const priority = kind === 'team' ? 0 : kind === 'agent' || kind === 'persona' ? 2 : kind === 'model' ? 3 : 4;
+  return {
+    kind, id, label, detail, data, priority,
+    insert: composerIntents.mentionInsert(kind, label, id),
+    search: `${kind}:${label} ${label} ${id} ${detail}`,
+  };
+}
+
+async function loadComposerModelItems() {
+  let settings = null;
+  try { settings = await reachApi.getSettings(); } catch { /* listModels reports the actionable error */ }
+  const requestedKey = `${String(settings?.activeConnection || '')}|${String(settings?.endpoint || '')}`;
+  if (composerModelsCache.key === requestedKey && composerModelsCache.at && Date.now() - composerModelsCache.at <= 30000) {
+    return composerModelsCache.items;
+  }
+  try {
+    const result = await reachApi.listModels();
+    const items = result?.ok ? (result.models || []).map(id => ({
+      kind: 'model', id, label: id, detail: `Model · ${result.connectionName || 'active connection'}`,
+      priority: 3,
+      data: { id }, insert: composerIntents.mentionInsert('model', id), search: `model:${id} ${id}`,
+    })) : [];
+    const resultKey = (result?.connectionId || result?.endpoint)
+      ? `${String(result?.connectionId || '')}|${String(result?.endpoint || '')}`
+      : requestedKey;
+    composerModelsCache = { key: resultKey, at: Date.now(), items };
+    return items;
+  } catch {
+    return [];
+  }
+}
+
+async function buildComposerCatalog({ includeModels = true } = {}) {
+  const liveRunId = activeTeamRun?.teamRunId || '';
+  const [savedAgents, savedPersonas, savedTeams, live] = await Promise.all([
+    reachApi.agents.list(),
+    reachApi.personas.list(),
+    reachApi.teams.list(),
+    liveRunId ? reachApi.teams.members(liveRunId).catch(() => null) : Promise.resolve(null),
+  ]);
+  const items = [];
+  if (currentAgent) {
+    items.push({
+      kind: 'current', id: currentAgent.id, label: currentAgent.name || 'Current chat',
+      priority: -1,
+      detail: `Current chat · ${currentAgent.model || 'default model'}`, data: currentAgent,
+      insert: '@current', search: `current ${currentAgent.name || ''}`,
+    });
+  }
+  items.push({
+    kind: 'default', id: 'default', label: 'Default model', detail: 'Clear a model override and inherit the active default',
+    priority: 8,
+    insert: '@default', search: 'default inherit model reset', data: {},
+  });
+  const liveMembers = liveRunId && activeTeamRun?.teamRunId === liveRunId && live?.ok ? live.agents || [] : [];
+  for (const member of liveMembers) {
+    const scopedId = `${liveRunId}/${member.agentId}`;
+    items.push(targetCandidate('team', scopedId, member.name,
+      `${member.origin === 'spawned' ? 'Run-only worker' : 'Live member'} · ${member.status} · ${member.model || 'default model'}`,
+      { ...member, teamRunId: liveRunId }));
+  }
+  for (const agent of Array.isArray(savedAgents) ? savedAgents : []) {
+    const project = String(agent.dir || '').split(/[\\/]/).filter(Boolean).at(-1) || 'no project';
+    items.push(targetCandidate('agent', agent.id, agent.name,
+      `${agent.status || 'idle'} · ${agent.model || 'default model'} · ${project}`, agent));
+  }
+  for (const persona of Array.isArray(savedPersonas) ? savedPersonas : []) {
+    items.push(targetCandidate('persona', persona.id, persona.name,
+      `Custom agent · ${persona.model || 'default model'}${persona.connectionId ? ' · pinned connection' : ''}`, persona));
+  }
+  for (const team of Array.isArray(savedTeams) ? savedTeams : []) {
+    items.push(targetCandidate('team-template', team.id, team.name,
+      `Saved team · ${team.mode} · ${(team.members || []).length} member${(team.members || []).length === 1 ? '' : 's'}`, team));
+  }
+  if (includeModels) {
+    items.push(...await loadComposerModelItems());
+  }
+  return items;
+}
+
+function closeComposerSuggestions() {
+  composerSuggestionItems = [];
+  composerSuggestionIndex = 0;
+  composerSuggestionContext = null;
+  composerSuggestionsEl.replaceChildren();
+  composerSuggestionsEl.classList.add('hidden');
+  composerInput.setAttribute('aria-expanded', 'false');
+  composerInput.removeAttribute('aria-activedescendant');
+  composerSuggestionStatus.textContent = '';
+}
+
+function setComposerSuggestionIndex(index) {
+  if (!composerSuggestionItems.length) return;
+  composerSuggestionIndex = (index + composerSuggestionItems.length) % composerSuggestionItems.length;
+  const options = [...composerSuggestionsEl.querySelectorAll('[role=option]')];
+  options.forEach((option, optionIndex) => option.setAttribute('aria-selected', String(optionIndex === composerSuggestionIndex)));
+  const active = options[composerSuggestionIndex];
+  if (active) {
+    composerInput.setAttribute('aria-activedescendant', active.id);
+    active.scrollIntoView({ block: 'nearest' });
+    const item = composerSuggestionItems[composerSuggestionIndex];
+    composerSuggestionStatus.textContent = `${item.label}. ${item.detail || item.kind}. ${composerSuggestionIndex + 1} of ${composerSuggestionItems.length}.`;
+  }
+}
+
+function commitComposerSuggestion(index = composerSuggestionIndex) {
+  const item = composerSuggestionItems[index];
+  if (!item || !composerSuggestionContext) return false;
+  const replacement = composerIntents.replaceCompletion(composerInput.value, composerSuggestionContext, item.insert);
+  composerInput.value = replacement.text;
+  composerInput.setSelectionRange(replacement.cursor, replacement.cursor);
+  closeComposerSuggestions();
+  composerInput.dispatchEvent(new Event('input', { bubbles: true }));
+  composerInput.focus();
+  return true;
+}
+
+function renderComposerSuggestions(context) {
+  if (!context) { closeComposerSuggestions(); return; }
+  const previousContext = composerSuggestionContext;
+  const previousItem = composerSuggestionItems[composerSuggestionIndex];
+  const preserveKey = previousContext?.mode === context.mode
+    && previousContext.commandId === context.commandId
+    && previousContext.start === context.start
+    && previousContext.end === context.end
+    && previousContext.query === context.query
+    && previousItem
+    ? `${previousItem.kind}:${previousItem.id || previousItem.insert || previousItem.label}`
+    : '';
+  composerSuggestionContext = context;
+  const commandKinds = composerIntents.COMMANDS.find(command => command.id === context.commandId)?.targetKinds || null;
+  const mentionCatalog = context.commandId && commandKinds
+    ? composerCatalog.filter(item => commandKinds.includes(item.kind))
+    : composerCatalog.filter(item => ['team', 'agent', 'persona', 'current', 'model', 'default'].includes(item.kind));
+  const items = context.mode === 'command'
+    ? composerIntents.commandCandidates(context.query)
+    : composerIntents.filterCandidates(mentionCatalog, context.query, composerIntents.MAX_SUGGESTIONS);
+  composerSuggestionItems = items;
+  composerSuggestionIndex = preserveKey
+    ? Math.max(0, items.findIndex(item => `${item.kind}:${item.id || item.insert || item.label}` === preserveKey))
+    : 0;
+  composerSuggestionsEl.replaceChildren();
+  composerSuggestionsEl.classList.remove('hidden');
+  composerInput.setAttribute('aria-expanded', 'true');
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.className = 'composer-suggestion-empty dim';
+    empty.textContent = context.mode === 'command' ? 'No matching command. Type /help for the command guide.' : 'No matching target.';
+    composerSuggestionsEl.appendChild(empty);
+    composerInput.removeAttribute('aria-activedescendant');
+    composerSuggestionStatus.textContent = empty.textContent;
+    return;
+  }
+  items.forEach((item, index) => {
+    const option = document.createElement('button');
+    option.type = 'button';
+    option.className = 'composer-suggestion';
+    option.id = `composer-suggestion-${index}`;
+    option.setAttribute('role', 'option');
+    option.setAttribute('aria-selected', String(index === composerSuggestionIndex));
+    const label = document.createElement('span');
+    label.className = 'composer-suggestion-label';
+    const kind = document.createElement('span');
+    kind.className = 'composer-suggestion-kind';
+    kind.textContent = item.kind === 'team-template' ? 'team' : item.kind;
+    const name = document.createElement('span');
+    name.textContent = item.label;
+    label.append(kind, name);
+    const detail = document.createElement('span');
+    detail.className = 'composer-suggestion-detail';
+    detail.textContent = item.detail || '';
+    option.append(label, detail);
+    option.onmousedown = event => event.preventDefault();
+    option.onmouseenter = () => setComposerSuggestionIndex(index);
+    option.onclick = () => commitComposerSuggestion(index);
+    composerSuggestionsEl.appendChild(option);
+  });
+  setComposerSuggestionIndex(composerSuggestionIndex);
+}
+
+async function refreshComposerSuggestions() {
+  const context = composerIntents.completionContext(composerInput.value, composerInput.selectionStart);
+  if (!context) { closeComposerSuggestions(); return; }
+  if (context.mode === 'command') { renderComposerSuggestions(context); return; }
+  const key = `${currentAgent?.id || ''}:${activeTeamRun?.teamRunId || ''}`;
+  if (composerCatalogKey === key && Date.now() - composerCatalogAt < 2500 && composerCatalog.length) {
+    renderComposerSuggestions(context);
+    return;
+  }
+  const revision = ++composerCatalogRevision;
+  composerSuggestionStatus.textContent = 'Loading targets…';
+  try {
+    // Local targets are useful immediately. Provider model discovery can take
+    // seconds, so it enriches the still-open menu without blocking the first
+    // usable result.
+    if (!composerCatalogPromise || composerCatalogPromiseKey !== key) {
+      composerCatalogPromiseKey = key;
+      composerCatalogPromise = buildComposerCatalog({ includeModels: false }).finally(() => {
+        if (composerCatalogPromiseKey === key) {
+          composerCatalogPromise = null;
+          composerCatalogPromiseKey = '';
+        }
+      });
+    }
+    const next = await composerCatalogPromise;
+    if (revision !== composerCatalogRevision) return;
+    composerCatalog = next;
+    composerCatalogAt = Date.now();
+    composerCatalogKey = key;
+    let freshContext = composerIntents.completionContext(composerInput.value, composerInput.selectionStart);
+    if (freshContext?.mode === 'mention') renderComposerSuggestions(freshContext);
+
+    const modelItems = await loadComposerModelItems();
+    if (revision !== composerCatalogRevision) return;
+    composerCatalog = [...next, ...modelItems];
+    composerCatalogAt = Date.now();
+    freshContext = composerIntents.completionContext(composerInput.value, composerInput.selectionStart);
+    if (freshContext?.mode === 'mention') renderComposerSuggestions(freshContext);
+  } catch (error) {
+    if (revision === composerCatalogRevision) composerSuggestionStatus.textContent = `Could not load targets: ${error.message}`;
+  }
+}
+
+composerInput.addEventListener('input', () => {
+  if (composerMentionRetry && composerInput.value !== composerMentionRetry.text) composerMentionRetry = null;
+  refreshComposerSuggestions();
+  updateSendControl();
+});
+composerInput.addEventListener('click', refreshComposerSuggestions);
+composerInput.addEventListener('keyup', event => {
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') refreshComposerSuggestions();
+});
+composerInput.addEventListener('blur', closeComposerSuggestions);
+composerInput.addEventListener('keydown', event => {
+  if (event.isComposing || event.keyCode === 229 || composerSuggestionsEl.classList.contains('hidden')) return;
+  if (event.key === 'ArrowDown') { event.preventDefault(); setComposerSuggestionIndex(composerSuggestionIndex + 1); }
+  else if (event.key === 'ArrowUp') { event.preventDefault(); setComposerSuggestionIndex(composerSuggestionIndex - 1); }
+  else if (event.key === 'Home') { event.preventDefault(); setComposerSuggestionIndex(0); }
+  else if (event.key === 'End') { event.preventDefault(); setComposerSuggestionIndex(composerSuggestionItems.length - 1); }
+  else if ((event.key === 'Enter' && !event.ctrlKey && !event.metaKey) || (event.key === 'Tab' && !event.shiftKey)) {
+    if (composerSuggestionItems.length) { event.preventDefault(); commitComposerSuggestion(); }
+    else closeComposerSuggestions();
+  } else if (event.key === 'Escape') { event.preventDefault(); closeComposerSuggestions(); }
+});
+document.addEventListener('mousedown', event => {
+  if (!composerSuggestionsEl.contains(event.target) && event.target !== composerInput) closeComposerSuggestions();
+});
+
+async function freshTargetCatalog(includeModels = false) {
+  // Submission never trusts a possibly stale completion row. Re-read the
+  // stores/run and resolve the stable id again immediately before IPC.
+  return buildComposerCatalog({ includeModels });
+}
+
+function resolveTargetMention(mention, catalog, allowedKinds = null, contextAgent = null) {
+  if (!mention || mention.error) throw new Error('Choose a valid @ target.');
+  if (mention.kind === 'current') {
+    if (allowedKinds && !allowedKinds.includes('current')) throw new Error('@current is not valid for this command.');
+    const selected = contextAgent || currentAgent;
+    if (!selected?.id) throw new Error('Open a conversation before using @current.');
+    const fresh = catalog.find(item => (item.kind === 'agent' || item.kind === 'current') && item.id === selected.id);
+    if (!fresh) throw new Error('The conversation that was current when you pressed Send no longer exists.');
+    return { kind: 'current', id: selected.id, label: fresh.label || selected.name || 'Current chat', data: fresh.data || selected };
+  }
+  if (mention.kind === 'default') {
+    if (allowedKinds && !allowedKinds.includes('default')) throw new Error('@default is not valid for this command.');
+    return { kind: 'default', id: 'default', label: 'Default model', data: {} };
+  }
+  if (mention.kind === 'model') {
+    if (allowedKinds && !allowedKinds.includes('model')) throw new Error('@model is not valid for this command.');
+    return { kind: 'model', id: mention.selector, label: mention.selector, data: { id: mention.selector } };
+  }
+  const allowed = allowedKinds || (mention.kind === 'any' ? ['team', 'agent', 'persona'] : [mention.kind]);
+  const kinds = mention.kind === 'any' ? allowed : allowed.filter(kind => kind === mention.kind);
+  if (!kinds.length) throw new Error(`@${mention.kind} is not valid for this command.`);
+  let matches = catalog.filter(item => kinds.includes(item.kind));
+  if (mention.id) {
+    matches = matches.filter(item => item.id === mention.id);
+    if (!matches.length) throw new Error(`The selected ${mention.kind} no longer exists. Open the @ menu and choose it again.`);
+  } else {
+    const wanted = String(mention.selector || '').toLocaleLowerCase();
+    matches = matches.filter(item => item.id.toLocaleLowerCase() === wanted || item.label.toLocaleLowerCase() === wanted);
+    if (!matches.length) throw new Error(`No ${kinds.join(' or ')} matches “${mention.selector}”. Open the @ menu to see available targets.`);
+    if (matches.length > 1) {
+      const choices = matches.slice(0, 6).map(item => `${item.kind}: ${item.label}`).join(', ');
+      throw new Error(`“${mention.selector}” is ambiguous (${choices}). Choose a specific row from the @ menu.`);
+    }
+  }
+  return matches[0];
+}
+
+function parseTargetToken(value) {
+  const mention = composerIntents.parseMentionValue(value);
+  if (!mention || mention.error) throw new Error('The first argument must be an @ target chosen from the menu.');
+  return mention;
+}
+
+function sameAttachments(before, after) {
+  return before.length === after.length && before.every((item, index) => item.attachmentId === after[index]?.attachmentId);
+}
+
+function composerAttachmentKey(items) {
+  return JSON.stringify((Array.isArray(items) ? items : []).map(item => String(item?.attachmentId || '')));
+}
+
+function clearSuccessfulComposer(snapshot, { attachments = false, allowContextChange = false } = {}) {
+  // An async command must never erase text the user typed while it was in
+  // flight or a draft now owned by another selected chat. Clear only the exact
+  // snapshot that was accepted by main.
+  const sameContext = allowContextChange || (currentAgent?.id || '') === (snapshot.contextAgentId || '');
+  if (sameContext && composerInput.value === snapshot.text) {
+    composerInput.value = '';
+    composerInput.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+  if (sameContext && attachments && sameAttachments(snapshot.attachments, composerAttachments)) {
+    composerAttachments = [];
+    renderComposerAttachments();
+  }
+}
+
+async function setAgentModel(agentId, model) {
+  const result = await reachApi.agents.update(agentId, { model });
+  if (!result.ok) throw new Error(result.err);
+  if (currentAgent?.id === agentId) {
+    currentAgent = { ...currentAgent, ...result.agent };
+    agentMetaEl.textContent = `${currentAgent.dir} · ${currentAgent.model || 'default model'}${currentAgent.parentChatId ? ' · ⑂ branch' : ''}`;
+    $('#agent-info-summary-model').textContent = currentAgent.model || 'Default model';
+    window.ReachWorkspace?.sync();
+  }
+  return result.agent;
+}
+
+async function dispatchToTargets(targets, message, {
+  modelDirective = null,
+  attachments = [],
+  displayText = message,
+  retryState = null,
+  fallbackTarget = null,
+  projectDir = '',
+} = {}) {
+  const unique = [];
+  const seen = new Map();
+  for (const target of targets) {
+    const key = composerIntents.deliveryKey(target);
+    if (!seen.has(key)) {
+      seen.set(key, unique.length);
+      unique.push(target);
+    } else if (target.kind === 'current' && unique[seen.get(key)]?.kind === 'agent') {
+      // Preserve current-chat attachment handling and local echo if aliases for
+      // the same destination were both written in the leading mention block.
+      unique[seen.get(key)] = target;
+    }
+  }
+  if (!unique.length) {
+    const fallback = fallbackTarget || (currentAgent
+      ? { kind: 'current', id: currentAgent.id, label: currentAgent.name, data: currentAgent }
+      : null);
+    if (!fallback) throw new Error('Choose an @ target or open a conversation.');
+    unique.push(fallback);
+  }
+  if (unique.length > 8) throw new Error('A single message can target at most 8 agents.');
+  const deliveryKey = composerIntents.deliveryKey;
+  const pendingTargets = retryState ? unique.filter(target => !retryState.delivered.has(deliveryKey(target))) : unique;
+  if (attachments.length && (unique.length !== 1 || unique[0].kind !== 'current')) {
+    throw new Error('Attachments stay with the current conversation. Remove them before messaging another agent.');
+  }
+  if (!String(message || '').trim() && modelDirective === null) throw new Error('A message is required.');
+  if (modelDirective !== null && pendingTargets.some(target => target.kind === 'team')) {
+    throw new Error('A live team member model cannot be changed mid-run. Add a run-only agent with --model instead.');
+  }
+  if (modelDirective !== null && String(message || '').trim()) {
+    const busyTarget = pendingTargets.find(target => (target.kind === 'agent' || target.kind === 'current') && (
+      runningAgentIds.has(target.id)
+      || (target.kind === 'current' && currentAgent?.id === target.id && agentRunning)
+      || target.data?.status === 'running'
+      || target.data?.runState?.status === 'running'
+    ));
+    if (busyTarget) throw new Error(`${busyTarget.label} is already running. Set its model now, then send after the current run finishes.`);
+  }
+
+  const acknowledgements = [];
+  for (let target of unique) {
+    const originalDeliveryKey = deliveryKey(target);
+    if (retryState?.delivered.has(originalDeliveryKey)) {
+      acknowledgements.push(`${target.label}: already accepted`);
+      continue;
+    }
+    if (target.kind === 'team') {
+      if (!String(message || '').trim()) throw new Error('A team message is required.');
+      if (!activeTeamRun || target.data?.teamRunId !== activeTeamRun.teamRunId) {
+        throw new Error('That @team tag belongs to an earlier run. Choose the member again from the current @ menu.');
+      }
+      const result = await reachApi.teams.message(target.data.teamRunId, target.data.agentId, message);
+      if (!result.ok) throw new Error(result.err);
+      retryState?.delivered.add(originalDeliveryKey);
+      acknowledgements.push(`${result.name || target.label}: ${result.delivered || 'delivered'}`);
+      continue;
+    }
+
+    let agentId = target.id;
+    let label = target.label;
+    let createdForPersona = false;
+    if (target.kind === 'persona') {
+      const persona = target.data;
+      const dir = projectDir || currentAgent?.dir || agentProjectDir;
+      if (!dir) throw new Error('Select a project before starting a custom agent independently.');
+      const chosenModel = modelDirective === '' ? '' : modelDirective || persona.model || '';
+      const created = await reachApi.agents.create({
+        dir,
+        personaId: persona.id,
+        ...(modelDirective === null ? {} : { modelOverride: chosenModel }),
+      });
+      if (!created.ok) throw new Error(created.err);
+      agentId = created.agent.id;
+      label = created.agent.name;
+      createdForPersona = true;
+      target = { ...target, kind: 'agent', id: agentId, data: created.agent };
+    }
+    if (target.kind !== 'agent' && target.kind !== 'current') throw new Error(`Cannot message @${target.kind} directly.`);
+    try {
+      if (modelDirective !== null) await setAgentModel(agentId, modelDirective);
+      if (String(message || '').trim() || attachments.length) {
+        const result = await reachApi.agents.send(agentId, message, target.kind === 'current' ? attachments.map(file => file.attachmentId) : []);
+        if (!result.ok) throw new Error(result.err);
+        if (target.kind === 'current' && currentAgent?.id === agentId) {
+          const visible = [displayText, attachments.length ? `Attachments: ${attachments.map(file => file.name).join(', ')}` : ''].filter(Boolean).join('\n\n');
+          appendChatMessage('user', visible);
+          agentRunning = true;
+          updateStatusPill('running');
+        }
+      }
+      retryState?.delivered.add(originalDeliveryKey);
+    } catch (error) {
+      // Materialization and first dispatch are one user operation. If the new
+      // chat never accepted its first message, remove that empty shell so a
+      // safe retry cannot duplicate the custom agent.
+      if (createdForPersona) await reachApi.agents.delete(agentId).catch(() => {});
+      throw error;
+    }
+    acknowledgements.push(`${label}: ${String(message || '').trim() ? 'message accepted' : 'model updated'}`);
+  }
+  await loadAgentTree();
+  invalidateComposerCatalog();
+  return acknowledgements;
+}
+
+function liveCardForTarget(target) {
+  if (!activeTeamRun || target?.kind !== 'team') return null;
+  const agentId = target.data?.agentId;
+  if (!agentId) return null;
+  if (activeTeamRun.subCards?.has(agentId)) return activeTeamRun.subCards.get(agentId);
+  const index = memberIndexFromAgentId(agentId);
+  return index === null ? null : activeTeamRun.cards.get(index) || null;
+}
+
+function selectedLiveMember(catalog) {
+  if (!activeTeamRun) return null;
+  for (const [index, card] of activeTeamRun.cards) {
+    if (!card.hidden) {
+      const agentId = card.dataset.agentId || catalog.find(item => item.kind === 'team' && item.data?.agentId?.startsWith(`m${index}-`))?.data?.agentId;
+      if (agentId) return catalog.find(item => item.kind === 'team' && item.data?.agentId === agentId) || null;
+    }
+  }
+  for (const [agentId, card] of activeTeamRun.subCards || []) {
+    if (!card.hidden) return catalog.find(item => item.kind === 'team' && item.data?.agentId === agentId) || null;
+  }
+  return null;
+}
+
+function selectedLiveMemberAgentId() {
+  if (!activeTeamRun) return '';
+  for (const card of activeTeamRun.cards.values()) {
+    if (!card.hidden && card.dataset.agentId) return card.dataset.agentId;
+  }
+  for (const [agentId, card] of activeTeamRun.subCards || []) {
+    if (!card.hidden) return agentId;
+  }
+  return '';
+}
+
+function submittedLiveMember(catalog, snapshot) {
+  if (!snapshot?.teamRunId || !snapshot?.selectedTeamAgentId) return null;
+  return catalog.find(item => item.kind === 'team'
+    && item.data?.teamRunId === snapshot.teamRunId
+    && item.data?.agentId === snapshot.selectedTeamAgentId) || null;
+}
+
+function formatBytes(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return 'unknown';
+  const n = Number(value);
+  return n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${(n / 1024 ** 2).toFixed(1)} MB`;
+}
+
+function helpText(topic = '') {
+  const query = String(topic || '').trim().toLowerCase().replace(/^\//, '');
+  const commands = query
+    ? composerIntents.COMMANDS.filter(command => `${command.path} ${(command.aliases || []).join(' ')} ${command.id}`.toLowerCase().includes(query))
+    : composerIntents.COMMANDS;
+  if (!commands.length) return `No command matches “${topic}”. Type /help for every command.`;
+  return ['Composer commands', ...commands.map(command => `${command.usage}\n  ${command.description}`), '', 'Tip: start a draft with @ to route it to a live member, saved chat, custom agent, or model. Menu choices carry stable IDs even when names are duplicated.'].join('\n');
+}
+
+async function executeComposerCommand(parsed, snapshot = {}) {
+  const remainder = parsed.remainder || '';
+  if (parsed.command?.noArgs && remainder.trim()) throw new Error(`Usage: ${parsed.command.usage}`);
+  const submittedAgent = snapshot.contextAgentId ? {
+    id: snapshot.contextAgentId,
+    name: snapshot.contextAgentName || 'Current chat',
+    dir: snapshot.contextProjectDir || '',
+  } : null;
+  const catalogCommands = new Set([
+    'message', 'reply', 'answer', 'agent-message', 'team-message', 'team-add', 'team-run',
+    'team-list', 'agent-open', 'agent-list', 'agent-status',
+  ]);
+  const catalog = catalogCommands.has(parsed.id) ? await freshTargetCatalog(false) : [];
+  switch (parsed.id) {
+    case 'help':
+      commandOutput(helpText(remainder));
+      return;
+    case 'say': {
+      if (!submittedAgent) throw new Error('Open a conversation first.');
+      if (!remainder.trim()) throw new Error(`Usage: ${parsed.command.usage}`);
+      await dispatchToTargets(
+        [{ kind: 'current', id: submittedAgent.id, label: submittedAgent.name, data: submittedAgent }],
+        remainder,
+        { displayText: remainder, projectDir: snapshot.contextProjectDir },
+      );
+      return;
+    }
+    case 'message':
+    case 'agent-message':
+    case 'team-message': {
+      const split = composerIntents.takeTargetAndMessage(remainder, ['model']);
+      if (!split.target) throw new Error(`Usage: ${parsed.command.usage}`);
+      const allowed = parsed.id === 'team-message' ? ['team'] : parsed.id === 'agent-message' ? ['agent', 'persona', 'current'] : ['team', 'agent', 'persona', 'current'];
+      const target = resolveTargetMention(parseTargetToken(split.target), catalog, allowed, submittedAgent);
+      if (!split.message.trim()) throw new Error('A message is required after the target.');
+      const model = composerIntents.optionValue(split.options, 'model');
+      const ack = await dispatchToTargets([target], split.message, { modelDirective: model, projectDir: snapshot.contextProjectDir });
+      commandOutput(`✓ ${ack.join(' · ')}`);
+      return;
+    }
+    case 'reply': {
+      let message = remainder;
+      let target = null;
+      const tokens = composerIntents.tokenize(remainder);
+      if (tokens[0]?.value.startsWith('@')) {
+        target = resolveTargetMention(parseTargetToken(tokens[0].value), catalog, ['team']);
+        message = remainder.slice(tokens[0].end).replace(/^\s+/, '');
+      } else target = submittedLiveMember(catalog, snapshot);
+      message = composerIntents.stripDelimiter(message);
+      if (!target) throw new Error('Select a live team tab or name one with @team.');
+      if (!message.trim()) throw new Error('A reply is required.');
+      if (liveCardForTarget(target)?.querySelector('.member-ask')) {
+        throw new Error(`${target.label} is waiting for a structured answer. Use /answer so the paused turn resumes.`);
+      }
+      const ack = await dispatchToTargets([target], message);
+      commandOutput(`✓ ${ack.join(' · ')}`);
+      return;
+    }
+    case 'answer': {
+      let message = remainder;
+      let target = null;
+      const tokens = composerIntents.tokenize(remainder);
+      if (tokens[0]?.value.startsWith('@')) {
+        target = resolveTargetMention(parseTargetToken(tokens[0].value), catalog, ['team']);
+        message = remainder.slice(tokens[0].end).replace(/^\s+/, '');
+      } else target = submittedLiveMember(catalog, snapshot);
+      message = composerIntents.stripDelimiter(message);
+      if (!target) throw new Error('Select the member that is waiting, or name one with @team.');
+      if (!message.trim()) throw new Error('An answer is required.');
+      if (!activeTeamRun || target.data?.teamRunId !== activeTeamRun.teamRunId) throw new Error('That member belongs to an earlier team run.');
+      const result = await reachApi.teams.answerMember(target.data.teamRunId, target.data.agentId, message);
+      if (!result.ok) throw new Error(result.err);
+      const card = liveCardForTarget(target);
+      card?.querySelector('.member-ask')?.remove();
+      if (card) {
+        card.classList.remove('waiting');
+        card.querySelector('.member-state').textContent = 'answer delivered · resuming…';
+      }
+      commandOutput(`✓ Answer delivered to ${target.label}.`);
+      return;
+    }
+    case 'team-add': {
+      if (!snapshot.teamRunId) throw new Error('Start a team before adding a run-only agent.');
+      const split = composerIntents.takeTargetAndMessage(remainder, ['model', 'role']);
+      if (!split.target) throw new Error(`Usage: ${parsed.command.usage}`);
+      const target = resolveTargetMention(parseTargetToken(split.target), catalog, ['persona', 'agent']);
+      const model = composerIntents.optionValue(split.options, 'model');
+      const role = composerIntents.optionValue(split.options, 'role');
+      const result = await reachApi.teams.addAgent(snapshot.teamRunId, {
+        ...(target.kind === 'persona' ? { personaId: target.id } : { agentId: target.id }),
+        model: model || '',
+        role: role || '',
+        task: split.message,
+      });
+      if (!result.ok) throw new Error(result.err);
+      invalidateComposerCatalog();
+      commandOutput(`✓ ${result.name} joined ${snapshot.teamName || 'the team'} for this run only${result.model ? ` on ${result.model}` : ''}. ${result.note || ''}`);
+      return;
+    }
+    case 'team-run': {
+      const split = composerIntents.takeTargetAndMessage(remainder, []);
+      if (!split.target || !split.message.trim()) throw new Error(`Usage: ${parsed.command.usage}`);
+      const target = resolveTargetMention(parseTargetToken(split.target), catalog, ['team-template']);
+      if (activeTeamRun && !activeTeamRun.paused) throw new Error('Pause or finish the active team before dispatching another.');
+      teamDispatching = true;
+      try {
+        const result = await reachApi.teams.run(target.id, split.message, snapshot.contextProjectDir, snapshot.contextAgentId || null);
+        if (!result.ok) throw new Error(result.err);
+        await showTab('agents');
+        startTeamRunView(result.teamRunId, target.data, split.message, snapshot.contextAgentId || null);
+        for (const event of pendingTeamEvents) handleTeamEvent(event);
+        pendingTeamEvents = [];
+      } finally { teamDispatching = false; }
+      commandOutput(`✓ ${target.label} dispatched.`);
+      return;
+    }
+    case 'team-list': {
+      const rows = catalog.filter(item => item.kind === 'team-template');
+      commandOutput(rows.length ? ['Saved teams', ...rows.map(item => `• ${item.label} — ${item.detail}`)].join('\n') : 'No saved teams. Create one on the Create page.');
+      return;
+    }
+    case 'team-status': {
+      if (!snapshot.teamRunId) { commandOutput('No team is running.'); return; }
+      const status = await reachApi.teams.members(snapshot.teamRunId);
+      if (!status.ok) throw new Error(status.err);
+      commandOutput([`${status.team} · ${status.mode} · ${status.paused ? 'paused' : 'active'} · ${status.count}/${status.maxAgents} agents`,
+        ...(status.agents || []).map(member => `• ${member.name} [${member.origin}] — ${member.status} · ${member.model || 'default model'} · ${member.messagesReceived || 0} received${member.inbox ? ` · ${member.inbox} queued` : ''}`),
+      ].join('\n'));
+      return;
+    }
+    case 'team-pause':
+    case 'team-stop': {
+      if (!snapshot.teamRunId) throw new Error('No team is running.');
+      const result = await reachApi.teams.stop(snapshot.teamRunId);
+      if (!result.ok) throw new Error(result.err);
+      commandOutput('✓ Team pause requested; its context is preserved.');
+      return;
+    }
+    case 'team-resume': {
+      if (!snapshot.teamRunId) throw new Error('No team is available to resume.');
+      const result = await reachApi.teams.start(snapshot.teamRunId);
+      if (!result.ok) throw new Error(result.err);
+      commandOutput('✓ Team resume requested.');
+      return;
+    }
+    case 'agent-new': {
+      const split = composerIntents.takeTargetAndMessage(remainder, ['model']);
+      if (!split.target) throw new Error(`Usage: ${parsed.command.usage}`);
+      const dir = snapshot.contextProjectDir;
+      if (!dir) throw new Error('Select a project first.');
+      const model = composerIntents.optionValue(split.options, 'model');
+      const result = await reachApi.agents.create(split.target, dir, model || '');
+      if (!result.ok) throw new Error(result.err);
+      if (split.message.trim()) {
+        try {
+          const sent = await reachApi.agents.send(result.agent.id, split.message);
+          if (!sent.ok) throw new Error(sent.err);
+        } catch (error) {
+          await reachApi.agents.delete(result.agent.id).catch(() => {});
+          throw error;
+        }
+      }
+      invalidateComposerCatalog();
+      await loadAgentTree();
+      commandOutput(`✓ ${result.agent.name} created${split.message.trim() ? ' and started independently' : ''}. Use /agent open to switch to it.`);
+      return;
+    }
+    case 'agent-open': {
+      const token = composerIntents.singleArgument(remainder, parsed.command.usage);
+      const target = resolveTargetMention(parseTargetToken(token.value), catalog, ['agent']);
+      await selectAgent({ id: target.id });
+      commandOutput(`Opened ${target.label}.`);
+      return { allowContextChange: true };
+    }
+    case 'agent-list': {
+      const rows = catalog.filter(item => item.kind === 'agent' || item.kind === 'persona');
+      commandOutput(rows.length ? ['Agents', ...rows.map(item => `• ${item.label} [${item.kind}] — ${item.detail}`)].join('\n') : 'No saved conversations or custom agents.');
+      return;
+    }
+    case 'agent-status': {
+      const token = composerIntents.singleArgument(remainder, parsed.command.usage, { optional: true });
+      let target;
+      if (token) target = resolveTargetMention(parseTargetToken(token.value), catalog, ['agent', 'current'], submittedAgent);
+      else if (submittedAgent) target = { kind: 'current', id: submittedAgent.id, label: submittedAgent.name };
+      else throw new Error('Open or name an agent first.');
+      const agent = await reachApi.agents.get(target.id);
+      if (!agent) throw new Error('That conversation no longer exists.');
+      commandOutput(`${agent.name}\nStatus: ${agent.runState?.status || 'idle'}\nModel: ${agent.model || 'default model'}\nMessages: ${(agent.messages || []).length}\nProject: ${agent.dir}`);
+      return;
+    }
+    case 'model-current': {
+      const settings = await reachApi.getSettings();
+      const agent = submittedAgent ? await reachApi.agents.get(submittedAgent.id) : null;
+      commandOutput(`Conversation: ${agent?.model || 'inherits default'}\nActive default: ${settings.model || 'not set'}\nConnection: ${settings.endpoint || 'not set'}`);
+      return;
+    }
+    case 'model-list': {
+      const result = await reachApi.listModels();
+      if (!result.ok) throw new Error(result.err);
+      const filter = remainder.trim().toLowerCase();
+      const models = (result.models || []).filter(model => !filter || model.toLowerCase().includes(filter));
+      commandOutput([`Models on ${result.connectionName || 'active connection'} (${models.length})`, ...models.slice(0, 100).map(model => `• ${model}`)].join('\n'));
+      return;
+    }
+    case 'model-use': {
+      if (!submittedAgent) throw new Error('Open a conversation first.');
+      const token = composerIntents.singleArgument(remainder, parsed.command.usage);
+      const modelId = composerIntents.modelIdFromToken(token?.raw || token?.value);
+      if (!modelId) throw new Error(`Usage: ${parsed.command.usage}`);
+      await setAgentModel(submittedAgent.id, modelId);
+      commandOutput(`✓ ${submittedAgent.name} will use ${modelId}.`);
+      return;
+    }
+    case 'model-reset': {
+      if (!submittedAgent) throw new Error('Open a conversation first.');
+      await setAgentModel(submittedAgent.id, '');
+      commandOutput(`✓ ${submittedAgent.name} now inherits the active default model.`);
+      return;
+    }
+    case 'model-default': {
+      const token = composerIntents.singleArgument(remainder, parsed.command.usage);
+      const modelId = composerIntents.modelIdFromToken(token?.raw || token?.value);
+      if (!modelId) throw new Error(`Usage: ${parsed.command.usage}`);
+      await reachApi.saveSettings({ model: modelId === 'default' ? '' : modelId });
+      composerModelsCache = { key: '', at: 0, items: [] };
+      commandOutput(`✓ Active connection default model set to ${modelId === 'default' ? 'automatic' : modelId}.`);
+      return;
+    }
+    case 'telemetry-summary':
+    case 'telemetry-cpu':
+    case 'telemetry-gpu':
+    case 'telemetry-memory':
+    case 'telemetry-io':
+    case 'telemetry-models':
+    case 'telemetry-processes': {
+      const sample = await reachApi.telemetry.sample();
+      if (parsed.id === 'telemetry-models') {
+        commandOutput([`Models in memory · sampled ${new Date(sample.at).toLocaleTimeString()}`,
+          ...(sample.models || []).map(model => `• ${model.name} — ${model.provider}${model.local ? ' · local' : ' · remote'} · ${model.placement} · ${formatBytes(model.bytes)}`),
+          ...((sample.models || []).length ? [] : ['No loaded models were reported by connected sources.']),
+        ].filter(Boolean).join('\n'));
+      } else if (parsed.id === 'telemetry-processes') {
+        commandOutput([`Largest processes · sampled ${new Date(sample.at).toLocaleTimeString()}`,
+          ...(sample.processes || []).slice(0, 15).map(process => `• ${process.name} (PID ${process.pid}) — ${formatBytes(process.ram)} RAM · ${process.cpu == null ? 'unknown' : Math.round(process.cpu) + '%'} CPU`),
+        ].join('\n'));
+      } else if (parsed.id === 'telemetry-cpu') {
+        commandOutput(`CPU · sampled ${new Date(sample.at).toLocaleTimeString()}\n${sample.cpu?.name || 'unknown'}\nUtilization: ${sample.cpu?.percent == null ? 'unknown' : Math.round(sample.cpu.percent) + '%'}\nThreads: ${sample.cpu?.threads ?? 'unknown'}`);
+      } else if (parsed.id === 'telemetry-gpu') {
+        commandOutput(`GPU · sampled ${new Date(sample.at).toLocaleTimeString()}\n${sample.gpu?.name || 'unknown'}\nUtilization: ${sample.gpu?.utilization == null ? 'unknown' : Math.round(sample.gpu.utilization) + '%'}\nDedicated: ${formatBytes(sample.gpu?.dedicated)} / ${formatBytes(sample.gpu?.total)}\nShared: ${formatBytes(sample.gpu?.shared)}\nSource: ${sample.gpu?.source || 'unknown'}`);
+      } else if (parsed.id === 'telemetry-memory') {
+        commandOutput(`Memory · sampled ${new Date(sample.at).toLocaleTimeString()}\nRAM: ${formatBytes(sample.ram?.used)} / ${formatBytes(sample.ram?.total)} · ${formatBytes(sample.ram?.available)} available\nVRAM: ${formatBytes(sample.gpu?.dedicated)} / ${formatBytes(sample.gpu?.total)}\nLoaded models reported: ${(sample.models || []).length}`);
+      } else if (parsed.id === 'telemetry-io') {
+        commandOutput(`I/O · sampled ${new Date(sample.at).toLocaleTimeString()}\nNetwork: ↓ ${formatBytes(sample.network?.receive)}/s · ↑ ${formatBytes(sample.network?.send)}/s\nDisk: read ${formatBytes(sample.disk?.read)}/s · write ${formatBytes(sample.disk?.write)}/s`);
+      } else {
+        commandOutput([`System telemetry · sampled ${new Date(sample.at).toLocaleTimeString()}`,
+          `CPU: ${sample.cpu?.percent == null ? 'unknown' : Math.round(sample.cpu.percent) + '%'} · ${sample.cpu?.name || 'unknown'}`,
+          `GPU: ${sample.gpu?.utilization == null ? 'unknown' : Math.round(sample.gpu.utilization) + '%'} · ${sample.gpu?.name || 'unknown'}`,
+          `RAM: ${formatBytes(sample.ram?.used)} / ${formatBytes(sample.ram?.total)} · ${formatBytes(sample.ram?.available)} available`,
+          `VRAM: ${formatBytes(sample.gpu?.dedicated)} / ${formatBytes(sample.gpu?.total)}`,
+          `Models reported: ${(sample.models || []).length} · Processes sampled: ${(sample.processes || []).length}`,
+        ].join('\n'));
+      }
+      return;
+    }
+    case 'telemetry-sources': {
+      const sources = await reachApi.telemetry.sources();
+      commandOutput(['Telemetry sources', ...(sources || []).map(source => `• ${source.type} — ${source.enabled === false ? 'disabled' : 'enabled'} · ${source.url}`)].join('\n'));
+      return;
+    }
+    case 'stop-all':
+      await stopAllRuns();
+      commandOutput('✓ Stop requested for active conversations; active teams are paused with context preserved.');
+      return;
+    default:
+      throw new Error(`Command not implemented: ${parsed.command?.path || parsed.id}. Type /help.`);
+  }
+}
+
+async function executeMentionRouting(parsed, snapshot, retryState = null) {
+  const catalog = await freshTargetCatalog(false);
+  const targets = [];
+  let modelDirective = null;
+  const submittedAgent = snapshot.contextAgentId ? {
+    id: snapshot.contextAgentId,
+    name: snapshot.contextAgentName || 'Current chat',
+    dir: snapshot.contextProjectDir || '',
+  } : null;
+  for (const [mentionIndex, mention] of parsed.mentions.entries()) {
+    const priorRoute = retryState?.routes?.[mentionIndex] || null;
+    const priorKey = priorRoute ? composerIntents.deliveryKey(priorRoute) : '';
+    // A retry of the exact unchanged draft must not depend on a target that
+    // already accepted the message still being present in the live catalog.
+    // Reuse only its inert identity here; dispatchToTargets skips it before
+    // consulting mutable target data. Pending targets are always revalidated.
+    if (priorRoute && retryState.delivered.has(priorKey)) {
+      targets.push({ kind: priorRoute.kind, id: priorRoute.id, label: priorRoute.label, data: {} });
+      continue;
+    }
+    const resolved = resolveTargetMention(mention, catalog, null, submittedAgent);
+    if (resolved.kind === 'model') {
+      if (modelDirective !== null) throw new Error('Use only one @model or @default directive.');
+      modelDirective = resolved.id;
+    } else if (resolved.kind === 'default') {
+      if (modelDirective !== null) throw new Error('Use only one @model or @default directive.');
+      modelDirective = '';
+    } else {
+      const resolvedKey = composerIntents.deliveryKey(resolved);
+      if (priorRoute && priorKey !== resolvedKey) {
+        throw new Error(`${priorRoute.label || 'A target'} changed while the first delivery was in flight. Edit the draft or choose the target again.`);
+      }
+      if (retryState && !priorRoute) {
+        retryState.routes[mentionIndex] = { kind: resolved.kind, id: resolved.id, label: resolved.label };
+      }
+      targets.push(resolved);
+    }
+  }
+  const fallbackTarget = targets.length || !submittedAgent
+    ? null
+    : resolveTargetMention({ kind: 'current' }, catalog, null, submittedAgent);
+  const acknowledgements = await dispatchToTargets(targets, parsed.body, {
+    modelDirective,
+    attachments: snapshot.attachments,
+    displayText: parsed.body,
+    retryState,
+    fallbackTarget,
+    projectDir: snapshot.contextProjectDir,
+  });
+  const external = targets.some(target => target.kind !== 'current');
+  if (external || !parsed.body.trim()) commandOutput(`✓ ${acknowledgements.join(' · ')}`);
 }
 
 function memberIndexFromAgentId(agentId) {
@@ -2637,7 +3703,13 @@ function attachAskBox(card, questionId, name, question) {
 }
 
 function handleTeamEvent(ev) {
-  if (teamDispatching && !activeTeamRun) { pendingTeamEvents.push(ev); return; }
+  // A paused run may still be displayed while main tears it down and starts the
+  // replacement. Buffer events for the not-yet-installed run instead of
+  // dropping its fast start/done sequence against the old run id.
+  if (teamDispatching && (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId)) {
+    pendingTeamEvents.push(ev);
+    return;
+  }
   if (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId) return;
   const run = activeTeamRun;
   // Nurse telemetry is coordination metadata, not provider/tool activity.
@@ -2651,7 +3723,14 @@ function handleTeamEvent(ev) {
   window.ReachActivity.team(ev, activityCard);
   switch (ev.type) {
     case 'start':
-      for (const member of ev.members) teamCard(member.index, member.name, member.model);
+      for (const member of ev.members) {
+        const card = teamCard(member.index, member.name, member.model);
+        if (card) {
+          card.dataset.agentId = member.agentId || '';
+          card.dataset.role = member.role || '';
+        }
+      }
+      invalidateComposerCatalog();
       break;
     case 'control':
       run.paused = ev.paused;
@@ -2809,8 +3888,16 @@ function handleTeamEvent(ev) {
           setMemberControl(card, ev.paused);
           break;
         case 'agent-created': {
-          card.classList.add('running');
-          state.textContent = `spawned · ${ev.task ? ev.task.slice(0, 80) : 'working…'}`;
+          if (ev.queued || ev.status === 'queued') {
+            card.classList.remove('running');
+            setMemberControl(card, false, true);
+            state.textContent = `queued for team capacity · ${ev.task ? ev.task.slice(0, 80) : 'waiting…'}`;
+          } else {
+            card.classList.add('running');
+            setMemberControl(card, false, false);
+            state.textContent = `spawned · ${ev.task ? ev.task.slice(0, 80) : 'working…'}`;
+          }
+          invalidateComposerCatalog();
           break;
         }
         case 'agent-state': {
@@ -2962,6 +4049,8 @@ function handleTeamEvent(ev) {
       run.deck.finish(ev.stopped ? 'stopped' : 'completed');
       run.stop.remove();
       activeTeamRun = null;
+      invalidateComposerCatalog();
+      if (!composerSuggestionsEl.classList.contains('hidden')) refreshComposerSuggestions();
       updateSendControl();
       break;
     }
@@ -2975,6 +4064,8 @@ function handleTeamEvent(ev) {
       run.deck.finish('error');
       run.stop.remove();
       activeTeamRun = null;
+      invalidateComposerCatalog();
+      if (!composerSuggestionsEl.classList.contains('hidden')) refreshComposerSuggestions();
       updateSendControl();
       break;
     }
