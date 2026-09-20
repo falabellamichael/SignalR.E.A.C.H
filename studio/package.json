@@ -15,6 +15,7 @@
     "bench:nurse": "node bench/team-nurse-benchmark.cjs",
     "test:workspace": "electron test/telemetry-ui.cjs",
     "test:teams-ui": "electron test/team-deck-ui.cjs",
+    "test:agents-ui": "electron test/agents-scroll-ui.cjs",
     "build:editor": "esbuild renderer/editor.src.js --bundle --minify --format=iife --outfile=renderer/editor.bundle.js",
     "dist": "npm run build:editor && electron-builder",
     "dist:mac": "npm run build:editor && electron-builder --mac",

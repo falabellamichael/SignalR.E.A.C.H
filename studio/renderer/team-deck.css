@@ -102,7 +102,7 @@
 .team-deck .member-control { border-color: var(--deck-line); color: var(--deck-ink); background: transparent; }
 .team-deck .member-control:hover { background: var(--deck-selected); }
 .team-deck .member-dot { display: none; }
-.team-deck .member-body { padding: 12px 14px; max-height: 300px; color: var(--deck-ink); }
+.team-deck .member-body { padding: 12px 14px; color: var(--deck-ink); }
 .team-deck .member-body:empty { display: none; }
 .team-deck .member-body p:first-child { margin-top: 0; }
 .team-deck .member-body p:last-child { margin-bottom: 0; }
@@ -112,7 +112,6 @@
 .team-deck .activity-note { margin: 5px 0 8px; }
 .team-deck .activity-progress { display: none; }
 .team-deck .activity-details > summary, .team-deck .activity-result summary { color: var(--deck-muted); }
-.team-deck .activity-steps { max-height: 96px; }
 .team-deck .activity-step { border-left-color: var(--deck-line); }
 .team-deck .activity-step p, .team-deck .activity-step-time, .team-deck .activity-number { color: var(--deck-muted); }
 .team-deck .edit-review-group, .team-deck .edit-card, .team-deck .edit-card > summary,
@@ -144,4 +143,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .team-tab[data-status="working"] .team-orbit-icon { animation: none; }
+}
+@media (max-height: 760px) {
+  .team-deck-heading { padding: 8px 0 6px; }
 }

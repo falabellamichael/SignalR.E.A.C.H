@@ -425,6 +425,7 @@ async function selectAgent(a) {
   refreshContextStatus();
   renderTodos();
   renderPendingEdits();
+  followChatTail(true);
   window.ReachWorkspace?.sync();
   await refreshFileTree();
   await loadAgentTree();
@@ -501,12 +502,22 @@ $('#btn-agent-continue').onclick = async () => {
 };
 
 // ---------- chat rendering ----------
+// Capture this BEFORE changing content. Streaming must follow a reader at the
+// bottom, but never drag someone away from a message or edit they are reading.
+function shouldFollowChat() {
+  return chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop <= 24;
+}
+function followChatTail(follow) {
+  if (follow) chatScroll.scrollTop = chatScroll.scrollHeight;
+}
+
 function timeStamp() {
   const d = new Date();
   return d.toTimeString().slice(0, 8);
 }
 
 function appendChatMessage(role, text, msgIndex = null) {
+  const follow = role === 'user' || shouldFollowChat();
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
   if (role === 'assistant') {
@@ -528,11 +539,12 @@ function appendChatMessage(role, text, msgIndex = null) {
     div.appendChild(fork);
   }
   chatLog.appendChild(div);
-  chatScroll.scrollTop = chatScroll.scrollHeight;
+  followChatTail(follow);
   return div;
 }
 
 function appendToolCallMessage(tool, args) {
+  const follow = shouldFollowChat();
   const div = document.createElement('div');
   div.className = 'chat-msg system tool-call-message';
   const content = document.createElement('span');
@@ -555,12 +567,13 @@ function appendToolCallMessage(tool, args) {
     details.appendChild(summary);
     div.insertBefore(details, ts);
   }
-  chatScroll.scrollTop = chatScroll.scrollHeight;
+  followChatTail(follow);
   return div;
 }
 
 function appendQuestion(question) {
   if (!question) return;
+  const follow = shouldFollowChat();
   const card = document.createElement('div');
   card.className = 'chat-msg system';
   const label = document.createElement('p');
@@ -574,9 +587,11 @@ function appendQuestion(question) {
     card.appendChild(button);
   }
   chatLog.appendChild(card);
+  followChatTail(follow);
 }
 
 function appendToolCard(tool, ok, pending, error, result) {
+  const follow = shouldFollowChat();
   const card = document.createElement('div');
   card.className = 'tool-card ' + (ok ? (pending ? 'pending' : 'ok') : 'err');
   const head = document.createElement('button');
@@ -589,7 +604,7 @@ function appendToolCard(tool, ok, pending, error, result) {
   card.appendChild(body);
   head.onclick = () => body.classList.toggle('hidden');
   chatLog.appendChild(card);
-  chatScroll.scrollTop = chatScroll.scrollHeight;
+  followChatTail(follow);
 }
 
 const activeEditReviewGroups = new Map();
@@ -870,6 +885,7 @@ function appendEditCardToGroup(group, edit) {
 
 function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
   if (!agent) return null;
+  const follow = shouldFollowChat();
   const group = ensureEditReviewGroup({
     key: `agent:${agent.id}`,
     host,
@@ -878,7 +894,7 @@ function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
     resolve: (editId, accepted) => reachApi.agents.resolveEdit(agent.id, editId, accepted),
   });
   const card = appendEditCardToGroup(group, edit);
-  chatScroll.scrollTop = chatScroll.scrollHeight;
+  followChatTail(follow);
   return card;
 }
 
@@ -1188,6 +1204,7 @@ $('#btn-agent-delete').onclick = async () => {
 let streamBubble = null;
 let recoveryBubble = null;
 function handleAgentEvent(ev) {
+  const follow = shouldFollowChat();
   window.ReachActivity.ingest(ev);
   if (ev.type === 'run-state') {
     if (ev.status === 'running') runningAgentIds.add(ev.agentId);
@@ -1223,13 +1240,11 @@ function handleAgentEvent(ev) {
         streamBubble.dataset.raw = '';
         streamBubble.className = 'chat-msg assistant streaming';
         chatLog.appendChild(streamBubble);
-        chatScroll.scrollTop = chatScroll.scrollHeight;
       }
       break;
     case 'delta':
       if (streamBubble) {
         streamBubble.innerHTML = md.render((streamBubble.dataset.raw = (streamBubble.dataset.raw || '') + ev.text));
-        chatScroll.scrollTop = chatScroll.scrollHeight;
       }
       break;
     case 'message-end':
@@ -1296,6 +1311,7 @@ function handleAgentEvent(ev) {
       appendChatMessage('system', `Retrying… ${ev.error}`);
       break;
   }
+  followChatTail(follow);
 }
 reachApi.agents.onEvent(handleAgentEvent);
 
@@ -3781,8 +3797,9 @@ function handleTeamEvent(ev) {
         if (!card._renderTimer) {
           card._renderTimer = setTimeout(() => {
             card._renderTimer = null;
+            const follow = card.isConnected && !card.hidden && shouldFollowChat();
             body.textContent = run.buffer.get(ev.index) || '';
-            body.parentElement.scrollTop = body.parentElement.scrollHeight;
+            followChatTail(follow);
           }, 100);
         }
       } else if (ev.memberType === 'message-end') {
@@ -4076,6 +4093,7 @@ reachApi.teams.onEvent(handleTeamEvent);
 // Team member edit reviews use the same grouped, nested dropdown as the main
 // agent. The run id keeps simultaneous/later crews in distinct review batches.
 reachApi.teams.onEditPending(({ teamRunId, edit }) => {
+  const follow = shouldFollowChat();
   const host = activeTeamRun?.teamRunId === teamRunId ? activeTeamRun.deck.reviews : chatLog;
   const teamName = activeTeamRun?.team?.name || 'AI team';
   const group = ensureEditReviewGroup({
@@ -4086,7 +4104,7 @@ reachApi.teams.onEditPending(({ teamRunId, edit }) => {
     resolve: (editId, accepted) => reachApi.teams.resolveEdit(editId, accepted),
   });
   appendEditCardToGroup(group, edit);
-  host.scrollTop = host.scrollHeight;
+  if (chatScroll.contains(host)) followChatTail(follow);
 });
 
 // ---------- boot ----------

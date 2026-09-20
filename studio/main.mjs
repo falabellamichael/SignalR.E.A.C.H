@@ -3437,10 +3437,12 @@ app.whenReady().then(() => {
             if (after.right > document.querySelector('#file-drawer').getBoundingClientRect().left + 1) throw new Error('Composer extends underneath the Files panel');
             if (scroll.clientHeight < 60 || input.getBoundingClientRect().width < 60) throw new Error('Conversation or input squeezed out of view: ' + JSON.stringify({ height: scroll.clientHeight, inputWidth: input.getBoundingClientRect().width, window: [innerWidth, innerHeight] }));
             if (document.body.scrollHeight > innerHeight + 1) throw new Error('Conversation overflowed the window');
-            const headerBeforeScroll = activity.getBoundingClientRect();
+            const header = document.querySelector('#agent-model-info');
+            const headerBeforeScroll = header.getBoundingClientRect();
             const contextBeforeScroll = document.querySelector('.context-bar').getBoundingClientRect();
+            if (!scroll.contains(activity)) throw new Error('Activity is outside the shared conversation scroller');
             scroll.scrollTop = scroll.scrollHeight;
-            if (Math.abs(activity.getBoundingClientRect().top - headerBeforeScroll.top) > 1 || Math.abs(document.querySelector('.context-bar').getBoundingClientRect().top - contextBeforeScroll.top) > 1) throw new Error('Conversation scrolling moved the stationary status header');
+            if (Math.abs(header.getBoundingClientRect().top - headerBeforeScroll.top) > 1 || Math.abs(document.querySelector('.context-bar').getBoundingClientRect().top - contextBeforeScroll.top) > 1) throw new Error('Conversation scrolling moved the stationary status header');
             if (scroll.scrollTop <= 0 || Math.abs(scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight) > 2) throw new Error('Final answer is not reachable by scrolling');
             const lastMessage = document.querySelector('#chat-log .chat-msg:last-child').getBoundingClientRect();
             const viewport = scroll.getBoundingClientRect();

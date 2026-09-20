@@ -32,6 +32,9 @@
     const panels = element.querySelector('.team-panels');
     const reviews = element.querySelector('.team-reviews');
     const modelInfo = element.querySelector('.team-model-info');
+    // Pin the live tab rail, not the expanded metadata. At small window sizes
+    // keeping both pinned can cover the entire conversation viewport.
+    element.querySelector('.team-deck-nav').after(modelInfo);
     const modelControl = modelInfo.querySelector('.team-model-control');
     modelInfo.hidden = true;
     const [left, right] = element.querySelectorAll('.team-tab-scroll');

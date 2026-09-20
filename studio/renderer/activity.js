@@ -52,7 +52,6 @@
       if (step.result) { text(result.querySelector('summary'), `Result · ${step.result.length.toLocaleString()} characters`); text(result.querySelector('pre'), step.result); }
     }
     for (const [key, row] of view.rows) if (!keys.has(key)) { row.remove(); view.rows.delete(key); }
-    if (view.lastCount !== state.count) { items.scrollTop = items.scrollHeight; view.lastCount = state.count; }
   }
   function render() {
     frame = false;
