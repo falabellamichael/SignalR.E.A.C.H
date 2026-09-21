@@ -95,6 +95,7 @@ let agentStore = null;
 let personaStore = null;
 let agentLoops = new Map(); // agentId -> AgentLoop
 let teamRuns = new Map();   // teamRunId -> TeamRunner
+const startingTeamConversations = new Set(); // reserve a chat across async validation
 
 /* Crash recovery: an unhandled exception or rejection must never silently kill
  * the app mid-run. Log to userData/crash.log, mark any running conversation
@@ -490,11 +491,12 @@ function registerIpc() {
     const loop = agentLoops.get(id);
     if (loop) loop.stop();
     agentLoops.delete(id);
+    for (const runner of teamRuns.values()) if (runner.conversationId === id) runner.stop();
     return { ok: getAgentStore().remove(id) };
   });
   ipcMain.handle('agents:clear', (_e, id) => {
     try {
-      if (agentLoops.get(id)?.running || [...teamRuns.values()].some(r => r.conversationId === id)) throw new Error('Finish the current agent or team run before clearing this conversation.');
+      if (agentLoops.get(id)?.running || startingTeamConversations.has(id) || [...teamRuns.values()].some(r => r.conversationId === id)) throw new Error('Finish the current agent or team run before clearing this conversation.');
       const agent = getAgentStore().clear(id);
       agentLoops.delete(id);
       return agent ? { ok: true, agent } : { ok: false, err: 'Conversation not found.' };
@@ -635,6 +637,7 @@ function registerIpc() {
   ipcMain.handle('teams:delete', (_e, id) => ({ ok: getPersonaStore().removeTeam(id) }));
 
   ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId, useHistory = true }) => {
+    let reservedConversation;
     try {
       const ps = getPersonaStore();
       const team = ps.getTeam(teamId);
@@ -644,13 +647,22 @@ function registerIpc() {
       const conversation = agentId ? getAgentStore().get(agentId) : null;
       if (agentId && !conversation) return { ok: false, err: 'Conversation not found.' };
       if (agentLoops.get(agentId)?.running) return { ok: false, err: 'Wait for this conversation to finish before starting the team.' };
+      const conversationKey = agentId || null;
+      if (startingTeamConversations.has(conversationKey)) return { ok: false, err: 'A team is already starting in this conversation.' };
+      if ([...teamRuns.values()].some(runner => runner.conversationId === conversationKey && !runner.paused)) {
+        return { ok: false, err: 'A team is already running in this conversation. Send it a follow-up or pause it first.' };
+      }
+      startingTeamConversations.add(conversationKey);
+      reservedConversation = conversationKey;
       const conversationTask = teamConversationTask(conversation?.messages, task, useHistory !== false);
 
       const settings = loadSettings();
       let endpoint = settings.endpoint || '';
       try { endpoint = await resolveEndpoint(endpoint); } catch (e) { return { ok: false, err: 'Endpoint: ' + e.message }; }
-      if ([...teamRuns.values()].some(runner => !runner.paused)) return { ok: false, err: 'A team is already running. Stop it or wait for it to finish first.' };
-      for (const [id, runner] of teamRuns) { runner.stop(); teamRuns.delete(id); }
+      for (const [id, runner] of teamRuns) {
+        if (runner.conversationId !== conversationKey) continue;
+        runner.stop(); teamRuns.delete(id);
+      }
       const accessKey = settings.accessKey || '';
       const defaultModel = settings.model || 'gpt-4o-mini';
 
@@ -745,6 +757,7 @@ function registerIpc() {
         if (agent && agent.dir) projectDir = agent.dir;
       }
 
+      if (agentId && !getAgentStore().get(agentId)) return { ok: false, err: 'Conversation was deleted while the team was starting.' };
       const teamRunId = 'teamrun-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
       const sendEvent = (channel, payload) => {
         // Save before announcing completion so a follow-up sees the answer
@@ -840,6 +853,8 @@ function registerIpc() {
       return { ok: true, teamRunId, routing };
     } catch (e) {
       return { ok: false, err: e.message };
+    } finally {
+      if (reservedConversation !== undefined) startingTeamConversations.delete(reservedConversation);
     }
   });
 

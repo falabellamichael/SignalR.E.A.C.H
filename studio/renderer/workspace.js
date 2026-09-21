@@ -151,6 +151,7 @@
     if (currentAgent?.id !== id) return;
     const result = await reachApi.agents.clear(id);
     if (!result.ok) { showNotice(result.err); return; }
+    discardTeamConversation(id);
     composerInput.value = ''; queuedIndicator.classList.add('hidden');
     window.ReachTelemetry?.reset();
     await selectAgent(result.agent); composerInput.focus(); sync();

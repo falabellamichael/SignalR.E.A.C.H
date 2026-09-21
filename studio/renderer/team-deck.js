@@ -348,7 +348,7 @@
       tally();
     }
     const api = { element, banner, reviews, add, identify, update, select, finish, noteNurse, restart, mount, unmount,
-      dispose: () => { unmount(); resize.disconnect(); recycledTabs = []; for (const entry of entries.values()) entry.observer?.disconnect(); }, get ended() { return ended; } };
+      dispose: () => { element._retainTeamView = false; unmount(); resize.disconnect(); recycledTabs = []; for (const entry of entries.values()) entry.observer?.disconnect(); }, get ended() { return ended; } };
     return api;
   }
   window.ReachTeamDeck = { create };

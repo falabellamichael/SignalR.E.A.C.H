@@ -424,6 +424,13 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "teams:followup": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId, agentId, teamId, target, message }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
   "teams:get": {
     "module": "main.mjs",
     "args": [

@@ -106,7 +106,6 @@
     const target = settings.liveTarget === 'selected' ? selectedLiveMemberAgentId() : '';
     composerIntentPending = true; updateSendControl(); close();
     try {
-      if (activeTeamRun && !run) throw new Error('Another conversation has the active team. Open that conversation or finish its run first.');
       if (run) {
         if (run.team.id !== team.id) throw new Error('Finish the active team before choosing another team.');
         if (settings.liveTarget === 'selected' && !target) throw new Error('Select a live member tab to receive your message.');
@@ -126,7 +125,7 @@
     } catch (error) {
       showNotice(`Team message not sent: ${error.message}`);
     } finally {
-      teamDispatching = false; pendingTeamEvents = [];
+      teamDispatching = false; pendingTeamEvents = []; earlyTeamEdits.clear();
       composerIntentPending = false; updateSendControl();
     }
   }

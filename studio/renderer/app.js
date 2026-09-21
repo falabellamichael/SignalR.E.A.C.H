@@ -177,6 +177,7 @@ async function selectProject(p) {
   agentProjectDir = p.dir;
   if (currentAgent && currentAgent.dir !== p.dir) {
     currentAgent = null;
+    syncSelectedTeamRun();
     agentRunning = false;
     streamBubble = null;
     recoveryBubble = null;
@@ -408,6 +409,7 @@ async function selectAgent(a) {
     dir: selected.dir,
   })) return;
   currentAgent = selected;
+  syncSelectedTeamRun();
   composerAttachments = [];
   renderComposerAttachments();
   window.ReachActivity.select(currentAgent);
@@ -900,7 +902,8 @@ function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
 
 function renderChatHistory() {
   for (const deck of chatLog.querySelectorAll('.team-deck')) {
-    if (deck !== activeTeamRun?.wrap) deck._teamDeck?.dispose();
+    deck._teamDeck?.unmount();
+    if (![...teamConversationViews.values()].some(run => run.wrap === deck)) deck._teamDeck?.dispose();
   }
   chatLog.innerHTML = '';
   if (!currentAgent || !currentAgent.messages) return;
@@ -923,9 +926,10 @@ function renderChatHistory() {
     note.textContent = `⑂ branched from "${currentAgent.name.replace(/ \(branch \d+\)$/, '')}" at message ${currentAgent.forkIndex}`;
     chatLog.insertBefore(note, chatLog.firstChild);
   }
-  if (activeTeamRun?.agentId === currentAgent.id) {
-    chatLog.prepend(activeTeamRun.wrap);
-    activeTeamRun.deck.mount(chatScroll);
+  const teamView = teamConversationViews.get(currentAgent.id);
+  if (teamView) {
+    chatLog.prepend(teamView.wrap);
+    teamView.deck.mount(chatScroll);
   }
 }
 
@@ -988,7 +992,7 @@ function renderComposerAttachments() {
 }
 
 $('#btn-attach').onclick = async () => {
-  if (!currentAgent || agentRunning || runningAgentIds.size || activeTeamRun && !activeTeamRun.paused) return;
+  if (!currentAgent || agentRunning || runningAgentIds.has(currentAgent.id) || activeTeamRun && !activeTeamRun.paused) return;
   const result = await reachApi.agents.pickAttachments(currentAgent.id);
   if (!result.ok) { showNotice(result.err); return; }
   composerAttachments.push(...result.attachments);
@@ -1112,8 +1116,8 @@ async function sendComposer() {
   if (window.ReachTeamComposer?.enabled() && raw.trim()) {
     return window.ReachTeamComposer.send(raw);
   }
-  if (agentRunning || runningAgentIds.size || (activeTeamRun && !activeTeamRun.paused)) {
-    return stopAllRuns();
+  if (agentRunning || runningAgentIds.has(currentAgent?.id) || (activeTeamRun && !activeTeamRun.paused)) {
+    return stopConversationRuns();
   }
   const text = raw.trim();
   if ((!text && !composerAttachments.length) || !currentAgent) return;
@@ -1154,7 +1158,7 @@ $('#btn-agent-stop').onclick = async () => {
 };
 
 function updateSendControl() {
-  const busy = agentRunning || runningAgentIds.size > 0 || !!(activeTeamRun && !activeTeamRun.paused);
+  const busy = agentRunning || runningAgentIds.has(currentAgent?.id) || !!(activeTeamRun && !activeTeamRun.paused);
   const parsed = composerIntents.parse(composerInput.value);
   const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
     || /^[\s]*[\/@]/.test(composerInput.value);
@@ -1163,11 +1167,25 @@ function updateSendControl() {
   const command = parsed.kind === 'command' || (parsed.error && /^\s*\//.test(composerInput.value));
   const button = $('#btn-send');
   button.textContent = stoppingAll ? 'Stopping…' : composerIntentPending ? 'Running…' : stopMode ? 'Stop' : command ? 'Run' : 'Send';
-  button.title = stopMode ? 'Stop all active agents and pause the team' : command ? 'Run composer command' : teamMessage ? 'Send to the selected team' : 'Send message';
+  button.title = stopMode ? 'Stop this conversation and pause its team' : command ? 'Run composer command' : teamMessage ? 'Send to the selected team' : 'Send message';
   button.classList.toggle('danger', stopMode);
   button.disabled = stoppingAll || composerIntentPending || window.ReachTeamComposer?.saving();
   $('#btn-attach').disabled = busy || !currentAgent || stoppingAll;
   window.ReachWorkspace?.syncControls();
+}
+
+async function stopConversationRuns() {
+  if (stoppingAll) return;
+  const agentId = currentAgent?.id, run = activeTeamRun;
+  stoppingAll = true; updateSendControl();
+  try {
+    const results = await Promise.all([
+      ...(agentId ? [reachApi.agents.stop(agentId)] : []),
+      ...(run ? [reachApi.teams.stop(run.teamRunId)] : []),
+    ]);
+    for (const result of results) if (!result.ok) showNotice(result.err);
+  } catch (error) { showNotice(error.message); }
+  finally { stoppingAll = false; updateSendControl(); }
 }
 
 async function stopAllRuns() {
@@ -1192,12 +1210,16 @@ async function deleteAgentById(id, name) {
       if (a.parentChatId && doomed.has(a.parentChatId) && !doomed.has(a.id)) { doomed.add(a.id); grew = true; }
     }
   }
-  for (const doomedId of doomed) await reachApi.agents.delete(doomedId);
+  for (const doomedId of doomed) {
+    await reachApi.agents.delete(doomedId);
+    discardTeamConversation(doomedId);
+  }
   if (currentAgent && doomed.has(currentAgent.id)) {
     currentAgent = null;
     agentView.classList.add('hidden');
     noAgent.classList.remove('hidden');
   }
+  syncSelectedTeamRun();
   await loadAgentTree();
 }
 
@@ -2267,9 +2289,31 @@ let roles = [];                // preset crew roles (agent/roles.cjs) — the dr
 let editingPersonaId = null;
 let editingTeamId = null;
 let teamBuilderMembers = [];   // [{personaId, roleId, role}] while the modal is open
-let activeTeamRun = null;      // { teamRunId, cards: Map(index -> {el, out}) }
+let activeTeamRun = null;      // Selected chat's live run, never another chat's.
+const teamRunViews = new Map(); // Live event routing by teamRunId, including background chats.
+const teamConversationViews = new Map(); // Latest deck retained per conversation.
 let teamDispatching = false;
 let pendingTeamEvents = [];
+const earlyTeamEdits = new Map();
+
+function discardTeamConversation(agentId) {
+  const run = teamConversationViews.get(agentId);
+  if (!run) return;
+  teamRunViews.delete(run.teamRunId); teamConversationViews.delete(agentId);
+  run.stop.remove(); run.deck.dispose(); run.wrap.remove();
+  syncSelectedTeamRun();
+}
+
+function syncSelectedTeamRun() {
+  const selected = teamConversationViews.get(currentAgent?.id || null);
+  activeTeamRun = selected && !selected.deck.ended ? selected : null;
+  for (const run of teamConversationViews.values()) {
+    run.stop?.remove();
+    if (run !== selected) run.deck.unmount();
+  }
+  if (activeTeamRun?.stop) document.querySelector('header .statusbar').prepend(activeTeamRun.stop);
+  invalidateComposerCatalog();
+}
 
 async function loadCreatePage() {
   personas = await reachApi.personas.list();
@@ -2694,18 +2738,20 @@ $('#btn-team-run-go').onclick = async () => {
   } finally {
     teamDispatching = false;
     pendingTeamEvents = [];
+    earlyTeamEdits.clear();
   }
 };
 
 /* Deployed team tabs hang from the top of the chat. Member DOM stays alive
  * behind each tab, preserving tool results and unanswered questions. */
 function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
-  if (activeTeamRun) {
-    activeTeamRun.stop.remove();
-    activeTeamRun.deck.finish('stopped');
+  const previous = teamConversationViews.get(agentId || null);
+  if (previous) {
+    previous.stop.remove();
+    previous.deck.finish('stopped');
+    teamRunViews.delete(previous.teamRunId);
   }
   const run = { teamRunId, team, agentId, cards: new Map(), subCards: new Map(), buffer: new Map() };
-  activeTeamRun = run;
   invalidateComposerCatalog();
   // Endpoint/model validation can take long enough for the user to navigate.
   // Never mount conversation A's team deck inside conversation B. The retained
@@ -2715,12 +2761,12 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
     currentAgent.settings = { ...currentAgent.settings, teamChat: { ...currentAgent.settings?.teamChat, enabled: true, teamId: team.id } };
     appendChatMessage('user', task);
   }
-  const host = boundToCurrent ? chatLog : noAgent;
+  const host = boundToCurrent ? chatLog : !agentId ? noAgent : null;
   if (!boundToCurrent && !currentAgent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
   const teamKey = team.id || `${team.name}:${team.mode}`;
-  const existing = [...host.querySelectorAll(':scope > .team-deck')].find(wrap =>
-    wrap.dataset.teamKey === teamKey && wrap.dataset.conversationId === (agentId || ''));
-  for (const wrap of host.querySelectorAll(':scope > .team-deck')) wrap._teamDeck?.unmount();
+  const existing = previous?.wrap.dataset.teamKey === teamKey ? previous.wrap : null;
+  if (previous && !existing) { previous.deck.dispose(); previous.wrap.remove(); }
+  for (const wrap of host?.querySelectorAll(':scope > .team-deck') || []) wrap._teamDeck?.unmount();
   run.deck = existing?._teamDeck || window.ReachTeamDeck.create({ team, task });
   if (existing) run.deck.restart({ team, task });
   run.banner = run.deck.banner;
@@ -2737,38 +2783,45 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
     } catch (error) { showNotice(error.message); }
     finally { stop.disabled = false; }
   };
-  document.querySelector('header .statusbar').prepend(stop);
   run.stop = stop;
   const wrap = run.deck.element;
   wrap._teamDeck = run.deck;
+  wrap._retainTeamView = true;
   wrap.dataset.teamRunId = teamRunId;
   wrap.dataset.teamKey = teamKey;
   wrap.dataset.conversationId = agentId || '';
-  host.prepend(wrap);
-  activeTeamRun.wrap = wrap;
+  host?.prepend(wrap);
+  run.wrap = wrap;
+  teamRunViews.set(teamRunId, run);
+  teamConversationViews.set(agentId || null, run);
+  syncSelectedTeamRun();
+  for (const edit of earlyTeamEdits.get(teamRunId) || []) handleTeamEditPending({ teamRunId, edit });
+  earlyTeamEdits.delete(teamRunId);
   updateSendControl();
-  (currentAgent ? chatScroll : host).scrollTop = 0;
-  run.deck.mount(boundToCurrent ? chatScroll : host);
+  if (host) {
+    const scroller = boundToCurrent ? chatScroll : host;
+    scroller.scrollTop = 0;
+    run.deck.mount(scroller);
+  }
 }
 
-function teamCard(index, name, model) {
-  if (!activeTeamRun) return null;
-  let card = activeTeamRun.cards.get(index);
-  if (card) { activeTeamRun.deck.identify(card, name, model); return card; }
+function teamCard(index, name, model, run = activeTeamRun) {
+  if (!run) return null;
+  let card = run.cards.get(index);
+  if (card) { run.deck.identify(card, name, model); return card; }
   card = document.createElement('div');
   card.className = 'member-card';
   card.innerHTML = `<div class="member-head"><div class="member-identity"><strong class="member-name"></strong><span class="member-model"></span></div><span class="member-state dim">starting…</span><span class="member-meta"></span></div>`
     + `<div class="member-body"></div>`;
-  activeTeamRun.cards.set(index, card);
-  addMemberControl(card, activeTeamRun, { index });
-  activeTeamRun.deck.add(card, { name, model });
+  run.cards.set(index, card);
+  addMemberControl(card, run, { index });
+  run.deck.add(card, { name, model });
   return card;
 }
 
 /* Spawned workers join the same rail and retain their own independent panel. */
-function subCard(agentId, name, model, depth) {
-  if (!activeTeamRun) return null;
-  const run = activeTeamRun;
+function subCard(agentId, name, model, depth, run = activeTeamRun) {
+  if (!run) return null;
   if (!run.subCards) run.subCards = new Map();
   let card = run.subCards.get(agentId);
   if (card) { run.deck.identify(card, name, model); return card; }
@@ -3466,7 +3519,7 @@ async function executeComposerCommand(parsed, snapshot = {}) {
         startTeamRunView(result.teamRunId, target.data, split.message, snapshot.contextAgentId || null);
         for (const event of pendingTeamEvents) handleTeamEvent(event);
         pendingTeamEvents = [];
-      } finally { teamDispatching = false; }
+      } finally { teamDispatching = false; pendingTeamEvents = []; earlyTeamEdits.clear(); }
       commandOutput(`✓ ${target.label} dispatched.`);
       return;
     }
@@ -3733,7 +3786,7 @@ function attachAskBox(card, questionId, name, question) {
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); finish(input.value.trim()); }
   });
-  if (!card.hidden) input.focus();
+  if (card.isConnected && !card.hidden && chatLog.contains(card)) input.focus();
   return ask;
 }
 
@@ -3741,12 +3794,14 @@ function handleTeamEvent(ev) {
   // A paused run may still be displayed while main tears it down and starts the
   // replacement. Buffer events for the not-yet-installed run instead of
   // dropping its fast start/done sequence against the old run id.
-  if (teamDispatching && (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId)) {
+  if (teamDispatching && !teamRunViews.has(ev.teamRunId)) {
     pendingTeamEvents.push(ev);
     return;
   }
-  if (!activeTeamRun || ev.teamRunId !== activeTeamRun.teamRunId) return;
-  const run = activeTeamRun;
+  const run = teamRunViews.get(ev.teamRunId);
+  if (!run) return;
+  const memberCard = (index, name, model) => teamCard(index, name, model, run);
+  const workerCard = (agentId, name, model, depth) => subCard(agentId, name, model, depth, run);
   // Nurse telemetry is coordination metadata, not provider/tool activity.
   // Keep it out of member construction and the activity reducer so it cannot
   // fabricate a worker or make a genuinely silent request look active.
@@ -3754,12 +3809,12 @@ function handleTeamEvent(ev) {
     run.deck.noteNurse(ev);
     return;
   }
-  const activityCard = ev.type === 'subagent' && ev.agentId ? subCard(ev.agentId, ev.name, ev.model || '', ev.depth) : ev.index !== undefined ? teamCard(ev.index, ev.name, ev.model) : null;
+  const activityCard = ev.type === 'subagent' && ev.agentId ? workerCard(ev.agentId, ev.name, ev.model || '', ev.depth) : ev.index !== undefined ? memberCard(ev.index, ev.name, ev.model) : null;
   window.ReachActivity.team(ev, activityCard);
   switch (ev.type) {
     case 'start':
       for (const member of ev.members) {
-        const card = teamCard(member.index, member.name, member.model);
+        const card = memberCard(member.index, member.name, member.model);
         if (card) {
           card.dataset.agentId = member.agentId || '';
           card.dataset.role = member.role || '';
@@ -3774,12 +3829,12 @@ function handleTeamEvent(ev) {
       updateSendControl();
       break;
     case 'member-control': {
-      const card = teamCard(ev.index, ev.name, ev.model);
+      const card = memberCard(ev.index, ev.name, ev.model);
       if (card) setMemberControl(card, ev.paused);
       break;
     }
     case 'member-start': {
-      const card = teamCard(ev.index, ev.name, ev.model);
+      const card = memberCard(ev.index, ev.name, ev.model);
       if (card && (ev.retake || card.dataset.paused !== 'true')) {
         card.classList.remove('stalled', 'failed', 'done');
         setMemberControl(card, false, false);
@@ -3788,7 +3843,7 @@ function handleTeamEvent(ev) {
       break;
     }
     case 'member-wake-queued': {
-      const card = teamCard(ev.index, ev.name, ev.model);
+      const card = memberCard(ev.index, ev.name, ev.model);
       if (card) {
         card.dataset.wakePending = 'true';
         const button = card.querySelector('.member-control');
@@ -3800,7 +3855,7 @@ function handleTeamEvent(ev) {
     }
     case 'member': {
       // Forwarded AgentLoop events for one member.
-      const card = teamCard(ev.index, ev.name, ev.model);
+      const card = memberCard(ev.index, ev.name, ev.model);
       if (!card) break;
       const body = card.querySelector('.member-body');
       const state = card.querySelector('.member-state');
@@ -3862,7 +3917,7 @@ function handleTeamEvent(ev) {
     case 'member-waiting': {
       // Member paused for edit review; the edit cards arrive separately via
       // onEditPending. Just reflect the pause on the card.
-      const card = teamCard(ev.index, ev.name, ev.model || '');
+      const card = memberCard(ev.index, ev.name, ev.model || '');
       if (card) {
         card.classList.add('waiting');
         card.querySelector('.member-state').textContent =
@@ -3871,7 +3926,7 @@ function handleTeamEvent(ev) {
       break;
     }
     case 'member-question': {
-      const card = teamCard(ev.index, ev.name, ev.model || '');
+      const card = memberCard(ev.index, ev.name, ev.model || '');
       if (!card) break;
       card.classList.add('waiting');
       card.querySelector('.member-state').textContent = 'waiting for your answer…';
@@ -3879,7 +3934,7 @@ function handleTeamEvent(ev) {
       break;
     }
     case 'member-resumed': {
-      const card = teamCard(ev.index, ev.name, ev.model || '');
+      const card = memberCard(ev.index, ev.name, ev.model || '');
       if (card) {
         card.classList.remove('waiting', 'failed');
         card.querySelector('.member-state').textContent = 'resumed · working…';
@@ -3887,7 +3942,7 @@ function handleTeamEvent(ev) {
       break;
     }
     case 'member-done': {
-      const card = teamCard(ev.index, ev.name, ev.model || '');
+      const card = memberCard(ev.index, ev.name, ev.model || '');
       if (card) {
         const terminalStatus = ev.status || (ev.ok ? 'completed' : 'error');
         card._teamDeck?.update(card, {
@@ -3915,8 +3970,8 @@ function handleTeamEvent(ev) {
       if (ev.netType === 'agent-message') {
         const fromIndex = memberIndexFromAgentId(ev.from);
         const toIndex = memberIndexFromAgentId(ev.to);
-        const fromCard = fromIndex === null ? run.subCards?.get(ev.from) : teamCard(fromIndex, ev.fromName || '', '');
-        const toCard = toIndex === null ? run.subCards?.get(ev.to) : teamCard(toIndex, ev.toName || '', '');
+        const fromCard = fromIndex === null ? run.subCards?.get(ev.from) : memberCard(fromIndex, ev.fromName || '', '');
+        const toCard = toIndex === null ? run.subCards?.get(ev.to) : memberCard(toIndex, ev.toName || '', '');
         updateCrewComms(fromCard, { sent: ev.messagesSent || 0 });
         updateCrewComms(toCard, { received: ev.messagesReceived || 0, inbox: ev.inbox || 0 });
         if (fromCard) {
@@ -3930,7 +3985,7 @@ function handleTeamEvent(ev) {
         if (toCard && ev.delivered === 'stalled-wake') toCard.querySelector('.member-state').textContent = 'stalled · wake-up queued…';
         break;
       }
-      const card = subCard(ev.agentId, ev.name, ev.model || '', ev.depth);
+      const card = workerCard(ev.agentId, ev.name, ev.model || '', ev.depth);
       if (!card) break;
       const body = card.querySelector('.member-body');
       const state = card.querySelector('.member-state');
@@ -4069,7 +4124,7 @@ function handleTeamEvent(ev) {
       break;
     }
     case 'links-revive': {
-      const card = teamCard(ev.index, ev.name, ev.model || '');
+      const card = memberCard(ev.index, ev.name, ev.model || '');
       if (card) {
         card.classList.remove('stalled', 'failed');
         setMemberControl(card, false, false);
@@ -4100,7 +4155,8 @@ function handleTeamEvent(ev) {
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
       run.deck.finish(ev.stopped ? 'stopped' : 'completed');
       run.stop.remove();
-      activeTeamRun = null;
+      teamRunViews.delete(run.teamRunId);
+      syncSelectedTeamRun();
       invalidateComposerCatalog();
       if (!composerSuggestionsEl.classList.contains('hidden')) refreshComposerSuggestions();
       updateSendControl();
@@ -4115,7 +4171,8 @@ function handleTeamEvent(ev) {
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
       run.deck.finish('error');
       run.stop.remove();
-      activeTeamRun = null;
+      teamRunViews.delete(run.teamRunId);
+      syncSelectedTeamRun();
       invalidateComposerCatalog();
       if (!composerSuggestionsEl.classList.contains('hidden')) refreshComposerSuggestions();
       updateSendControl();
@@ -4127,10 +4184,18 @@ reachApi.teams.onEvent(handleTeamEvent);
 
 // Team member edit reviews use the same grouped, nested dropdown as the main
 // agent. The run id keeps simultaneous/later crews in distinct review batches.
-reachApi.teams.onEditPending(({ teamRunId, edit }) => {
+function handleTeamEditPending({ teamRunId, edit }) {
+  const run = teamRunViews.get(teamRunId);
+  if (!run) {
+    if (teamDispatching) {
+      const edits = earlyTeamEdits.get(teamRunId) || [];
+      edits.push(edit); earlyTeamEdits.set(teamRunId, edits);
+    }
+    return;
+  }
   const follow = shouldFollowChat();
-  const host = activeTeamRun?.teamRunId === teamRunId ? activeTeamRun.deck.reviews : chatLog;
-  const teamName = activeTeamRun?.team?.name || 'AI team';
+  const host = run.deck.reviews;
+  const teamName = run.team?.name || 'AI team';
   const group = ensureEditReviewGroup({
     key: `team:${teamRunId}`,
     host,
@@ -4140,7 +4205,8 @@ reachApi.teams.onEditPending(({ teamRunId, edit }) => {
   });
   appendEditCardToGroup(group, edit);
   if (chatScroll.contains(host)) followChatTail(follow);
-});
+}
+reachApi.teams.onEditPending(handleTeamEditPending);
 
 // ---------- boot ----------
 (async () => {

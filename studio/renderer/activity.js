@@ -61,7 +61,7 @@
       if (!view.host.isConnected) {
         // Switching conversations temporarily detaches a live team. Its tabs
         // must recover the same activity when the user switches back.
-        if (view.card?._teamDeck && !view.card._teamDeck.ended) continue;
+        if (view.card?._teamDeck && (!view.card._teamDeck.ended || view.card._teamDeck.element._retainTeamView)) continue;
         view.card?._teamDeck?.dispose();
         views.delete(key); states.delete(key); continue;
       }
