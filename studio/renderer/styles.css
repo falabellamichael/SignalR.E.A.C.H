@@ -140,12 +140,24 @@ aside {
 }
 #project-list { list-style: none; flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
 #project-list li {
-  padding: 9px 12px; border-radius: 6px; cursor: pointer;
+  display: flex; align-items: center; padding: 0; border-radius: 6px; cursor: pointer;
   font-size: 13px; color: var(--text); border: 1px solid transparent;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 #project-list li:hover { background: var(--panel2); }
 #project-list li.active { border-color: var(--gold-dim); color: var(--gold); }
+.project-open {
+  flex: 1; min-width: 0; padding: 9px 12px; border: 0; background: transparent;
+  color: inherit; font: inherit; text-align: left; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.project-remove {
+  flex: 0 0 26px; width: 26px; height: 26px; margin-right: 4px; padding: 0;
+  border: 0; border-radius: 4px; background: transparent; color: var(--dim);
+  font-size: 18px; line-height: 1;
+}
+.project-remove:hover { color: var(--err); background: var(--panel2); }
+.project-open:focus-visible, .project-remove:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
 .side-actions { display: flex; flex-direction: column; gap: 8px; }
 
 /* work area */

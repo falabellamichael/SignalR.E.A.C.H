@@ -92,7 +92,10 @@ class BrowserSessionTests(unittest.TestCase):
                    {"action": "text", "tab": "one", "text": "x" * 16385},
                    {"action": "input", "tab": "one", "events": [{}] * 65},
                    {"action": "input", "tab": "one", "events": [{"type": {}}]},
-                   {"action": "input", "tab": "one", "events": [{"type": "keyDown", "modifiers": [{}]}]}]
+                   {"action": "input", "tab": "one", "events": [{"type": "keyDown", "modifiers": [{}]}]},
+                   {"action": "input", "tab": "one", "events": [{"type": "keyDown", "keyCode": "k" * 33}]},
+                   {"action": "input", "tab": "one", "events": [{"type": "char", "keyCode": ""}]},
+                   {"action": "input", "tab": "one", "events": [{"type": "keyDown", "keyCode": "Enter", "modifiers": ["super"]}]}]
         for body in invalid:
             with self.subTest(body=str(body)[:100]), self.assertRaises(BrowserError):
                 self.engine.request(body)
@@ -104,6 +107,10 @@ class BrowserSessionTests(unittest.TestCase):
             {"type": "mouseWheel", "x": 25, "y": 30, "deltaY": -120}]})
         self.assertEqual(len(command["events"]), 2)
         self.assertNotIn("javascript", command["events"][0])
+        # isKeypad is engine-legal (main.cjs MODIFIERS) and must pass the bridge.
+        keypad = _command_body({"action": "input", "tab": "one", "events": [
+            {"type": "keyDown", "keyCode": "1", "modifiers": ["isKeypad"]}]})
+        self.assertEqual(keypad["events"][0]["modifiers"], ["isKeypad"])
 
 
 class BrowserTransportTests(unittest.TestCase):
@@ -144,6 +151,15 @@ class BrowserTransportTests(unittest.TestCase):
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             results = list(pool.map(lambda value: engine._command({"action": "echo", "value": value}), range(24)))
         self.assertEqual([result["echo"] for result in results], list(range(24)))
+
+    def test_oversized_command_body_never_reaches_the_engine(self):
+        engine = BrowserEngine()
+        engine._http_request = Mock()
+        with self.assertRaises(BrowserError) as error:
+            engine._command({"action": "navigate", "tab": "one",
+                             "url": "https://example.com/" + "a" * 300000})
+        self.assertEqual(error.exception.code, "invalid_request")
+        engine._http_request.assert_not_called()
 
     def test_large_frame_sized_reply_over_authenticated_loopback(self):
         engine, _ = self.make_process()

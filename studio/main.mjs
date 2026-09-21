@@ -312,6 +312,12 @@ function registerIpc() {
   ipcMain.handle('reach:kill', (_e, runId) => reachProcess.killRun(runId));
 
   ipcMain.handle('projects:get', () => loadProjects());
+  ipcMain.handle('projects:remove', (_e, dir) => {
+    if (typeof dir !== 'string' || !dir.trim()) return { ok: false, err: 'Choose a project to remove.' };
+    // Forget the saved shortcut only. Never remove files, chats, or live runs.
+    saveProjects(loadProjects().filter(project => project.dir !== dir));
+    return { ok: true };
+  });
   ipcMain.handle('projects:save', (_e, ps) => saveProjects(ps));
 
   ipcMain.handle('settings:get', () => loadSettings());
@@ -2970,6 +2976,44 @@ app.whenReady().then(() => {
             await selectProject({ name: 'No chats', dir: emptyDir });
             await showTab('agents');
             if (currentAgent || !document.querySelector('#agent-tree').textContent.includes('No conversations yet') || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
+            // Removing a project means forgetting its shortcut, never deleting
+            // its folder/chat or interrupting the current editor session.
+            await selectAgent(a.agent);
+            await showTab('projects');
+            await openFile('index.rsh');
+            const retainedEditor = openFiles.get('index.rsh');
+            retainedEditor.editor.setText('// UNSAVED REMOVE CHECK');
+            const removeRow = async (dir, accepted) => {
+              const row = [...projectList.children].find(li => li.title === dir);
+              const button = row.querySelector('.project-remove');
+              const labelBounds = row.querySelector('.project-open').getBoundingClientRect();
+              if (button.getBoundingClientRect().left < labelBounds.right - 1) throw new Error('Remove button must sit to the right of the project label');
+              if (!button.getAttribute('aria-label')?.includes('from Projects')) throw new Error('Remove button needs an accessible name');
+              button.focus(); button.click();
+              await until(() => document.querySelector('dialog.app-dialog'));
+              if (!document.querySelector('dialog.app-dialog').textContent.includes('Files, conversations, and open work are kept')) throw new Error('Removal must explain that files are kept');
+              document.querySelector('dialog.app-dialog button.' + (accepted ? 'gold' : 'ghost')).click();
+              await until(() => !removingProjects.has(dir));
+            };
+            await removeRow(first, false);
+            if ((await reachApi.getProjects()).length !== 2) throw new Error('Cancelled removal changed saved projects');
+            await removeRow(first, true);
+            if ((await reachApi.getProjects()).some(p => p.dir === first)) throw new Error('Project shortcut was not removed');
+            if (currentProject.dir !== second || currentAgent.id !== a.agent.id) throw new Error('Remove click also selected another project');
+            await removeRow(second, true);
+            await loadProjectList();
+            if (projectList.children.length || (await reachApi.getProjects()).length) throw new Error('Removed active project was resurrected');
+            if (openFiles.get('index.rsh') !== retainedEditor || !retainedEditor.dirty || retainedEditor.editor.getText() !== '// UNSAVED REMOVE CHECK') throw new Error('Removal lost unsaved editor work');
+            if (!(await reachApi.agents.get(a.agent.id)) || currentAgent.id !== a.agent.id) throw new Error('Removal deleted or closed a conversation');
+            if ((await reachApi.files.read(null, 'index.rsh', first)).content !== '// FIRST PROJECT'
+              || (await reachApi.files.read(null, 'index.rsh', second)).content !== '// SECOND PROJECT EDITED') throw new Error('Removal changed files on disk');
+            // Re-adding the open folder should preserve its unsaved editor too.
+            await rememberProject(second);
+            if (projectList.children.length !== 1 || openFiles.get('index.rsh') !== retainedEditor) throw new Error('Could not re-add removed project safely');
+            resetEditors();
+            await reachApi.saveProjects([{ name: 'SimpleREACH', dir: first }, { name: 'SingalREACH', dir: second }]);
+            await loadProjectList();
+            console.log('PROJECT REMOVAL SMOKE OK: right-side button, cancel, exact-path removal, active work preserved, files/chats kept, re-add.');
             await reachApi.agents.delete(a.agent.id);
             if (window.__errors.length) throw new Error('Renderer errors: ' + window.__errors.join('; '));
           })()

@@ -103,13 +103,21 @@ def _command_body(body):
                     raise BrowserError("Invalid mouse button.", code="invalid_request")
                 clean["button"] = event["button"]
             if "keyCode" in event:
-                if not isinstance(event["keyCode"], str) or len(event["keyCode"]) > 64:
+                # The engine (inputEvent in server/browser-engine/main.cjs)
+                # rejects empty codes, NUL bytes and keys over 32 chars.
+                # Match its bounds here so those failures are 400, not 502.
+                key_code = event["keyCode"]
+                if not isinstance(key_code, str) or not key_code or len(key_code) > 32 or "\x00" in key_code:
                     raise BrowserError("Invalid key code.", code="invalid_request")
-                clean["keyCode"] = event["keyCode"]
+                clean["keyCode"] = key_code
             if "modifiers" in event:
+                # Keep this whitelist in sync with MODIFIERS in
+                # server/browser-engine/main.cjs so the bridge and the engine
+                # accept exactly the same modifiers (no 502 on "super",
+                # no 400 on the engine-legal "isKeypad").
                 modifiers = event["modifiers"]
                 if not isinstance(modifiers, list) or len(modifiers) > 12 or any(
-                        not isinstance(item, str) or item not in {"shift", "control", "ctrl", "alt", "meta", "command", "cmd", "super",
+                        not isinstance(item, str) or item not in {"shift", "control", "ctrl", "alt", "meta", "command", "cmd", "isKeypad",
                                      "leftButtonDown", "middleButtonDown", "rightButtonDown", "capsLock",
                                      "numLock", "isAutoRepeat", "left", "right"} for item in modifiers):
                     raise BrowserError("Invalid key modifiers.", code="invalid_request")
@@ -254,10 +262,17 @@ class BrowserEngine:
                 pass
 
     def _command(self, command):
+        # Reject oversized commands before they reach the wire or the engine.
+        # The engine's own gate (MAX_LINE_BYTES, 256 KB) is larger, so without
+        # this check the documented 128 KB limit would only hold for HTTP
+        # callers and not for direct BrowserEngine.request() callers.
+        identifier = secrets.token_hex(16)
+        payload = {**command, "id": identifier}
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_BODY_BYTES:
+            raise BrowserError("Browser command is too large.", 400, "invalid_request")
         if not self._slots.acquire(blocking=False):
             raise BrowserError("The browser is busy. Try again shortly.", 429, "engine_busy")
         try:
-            identifier = secrets.token_hex(16)
             with self._lock:
                 process = self._process
                 bridge = self._bridge
@@ -270,7 +285,7 @@ class BrowserEngine:
             watchdog.daemon = True
             watchdog.start()
             try:
-                message = self._http_request(bridge, "POST", "/command", {**command, "id": identifier})
+                message = self._http_request(bridge, "POST", "/command", payload)
                 if not isinstance(message, dict) or message.get("id") != identifier:
                     raise BrowserError("Invalid browser engine response.", 502, "engine_protocol_error")
                 if "error" in message:

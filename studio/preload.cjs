@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('reach', {
 
   // Projects
   getProjects: () => ipcRenderer.invoke('projects:get'),
+  removeProject: dir => ipcRenderer.invoke('projects:remove', dir),
   saveProjects: (ps) => ipcRenderer.invoke('projects:save', ps),
   pickDir: () => ipcRenderer.invoke('dialog:pickDir'),
   createProject: (name, parent) => ipcRenderer.invoke('project:create', { name, parent }),

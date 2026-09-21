@@ -14,6 +14,7 @@ that states numbers.
 | Re-measure the baseline before trusting any number | `bash docs/verify-improvements.sh` |
 | Know the main↔renderer channel surface today | [`STUDIO_IPC.md`](./STUDIO_IPC.md) |
 | Understand the CodeGPT economy tier (two upstreams, the `127.0.0.1` trap, the 503s) | [`CODEGPT_ECONOMY_HANDOFF.md`](./CODEGPT_ECONOMY_HANDOFF.md) |
+| Understand the three engine systems (Chromium, bridge, fetcher) | [`engine/overview.md`](./engine/overview.md) |
 
 ## The one rule
 
@@ -30,6 +31,10 @@ Do **not** add a second improvement plan. Add items to the existing one.
 | `IMPROVEMENTS_VERIFIED.md` | The plan: verified baseline, phased items, frozen interfaces, invariant→check table | **source of truth** |
 | `STUDIO_IPC.md` | The readable half of the IPC contract (the machine-checked half is item 1.2's manifest test) | maintained |
 | `CODEGPT_ECONOMY_HANDOFF.md` | Operating notes for the economy tier: why it 503s, how routing/auth follow the model | maintained |
+| `engine/overview.md` | Architecture overview of all three engine systems | maintained |
+| `engine/browser-engine.md` | Deep dive: offscreen Chromium process (`server/browser-engine/main.cjs`) | maintained |
+| `engine/browser-bridge.md` | Deep dive: Python HTTP bridge to Chromium (`server/reachd/browser_engine.py`) | maintained |
+| `engine/browser-fetcher.md` | Deep dive: stateless page retriever for Reader mode (`server/reachd/browser.py`) | maintained |
 | `verify-improvements.sh` | Re-measures the baseline; run it before trusting §1 | maintained |
 | `README.md` | This index | maintained |
 

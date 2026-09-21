@@ -266,6 +266,11 @@
     "args": [],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "projects:remove": {
+    "module": "main.mjs",
+    "args": ["dir"],
+    "returns": "{ ok: true } or { ok: false, err: string }; removes only the saved project shortcut"
+  },
   "projects:save": {
     "module": "main.mjs",
     "args": [

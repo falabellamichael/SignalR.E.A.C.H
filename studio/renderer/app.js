@@ -150,17 +150,55 @@ async function refreshStatus() {
 }
 
 // ---------- projects ----------
+const removingProjects = new Set();
 async function loadProjectList() {
   const ps = await reachApi.getProjects();
-  if (currentProject && !ps.some(p => p.dir === currentProject.dir)) ps.push(currentProject);
+  // An open chat/editor can outlive its saved shortcut. Do not resurrect it.
   projectList.innerHTML = '';
   for (const p of ps) {
     const li = document.createElement('li');
-    li.textContent = p.name;
+    const label = document.createElement('button');
+    label.type = 'button';
+    label.className = 'project-open';
+    label.textContent = p.name;
+    label.title = p.dir;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'project-remove';
+    remove.textContent = '×';
+    remove.title = 'Remove from Projects (keep files on disk)';
+    remove.setAttribute('aria-label', `Remove "${p.name}" from Projects`);
+    remove.disabled = removingProjects.has(p.dir);
+    remove.onclick = event => {
+      event.stopPropagation();
+      return removeRememberedProject(p, remove);
+    };
+    li.append(label, remove);
     li.title = p.dir;
     if (currentProject && currentProject.dir === p.dir) li.classList.add('active');
     li.onclick = () => selectProject(p);
     projectList.appendChild(li);
+  }
+}
+
+async function removeRememberedProject(project, button) {
+  if (removingProjects.has(project.dir)) return;
+  removingProjects.add(project.dir);
+  try {
+    if (!await confirmAction(`Remove "${project.name}" from Projects? This only removes the saved shortcut. Files, conversations, and open work are kept. You can add it again with Open Folder.`)) return;
+    const restoreFocus = document.activeElement === button;
+    button.disabled = true;
+    const result = await reachApi.removeProject(project.dir);
+    if (!result.ok) throw new Error(result.err || 'Could not remove project.');
+    await Promise.all([loadProjectList(), loadAgentProjectSelect()]);
+    if (restoreFocus && $('#page-projects').classList.contains('active')) {
+      (projectList.querySelector('.project-open') || $('#btn-open')).focus();
+    }
+  } catch (error) {
+    await showNotice(`Could not remove project: ${error.message}`);
+  } finally {
+    removingProjects.delete(project.dir);
+    button.disabled = false;
   }
 }
 

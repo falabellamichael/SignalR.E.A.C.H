@@ -21,6 +21,13 @@ report('Preload-only channels', [...preload].filter(channel => !handlers.has(cha
 report('Agent modules', count('studio/agent', '.cjs'));
 report('Renderer scripts', count('studio/renderer', '.js'));
 report('Unit test files', count('studio/test', '.test.cjs'));
+// Engine surfaces (docs/engines/ round): line counts of the four engine sources
+// and presence of the engine docs. See docs/engines/README.md.
+for (const file of ['server/browser-engine/main.cjs', 'server/reachd/browser_engine.py',
+  'server/reachd/browser.py', 'src/browser-engine.js',
+  'studio/browser/host.cjs', 'studio/browser/agent.cjs', 'studio/browser/page.cjs',
+  'studio/agent/reach-process.cjs', 'studio/agent/reach-tool-executor.cjs']) report(file + ' lines', read(file).split('\n').length - 1);
+report('Engine docs', ['README', 'BROWSER_ENGINE', 'STUDIO_BROWSER', 'REACH_CLI'].map(name => 'docs/engines/' + name + '.md').filter(file => fs.existsSync(file)).length + '/4');
 report('Dirty paths (live snapshot)', execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean).length);
 for (const file of ['studio/agent/settings-store.cjs', 'studio/agent/endpoint.cjs', 'studio/agent/attention.cjs', 'studio/agent/untrusted.cjs', 'studio/ipc-manifest.json', 'studio/CONTRIBUTING.md', 'SECURITY.md']) report(file, fs.existsSync(file) ? 'present' : 'MISSING');
 report('Windows packaging in CI', read('.github/workflows/ci.yml').includes('npm run dist:win'));
