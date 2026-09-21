@@ -1395,6 +1395,7 @@ async function codegptSendRequest(text, signal, engine, label, onDelta) {
             if (snap.apiReply.run) {
                 const answer = extractCodegptRunReply(snap.apiReply.body);
                 lastReplyAt = Date.now();
+                log('codegpt reply: run capture (' + answer.length + ' chars)');
                 return answer;
             }
         }
@@ -1424,6 +1425,7 @@ async function codegptSendRequest(text, signal, engine, label, onDelta) {
             ? extractCodegptApiReply(snap.apiReply.body) : '';
         if (apiText) {
             lastReplyAt = Date.now();
+            log('codegpt reply: api text (' + apiText.length + ' chars)');
             return apiText;
         }
         // Role-aware pages: only a new ASSISTANT container (or changed reply
@@ -1444,6 +1446,16 @@ async function codegptSendRequest(text, signal, engine, label, onDelta) {
             stable++;
             if (stable >= 2 && forming.length > 0 && !snap.generating) {
                 completed = true;
+                // Why did the DOM path win? Record the capture state — a live
+                // capture (pending or fresh) means the run's own completion
+                // signal was there and got missed; "none" means the hook was
+                // not installed on this page at all.
+                log('codegpt reply: DOM text (' + (forming || '').length + ' chars, idle ' + stable
+                    + ' polls, capture=' + (snap.apiReply
+                        ? (snap.apiReply.pending ? 'pending' : 'done/' + (snap.apiReply.run ? 'run' : 'other'))
+                        : 'none')
+                    + ', ts=' + (snap.apiReply ? (snap.apiReply.ts >= sendStart ? 'fresh' : 'stale') : 'n/a')
+                    + ', generating=' + !!snap.generating + ')');
                 break;
             }
         } else {

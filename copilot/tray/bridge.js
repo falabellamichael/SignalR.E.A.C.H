@@ -107,9 +107,44 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     // Whatever the deltas did not carry (a sender without
                     // partials, or a tail that only exists in the final text)
                     // goes out here, so the accumulated stream is the answer.
-                    if (content && content.startsWith(streamed)) {
-                        const rest = content.slice(streamed.length);
-                        if (rest) onDelta(rest);
+                    //
+                    // The live text and the final text do NOT always prefix-
+                    // match: the page renders markdown away (backticks), shows
+                    // a "Reasoned for …" thinking header, and multi-message
+                    // runs switch which block the DOM exposes mid-answer. When
+                    // that happens the old code silently dropped everything
+                    // after the first chunk — the client saw a one-line
+                    // preamble and the stream just stopped (2026-09-21:
+                    // "the bridge just stops working"). Never lose the answer:
+                    // if the streamed text already ends with the finished
+                    // answer, leave it; otherwise append the missing part
+                    // (whole answer when nothing overlaps).
+                    if (content) {
+                        if (content.startsWith(streamed)) {
+                            const rest = content.slice(streamed.length);
+                            if (rest) onDelta(rest);
+                        } else {
+                            const norm = (value) => String(value)
+                                .replace(/[`*_~#>\[\]()]/g, '').replace(/\s+/g, ' ').trim();
+                            const out = norm(streamed);
+                            const fin = norm(content);
+                            const tail = Math.min(60, fin.length);
+                            const alreadyThere = fin && out.endsWith(fin.slice(fin.length - tail));
+                            if (!alreadyThere) {
+                                let overlap = 0;
+                                const cap = Math.min(streamed.length, content.length, 2000);
+                                for (let i = cap; i > 0; i -= 1) {
+                                    if (content.startsWith(streamed.slice(streamed.length - i))) {
+                                        overlap = i;
+                                        break;
+                                    }
+                                }
+                                const rest = content.slice(overlap);
+                                note('bridge: final answer did not extend the live stream — appended from '
+                                    + overlap + '/' + content.length + ' chars');
+                                if (rest) onDelta(rest);
+                            }
+                        }
                     }
                     event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
                     res.end('data: [DONE]\n\n');
