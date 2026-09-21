@@ -105,7 +105,7 @@
 .team-deck .member-control { border-color: var(--deck-line); color: var(--deck-ink); background: transparent; }
 .team-deck .member-control:hover { background: var(--deck-selected); }
 .team-deck .member-dot { display: none; }
-.team-deck .member-body { padding: 12px 14px; color: var(--deck-ink); }
+.team-deck .member-body { padding: 8px 12px; color: var(--deck-ink); }
 .team-deck .member-body:empty { display: none; }
 .team-deck .member-body p:first-child { margin-top: 0; }
 .team-deck .member-body p:last-child { margin-bottom: 0; }
