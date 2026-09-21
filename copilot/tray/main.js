@@ -23,6 +23,7 @@ const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 // Keep the existing Copilot session directory across source and packaged launches.
 app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
 const { createEndpointClient } = require('./endpoint');
@@ -1277,6 +1278,33 @@ async function codegptStopGeneration(why) {
     }
 }
 
+// The CodeGPT sidecar logs to "%USERPROFILE%\.codegpt\server.log" (truncated
+// at every spawn). When the upstream cuts a stream, the sidecar writes
+// "[stream] Error processing stream chunk: ..." — yet the extension still
+// closes the run as finished, so a client would receive a half-done answer.
+// 2026-09-21: a SUMMARY.md run lost its final two edits and its wrap-up this
+// way ("died right at the end"). The tray watches the log window across each
+// run and resumes when a cut shows up.
+const CODEGPT_SIDECAR_LOG = path.join(os.homedir(), '.codegpt', 'server.log');
+function codegptSidecarLogSize() {
+    try { return fs.statSync(CODEGPT_SIDECAR_LOG).size; } catch (_) { return 0; }
+}
+function codegptStreamCutSince(mark) {
+    try {
+        const size = fs.statSync(CODEGPT_SIDECAR_LOG).size;
+        if (size === mark) return false;
+        // A respawned sidecar truncates its log: a size below the mark means
+        // everything currently in the file is newer than the mark.
+        const from = size > mark ? mark : 0;
+        const len = Math.min(size - from, 1024 * 1024);
+        if (len <= 0) return false;
+        const fd = fs.openSync(CODEGPT_SIDECAR_LOG, 'r');
+        const buf = Buffer.alloc(len);
+        try { fs.readSync(fd, buf, 0, len, from); } finally { fs.closeSync(fd); }
+        return /\[stream\] Error processing stream chunk/.test(buf.toString('utf8'));
+    } catch (_) { return false; }
+}
+
 /* Format one CodeGPT tool event as a single reasoning line for clients.
  * The app already ran the tool; this is progress information, never a call
  * for the client to execute. */
@@ -1312,7 +1340,7 @@ async function codegptSend(text, { signal, model, label, onDelta, onReasoning } 
     }
 }
 
-async function codegptSendRequest(text, signal, engine, label, onDelta, onReasoning) {
+async function codegptSendRequest(text, signal, engine, label, onDelta, onReasoning, resumeDepth = 0) {
     const auth = await checkCodegptSignedIn();
     if (!auth.ok) {
         showCodegpt();
@@ -1377,6 +1405,12 @@ async function codegptSendRequest(text, signal, engine, label, onDelta, onReason
     })()`).catch(e => 'err: ' + e.message);
     if (setRes !== 'set') throw new Error('CodeGPT composer unreachable: ' + setRes);
     await sleep(500);
+
+    // Watch the sidecar log across this run (see codegptStreamCutSince): if
+    // the upstream cuts the stream, the completion branch below resumes the
+    // run instead of reporting a half-finished answer. The mark is taken
+    // after the ready/stale-stop phase so an older run's error cannot leak in.
+    const sidecarLogMark = codegptSidecarLogSize();
 
     // Submit via the Send button (Enter alone proved unreliable on this app).
     const sendRes = await codegptClickSend();
@@ -1469,6 +1503,26 @@ async function codegptSendRequest(text, signal, engine, label, onDelta, onReason
                 const answer = extractCodegptRunReply(snap.apiReply.body);
                 lastReplyAt = Date.now();
                 log('codegpt reply: run capture (' + answer.length + ' chars)');
+                // An upstream cut ends the run early: the extension closes it
+                // as done and whatever was mid-flight (final edits, the
+                // wrap-up) never happens. Resume automatically instead of
+                // handing the client a half-finished answer. Bounded to two
+                // resumes so a dying upstream cannot loop forever.
+                if (resumeDepth < 2 && codegptStreamCutSince(sidecarLogMark)) {
+                    log('codegpt: upstream terminated the stream mid-run — continuing ('
+                        + (resumeDepth + 1) + '/2)');
+                    try {
+                        if (typeof onReasoning === 'function') {
+                            onReasoning('\n· stream was cut mid-run — continuing automatically\n');
+                        }
+                    } catch (_) { /* client gone */ }
+                    const more = await codegptSendRequest(
+                        'Your previous response was interrupted mid-stream. Continue from where '
+                        + 'you left off: finish any pending edits or actions and confirm the '
+                        + 'final state.',
+                        signal, engine, label, onDelta, onReasoning, resumeDepth + 1);
+                    return more ? answer + '\n\n' + more : answer;
+                }
                 return answer;
             }
         }
