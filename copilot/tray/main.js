@@ -667,8 +667,45 @@ const CODEGPT_HOOK_JS = `(() => {
         if (capture) window.__reachCg = { pending: true, ts: Date.now() };
         try {
             const res = await of(...args);
-            if (capture) res.clone().text().then(t => grab(url, res.status, t))
-                .catch(e => grab(url, 502, JSON.stringify({ error: e.message })));
+            if (capture) {
+                // Live tee: read the stream chunk-by-chunk so the app's
+                // progress labels and tool events can be forwarded WHILE the
+                // run is still going (the whole-body grab below only lands at
+                // the end). Never touch the app's own copy of the response.
+                const live = { run: String(url).includes('/api/runs'), progress: '', tools: [] };
+                window.__reachCg.live = live;
+                const clone = res.clone();
+                const consume = clone.body && clone.body.getReader ? (async () => {
+                    const reader = clone.body.getReader();
+                    const decode = new TextDecoder();
+                    let buf = '';
+                    let all = '';
+                    while (true) {
+                        const step = await reader.read();
+                        if (step.done) break;
+                        const piece = decode.decode(step.value, { stream: true });
+                        all += piece;
+                        buf += piece;
+                        let nl;
+                        while ((nl = buf.indexOf('\\n')) >= 0) {
+                            const line = buf.slice(0, nl).trim();
+                            buf = buf.slice(nl + 1);
+                            if (!line) continue;
+                            try {
+                                const ev = JSON.parse(line);
+                                if (ev && ev.t === 'p' && typeof ev.label === 'string') live.progress = ev.label;
+                                else if (ev && ev.t === 'tool') live.tools.push({
+                                    id: ev.id, name: ev.name, subject: ev.subject,
+                                    status: ev.status, output: String(ev.output || '').slice(0, 500)
+                                });
+                            } catch (_) { /* partial line, comes with the next chunk */ }
+                        }
+                        if (live.tools.length > 300) live.tools.splice(0, live.tools.length - 300);
+                    }
+                    grab(url, res.status, all);
+                })() : res.clone().text().then(t => grab(url, res.status, t));
+                consume.catch(e => grab(url, 502, JSON.stringify({ error: e.message })));
+            }
             return res;
         } catch (e) {
             if (capture) grab(url, 502, JSON.stringify({ error: e.message }));
@@ -1240,7 +1277,20 @@ async function codegptStopGeneration(why) {
     }
 }
 
-async function codegptSend(text, { signal, model, label, onDelta } = {}) {
+/* Format one CodeGPT tool event as a single reasoning line for clients.
+ * The app already ran the tool; this is progress information, never a call
+ * for the client to execute. */
+function codegptToolLine(ev) {
+    const name = String(ev.name || 'tool');
+    let subject = String(ev.subject || '').replace(/\s+/g, ' ').trim();
+    if (subject.length > 110) subject = '…' + subject.slice(subject.length - 109);
+    if (ev.status === 'running') return '\n· ' + name + ' ' + subject + ' …\n';
+    const first = String(ev.output || '').split('\n')[0].replace(/\s+/g, ' ').trim().slice(0, 130);
+    const mark = ev.status === 'error' ? '✗' : '✓';
+    return '\n' + mark + ' ' + name + ' ' + subject + (first ? ' — ' + first : '') + '\n';
+}
+
+async function codegptSend(text, { signal, model, label, onDelta, onReasoning } = {}) {
     if (!codegptWin || codegptWin.isDestroyed()) {
         showCodegpt();
         throw new Error('Opening the CodeGPT window. Please complete sign in and retry.');
@@ -1252,7 +1302,7 @@ async function codegptSend(text, { signal, model, label, onDelta } = {}) {
     log('codegpt request started (' + text.length + ' chars' +
         (engine ? ', model=' + engine.id : ', default agent page') + ')');
     try {
-        return await codegptSendRequest(text, signal, engine, label, onDelta);
+        return await codegptSendRequest(text, signal, engine, label, onDelta, onReasoning);
     } catch (error) {
         await codegptStopGeneration('request failed');
         log('codegpt request failed: ' + (signal?.aborted ? 'cancelled' : error.message));
@@ -1262,7 +1312,7 @@ async function codegptSend(text, { signal, model, label, onDelta } = {}) {
     }
 }
 
-async function codegptSendRequest(text, signal, engine, label, onDelta) {
+async function codegptSendRequest(text, signal, engine, label, onDelta, onReasoning) {
     const auth = await checkCodegptSignedIn();
     if (!auth.ok) {
         showCodegpt();
@@ -1358,6 +1408,28 @@ async function codegptSendRequest(text, signal, engine, label, onDelta) {
     let forming = null;
     let stable = 0;
     let completed = false;
+    // Live activity feed: the app's progress labels and tool events are
+    // forwarded to clients as reasoning lines while the run is still going,
+    // so VS Code (and anything else) shows what the agent is doing instead
+    // of a silent wait. Each tool id/status pair and each progress kind is
+    // sent once.
+    let liveProgressKind = '';
+    const liveToolsSent = new Set();
+    const relayLive = (live) => {
+        if (typeof onReasoning !== 'function' || !live) return;
+        const label = String(live.progress || '');
+        const kind = label.split('\u00b7')[0].trim();
+        if (kind && kind !== liveProgressKind) {
+            liveProgressKind = kind;
+            try { onReasoning('\n· ' + kind + '\n'); } catch (_) { /* client gone */ }
+        }
+        for (const ev of (live.tools || [])) {
+            const key = String(ev.id || '') + '/' + String(ev.status || '');
+            if (liveToolsSent.has(key)) continue;
+            liveToolsSent.add(key);
+            try { onReasoning(codegptToolLine(ev)); } catch (_) { /* client gone */ }
+        }
+    };
     // No deadline: waiting on a live answer is agent work, and the old 180 s
     // kill fired mid-reply while the page was still reporting progress — that
     // is exactly how an "empty reply" reached the chat (2026-09-10,
@@ -1385,6 +1457,7 @@ async function codegptSendRequest(text, signal, engine, label, onDelta) {
                 + ' replyChars=' + ((snap.text || '').length));
         }
         if (snap.signIn) throw new Error('signed out mid-conversation');
+        if (snap.apiReply && snap.apiReply.live) relayLive(snap.apiReply.live);
         // Stream the reply as the page forms it — BEFORE the completion
         // shortcuts below: the captured API reply only exists once the run has
         // finished, so waiting for it would defeat the whole point.

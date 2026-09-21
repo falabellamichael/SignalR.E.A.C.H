@@ -594,6 +594,23 @@ def chat_finalize(h, upstream, ctx):
                     if not (isinstance(choices, list) and choices):
                         continue
                     delta = choices[0].get("delta", {})
+                    reason = (delta.get("reasoning_content")
+                              or delta.get("reasoning")
+                              or delta.get("thought"))
+                    if isinstance(reason, str) and reason:
+                        # Forward the provider's reasoning/activity stream so
+                        # reasoning-aware clients (VS Code-style chat panels)
+                        # can render it as thinking while the answer forms.
+                        # Content scrubbing below does not apply to it.
+                        h._write_chunk(("data: " + json.dumps({
+                            "id": "chatcmpl-reach",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": requested,
+                            "choices": [{"index": 0,
+                                         "delta": {"reasoning_content": reason},
+                                         "finish_reason": None}]
+                        }) + "\n\n").encode("utf-8"))
                     content = delta.get("content")
                     if not (isinstance(content, str) and content):
                         continue

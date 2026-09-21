@@ -91,6 +91,14 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: roleSent ? { content: delta } : { role: 'assistant', content: delta }, finish_reason: null }] });
                     roleSent = true;
                 };
+                // Reasoning / activity lines (the CodeGPT agent's progress
+                // labels and tool events) ride a separate field: text-only
+                // clients ignore it, VS Code-style clients render it as
+                // thinking while the answer forms.
+                const onReasoning = (delta) => {
+                    if (typeof delta !== 'string' || !delta) return;
+                    event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { reasoning_content: delta }, finish_reason: null }] });
+                };
                 try {
                     if (stream) {
                         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -100,7 +108,7 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     const sender = provider === 'codegpt' ? sendCodegpt : provider === 'chatgpt' ? sendChatgpt : sendCopilot;
                     // The requested model rides along so the CodeGPT sender can
                     // pick that economy model out of the signed-in session.
-                    const content = await sender(text, { signal: controller.signal, model, label: modelLabel(model), onDelta: stream ? onDelta : undefined });
+                    const content = await sender(text, { signal: controller.signal, model, label: modelLabel(model), onDelta: stream ? onDelta : undefined, onReasoning: stream ? onReasoning : undefined });
                     if (res.destroyed) return;
                     if (!openai) return json(200, { ok: true, content, ms: Date.now() - start });
                     if (!stream) return json(200, { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });
