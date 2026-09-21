@@ -83,8 +83,22 @@ const timeout = setTimeout(()=>{console.error('Concurrent teams timed out',root)
   assert.equal(await run('runA.subCards.size===1 && runB.subCards.size===0'),true);
   assert.match(await run('runA.wrap.textContent'),/ALPHA question/);
   assert.doesNotMatch(await run('chatLog.textContent'),/ALPHA question|ALPHA edit|A child/);
-  // Stop in B is scoped; A keeps working. Resume B so both can finish normally.
-  await run(`(async()=>{composerInput.value=''; await sendComposer();})()`);
+  // A team draft stays sendable. The separate Pause control preserves it and
+  // only pauses this conversation, even while another chat uses the same team.
+  await run(`composerInput.dispatchEvent(new Event('input', { bubbles: true }))`);
+  assert.equal(await run(`document.querySelector('#btn-send').textContent`),'Send');
+  await run(`document.querySelector('#team-chat-pause').onclick()`);
+  await until('runB.paused','Pause control did not pause B');
+  assert.equal(await run('composerInput.value'),'B draft','Pause must preserve the draft');
+  assert.equal(await run(`document.querySelector('#btn-send').textContent`),'Send');
+  assert.equal((await run('reachApi.teams.members(runA.teamRunId)')).paused,false);
+  await run(`document.querySelector('#team-chat-pause').onclick()`);
+  await until('!runB.paused','Pause control did not resume B');
+  assert.equal(await run('composerInput.value'),'B draft','Resume must preserve the draft');
+  // An empty composer becomes Stop, scoped to B; A keeps working.
+  await run(`composerInput.value=''; composerInput.dispatchEvent(new Event('input', { bubbles: true }))`);
+  assert.equal(await run(`document.querySelector('#btn-send').textContent`),'Stop');
+  await run(`document.querySelector('#btn-send').onclick()`);
   await until('runB.paused','B did not pause');
   assert.equal((await run('reachApi.teams.members(runA.teamRunId)')).paused,false);
   await run('reachApi.teams.start(runB.teamRunId)');

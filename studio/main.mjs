@@ -2575,7 +2575,10 @@ app.whenReady().then(() => {
               if (all.includes('YOUR CREW ROLE')) linksChecks.roleSeen = true;
               if (all.includes('Review my draft')) linksChecks.messageSeen = true;
             }
-            if (all.includes('Universal stop regular fixture') || (request.model === 'fixture-sub' && !all.includes('Continue the original task'))) {
+            // Team follow-ups include conversation history. Only hold the
+            // regular-chat fixture, not members that inherit its stop marker.
+            if ((request.model === 'fixture' && all.includes('Conversation stop regular fixture'))
+              || (request.model === 'fixture-sub' && !all.includes('Continue the original task'))) {
               res.writeHead(200, { 'content-type': 'text/event-stream' });
               res.write(': waiting for stop\n\n');
               return;
@@ -2713,14 +2716,23 @@ app.whenReady().then(() => {
               }, 'restart individual member');
               if (!memberFlashSeen) throw new Error('Finished member card did not flash');
               if (getComputedStyle(slow.cards.get(0)).borderLeftWidth !== restingEdgeWidth()) throw new Error('Finished member card must not keep a colored edge bar');
-              if (document.querySelector('#btn-send').textContent !== 'Stop') throw new Error('Send did not become universal Stop');
-              await reachApi.agents.send(currentAgent.id, 'Universal stop regular fixture');
+              // Team drafts are messages, not Stop commands. Initialize the
+              // draft explicitly: earlier smoke sections also use the composer.
+              const setDraft = text => {
+                composerInput.value = text;
+                composerInput.dispatchEvent(new Event('input', { bubbles: true }));
+              };
+              if (!window.ReachTeamComposer.enabled()) throw new Error('Dispatch did not enable team chat');
+              setDraft('Keep this unsent draft');
+              if (document.querySelector('#btn-send').textContent !== 'Send') throw new Error('Team draft must keep Send available');
+              await reachApi.agents.send(currentAgent.id, 'Conversation stop regular fixture');
               await until(() => agentRunning, 'regular chat alongside team');
-              composerInput.value = 'Keep this unsent draft';
+              setDraft('');
+              if (document.querySelector('#btn-send').textContent !== 'Stop') throw new Error('Empty composer did not become conversation Stop');
               await document.querySelector('#btn-send').onclick();
-              await until(() => activeTeamRun?.paused, 'stop team from Send');
+              await until(() => activeTeamRun?.paused, 'stop selected conversation team from composer');
               await until(() => currentAgent.runState?.status === 'stopped', 'stop regular chat alongside team');
-              if (composerInput.value !== 'Keep this unsent draft') throw new Error('Stop consumed the draft');
+              if (composerInput.value !== '') throw new Error('Stop changed the empty composer');
               if (document.querySelector('#btn-stop-team').textContent !== 'Start team') throw new Error('Stopped team has no Start');
               if (slow.cards.get(1).querySelector('.member-control').textContent !== 'Start') throw new Error('Stopped member has no Start');
               document.querySelector('#btn-stop-team').click();
