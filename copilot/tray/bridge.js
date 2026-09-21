@@ -22,7 +22,11 @@ function modelLabel(id) {
 
 // The Copilot bridge keeps its own provider, regardless of the tray's current
 // MiniChat selection. VS Code uses this OpenAI-compatible surface directly.
-function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debugCodegptDom) {
+function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debugCodegptDom, log) {
+    // Requests run one-at-a-time per provider (the pages are single-session).
+    // `note` writes diagnostics into the tray log so a request stuck behind a
+    // stalled predecessor is visible instead of looking like a dead bridge.
+    const note = typeof log === 'function' ? log : () => {};
     const queues = { copilot: Promise.resolve(), chatgpt: Promise.resolve(), codegpt: Promise.resolve() };
     return (req, res) => {
         const json = (code, data) => {
@@ -62,8 +66,13 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
             const provider = useCodegpt ? 'codegpt' : useChatgpt ? 'chatgpt' : 'copilot';
             const controller = new AbortController();
             res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+            const queuedAt = Date.now();
             queues[provider] = queues[provider].then(async () => {
                 if (res.destroyed) return;
+                if (Date.now() - queuedAt > 30000) {
+                    note('bridge: ' + provider + ' request waited '
+                        + Math.round((Date.now() - queuedAt) / 1000) + 's behind the previous one');
+                }
                 const start = Date.now();
                 let keepalive;
                 const stream = openai && body.stream === true;
@@ -109,7 +118,9 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     if (stream) { event({ error: { message: error.message } }); res.end('data: [DONE]\n\n'); }
                     else json(502, { ok: false, error: openai ? { message: error.message } : error.message });
                 } finally { clearInterval(keepalive); }
-            }).catch(() => {});
+            }).catch((error) => {
+                note('bridge: ' + provider + ' request aborted: ' + ((error && error.message) || error));
+            });
         });
     };
 }

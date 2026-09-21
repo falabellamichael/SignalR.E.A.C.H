@@ -676,9 +676,11 @@ def main():
                       help="also stop relay/tunnel and remove autostart")
     p_un.set_defaults(func=cmd_uninstall)
 
-    p_tray = sub.add_parser('tray', help='install or open the tray on macOS, Windows, or Linux')
+    p_tray = sub.add_parser('tray', help='install, open, or watch the tray on macOS, Windows, or Linux')
     tray_sub = p_tray.add_subparsers(dest='tray_cmd', required=True)
-    for action in ('install', 'start'):
+    # 'watch' stays resident and revives the tray when its bridge goes dark —
+    # the codegpt/chatgpt/copilot models all pass through that bridge.
+    for action in ('install', 'start', 'watch'):
         tray_sub.add_parser(action).set_defaults(func=cmd_tray)
 
     p_vscode = sub.add_parser("vscode",

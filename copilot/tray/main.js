@@ -233,6 +233,11 @@ function ensureBrowser() {
     });
     browserWin.on('closed', () => { browserWin = null; });
     browserWin.loadURL(COPILOT_URL);
+    // Install the shared tile up-front (not only on first show) so the
+    // account/user icon is covered from the very first paint.
+    void installControlTile(browserWin, {
+        homeUrl: COPILOT_URL, accent: '#d4af37', homeTitle: 'Back to Copilot chat'
+    });
     log('invisible browser created (partition ' + PARTITION + ')');
     return browserWin;
 }
@@ -265,46 +270,89 @@ function showBrowser() {
     refreshNativeMenus();
 }
 
-// Floating control bar injected into the sign-in window so the user can
-// refresh / go home / hide WITHOUT the page's own redirect loop interfering.
-const CONTROLS_JS = `(() => {
-    if (document.getElementById('__reachCtl')) return 'already';
-    const bar = document.createElement('div');
-    bar.id = '__reachCtl';
-    bar.style.cssText = 'position:fixed;top:10px;right:10px;z-index:2147483647;' +
-        'display:flex;gap:6px;background:rgba(27,27,31,.92);border:1px solid #3a3a44;' +
-        'border-radius:8px;padding:5px 6px;font-family:Segoe UI,system-ui,sans-serif;' +
-        'box-shadow:0 4px 14px rgba(0,0,0,.4);';
-    const mk = (label, title, fn) => {
-        const b = document.createElement('button');
-        b.textContent = label; b.title = title;
-        b.style.cssText = 'cursor:pointer;border:1px solid #44444e;background:#2b2b33;' +
-            'color:#e8e6e0;border-radius:6px;padding:5px 9px;font-size:13px;line-height:1;';
-        b.onmouseenter = () => b.style.borderColor = '#d4af37';
-        b.onmouseleave = () => b.style.borderColor = '#44444e';
-        b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
-        return b;
+/* ---------------- ONE shared control tile for every page ------------------- */
+// The same docked tile (⟳ reload · ⌂ home) is injected into ALL embedded chat
+// windows (M365 Copilot, ChatGPT, CodeGPT). It is anchored FLUSH to the
+// top-right corner of the page's top ribbon and sized big enough to fully
+// block the account/user icon area — that icon must never peek out, on any
+// page, at any time. The tile is a true BLOCKER: every click and wheel event
+// that lands on it is swallowed — nothing underneath is reachable — while
+// its own two buttons keep working. An in-page MutationObserver
+// re-attaches the tile whenever the page's SPA re-render rips it out, and
+// every inject rebuilds it, so the cover is ALWAYS on and always current.
+function reachControlTileJs({ homeUrl, accent = '#d4af37', homeTitle = 'Back to chat' } = {}) {
+    return `(() => {
+    const HOST = document.body || document.documentElement;
+    if (!HOST) return 'no-body';
+    const build = () => {
+        const bar = document.createElement('div');
+        bar.id = '__reachCtl';
+        bar.style.cssText = 'position:fixed;top:0;right:0;z-index:2147483647;' +
+            'display:flex;align-items:center;gap:8px;box-sizing:border-box;' +
+            'min-height:58px;min-width:156px;padding:8px 12px;' +
+            'background:#1b1b1f;border:1px solid #3a3a44;border-top:none;border-right:none;' +
+            'border-radius:0 0 0 16px;box-shadow:0 6px 18px rgba(0,0,0,.45);' +
+            'font-family:Segoe UI,system-ui,sans-serif;pointer-events:auto;';
+        const mk = (label, title, fn) => {
+            const b = document.createElement('button');
+            b.textContent = label; b.title = title;
+            b.style.cssText = 'cursor:pointer;width:42px;height:42px;' +
+                'padding:0;border:1px solid #44444e;background:#2b2b33;color:#e8e6e0;' +
+                'border-radius:10px;font-size:20px;line-height:1;';
+            b.onmouseenter = () => b.style.borderColor = ${JSON.stringify(accent)};
+            b.onmouseleave = () => b.style.borderColor = '#44444e';
+            b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+            return b;
+        };
+        bar.appendChild(mk('⟳', 'Reload this page', () => location.reload()));
+        bar.appendChild(mk('⌂', ${JSON.stringify(homeTitle)}, () => { location.href = ${JSON.stringify(homeUrl)}; }));
+        // true blocker: the tile itself must swallow stray clicks and wheel
+        // events — nothing under it is reachable (only the two buttons act).
+        bar.addEventListener('click', (e) => { if (e.target === bar) { e.preventDefault(); e.stopPropagation(); } });
+        bar.addEventListener('wheel', (e) => e.preventDefault(), { passive: false });
+        return bar;
     };
-    bar.appendChild(mk('⟳', 'Reload this page', () => location.reload()));
-    bar.appendChild(mk('⌂', 'Back to Copilot chat', () => { location.href = ${JSON.stringify(COPILOT_URL)}; }));
-    (document.body || document.documentElement).appendChild(bar);
+    const old = document.getElementById('__reachCtl');
+    if (old) old.remove();
+    HOST.appendChild(build());
+    window.__reachCtlBuild = build;   // newest builder wins for auto re-attach
+    if (!window.__reachCtlWatch) {
+        window.__reachCtlWatch = true;
+        new MutationObserver(() => {
+            if (!document.getElementById('__reachCtl')) {
+                (document.body || document.documentElement)
+                    .appendChild((window.__reachCtlBuild || build)());
+            }
+        }).observe(document.documentElement, { childList: true, subtree: true });
+    }
     return 'injected';
 })()`;
+}
+
+// Attach (or refresh) the shared tile on an embedded window and keep it fresh
+// across every load and in-page navigation — the ONE fix used by all windows.
+async function installControlTile(win, opts) {
+    if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+    win.__ctlOpts = opts;  // latest wins: CodeGPT's home URL moves per activation
+    const inject = () => {
+        if (!win || win.isDestroyed() || win.webContents.isDestroyed()) return;
+        win.webContents.executeJavaScript(reachControlTileJs(win.__ctlOpts)).catch(() => {});
+    };
+    try {
+        await win.webContents.executeJavaScript(reachControlTileJs(win.__ctlOpts));
+    } catch (_) { /* page not ready yet */ }
+    if (!win.__ctlHooked) {
+        win.__ctlHooked = true;
+        win.webContents.on('dom-ready', inject);             // cover from first paint
+        win.webContents.on('did-finish-load', inject);       // full document load
+        win.webContents.on('did-navigate-in-page', inject);  // SPA route swaps
+    }
+}
 
 async function injectPageControls() {
-    if (!browserWin || browserWin.isDestroyed()) return;
-    try {
-        await browserWin.webContents.executeJavaScript(CONTROLS_JS);
-    } catch (_) { /* page not ready */ }
-    // re-inject on each navigation while visible (page reloads wipe it)
-    if (!browserWin.__ctlHooked) {
-        browserWin.__ctlHooked = true;
-        browserWin.webContents.on('did-finish-load', () => {
-            if (browserWin && !browserWin.isDestroyed() && browserWin.isVisible()) {
-                browserWin.webContents.executeJavaScript(CONTROLS_JS).catch(() => {});
-            }
-        });
-    }
+    await installControlTile(browserWin, {
+        homeUrl: COPILOT_URL, accent: '#d4af37', homeTitle: 'Back to Copilot chat'
+    });
 }
 
 function hideBrowser() {
@@ -369,6 +417,9 @@ function ensureChatgpt() {
     });
     chatgptWin.on('closed', () => { chatgptWin = null; });
     chatgptWin.loadURL(CHATGPT_URL);
+    void installControlTile(chatgptWin, {
+        homeUrl: CHATGPT_URL, accent: '#10a37f', homeTitle: 'Back to ChatGPT'
+    });
     log('chatgpt invisible browser created (partition ' + CHATGPT_PARTITION + ')');
     return chatgptWin;
 }
@@ -399,43 +450,10 @@ function showChatgpt() {
     refreshNativeMenus();
 }
 
-const CHATGPT_CONTROLS_JS = `(() => {
-    if (document.getElementById('__reachCtl')) return 'already';
-    const bar = document.createElement('div');
-    bar.id = '__reachCtl';
-    bar.style.cssText = 'position:fixed;top:10px;right:10px;z-index:2147483647;' +
-        'display:flex;gap:6px;background:rgba(27,27,31,.92);border:1px solid #3a3a44;' +
-        'border-radius:8px;padding:5px 6px;font-family:Segoe UI,system-ui,sans-serif;' +
-        'box-shadow:0 4px 14px rgba(0,0,0,.4);';
-    const mk = (label, title, fn) => {
-        const b = document.createElement('button');
-        b.textContent = label; b.title = title;
-        b.style.cssText = 'cursor:pointer;border:1px solid #44444e;background:#2b2b33;' +
-            'color:#e8e6e0;border-radius:6px;padding:5px 9px;font-size:13px;line-height:1;';
-        b.onmouseenter = () => b.style.borderColor = '#10a37f';
-        b.onmouseleave = () => b.style.borderColor = '#44444e';
-        b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
-        return b;
-    };
-    bar.appendChild(mk('⟳', 'Reload this page', () => location.reload()));
-    bar.appendChild(mk('⌂', 'Back to ChatGPT', () => { location.href = ${JSON.stringify(CHATGPT_URL)}; }));
-    (document.body || document.documentElement).appendChild(bar);
-    return 'injected';
-})()`;
-
 async function injectChatgptControls() {
-    if (!chatgptWin || chatgptWin.isDestroyed()) return;
-    try {
-        await chatgptWin.webContents.executeJavaScript(CHATGPT_CONTROLS_JS);
-    } catch (_) { /* page not ready */ }
-    if (!chatgptWin.__ctlHooked) {
-        chatgptWin.__ctlHooked = true;
-        chatgptWin.webContents.on('did-finish-load', () => {
-            if (chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()) {
-                chatgptWin.webContents.executeJavaScript(CHATGPT_CONTROLS_JS).catch(() => {});
-            }
-        });
-    }
+    await installControlTile(chatgptWin, {
+        homeUrl: CHATGPT_URL, accent: '#10a37f', homeTitle: 'Back to ChatGPT'
+    });
 }
 
 function hideChatgpt() {
@@ -555,6 +573,9 @@ function ensureCodegpt() {
         if (codegptWin && !codegptWin.isDestroyed()) {
             log('codegpt chat url: ' + url);
             codegptWin.webContents.loadURL(url);
+            void installControlTile(codegptWin, {
+                homeUrl: url, accent: '#d4af37', homeTitle: 'Back to CodeGPT chat'
+            });
         }
     }).catch(() => {});
     log('codegpt invisible browser created (partition ' + CODEGPT_PARTITION + ')');
@@ -589,46 +610,11 @@ function showCodegpt() {
     refreshNativeMenus();
 }
 
-function codegptControlsJs(chatUrl) {
-    return `(() => {
-    if (document.getElementById('__reachCtl')) return 'already';
-    const bar = document.createElement('div');
-    bar.id = '__reachCtl';
-    bar.style.cssText = 'position:fixed;top:10px;right:10px;z-index:2147483647;' +
-        'display:flex;gap:6px;background:rgba(27,27,31,.92);border:1px solid #3a3a44;' +
-        'border-radius:8px;padding:5px 6px;font-family:Segoe UI,system-ui,sans-serif;' +
-        'box-shadow:0 4px 14px rgba(0,0,0,.4);';
-    const mk = (label, title, fn) => {
-        const b = document.createElement('button');
-        b.textContent = label; b.title = title;
-        b.style.cssText = 'cursor:pointer;border:1px solid #44444e;background:#2b2b33;' +
-            'color:#e8e6e0;border-radius:6px;padding:5px 9px;font-size:13px;line-height:1;';
-        b.onmouseenter = () => b.style.borderColor = '#d4af37';
-        b.onmouseleave = () => b.style.borderColor = '#44444e';
-        b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
-        return b;
-    };
-    bar.appendChild(mk('⟳', 'Reload this page', () => location.reload()));
-    bar.appendChild(mk('⌂', 'Back to CodeGPT chat', () => { location.href = ${JSON.stringify(chatUrl)}; }));
-    (document.body || document.documentElement).appendChild(bar);
-    return 'injected';
-})()`;
-}
-
 async function injectCodegptControls() {
     if (!codegptWin || codegptWin.isDestroyed()) return;
-    const js = codegptControlsJs(await codegptChatUrl());
-    try {
-        await codegptWin.webContents.executeJavaScript(js);
-    } catch (_) { /* page not ready */ }
-    if (!codegptWin.__ctlHooked) {
-        codegptWin.__ctlHooked = true;
-        codegptWin.webContents.on('did-finish-load', () => {
-            if (codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()) {
-                injectCodegptControls();
-            }
-        });
-    }
+    await installControlTile(codegptWin, {
+        homeUrl: await codegptChatUrl(), accent: '#d4af37', homeTitle: 'Back to CodeGPT chat'
+    });
 }
 
 function hideCodegpt() {
@@ -1022,8 +1008,13 @@ async function codegptClickSend() {
 
 let codegptQueue = Promise.resolve();
 function sendCodegptQueued(text, options = {}) {
+    const queuedAt = Date.now();
     const result = codegptQueue.then(async () => {
         options.signal?.throwIfAborted();
+        if (Date.now() - queuedAt > 60000) {
+            log('codegpt queue: the previous request held this one for '
+                + Math.round((Date.now() - queuedAt) / 1000) + 's');
+        }
         return codegptSend(text, options);
     });
     codegptQueue = result.then(() => sleep(1500), () => sleep(1000));
@@ -1220,6 +1211,35 @@ function codegptReplyModel(body) {
     }
 }
 
+/* Ask the CodeGPT page to stop its current generation.
+ *
+ * Used in two places: when a request fails (the app must not keep streaming
+ * into the void) and when a NEW request finds the composer still busy — a
+ * leftover stream holds the account's single economy session open, and
+ * CodeGPT answers the next stream with ECONOMY_CONCURRENCY_LIMIT (429) until
+ * it ends. Both need the same step and the same log line.
+ */
+async function codegptStopGeneration(why) {
+    if (!codegptWin || codegptWin.isDestroyed()) return false;
+    try {
+        const clicked = await codegptWin.webContents.executeJavaScript(`(() => {
+            const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
+            const label = (b) => ((b.getAttribute('aria-label') || '') + ' ' + (b.title || '') + ' '
+                + (b.innerText || '')).trim().toLowerCase();
+            const stop = [...document.querySelectorAll('button, [role="button"]')].filter(vis)
+                .find((b) => /stop|halt|square|cancel/.test(label(b)));
+            if (!stop) return '';
+            stop.click();
+            return label(stop).slice(0, 40);
+        })()`).catch(() => '');
+        log('codegpt stop' + (why ? ' (' + why + ')' : '') + ': '
+            + (clicked ? 'clicked [' + clicked + ']' : 'no stop control found'));
+        return !!clicked;
+    } catch (_) {
+        return false;
+    }
+}
+
 async function codegptSend(text, { signal, model, label, onDelta } = {}) {
     if (!codegptWin || codegptWin.isDestroyed()) {
         showCodegpt();
@@ -1234,13 +1254,7 @@ async function codegptSend(text, { signal, model, label, onDelta } = {}) {
     try {
         return await codegptSendRequest(text, signal, engine, label, onDelta);
     } catch (error) {
-        if (codegptWin && !codegptWin.isDestroyed()) {
-            codegptWin.webContents.executeJavaScript(`(() => {
-                const stop = [...document.querySelectorAll('button')]
-                    .find(b => b.offsetWidth && /stop|halt|square/i.test((b.getAttribute('aria-label') || b.title || b.innerText || '')));
-                if (stop) stop.click();
-            })()`).catch(() => {});
-        }
+        await codegptStopGeneration('request failed');
         log('codegpt request failed: ' + (signal?.aborted ? 'cancelled' : error.message));
         throw error;
     } finally {
@@ -1270,12 +1284,27 @@ async function codegptSendRequest(text, signal, engine, label, onDelta) {
     // body is captured verbatim (fetch + XHR), sidestepping DOM guesswork.
     await codegptWin.webContents.executeJavaScript(CODEGPT_HOOK_JS).catch(() => {});
     const sendStart = Date.now();
+    let readyDeadline = sendStart + 30000;
+    let staleStopTried = false;
     while (true) {
         signal?.throwIfAborted();
-        if (Date.now() - sendStart > 30000) throw new Error('CodeGPT composer did not become ready. Reload the CodeGPT window.');
         let snap;
         try { snap = await codegptSnapshot(); } catch (_) { snap = null; }
         if (snap && snap.composer && !snap.generating) break;
+        if (Date.now() > readyDeadline) {
+            if (snap && snap.composer && snap.generating && !staleStopTried) {
+                // A prior stream is still running — the ghost of a cancelled
+                // request. It holds the economy session open, so the page
+                // would answer this send with a 429. Ask it to stop, then give
+                // the page one more ready window before failing.
+                staleStopTried = true;
+                log('codegpt: previous stream is still generating — stopping it before this send');
+                await codegptStopGeneration('stale stream before send');
+                readyDeadline = Date.now() + 30000;
+            } else {
+                throw new Error('CodeGPT composer did not become ready. Reload the CodeGPT window.');
+            }
+        }
         await sleep(400);
     }
 
@@ -1567,8 +1596,13 @@ async function chatgptClickSend() {
 
 let chatgptQueue = Promise.resolve();
 function sendChatgptQueued(text, options = {}) {
+    const queuedAt = Date.now();
     const result = chatgptQueue.then(async () => {
         options.signal?.throwIfAborted();
+        if (Date.now() - queuedAt > 60000) {
+            log('chatgpt queue: the previous request held this one for '
+                + Math.round((Date.now() - queuedAt) / 1000) + 's');
+        }
         return chatgptSend(text, options);
     });
     chatgptQueue = result.then(() => sleep(1500), () => sleep(1000));
@@ -1598,6 +1632,31 @@ async function chatgptSend(text, { signal, onDelta } = {}) {
     }
 }
 
+/* Ask the ChatGPT page to stop generating — the same stale-stream problem as
+ * CodeGPT: a cancelled run keeps the page busy and every following send waits
+ * behind it (or never sees a ready composer). */
+async function chatgptStopGeneration(why) {
+    if (!chatgptWin || chatgptWin.isDestroyed()) return false;
+    try {
+        const clicked = await chatgptWin.webContents.executeJavaScript(`(() => {
+            const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
+            const stop = [...document.querySelectorAll('button')].filter(vis)
+                .find((b) => b.getAttribute('data-testid') === 'stop-button'
+                    || /stop generating/i.test(b.getAttribute('aria-label') || '')
+                    || /stop|halt/i.test((b.innerText || '').trim()));
+            if (!stop) return '';
+            stop.click();
+            return (stop.getAttribute('data-testid') || stop.getAttribute('aria-label') || stop.innerText || '')
+                .trim().slice(0, 40);
+        })()`).catch(() => '');
+        log('chatgpt stop' + (why ? ' (' + why + ')' : '') + ': '
+            + (clicked ? 'clicked [' + clicked + ']' : 'no stop control found'));
+        return !!clicked;
+    } catch (_) {
+        return false;
+    }
+}
+
 async function chatgptSendRequest(text, signal, onDelta) {
     const auth = await checkChatgptSignedIn();
     if (!auth.ok) {
@@ -1605,13 +1664,28 @@ async function chatgptSendRequest(text, signal, onDelta) {
         throw new Error(auth.why + ' — opening the ChatGPT window. Please complete sign in and retry.');
     }
 
-    // Wait for any prior generation or DOM transition to settle
+    // Wait for any prior generation or DOM transition to settle. No deadline —
+    // a live answer may legitimately take as long as it takes — but a page
+    // that stays busy is reported, and once asked to stop: a ghost of a
+    // cancelled run would otherwise hold every following send hostage.
+    let waiting = 0;
+    let staleStopTried = false;
     while (true) {
         signal?.throwIfAborted();
         let snap;
         try { snap = await chatgptSnapshot(); } catch (_) { snap = null; }
         if (snap && snap.composer && !snap.generating) break;
+        if (snap && snap.composer && snap.generating && !staleStopTried && waiting >= 30000) {
+            staleStopTried = true;
+            log('chatgpt: page still generating — stopping it before this send');
+            await chatgptStopGeneration('stale stream before send');
+        }
+        if (waiting && waiting % 20000 === 0) {
+            log('chatgpt still waiting for the page (' + Math.round(waiting / 1000) + 's): composer='
+                + !!(snap && snap.composer) + ' generating=' + !!(snap && snap.generating));
+        }
         await sleep(400);
+        waiting += 400;
     }
 
     const before = await chatgptSnapshot();
@@ -1814,8 +1888,13 @@ async function clickSendButton() {
 
 let copilotQueue = Promise.resolve();
 function sendCopilotQueued(text, options = {}) {
+    const queuedAt = Date.now();
     const result = copilotQueue.then(async () => {
         options.signal?.throwIfAborted();
+        if (Date.now() - queuedAt > 60000) {
+            log('copilot queue: the previous request held this one for '
+                + Math.round((Date.now() - queuedAt) / 1000) + 's');
+        }
         return copilotSend(text, options);
     });
     copilotQueue = result.catch(() => {});
@@ -1922,7 +2001,7 @@ function startBridge() {
             browserVisible: prov === 'chatgpt' ? gVis : prov === 'codegpt' ? eVis : cVis,
             lastReplyAt, lastError
         };
-    }, debugCodegptDom));
+    }, debugCodegptDom, log));
     bridgeServer.timeout = 0;
     bridgeServer.requestTimeout = 0;
     bridgeServer.headersTimeout = 0;
@@ -2461,6 +2540,52 @@ function installIpc() {
     listen('quit', () => app.quit());
 }
 
+/* ------------------------------ resilience -------------------------------- */
+// The tray is the host's browser-backed provider gateway: codegpt / chatgpt /
+// copilot models are served through the in-process bridge, so if this process
+// disappears silently every one of them goes dark the next time a client asks.
+// (Seen 2026-09-21: the process vanished mid-heartbeat — no quit log, no crash
+// report — and "the bridge runs dry" until a human restarts the tray.) Make
+// every failure mode loud in the log, and heal what can be healed in place.
+
+if (typeof process.on === 'function') {
+    process.on('uncaughtException', (error) => {
+        log('tray uncaught exception: ' + ((error && error.stack) || error));
+    });
+    process.on('unhandledRejection', (reason) => {
+        log('tray unhandled rejection: ' + ((reason && reason.stack) || reason));
+    });
+}
+
+// A renderer crash must not take its provider down for good: reload the page
+// (sign-in lives in the partition, so it survives the reload) unless the page
+// is crash-looping — then leave it down and say why.
+const rendererCrashLog = [];
+app.on('render-process-gone', (_event, webContents, details) => {
+    let url = '';
+    try { url = webContents.getURL(); } catch (_) { url = ''; }
+    log('tray renderer gone: reason=' + details.reason + ' exitCode=' + details.exitCode
+        + ' url=' + String(url).slice(0, 90));
+    if (isQuitting || details.reason === 'clean-exit') return;
+    const now = Date.now();
+    const recent = rendererCrashLog.filter((ts) => now - ts < 5 * 60 * 1000);
+    recent.push(now);
+    rendererCrashLog.length = 0;
+    rendererCrashLog.push(...recent);
+    if (recent.length > 3) {
+        log('tray renderer crash loop (' + recent.length + ' in 5 min) — leaving the page '
+            + 'down; open the tray and sign in / reload by hand');
+        return;
+    }
+    setTimeout(() => {
+        try { if (!webContents.isDestroyed()) webContents.reload(); } catch (_) { /* gone */ }
+    }, 1500);
+});
+app.on('child-process-gone', (_event, details) => {
+    log('tray child process gone: type=' + details.type + ' reason=' + details.reason
+        + (details.serviceName ? ' service=' + details.serviceName : ''));
+});
+
 /* ---------------------------------- boot ---------------------------------- */
 
 // Host binding. The tray holds the signed-in CodeGPT session, so it must only
@@ -2522,6 +2647,15 @@ if (hostBlock) {
             refreshEconomyModels({ force: true })
                 .then((info) => log('economy models refreshed: ' + info.count + ' from ' + info.source))
                 .catch(() => {});
+        }, 5 * 60 * 1000);
+        // Liveness + memory trail: when a long session ends abruptly this log
+        // is the only record, so leave a heartbeat (RSS, window state) behind.
+        setInterval(() => {
+            const state = [['copilot', browserWin], ['chatgpt', chatgptWin], ['codegpt', codegptWin]]
+                .map(([name, win]) => win && !win.isDestroyed()
+                    ? name + (win.webContents.isCrashed() ? ':crashed' : ':ok') : name + ':none')
+                .join(' ');
+            log('tray alive: rss=' + Math.round(process.memoryUsage().rss / 1048576) + 'MB ' + state);
         }, 5 * 60 * 1000);
         const startProvider = endpoints.getSettings().provider;
         if (startProvider === 'copilot') ensureBrowser();

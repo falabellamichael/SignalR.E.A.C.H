@@ -70,6 +70,13 @@ def register_autostart():
         lines.append("rem --- Copilot 365 tray (invisible browser + bridge :21302) ---")
         lines.append("start \"\" /min \"%s\" \"%s\""
                      % (tray_electron, tray_main.parent))
+        # The tray holds the signed-in CodeGPT/ChatGPT browser sessions, so its
+        # bridge is the host's browser-provider gateway: a watchdog keeps it
+        # alive across silent process deaths (logon-started like everything
+        # else here; no elevation needed).
+        lines.append("rem --- tray watchdog (revives the bridge if the tray dies) ---")
+        lines.append("start \"\" /min \"%s\" tools\\reach.py tray watch"
+                     % resolve_pythonw())
 
     BAT_PATH.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
     result = subprocess.run(
