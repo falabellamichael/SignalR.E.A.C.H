@@ -21,7 +21,7 @@
     const element = document.createElement('section');
     element.className = 'team-run team-deck';
     element.setAttribute('aria-label', `${team.name} deployed team`);
-    element.innerHTML = '<div class="team-deck-nav"><div class="team-deck-heading"><strong></strong><span class="team-deck-mode"></span><span class="team-deck-nurse" aria-live="off" hidden></span><span class="team-deck-count"></span></div><div class="team-tab-strip"><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs left"></button><div class="team-tabs" role="tablist" aria-label="Deployed team members" aria-orientation="horizontal"></div><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs right"></button></div><details class="team-model-info" open><summary aria-label="Toggle selected team member information"><span class="team-model-summary-copy"><strong></strong><span class="team-model-summary-model"></span></span><span class="team-model-summary-state"></span><span class="team-icon team-model-caret" data-icon="caret-right" aria-hidden="true"></span></summary><div class="team-model-info-expanded"><div class="team-model-expanded-identity"><strong></strong><span class="team-model-expanded-model"></span></div><span class="team-model-expanded-state"></span><span class="team-model-expanded-meta"></span><button class="ghost small team-model-control" type="button"></button></div></details></div><div class="team-panels"></div><div class="team-reviews"></div>';
+    element.innerHTML = '<div class="team-deck-nav"><div class="team-deck-heading"><strong></strong><span class="team-deck-mode"></span><span class="team-deck-nurse" aria-live="off" hidden></span><span class="team-deck-count"></span></div><div class="team-tab-strip"><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs left"></button><div class="team-tabs" role="tablist" aria-label="Deployed team members" aria-orientation="horizontal"></div><button class="team-tab-scroll" type="button" aria-label="Scroll team tabs right"></button></div><details class="team-model-info" open><summary aria-label="Toggle selected team member information"><span class="team-model-summary-copy"><strong></strong><span class="team-model-summary-model"></span></span><span class="team-model-summary-state"></span><span class="team-icon team-model-caret" data-icon="caret-right" aria-hidden="true"></span></summary><div class="team-model-info-expanded"><span class="team-model-expanded-meta"></span><button class="ghost small team-model-control" type="button"></button></div></details></div><div class="team-panels"></div><div class="team-reviews"></div>';
     const banner = element.querySelector('.team-deck-heading');
     setText(banner.querySelector('strong'), team.name || 'Team');
     setText(banner.querySelector('.team-deck-mode'), team.mode || 'parallel');
@@ -32,9 +32,68 @@
     const panels = element.querySelector('.team-panels');
     const reviews = element.querySelector('.team-reviews');
     const modelInfo = element.querySelector('.team-model-info');
+    const nav = element.querySelector('.team-deck-nav');
     // Pin the live tab rail, not the expanded metadata. At small window sizes
     // keeping both pinned can cover the entire conversation viewport.
-    element.querySelector('.team-deck-nav').after(modelInfo);
+    nav.after(modelInfo);
+    // Keep a height reservation while the original rail floats. No cloned
+    // controls and no layout jump when it hides or returns.
+    const anchor = document.createElement('div');
+    anchor.className = 'team-nav-anchor';
+    nav.before(anchor);
+    anchor.append(nav);
+    let scroller = null, lastScroll = 0, concealed = false;
+    let recycledTabs = [], preferredIndex = 0, runNumber = 1;
+    function positionNav(scrolled = false) {
+      if (!scroller || !element.isConnected || !element.getClientRects().length) return;
+      const viewport = scroller.getBoundingClientRect();
+      const origin = anchor.getBoundingClientRect();
+      const top = viewport.top + scroller.clientTop;
+      const offset = top - origin.top;
+      const delta = scroller.scrollTop - lastScroll;
+      // Follow through the first part of the conversation. Thereafter, even a
+      // small upward scroll recalls this SAME rail, beyond the deck's end too.
+      const cutoff = Math.max(260, scroller.clientHeight * .6);
+      if (offset <= cutoff) concealed = false;
+      else if (scrolled && Math.abs(delta) >= 1) concealed = delta > 0;
+      lastScroll = scroller.scrollTop;
+      const floating = offset > 0;
+      anchor.style.height = floating ? nav.offsetHeight + 'px' : '';
+      nav.classList.toggle('is-floating', floating);
+      nav.style.top = floating ? top + 'px' : '';
+      nav.style.left = floating ? origin.left + 'px' : '';
+      nav.style.width = floating ? origin.width + 'px' : '';
+      // Preserve keyboard navigation, but a previously mouse-clicked tab must
+      // not prevent the rail from hiding when the user scrolls down again.
+      const hidden = floating && concealed && !nav.querySelector(':focus-visible');
+      nav.classList.toggle('is-concealed', hidden);
+      nav.inert = hidden;
+      nav.setAttribute('aria-hidden', String(hidden));
+    }
+    const onScroll = () => positionNav(true);
+    const geometry = new ResizeObserver(() => positionNav());
+    nav.addEventListener('focusout', () => queueMicrotask(() => positionNav()));
+    function unmount() {
+      scroller?.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', positionNav);
+      geometry.disconnect();
+      scroller = null;
+      anchor.style.height = '';
+      nav.classList.remove('is-floating', 'is-concealed');
+      nav.style.top = nav.style.left = nav.style.width = '';
+      nav.inert = false;
+      nav.removeAttribute('aria-hidden');
+    }
+    function mount(host) {
+      unmount();
+      scroller = host;
+      lastScroll = host.scrollTop;
+      concealed = false;
+      host.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('resize', positionNav);
+      geometry.observe(host); geometry.observe(anchor); geometry.observe(nav);
+      positionNav();
+    }
     const modelControl = modelInfo.querySelector('.team-model-control');
     modelInfo.hidden = true;
     const [left, right] = element.querySelectorAll('.team-tab-scroll');
@@ -58,8 +117,7 @@
     }, { passive: false });
     const resize = new ResizeObserver(overflow);
     resize.observe(tabs);
-    // No global listeners or timers: the owning run disposes this observer
-    // when its archived DOM is discarded by a history refresh.
+    // The owning run disposes observers/listeners when history is discarded.
     function select(card, focus = false) {
       if (!entries.has(card)) return;
       selected = card;
@@ -88,9 +146,6 @@
       setText(modelInfo.querySelector('.team-model-summary-copy strong'), entry.name);
       setText(modelInfo.querySelector('.team-model-summary-model'), entry.model || (entry.worker ? 'Spawned worker' : 'Team member'));
       setText(modelInfo.querySelector('.team-model-summary-state'), state);
-      setText(modelInfo.querySelector('.team-model-expanded-identity strong'), entry.name);
-      setText(modelInfo.querySelector('.team-model-expanded-model'), entry.model || (entry.worker ? 'Spawned worker' : 'Team member'));
-      setText(modelInfo.querySelector('.team-model-expanded-state'), state);
       setText(modelInfo.querySelector('.team-model-expanded-meta'), meta);
       modelControl.hidden = !control;
       if (control) {
@@ -189,7 +244,7 @@
     }
     function add(card, { name, model, worker = false }) {
       const n = entries.size;
-      const tab = document.createElement('button');
+      const tab = recycledTabs[n] || document.createElement('button');
       tab.type = 'button'; tab.className = 'team-tab'; tab.id = `${id}-tab-${n}`;
       tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', `${id}-panel-${n}`);
       tab.innerHTML = '<span class="team-orbit"><span class="team-initial"></span></span><span class="team-tab-copy"><span class="team-tab-name"></span><span class="team-tab-model"></span><span class="team-tab-detail"><span class="team-tab-action"></span><span class="team-tab-step"></span></span></span>';
@@ -210,7 +265,7 @@
       tab.onclick = () => select(card);
       identify(card, name, model);
       update(card);
-      if (!selected) select(card); else card.hidden = true;
+      if (!selected || n === preferredIndex) select(card); else card.hidden = true;
       tab.setAttribute('aria-selected', String(selected === card)); tab.tabIndex = selected === card ? 0 : -1;
       overflow();
     }
@@ -257,8 +312,43 @@
           status: status === 'error' ? 'error' : 'stopped', endedAt: Date.now() });
       }
     }
-    const api = { element, banner, reviews, add, identify, update, select, finish, noteNurse,
-      dispose: () => { resize.disconnect(); for (const entry of entries.values()) entry.observer?.disconnect(); }, get ended() { return ended; } };
+    function restart(next) {
+      preferredIndex = Math.max(0, [...entries.keys()].indexOf(selected));
+      recycledTabs = [...entries.values()].map(entry => entry.tab);
+      const history = document.createElement('details');
+      history.className = 'team-run-history';
+      const heading = document.createElement('summary');
+      const previousTask = banner.title;
+      heading.textContent = `Earlier work · Run ${runNumber++} · ${previousTask.length > 160 ? previousTask.slice(0, 160) + '…' : previousTask}`;
+      heading.title = previousTask;
+      history.append(heading);
+      for (const [card, entry] of entries) {
+        entry.observer.disconnect();
+        clearTimeout(card._renderTimer);
+        card._teamDeck = null;
+        card.removeAttribute('id'); card.removeAttribute('role'); card.removeAttribute('aria-labelledby');
+        card.hidden = false;
+        const member = document.createElement('details');
+        const label = document.createElement('summary');
+        label.textContent = `${entry.name} · ${entry.model} · ${entry.action}`;
+        member.append(label, card); history.append(member);
+      }
+      // Reviews keep their original live nodes and decision handlers, outside
+      // collapsed history; follow-ups must never discard a pending decision.
+      for (const note of element.querySelectorAll(':scope > .chat-msg')) history.append(note);
+      if (entries.size) element.append(history);
+      entries.clear(); tabs.replaceChildren(); selected = null; ended = false;
+      delete element.dataset.finished;
+      banner.title = next.task;
+      setText(banner.querySelector('strong'), next.team.name || 'Team');
+      setText(banner.querySelector('.team-deck-mode'), next.team.mode || 'parallel');
+      for (const key of Object.keys(nurseStats)) nurseStats[key] = 0;
+      nurseBadge.hidden = true;
+      modelInfo.hidden = true;
+      tally();
+    }
+    const api = { element, banner, reviews, add, identify, update, select, finish, noteNurse, restart, mount, unmount,
+      dispose: () => { unmount(); resize.disconnect(); recycledTabs = []; for (const entry of entries.values()) entry.observer?.disconnect(); }, get ended() { return ended; } };
     return api;
   }
   window.ReachTeamDeck = { create };

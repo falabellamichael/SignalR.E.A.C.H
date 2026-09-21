@@ -925,6 +925,7 @@ function renderChatHistory() {
   }
   if (activeTeamRun?.agentId === currentAgent.id) {
     chatLog.prepend(activeTeamRun.wrap);
+    activeTeamRun.deck.mount(chatScroll);
   }
 }
 
@@ -2716,7 +2717,12 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   }
   const host = boundToCurrent ? chatLog : noAgent;
   if (!boundToCurrent && !currentAgent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
-  run.deck = window.ReachTeamDeck.create({ team, task });
+  const teamKey = team.id || `${team.name}:${team.mode}`;
+  const existing = [...host.querySelectorAll(':scope > .team-deck')].find(wrap =>
+    wrap.dataset.teamKey === teamKey && wrap.dataset.conversationId === (agentId || ''));
+  for (const wrap of host.querySelectorAll(':scope > .team-deck')) wrap._teamDeck?.unmount();
+  run.deck = existing?._teamDeck || window.ReachTeamDeck.create({ team, task });
+  if (existing) run.deck.restart({ team, task });
   run.banner = run.deck.banner;
   const stop = document.createElement('button');
   stop.id = 'btn-stop-team';
@@ -2736,10 +2742,13 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   const wrap = run.deck.element;
   wrap._teamDeck = run.deck;
   wrap.dataset.teamRunId = teamRunId;
+  wrap.dataset.teamKey = teamKey;
+  wrap.dataset.conversationId = agentId || '';
   host.prepend(wrap);
   activeTeamRun.wrap = wrap;
   updateSendControl();
   (currentAgent ? chatScroll : host).scrollTop = 0;
+  run.deck.mount(boundToCurrent ? chatScroll : host);
 }
 
 function teamCard(index, name, model) {

@@ -97,16 +97,18 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`previewRun.wrap.querySelector('.team-model-info').open`), true);
   assert.equal(await run(`previewRun.wrap.querySelector('.team-model-summary-copy strong').textContent`), 'Seeker');
   assert.equal(await run(`previewRun.wrap.querySelector('.team-model-summary-model').textContent`), 'deepseek-flash');
-  assert.match(await run(`previewRun.wrap.querySelector('.team-model-expanded-state').textContent`), /waiting|review/i);
+  assert.match(await run(`previewRun.wrap.querySelector('.team-model-summary-state').textContent`), /waiting|review/i);
+  assert.equal(await run(`previewRun.wrap.querySelector('.team-model-expanded-identity')`), null, 'Expanded metadata must not repeat identity');
   assert.equal(await run(`getComputedStyle(previewRun.cards.get(2).querySelector('.member-head')).display`), 'none');
   await run(`previewRun.wrap.querySelector('.team-model-info > summary').click()`);
   assert.equal(await run(`previewRun.wrap.querySelector('.team-model-info').open`), false);
   assert.equal(await run(`previewRun.cards.get(2).querySelector('.member-model').textContent`), 'deepseek-flash');
   await capture('desktop-collapsed');
   await run(`previewRun.wrap.querySelector('.team-model-info > summary').click()`);
-  const sticky = await run(`(() => {
+  const sticky = await run(`(async () => {
     const scroller = chatScroll, nav = previewRun.wrap.querySelector('.team-deck-nav');
     scroller.scrollTop = Math.min(180, scroller.scrollHeight - scroller.clientHeight);
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     const scrollTop = scroller.getBoundingClientRect().top, navTop = nav.getBoundingClientRect().top;
     return { scrollTop, navTop, amount: scroller.scrollTop };
   })()`);
@@ -288,6 +290,27 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`previewRun.cards.get(3).querySelector('.member-body').textContent`), 'Validation complete. All checks passed.');
   assert.equal(await run(`previewRun.wrap.querySelectorAll('.member-card:not([hidden])').length`), 1);
   await capture('finished');
+  const restartedControls = [];
+  ipcMain.removeHandler('teams:controlMember');
+  ipcMain.handle('teams:controlMember', (_event, payload) => { restartedControls.push(payload); return {ok:true}; });
+  await run(`(() => {
+    window.retainedRail = previewRun.wrap.querySelector('.team-deck-nav');
+    window.retainedTab = previewRun.wrap.querySelector('.team-tab');
+    window.retainedDecisions = [];
+    window.retainedReview = ensureEditReviewGroup({key:'team:pending-restart',host:previewRun.deck.reviews,title:'Pending review',actor:'Team 1',resolve:async(id,accepted)=>{retainedDecisions.push({id,accepted});return {ok:true,accepted};}});
+    appendEditCardToGroup(retainedReview,{editId:'keep-this-review',path:'README.md',stats:{added:1,removed:0},hunks:[{type:'add',text:'Keep this pending edit.'}]});
+    startTeamRunView('deck-followup',{name:'Team 1',mode:'parallel'},'Continue with a smaller roster');
+    handleTeamEvent({teamRunId:'deck-followup',type:'start',members:[{index:0,name:'CEO',model:'qwen-27b'},{index:1,name:'Thinker',model:'qwen-35b'}]});
+  })()`);
+  assert.equal(await run(`chatLog.querySelectorAll('.team-deck').length`), 1);
+  assert.equal(await run(`activeTeamRun.wrap === previewRun.wrap && activeTeamRun.wrap.querySelector('.team-deck-nav') === retainedRail && activeTeamRun.wrap.querySelector('.team-tab') === retainedTab`), true);
+  assert.equal(await run(`activeTeamRun.wrap.querySelectorAll('.team-tab').length`), 2, 'Removed workers must not linger in the current rail');
+  assert.equal(await run(`retainedReview.element.isConnected`), true, 'Pending review nodes survive deck reuse');
+  await run(`retainedReview.acceptAll.click(); activeTeamRun.wrap.querySelector('.team-model-control').click();`);
+  await until(`retainedDecisions.length===1`, 'Old pending review still resolves after reuse');
+  assert.equal(restartedControls.length, 1);
+  assert.equal(restartedControls[0].teamRunId, 'deck-followup', 'Reused deck controls target the new run');
+  assert.match(await run(`activeTeamRun.wrap.querySelector('.team-run-history').textContent`), /Validation complete/);
   assert.deepEqual(errors, []);
   fs.writeFileSync(path.join(root,'results.json'), JSON.stringify({checks:['state fidelity','single panel','keyboard and overflow','background questions','draft preservation','pause/resume','history remount','spawned workers','narrow/light/dark','reduced motion','silent team nurse','bulk review','terminal outcomes'],errors},null,2));
   console.log('TEAM DECK UI PASS', root);

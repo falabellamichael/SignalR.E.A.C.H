@@ -70,8 +70,14 @@ function transcript(start = 0) { return requests.slice(start).map(r => r.message
   await send('Compare the first options: INDIGO-319.'); await finish();
   assert.equal(requests.length, 2, 'normal Send dispatched the two team members');
   assert.match(transcript(), /INDIGO-319/);
+  await run(`window.firstDeck = chatLog.querySelector('.team-deck'); window.firstRail = firstDeck.querySelector('.team-deck-nav'); window.firstTab = firstDeck.querySelector('.team-tab');`);
   const second = requests.length;
   await send('Explain your previous answer.'); await finish();
+  assert.equal(await run(`chatLog.querySelectorAll('.team-deck').length`), 1, 'Follow-up reuses the existing team deck');
+  assert.equal(await run(`chatLog.querySelector('.team-deck') === firstDeck && firstDeck.querySelector('.team-deck-nav') === firstRail && firstDeck.querySelector('.team-tab') === firstTab`), true, 'Deck, rail and member tabs retain their DOM identity');
+  assert.equal(await run(`firstDeck.querySelectorAll('.team-tabs > .team-tab').length`), 2);
+  assert.equal(await run(`firstDeck.querySelector('.team-run-history').open`), false, 'Earlier work starts collapsed');
+  assert.match(await run(`firstDeck.querySelector('.team-run-history').textContent`), /COBALT-742/);
   assert.match(transcript(second), /INDIGO-319/);
   assert.match(transcript(second), /COBALT-742/);
   assert.match(transcript(second), /LATEST USER MESSAGE:\nExplain your previous answer/);

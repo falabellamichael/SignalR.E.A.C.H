@@ -15,7 +15,13 @@
 .chat-log:has(> .team-deck) { padding-top: 0; }
 #no-agent.telemetry-landing > .team-deck { display: flex; }
 #no-agent.telemetry-landing:has(> .team-deck) > .telemetry-dashboard { display: none; }
-.team-deck-nav { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.team-nav-anchor { min-width: 0; overflow-anchor: none; }
+.team-deck-nav { position: relative; z-index: 2; background: var(--surface); }
+.team-deck-nav.is-floating { position: fixed; z-index: 5; }
+.team-deck-nav.is-concealed { visibility: hidden; pointer-events: none; }
+.team-run-history { border-top: 1px solid var(--deck-line); padding: 10px 0; }
+.team-run-history summary { cursor: pointer; color: var(--deck-muted); padding: 6px 0; font-size: 11px; overflow-wrap: anywhere; }
+.team-run-history > details { margin: 8px 0; }
 .team-deck-heading { display: flex; align-items: baseline; gap: 9px; padding: 12px 0 9px; font-size: 12px; min-width: 0; }
 .team-deck-heading strong { font-size: 12px; font-weight: 600; white-space: nowrap; }
 .team-deck-mode { color: var(--deck-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
@@ -84,10 +90,7 @@
 .team-model-caret { width: 14px; height: 14px; flex: 0 0 14px; transition: transform .15s ease; }
 .team-model-info[open] .team-model-caret { transform: rotate(90deg); }
 .team-model-info-expanded { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--deck-line); }
-.team-model-expanded-identity { display: flex; flex-direction: column; gap: 3px; flex: 1 1 150px; min-width: 0; }
-.team-model-expanded-identity strong { font-size: 14px; overflow-wrap: anywhere; }
-.team-model-expanded-model, .team-model-expanded-state, .team-model-expanded-meta { color: var(--deck-muted); font-size: 11px; overflow-wrap: anywhere; }
-.team-model-expanded-meta { flex: 0 0 auto; font-size: 10px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.team-model-expanded-meta { color: var(--deck-muted); overflow-wrap: anywhere; flex: 1 1 auto; font-size: 10px; font-variant-numeric: tabular-nums; }
 .team-model-control { flex: 0 0 auto; border-color: var(--deck-line); color: var(--deck-ink); }
 .team-panels, .team-reviews { min-width: 0; }
 .team-reviews:empty { display: none; }
@@ -139,7 +142,6 @@
   .team-deck .member-head { gap: 8px; }
   .team-deck .member-state { max-width: 180px; }
   .team-model-info-expanded { flex-wrap: wrap; gap: 8px; }
-  .team-model-expanded-state { order: 3; flex: 1 1 65%; }
 }
 @media (prefers-reduced-motion: reduce) {
   .team-tab[data-status="working"] .team-orbit-icon { animation: none; }
