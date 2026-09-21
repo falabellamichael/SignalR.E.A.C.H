@@ -50,13 +50,16 @@ class StudioBrowser {
     if (!this.win.isDestroyed()) this.win.webContents.send('browser:state', this.state());
   }
   layout() {
-    if (this.win.isDestroyed()) return;
+    if (this.win.isDestroyed() || this.win.webContents.isDestroyed()) return;
     const outer = this.win.getContentBounds();
     const b = this.bounds;
-    const x = Math.min(outer.width, Math.max(0, Math.round(b.x)));
-    const y = Math.min(outer.height, Math.max(0, Math.round(b.y)));
-    const width = Math.max(0, Math.min(Math.round(b.width), outer.width - x));
-    const height = Math.max(0, Math.min(Math.round(b.height), outer.height - y));
+    // The renderer reports CSS pixels; native child views use window DIPs.
+    // Scale by the Studio host zoom, not the webpage zoom or Retina DPR.
+    const zoom = this.win.webContents.getZoomFactor();
+    const edge = (value, limit) => Math.min(limit, Math.max(0, Math.round(value * zoom)));
+    const x = edge(b.x, outer.width), y = edge(b.y, outer.height);
+    const width = Math.max(0, edge(b.x + b.width, outer.width) - x);
+    const height = Math.max(0, edge(b.y + b.height, outer.height) - y);
     for (const tab of this.tabs.values()) {
       tab.view.setBounds({ x, y, width, height });
       tab.view.setVisible(this.visible && tab.id === this.active && !!tab.view.webContents.getURL() && !tab.error && width > 0 && height > 0);

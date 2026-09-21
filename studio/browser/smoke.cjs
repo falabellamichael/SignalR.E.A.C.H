@@ -16,7 +16,7 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
   const until = async predicate => {
     const deadline = Date.now() + 5000;
     while (!await predicate()) {
-      if (Date.now() > deadline) throw new Error('Browser smoke condition timed out');
+      if (Date.now() > deadline) throw new Error('Browser smoke condition timed out' + (predicate.diagnostic ? ': ' + predicate.diagnostic : ''));
       await new Promise(resolve => setTimeout(resolve, 20));
     }
   };
@@ -31,6 +31,64 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     await until(() => browser.state().tabs.some(t => t.title === 'Browser fixture' && !t.loading));
     const firstId = browser.active, first = browser.tabs.get(firstId).view;
     await until(() => first.getVisible());
+    // Native browser bounds must follow the host's zoomed DOM, not CSS pixels
+    // or physical screen pixels. Exercise real resize/layout IPC on every CI
+    // smoke platform, including the fractional zoom that exposed this bug.
+    const savedZoom = win.webContents.getZoomFactor();
+    const savedDrawerWidth = await ui('return drawer.style.width;');
+    const savedViewportStyle = await ui("return document.querySelector('#browser-viewport').style.cssText;");
+    const aligned = async () => {
+      const rect = await ui("const r = document.querySelector('#browser-viewport').getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, bottom: r.bottom };");
+      const zoom = win.webContents.getZoomFactor(), outer = win.getContentBounds();
+      const edge = (value, limit) => Math.min(limit, Math.max(0, Math.round(value * zoom)));
+      const expected = { x: edge(rect.x, outer.width), y: edge(rect.y, outer.height) };
+      expected.width = edge(rect.right, outer.width) - expected.x;
+      expected.height = edge(rect.bottom, outer.height) - expected.y;
+      const actual = first.getBounds();
+      aligned.diagnostic = JSON.stringify({ zoom, rect, expected, actual, visible: first.getVisible() });
+      return first.getVisible() && expected.width > 0 && expected.height > 0
+        && Object.keys(expected).every(key => Math.abs(actual[key] - expected[key]) <= 1);
+    };
+    try {
+      for (const zoom of [0.75, 1.2 ** -0.5, 1, 1.25, 1.5]) {
+        win.webContents.setZoomFactor(zoom);
+        await until(async () => Math.abs(await ui('return innerWidth;') - win.getContentBounds().width / zoom) < 2);
+        // Crossing the narrow-window breakpoint intentionally closes drawers.
+        // Reopen as a user would, after the responsive guard has run.
+        await ui("applyWidthGuard(); await selectDrawerPanel('browser', { focus: false });");
+        for (const width of [320, 520]) {
+          await ui(`drawer.style.width = '${width}px';`);
+          await until(aligned);
+        }
+        if (zoom === 1.2 ** -0.5) {
+          fs.writeFileSync(path.join(outputDir, 'browser-zoom-91.png'), (await win.capturePage()).toPNG());
+        }
+      }
+      // Changing only zoom must bypass layout deduplication even when the CSS
+      // slot itself never moves or resizes. Page zoom must not change its slot.
+      await ui("document.querySelector('#browser-viewport').style.cssText = 'position:fixed;left:120px;top:180px;width:280px;height:200px;';");
+      for (const zoom of [1, 0.8, 1.25]) {
+        win.webContents.setZoomFactor(zoom);
+        await until(aligned);
+      }
+      first.webContents.setZoomFactor(1.5);
+      browser.layout();
+      assert.ok(await aligned(), 'Webpage zoom must not alter the native browser slot');
+      await ui("window.__zoomNotice = showNotice('Zoomed browser overlay test');");
+      await until(() => !first.getVisible());
+      await ui("document.querySelector('dialog.app-dialog button').click(); await window.__zoomNotice;");
+      await until(aligned);
+      await ui("await selectDrawerPanel('files');");
+      await until(() => !first.getVisible());
+      await ui("await selectDrawerPanel('browser');");
+      await until(aligned);
+    } finally {
+      first.webContents.setZoomFactor(1);
+      win.webContents.setZoomFactor(savedZoom);
+      await ui(`drawer.style.width = ${JSON.stringify(savedDrawerWidth)}; document.querySelector('#browser-viewport').style.cssText = ${JSON.stringify(savedViewportStyle)};`);
+    }
+    await until(aligned);
+    console.log('BROWSER ZOOM SMOKE OK: 75%, 91%, 100%, 125%, 150%, drawer resizing, fixed CSS bounds, independent page zoom, dialogs and panel switching.');
     win.showInactive();
     await new Promise(resolve => setTimeout(resolve, 150));
     const point = await first.webContents.executeJavaScript("(() => { const r = document.querySelector('#counter').getBoundingClientRect(); return {x:r.x+r.width/2,y:r.y+r.height/2}; })()");

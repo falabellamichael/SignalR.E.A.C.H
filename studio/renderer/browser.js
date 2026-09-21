@@ -202,7 +202,9 @@ function scheduleBrowserLayout() {
     const overlay = document.querySelector('dialog[open], .modal:not(.hidden), .settings-dropdown:not(.hidden)');
     const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     const visible = drawerPanel === 'browser' && !drawer.classList.contains('closed') && !overlay && !document.body.classList.contains('resizing-x');
-    const value = JSON.stringify({ bounds, visible });
+    // Zoom can change while a fixed-size slot keeps identical CSS bounds.
+    // DPR is only a cache invalidator: the host converts using its own zoom.
+    const value = JSON.stringify({ bounds, visible, scale: window.devicePixelRatio });
     if (value === browserLastLayout) return;
     browserLastLayout = value;
     reachApi.browser.command('layout', { bounds, visible }).catch(() => {});
@@ -211,3 +213,4 @@ function scheduleBrowserLayout() {
 new ResizeObserver(scheduleBrowserLayout).observe($('#browser-viewport'));
 new MutationObserver(scheduleBrowserLayout).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'open', 'style'] });
 window.addEventListener('resize', scheduleBrowserLayout);
+window.visualViewport?.addEventListener('resize', scheduleBrowserLayout);
