@@ -4,6 +4,10 @@
   else root.ReachAgentRun = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
+  const chatInstruction = 'For this turn, Agent mode is off. Answer the user directly in readable Markdown. '
+    + 'Earlier agent action and run-control formatting instructions do not apply to this turn. '
+    + 'Do not wrap the answer in status/message/actions/options JSON or agent control blocks. '
+    + 'Preserve JSON, code, or another output format when the user explicitly requests it.';
   const protocol = 'AGENT RUN CONTROL (required; ordinary prose never ends the task):\n'
     + 'Use fenced tool blocks to take the next action. A progress update alone is not an action.\n'
     + 'When the user request is fully handled, finish with exactly one standalone block:\n'
@@ -88,5 +92,5 @@
       + (open.length ? 'Open plan items: ' + JSON.stringify(open) + '\n' : '');
     return { state: { ...state, status: 'running', reason }, action: 'continue', reason, instruction };
   }
-  return { protocol, start, parse, decide };
+  return { protocol, chatInstruction, start, parse, decide };
 });

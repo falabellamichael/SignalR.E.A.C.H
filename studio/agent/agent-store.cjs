@@ -27,13 +27,14 @@ class AgentStore {
     this.getSettings = getSettings;
     this.filePath = filePath;
     this.agents = this._load();
+    this.drafts = new Map();
   }
 
   _load() {
     try {
       const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
       if (!raw || !Array.isArray(raw.agents)) return [];
-      return raw.agents.filter(a => a && typeof a.id === 'string' && typeof a.name === 'string').map(a => {
+      return raw.agents.filter(a => a && !a.draft && typeof a.id === 'string' && typeof a.name === 'string').map(a => {
         if (a.runState?.status === 'running') {
           if (a.activity) a.activity = require('../renderer/activity-state.js').reduce(a.activity, { type: 'run-state', status: 'paused', reason: 'Previous app session ended.' });
           a.runState = { ...a.runState, status: 'paused', reason: 'The previous app session ended. Continue to resume this conversation.' };
@@ -120,7 +121,7 @@ class AgentStore {
   }
 
   get(id) {
-    const a = this.agents.find(a => a.id === id) || null;
+    const a = this.agents.find(a => a.id === id) || this.drafts?.get(id) || null;
     if (a) {
       // Fields added after the first release may be missing on disk.
       if (!a.pendingEdits || typeof a.pendingEdits !== 'object') a.pendingEdits = {};
@@ -133,14 +134,23 @@ class AgentStore {
     return a;
   }
 
-  create({ name, dir, model, personaId = '', personaPrompt = '', connectionId = '', parentChatId = null, forkIndex = null }) {
+  _checkConversationLimit() {
     const maxAgents = resolveBudgets(this.getSettings()).maxConversations;
     if (maxAgents > 0 && this.agents.length >= maxAgents) {
       throw new Error(`Conversation limit reached (${maxAgents}). Change Settings > Budgeting or delete a conversation.`);
     }
+  }
+
+  create({ name, dir, model, personaId = '', personaPrompt = '', connectionId = '', parentChatId = null, forkIndex = null, draft = false }) {
+    if (draft) {
+      if (!this.drafts) this.drafts = new Map();
+      const existing = [...this.drafts.values()].find(a => a.dir === String(dir || ''));
+      if (existing) return existing;
+    } else this._checkConversationLimit();
     const now = Date.now();
     const agent = {
       id: 'agent-' + now.toString(36) + '-' + Math.random().toString(36).slice(2, 8),
+      ...(draft ? { draft: true } : {}),
       name: String(name || 'Chat').slice(0, 80),
       dir: String(dir || ''),
       model: String(model || ''),
@@ -170,8 +180,37 @@ class AgentStore {
         temperature: null,     // null = let the endpoint decide
       },
     };
+    if (draft) this.drafts.set(agent.id, agent);
+    else { this.agents.push(agent); this._save(); }
+    return agent;
+  }
+
+  /* New Chat uses a normal agent identity for model preferences and selected
+   * attachments, but does not enter saved history until its first submission. */
+  validateMaterialization(id) {
+    const agent = this.get(id);
+    if (!agent) throw new Error('Conversation not found.');
+    if (agent.draft) {
+      if (!agent.dir.trim()) throw new Error('Choose a project before sending a message.');
+      this._checkConversationLimit();
+    }
+    return agent;
+  }
+
+  materialize(id) {
+    const agent = this.validateMaterialization(id);
+    if (!agent.draft) return agent;
+    const previous = { createdAt: agent.createdAt, updatedAt: agent.updatedAt };
+    delete agent.draft;
+    agent.createdAt = agent.updatedAt = Date.now();
     this.agents.push(agent);
-    this._save();
+    try { this._save(); }
+    catch (error) {
+      this.agents = this.agents.filter(a => a.id !== id);
+      Object.assign(agent, previous, { draft: true });
+      throw error;
+    }
+    this.drafts.delete(id);
     return agent;
   }
 
@@ -181,6 +220,7 @@ class AgentStore {
   fork(id, { upToIndex = -1, name = null } = {}) {
     const parent = this.get(id);
     if (!parent) throw new Error('Conversation not found.');
+    if (parent.draft) throw new Error('Send a message before branching this conversation.');
     const messages = Array.isArray(parent.messages) ? parent.messages : [];
     const cut = Number.isInteger(upToIndex) && upToIndex >= 0 ? upToIndex + 1 : messages.length;
     const siblings = this.childrenOf(id).length;
@@ -286,8 +326,13 @@ class AgentStore {
   }
 
   appendMessage(id, message) {
-    const agent = this.get(id);
+    let agent = this.get(id);
     if (!agent) return null;
+    if (agent.draft && message?.role === 'user') {
+      const hasContent = Array.isArray(message.content) ? message.content.length > 0 : String(message.content || '').trim().length > 0;
+      if (!hasContent) throw new Error('A message is required.');
+      agent = this.materialize(id);
+    }
     agent.messages.push(message);
     // Apply only the user-configured history retention cap. Compression keeps
     // a separate context checkpoint and never removes the audit transcript.
@@ -405,6 +450,7 @@ class AgentStore {
   }
 
   remove(id) {
+    if (this.drafts?.delete(id)) return true;
     const before = this.agents.length;
     this.agents = this.agents.filter(a => a.id !== id);
     if (this.agents.length !== before) this._save();

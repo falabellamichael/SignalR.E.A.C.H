@@ -279,6 +279,7 @@ footer {
 .agent-tree { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
 .tree-empty { font-size: 12px; padding: 10px 6px; line-height: 1.5; }
 .tree-node { border-radius: 6px; }
+.tree-new-chat { width: 100%; text-align: left; font: inherit; }
 .tree-label {
   display: flex; align-items: center; gap: 7px; padding: 7px 8px;
   cursor: pointer; border-radius: 6px; border: 1px solid transparent;
@@ -334,6 +335,8 @@ footer {
   background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
   padding: 14px; display: flex; flex-direction: column; gap: 10px;
 }
+.chat-log:empty { display: none; }
+.jev-auto-status { grid-column: 1 / -1; font-size: 11px; overflow-wrap: anywhere; }
 .chat-msg {
   max-width: 78%; padding: 10px 14px; border-radius: 10px; flex-shrink: 0;
   font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
@@ -464,7 +467,7 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
   background: var(--surface); overflow: hidden;
 }
 .model-info-disclosure > summary {
-  display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px;
+  display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 4px 10px;
   color: var(--text); cursor: pointer; list-style: none; user-select: none;
 }
 .model-info-disclosure > summary::-webkit-details-marker { display: none; }
@@ -484,11 +487,20 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
   transform: rotate(0deg); transition: transform .15s ease;
 }
 .model-info-disclosure[open] > summary .model-info-caret { transform: rotate(90deg); }
-.model-info-content { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px 12px; border-top: 1px solid var(--line); max-height: min(390px, 48vh); overflow: auto; }
+.model-info-content {
+  --chat-header-gap: 6px; --chat-button-padding: 4px 8px; --chat-button-size: 11px;
+  --chat-context-padding: 4px 8px;
+  display: flex; flex-direction: column; gap: 6px; padding: 6px 10px;
+  border-top: 1px solid var(--line); max-height: min(390px, 48vh); overflow: auto;
+}
 .model-info-disclosure:has(.settings-dropdown:not(.hidden)),
 .model-info-disclosure:has(.settings-dropdown:not(.hidden)) .model-info-content { overflow: visible; }
-.model-info-content > .project-head { flex-wrap: wrap; }
+.model-info-content > .project-head { flex-wrap: wrap; align-items: center; }
 .model-info-content > .project-head > :first-child { flex: 1 1 220px; min-width: 0; }
+/* The summary already identifies the conversation; keep its expanded row compact. */
+.model-info-content #agent-name { display: none; }
+.model-info-content #agent-meta { margin-top: 0; font-size: 11px; line-height: 16px; }
+.model-info-content #agent-status { padding: 3px 7px; font-size: 11px; line-height: 16px; }
 #agent-name { overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 #agent-meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer textarea { min-width: 0; }

@@ -41,6 +41,13 @@ function createSettingsStore({ file, safeStorage }) {
     };
     const decoded = decodeKey(raw);
     if (Array.isArray(raw.connections)) decoded.connections = raw.connections.map(decodeKey);
+    if (raw.encryptedJevApiKey !== undefined) {
+      try {
+        if (!available()) throw new Error('Credential vault unavailable.');
+        decoded.jevApiKey = safeStorage.decryptString(Buffer.from(raw.encryptedJevApiKey, 'base64'));
+      } catch { decoded.jevApiKey = ''; locked = true; }
+      delete decoded.encryptedJevApiKey;
+    }
     return { decoded, locked };
   }
   function encode(settings) {
@@ -50,6 +57,12 @@ function createSettingsStore({ file, safeStorage }) {
     // The legacy projection is only needed in memory; never duplicate its key
     // on disk alongside the canonical connection list.
     delete out.accessKey;
+    delete out.encryptedJevApiKey;
+    delete out.jevApiKey;
+    if (settings.jevApiKey) {
+      if (available()) out.encryptedJevApiKey = safeStorage.encryptString(settings.jevApiKey).toString('base64');
+      else out.jevApiKey = settings.jevApiKey;
+    }
     out.connections = settings.connections.map(connection => {
       const entry = { ...connection };
       if (entry.accessKey && available()) {
@@ -68,7 +81,7 @@ function createSettingsStore({ file, safeStorage }) {
     const raw = read();
     const { decoded, locked } = decode(raw);
     const settings = normalizeSettings(decoded).settings;
-    const hasPlaintext = !!raw.accessKey || raw.connections?.some(entry => entry?.accessKey);
+    const hasPlaintext = !!raw.accessKey || !!raw.jevApiKey || raw.connections?.some(entry => entry?.accessKey);
     const exists = fs.existsSync(file());
     if (exists && !locked && (raw.schemaVersion !== SCHEMA_VERSION || hasPlaintext && available())) {
       const encoded = encode(settings); // Encrypt everything before touching disk.

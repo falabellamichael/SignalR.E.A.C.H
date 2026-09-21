@@ -18,6 +18,25 @@ let currentProject = null;
 let projectSelectionRevision = 0;
 let activeRunId = null;
 let currentAgent = null;
+let jevAutoDefault = false;
+let jevAutoRoutingAgentId = null;
+let jevAutoCancelled = false;
+function jevAutoModeEnabled() { return (currentAgent?.settings?.jevAutoMode ?? jevAutoDefault) === true; }
+function jevAutoDescription(plan) {
+  if (plan.token) {
+    const controls = plan.features || {};
+    const tools = controls.agent === false ? 'direct answer' : ['workspace', 'web', 'terminal'].filter(key => controls[key] !== false).join(', ');
+    return `Auto: ${plan.label || 'your selected model'}${tools ? ` · ${tools}` : ''}`;
+  }
+  const reason = plan.reason === 'missing-key' ? 'add a TypeSafe key in Settings'
+    : ['vague-request', 'unusable-request'].includes(plan.reason) ? 'using your selection for this follow-up or long request'
+      : plan.reason === 'too-many-candidates' ? 'too many configured options for automatic selection'
+        : plan.reason === 'jev-keep' ? 'your current selection fits this request'
+          : plan.reason === 'disabled' ? 'using your selected setup'
+            : 'Jev is unavailable or uncertain; using your selected setup';
+  return `Auto: ${reason}`;
+}
+const newChatDrafts = new Map(); // unsent composer text and attachments, keyed by draft id
 let agents = [];
 let agentRunning = false;
 const runningAgentIds = new Set();
@@ -202,7 +221,7 @@ async function removeRememberedProject(project, button) {
   }
 }
 
-async function selectProject(p) {
+async function selectProject(p, { openDraft = true } = {}) {
   const revision = ++projectSelectionRevision;
   if (hasUnsavedFilesOutside(p.dir)
       && !await confirmAction('There are unsaved editor changes. Discard them and switch project?')) {
@@ -214,6 +233,7 @@ async function selectProject(p) {
   currentProject = p;
   agentProjectDir = p.dir;
   if (currentAgent && currentAgent.dir !== p.dir) {
+    rememberNewChatDraft();
     currentAgent = null;
     syncSelectedTeamRun();
     agentRunning = false;
@@ -231,7 +251,9 @@ async function selectProject(p) {
     logLine('sys', `Project: ${p.name}  (${p.dir})`);
   }
   await Promise.all([refreshFileTree(), loadProjectList(), loadAgentProjectSelect(), loadAgentTree()]);
-  return revision === projectSelectionRevision;
+  if (revision !== projectSelectionRevision) return false;
+  if (openDraft && !currentAgent) await selectNewChat();
+  return true;
 }
 
 async function rememberProject(dir) {
@@ -385,18 +407,44 @@ async function loadAgentTree() {
   const revision = ++agentTreeRevision;
   const treeEl = $('#agent-tree');
   treeEl.innerHTML = '';
+  const draftRow = document.createElement('div');
+  draftRow.className = 'tree-node';
+  const draftButton = document.createElement('button');
+  draftButton.id = 'tree-new-chat';
+  draftButton.className = 'tree-label tree-new-chat';
+  draftButton.type = 'button';
+  draftButton.textContent = 'New Chat';
+  draftButton.onclick = () => selectNewChat();
+  draftRow.appendChild(draftButton);
+  const markDraft = () => {
+    const selected = !currentAgent || currentAgent.draft === true;
+    draftRow.classList.toggle('active', selected);
+    if (selected) draftButton.setAttribute('aria-current', 'page');
+    else draftButton.removeAttribute('aria-current');
+  };
+  markDraft();
+  treeEl.appendChild(draftRow);
   if (!agentProjectDir) {
-    treeEl.innerHTML = '<div class="dim tree-empty">No project selected. Add one on the Projects page or pick a folder.</div>';
+    const hint = document.createElement('div');
+    hint.className = 'dim tree-empty';
+    hint.textContent = 'Choose a project when you send your first message.';
+    treeEl.appendChild(hint);
     return;
   }
   const dir = agentProjectDir;
   const res = await reachApi.agents.tree(dir);
   if (dir !== agentProjectDir || revision !== agentTreeRevision) return;
   if (!res.ok || !res.tree.length) {
-    treeEl.innerHTML = '<div class="dim tree-empty">No conversations yet — start one below.</div>';
     return;
   }
   const renderNode = (node) => {
+    if (currentAgent?.id === node.id && currentAgent.draft) {
+      delete currentAgent.draft;
+      newChatDrafts.delete(node.id);
+      currentAgent.name = node.name;
+      agentNameEl.textContent = agentNameEl.title = node.name;
+      $('#agent-info-summary-name').textContent = node.name;
+    }
     const row = document.createElement('div');
     row.className = 'tree-node';
     row.style.paddingLeft = (6 + node.depth * 16) + 'px';
@@ -427,35 +475,53 @@ async function loadAgentTree() {
     treeEl.appendChild(row);
     for (const child of node.children || []) renderNode(child);
   };
-  for (const root of res.tree) renderNode(root);
+  for (const root of [...res.tree].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))) renderNode(root);
+  markDraft();
+  window.ReachWorkspace?.syncControls();
 }
 
-async function selectAgent(a) {
+function rememberNewChatDraft() {
+  if (currentAgent?.draft) newChatDrafts.set(currentAgent.id, {
+    text: composerInput.value, attachments: [...composerAttachments],
+  });
+}
+
+async function selectAgent(a, { preserveEditors = false } = {}) {
   closeComposerSuggestions();
   invalidateComposerCatalog();
-  if ([...openFiles.values()].some(f => f.dirty) && !await confirmAction('There are unsaved editor changes. Discard them and switch conversation?')) return;
+  if (!preserveEditors && [...openFiles.values()].some(f => f.dirty) && !await confirmAction('There are unsaved editor changes. Discard them and switch conversation?')) return;
   const revision = ++projectSelectionRevision;
   const selected = await reachApi.agents.get(a.id);
   if (!selected || revision !== projectSelectionRevision) return;
+  if (jevAutoRoutingAgentId && jevAutoRoutingAgentId !== selected.id) {
+    jevAutoCancelled = true;
+    await reachApi.agents.stop(jevAutoRoutingAgentId);
+    if (revision !== projectSelectionRevision) return;
+  }
+  const leavingDraft = currentAgent?.draft;
   setBackgroundAgentGate(selected.id, '', { clear: true });
   streamBubble = null;
   recoveryBubble = null;
-  resetEditors();
+  if (!preserveEditors) resetEditors();
 
   if (selected.dir && !await selectProject({
     name: [...$('#agent-project-select').options].find(o => o.value === selected.dir)?.textContent || selected.dir.split(/[\\/]/).pop(),
     dir: selected.dir,
-  })) return;
+  }, { openDraft: false })) return;
+  rememberNewChatDraft();
   currentAgent = selected;
   syncSelectedTeamRun();
-  composerAttachments = [];
+  const draft = selected.draft ? newChatDrafts.get(selected.id) : null;
+  if (selected.draft || leavingDraft) composerInput.value = draft?.text || '';
+  composerAttachments = draft?.attachments || [];
+  queuedIndicator.classList.add('hidden');
   renderComposerAttachments();
   window.ReachActivity.select(currentAgent);
-  agentNameEl.textContent = agentNameEl.title = currentAgent.name;
+  agentNameEl.textContent = agentNameEl.title = currentAgent.draft ? 'New Chat' : currentAgent.name;
   const lineage = currentAgent.parentChatId ? ' · ⑂ branch' : '';
   agentMetaEl.textContent = `${currentAgent.dir} · ${currentAgent.model || 'default model'}${lineage}`;
   agentMetaEl.title = agentMetaEl.textContent;
-  $('#agent-info-summary-name').textContent = currentAgent.name;
+  $('#agent-info-summary-name').textContent = agentNameEl.textContent;
   $('#agent-info-summary-model').textContent = currentAgent.model || 'Default model';
   noAgent.classList.add('hidden');
   agentView.classList.remove('hidden');
@@ -474,7 +540,7 @@ async function selectAgent(a) {
 /* Fork the current chat's history up to (and including) message index i.
  * The new branch opens immediately; the sidebar tree shows the stem. */
 async function branchFromMessage(msgIndex) {
-  if (!currentAgent) return;
+  if (!currentAgent || currentAgent.draft) return;
   const res = await reachApi.agents.fork(currentAgent.id, msgIndex, null);
   if (!res.ok) { showNotice('Could not branch: ' + res.err); return; }
   await selectAgent(res.agent);
@@ -496,9 +562,9 @@ function updateStatusPill(status, reason) {
   summaryStatus.textContent = s;
   summaryStatus.dataset.status = s;
   $('#btn-agent-stop').classList.toggle('hidden', s !== 'running');
-  $('#btn-agent-continue').classList.toggle('hidden', !['stopped', 'stalled', 'paused', 'waiting_edits'].includes(s));
+  $('#btn-agent-continue').classList.toggle('hidden', currentAgent.draft || !['stopped', 'stalled', 'paused', 'waiting_edits'].includes(s));
   $('#btn-agent-continue').textContent = ['stopped', 'stalled'].includes(s) ? 'Start' : 'Continue';
-  $('#btn-agent-compact').disabled = s === 'running';
+  $('#btn-agent-compact').disabled = currentAgent.draft || s === 'running';
   updateSendControl();
   if (reason) pill.title = reason;
 }
@@ -1031,34 +1097,58 @@ function renderComposerAttachments() {
 
 $('#btn-attach').onclick = async () => {
   if (!currentAgent || agentRunning || runningAgentIds.has(currentAgent.id) || activeTeamRun && !activeTeamRun.paused) return;
-  const result = await reachApi.agents.pickAttachments(currentAgent.id);
+  const id = currentAgent.id;
+  const result = await reachApi.agents.pickAttachments(id);
   if (!result.ok) { showNotice(result.err); return; }
+  if (currentAgent?.id !== id) {
+    const draft = newChatDrafts.get(id);
+    if (draft) draft.attachments.push(...result.attachments);
+    return;
+  }
   composerAttachments.push(...result.attachments);
   renderComposerAttachments();
   composerInput.focus();
 };
 
 // ---------- chat CRUD ----------
-$('#btn-new-chat').onclick = async () => {
-  if (!agentProjectDir) {
-    // No project yet: let the user pick a folder to stem the chat from.
-    const dir = await reachApi.pickDir();
-    if (!dir) return;
-    agentProjectDir = dir;
-    const select = $('#agent-project-select');
-    if (![...select.options].some(o => o.value === dir)) {
-      const opt = document.createElement('option');
-      opt.value = dir;
-      opt.textContent = dir.split(/[\\/]/).pop();
-      select.appendChild(opt);
+async function selectNewChat() {
+  const revision = ++projectSelectionRevision;
+  try {
+    // Drafts support the same model, team and attachment controls as saved chats,
+    // but stay out of history and off disk until a message is submitted.
+    const res = await reachApi.agents.create('Chat', agentProjectDir || '', '', { draft: true });
+    if (revision !== projectSelectionRevision) return;
+    if (!res.ok) throw new Error(res.err);
+    if (res.agent.id !== currentAgent?.id) await selectAgent(res.agent, { preserveEditors: true });
+    else {
+      noAgent.classList.add('hidden');
+      agentView.classList.remove('hidden');
+      window.ReachWorkspace?.sync();
     }
-    select.value = dir;
-  }
-  const res = await reachApi.agents.create('Chat', agentProjectDir, '');
-  if (!res.ok) { showNotice(`Could not create chat: ${res.err}`); return; }
-  await selectAgent(res.agent);
-  composerInput.focus();
-};
+    composerInput.focus();
+  } catch (error) { showNotice(`Could not open New Chat: ${error.message}`); }
+}
+$('#btn-new-chat').onclick = selectNewChat;
+
+async function prepareDraftProject() {
+  if (!currentAgent?.draft || currentAgent.dir) return true;
+  const id = currentAgent.id;
+  composerIntentPending = true; updateSendControl();
+  try {
+    const dir = await reachApi.pickDir();
+    if (!dir || currentAgent?.id !== id) return false;
+    const res = await reachApi.agents.update(id, { dir });
+    if (!res.ok) throw new Error(res.err);
+    if (currentAgent?.id !== id) return false;
+    currentAgent.dir = dir;
+    await rememberProject(dir);
+    if (currentAgent?.id !== id) return false;
+    agentMetaEl.textContent = `${dir} · ${currentAgent.model || 'default model'}`;
+    agentMetaEl.title = agentMetaEl.textContent;
+    return true;
+  } catch (error) { showNotice(error.message); return false; }
+  finally { composerIntentPending = false; updateSendControl(); }
+}
 
 $('#btn-send').onclick = sendComposer;
 composerInput.addEventListener('keydown', (e) => {
@@ -1071,11 +1161,33 @@ composerInput.addEventListener('keydown', (e) => {
 });
 
 async function sendComposer() {
+  if (jevAutoRoutingAgentId) {
+    jevAutoCancelled = true;
+    await reachApi.agents.stop(jevAutoRoutingAgentId);
+    return;
+  }
   if (composerIntentPending || window.ReachTeamComposer?.saving()) return;
   const raw = composerInput.value;
   const parsed = composerIntents.parse(raw);
   const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
     || /^[\s]*[\/@]/.test(raw);
+  if (currentAgent?.draft && !currentAgent.dir) {
+    let needsProject = !explicitIntent && !!(raw.trim() || composerAttachments.length);
+    if (parsed.kind === 'mentions' && !parsed.error && parsed.body.trim()) {
+      const kinds = parsed.mentions.map(mention => mention.kind);
+      needsProject = kinds.some(kind => ['current', 'persona'].includes(kind))
+        || kinds.every(kind => ['model', 'default'].includes(kind));
+    } else if (parsed.kind === 'command' && !parsed.error && parsed.remainder.trim()) {
+      needsProject = ['say', 'team-run', 'agent-new'].includes(parsed.id);
+      if (['message', 'agent-message'].includes(parsed.id)) {
+        try {
+          const split = composerIntents.takeTargetAndMessage(parsed.remainder, ['model']);
+          needsProject = !!split.message.trim() && ['current', 'persona'].includes(composerIntents.parseMentionValue(split.target)?.kind);
+        } catch { /* The command handler below reports malformed arguments. */ }
+      }
+    }
+    if (needsProject && !await prepareDraftProject()) return;
+  }
   if (explicitIntent) {
     const snapshot = {
       text: raw,
@@ -1165,10 +1277,44 @@ async function sendComposer() {
   const display = [text, attachments.length ? `Attachments: ${attachments.map(file => file.name).join(', ')}` : ''].filter(Boolean).join('\n\n');
   composerIntentPending = true;
   updateSendControl();
+  let autoTeamDispatch = false;
   try {
-    const res = await reachApi.agents.send(contextAgentId, text, attachments.map(file => file.attachmentId));
+    let plan = null;
+    if (jevAutoModeEnabled()) {
+      jevAutoCancelled = false;
+      jevAutoRoutingAgentId = contextAgentId;
+      updateSendControl();
+      plan = await reachApi.agents.autoPlan(contextAgentId, text, { hasAttachments: attachments.length > 0 });
+      if (jevAutoCancelled || currentAgent?.id !== contextAgentId) return;
+      if (!plan.ok) throw new Error(plan.err || 'Auto selection failed.');
+      if (!plan.token) jevAutoRoutingAgentId = null;
+      const status = $('#jev-auto-status');
+      status.dataset.agentId = contextAgentId;
+      status.textContent = jevAutoDescription(plan);
+      status.title = plan.usage ? `Jev used ${plan.usage.inputTokens} input and ${plan.usage.outputTokens} output tokens.` : plan.cached ? 'Reused a previous Jev decision.' : '';
+      status.classList.remove('hidden');
+      updateSendControl();
+    }
+    if (plan?.kind === 'team' && plan.team) {
+      autoTeamDispatch = true;
+      teamDispatching = true;
+      const res = await reachApi.teams.run(plan.team.id, text, currentAgent.dir, contextAgentId,
+        currentAgent.settings?.teamChat?.useHistory !== false, { autoToken: plan.token });
+      if (!res.ok) throw new Error(res.err);
+      startTeamRunView(res.teamRunId, plan.team, text, contextAgentId, { autoRouted: true });
+      for (const event of pendingTeamEvents) handleTeamEvent(event);
+      if (currentAgent?.id === contextAgentId) {
+        delete currentAgent.draft;
+        newChatDrafts.delete(contextAgentId);
+        clearSuccessfulComposer({ text: raw, attachments, contextAgentId }, { attachments: true });
+      }
+      await loadAgentTree();
+      return;
+    }
+    const res = await reachApi.agents.send(contextAgentId, text, attachments.map(file => file.attachmentId), { autoToken: plan?.token });
     if (!res.ok) throw new Error(res.err);
     if (currentAgent?.id === contextAgentId) {
+      if (res.draft === false) { delete currentAgent.draft; newChatDrafts.delete(contextAgentId); }
       clearSuccessfulComposer({ text: raw, attachments, contextAgentId }, { attachments: true });
       appendChatMessage('user', display);
       agentRunning = true;
@@ -1176,16 +1322,20 @@ async function sendComposer() {
     }
     loadAgentTree(); // auto-title + message count may have changed
   } catch (error) {
+    if (jevAutoCancelled) return;
     // Keep the exact draft and attachment chips on every rejected or failed IPC
     // path. A transport exception must not leave the composer permanently busy.
     if (currentAgent?.id === contextAgentId) {
-      updateStatusPill('paused', error.message);
+      updateStatusPill(currentAgent.draft ? 'idle' : 'paused', error.message);
       appendChatMessage('system', `Error: ${error.message}`);
     } else {
       setBackgroundAgentGate(contextAgentId, `Message failed: ${error.message}`, { action: 'Inspect' });
       showNotice(`${contextAgentName}: ${error.message}`);
     }
   } finally {
+    jevAutoRoutingAgentId = null;
+    jevAutoCancelled = false;
+    if (autoTeamDispatch) { teamDispatching = false; pendingTeamEvents = []; earlyTeamEdits.clear(); }
     composerIntentPending = false;
     updateSendControl();
   }
@@ -1196,6 +1346,7 @@ $('#btn-agent-stop').onclick = async () => {
 };
 
 function updateSendControl() {
+  const routing = jevAutoRoutingAgentId === currentAgent?.id && !!jevAutoRoutingAgentId;
   const busy = agentRunning || runningAgentIds.has(currentAgent?.id) || !!(activeTeamRun && !activeTeamRun.paused);
   const parsed = composerIntents.parse(composerInput.value);
   const explicitIntent = parsed.kind === 'command' || parsed.kind === 'mentions' || parsed.error
@@ -1204,10 +1355,11 @@ function updateSendControl() {
   const stopMode = busy && !explicitIntent && !teamMessage;
   const command = parsed.kind === 'command' || (parsed.error && /^\s*\//.test(composerInput.value));
   const button = $('#btn-send');
-  button.textContent = stoppingAll ? 'Stopping…' : composerIntentPending ? 'Running…' : stopMode ? 'Stop' : command ? 'Run' : 'Send';
+  button.textContent = stoppingAll ? 'Stopping…' : routing ? 'Stop' : composerIntentPending ? 'Running…' : stopMode ? 'Stop' : command ? 'Run' : 'Send';
   button.title = stopMode ? 'Stop this conversation and pause its team' : command ? 'Run composer command' : teamMessage ? 'Send to the selected team' : 'Send message';
-  button.classList.toggle('danger', stopMode);
-  button.disabled = stoppingAll || composerIntentPending || window.ReachTeamComposer?.saving();
+  if (routing) button.title = 'Stop automatic selection';
+  button.classList.toggle('danger', stopMode || routing);
+  button.disabled = stoppingAll || (composerIntentPending && !routing) || window.ReachTeamComposer?.saving();
   $('#btn-attach').disabled = busy || !currentAgent || stoppingAll;
   window.ReachWorkspace?.syncControls();
 }
@@ -1249,20 +1401,27 @@ async function deleteAgentById(id, name) {
     }
   }
   for (const doomedId of doomed) {
-    await reachApi.agents.delete(doomedId);
+    const result = await reachApi.agents.delete(doomedId);
+    if (!result.ok) { showNotice(result.err || 'Could not delete conversation.'); await loadAgentTree(); return; }
+    runningAgentIds.delete(doomedId);
+    setBackgroundAgentGate(doomedId, '', { clear: true });
     discardTeamConversation(doomedId);
   }
   if (currentAgent && doomed.has(currentAgent.id)) {
+    newChatDrafts.delete(currentAgent.id);
     currentAgent = null;
-    agentView.classList.add('hidden');
-    noAgent.classList.remove('hidden');
+    agentRunning = false;
+    streamBubble = recoveryBubble = null;
+    composerInput.value = '';
+    composerAttachments = [];
+    await selectNewChat();
   }
   syncSelectedTeamRun();
   await loadAgentTree();
 }
 
 $('#btn-agent-delete').onclick = async () => {
-  if (!currentAgent) return;
+  if (!currentAgent || currentAgent.draft) return;
   await deleteAgentById(currentAgent.id, currentAgent.name);
 };
 
@@ -1355,7 +1514,12 @@ function handleAgentEvent(ev) {
       break;
     case 'renamed':
       // Auto-title from the first user message.
-      if (currentAgent) { currentAgent.name = ev.name; agentNameEl.textContent = agentNameEl.title = ev.name; }
+      if (currentAgent) {
+        if (ev.draft === false) { delete currentAgent.draft; newChatDrafts.delete(currentAgent.id); }
+        currentAgent.name = ev.name;
+        agentNameEl.textContent = agentNameEl.title = ev.name;
+        $('#agent-info-summary-name').textContent = ev.name;
+      }
       loadAgentTree();
       break;
     case 'error':
@@ -1751,6 +1915,7 @@ document.addEventListener('keydown', (e) => {
  * could inject markup. Setting .value on a created element has no such hole. */
 let connDraft = [];        // working copy; only written to disk on Save
 let connActiveId = '';
+let jevClearRequested = false;
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
 /* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
  * a re-render (pool toggle, activation, Settings save) does not wipe the last
@@ -1765,6 +1930,16 @@ async function loadSettings() {
   $('#credential-storage-warning').textContent = s.credentialStorage?.warning || '';
   $('#credential-storage-warning').classList.toggle('hidden', !s.credentialStorage?.warning);
   $('#set-reach-cli').value = s.reachCli || '';
+  $('#set-jev-enabled').checked = s.jevEnabled === true;
+  jevAutoDefault = s.jevAutoMode === true;
+  $('#set-jev-auto-mode').checked = jevAutoDefault;
+  window.ReachWorkspace?.syncControls();
+  $('#set-jev-key').value = '';
+  jevClearRequested = false;
+  $('#btn-clear-jev-key').disabled = s.jevKeySource !== 'saved';
+  $('#set-jev-key-status').textContent = s.jevKeySource === 'saved' ? 'A saved key is configured. Leave blank to keep it.'
+    : s.jevKeySource === 'environment' ? 'Using TYPESAFE_API_KEY from the Studio process environment.'
+      : 'Add a key to enable Jev calls. The key is not shown again after saving.';
   // Draft from the normalized list so ids are stable and the active one is known.
   connDraft = (Array.isArray(s.connections) ? s.connections : []).map(c => ({ ...c }));
   connActiveId = s.activeConnection || (connDraft[0] ? connDraft[0].id : '');
@@ -1780,6 +1955,12 @@ async function loadSettings() {
     control.dataset.credentialLocked = String(!!s.credentialStorage?.locked);
   }
 }
+$('#set-jev-key').oninput = () => { jevClearRequested = false; };
+$('#btn-clear-jev-key').onclick = () => {
+  jevClearRequested = true;
+  $('#set-jev-key').value = '';
+  $('#set-jev-key-status').textContent = 'Saved key will be removed when you save Settings.';
+};
 
 function newConnId() {
   // Client-side placeholder id for an unsaved row; the main process assigns the
@@ -2194,10 +2375,13 @@ $('#btn-save-settings').onclick = async () => {
   const endpoints = connDraft.map(c => String(c.endpoint).trim().replace(/\/+$/, ''));
   const dupe = endpoints.find((e, i) => endpoints.indexOf(e) !== i);
   if (dupe) { status.textContent = `Two connections use the same endpoint: ${dupe}`; return; }
-  if (!connDraft.some(c => c.id === connActiveId)) connActiveId = connDraft[0].id;
+  if (!connDraft.some(c => c.id === connActiveId)) connActiveId = connDraft[0]?.id || '';
 
   const payload = {
     reachCli: $('#set-reach-cli').value.trim(),
+    jevEnabled: $('#set-jev-enabled').checked,
+    jevAutoMode: $('#set-jev-auto-mode').checked,
+    ...(jevClearRequested ? { jevApiKeyAction: 'clear' } : $('#set-jev-key').value.trim() ? { jevApiKey: $('#set-jev-key').value.trim() } : {}),
     // Sending `connections` makes the list authoritative (see settings:save), so
     // the legacy endpoint/accessKey/model fields are recomputed from the active
     // row instead of being folded back into it.
@@ -2782,7 +2966,7 @@ $('#btn-team-run-go').onclick = async () => {
 
 /* Deployed team tabs hang from the top of the chat. Member DOM stays alive
  * behind each tab, preserving tool results and unanswered questions. */
-function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
+function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id, { autoRouted = false } = {}) {
   const previous = teamConversationViews.get(agentId || null);
   if (previous) {
     previous.stop.remove();
@@ -2796,7 +2980,7 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id) {
   // deck DOM moves into its bound chat through renderChatHistory when selected.
   const boundToCurrent = !!agentId && currentAgent?.id === agentId;
   if (boundToCurrent && team.id) {
-    currentAgent.settings = { ...currentAgent.settings, teamChat: { ...currentAgent.settings?.teamChat, enabled: true, teamId: team.id } };
+    if (!autoRouted) currentAgent.settings = { ...currentAgent.settings, teamChat: { ...currentAgent.settings?.teamChat, enabled: true, teamId: team.id } };
     appendChatMessage('user', task);
   }
   const host = boundToCurrent ? chatLog : !agentId ? noAgent : null;
@@ -4253,7 +4437,7 @@ reachApi.teams.onEditPending(handleTeamEditPending);
   await loadAgentProjectSelect();
   const option = $('#agent-project-select').selectedOptions[0];
   if (option) await selectProject({ name: option.textContent, dir: option.value });
-  else await loadAgentTree();
+  else await selectNewChat();
   await loadCreatePage();
   loadSettings();
 })();

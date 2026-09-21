@@ -58,6 +58,7 @@
   let pendingThought = '';
   let configCache = null;
   let agenticEnabled = true;
+  let manualModelOverride = false;
   let pendingEdits = [];
   let pendingActionContext = '';
   const editCards = {};
@@ -1308,7 +1309,10 @@
     if (pendingBubble) { pendingBubble.textContent = ''; showThinking(); }
     post('chat', {
       body: {
-        model: conv.model,
+        model: conv.jevTurn?.model || conv.model,
+        autoTurnId: conv.jevTurn?.id,
+        autoContinuation: true,
+        autoAllowedWeb: conv.jevTurn?.web,
         stream: true,
         messages: follow,
         includeWorkspace: false,
@@ -1376,7 +1380,7 @@
 
     post('chat', {
       body: {
-        model: conv.model,
+        model: conv.jevTurn?.model || conv.model,
         stream: true,
         messages: follow,
         includeWorkspace: false,
@@ -1717,6 +1721,8 @@
   });
 
   const SETTING_FIELDS = [
+    { key: 'typesafeAutoMode', label: 'Jev Auto · model, tools and context', type: 'check', title: 'Automatically choose for each prompt within your enabled capabilities. Requires a TypeSafe key; unavailable or uncertain decisions keep your current setup.' },
+    { key: 'typesafeFileSelection', label: 'Jev file selection only', type: 'check', title: 'Choose relevant workspace files with Jev. Auto includes this behavior.' },
     { key: 'model', label: 'Default model', type: 'text' },
     { key: 'temperature', label: 'Temperature (blank = provider default)', type: 'text' },
     { key: 'additionalHeaders', label: 'Extra headers (one Name: value per line)', type: 'text' },
@@ -2209,6 +2215,8 @@
     activeRequestLength = conv.messages.length;
     activeRequestConvId = conv.id;
     activeContextRevision = contextRevision;
+    conv.jevTurn = { id: String(conv.id) + ':' + Date.now() + ':' + Math.random().toString(36).slice(2, 8),
+      model: conv.model, agentic: agenticEnabled, web: webEnabled };
     busy = true;
     answeringNow = false;
     pendingBubble = bubble('assistant');
@@ -2245,6 +2253,9 @@
     post('chat', {
       body: {
         model: conv.model,
+        autoTurnId: conv.jevTurn.id,
+        autoRequest: [...conv.messages].reverse().find(message => message.role === 'user')?.content || '',
+        manualModelOverride,
         stream: true,
         messages: msgs,
         includeWorkspace,
@@ -2255,6 +2266,7 @@
         structuredActions: !!conv.agentRun?.structuredActions,
       },
     });
+    manualModelOverride = false;
     scrollBottom();
   }
 
@@ -2342,6 +2354,13 @@
         setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null, msg.groups);
         if (conv && !msg.models.includes(conv.model)) { conv.model = modelSelect.value; persist(); updateModelChip(); }
         break;
+      case 'jevAutoRoute':
+        if (!busy || msg.turnId !== conv?.jevTurn?.id) break;
+        conv.jevTurn.model = msg.model || conv.jevTurn.model;
+        conv.jevTurn.agentic = agenticEnabled && msg.agentic === true;
+        modelChip.textContent = 'Auto · ' + conv.jevTurn.model;
+        modelChip.title = 'Jev selected this model for the current prompt. Your saved model stays unchanged.';
+        break;
       case 'delta':
         if (!busy || stopRequested) break;
         if (!pendingBubble) {
@@ -2362,6 +2381,7 @@
         break;
       case 'done': {
         if (!busy) break;
+        const turnAgenticEnabled = agenticEnabled && (conv?.jevTurn?.agentic ?? true);
         const isAnsweringNow = typeof answeringNow !== 'undefined' && Boolean(answeringNow);
         const aborted = (msg.aborted && !isAnsweringNow) || stopRequested;
         if (rafPending && pendingBubble) {
@@ -2389,7 +2409,7 @@
         }
         let tools = [], confirm = null, control = null, invalidControl = false;
         pendingActionContext = '';
-        if (agenticEnabled && !isAnsweringNow && msg.agentAction) {
+        if (turnAgenticEnabled && !isAnsweringNow && msg.agentAction) {
           // The host validated this API response. Never parse the display prose
           // as tool instructions; executable actions travel as separate data.
           const action = msg.agentAction;
@@ -2399,7 +2419,7 @@
           pendingActionContext = action.context;
           pendingText = action.message;
           if (pendingBubble) setRich(pendingBubble, pendingText);
-        } else if (agenticEnabled && !isAnsweringNow) {
+        } else if (turnAgenticEnabled && !isAnsweringNow) {
           const parsedRun = agentRun.parse(pendingText);
           control = parsedRun.control; invalidControl = parsedRun.invalid;
           const parsedE = extractEdits(parsedRun.text);
@@ -2413,7 +2433,7 @@
           if (pendingBubble) setRich(pendingBubble, pendingText);
         }
         const decision = agentRun.decide(conv && conv.agentRun || agentRun.start(), {
-          enabled: agenticEnabled, stopped: aborted, answerNow: isAnsweringNow,
+          enabled: turnAgenticEnabled, stopped: aborted, answerNow: isAnsweringNow,
           control, invalid: invalidControl, tools: tools.length, edits: pendingEdits.length, confirm,
           rounds: agentRounds, roundLimit: MAX_AGENT_ROUNDS, retryLimit: UNFINISHED_RETRY_LIMIT,
         });
@@ -2767,6 +2787,7 @@
   });
   webCheck.addEventListener('change', () => {
     webEnabled = webCheck.checked;
+    if (conv?.jevTurn) conv.jevTurn.web = webEnabled;
     vscode.setState(Object.assign(state(), { webEnabled }));
   });
   agentCheck.addEventListener('change', () => {
@@ -2830,6 +2851,7 @@
   });
   modelSelect.addEventListener('change', () => {
     if (busy) return; // locked while the AI is responding
+    manualModelOverride = true;
     if (conv) { conv.model = modelSelect.value; persist(); }
     updateModelChip();
   });

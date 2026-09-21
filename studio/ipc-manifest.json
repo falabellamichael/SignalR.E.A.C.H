@@ -11,6 +11,11 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "agents:autoPlan": {
+    "module": "main.mjs",
+    "args": ["{ id, text, hasAttachments = false }"],
+    "returns": "{ ok, token?, kind?, team?, label?, reason?, features?, usage?, cached?, err? }"
+  },
   "agents:clear": {
     "module": "main.mjs",
     "args": [
@@ -103,7 +108,7 @@
   "agents:send": {
     "module": "main.mjs",
     "args": [
-      "{ id, text, attachmentIds = [] }"
+      "{ id, text, attachmentIds = [], autoToken }"
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
@@ -472,7 +477,7 @@
   "teams:run": {
     "module": "main.mjs",
     "args": [
-      "{ teamId, task, dir, agentId }"
+      "{ teamId, task, dir, agentId, useHistory = true, autoToken }"
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },

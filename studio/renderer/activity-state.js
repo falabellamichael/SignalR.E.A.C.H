@@ -4,7 +4,7 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.ReachActivityState = factory();
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const relevant = new Set(['run-state','round','request-start','message-start','reasoning','delta','message-end','tool-call','tool-result','approval-wait','approval-end','retry','budget-recovery','recovery','compaction-start','compaction-progress','compacted','code-context','error','stopped']);
+  const relevant = new Set(['run-state','round','request-start','message-start','reasoning','delta','message-end','tool-call','tool-result','approval-wait','approval-end','retry','budget-recovery','recovery','compaction-start','compaction-progress','compacted','code-context','jev-context','jev-auto','error','stopped']);
   function reduce(state, event, now = event.at || Date.now()) {
     if (!relevant.has(event.type)) return state;
     if (!state || event.type === 'run-state' && event.status === 'running' && state.status !== 'running') {
@@ -31,6 +31,25 @@
         else { close(event.status === 'completed' ? 'done' : event.status === 'error' ? 'error' : 'paused'); state.endedAt = now; state.reason = event.reason || ''; }
         break;
       case 'round': state.round = event.round; break;
+      case 'jev-auto': {
+        const usage = event.usage ? ` · ${event.usage.inputTokens} Jev input tokens` : '';
+        const action = event.label || 'Kept your selected setup';
+        start('Jev Auto', action + usage + (event.cached ? ' · cached' : ''), 'prepare');
+        close('done', action + (event.reason ? ` · ${event.reason}` : '') + usage);
+        break;
+      }
+      case 'jev-context': {
+        const action = event.reason === 'jev-skip' ? 'Skipped unrelated code context'
+          : event.reason === 'jev-keep' ? 'Kept code context'
+            : event.reason === 'missing-key' ? 'Kept code context · add a TypeSafe key in Settings'
+              : event.reason?.startsWith('http-') ? `Kept code context · Jev ${event.reason.replace('http-', 'HTTP ')}`
+                : event.reason === 'request-failed' ? 'Kept code context · Jev request failed'
+                  : 'Kept code context after Jev fallback';
+        const usage = event.usage?.inputTokens ? ` · ${event.usage.inputTokens} Jev input tokens` : '';
+        start('Jev context selection', action + usage + (event.cached ? ' · cached' : ''), 'prepare');
+        close('done', action + usage);
+        break;
+      }
       case 'code-context':
         // Injection is invisible work that changes what the model sees, so it
         // belongs in the trail — but only when something was actually injected.

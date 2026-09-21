@@ -43,6 +43,19 @@ it is plaintext with owner-only permissions and is upgraded on a later successfu
 encryption migration. Do not publish either file. Moving encrypted settings to
 another account/machine may require re-entering credentials.
 
+Optional Jev context selection and Auto mode send bounded user-request text,
+file/symbol metadata, and configured model/team/tool metadata to
+`https://api.typesafe.ai/v1/systemone`. They do not send source-file
+contents in these selection requests. Enable it only for projects where that
+data may be sent to TypeSafe. The VS Code extension keeps its Jev key in
+SecretStorage. Studio uses its existing OS-vault settings storage for the Jev
+key and returns only configured status to the renderer. Auto excludes endpoint
+credentials and private persona instructions from routing requests. Its choices
+apply to a submitted prompt: it may choose a configured model or Studio team and
+narrow tools, but cannot enable a disabled permission or bypass approvals,
+workspace trust, sandbox policy, or edit review. Studio binds one-use routing
+tokens to the exact prompt, conversation, and current configuration.
+
 Conversations, attachments, tool output, diagnostic logs, and exported chat files
 are **not encrypted by this change** and may contain sensitive material. The
 Copilot shim's token file is permission-restricted but not OS-vault-encrypted.

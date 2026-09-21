@@ -104,3 +104,27 @@ test('failed encryption, corrupt JSON and future schemas preserve the previous f
   assert.throws(() => store.save({}), /read-only|unsupported version/);
   assert.equal(fs.readFileSync(file, 'utf8'), '{"schemaVersion":999}');
 });
+
+test('Jev key is encrypted, survives unrelated saves, and can be cleared', t => {
+  const { file, store } = fixture(t);
+  store.save({ jevEnabled: true, jevApiKey: 'test-jev-secret' });
+  const disk = fs.readFileSync(file, 'utf8');
+  assert.ok(!disk.includes('test-jev-secret'));
+  assert.ok(JSON.parse(disk).encryptedJevApiKey);
+  assert.equal(store.load().jevApiKey, 'test-jev-secret');
+  store.save({ ...store.load(), theme: 'dark' });
+  assert.equal(store.load().jevApiKey, 'test-jev-secret');
+  store.save({ ...store.load(), jevApiKey: '' });
+  assert.equal(store.load().jevApiKey, undefined);
+  assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).encryptedJevApiKey, undefined);
+});
+
+test('locked Jev key prevents a settings overwrite', t => {
+  const { file, vault, store } = fixture(t);
+  store.save({ jevEnabled: true, jevApiKey: 'test-jev-secret' });
+  const disk = fs.readFileSync(file, 'utf8');
+  vault.decryptString = () => { throw new Error('Vault locked'); };
+  assert.equal(store.load().credentialStorage.locked, true);
+  assert.throws(() => store.save({ jevEnabled: false }), /locked/);
+  assert.equal(fs.readFileSync(file, 'utf8'), disk);
+});

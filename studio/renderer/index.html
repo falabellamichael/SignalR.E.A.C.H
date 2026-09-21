@@ -216,6 +216,7 @@
               </div>
               <div id="composer-attachments" class="composer-attachments hidden" aria-live="polite"></div>
               <div class="composer-footer" aria-label="Conversation controls">
+                <button id="jev-auto-toggle" class="ghost small feature-switch" type="button" role="switch" aria-checked="false" title="Let Jev choose a model, tools and context for each message">Auto</button>
                 <div class="team-composer-pill" role="group" aria-label="Team chat">
                   <button id="team-chat-toggle" class="ghost small feature-switch" type="button" role="switch" aria-checked="false" title="Send normal messages to a team"><span>Teams</span></button>
                   <button id="team-chat-menu-button" class="ghost small" type="button" aria-label="Team chat options" aria-haspopup="dialog" aria-expanded="false" aria-controls="team-chat-menu" title="Choose a team and conversation options">▾</button>
@@ -230,6 +231,7 @@
                   </select>
                 </div>
               </div>
+              <div id="jev-auto-status" class="jev-auto-status dim hidden" role="status" aria-live="polite"></div>
               <div id="team-chat-menu" class="team-chat-menu hidden" role="dialog" aria-label="Team chat options">
                 <div class="team-chat-menu-head"><strong>Team chat</strong><button id="team-chat-close" class="ghost small" type="button" aria-label="Close team chat options">✕</button></div>
                 <label for="team-chat-select">Team</label>
@@ -300,6 +302,14 @@
         <label for="set-reach-cli">Reach CLI executable (optional)</label>
         <input id="set-reach-cli" type="text" placeholder="Automatic discovery" spellcheck="false" />
         <p id="set-reach-cli-help" class="dim"></p>
+        <h3>TypeSafe Jev context selection</h3>
+        <label class="check"><input id="set-jev-enabled" type="checkbox" /> Use Jev to skip unrelated automatic code context</label>
+        <label class="check"><input id="set-jev-auto-mode" type="checkbox" /> Auto mode by default: choose a configured model or team, tools and context for each prompt</label>
+        <p class="settings-description">Auto uses enabled connection models and saved teams. It keeps your permissions and falls back to your selected setup when uncertain. The Auto switch in each conversation overrides this default. Explicit @ routes, slash commands and a manually selected team take priority.</p>
+        <p class="settings-description">Sends a short user request and candidate symbol names and paths to TypeSafe to check whether code context is useful. Retrieved source and tool output are excluded from the Jev request. Uncertain or failed decisions keep the usual context. Jev calls use API tokens.</p>
+        <label for="set-jev-key">TypeSafe API key</label>
+        <div class="row"><input id="set-jev-key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved key" spellcheck="false" /><button id="btn-clear-jev-key" class="ghost small" type="button">Clear saved key</button></div>
+        <p id="set-jev-key-status" class="dim" role="status"></p>
         <div class="settings-actions">
           <button id="btn-save-settings" class="gold">Save Settings</button>
           <span id="settings-status" class="dim"></span>

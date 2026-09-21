@@ -31,10 +31,51 @@ overwritten. See the [security policy](../SECURITY.md) for migration backups and
 what is—and is not—encrypted. For development and tests, see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
+**Settings → Connection → TypeSafe Jev context selection** optionally judges
+whether Studio should include automatically retrieved code symbols in an answer
+request. Enter a TypeSafe API key and enable the checkbox, then save. A key can
+also come from `TYPESAFE_API_KEY` in the Studio process environment. The saved key
+uses the same credential storage as connection keys; Settings shows only whether
+it is configured. A blank key field preserves it, and **Clear saved key** removes
+it on the next save. Studio sends the current short user request plus up to 12
+symbol names, paths, and kinds to TypeSafe. It does not send source snippets for
+this judgment. Explicit symbol requests, long or vague requests, uncertain
+judgments, and API failures keep the usual code context. The selected answer
+model, tool permissions, edit reviews, and Stop behavior remain in force. The
+Activity trail reports the decision and Jev input tokens when the API reports
+usage. This feature is off by default; its calls consume tokens and may not
+reduce total cost on every request.
+
+**Auto** beside the composer adds prompt-based model, team, and tool selection.
+Enable **Auto mode by default** under **Settings → Connection** to start with it
+on; the conversation's switch overrides that default. It also enables Jev's
+context selection. Auto chooses from enabled connections with configured models
+and saved teams, using at most 32 candidates. It sends a self-contained request
+of at most 1,500 characters plus bounded model labels, team names/member roles,
+and permitted feature names to TypeSafe. Endpoint credentials, source contents,
+and persona prompts are excluded.
+
+Selections apply to one submitted prompt and its continuing work. They do not
+overwrite the conversation's saved model or leave Teams enabled. Tool selections
+can only narrow the currently allowed features; existing disabled tools,
+approvals, sandbox, and edit-review policies remain effective. Explicit `@` and
+slash routes and a manually selected team take priority. Follow-ups needing
+conversation context, unavailable keys, uncertain results, oversized candidate
+pools, and service failures use your selected setup. Stop cancels routing. The
+composer and Activity show the chosen route; repeated decisions are cached.
+
 Use **Open Folder** to work with an existing project. **New Project → Create & Init**
 creates a new Reach DApp scaffold; it does not import another project's files.
 The Files panel loads the selected directory and expands folders on demand.
 Compiled Python bytecode (`.pyc`) and other binary files are not editable source.
+
+**New Chat** stays at the top of conversation history. The **+ New Chat** button
+returns to that starting view; opening it does not save an empty conversation.
+Choose a model, adjust controls, or attach files before sending. The first message
+saves the conversation beneath New Chat and names it from the prompt. Deleting
+the selected conversation returns to New Chat with the composer ready. Each
+project keeps its unsent draft while Studio is open; unsent drafts are not saved
+across app restarts. If no project is selected, the first message asks for a folder.
 
 ## Files and Browser
 

@@ -23,6 +23,8 @@ const { untrustedData } = require('./untrusted.cjs');
 const { budgetPolicy, reserveGuard, checkpoint } = require('./budget-awareness.cjs');
 const { resolveBudgets, cap } = require('./budgets.cjs');
 const { buildCodeContext, formatInjection } = require('./code-context.cjs');
+const { decideContext, recentQuery } = require('./jev-context.cjs');
+const { intersectFeatures } = require('./jev-auto.cjs');
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_ROUNDS = 40;
@@ -40,7 +42,7 @@ function normalizeUserInput(value) {
 }
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false }) {
+  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false, jev = null, featureMask = null }) {
     this.agentId = agentId;
     this.store = store;
     this.endpoint = endpoint;
@@ -60,6 +62,9 @@ class AgentLoop {
     // request and execute the endpoint's tool_calls directly. Team members only;
     // single-agent chat keeps the universal JSON contract.
     this.nativeTools = !!nativeTools;
+    this.jev = jev?.enabled ? { apiKey: jev.apiKey || '', fetchImpl: jev.fetchImpl } : null;
+    this.jevContextCache = new Map();
+    this.featureMask = featureMask ? structuredClone(featureMask) : null;
     this.personaPrompt = String(personaPrompt || '');
     this.budgets = budgets;
     this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
@@ -70,6 +75,14 @@ class AgentLoop {
 
   _agent() {
     return this.store.get(this.agentId);
+  }
+
+  // Auto can narrow tools for this turn, but live user controls still win.
+  // Keeping the mask on the loop avoids persisting temporary choices or
+  // restoring stale permissions after an approval or edit review.
+  _settings() {
+    const settings = this._agent()?.settings || {};
+    return this.featureMask ? intersectFeatures(settings, this.featureMask) : settings;
   }
 
   /* Is this loop part of a live crew network? Lazy require: agent-net depends
@@ -103,7 +116,7 @@ class AgentLoop {
   }
 
   _buildSystemPrompt() {
-    const settings = this._agent()?.settings || {}, controls = features(settings);
+    const settings = this._settings(), controls = features(settings);
     const disabled = disabledTools(settings, TOOLS);
     if (!controls.agent) return 'You are REACH Studio. Answer the user directly in normal prose. Agent mode is off: do not use tools, execute commands, modify files, or emit action/control blocks. '
       + (controls.think ? '' : 'Give a concise direct answer without an extended reasoning narrative. ')
@@ -159,8 +172,7 @@ class AgentLoop {
     const url = this.endpoint.replace(/\/+$/, '') + '/chat/completions';
     const headers = { 'Content-Type': 'application/json' };
     if (this.accessKey) headers.Authorization = 'Bearer ' + this.accessKey;
-    const agent = this._agent();
-    const settings = agent?.settings || {};
+    const settings = this._settings();
     const body = {
       model: this.model,
       messages: normalizeChatMessages([...messages, { role: 'system', content: budgetPolicy({ maxTokens, purpose, budgets: this._budgets(), round: this.requestRound || 1, contextChars: contextChars(messages), concise }) }]),
@@ -233,15 +245,15 @@ class AgentLoop {
    * Never throws: buildCodeContext catches its own failures and returns a skip
    * reason, and an indexing problem must not stop the model from answering.
    */
-  _withCodeContext(messages) {
+  _codeContextBlock(messages) {
     const budgets = this._budgets();
-    if (budgets.codeContext === false || !(budgets.codeContextChars > 0)) return messages;
+    if (budgets.codeContext === false || !(budgets.codeContextChars > 0)) return null;
     // The workspace toggle governs every project read; injection is one.
-    const settings = this._agent()?.settings || {};
-    if (features(settings).workspace === false) return messages;
-    if (!this.projectDir) return messages;
+    const settings = this._settings();
+    if (features(settings).workspace === false) return null;
+    if (!this.projectDir) return null;
 
-    const block = buildCodeContext({
+    return buildCodeContext({
       projectDir: this.projectDir,
       messages,
       maxChars: budgets.codeContextChars,
@@ -249,6 +261,11 @@ class AgentLoop {
       contextChars: contextChars(messages),
       contextTrigger: budgets.contextTrigger,
     });
+  }
+
+  _withCodeContext(messages, preparedBlock = null) {
+    const block = preparedBlock || this._codeContextBlock(messages);
+    if (!block) return messages;
     if (block.skipped || !block.text) {
       // A skip is normal (greeting, no project, near the compaction trigger) and
       // should not spam the transcript; surface it only through run-state.
@@ -264,8 +281,33 @@ class AgentLoop {
     return [...messages, { role: 'user', content: formatInjection(block) }];
   }
 
+  async _withSelectedCodeContext(messages) {
+    if (!this.jev) return this._withCodeContext(messages);
+    const block = this._codeContextBlock(messages);
+    if (!block || block.skipped || !block.text) return this._withCodeContext(messages, block);
+    const query = recentQuery(this._agent()?.messages || []);
+    const key = JSON.stringify([query, block.symbols.map(s => [s.name, s.path, s.line])]);
+    let decision = this.jevContextCache.get(key);
+    const cached = !!decision;
+    if (!decision) {
+      decision = await decideContext({ apiKey: this.jev.apiKey, query, symbols: block.symbols,
+        signal: this.abortController?.signal, ...(this.jev.fetchImpl ? { fetchImpl: this.jev.fetchImpl } : {}) });
+      // A stopped run must not proceed to a model request after Jev finishes.
+      this.abortController?.signal.throwIfAborted();
+      if (decision.reason === 'jev-skip' || decision.reason === 'jev-keep' || decision.reason === 'explicit-or-vague') {
+        if (this.jevContextCache.size >= 64) this.jevContextCache.delete(this.jevContextCache.keys().next().value);
+        this.jevContextCache.set(key, decision);
+      }
+    }
+    this._emit('jev-context', { reason: decision.reason, injected: decision.inject, cached,
+      probability: decision.probability, usage: cached ? null : decision.usage || null });
+    if (decision.inject) return this._withCodeContext(messages, block);
+    this._emit('code-context', { injected: false, reason: 'Jev judged the retrieved symbols unrelated to this request.' });
+    return messages;
+  }
+
   async _budgetedAnswer(messages) {
-    const requestMessages = this._withCodeContext(messages);
+    const requestMessages = await this._withSelectedCodeContext(messages);
     let reply;
     try { reply = await this._readAnswer(requestMessages); }
     catch (error) {
@@ -454,7 +496,7 @@ class AgentLoop {
         }
 
         let content = reply.content || '';
-        if (!features(this._agent()?.settings).agent) {
+        if (!features(this._settings()).agent) {
           this._emit('message-end', { role: 'assistant', content });
           this.store.appendMessage(this.agentId, { role: 'assistant', content, _reachMeta: { display: content } });
           runState = { ...runState, status: 'completed', reason: '' };
@@ -516,6 +558,7 @@ class AgentLoop {
             projectDir: this.projectDir,
             agentId: this.agentId,
             agentStore: this.store,
+            getSettings: () => this._settings(),
             auditLog: this.auditLog,
             reachExecutor: this.reachExecutor,
             browserExecutor: this.browserExecutor,

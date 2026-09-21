@@ -117,8 +117,10 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null, jev = null, featureMask = null }) {
     this.agentSettings = agentSettings;
+    this.jev = jev;
+    this.featureMask = featureMask;
     this.budgets = budgets;
     // Shared security audit log: every member runs tools, so every member's
     // sandbox denials must be recorded, not just the orchestrator's.
@@ -307,6 +309,8 @@ class TeamRunner {
     // them may spawn/message/await peers through the agent.* collab tools.
     this.net = new AgentNet({
       agentSettings: this.agentSettings,
+      jev: this.jev,
+      featureMask: this.featureMask,
       teamRunId,
       teamName: this.team.name,
       onSettled: () => {
@@ -537,6 +541,8 @@ class TeamRunner {
       personaPrompt: persona.prompt || '',
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
+      jev: this.jev,
+      featureMask: this.featureMask,
       auditLog: this.auditLog,
       nativeTools: this.nativeTools,
       sendEvent: (_channel, payload) => {

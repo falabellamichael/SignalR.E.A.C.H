@@ -83,6 +83,8 @@ class AgentNet {
     requestTimeoutMs = 180000,
     budgets = null,
     agentSettings = {},
+    jev = null,
+    featureMask = null,
     maxAgents = MAX_AGENTS,
     maxDepth = MAX_DEPTH,
     awaitTimeoutMs = DEFAULT_AWAIT_TIMEOUT,
@@ -103,6 +105,8 @@ class AgentNet {
   } = {}) {
     this.budgets = budgets;
     this.agentSettings = agentSettings;
+    this.jev = jev;
+    this.featureMask = featureMask;
     // Subagents run tools too, so they share the same security audit log.
     this.auditLog = auditLog;
     this.nativeTools = !!nativeTools;
@@ -309,6 +313,8 @@ class AgentNet {
       nativeTools: this.nativeTools,
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets ? { ...this.budgets, maxRounds: this.budgets.subagentMaxRounds } : null,
+      jev: this.jev,
+      featureMask: this.featureMask,
       auditLog: this.auditLog,
       requestApproval: this.requestApproval
         ? (payload) => this.requestApproval({ ...payload, memberName: name, subagent: true })

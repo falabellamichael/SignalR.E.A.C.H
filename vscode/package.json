@@ -36,6 +36,14 @@
         "title": "REACH: Reload Models"
       },
       {
+        "command": "simplereach.setTypesafeJevApiKey",
+        "title": "REACH: Set TypeSafe (Jev) API Key"
+      },
+      {
+        "command": "simplereach.clearTypesafeJevApiKey",
+        "title": "REACH: Clear TypeSafe (Jev) API Key"
+      },
+      {
         "command": "simplereach.askSelection",
         "title": "REACH: Ask about this",
         "icon": "$(question)"
@@ -242,6 +250,18 @@
           "type": "number",
           "default": 0,
           "markdownDescription": "Output budget for the workspace file-selection pass. **0 = no limit** \u2014 the field is omitted and the provider\u2019s own maximum applies."
+        },
+        "simplereach.typesafeAutoMode": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Let Jev choose an available model from the selected provider, direct answer or Agent mode, relevant tools, and context for each new prompt. Includes Jev file selection. Save a key with **REACH: Set TypeSafe (Jev) API Key**. Sends the prompt (up to 1,500 characters), model IDs, allowed tool names and permission flags to TypeSafe. Keeps disabled capabilities off, preserves the manually selected model for the next prompt, and falls back to your current setup when uncertain or unavailable. Your saved model and provider are unchanged. Off by default."
+        },
+        "simplereach.typesafeFileSelection": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "markdownDescription": "Use TypeSafe Jev to select workspace files before Agent answers when a TypeSafe API key is stored with **REACH: Set TypeSafe (Jev) API Key**. Sends the latest user request (up to 1,500 characters) and up to 32 source file paths to TypeSafe; it does not send file contents or the full conversation. Falls back to the selected chat provider when Jev is unavailable or the request needs conversation context. Off by default."
         },
         "simplereach.compressThink": {
           "type": "boolean",

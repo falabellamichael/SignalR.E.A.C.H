@@ -2,12 +2,13 @@ import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell, safeStorage, N
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { AgentStore } = require('./agent/agent-store.cjs');
 const { AgentLoop } = require('./agent/agent-loop.cjs');
+const { decideAuto, intersectFeatures } = require('./agent/jev-auto.cjs');
 const { parseAgentResponse } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
@@ -96,6 +97,9 @@ let personaStore = null;
 let agentLoops = new Map(); // agentId -> AgentLoop
 let teamRuns = new Map();   // teamRunId -> TeamRunner
 const startingTeamConversations = new Set(); // reserve a chat across async validation
+const autoPlans = new Map(); // short-lived, one-use routes; never persisted
+const autoPlanning = new Map(); // agentId -> AbortController
+const autoDecisionCache = new Map();
 
 /* Crash recovery: an unhandled exception or rejection must never silently kill
  * the app mid-run. Log to userData/crash.log, mark any running conversation
@@ -191,6 +195,84 @@ function loadSettings() {
 function saveSettings(s) {
   settingsStore.save(s);
 }
+function autoModeEnabled(settings, agent) {
+  return (agent?.settings?.jevAutoMode ?? settings.jevAutoMode) === true;
+}
+function jevConfig(settings, agent = null) {
+  return { enabled: settings.jevEnabled === true || autoModeEnabled(settings, agent),
+    apiKey: settings.jevApiKey || process.env.TYPESAFE_API_KEY || '' };
+}
+
+function autoSnapshot(settings, agent) {
+  const ps = getPersonaStore();
+  // A hash binds the plan to credentials and configuration without returning
+  // either to the renderer or TypeSafe. Any changed selection needs a new plan.
+  return createHash('sha256').update(JSON.stringify({ settings,
+    agent: { id: agent.id, dir: agent.dir, model: agent.model, connectionId: agent.connectionId,
+      settings: agent.settings, personaPrompt: agent.personaPrompt, messages: agent.messages?.length },
+    teams: ps.listTeams(), personas: ps.listPersonas(),
+  })).digest('hex');
+}
+
+function autoCandidates(settings, agent, hasAttachments) {
+  const pinned = agent.connectionId ? connections.findConnection(settings, agent.connectionId) : null;
+  const current = pinned?.enabled !== false && pinned ? pinned : connections.activeConnection(settings);
+  const currentModel = agent.model || current?.model || settings.model || 'gpt-4o-mini';
+  const candidates = [{ id: 'current-model', kind: 'model', label: `${current?.name || 'Current connection'} · ${currentModel}`,
+    model: currentModel, connectionId: current?.id || '', description: 'The current conversation model.' }];
+  for (const connection of connections.enabledPool(settings)) {
+    if (!connection.model || connection.id === current?.id && connection.model === currentModel) continue;
+    candidates.push({ id: `model:${connection.id}`, kind: 'model', label: `${connection.name} · ${connection.model}`,
+      model: connection.model, connectionId: connection.id, description: 'A saved enabled connection and its configured model.' });
+  }
+  if (!hasAttachments && agent.settings?.features?.agent !== false) {
+    const ps = getPersonaStore();
+    for (const team of ps.listTeams()) {
+      const members = (team.members || []).map(member => ({ member, persona: ps.getPersona(member.personaId) })).filter(row => row.persona);
+      if (!members.length) continue;
+      candidates.push({ id: `team:${team.id}`, kind: 'team', teamId: team.id, label: team.name,
+        description: `${members.length} members working in ${team.mode} mode. Use only if multiple specialists are necessary.`,
+        members: members.map(({ member, persona }) => ({ name: persona.name, role: member.role || '' })) });
+    }
+  }
+  return candidates;
+}
+
+function consumeAutoPlan(token, { id, text, kind, teamId = '', hasAttachments = false }) {
+  if (!token) return null;
+  const plan = autoPlans.get(token);
+  autoPlans.delete(token);
+  const agent = getAgentStore().get(id), settings = loadSettings();
+  if (!plan || !agent || plan.expires < Date.now() || plan.id !== id || plan.text !== text
+    || plan.route.kind !== kind || kind === 'team' && plan.route.teamId !== teamId
+    || plan.hasAttachments !== hasAttachments || !autoModeEnabled(settings, agent)
+    || plan.snapshot !== autoSnapshot(settings, agent)) {
+    throw new Error('Auto selection expired or the conversation changed. Send again to choose a fresh route.');
+  }
+  // Keep Stop effective through endpoint and team-catalog validation, until the
+  // accepted run takes over its own abort controller.
+  cancelAutoPlan(id);
+  plan.controller = new AbortController();
+  autoPlanning.set(id, plan.controller);
+  return plan;
+}
+
+function validateAutoDispatch(plan) {
+  if (!plan) return;
+  if (plan.controller.signal.aborted) throw new Error('Auto selection cancelled.');
+  const agent = getAgentStore().get(plan.id);
+  if (!agent || plan.snapshot !== autoSnapshot(loadSettings(), agent)) throw new Error('Conversation settings changed while Auto was starting. Send again.');
+}
+
+function finishAutoDispatch(plan) {
+  if (plan && autoPlanning.get(plan.id) === plan.controller) autoPlanning.delete(plan.id);
+}
+
+function cancelAutoPlan(id) {
+  autoPlanning.get(id)?.abort();
+  autoPlanning.delete(id);
+  for (const [token, plan] of autoPlans) if (plan.id === id) autoPlans.delete(token);
+}
 
 const projectsFile = () => path.join(app.getPath('userData'), 'projects.json');
 function loadProjects() {
@@ -241,23 +323,36 @@ function requestApprovalFromRenderer(payload, timeoutMs = 300000) {
   });
 }
 
-async function getAgentLoop(agentId) {
+async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
   const cached = agentLoops.get(agentId);
-  if (cached && (cached.running || !cached.settingsStale)) return cached;
+  if (cached?.running) {
+    if (autoRoute) throw new Error('Wait for the current run before applying a new Auto selection.');
+    return cached;
+  }
+  if (cached && !cached.settingsStale && (!newTurn || !autoRoute && !cached.autoRoute)) return cached;
+  // Edit-review resumes retain the same turn's route. A new prompt replaces it.
+  if (!newTurn && autoRoute === undefined) autoRoute = cached?.autoRoute || null;
   const store = getAgentStore();
   const agent = store.get(agentId);
   if (!agent) throw new Error('Agent not found.');
 
   const settings = loadSettings();
-  const pinnedCandidate = agent.connectionId ? connections.findConnection(settings, agent.connectionId) : null;
+  const route = autoRoute?.route;
+  const connectionId = route?.connectionId || agent.connectionId;
+  const pinnedCandidate = connectionId ? connections.findConnection(settings, connectionId) : null;
   const pinnedConnection = pinnedCandidate?.enabled === false ? null : pinnedCandidate;
   const selectedConnection = pinnedConnection || connections.activeConnection(settings);
   // Follow gist/.txt endpoint pointers (same rule as models:list) so the
   // agent runs against the same endpoint the user sees in Settings.
   let endpoint = selectedConnection?.endpoint || settings.endpoint || '';
   try { endpoint = await resolveEndpoint(endpoint); }
-  catch (e) { console.warn('endpoint resolve failed, using raw:', e.message); }
-  const accessKey = selectedConnection?.accessKey || settings.accessKey || '';
+  catch (e) {
+    if (agent.draft) throw new Error('Endpoint: ' + e.message);
+    console.warn('endpoint resolve failed, using raw:', e.message);
+  }
+  // An intentionally keyless selected endpoint must not inherit another
+  // connection's credential when Auto routes away from the active default.
+  const accessKey = selectedConnection ? selectedConnection.accessKey || '' : settings.accessKey || '';
 
   const budgets = resolveBudgets(settings, agent.settings);
   const loop = new AgentLoop({
@@ -265,9 +360,11 @@ async function getAgentLoop(agentId) {
     store,
     endpoint,
     accessKey,
-    model: agent.model || selectedConnection?.model || settings.model || 'gpt-4o-mini',
+    model: route?.model || agent.model || selectedConnection?.model || settings.model || 'gpt-4o-mini',
     personaPrompt: agent.personaPrompt || '',
     budgets,
+    jev: jevConfig(settings, agent),
+    featureMask: autoRoute?.features || null,
     projectDir: agent.dir,
     reachExecutor: createReachToolExecutor(),
     browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
@@ -284,6 +381,7 @@ async function getAgentLoop(agentId) {
       }
     },
   });
+  loop.autoRoute = autoRoute || null;
   agentLoops.set(agentId, loop);
   return loop;
 }
@@ -320,11 +418,25 @@ function registerIpc() {
   });
   ipcMain.handle('projects:save', (_e, ps) => saveProjects(ps));
 
-  ipcMain.handle('settings:get', () => loadSettings());
+  ipcMain.handle('settings:get', () => {
+    const settings = loadSettings();
+    const { jevApiKey, ...publicSettings } = settings;
+    return { ...publicSettings, jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
+      jevKeySource: jevApiKey ? 'saved' : process.env.TYPESAFE_API_KEY ? 'environment' : '' };
+  });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
-    const next = { ...loadSettings(), ...patch };
+    const current = loadSettings();
+    const next = { ...current, ...patch };
+    if (Object.hasOwn(patch, 'jevEnabled')) next.jevEnabled = patch.jevEnabled === true;
+    if (Object.hasOwn(patch, 'jevAutoMode')) next.jevAutoMode = patch.jevAutoMode === true;
+    if (patch.jevApiKeyAction === 'clear') next.jevApiKey = '';
+    else if (typeof patch.jevApiKey === 'string' && patch.jevApiKey.trim()) next.jevApiKey = patch.jevApiKey.trim();
+    else next.jevApiKey = current.jevApiKey || '';
+    delete next.jevApiKeyAction;
+    delete next.jevKeyConfigured;
+    delete next.jevKeySource;
     if (patch.budgets !== undefined) next.budgets = { ...budgetDefaults, ...validateBudgets(patch.budgets) };
     /* Fold a legacy single-endpoint write into the active connection.
      *
@@ -341,7 +453,7 @@ function registerIpc() {
     // Settings drive every agent loop's endpoint + default model — drop the
     // cache so the next message builds a fresh loop with the new values.
     for (const [id, loop] of agentLoops) {
-      if (loop.running) loop.settingsStale = true;
+      if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
       else agentLoops.delete(id);
     }
     return { ok: true };
@@ -446,7 +558,7 @@ function registerIpc() {
   ipcMain.handle('agents:create', (_e, payload = {}) => {
     try {
       const { name, dir, model, personaId, personaPrompt, connectionId } = payload;
-      let spec = { name, dir, model, personaId, personaPrompt, connectionId };
+      let spec = { name, dir, model, personaId, personaPrompt, connectionId, draft: payload.draft === true && !personaId };
       if (personaId) {
         // Persona identity is authoritative in main. A stale or tampered
         // renderer snapshot cannot pair one persona id with different prompts
@@ -479,6 +591,7 @@ function registerIpc() {
   });
   ipcMain.handle('agents:update', (_e, { id, ...patch }) => {
     if (patch.settings) validatePolicy(patch.settings, TOOLS);
+    if (patch.settings?.jevAutoMode !== undefined && typeof patch.settings.jevAutoMode !== 'boolean') throw new Error('Auto mode must be on or off.');
     if (patch.settings?.budgetOverrides != null) patch.settings.budgetOverrides = validateBudgets(patch.settings.budgetOverrides);
     const agent = getAgentStore().update(id, patch);
     if (agent) for (const runner of teamRuns.values()) if (runner.conversationId === id) {
@@ -489,11 +602,12 @@ function registerIpc() {
     }
     // A settings save must not orphan an active loop or break Stop.
     const loop = agentLoops.get(id);
-    if (loop?.running) loop.settingsStale = true;
+    if (loop?.running || loop?.autoRoute && agent?.runState?.status === 'waiting_edits') loop.settingsStale = true;
     else agentLoops.delete(id);
     return agent ? { ok: true, agent } : { ok: false, err: 'Agent not found' };
   });
   ipcMain.handle('agents:delete', (_e, id) => {
+    cancelAutoPlan(id);
     const loop = agentLoops.get(id);
     if (loop) loop.stop();
     agentLoops.delete(id);
@@ -508,31 +622,83 @@ function registerIpc() {
       return agent ? { ok: true, agent } : { ok: false, err: 'Conversation not found.' };
     } catch (error) { return { ok: false, err: error.message }; }
   });
-  ipcMain.handle('agents:send', async (_e, { id, text, attachmentIds = [] }) => {
+  ipcMain.handle('agents:autoPlan', async (_e, { id, text, hasAttachments = false }) => {
+    let controller;
     try {
-      const loop = await getAgentLoop(id);
+      const agent = getAgentStore().get(id), settings = loadSettings();
+      if (!agent) throw new Error('Conversation not found.');
+      if (!autoModeEnabled(settings, agent)) return { ok: true, kind: 'current', reason: 'disabled' };
+      if (agentLoops.get(id)?.running || startingTeamConversations.has(id)
+        || [...teamRuns.values()].some(runner => runner.conversationId === id && !runner.paused)) {
+        throw new Error('Wait for the current run before choosing an Auto route.');
+      }
+      cancelAutoPlan(id);
+      controller = new AbortController();
+      autoPlanning.set(id, controller);
+      const snapshot = autoSnapshot(settings, agent);
+      const candidates = autoCandidates(settings, agent, hasAttachments === true);
+      const decision = await decideAuto({ apiKey: jevConfig(settings, agent).apiKey, query: String(text || ''),
+        candidates, features: agent.settings?.features, signal: controller.signal, cache: autoDecisionCache });
+      controller.signal.throwIfAborted();
+      const latest = getAgentStore().get(id);
+      if (!latest || snapshot !== autoSnapshot(loadSettings(), latest)) throw new Error('Conversation settings changed during Auto selection. Send again.');
+      // A valid keep-current judgment can still narrow this turn's features.
+      // Transport/configuration fallbacks use the ordinary send path unchanged.
+      const route = candidates.find(candidate => candidate.id === decision.candidateId)
+        || (['jev-auto', 'jev-keep'].includes(decision.reason) ? candidates[0] : null);
+      const summary = { ok: true, kind: route?.kind || 'current', label: route?.label || 'Current selection',
+        reason: decision.reason, features: intersectFeatures(agent.settings || {}, decision.features).features,
+        usage: decision.usage || null, cached: decision.cached === true };
+      if (!route) return summary;
+      const token = randomUUID();
+      for (const [key, plan] of autoPlans) if (plan.expires < Date.now()) autoPlans.delete(key);
+      if (autoPlans.size >= 64) autoPlans.delete(autoPlans.keys().next().value);
+      autoPlans.set(token, { id, text: String(text || ''), hasAttachments: hasAttachments === true,
+        route, features: summary.features, summary, snapshot, expires: Date.now() + 60000 });
+      return { ...summary, token, ...(route.kind === 'team' ? { team: getPersonaStore().listTeams().find(team => team.id === route.teamId) } : {}) };
+    } catch (error) {
+      return { ok: false, err: controller?.signal.aborted ? 'Auto selection cancelled.' : error.message };
+    } finally {
+      if (controller && autoPlanning.get(id) === controller) autoPlanning.delete(id);
+    }
+  });
+  ipcMain.handle('agents:send', async (_e, { id, text, attachmentIds = [], autoToken }) => {
+    let autoRoute;
+    try {
+      if (!String(text || '').trim() && !(Array.isArray(attachmentIds) && attachmentIds.length)) {
+        throw new Error('A message is required.');
+      }
+      autoRoute = consumeAutoPlan(autoToken, { id, text: String(text || ''), kind: 'model', hasAttachments: Array.isArray(attachmentIds) && attachmentIds.length > 0 });
+      const loop = await getAgentLoop(id, { autoRoute, newTurn: true });
+      validateAutoDispatch(autoRoute);
       if (loop.running && Array.isArray(attachmentIds) && attachmentIds.length) {
         throw new Error('Wait for the current run to finish before sending attachments.');
       }
       // Auto-title: the first user message names an untitled chat.
       const store = getAgentStore();
-      const agent = store.get(id);
+      // Check the saved-history limit before copying selected attachments. A
+      // failed picker/staging operation must still leave New Chat unsaved.
+      const agent = store.validateMaterialization(id);
       const staged = stageAgentAttachments(agent, attachmentIds);
       const message = staged.attachments.length ? attachmentMessage(text, staged) : String(text || '');
+      store.materialize(id);
       if (agent && (!agent.name || agent.name === 'Chat' || agent.name.startsWith('Chat '))) {
         const title = String(text).trim().replace(/\s+/g, ' ').slice(0, 42)
           || staged.attachments.map(file => file.name).join(', ').slice(0, 42) || 'Chat';
         store.update(id, { name: title });
-        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'renamed', name: title });
+        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'renamed', name: title, draft: false });
       }
       loop.sendUserMessage(message).catch((err) => {
         if (win && !win.isDestroyed()) {
           win.webContents.send('agent:event', { agentId: id, type: 'error', message: err.message });
         }
       });
-      return { ok: true, display: staged.attachments.length ? message.display : String(text || '') };
+      if (autoRoute) loop._emit('jev-auto', autoRoute.summary);
+      return { ok: true, draft: false, display: staged.attachments.length ? message.display : String(text || '') };
     } catch (e) {
       return { ok: false, err: e.message };
+    } finally {
+      finishAutoDispatch(autoRoute);
     }
   });
   ipcMain.handle('agents:context', async (_e, id) => {
@@ -546,11 +712,14 @@ function registerIpc() {
     catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('agents:stop', (_e, id) => {
+    cancelAutoPlan(id);
     const loop = agentLoops.get(id);
     if (loop) loop.stop();
     return { ok: true };
   });
   ipcMain.handle('runs:stop', () => {
+    for (const id of autoPlanning.keys()) cancelAutoPlan(id);
+    autoPlans.clear();
     for (const loop of agentLoops.values()) if (loop.running) loop.stop();
     for (const runner of teamRuns.values()) runner.pause();
     return { ok: true };
@@ -642,9 +811,10 @@ function registerIpc() {
   });
   ipcMain.handle('teams:delete', (_e, id) => ({ ok: getPersonaStore().removeTeam(id) }));
 
-  ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId, useHistory = true }) => {
-    let reservedConversation;
+  ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId, useHistory = true, autoToken }) => {
+    let reservedConversation, autoRoute;
     try {
+      autoRoute = consumeAutoPlan(autoToken, { id: agentId, text: String(task || ''), kind: 'team', teamId });
       const ps = getPersonaStore();
       const team = ps.getTeam(teamId);
       if (!team) return { ok: false, err: 'Team not found.' };
@@ -793,6 +963,8 @@ function registerIpc() {
          * as the documented fallback when a member's resolution is unusable. */
         memberConnections,
         budgets,
+        jev: jevConfig(settings, conversation),
+        featureMask: autoRoute?.features || null,
         // Shared with the orchestrator loop: members and their subagents run
         // tools, and one hash-chained log means one chain to verify.
         auditLog: getAuditLog(),
@@ -833,6 +1005,18 @@ function registerIpc() {
           }, budgets.questionTimeoutMs);
         }),
       });
+      // Roster, endpoints and advertised models have been validated. Only an
+      // accepted team task turns the reusable New Chat draft into saved history.
+      validateAutoDispatch(autoRoute);
+      if (conversation) {
+        const store = getAgentStore();
+        store.materialize(agentId);
+        if (!conversation.name || conversation.name === 'Chat' || conversation.name.startsWith('Chat ')) {
+          const title = String(task).trim().replace(/\s+/g, ' ').slice(0, 42);
+          store.update(agentId, { name: title });
+          if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId, type: 'renamed', name: title, draft: false });
+        }
+      }
       runner.conversationId = agentId || null;
       teamRuns.set(teamRunId, runner);
       /* Human-readable routing for this run: which connection each member ended
@@ -844,7 +1028,7 @@ function registerIpc() {
       console.log(`[teams] ${team.name} (${memberConnections.length} members): ${routing}`);
       if (conversation) {
         getAgentStore().appendMessage(agentId, { role: 'user', content: String(task).trim(), _reachMeta: { source: 'team-user', teamId, teamRunId } });
-        getAgentStore().update(agentId, { settings: { teamChat: { ...conversation.settings?.teamChat, enabled: true, teamId, useHistory: useHistory !== false } } });
+        if (!autoRoute) getAgentStore().update(agentId, { settings: { teamChat: { ...conversation.settings?.teamChat, enabled: true, teamId, useHistory: useHistory !== false } } });
       }
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
@@ -856,10 +1040,12 @@ function registerIpc() {
         }
         teamRuns.delete(teamRunId);
       });
-      return { ok: true, teamRunId, routing };
+      if (autoRoute && win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId, type: 'jev-auto', ...autoRoute.summary, at: Date.now() });
+      return { ok: true, teamRunId, routing, autoRouted: !!autoRoute };
     } catch (e) {
       return { ok: false, err: e.message };
     } finally {
+      finishAutoDispatch(autoRoute);
       if (reservedConversation !== undefined) startingTeamConversations.delete(reservedConversation);
     }
   });
@@ -1182,7 +1368,7 @@ function registerIpc() {
       || routingBefore.accessKey !== routingAfter.accessKey;
     if (routingChanged) {
       for (const [id, loop] of agentLoops) {
-        if (loop.running) loop.settingsStale = true;
+        if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
         else agentLoops.delete(id);
       }
     }
@@ -2373,9 +2559,9 @@ app.whenReady().then(() => {
             await sleep(400);
             document.querySelector('#btn-new-chat').click();
             await sleep(700);
-            const treeNodes = [...document.querySelectorAll('#agent-tree .tree-node .tree-name')];
-            if (!treeNodes.length) throw new Error('new chat did not appear in the conversation tree');
-            const target = treeNodes[treeNodes.length - 1].closest('.tree-node').querySelector('.tree-label');
+            const target = document.querySelector('#tree-new-chat');
+            if (!target || !currentAgent?.draft) throw new Error('New Chat did not open the reusable draft');
+            if ((await window.reach.agents.list()).some(agent => agent.id === currentAgent.id)) throw new Error('Empty New Chat was saved before sending');
             target.click();
             await sleep(400);
             if (document.querySelector('#agent-view').classList.contains('hidden')) {
@@ -2421,6 +2607,11 @@ app.whenReady().then(() => {
             if (!choice) throw new Error('Question choices were not rendered');
             choice.click();
             if (document.querySelector('#composer-input').value !== 'hello.py') throw new Error('Question choice did not fill composer');
+            // Branching applies to saved conversations, not the empty draft.
+            if (!document.querySelector('#btn-branch-chat').disabled) throw new Error('Empty New Chat must not allow branching');
+            const branchFixture = await window.reach.agents.create('Branch fixture', ${JSON.stringify(smokeProject)}, 'fixture');
+            await selectAgent(branchFixture.agent);
+            await loadAgentTree();
             // Branch toggle: forking the open chat must add an indented child.
             const before = document.querySelectorAll('#agent-tree .tree-node').length;
             document.querySelector('#btn-branch-chat').click();
@@ -2967,7 +3158,7 @@ app.whenReady().then(() => {
             await until(() => document.querySelector('dialog.app-dialog'));
             document.querySelector('dialog.app-dialog button.gold').click();
             await switchDropdown;
-            if (drawerContext.textContent !== first || projectPath.textContent !== first || currentAgent || openFiles.size || !agentView.classList.contains('hidden')) throw new Error('Dropdown left another project chat or files visible');
+            if (drawerContext.textContent !== first || projectPath.textContent !== first || !currentAgent?.draft || currentAgent.dir !== first || openFiles.size || agentView.classList.contains('hidden')) throw new Error('Dropdown did not open the selected project draft');
             await showTab('projects');
             if (drawerContext.textContent !== first || projectPath.textContent !== first || document.querySelector('#project-list li.active')?.title !== first) throw new Error('Dropdown did not synchronize Projects');
             await selectAgent(a.agent);
@@ -2975,7 +3166,7 @@ app.whenReady().then(() => {
             const emptyDir = first + '/build';
             await selectProject({ name: 'No chats', dir: emptyDir });
             await showTab('agents');
-            if (currentAgent || !document.querySelector('#agent-tree').textContent.includes('No conversations yet') || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
+            if (!currentAgent?.draft || currentAgent.dir !== emptyDir || !document.querySelector('#agent-tree').textContent.includes('New Chat') || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
             // Removing a project means forgetting its shortcut, never deleting
             // its folder/chat or interrupting the current editor session.
             await selectAgent(a.agent);

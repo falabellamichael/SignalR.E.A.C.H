@@ -39,6 +39,53 @@ overrides, and unrestricted testing controls. It connects to an OpenAI-compatibl
 endpoint, including SignalREACH. See the [Studio guide](studio/README.md) for setup,
 tests, Windows builds, and the optional WSL Reach CLI integration.
 
+## Optional Jev context selection and Auto mode
+
+REACH Studio and the VS Code extension can use [TypeSafe Jev](https://docs.typesafe.ai/)
+to make small context decisions before calling your selected answer model. The
+features are off by default and require a TypeSafe API key.
+
+- **VS Code:** run **REACH: Set TypeSafe (Jev) API Key**, then enable
+  `simplereach.typesafeFileSelection` in Settings. The key is stored in VS Code's
+  SecretStorage; **REACH: Clear TypeSafe (Jev) API Key** removes it. Jev selects
+  from a bounded source-file catalog in place of the separate file-selection
+  request to your answer provider.
+- **REACH Studio:** configure Jev in **Settings → Connection**.
+  It judges whether automatically retrieved code context is useful before that
+  context is sent to the answer model. See the [Studio guide](studio/README.md)
+  for key storage and setup.
+
+For prompt-based routing as well as context selection, enable **Auto**:
+
+- **Studio:** use the **Auto** switch beside the composer, or enable its default
+  in **Settings → Connection**. Jev can choose an enabled connection's configured
+  model, a saved team, and a smaller set of permitted features for one prompt.
+  The selected route is shown above the composer and in Activity. Saved model,
+  connection, tool permissions, and Teams selections stay unchanged. Explicit
+  `@` routes, slash commands, and manually selected teams take priority.
+- **VS Code:** enable `simplereach.typesafeAutoMode` in extension or panel Settings.
+  Jev chooses among models discovered on the selected provider, direct answer or
+  Agent mode, and permitted tools/context. The extension has no Studio team runner.
+  Auto also enables the existing Jev file-selection path.
+
+Auto uses short self-contained prompts. Long or context-dependent follow-ups,
+missing keys, uncertainty, and service failures retain the current setup.
+Cached choices avoid repeated routing calls. Studio supports up to 32 configured
+route choices per decision; larger pools use the current setup.
+
+Only bounded request text, file or symbol metadata, and configured model/team/tool
+metadata are sent to TypeSafe for these decisions; source-file contents, endpoint
+credentials, and private persona instructions are excluded.
+The normal answer provider still receives the context it needs. Missing keys,
+uncertain judgments and service failures use the existing context path, and Stop
+cancels pending selection. Auto can narrow the allowed tools for a prompt;
+disabled tools, trust, approval settings, and edit reviews continue to apply.
+
+Jev uses its own API tokens. Activity reports its usage when available; it does
+not claim a token-saving percentage. Compare total model usage, retries and
+answer quality before deciding whether the feature saves cost for your workload.
+The relay and desktop tray have no Jev routing changes.
+
 ## CodeGPT economy models
 
 CodeGPT's paid plans include an **economy tier** that costs no credits. The list is

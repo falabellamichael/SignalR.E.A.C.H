@@ -4,6 +4,28 @@ This is the active plan. The four older improvement documents are preserved in
 `docs/archive/` as historical proposals; their counts, worker assignments and
 instructions to commit/stash are not current task instructions.
 
+## Jev and conversation UI verification — 2026-09-21
+
+- Optional TypeSafe Jev context selection and Auto routing are implemented for
+  Studio and the VS Code extension. Routing remains bounded by existing enabled
+  models, tools and permissions; missing keys, uncertainty and failures retain
+  the selected setup. Authenticated TypeSafe calls and net token savings have
+  not been verified; decision tests use mocked responses.
+- Studio keeps a reusable New Chat draft until the first accepted prompt,
+  restores it after deletion, and hides the empty message container. The Auto
+  switch alignment and conversation information disclosure are compacted.
+- Local verification: Studio unit suite passed with 521 passes and four skips;
+  the integrated VS Code working-tree suite passed 276 tests. Isolated Electron
+  Jev, settings, edit-resume and New Chat fixtures passed. Windows installer and
+  portable builds succeeded; installed executable/archive hashes were verified.
+- Full Electron smoke remains PARTIAL: chat layout and browser zoom checks
+  passed, but the embedded-browser simulated right-click timed out. The compact
+  header passed wide/narrow visual checks and is packaged; installation awaits
+  completion of the user's active run.
+- Publication snapshot verification: 521 Studio tests passed with four skips;
+  all 273 VS Code tests passed. This snapshot excludes the unrelated tray and
+  response-display changes present in the shared working tree.
+
 ## Current implementation snapshot — 2026-09-20
 
 These changes are implemented in the local working tree based on HEAD

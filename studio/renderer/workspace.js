@@ -74,6 +74,11 @@
   host.addEventListener('wheel', e => { if (host.scrollWidth > host.clientWidth && !e.ctrlKey && !e.metaKey) { e.preventDefault(); host.scrollLeft += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY; } }, { passive: false });
 
   function syncControls() {
+    const auto = $('#jev-auto-toggle');
+    auto.setAttribute('aria-checked', String(jevAutoModeEnabled()));
+    auto.disabled = !currentAgent || saving || composerIntentPending || agentRunning || !!activeTeamRun;
+    const autoStatus = $('#jev-auto-status');
+    autoStatus.classList.toggle('hidden', !jevAutoModeEnabled() || autoStatus.dataset.agentId !== currentAgent?.id);
     for (const [key, button] of buttons) {
       button.setAttribute('aria-checked', String(currentAgent?.settings?.features?.[key] !== false));
       button.disabled = !currentAgent || saving;
@@ -82,10 +87,16 @@
     $('#composer-model').textContent = (currentAgent?.model || 'Default model') + ' ▾';
     $('#composer-model').title = currentAgent?.model || 'Choose a model for this conversation';
     $('#composer-model').disabled = !currentAgent || saving;
-    $('#btn-clear-chat').disabled = !currentAgent || saving || agentRunning || !!activeTeamRun;
+    $('#btn-clear-chat').disabled = !currentAgent || currentAgent.draft || saving || agentRunning || !!activeTeamRun;
+    $('#btn-branch-chat').disabled = !currentAgent || currentAgent.draft;
+    $('#btn-agent-delete').disabled = !currentAgent || currentAgent.draft;
     window.ReachTeamComposer?.sync();
   }
   function sync() { syncControls(); resizeComposer(); window.ReachTelemetry?.sync(); }
+  $('#jev-auto-toggle').onclick = async () => {
+    if (!currentAgent || saving || composerIntentPending) return;
+    await save(currentAgent.id, { settings: { jevAutoMode: !jevAutoModeEnabled() } });
+  };
   async function save(id, patch) {
     if (saving) return false;
     saving = true; syncControls();

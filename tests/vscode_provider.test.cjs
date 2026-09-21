@@ -46,6 +46,27 @@ test('VS Code free-endpoint chat keeps the selected model and access key',async(
  assert.equal(h.posts.find(p=>p.type==='done').full,'FREE OK');
 });
 
+test('Agent-off requests remove saved action formatting while keeping context and explicit format requests',async()=>{
+ const actionCodec=require('../vscode/agent-action');
+ const {protocol}=require('../vscode/media/agent-run');
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'Readable answer'}}]})));
+ const messages=[{role:'system',content:'Keep the project facts.\n'+actionCodec.instruction+'\n'+protocol},
+  {role:'user',content:'Show a JSON example for SQLite metadata.'}];
+ const original=JSON.stringify(messages);
+ await h.provider._chat({messages,agentic:false,structuredActions:true});
+ assert.equal(h.calls.length,1);
+ const payload=JSON.parse(h.calls[0].options.body);
+ assert.equal(payload.response_format,undefined);
+ assert.match(payload.messages[0].content,/Keep the project facts/);
+ assert.match(payload.messages[0].content,/Agent mode is off/);
+ assert.match(payload.messages[0].content,/when the user explicitly requests it/);
+ assert.ok(!payload.messages[0].content.includes(actionCodec.instruction));
+ assert.ok(!payload.messages[0].content.includes(protocol));
+ assert.equal(payload.messages.at(-1).content,messages.at(-1).content);
+ assert.equal(JSON.stringify(messages),original);
+ assert.equal(h.posts.find(p=>p.type==='done').full,'Readable answer');
+});
+
 test('added providers are saved and selected independently from the locked Free endpoints connection', async()=>{
  const h=host({},(url, options)=>{
    if(url.endsWith('/models')) return new Response(JSON.stringify({data:(url.includes('second') ? ['other/model','shared'] : ['my/free-model','shared']).map(id=>({id}))}));
@@ -846,6 +867,18 @@ test('schema negotiation also reuses the first encoded context',async()=>{
  assert.equal(summaries,1);assert.equal(h.calls.length,2);
  assert.equal(JSON.parse(h.calls[1].options.body).response_format.type,'json_object');
  assert.ok(h.posts.some(p=>p.agentAction));
+});
+
+test('switching Agent back on removes the saved ordinary-chat override',async()=>{
+ const {chatInstruction}=require('../vscode/media/agent-run');
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:actionResponse()}}]})));
+ await h.provider._chat({messages:[{role:'system',content:'Saved project facts.\n'+chatInstruction},
+  {role:'user',content:'Continue the work'}],agentic:true,structuredActions:true});
+ const payload=JSON.parse(h.calls[0].options.body);
+ assert.ok(!payload.messages[0].content.includes(chatInstruction));
+ assert.match(payload.messages[0].content,/Saved project facts/);
+ assert.match(payload.messages[0].content,/EXECUTABLE ACTION RESPONSE/);
+ assert.equal(h.posts.find(p=>p.type==='done').agentAction.tools[0].action,'read');
 });
 
 test('broken nested JSON retries as object arguments and remembers success only for that endpoint/model',async()=>{

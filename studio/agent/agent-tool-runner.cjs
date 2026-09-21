@@ -140,7 +140,9 @@ async function runToolCall(agentId, name, args, context) {
   }
 
   // Approval: exec-class tools prompt unless the agent's settings say auto-all.
-  const settings = (context.agentStore && context.agentStore.get(agentId)?.settings) || {};
+  const getSettings = () => typeof context.getSettings === 'function'
+    ? context.getSettings() : (context.agentStore && context.agentStore.get(agentId)?.settings) || {};
+  const settings = getSettings();
   if (disabledTools(settings, TOOLS).includes(name)) {
     const error = `The ${name} tool is disabled in this conversation's tool controls.`;
     await persistToolResult(agentId, name, args, { ok: false, error }, context);
@@ -189,7 +191,7 @@ async function runToolCall(agentId, name, args, context) {
   let result;
   try {
     // Controls may change while an approval dialog is open.
-    if (disabledTools(context.agentStore?.get(agentId)?.settings || {}, TOOLS).includes(name)) throw new Error(`The ${name} tool is now disabled.`);
+    if (disabledTools(getSettings(), TOOLS).includes(name)) throw new Error(`The ${name} tool is now disabled.`);
     if (name.startsWith('reach.')) {
       if (typeof context.reachExecutor !== 'function') throw new Error('Reach tools are not available.');
       result = await context.reachExecutor(name, args || {}, context);
