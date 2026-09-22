@@ -18,8 +18,9 @@
       ]
     },
     "studio": {
-      "release-type": "node",
+      "release-type": "simple",
       "package-name": "reach-studio",
+      "versioning": "always-bump-patch",
       "changelog-path": "studio/CHANGELOG.md",
       "extra-files": [
         { "type": "json", "path": "studio/package.json", "jsonpath": "$.version" }
