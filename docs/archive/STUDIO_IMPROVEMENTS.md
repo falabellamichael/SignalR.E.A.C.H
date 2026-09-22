@@ -1,4 +1,10 @@
-# REACH Studio — Prioritized Improvement Digest
+> ⚠ **SUPERSEDED — archived 2026-09-22.** The single canonical improvement plan is now
+> [`docs/IMPROVEMENTS.md`](../IMPROVEMENTS.md). The new findings from this digest (A1 baseline
+> rot, A2 missing engine docs, A3 half-done rename, A4 `.DS_Store`, N2 return shapes, N3 Node
+> version) were merged into it as items 6.10, 6.11, 1.9 and inside 2.3. Its §2 numbers are
+> stale. Do not cite it, do not work from it.
+
+# REACH Studio — Prioritized Improvement Digest (archived copy)
 
 > **Read this first — where this document sits in the repo.**
 > `docs/README.md` states the rule: *"Do not add a second improvement plan. Add items to the

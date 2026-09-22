@@ -44,3 +44,8 @@ dist/
 *.vsix
 *.dmg
 *.AppImage
+
+# Local scratch workspace: snapshots, probe scripts, QA screenshots and logs
+# produced while working. ~40MB across hundreds of files, including whole-tree
+# pre-change snapshots. Untracked but NOT ignored, so `git add -A` swept it in.
+.files-work/

@@ -1,4 +1,9 @@
-# REACH Studio — Improvement Summary
+> ⚠ **SUPERSEDED — archived 2026-09-22.** The single canonical improvement plan is now
+> [`docs/IMPROVEMENTS.md`](../IMPROVEMENTS.md); its Executive Summary section supersedes the
+> digest below (which stated stale line counts — e.g. `main.mjs` 3,636 / `app.js` 2,949 vs.
+> 4,116 / 4,573 measured 2026-09-22). Do not cite it, do not work from it.
+
+# REACH Studio — Improvement Summary (archived copy)
 
 ## What This Is
 
