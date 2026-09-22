@@ -2663,6 +2663,95 @@ function fillConnectionSelect(select, selectedId, { includeDisabled = true } = {
   if (!selectedId) select.value = '';
 }
 
+/* ----- SOUL.md + MEMORY.md editors (per agent) ----- */
+/* The two files only exist for a SAVED agent, because their directory is keyed
+ * by the persona id. So a brand-new agent starts from the scaffolds (rendered
+ * for the name being typed) and both files are written when the persona is
+ * first saved; an existing agent loads its real files. */
+let personaFileCaps = { soul: 8000, memory: 16000 };
+/* The scaffold TEXT, cached. Named distinctly from personaFileDefaults(),
+   which ASKS main for it — a variable and a function cannot share a name. */
+let personaFileScaffold = { soul: '', memory: '' };
+let personaFilesDirty = false;
+
+function setPersonaFilesStatus(text) {
+  const el = $('#persona-files-status');
+  if (el) el.textContent = text || '';
+}
+
+function updatePersonaFileCounts() {
+  const soul = $('#persona-soul'), memory = $('#persona-memory');
+  const soulEl = $('#persona-soul-count'), memoryEl = $('#persona-memory-count');
+  if (soulEl) soulEl.textContent = `${soul.value.length} / ${personaFileCaps.soul}`;
+  if (memoryEl) memoryEl.textContent = `${memory.value.length} / ${personaFileCaps.memory}`;
+}
+
+/** Load the scaffolds once (used for a new agent and for Restore). */
+async function personaFileDefaults(name, role) {
+  try {
+    const res = await reachApi.soul.defaults(name || 'Agent', role || '');
+    if (res?.ok) personaFileScaffold = { soul: res.soul || '', memory: res.memory || '' };
+  } catch { /* keep whatever scaffolds we already have */ }
+  return personaFileScaffold;
+}
+
+async function loadPersonaFiles(persona) {
+  const soul = $('#persona-soul'), memory = $('#persona-memory');
+  soul.value = '';
+  memory.value = '';
+  personaFilesDirty = false;
+  if (!persona) {
+    const defaults = await personaFileDefaults($('#persona-name').value.trim());
+    soul.value = defaults.soul;
+    memory.value = defaults.memory;
+    setPersonaFilesStatus('Created when you save this agent.');
+    updatePersonaFileCounts();
+    return;
+  }
+  try {
+    const [soulRes, memRes] = await Promise.all([
+      reachApi.soul.get(persona.id, 'soul'),
+      reachApi.soul.get(persona.id, 'memory'),
+    ]);
+    if (soulRes?.caps) personaFileCaps = soulRes.caps;
+    soul.value = soulRes?.text || '';
+    memory.value = memRes?.text || '';
+    const exists = soulRes?.exists || {};
+    const missing = [];
+    if (!exists.soul) missing.push('SOUL.md');
+    if (!exists.memory) missing.push('MEMORY.md');
+    setPersonaFilesStatus(missing.length ? `${missing.join(' and ')} missing — save to create it.` : '');
+  } catch (e) {
+    setPersonaFilesStatus('Could not read agent files: ' + (e?.message || e));
+  }
+  updatePersonaFileCounts();
+}
+
+/** True when the two textareas differ from what was loaded. */
+function personaFilesChanged(persona) {
+  if (!persona) return true;
+  return personaFilesDirty;
+}
+
+async function savePersonaFiles(personaId) {
+  const soul = $('#persona-soul').value;
+  const memory = $('#persona-memory').value;
+  const results = await Promise.all([
+    reachApi.soul.set(personaId, 'soul', soul),
+    reachApi.soul.set(personaId, 'memory', memory),
+  ]);
+  const failed = results.filter(r => !r?.ok);
+  if (failed.length) {
+    setPersonaFilesStatus('Could not save: ' + (failed[0].err || 'unknown error'));
+    return false;
+  }
+  personaFilesDirty = false;
+  const truncated = results.some(r => r.truncated);
+  setPersonaFilesStatus(truncated ? 'Saved (trimmed to the size cap).' : 'Saved.');
+  updatePersonaFileCounts();
+  return true;
+}
+
 async function openPersonaModal(p) {
   editingPersonaId = p ? p.id : null;
   $('#persona-modal-title').textContent = p ? 'Edit Custom Agent' : 'New Custom Agent';
@@ -2672,6 +2761,9 @@ async function openPersonaModal(p) {
   await loadConnectionChoices();
   fillConnectionSelect($('#persona-connection'), p ? (p.connectionId || '') : '');
   $('#btn-persona-delete').classList.toggle('hidden', !p);
+  const files = $('#persona-files');
+  if (files) files.open = false;
+  await loadPersonaFiles(p);
   $('#persona-modal').classList.remove('hidden');
   $('#persona-name').focus();
 }
@@ -2696,6 +2788,34 @@ $('#btn-persona-browse').onclick = () => {
     },
   });
 };
+for (const id of ['#persona-soul', '#persona-memory']) {
+  $(id).addEventListener('input', () => {
+    personaFilesDirty = true;
+    setPersonaFilesStatus('Unsaved changes.');
+    updatePersonaFileCounts();
+  });
+}
+/* A new agent's scaffolds carry the name, so re-render them while the name is
+ * still being typed — but NEVER once the user has touched the fields, and never
+ * for an existing agent (that would overwrite real writing on the next load). */
+$('#persona-name').addEventListener('input', async () => {
+  if (editingPersonaId || personaFilesDirty) return;
+  const defaults = await personaFileDefaults($('#persona-name').value.trim());
+  $('#persona-soul').value = defaults.soul;
+  $('#persona-memory').value = defaults.memory;
+  updatePersonaFileCounts();
+});
+$('#btn-persona-files-reset').onclick = async () => {
+  const label = editingPersonaId ? 'Restore the scaffold text? This replaces what is in both boxes.'
+    : 'Reset both boxes to the scaffold text?';
+  if (!await confirmAction(label)) return;
+  const defaults = await personaFileDefaults($('#persona-name').value.trim());
+  $('#persona-soul').value = defaults.soul;
+  $('#persona-memory').value = defaults.memory;
+  personaFilesDirty = true;
+  setPersonaFilesStatus('Scaffolds restored — save to write them.');
+  updatePersonaFileCounts();
+};
 $('#persona-connection').onchange = () => {
   /* Models belong to an endpoint, so the previously chosen id may not exist on
    * the newly pinned one. Clear it rather than leave a value that will 404 —
@@ -2715,6 +2835,15 @@ $('#btn-persona-save').onclick = async () => {
     ? await reachApi.personas.update(editingPersonaId, patch)
     : await reachApi.personas.create(patch);
   if (!res.ok) { showNotice(res.err); return; }
+  /* The persona id only exists after this save, so the files are written here
+   * rather than with the rest of the modal state. An EXISTING agent is only
+   * rewritten when its boxes actually changed, so a plain "rename" cannot
+   * clobber a soul or memory the user edited outside the app. */
+  const personaId = res.persona?.id || editingPersonaId;
+  if (personaId && personaFilesChanged(res.persona || null)) {
+    const ok = await savePersonaFiles(personaId);
+    if (!ok) return;
+  }
   $('#persona-modal').classList.add('hidden');
   await loadCreatePage();
 };

@@ -122,6 +122,23 @@ draft is preserved.
   **Settings ▾ → Conversation & permissions**.
 - Create personas and teams on the **Create** page, then dispatch a team from a
   conversation. Teams support parallel reviews and sequential handoffs.
+- Every custom agent has its own **SOUL.md** (who it is) and **MEMORY.md** (what
+  it has learned), stored as plain markdown at
+  `userData/agents/<agent id>/` and editable from the agent's card on the Create
+  page. They are copied from the templates in `studio/agent/`, so a new agent
+  starts with a working identity and you can change the baseline for every agent
+  you create afterwards by editing those two files. Saving an agent writes only
+  the boxes you changed, and an existing agent's files are never overwritten by a
+  template edit. SOUL text is treated as authoritative instructions; MEMORY text
+  is injected as untrusted data, so a note recorded during a run can never act
+  like approval. Deleting an agent keeps its two files on disk.
+- Team members and the workers they spawn each own their own pair. A spawned
+  worker is keyed by the agent that spawned it plus its name, so the same
+  helper's notes are still there next run while a differently-named helper is a
+  different agent. A helper adopted from a saved persona joins with that
+  persona's own files. An agent that has its own pair can read and append it
+  during a run with the `memory` tool; a run with no identity of its own
+  reports that instead of pretending to have recorded anything.
 - Team members can create background workers, send messages, inspect progress,
   and await peers. Stop cancels active model requests and filesystem scans.
 - Links teams include a silent, event-driven Team Nurse. It coalesces peer mail,

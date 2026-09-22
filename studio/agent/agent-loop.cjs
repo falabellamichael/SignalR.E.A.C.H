@@ -25,6 +25,7 @@ const { resolveBudgets, cap } = require('./budgets.cjs');
 const { buildCodeContext, formatInjection } = require('./code-context.cjs');
 const { decideContext, recentQuery } = require('./jev-context.cjs');
 const { intersectFeatures } = require('./jev-auto.cjs');
+const { soulPromptBlock } = require('./agent-soul.cjs');
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_ROUNDS = 40;
@@ -42,7 +43,7 @@ function normalizeUserInput(value) {
 }
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false, jev = null, featureMask = null }) {
+  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false, jev = null, featureMask = null }) {
     this.agentId = agentId;
     this.store = store;
     this.endpoint = endpoint;
@@ -66,6 +67,13 @@ class AgentLoop {
     this.jevContextCache = new Map();
     this.featureMask = featureMask ? structuredClone(featureMask) : null;
     this.personaPrompt = String(personaPrompt || '');
+    // SOUL.md + MEMORY.md for this agent (agent/agent-soul.cjs). Optional: when
+    // no store is injected the loop behaves exactly as before, so a bare
+    // conversation or a test harness never needs one. The soul block is read
+    // FRESH on every prompt build so an edit made between turns applies to the
+    // next turn without restarting the loop.
+    this.soulStore = soulStore;
+    this.soulKey = String(soulKey || '');
     this.budgets = budgets;
     this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
     this.requestSignal = null;
@@ -75,6 +83,28 @@ class AgentLoop {
 
   _agent() {
     return this.store.get(this.agentId);
+  }
+
+  /*
+   * This agent's OWN soul/memory directory, or '' when it has none.
+   *
+   * Resolved from the loop's own soulKey (never from tool arguments), which is
+   * what lets the `memory` tool be safe: an agent can read and append its own
+   * MEMORY.md, but it cannot name a path and so cannot touch another agent's
+   * files or the bound project.
+   */
+  _soulDir() {
+    if (!this.soulStore || !this.soulKey) return '';
+    try {
+      /* Some stores are constructed with the root and expect just the key
+       * (AgentSoulStore); a bare store may only expose block(). Both are
+       * tolerated because the soul DIRECTORY is an optional convenience for
+       * the memory tool, and a loop without it must still run normally. */
+      const paths = typeof this.soulStore.paths === 'function' ? this.soulStore.paths(this.soulKey) : null;
+      return paths && paths.dir ? paths.dir : '';
+    } catch {
+      return '';
+    }
   }
 
   // Auto can narrow tools for this turn, but live user controls still win.
@@ -128,7 +158,12 @@ class AgentLoop {
     const persona = this.personaPrompt
       ? 'YOUR ROLE (overrides the generic assistant identity above where they conflict):\n' + this.personaPrompt + '\n\n'
       : '';
+    // The agent's own SOUL.md + MEMORY.md, appended right after the role so the
+    // durable definition and the role read as one identity block. '' when the
+    // agent has no files — which is every agent that has never been scaffolded.
+    const soul = this.soulKey ? soulPromptBlock(this.soulStore, this.soulKey) : '';
     return persona
+      + (soul ? soul + '\n\n' : '')
       + 'You are REACH Studio, a coding assistant for the user\'s selected project. '
       + 'Inspect the project to identify its language and tools; it may be Python, JavaScript, or another stack. '
       + 'Reach DApp commands are optional and only appropriate for an actual Reach project. '
@@ -558,6 +593,11 @@ class AgentLoop {
             projectDir: this.projectDir,
             agentId: this.agentId,
             agentStore: this.store,
+            // The `memory` tool reads/appends through the loop's OWN store +
+            // key (the directory is kept for diagnostics only).
+            soulDir: this._soulDir(),
+            soulStore: this.soulStore,
+            soulKey: this.soulKey,
             getSettings: () => this._settings(),
             auditLog: this.auditLog,
             reachExecutor: this.reachExecutor,

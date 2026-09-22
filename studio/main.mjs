@@ -12,6 +12,7 @@ const { decideAuto, intersectFeatures } = require('./agent/jev-auto.cjs');
 const { parseAgentResponse } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
+const { AgentSoulStore, MAX_SOUL_CHARS, MAX_MEMORY_CHARS } = require('./agent/agent-soul.cjs');
 const { TeamRunner } = require('./agent/team-runner.cjs');
 const { teamConversationTask, teamAnswerNote, teamFollowupTarget } = require('./agent/team-conversation.cjs');
 const { listRoleChoices } = require('./agent/roles.cjs');
@@ -298,6 +299,28 @@ function getPersonaStore() {
   return personaStore;
 }
 
+/* SOUL.md + MEMORY.md per agent (the durable half of a custom agent).
+ *
+ * Kept as FILES rather than fields on the persona record on purpose: the
+ * operator can then read, back up, diff and hand-edit an agent's identity
+ * outside the app, and a long memory never bloats the persona document that
+ * every list call returns. One directory per persona id under userData/agents.
+ * The store rejects any key that is not a single safe path segment, so a
+ * persona id can never escape this root. */
+let soulStore = null;
+function getSoulStore() {
+  if (!soulStore) {
+    /* templateDir = the app's own `agent/` folder, which ships SOUL.md and
+     * MEMORY.md. Those are the DEFAULT identity and memory: every NEW agent is
+     * scaffolded from them (with {{name}}/{{role}} filled in), so editing the
+     * shipped pair changes the baseline for everything created afterwards.
+     * Agents that already have their own files are never touched by it. */
+    soulStore = new AgentSoulStore(path.join(app.getPath('userData'), 'agents'),
+      { templateDir: path.join(rootDir, 'agent') });
+  }
+  return soulStore;
+}
+
 /* Team member edit reviews: members run on ephemeral MemoryStores, so their
  * pending edits live here (main process) keyed by editId until resolved. */
 const pendingTeamEdits = new Map(); // editId -> { edit, teamRunId }
@@ -362,6 +385,11 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     accessKey,
     model: route?.model || agent.model || selectedConnection?.model || settings.model || 'gpt-4o-mini',
     personaPrompt: agent.personaPrompt || '',
+    /* SOUL.md + MEMORY.md for the agent this conversation is running as. Keyed
+     * by the persona id when the chat has one (so a single chat and a crew run
+     * share one identity), else by the conversation id. */
+    soulStore: getSoulStore(),
+    soulKey: agent.personaId || agent.id,
     budgets,
     jev: jevConfig(settings, agent),
     featureMask: autoRoute?.features || null,
@@ -550,6 +578,10 @@ function registerIpc() {
     try {
       const data = payload && payload.format === 'reach-studio.conversation' ? payload.agent : payload;
       const agent = getAgentStore().importConversation(data);
+      /* An imported conversation carries a minted id, so it always needs its
+       * own pair; a foreign personaId degrades to a no-op when that persona's
+       * files already exist (scaffold() never overwrites). */
+      getSoulStore().scaffold(agent.personaId || agent.id, { name: agent.name });
       return { ok: true, agent };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -576,6 +608,11 @@ function registerIpc() {
         };
       }
       const agent = getAgentStore().create(spec);
+      /* A plain chat (no persona) is born with its own SOUL.md + MEMORY.md,
+       * keyed by the conversation id. Persona-backed chats key on the persona
+       * id, whose files personas:create already scaffolded — scaffold() only
+       * creates MISSING files, so it is a no-op there (archive-never-delete). */
+      getSoulStore().scaffold(agent.personaId || agent.id, { name: agent.name });
       return { ok: true, agent };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -584,6 +621,10 @@ function registerIpc() {
   ipcMain.handle('agents:fork', (_e, { id, upToIndex, name }) => {
     try {
       const child = getAgentStore().fork(id, { upToIndex, name });
+      /* A fork of a plain conversation gets its own fresh SOUL.md + MEMORY.md
+       * (new conversation id); forking a persona-backed chat keys on the
+       * persona id and is a no-op — the branch shares its parent's identity. */
+      getSoulStore().scaffold(child.personaId || child.id, { name: child.name });
       return { ok: true, agent: child };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -784,14 +825,41 @@ function registerIpc() {
   ipcMain.handle('personas:list', () => getPersonaStore().listPersonas());
   ipcMain.handle('personas:get', (_e, id) => getPersonaStore().getPersona(id));
   ipcMain.handle('personas:create', (_e, p) => {
-    try { return { ok: true, persona: getPersonaStore().createPersona(p) }; }
-    catch (e) { return { ok: false, err: e.message }; }
+    try {
+      const persona = getPersonaStore().createPersona(p);
+      /* Give the new agent its own SOUL.md and MEMORY.md straight away, so it
+       * is genuinely born with an identity instead of an empty directory the
+       * user has to discover. scaffold() only ever creates MISSING files, so
+       * this can never clobber an existing agent. */
+      getSoulStore().scaffold(persona.id, { name: persona.name });
+      return { ok: true, persona };
+    } catch (e) { return { ok: false, err: e.message }; }
   });
   ipcMain.handle('personas:update', (_e, { id, ...patch }) => {
     const p = getPersonaStore().updatePersona(id, patch);
     return p ? { ok: true, persona: p } : { ok: false, err: 'Persona not found' };
   });
   ipcMain.handle('personas:delete', (_e, id) => ({ ok: getPersonaStore().removePersona(id) }));
+
+  /* ---------- agent SOUL.md + MEMORY.md ----------
+   * Deleting a persona deliberately does NOT delete its files: an agent's soul
+   * and memory are the operator's writing and real history, and a mistaken
+   * delete must be recoverable by recreating the agent (invariant A4,
+   * archive-never-delete). An explicit purge is available from the UI later. */
+  ipcMain.handle('soul:get', (_e, { key, kind } = {}) => {
+    const store = getSoulStore();
+    return { ok: true, kind, text: store.read(key, kind), exists: store.exists(key),
+      caps: { soul: MAX_SOUL_CHARS, memory: MAX_MEMORY_CHARS } };
+  });
+  ipcMain.handle('soul:set', (_e, { key, kind, text } = {}) => {
+    const res = getSoulStore().write(key, kind, text);
+    return res.ok ? { ok: true, chars: res.chars, truncated: res.truncated === true }
+      : { ok: false, err: res.err };
+  });
+  /* Routed through the store (not renderDefaults directly) so the text the UI
+   * PREVIEWS for a new agent is byte-identical to what scaffold() will write —
+   * including any project-level template override. */
+  ipcMain.handle('soul:defaults', (_e, { name, role } = {}) => ({ ok: true, ...getSoulStore().defaults({ name, role }) }));
 
   /* Preset crew roles (agent/roles.cjs) — a static catalog the team editor
    * renders as a dropdown; nothing here is persisted. */
@@ -962,6 +1030,7 @@ function registerIpc() {
          * used for anything the runner does not have a member resolution for, and
          * as the documented fallback when a member's resolution is unusable. */
         memberConnections,
+        soulStore: getSoulStore(),
         budgets,
         jev: jevConfig(settings, conversation),
         featureMask: autoRoute?.features || null,
@@ -1140,6 +1209,11 @@ function registerIpc() {
         task,
         endpoint: route.endpoint,
         accessKey: route.accessKey,
+        /* When the helper was ADOPTED from a saved persona, hand over that
+         * persona's identity so it joins with its OWN SOUL.md + MEMORY.md — it
+         * is the agent the user created on the Create page, not an anonymous
+         * worker. A hand-typed name has no identity and the net derives one. */
+        soulKey: routePersona.id,
       });
       if (!result.ok) return { ok: false, err: result.error };
       return {

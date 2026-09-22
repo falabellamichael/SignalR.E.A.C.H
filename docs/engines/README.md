@@ -10,14 +10,31 @@ on every run (`<file> lines` + `Engine docs N/4`).
 
 | Doc | Surface | Files (measured lines) | Runs | Talks to |
 | --- | --- | --- | --- | --- |
-| [`BROWSER_ENGINE.md`](./BROWSER_ENGINE.md) | **Offscreen Chromium engine** — relay-side interactive browser | `server/browser-engine/main.cjs` (480), `server/reachd/browser_engine.py` (372), `server/reachd/browser.py` (436), `src/browser-engine.js` (181) | One Electron subprocess, spawned by the relay | HTTP `127.0.0.1:<random>`, Bearer secret; relay web panel via `POST /_reach/browser/engine` |
+| [`BROWSER_ENGINE.md`](./BROWSER_ENGINE.md) | **Offscreen Chromium engine** — relay-side interactive browser | `server/browser-engine/main.cjs` (480), `server/reachd/browser_engine.py` (387), `server/reachd/browser.py` (370), `src/browser-engine.js` (181) | One Electron subprocess, spawned by the relay | HTTP `127.0.0.1:<random>`, Bearer secret; relay web panel via `POST /_reach/browser/engine` |
 | [`STUDIO_BROWSER.md`](./STUDIO_BROWSER.md) | **Studio in-app browser** — Electron `WebContentsView` tabs inside the desktop app | `studio/browser/host.cjs` (223), `studio/browser/agent.cjs` (63), `studio/browser/page.cjs` (85) | In-process, in the Studio main process | Renderer via IPC `browser:command` (dynamic channel, item 1.2/1.3 of the plan) |
 | [`REACH_CLI.md`](./REACH_CLI.md) | **Reach CLI surface** — `reach` compile/run/init/clean/version as agent tools | `studio/agent/platform.cjs` (59), `studio/agent/reach-process.cjs` (67), `studio/agent/reach-tool-executor.cjs` (106) | Subprocess (`reach` directly, or `wsl.exe -d Ubuntu -- reach` on Windows) | Main-process run-event bus (`onRunEvent`); agent tool registry |
-| [`README.md`](./README.md) *(this file)* | **Relay Reader fetcher** — stateless public-page retrieval (documented inline, §4) | `server/reachd/browser.py` (436) | In the relay process, stdlib only | Public web (pinned connections, public-IP-only) |
+| [`README.md`](./README.md) *(this file)* | **Relay Reader fetcher** — stateless public-page retrieval (documented inline, §4) | `server/reachd/browser.py` (370) | In the relay process, stdlib only | Public web (pinned connections, public-IP-only) |
 
 The fetcher shares `browser.py` with the Chromium surface (it is imported by
 `browser_engine.py` for `_parse_url`), so its deep dive lives in
 [BROWSER_ENGINE.md §6](./BROWSER_ENGINE.md) and is summarized here in §4.
+
+### Code changes this round (commit `ff56eda`)
+
+The bridge/fetcher code was aligned with the engine while this documentation
+round ran (green: `python3 -B -m unittest tests.test_browser_engine
+tests.test_browser` → 38/38; `node --test tests/browser_engine.test.cjs` →
+4/4). Deep dives describe the code **as of this commit**:
+
+- `browser_engine.py` (372 → **387**): `keyCode` is now validated with the
+  engine's bounds (non-empty, ≤ 32 chars, no NUL — `inputEvent` in
+  `main.cjs`), so bad keys are a 400, not a 502; the `modifiers` whitelist is
+  now the same 16 values as `MODIFIERS` in `main.cjs`; `_command()` enforces
+  `MAX_BODY_BYTES` (128 KB) on the outgoing JSON payload before it reaches
+  the wire (400 `invalid_request`).
+- `browser.py` (436 → **370**): the dead `_DeflateReader` / `_BrotliReader`
+  classes were removed — the fetcher decodes the fully-read bounded body
+  through `_decode_compressed()`, so compression is not incremental.
 
 ## Architecture map
 

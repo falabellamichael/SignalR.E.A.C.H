@@ -11,10 +11,11 @@ that states numbers.
 | If you want to… | Read |
 | --- | --- |
 | Know what to work on next, with measured evidence | [`IMPROVEMENTS_VERIFIED.md`](./IMPROVEMENTS_VERIFIED.md) *— the single source of truth* |
+| Get the one-page status of the improvement plan (no numbers) | [`IMPROVEMENTS_SUMMARY.md`](./IMPROVEMENTS_SUMMARY.md) — digest of the source of truth |
 | Re-measure the baseline before trusting any number | `bash docs/verify-improvements.sh` |
 | Know the main↔renderer channel surface today | [`STUDIO_IPC.md`](./STUDIO_IPC.md) |
 | Understand the CodeGPT economy tier (two upstreams, the `127.0.0.1` trap, the 503s) | [`CODEGPT_ECONOMY_HANDOFF.md`](./CODEGPT_ECONOMY_HANDOFF.md) |
-| Understand the three engine systems (Chromium, bridge, fetcher) | [`engine/overview.md`](./engine/overview.md) |
+| Understand the four engine surfaces (relay Chromium + bridge, web panel, fetcher, Studio browser, Reach CLI) | [`engines/README.md`](./engines/README.md) |
 
 ## The one rule
 
@@ -29,12 +30,13 @@ Do **not** add a second improvement plan. Add items to the existing one.
 | File | What it is | Status |
 | --- | --- | --- |
 | `IMPROVEMENTS_VERIFIED.md` | The plan: verified baseline, phased items, frozen interfaces, invariant→check table | **source of truth** |
+| `IMPROVEMENTS_SUMMARY.md` | One-page digest of the plan: statuses, build order, invariants — states no numbers | maintained digest |
 | `STUDIO_IPC.md` | The readable half of the IPC contract (the machine-checked half is item 1.2's manifest test) | maintained |
 | `CODEGPT_ECONOMY_HANDOFF.md` | Operating notes for the economy tier: why it 503s, how routing/auth follow the model | maintained |
-| `engine/overview.md` | Architecture overview of all three engine systems | maintained |
-| `engine/browser-engine.md` | Deep dive: offscreen Chromium process (`server/browser-engine/main.cjs`) | maintained |
-| `engine/browser-bridge.md` | Deep dive: Python HTTP bridge to Chromium (`server/reachd/browser_engine.py`) | maintained |
-| `engine/browser-fetcher.md` | Deep dive: stateless page retriever for Reader mode (`server/reachd/browser.py`) | maintained |
+| `engines/README.md` | The four engine surfaces: map, invariants, document contract (item 5.2's structure) | maintained |
+| `engines/BROWSER_ENGINE.md` | Deep dive: relay-side Chromium engine + Python bridge + web panel + Reader fetcher | maintained |
+| `engines/STUDIO_BROWSER.md` | Deep dive: Studio in-app browser (`studio/browser/{host,agent,page}.cjs`) | maintained |
+| `engines/REACH_CLI.md` | Deep dive: Reach CLI surface (`studio/agent/{platform,reach-process,reach-tool-executor}.cjs`) | maintained |
 | `verify-improvements.sh` | Re-measures the baseline; run it before trusting §1 | maintained |
 | `README.md` | This index | maintained |
 

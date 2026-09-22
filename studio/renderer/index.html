@@ -724,6 +724,34 @@
       </div>
       <label>Instructions (system prompt for this agent)</label>
       <textarea id="persona-prompt" rows="7" placeholder="You are a meticulous security auditor. Review Reach contracts for reentrancy, participant-order bugs, and token-balance mistakes. Always compile before declaring work done."></textarea>
+      <!-- SOUL.md + MEMORY.md. These are the agent's own files on disk
+           (userData/agents/<id>/), not fields in the persona record, so the
+           operator can read, back up and hand-edit them outside the app. A new
+           agent has none yet: they are created when the persona is saved. -->
+      <details id="persona-files" class="agent-files">
+        <summary>SOUL.md &amp; MEMORY.md <span class="dim">— this agent's identity and memory</span></summary>
+        <p class="dim field-hint">Stored as plain markdown at <code>userData/agents/&lt;agent id&gt;/</code> — readable, diffable and hand-editable outside the app. SOUL.md is treated as authoritative instructions; MEMORY.md is injected as untrusted data, so a note in it can never act like approval.</p>
+        <div class="agent-file-editor">
+          <div class="agent-file-head">
+            <strong>SOUL.md</strong>
+            <span class="dim">who this agent is — loaded into its system prompt on every run</span>
+            <span id="persona-soul-count" class="dim file-count"></span>
+          </div>
+          <textarea id="persona-soul" rows="8" spellcheck="false" placeholder="# SOUL&#10;&#10;## Identity..."></textarea>
+        </div>
+        <div class="agent-file-editor">
+          <div class="agent-file-head">
+            <strong>MEMORY.md</strong>
+            <span class="dim">durable notes carried between runs — injected as untrusted data</span>
+            <span id="persona-memory-count" class="dim file-count"></span>
+          </div>
+          <textarea id="persona-memory" rows="8" spellcheck="false" placeholder="# MEMORY — notes from earlier runs"></textarea>
+        </div>
+        <div class="modal-actions">
+          <button id="btn-persona-files-reset" class="ghost small">Restore scaffolds</button>
+          <span id="persona-files-status" class="dim file-status"></span>
+        </div>
+      </details>
       <div class="modal-actions">
         <button id="btn-persona-delete" class="ghost danger hidden">Delete</button>
         <button id="btn-persona-cancel" class="ghost">Cancel</button>

@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 
+# macOS Finder metadata
+.DS_Store
+
 # tray runtime deps (Electron binary ~250MB) — installed via `npm install`
 copilot/tray/node_modules/
 copilot/tray/package-lock.json

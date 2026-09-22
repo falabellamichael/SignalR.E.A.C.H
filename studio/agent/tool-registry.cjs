@@ -93,6 +93,33 @@ function resolveInProject(projectDir, requested) {
   return resolved;
 }
 
+/* Resolve the `memory` tool to (store, key) for THIS run.
+ *
+ * The loop supplies its own AgentSoulStore + soulKey, which is the
+ * authoritative path: the store owns the rolling window, so what the agent
+ * appends is the exact text its next prompt reads back. `ctx.soulDir` — the
+ * same directory, already resolved by the loop from that same key — is the
+ * documented fallback, so a caller that knows only the directory still gets
+ * identical behaviour: the fallback rebuilds a store rooted at the directory's
+ * parent (the agent store root by construction) with the directory name as the
+ * key. Both name the agent's OWN folder; neither comes from tool arguments, so
+ * an agent can never point this tool at another agent's files.
+ *
+ * Returns null only when this run genuinely has no memory directory. */
+function memoryStoreFromCtx(ctx) {
+  const key = String(ctx && ctx.soulKey || '').trim();
+  const store = ctx && ctx.soulStore;
+  if (store && key && typeof store.read === 'function' && typeof store.append === 'function') {
+    return { store, key };
+  }
+  const dir = String(ctx && ctx.soulDir || '').trim();
+  if (!dir) return null;
+  const { AgentSoulStore, sanitizeAgentKey } = require('./agent-soul.cjs');
+  const dirKey = sanitizeAgentKey(path.basename(dir));
+  if (!dirKey) return null;
+  return { store: new AgentSoulStore(path.dirname(dir)), key: dirKey };
+}
+
 const CORE_TOOLS = {
   read: {
     class: 'read', tier: 'core', approval: false, budget: Infinity,
@@ -271,6 +298,52 @@ const CORE_TOOLS = {
       return ctx.browserExecutor ? ctx.browserExecutor('open', args, ctx) : { ok: false, error: 'The in-app browser is not available.' };
     },
   },
+  /* The agent's OWN durable memory (MEMORY.md), next to its SOUL.md. This is
+   * what makes the files 'writable by the agent' rather than only by the UI:
+   * without it an agent can be TOLD what it remembers but can never record
+   * anything itself, and the memory would only ever change by hand-editing.
+   *
+   * The path comes from the loop's OWN agent directory (its soulStore + soulKey,
+   * or ctx.soulDir — see memoryStoreFromCtx), never from args: an agent must not
+   * be able to point this tool at another agent's files, let alone a project
+   * path. No approval — it writes a private 0600 file in userData, not the
+   * user's project, and it is append-only. */
+  memory: {
+    class: 'write', tier: 'core', approval: false, budget: 40000,
+    help: "reads or appends this agent's own durable MEMORY.md (notes carried between runs). Args: op 'read'|'append', entry (the note, required when appending).",
+    example: { action: 'memory', op: 'append', entry: 'The audit suite runs in about 40 seconds.' },
+    async execute(args, ctx) {
+      /* Routed through the loop's OWN AgentSoulStore + key, never through
+       * args: an agent must not be able to point this tool at another agent's
+       * files. The store's rolling window (agent-soul.cjs) is the single
+       * writer, so what the agent appends is exactly what its next prompt
+       * reads back — a second write path with its own cap would let new
+       * notes outgrow the window and vanish from the agent's own memory. */
+      const resolved = memoryStoreFromCtx(ctx);
+      if (!resolved) return { ok: false, error: 'This run has no agent memory directory, so MEMORY.md is unavailable.' };
+      const { store, key } = resolved;
+      const op = String(args.op || 'read').trim().toLowerCase();
+      if (op === 'read') {
+        const text = store.read(key, 'memory');
+        return text ? { ok: true, op: 'read', memory: text }
+          : { ok: true, op: 'read', memory: '', note: 'This agent has no MEMORY.md yet.' };
+      }
+      if (op !== 'append') return { ok: false, error: `Unknown memory op '${op}'. Use 'read' or 'append'.` };
+      const { MAX_MEMORY_ENTRY_CHARS } = require('./agent-soul.cjs');
+      const entry = String(args.entry ?? '').trim().slice(0, MAX_MEMORY_ENTRY_CHARS);
+      if (!entry) return { ok: false, error: 'An entry is required when op is \"append\".' };
+      const res = store.append(key, 'memory', '- ' + new Date().toISOString() + ' — ' + entry);
+      return res.ok
+        ? {
+          ok: true, op: 'append', chars: res.chars,
+          // The file size AFTER the append, so a caller can confirm the note
+          // actually landed on disk instead of trusting the call's own word.
+          bytes: Buffer.byteLength(store.read(key, 'memory'), 'utf8'),
+          dropped: res.dropped, appended: entry.slice(0, 500),
+        }
+        : { ok: false, error: res.err };
+    },
+  },
   todo_write: {
     class: 'write', tier: 'core', approval: false, budget: 40000,
     help: 'creates or updates the structured plan / checklist for multi-step tasks.',
@@ -438,7 +511,9 @@ function namesByTier(tier) {
   return Object.keys(TOOLS).filter((name) => TOOLS[name].tier === tier);
 }
 
-const CORE_PROMPT_TOOLS = ['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'browser', 'browser.click', 'browser.type'];
+/* Described in the default (JSON-contract) prompt. `memory` belongs here: an
+ * agent that is never told it can read/append its own memory will not use it. */
+const CORE_PROMPT_TOOLS = ['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'browser', 'browser.click', 'browser.type', 'memory'];
 
 function toolHelp(tier = 'core', disabled = []) {
   const tiers = Array.isArray(tier) ? tier : [tier];

@@ -96,6 +96,12 @@ contextBridge.exposeInMainWorld('reach', {
   roles: {
     list: () => ipcRenderer.invoke('roles:list'),
   },
+  // SOUL.md + MEMORY.md for one agent (keyed by persona id).
+  soul: {
+    get: (key, kind) => ipcRenderer.invoke('soul:get', { key, kind }),
+    set: (key, kind, text) => ipcRenderer.invoke('soul:set', { key, kind, text }),
+    defaults: (name, role) => ipcRenderer.invoke('soul:defaults', { name, role }),
+  },
   teams: {
     list: () => ipcRenderer.invoke('teams:list'),
     get: (id) => ipcRenderer.invoke('teams:get', id),

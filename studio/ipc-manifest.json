@@ -385,6 +385,27 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "soul:defaults": {
+    "module": "main.mjs",
+    "args": [
+      "{ name, role }"
+    ],
+    "returns": "{ ok, soul, memory } — the scaffold templates for a NEW agent"
+  },
+  "soul:get": {
+    "module": "main.mjs",
+    "args": [
+      "{ key, kind }"
+    ],
+    "returns": "{ ok, kind, text, exists: {soul,memory}, caps: {soul,memory} }"
+  },
+  "soul:set": {
+    "module": "main.mjs",
+    "args": [
+      "{ key, kind, text }"
+    ],
+    "returns": "{ ok, chars, truncated } or { ok:false, err }"
+  },
   "shell:openDir": {
     "module": "main.mjs",
     "args": [

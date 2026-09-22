@@ -17,8 +17,8 @@ for literal `true`. Other gaps listed below remain open.
 
 | Field | Value | Command |
 | --- | --- | --- |
-| Registered handlers | **80** | `grep -oE "ipcMain\.handle\('[^']+'" studio/main.mjs \| sort -u \| wc -l` |
-| Preload invoke channels | **81** (80 static + 1 dynamic) | `grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs \| sort -u \| wc -l` |
+| Registered handlers | **86** | `grep -oE "ipcMain\.handle\('[^']+'" studio/main.mjs \| sort -u \| wc -l` |
+| Preload invoke channels | **87** (86 static + 1 dynamic) | `grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs \| sort -u \| wc -l` |
 | Event listeners (main→renderer) | 16 | `grep -c "ipcRenderer.on(" studio/preload.cjs` |
 | Synchronous channels | 1 (`theme:get`) | `grep -c "sendSync" studio/preload.cjs` |
 
@@ -26,8 +26,8 @@ for literal `true`. Other gaps listed below remain open.
 > in `main.mjs` contains the literal string. Count registrations, not mentions:
 >
 > ```bash
-> grep -oE "ipcMain\.handle\('[^']+'" studio/main.mjs | sort -u | wc -l              # → 80
-> grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs | sort -u | wc -l       # → 81
+> grep -oE "ipcMain\.handle\('[^']+'" studio/main.mjs | sort -u | wc -l              # → 86
+> grep -oE "ipcRenderer\.invoke\('[^']+'" studio/preload.cjs | sort -u | wc -l       # → 87
 > ```
 >
 > Earlier revisions of this file said 74/75 and 14 listeners. Those numbers had drifted by six
@@ -100,7 +100,10 @@ because its callee does. **GAP**: no check on this argument; see §3.
 | `teams:resolveEdit` | `{editId, accepted}` | PAREN |
 | `teams:answerQuestion` | `{questionId, answer}` | PAREN |
 | `runs:stop` | (none) | OK |
-| `personas:*` | `id` / `persona` / `{id,...patch}` | PAREN (store throws→caught) |
+| `personas:*` | `id` / `persona` / `{id,...patch}` |
+| `soul:get` | `{key, kind}` |
+| `soul:set` | `{key, kind, text}` |
+| `soul:defaults` | `{name, role}` | PAREN (store throws→caught) |
 | `roles:list` | (none) | OK |
 
 ### Files, project, shell

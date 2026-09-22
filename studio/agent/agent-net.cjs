@@ -23,6 +23,10 @@
  *   await cycle detection + timeout, so A↔B cannot deadlock a run
  */
 
+/* sha1 is used by workerSoulKey to bound an over-long identity key down to the
+ * store's key cap. It is a length-bounding digest, not a security primitive. */
+const crypto = require('node:crypto');
+
 const { AgentLoop } = require('./agent-loop.cjs');
 const { MemoryStore } = require('./memory-store.cjs');
 const { RunControl } = require('./run-control.cjs');
@@ -40,6 +44,8 @@ const TRANSCRIPT_CHARS = 4000;
 const OUTPUT_PREVIEW = 4000;
 const MAX_OPERATOR_MESSAGES_PER_AGENT = 20;
 const MAX_OPERATOR_CHARS_PER_AGENT = 40000;
+/* Mirrors agent-soul.cjs MAX_KEY_CHARS: the store refuses a longer key. */
+const MAX_WORKER_KEY_CHARS = 64;
 
 /* Links-mode completion declaration: a member ends a message (or its final
  * answer) with this line to say the WHOLE task is done. Scanned on every
@@ -57,6 +63,36 @@ function cleanOutput(text) {
   } catch {
     return String(text || '').trim();
   }
+}
+
+/*
+ * The identity key for a SPAWNED worker's OWN SOUL.md + MEMORY.md.
+ *
+ * Derived from (parent identity, worker name) rather than from the run-scoped
+ * net id, because memory is only worth writing if the same worker can read it
+ * back: a helper named "Auditor" spawned by persona P finds its own notes on
+ * the next run, while an "Auditor" under a different persona is a different
+ * agent with a different history. Keying on the net id would make every memory
+ * write unreadable one run later.
+ *
+ * Returns '' when the parent has no identity: two crews must never end up
+ * sharing one memory file, so no key is invented in that case and the worker
+ * simply runs without soul files, as it did before this feature. The result
+ * always satisfies sanitizeAgentKey — leading alphanumeric, one segment, no
+ * '..', within the store's cap — so it can never escape <root>/agents.
+ */
+function workerSoulKey(parentKey, name) {
+  const parent = String(parentKey || '').trim();
+  if (!parent) return '';
+  const slug = String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'worker';
+  const suffix = `-worker-${slug}`;
+  const full = parent + suffix;
+  if (full.length <= MAX_WORKER_KEY_CHARS) return full;
+  /* Long persona ids are normal eventually, so bound deterministically with a
+   * digest of the FULL key: the name-derived tail stays stable, and two long
+   * parents with identical prefixes still get different keys. */
+  const digest = crypto.createHash('sha1').update(full).digest('hex').slice(0, 8);
+  return parent.slice(0, MAX_WORKER_KEY_CHARS - suffix.length - 9) + suffix + '-' + digest;
 }
 
 /* agentId -> net, so collab tools can find their network from tool context. */
@@ -102,6 +138,10 @@ class AgentNet {
     /* Links mode exchange budget: total member-to-member messages allowed in
      * the run (3× a chain's rate). Null = unlimited (all other modes). */
     linkBudget = null,
+    /* SOUL.md + MEMORY.md store (agent/agent-soul.cjs). Members read their own
+     * persona's files; this is also what lets anything they spawn own its own
+     * pair. Null keeps pre-feature behaviour (no soul files, no memory tool). */
+    soulStore = null,
   } = {}) {
     this.budgets = budgets;
     this.agentSettings = agentSettings;
@@ -109,6 +149,7 @@ class AgentNet {
     this.featureMask = featureMask;
     // Subagents run tools too, so they share the same security audit log.
     this.auditLog = auditLog;
+    this.soulStore = soulStore;
     this.nativeTools = !!nativeTools;
     this.onSettled = onSettled;
     this.onActivity = onActivity;
@@ -160,7 +201,7 @@ class AgentNet {
 
   /* Register an agent the net did not create itself (a roster member). The
    * caller owns its loop; the net only tracks and routes messages to it. */
-  register({ agentId, name, model = '', prompt = '', depth = 0, parentId = null, loop, store, task = '' }) {
+  register({ agentId, name, model = '', prompt = '', depth = 0, parentId = null, loop, store, task = '', soulKey = '' }) {
     const rec = {
       id: agentId,
       name: String(name || agentId),
@@ -171,6 +212,10 @@ class AgentNet {
       origin: 'roster',
       loop,
       store,
+      /* The identity whose SOUL.md/MEMORY.md this member reads. Anything it
+       * spawns derives its OWN key from this, so a worker becomes its own
+       * agent with its own memory instead of a second writer to the member's. */
+      soulKey: String(soulKey || ''),
       status: 'running',
       output: '',
       error: null,
@@ -188,7 +233,7 @@ class AgentNet {
   /* Pre-register a roster member BEFORE its loop exists, so the whole crew is
    * visible to agent.list / agent.send / agent.status from the first turn
    * (chain mode runs members later; they must still be addressable). */
-  preRegister({ agentId, name, model = '', prompt = '', depth = 0, task = '', endpoint = '', accessKey = '' }) {
+  preRegister({ agentId, name, model = '', prompt = '', depth = 0, task = '', endpoint = '', accessKey = '', soulKey = '' }) {
     if (this.agents.has(agentId)) return this.agents.get(agentId);
     const rec = {
       id: agentId,
@@ -211,6 +256,10 @@ class AgentNet {
        * accessKey is never emitted in any event or log. */
       endpoint: String(endpoint || ''),
       accessKey: String(accessKey || ''),
+      /* Identity key for this member (its persona id). Held from the first
+       * turn so a worker spawned before the member's loop exists still derives
+       * its own key from the right agent. */
+      soulKey: String(soulKey || ''),
       startedAt: Date.now(),
       finishedAt: null,
       messagesSent: 0,
@@ -222,11 +271,15 @@ class AgentNet {
   }
 
   /* Attach the live loop+store once a pre-registered member starts. */
-  attach(agentId, loop, store) {
+  attach(agentId, loop, store, soulKey = '') {
     const rec = this.agents.get(agentId);
     if (!rec) return null;
     rec.loop = loop;
     rec.store = store;
+    /* Late-bound identity: a caller that built the loop itself (TeamRunner) may
+     * only learn the persona key here. An empty value never CLEARS a key that
+     * preRegister already set. */
+    if (soulKey) rec.soulKey = String(soulKey);
     return rec;
   }
 
@@ -262,7 +315,7 @@ class AgentNet {
 
   /* Spawn a background worker. Returns immediately with an id — the caller
    * keeps working and can poll (agent.status), await, or message it. */
-  spawn({ name, model = '', prompt = '', task, parentId = null, depth = 0, callerName = '', endpoint = '', accessKey = '', deferStart = false, operatorAdded = false }) {
+  spawn({ name, model = '', prompt = '', task, parentId = null, depth = 0, callerName = '', endpoint = '', accessKey = '', deferStart = false, operatorAdded = false, soulKey: explicitSoulKey = '' }) {
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
     if (this.paused) return { ok: false, error: 'The crew is paused by the user.' };
     const cleanTask = String(task || '').trim();
@@ -300,6 +353,39 @@ class AgentNet {
       || (parentRec && parentRec.model)
       || this.defaultModel
       || 'gpt-4o-mini';
+    /* This worker's OWN SOUL.md + MEMORY.md.
+     *
+     * A spawned worker is a full agent — same loop, same tools, same review
+     * flow as its parent — so it owns its own persona file and its own memory
+     * rather than appending to the agent that spawned it. See workerSoulKey for
+     * why the key is derived from (parent identity, name) and not from the
+     * run-scoped net id. */
+    const workerName = String(name).trim();
+    /* An explicitly supplied identity wins over the derived one.
+     *
+     * That is the operator-added-helper case: a user joins a saved persona to
+     * a running crew, and it should arrive WITH that persona's soul and memory
+     * — it IS the agent they created on the Create page — rather than as an
+     * anonymous worker with files of its own under a derived name. A supplied
+     * key is only honoured when the store itself accepts it (paths() returns
+     * null for a key it would refuse), so a tampered or foreign id degrades to
+     * the derived key instead of naming another agent's directory. */
+    const requestedKey = String(explicitSoulKey || '').trim();
+    const requestedOk = requestedKey && (!this.soulStore || typeof this.soulStore.paths !== 'function'
+      || this.soulStore.paths(requestedKey) !== null);
+    const soulKey = requestedOk ? requestedKey : workerSoulKey(parentRec && parentRec.soulKey, workerName);
+    if (this.soulStore && soulKey) {
+      try {
+        /* Best-effort, exactly like TeamRunner's member scaffold: a soul that
+         * cannot be written must never fail a spawn. */
+        this.soulStore.scaffold(soulKey, {
+          name: workerName,
+          /* The caller's `prompt` IS this worker's role. First line only, and
+           * bounded: the template renders it as ONE bullet in Identity. */
+          role: String(prompt || '').trim().split(/\r?\n/)[0].slice(0, 200),
+        });
+      } catch { /* soul files are best-effort; never break a spawn over them */ }
+    }
     const loop = new AgentLoop({
       agentId: id,
       store,
@@ -310,6 +396,10 @@ class AgentNet {
       reachExecutor: this.reachExecutor,
       browserExecutor: this.browserExecutor,
       personaPrompt: String(prompt || ''),
+      /* Its own identity, so the `memory` tool resolves ITS directory and the
+       * prompt carries ITS soul — never another agent's. */
+      soulStore: this.soulStore,
+      soulKey,
       nativeTools: this.nativeTools,
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets ? { ...this.budgets, maxRounds: this.budgets.subagentMaxRounds } : null,
@@ -351,6 +441,8 @@ class AgentNet {
       loop, store, status: queuedForTeam ? 'queued' : 'starting', output: '', error: null, task: cleanTask,
       // Stored so a grandchild inherits the same provider (see spawn()).
       endpoint: useEndpoint || '', accessKey: useAccessKey || '',
+      /* Its own identity key, so anything THIS worker spawns derives from it. */
+      soulKey,
       startedAt: Date.now(), finishedAt: null, messagesSent: 0, messagesReceived: 0,
       spawnedBy: callerName || null,
       // Only user-added Links helpers opt into the TeamRunner's roster
@@ -932,7 +1024,9 @@ module.exports = {
   cleanOutput,
   linksCompleteIn,
   LINKS_COMPLETE_RE,
+  workerSoulKey,
   MAX_AGENTS,
   MAX_DEPTH,
+  MAX_WORKER_KEY_CHARS,
   SUBAGENT_MAX_ROUNDS,
 };

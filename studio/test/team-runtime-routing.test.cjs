@@ -104,6 +104,9 @@ test('run-only agents receive resolved routing and never mutate the saved roster
     accessKey: 'fixture-secret',
     deferStart: true,
     operatorAdded: true,
+    // No saved persona was adopted, so no identity is claimed: the net derives
+    // one for the helper from its parent (or creates none at all).
+    soulKey: '',
   }]);
 
   runner.paused = true;
@@ -114,6 +117,28 @@ test('run-only agents receive resolved routing and never mutate the saved roster
   runner.team.mode = 'parallel';
   assert.match(runner.addRuntimeAgent({ name: 'Parallel helper' }).error, /Links teams/i);
   assert.equal(calls.spawns.length, 1);
+});
+
+test('a helper adopted from a saved persona joins with its persona identity', () => {
+  // The operator-adds-an-agent path: when the helper IS a saved persona, it
+  // arrives with that persona's own SOUL.md + MEMORY.md rather than as an
+  // anonymous worker with derived files. The identity is passed straight
+  // through to the net, which is where the key is honoured (and validated).
+  const { runner, calls } = fixture();
+  const result = runner.addRuntimeAgent({
+    name: 'Auditor',
+    prompt: 'You audit.',
+    task: 'Check the patch.',
+    soulKey: 'persona-auditor',
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls.spawns.length, 1);
+  assert.equal(calls.spawns[0].soulKey, 'persona-auditor');
+  // Everything else about the helper is unchanged by the identity.
+  assert.equal(calls.spawns[0].deferStart, true);
+  assert.equal(calls.spawns[0].operatorAdded, true);
+  assert.equal(calls.spawns[0].parentId, null);
 });
 
 test('Links completion closes operator mail and helper admission immediately', () => {

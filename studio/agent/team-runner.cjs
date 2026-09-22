@@ -117,7 +117,11 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null, jev = null, featureMask = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null, jev = null, featureMask = null, soulStore = null }) {
+    // SOUL.md + MEMORY.md store (agent/agent-soul.cjs). Every member reads ITS
+    // OWN persona's files, keyed by persona id, so one persona carries one soul
+    // and one memory into every crew it joins. Null keeps pre-feature behaviour.
+    this.soulStore = soulStore;
     this.agentSettings = agentSettings;
     this.jev = jev;
     this.featureMask = featureMask;
@@ -345,6 +349,11 @@ class TeamRunner {
       budgets: this.budgets,
       auditLog: this.auditLog,
       nativeTools: this.nativeTools,
+      /* SOUL.md + MEMORY.md store. Handed to the net so anything a member
+       * SPAWNS owns its own pair, derived from the member's persona key — a
+       * spawned worker is a full agent, not a second writer to its parent's
+       * memory. Null-safe: without a store the worker runs exactly as before. */
+      soulStore: this.soulStore,
       /* Links owns the crew conversation: roster members accept messages
        * between turns, and the total exchange count is capped at 3× a chain
        * crew's rate. Both options are inert in the other modes. */
@@ -391,6 +400,10 @@ class TeamRunner {
          * exist. The key travels in-process only and is never emitted. */
         endpoint: conn.endpoint,
         accessKey: conn.accessKey,
+        /* The member's OWN identity (its persona id, not the run-scoped
+         * `m<i>-<id>` key): a worker it spawns derives its own key from this,
+         * and the roster position must never change which files an agent owns. */
+        soulKey: p.id,
       });
     });
 
@@ -520,6 +533,16 @@ class TeamRunner {
 
   async _runMember(persona, index, prompt, { keep = false } = {}) {
     const key = `m${index}-${persona.id}`;
+    /* Give this member its OWN SOUL.md + MEMORY.md if it does not have them
+     * yet. A persona created before the soul feature existed, or whose files
+     * were removed by hand, would otherwise run through a crew with no persona
+     * or memory at all while a fresh one had both — the difference would be
+     * invisible until an agent behaved differently than its card suggested.
+     * scaffold() only ever creates MISSING files, so this can never overwrite
+     * an agent's own writing, and a failure here must not stop the run: the
+     * member simply runs without a soul block, exactly as before the feature. */
+    try { this.soulStore?.scaffold?.(persona.id, { name: persona.name, role: this.roleOf(index) }); }
+    catch { /* soul files are best-effort; never break the run over them */ }
     const store = new MemoryStore();
     Object.assign(store.get(key).settings, structuredClone(this.agentSettings));
     /* THIS is the per-member routing that makes Teams the multi-endpoint case.
@@ -539,6 +562,11 @@ class TeamRunner {
       reachExecutor: this.reachExecutor,
       browserExecutor: this.browserExecutor,
       personaPrompt: persona.prompt || '',
+      soulStore: this.soulStore,
+      // The KEY is the persona id, NOT the run-scoped member key (`m0-<id>`):
+      // the roster position must not change which files an agent owns, or a
+      // persona would lose its memory every time the roster was reordered.
+      soulKey: persona.id,
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
       jev: this.jev,
@@ -582,7 +610,7 @@ class TeamRunner {
     // peers can message/await it, and deliver anything buffered while pending.
     let fullPrompt = prompt;
     if (this.net) {
-      const rec = this.net.attach(key, loop, store);
+      const rec = this.net.attach(key, loop, store, persona.id);
       if (rec) {
         rec.control = control;
         rec.status = control.paused ? 'paused' : 'running';
@@ -1211,7 +1239,7 @@ class TeamRunner {
    * snapshot roster indexes at dispatch. The worker still has tools, its own
    * tab/control, direct team messaging, and is awaited before run finalization;
    * Links synthesis also incorporates spawned-worker results. */
-  addRuntimeAgent({ name, model = '', prompt = '', task = '', role = '', endpoint = '', accessKey = '' } = {}) {
+  addRuntimeAgent({ name, model = '', prompt = '', task = '', role = '', endpoint = '', accessKey = '', soulKey = '' } = {}) {
     if (this.team.mode !== 'links') return { ok: false, error: 'Run-only agents can join Links teams. Parallel and chain teams have a fixed result roster.' };
     if (!this.net || !this.running || this.stopped || !this.acceptingRuntimeAgents || this._linksDone()) return { ok: false, error: 'The team run is finalizing and is no longer accepting agents.' };
     if (this.paused || this.userPaused) return { ok: false, error: 'Resume the team before adding an agent.' };
@@ -1222,6 +1250,10 @@ class TeamRunner {
       name, model, prompt: instructions, task: assignment,
       parentId: null, depth: 0, callerName: 'You', endpoint, accessKey,
       deferStart: true, operatorAdded: true,
+      /* A helper adopted FROM a saved persona joins with that persona's own
+       * soul and memory: it is the agent the user created, not an anonymous
+       * worker. Empty (a hand-typed name) lets the net derive its own key. */
+      soulKey,
     });
     if (result.ok) {
       if (this._linksPump) this._linksPump();

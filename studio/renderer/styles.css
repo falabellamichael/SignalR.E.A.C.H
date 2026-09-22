@@ -837,6 +837,37 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 }
 .team-card-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
 
+/* SOUL.md + MEMORY.md editors inside the persona modal. Collapsed by default:
+   the modal is already long, and most edits only touch name/model/instructions.
+   Each editor is a labelled textarea with a live character count against the
+   same cap main.mjs enforces, so the user sees a trim coming rather than
+   discovering it after saving. */
+.agent-files { margin: 4px 0 2px; border-top: 1px solid var(--line); padding-top: 8px; }
+.agent-files > summary {
+  cursor: pointer; font-size: 12.5px; color: var(--gold); padding: 2px 0;
+  list-style: none;
+}
+.agent-files > summary::-webkit-details-marker { display: none; }
+.agent-files > summary::before { content: '\25B8 '; }
+.agent-files[open] > summary::before { content: '\25BE '; }
+.agent-files > summary .dim { color: var(--dim); }
+.agent-file-editor { margin-top: 8px; }
+.agent-file-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px;
+}
+.agent-file-head strong { color: var(--text); }
+.agent-file-head .dim { font-size: 11.5px; flex: 1; min-width: 0; }
+.agent-file-head .file-count { flex: none; font-variant-numeric: tabular-nums; }
+.agent-file-editor textarea {
+  width: 100%; margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; line-height: 1.5; resize: vertical;
+}
+.agent-files .modal-actions {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px; justify-content: flex-start;
+}
+.agent-files .file-status { font-size: 11.5px; }
+.agent-files .modal-actions button { margin-left: 0; }
+
 /* team builder */
 .team-members { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; }
 .team-member-row {
