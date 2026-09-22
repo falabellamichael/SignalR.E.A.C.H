@@ -1,5 +1,35 @@
 # Changelog
 
+## [26.9.6](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.5...v26.9.6) (2026-09-22)
+
+
+### Features
+
+* add composer routing and persistent model details ([2b760d2](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/2b760d25d7f04a20ec964ef887fcb30729d78ef7))
+* add Jev Auto routing and compact chat controls ([67cdae6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/67cdae64f6585997969f01c69a1572b983d34f11))
+* add persistent team chat and conversation follow-ups ([6fb2066](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6fb20663b3a96ba96a1fc93b8ad52497ace70c22))
+* add work-conserving Team Nurse ([b1acfae](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b1acfae55ea7e637c1614a4564abd90acb8b99c5))
+* **bridge:** stream the agent's reasoning and edits to clients ([3a480d7](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3a480d7eab327b1283bc45426b6a9750634d17fc))
+* **studio:** add agent soul and memory, cap conversations ([1b51486](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1b51486c0d6fe6f2387ae1720e061116cbe99872))
+* **studio:** add project removal and include browser engine updates ([ff56eda](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ff56eda1a9b9355684815c5fb47b6c7713e1bb0b))
+* **studio:** harden agent recovery and implement improvement plan ([a0fe80c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a0fe80c8ad033b3a3e2187a698666e674a52911d))
+* **studio:** refresh team UI and consolidate app improvements ([4924b31](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/4924b31ecddd4c7a626a159bba3aecb3cf0870af))
+
+
+### Bug Fixes
+
+* show full composer suggestions on hover ([fe13911](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/fe13911cc930b7437a5e97376c9bf6c5251165a2))
+* **studio:** align embedded browser bounds with app zoom ([e6cd493](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e6cd49335458d40b257f9e924f108f5b9ff67bf8))
+* **studio:** center cards and unblock Links completion ([0749309](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0749309c71379835566ffc60e1fb66ad3c0e4015))
+* **studio:** collapse activity by default and bound expanded traces ([895ec32](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/895ec32b526e63622aa9f3bb44b5fea8c739041f))
+* **studio:** isolate concurrent team runs by conversation ([e4d2cc3](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e4d2cc3374734ba3f8c37dc55ebbd15424d6ef02))
+* **studio:** restore free Agents scrolling beneath pinned headers ([2b74104](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/2b7410411bed2f05eb7c8de1686ac99420485279))
+* **studio:** reuse team decks and recall tabs on upward scroll ([c338dfb](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c338dfbcd7178f4b622699d1ac84f6fd96d2b45f))
+* **studio:** tighten AI response spacing ([15c878c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/15c878c877f000ca73a1f342552d631afe8709b1))
+* **tray:** keep the browser bridge alive and explainable ([ad30b26](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ad30b2668deac050ca34e395790ccc56865070bf))
+* **tray:** never drop the end of a browser-provider answer ([f280fdf](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f280fdffa2c09a72085fe2f21c0e98306933dcda))
+* **tray:** resume CodeGPT runs the upstream cut mid-stream ([0061b12](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0061b128652b5178e67875130cb4de1457b444aa))
+
 ## [26.9.5](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.4...v26.9.5) (2026-09-19)
 
 
