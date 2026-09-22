@@ -15,6 +15,11 @@ async function resolveEndpoint(raw, depth = 0) {
     const target = (await response.text()).trim();
     return resolveEndpoint(target, depth + 1);
   }
+  // A pasted endpoint may already carry a version segment AND a trailing API
+  // path (".../v1/models"), which the plain /v1$ strip below cannot see because
+  // the path ends in "/models", producing ".../v1/models/v1" and a 404. Reduce a
+  // known API path back to its version root first, so both spellings converge.
+  url.pathname = url.pathname.replace(/\/(?:models|chat\/completions|completions)\/?$/, '');
   url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
   url.search = ''; url.hash = '';
   return url.toString().replace(/\/$/, '');
