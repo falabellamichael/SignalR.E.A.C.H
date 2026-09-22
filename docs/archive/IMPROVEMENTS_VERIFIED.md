@@ -1,4 +1,9 @@
-# REACH Studio — Verified Improvement List
+> ⚠ **SUPERSEDED — archived 2026-09-22.** The single canonical improvement plan is now
+> [`docs/IMPROVEMENTS.md`](../IMPROVEMENTS.md). The phased detail in this file (cross-surface
+> items, frozen interfaces I1–I6, invariants A1–A9) was merged into it. This copy is kept for
+> history only; its baseline numbers are stale. Do not cite it, do not work from it.
+
+# REACH Studio — Verified Improvement List (archived copy)
 
 This is the active plan. The four older improvement documents are preserved in
 `docs/archive/` as historical proposals; their counts, worker assignments and
@@ -74,6 +79,8 @@ write, installed-app restart, or real-profile migration was performed in this ba
 
 Run `bash docs/verify-improvements.sh` for current counts. It does not execute tests
 or crawl dependencies/build output.
+
+(Original §1 text preserved below. Its numbers predate the 2026-09-22 consolidation.)
 
 | Metric | Measured in this batch |
 | --- | --- |

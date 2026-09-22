@@ -45,7 +45,7 @@ tests. The CI baseline is informational, not a coverage-percentage gate.
 
 For each change, add a regression test, run `npm test`, and run `npm run smoke`
 when changing main, preload or renderer behavior. Update the item's status and
-evidence in [the verified improvement plan](../docs/IMPROVEMENTS_VERIFIED.md).
+evidence in [the canonical improvement plan](../docs/IMPROVEMENTS.md).
 Use `PARTIAL` when a CI-only platform check or a larger part of an item remains.
 Do not label a passing mock as proof of an actual Windows build or OS notification.
 Preserve unrelated local changes; do not discard or stash another contributor's

@@ -92,8 +92,8 @@ tests.test_browser` → 38/38; `node --test tests/browser_engine.test.cjs` →
    uses Chromium's own `resolveHost()` so check and connect resolve the same
    address. *(BROWSER_ENGINE.md §5, §7)*
 4. **Studio and the relay are separate browser surfaces and must not be
-   merged silently.** Studio uses in-process `WebContentsView`s (item 5.2 of
-   `IMPROVEMENTS_VERIFIED.md` tracks consolidating the four implementations);
+   merged silently.** Studio uses in-process `WebContentsView`s (item 7.2 of
+   `IMPROVEMENTS.md` tracks consolidating the four implementations);
    docs must keep the boundary explicit. *(STUDIO_BROWSER.md §1)*
 5. **Studio agent ops are ref-based, not coordinate-based.** The agent reads
    the page, gets element `ref`s from `page.cjs`, and acts on refs; refs are
@@ -150,14 +150,14 @@ Each deep dive is organized the same way, so a reader can jump to any claim:
 Rules: cite `path:line` for every non-obvious claim; state limits as
 `measured` numbers; never copy a number from another doc without re-running
 the command; keep cross-links inside `docs/engines/` and to
-`IMPROVEMENTS_VERIFIED.md` (the one file allowed to state plan numbers).
+`IMPROVEMENTS.md` (the one file allowed to state plan numbers).
 
 ## Related
 
-- [`../IMPROVEMENTS_VERIFIED.md`](../IMPROVEMENTS_VERIFIED.md) — item 5.2
+- [`../IMPROVEMENTS.md`](../IMPROVEMENTS.md) — item 7.2
   ("Three browser engines coexist") is the open consolidation work this
-  directory is structured for; item 1.3 (guard `browser:command`) and
-  5.6 (parse coverage over the engine files).
+  directory is structured for; item 2.5 (guard `browser:command`) and
+  4.10 (parse coverage over the engine files).
 - [`../STUDIO_IPC.md`](../STUDIO_IPC.md) — the `browser:command` channel in
   the IPC surface table.
 - [`../../specs/AGENT_UPGRADE_PLAN.md`](../../specs/AGENT_UPGRADE_PLAN.md) —

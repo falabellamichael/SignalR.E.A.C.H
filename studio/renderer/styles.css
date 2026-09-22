@@ -228,6 +228,7 @@ footer {
 .modal-box {
   width: 440px; background: var(--panel); border: 1px solid var(--gold-dim);
   border-radius: 10px; padding: 22px; display: flex; flex-direction: column; gap: 10px;
+  max-height: min(92vh, 880px); overflow-y: auto; box-sizing: border-box;
 }
 .modal-box h3 { color: var(--gold); font-weight: normal; font-size: 20px; margin-bottom: 4px; }
 .modal-box label { font-size: 12px; color: var(--dim); letter-spacing: 1px; text-transform: uppercase; }
@@ -837,6 +838,81 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 }
 .team-card-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
 
+/* Persona editor modal. The dialog is a pinned FRAME: its title and its
+   Delete/Cancel/Save row stay put and only `.persona-modal-body` scrolls. That
+   matters at small windows and at raised zoom, where the content is taller than
+   the dialog — before this the whole box scrolled, so the action row sat below
+   the visible area and the agent could not be saved without hunting for it. */
+#persona-modal .modal-box {
+  width: min(780px, 94vw);
+  max-height: min(92vh, 880px);
+  overflow: hidden;          /* the body scrolls, never the frame */
+}
+.persona-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;             /* a flex child must be allowed to shrink */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;                 /* the box's gap, now inside the scrolling body */
+  padding-right: 2px;        /* keeps fields clear of the scrollbar */
+}
+/* Side-by-side agent options: Name | Connection, then Model | Connection
+   Policy. `min-width: 0` lets a column shrink below its content's intrinsic
+   width instead of forcing the row wider than the dialog. */
+.persona-options-row {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+.persona-options-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.persona-options-col .row {
+  width: 100%;
+}
+.persona-options-col .row input {
+  flex: 1;
+  min-width: 0;
+}
+.persona-conn-hint-col label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.persona-options-col .persona-conn-hint {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+/* Side-by-side SOUL.md | MEMORY.md. `align-items: start` keeps each editor's
+   own height, so a taller one cannot stretch the other; `resize: vertical`
+   still lets the user enlarge either. */
+.agent-files-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 8px;
+  align-items: start;
+}
+/* The action row is chrome: never let a long body squeeze it. */
+.persona-modal-actions { flex: 0 0 auto; }
+@media (max-width: 640px) {
+  .persona-options-row {
+    flex-direction: column;
+    gap: 8px;
+  }
+  .agent-files-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
 /* SOUL.md + MEMORY.md editors inside the persona modal. Collapsed by default:
    the modal is already long, and most edits only touch name/model/instructions.
    Each editor is a labelled textarea with a live character count against the
@@ -851,7 +927,7 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 .agent-files > summary::before { content: '\25B8 '; }
 .agent-files[open] > summary::before { content: '\25BE '; }
 .agent-files > summary .dim { color: var(--dim); }
-.agent-file-editor { margin-top: 8px; }
+.agent-file-editor { margin-top: 8px; min-width: 0; }
 .agent-file-head {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12px;
 }
@@ -860,7 +936,7 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 .agent-file-head .file-count { flex: none; font-variant-numeric: tabular-nums; }
 .agent-file-editor textarea {
   width: 100%; margin-top: 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px; line-height: 1.5; resize: vertical;
+  font-size: 12px; line-height: 1.5; resize: vertical; box-sizing: border-box;
 }
 .agent-files .modal-actions {
   display: flex; align-items: center; gap: 8px; margin-top: 10px; justify-content: flex-start;

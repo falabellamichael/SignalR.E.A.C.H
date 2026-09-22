@@ -1,7 +1,7 @@
 # Studio IPC contract
 
 **Generated from the working tree, item 1.4 of
-[`IMPROVEMENTS_VERIFIED.md`](./IMPROVEMENTS_VERIFIED.md) — the source of truth for the plan.**
+[`IMPROVEMENTS.md`](./IMPROVEMENTS.md) — the canonical improvement plan.**
 
 This is the authoritative list of the main↔renderer channel surface. `studio/preload.cjs`
 is the de-facto API contract; this document is the readable half of it. The machine-checked

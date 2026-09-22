@@ -113,7 +113,10 @@ test('paths() for a good key is always an immediate child of the root', () => {
   assert.equal(path.dirname(store.paths('a..b').dir), root);
 });
 
-test('a symlinked agent directory is refused for both read and write', () => {
+test('a symlinked agent directory is refused for both read and write', { skip: process.platform === 'win32' }, () => {
+  /* win32: fs.symlinkSync throws EPERM without developer mode or admin, so the
+   * fixture cannot be built — the containment itself (no symlink escape via
+   * sanitizeAgentKey/paths) is still covered by the other tests. */
   const root = tmpRoot();
   const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-outside-'));
   const store = new AgentSoulStore(root);
@@ -139,7 +142,12 @@ test('write caps both files, reports truncation, and creates them 0600', () => {
   assert.equal(memory.truncated, true);
 
   const stat = fs.statSync(store.paths('persona-cap').soul);
-  assert.equal(stat.mode & 0o777, 0o600, 'agent files are private (0600)');
+  /* win32 has no POSIX mode bits — stat.mode is 0o666-ish regardless of the
+   * store's 0600 request, so the privacy assertion is only expressible on
+   * POSIX. The store still passes the mode on every platform. */
+  if (process.platform !== 'win32') {
+    assert.equal(stat.mode & 0o777, 0o600, 'agent files are private (0600)');
+  }
   assert.equal(store.write('persona-cap', 'nope', 'x').ok, false, 'unknown kind refused');
 });
 

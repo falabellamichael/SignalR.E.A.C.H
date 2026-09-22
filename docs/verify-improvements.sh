@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fast, dependency-free snapshot for IMPROVEMENTS_VERIFIED.md.
+# Fast, dependency-free snapshot for docs/IMPROVEMENTS.md (the canonical plan).
 # Counts source only: never walk node_modules, dist, or live user-data.
 set -euo pipefail
 cd "$(dirname "$0")/.."

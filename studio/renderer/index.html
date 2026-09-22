@@ -712,54 +712,70 @@
   <div id="persona-modal" class="modal hidden">
     <div class="modal-box">
       <h3 id="persona-modal-title">New Custom Agent</h3>
-      <label>Name</label>
-      <input id="persona-name" type="text" placeholder="e.g. Security Auditor" spellcheck="false" />
-      <label>Connection (blank = let the team decide)</label>
-      <select id="persona-connection"></select>
-      <p class="dim field-hint persona-conn-hint">Pinning guarantees this agent always runs on that provider, even in a team that spreads across several. Leave it blank to use the team spread, or the active connection.</p>
-      <label>Model (blank = that connection's default)</label>
-      <div class="row">
-        <input id="persona-model" type="text" readonly placeholder="click Browse to pick from the connection" spellcheck="false" />
-        <button id="btn-persona-browse" class="ghost small">Browse&hellip;</button>
+      <div class="modal-body persona-modal-body">
+        <div class="persona-options-row">
+          <div class="persona-options-col">
+            <label for="persona-name">Name</label>
+            <input id="persona-name" type="text" placeholder="e.g. Security Auditor" spellcheck="false" />
+          </div>
+          <div class="persona-options-col">
+            <label for="persona-connection">Connection <span class="dim">(blank = team decides)</span></label>
+            <select id="persona-connection"></select>
+          </div>
+        </div>
+        <div class="persona-options-row">
+          <div class="persona-options-col">
+            <label for="persona-model">Model <span class="dim">(blank = connection default)</span></label>
+            <div class="row">
+              <input id="persona-model" type="text" readonly placeholder="click Browse to pick from connection" spellcheck="false" />
+              <button id="btn-persona-browse" class="ghost small">Browse&hellip;</button>
+            </div>
+          </div>
+          <div class="persona-options-col persona-conn-hint-col">
+            <label class="dim">Connection Policy</label>
+            <p class="dim field-hint persona-conn-hint">Pinning guarantees this agent runs on that provider; blank uses the team spread or active connection.</p>
+          </div>
+        </div>
+        <label for="persona-prompt">Instructions <span class="dim">(system prompt for this agent)</span></label>
+        <textarea id="persona-prompt" rows="4" placeholder="You are a meticulous security auditor. Review Reach contracts for reentrancy, participant-order bugs, and token-balance mistakes. Always compile before declaring work done."></textarea>
+        <!-- SOUL.md + MEMORY.md. These are the agent's own files on disk
+             (userData/agents/<id>/), not fields in the persona record, so the
+             operator can read, back up and hand-edit them outside the app. A new
+             agent has none yet: they are created when the persona is saved. -->
+        <details id="persona-files" class="agent-files">
+          <summary>SOUL.md &amp; MEMORY.md <span class="dim">&mdash; this agent's identity and memory</span></summary>
+          <p class="dim field-hint">Stored as plain markdown at <code>userData/agents/&lt;agent id&gt;/</code> &mdash; readable, diffable and hand-editable outside the app. SOUL.md is authoritative instructions; MEMORY.md is injected as untrusted data, so a note in it can never act like approval.</p>
+          <div class="agent-files-grid">
+            <div class="agent-file-editor">
+              <div class="agent-file-head">
+                <strong>SOUL.md</strong>
+                <span class="dim">who this agent is &mdash; loaded into system prompt</span>
+                <span id="persona-soul-count" class="dim file-count"></span>
+              </div>
+              <textarea id="persona-soul" rows="7" spellcheck="false" placeholder="# SOUL&#10;&#10;## Identity..."></textarea>
+            </div>
+            <div class="agent-file-editor">
+              <div class="agent-file-head">
+                <strong>MEMORY.md</strong>
+                <span class="dim">durable notes &mdash; injected as untrusted data</span>
+                <span id="persona-memory-count" class="dim file-count"></span>
+              </div>
+              <textarea id="persona-memory" rows="7" spellcheck="false" placeholder="# MEMORY &mdash; notes from earlier runs"></textarea>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button id="btn-persona-files-reset" class="ghost small">Restore scaffolds</button>
+            <span id="persona-files-status" class="dim file-status"></span>
+          </div>
+        </details>
       </div>
-      <label>Instructions (system prompt for this agent)</label>
-      <textarea id="persona-prompt" rows="7" placeholder="You are a meticulous security auditor. Review Reach contracts for reentrancy, participant-order bugs, and token-balance mistakes. Always compile before declaring work done."></textarea>
-      <!-- SOUL.md + MEMORY.md. These are the agent's own files on disk
-           (userData/agents/<id>/), not fields in the persona record, so the
-           operator can read, back up and hand-edit them outside the app. A new
-           agent has none yet: they are created when the persona is saved. -->
-      <details id="persona-files" class="agent-files">
-        <summary>SOUL.md &amp; MEMORY.md <span class="dim">— this agent's identity and memory</span></summary>
-        <p class="dim field-hint">Stored as plain markdown at <code>userData/agents/&lt;agent id&gt;/</code> — readable, diffable and hand-editable outside the app. SOUL.md is treated as authoritative instructions; MEMORY.md is injected as untrusted data, so a note in it can never act like approval.</p>
-        <div class="agent-file-editor">
-          <div class="agent-file-head">
-            <strong>SOUL.md</strong>
-            <span class="dim">who this agent is — loaded into its system prompt on every run</span>
-            <span id="persona-soul-count" class="dim file-count"></span>
-          </div>
-          <textarea id="persona-soul" rows="8" spellcheck="false" placeholder="# SOUL&#10;&#10;## Identity..."></textarea>
-        </div>
-        <div class="agent-file-editor">
-          <div class="agent-file-head">
-            <strong>MEMORY.md</strong>
-            <span class="dim">durable notes carried between runs — injected as untrusted data</span>
-            <span id="persona-memory-count" class="dim file-count"></span>
-          </div>
-          <textarea id="persona-memory" rows="8" spellcheck="false" placeholder="# MEMORY — notes from earlier runs"></textarea>
-        </div>
-        <div class="modal-actions">
-          <button id="btn-persona-files-reset" class="ghost small">Restore scaffolds</button>
-          <span id="persona-files-status" class="dim file-status"></span>
-        </div>
-      </details>
-      <div class="modal-actions">
+      <div class="modal-actions persona-modal-actions">
         <button id="btn-persona-delete" class="ghost danger hidden">Delete</button>
         <button id="btn-persona-cancel" class="ghost">Cancel</button>
         <button id="btn-persona-save" class="gold">Save</button>
       </div>
     </div>
   </div>
-
   <!-- Team builder modal -->
   <div id="team-modal" class="modal hidden">
     <div class="modal-box">
