@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('reach', {
   // Reach CLI
   getVersion: () => ipcRenderer.invoke('reach:version'),
   run: (cwd, args) => ipcRenderer.invoke('reach:run', { cwd, args }),
+  runProject: (cwd, args) => ipcRenderer.invoke('project:run', { cwd, args }),
   kill: (runId) => ipcRenderer.invoke('reach:kill', runId),
   onOutput: (cb) => {
     ipcRenderer.on('reach:output', (_e, d) => cb(d));

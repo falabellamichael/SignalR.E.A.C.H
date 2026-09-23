@@ -17,6 +17,9 @@ const confirmAction = message => window.ReachDialogs.confirm(message);
 let currentProject = null;
 let projectSelectionRevision = 0;
 let activeRunId = null;
+let awaitingRunId = false;
+const earlyRunEvents = [];
+let reachCliAvailable = false;
 let currentAgent = null;
 let jevAutoDefault = false;
 let jevAutoRoutingAgentId = null;
@@ -70,6 +73,9 @@ const projectName = $('#project-name');
 const projectPath = $('#project-path');
 const logEl = $('#log');
 const cmdInput = $('#cmd-input');
+const cmdMode = $('#cmd-mode');
+const cmdPrompt = $('#cmd-prompt');
+const cmdHint = $('#cmd-hint');
 const modal = $('#modal');
 const approvalModal = $('#approval-modal');
 const noAgent = $('#no-agent');
@@ -137,32 +143,42 @@ function logLine(cls, text) {
 }
 function clearLog() { logEl.innerHTML = ''; }
 
-reachApi.onOutput(({ runId, channel, data }) => {
-  if (runId !== activeRunId) return;
-  const cls = channel === 'err' ? 'err' : 'out';
-  for (const line of data.split('\n')) {
-    if (line === '') continue;
-    logLine(cls, line);
+function showRunEvent(event) {
+  if (event.runId !== activeRunId) {
+    // A short-lived command can emit output and exit before invoke() returns its
+    // runId. Keep those events until the request resolves so errors are visible.
+    if (awaitingRunId && earlyRunEvents.length < 200) earlyRunEvents.push(event);
+    return;
   }
-});
-reachApi.onExit(({ runId, code }) => {
-  if (runId !== activeRunId) return;
-  logLine(code === 0 ? 'exit0' : 'exitn', `\u2014 process exited with code ${code} \u2014`);
+  if (event.type === 'output') {
+    const cls = event.channel === 'err' ? 'err' : 'out';
+    for (const line of event.data.split('\n')) {
+      if (line) logLine(cls, line);
+    }
+    return;
+  }
+  const message = event.launchError ? '— command could not start —'
+    : event.stopped ? '— command stopped —'
+      : `— process exited with code ${event.code} —`;
+  logLine(event.code === 0 ? 'exit0' : 'exitn', message);
   $('#btn-run').disabled = false;
   $('#btn-stop').classList.add('hidden');
   activeRunId = null;
-});
+}
+reachApi.onOutput(event => showRunEvent({ type: 'output', ...event }));
+reachApi.onExit(event => showRunEvent({ type: 'exit', ...event }));
 
 // ---------- status ----------
 async function refreshStatus() {
   const v = await reachApi.getVersion();
-  if (v.startsWith('reach ')) {
+  reachCliAvailable = !v.startsWith('Optional Reach CLI unavailable.');
+  if (reachCliAvailable) {
     wslStatus.textContent = 'Reach CLI \u2713';
     wslStatus.className = 'chip ok';
     reachVersion.textContent = v;
     reachVersion.title = '';
   } else {
-    wslStatus.textContent = 'CLI not configured';
+    wslStatus.textContent = 'Reach CLI unavailable';
     wslStatus.className = 'chip';
     reachVersion.textContent = 'Configure optional CLI in Settings';
     reachVersion.title = v;
@@ -268,25 +284,65 @@ async function rememberProject(dir) {
   await selectProject({ name, dir });
 }
 
-async function execReach(args, sysLine) {
-  if (!currentProject) return;
-  if (activeRunId) { logLine('sys', 'Another command is still running. Stop it first.'); return; }
-  if (sysLine) logLine('sys', `$ reach ${args.join(' ')}`);
+function syncCommandMode() {
+  const reachMode = cmdMode.value === 'reach';
+  cmdPrompt.textContent = reachMode ? 'reach' : '$';
+  cmdInput.placeholder = reachMode ? 'e.g. compile index.rsh' : 'e.g. npm --prefix studio test';
+  cmdHint.textContent = reachMode
+    ? 'Reach DApp commands require the optional Reach CLI. Enter the subcommand only.'
+    : 'Runs a program in this project folder. No shell pipes or redirects.';
+}
+cmdMode.onchange = syncCommandMode;
+syncCommandMode();
+
+async function execCommand(args, mode) {
+  if (!currentProject) return false;
+  if (activeRunId || awaitingRunId) { logLine('sys', 'Another command is still running. Stop it first.'); return false; }
+  if (mode === 'reach' && !reachCliAvailable) {
+    logLine('err', 'Reach CLI is unavailable. Install it or set its executable in Settings → Connection.');
+    return false;
+  }
+  logLine('sys', `$ ${mode === 'reach' ? 'reach ' : ''}${args.join(' ')}`);
   $('#btn-run').disabled = true;
   $('#btn-stop').classList.remove('hidden');
-  activeRunId = await reachApi.run(currentProject.dir, args);
+  awaitingRunId = true;
+  earlyRunEvents.length = 0;
+  try {
+    activeRunId = mode === 'reach'
+      ? await reachApi.run(currentProject.dir, args)
+      : await reachApi.runProject(currentProject.dir, args);
+    awaitingRunId = false;
+    for (const event of earlyRunEvents.splice(0)) showRunEvent(event);
+    return true;
+  } catch (error) {
+    awaitingRunId = false;
+    earlyRunEvents.length = 0;
+    $('#btn-run').disabled = false;
+    $('#btn-stop').classList.add('hidden');
+    logLine('err', error.message || 'Command could not start.');
+    return false;
+  }
 }
 
-$('#btn-compile').onclick = () => execReach(['compile', 'index.rsh']);
-$('#btn-clean').onclick = () => execReach(['clean']);
-$('#btn-info').onclick = () => execReach(['info']);
+$('#btn-compile').onclick = async () => {
+  if (!currentProject) return;
+  if (reachCliAvailable && !(await reachApi.listFiles(currentProject.dir)).includes('index.rsh')) {
+    logLine('err', 'This project has no index.rsh. Open a Reach DApp project or choose a source file in Reach CLI mode.');
+    return;
+  }
+  await execCommand(['compile', 'index.rsh'], 'reach');
+};
+$('#btn-clean').onclick = () => execCommand(['clean'], 'reach');
+$('#btn-info').onclick = () => execCommand(['info'], 'reach');
 $('#btn-folder').onclick = () => currentProject && reachApi.openDir(currentProject.dir);
-$('#btn-run').onclick = () => {
+$('#btn-run').onclick = async () => {
   const t = cmdInput.value.trim();
   if (!t) return;
   const args = t.split(/\s+/).filter(Boolean);
-  cmdInput.value = '';
-  execReach(args);
+  const mode = cmdMode.value === 'reach' ? 'reach' : 'project';
+  if (mode === 'reach' && args[0] === 'reach') args.shift();
+  if (!args.length) return;
+  if (await execCommand(args, mode)) cmdInput.value = '';
 };
 $('#btn-stop').onclick = async () => {
   if (activeRunId) await reachApi.kill(activeRunId);
@@ -316,9 +372,19 @@ $('#btn-create').onclick = async () => {
   const parent = $('#new-parent').value.trim();
   if (!name) { $('#new-name').focus(); return; }
   if (!parent) { $('#btn-pick-parent').click(); return; }
+  if (!reachCliAvailable) {
+    await showNotice('New Project uses reach init. Install the optional Reach CLI or configure its executable in Settings → Connection. To open an existing code project, use Open Folder.');
+    return;
+  }
   modal.classList.add('hidden');
-  const res = await reachApi.createProject(name, parent);
+  awaitingRunId = true;
+  earlyRunEvents.length = 0;
+  let res;
+  try { res = await reachApi.createProject(name, parent); }
+  catch (error) { res = { ok: false, err: error.message }; }
   if (!res.ok) {
+    awaitingRunId = false;
+    earlyRunEvents.length = 0;
     showNotice(`Could not create project: ${res.err}`);
     return;
   }
@@ -327,6 +393,8 @@ $('#btn-create').onclick = async () => {
   logLine('sys', `$ reach init`);
   $('#btn-run').disabled = true;
   $('#btn-stop').classList.remove('hidden');
+  awaitingRunId = false;
+  for (const event of earlyRunEvents.splice(0)) showRunEvent(event);
 };
 
 // ---------- conversations (project-scoped, branching) ----------
