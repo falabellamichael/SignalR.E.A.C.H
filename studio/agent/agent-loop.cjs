@@ -14,7 +14,7 @@ const { fingerprint, workingMessages, summarizeSegments } = require('./compactio
 const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
 // E1: Retry-After parsing, backoff and the retry-vs-give-up decision live in a leaf
 // module so the timing policy is testable without a fake clock.
-const { retryAfterMs, retryDelayMs, isRetryableStatus } = require('./retry.cjs');
+const { retryAfterMs, retryDelayMs, isRetryableStatus, isNgrokTunnelUnavailable } = require('./retry.cjs');
 // One adaptive provider-origin gate, shared by every loop on the same provider.
 const { gateFor, gateKeyFor, rateLimitInfoFrom, rateLimitDiagnostic } = require('./rate-limit.cjs');
 const { protocol, start, decide } = require('./agent-run.cjs');
@@ -252,6 +252,13 @@ class AgentLoop {
     });
   }
 
+  _retryLimitFor(error) {
+    const configured = this._budgets().retryLimit;
+    // A live tunnel can recover after its local relay restarts. Give that
+    // specific failure a longer, bounded window without retrying generic 503s.
+    return error.ngrokTunnelUnavailable && configured > 0 ? Math.max(configured, 6) : configured;
+  }
+
   async _fetchChat(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
     const url = this.endpoint.replace(/\/+$/, '') + '/chat/completions';
     const headers = { 'Content-Type': 'application/json' };
@@ -334,16 +341,24 @@ class AgentLoop {
           return this._fetchChat(messages, { stream: false, maxTokens, purpose, concise });
         }
       }
-      const error = new Error(`Endpoint returned HTTP ${response.status}: ${text.slice(0, 500)}`);
+      const ngrokTunnelUnavailable = isNgrokTunnelUnavailable(response.status, text);
+      const htmlError = /(?:<!doctype\s+html|<html[\s>])/i.test(text);
+      const detail = ngrokTunnelUnavailable
+        ? 'The ngrok tunnel cannot reach the REACH relay. Check that the local relay and tunnel are running, then Continue.'
+        : htmlError ? 'The endpoint returned an HTML error page. Check the connection URL and upstream service.'
+          : text.slice(0, 500);
+      const error = new Error(`Endpoint returned HTTP ${response.status}: ${detail}`);
       error.status = response.status;
+      error.ngrokTunnelUnavailable = ngrokTunnelUnavailable;
       // E1: remember the provider's own retry instruction so the caller can
       // honour it instead of guessing at a fixed delay. Rate limits were
-      // handled by the shared gate above; a bare 503 stays non-retryable.
+      // handled by the shared gate above. Only ngrok's own HTML 503 gets an
+      // extended recovery window; a bare provider 503 stays non-retryable.
       error.retryAfter = retryAfterMs(response);
-      // A bare 503 keeps the Nurse's hard-provider contract. A 503 with a
-      // Retry-After was handled by the shared provider gate above.
+      // A bare provider 503 keeps the Nurse's hard-provider contract. A 503
+      // with Retry-After was handled by the shared provider gate above.
       error.retryable = isRetryableStatus(response.status)
-        && !(response.status === 503 && error.retryAfter === null);
+        && !(response.status === 503 && error.retryAfter === null && !ngrokTunnelUnavailable);
       error.contextOverflow = [400, 413, 422].includes(response.status) && /context[_ ](length[_ ]exceeded|window|limit)|maximum context|too many (input )?tokens|input.*(too long|token limit)/i.test(text);
       throw error;
     }
@@ -490,7 +505,7 @@ class AgentLoop {
               onReasoning: count => this._emit('compaction-progress', { note: `Preparing memory · ${count} reasoning characters received` }),
               onText: text => { chars += text.length; this._emit('compaction-progress', { note: `Writing memory · ${chars} characters received` }); } });
           } catch (error) {
-            const retryLimit = this._budgets().retryLimit;
+            const retryLimit = this._retryLimitFor(error);
             if (this.abortController.signal.aborted || retry >= retryLimit || !(isTransientTransportError(error) || error.retryable === true)) throw error;
             this._emit('compaction-progress', { note: 'Connection interrupted · retrying this segment' });
             await waitForRetry(this._retryDelay(retry + 1, error.retryAfter ?? null), this.abortController.signal);
@@ -642,11 +657,12 @@ class AgentLoop {
               ? transportDiagnostic(error, this.endpoint)
               : `Endpoint returned HTTP ${error.status}: ${error.message.replace(/^Endpoint returned HTTP \d+: /, '')}`
                 + (error.retryAfter !== null && error.retryAfter !== undefined ? ' (retry-after received)' : '');
-            const retryLimit = this._budgets().retryLimit;
+            const retryLimit = this._retryLimitFor(error);
             if (++transportRetries > retryLimit) throw new Error(diagnostic + ' Retry limit reached.');
             const delay = this._retryDelay(transportRetries, error.retryAfter ?? null);
             this._emit('retry', { error: diagnostic, attempt: transportRetries, retryInMs: delay, retryAfter: error.retryAfter ?? null });
             await waitForRetry(delay, this.abortController.signal);
+            round--; // No model round or tool ran when the request was rejected.
             continue;
           }
           throw error;

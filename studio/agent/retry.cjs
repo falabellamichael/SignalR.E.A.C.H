@@ -114,6 +114,14 @@ function isRetryableStatus(status) {
   return Number.isInteger(status) && RETRYABLE_STATUS.has(status);
 }
 
+/** An ngrok-generated 503 means its tunnel cannot currently reach the origin. */
+function isNgrokTunnelUnavailable(status, body) {
+  const text = String(body || '');
+  return status === 503
+    && /(?:<!doctype\s+html|<html[\s>])/i.test(text)
+    && /(?:assets\.ngrok\.com|ERR_NGROK_[A-Z0-9_]+)/i.test(text);
+}
+
 /**
  * True when the failure is the provider telling us to slow down.
  *
@@ -137,5 +145,6 @@ module.exports = {
   backoffMs,
   retryDelayMs,
   isRetryableStatus,
+  isNgrokTunnelUnavailable,
   isRateLimitEvidence,
 };

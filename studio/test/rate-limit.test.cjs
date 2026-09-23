@@ -343,6 +343,55 @@ test('a bare 503 is still a hard failure, not a paced retry', async t => {
   resetGates();
 });
 
+test('an ngrok HTML 503 recovers without using an agent round', async t => {
+  let hits = 0;
+  const url = await endpoint(t, (_body, res) => {
+    if (++hits === 1) {
+      res.writeHead(503, { 'Content-Type': 'text/html' });
+      res.end('<!DOCTYPE html><html><head><link href="https://assets.ngrok.com/error.css"></head></html>');
+      return;
+    }
+    reply(res, action('complete', 'Recovered'));
+  });
+
+  resetGates();
+  const store = new MemoryStore();
+  const events = [];
+  const loop = new AgentLoop({ agentId: 'a', store, endpoint: url, model: 'fixture',
+    budgets: { ...defaults, maxRounds: 1, retryLimit: 1, retryBaseMs: 1, retryMaxMs: 1 },
+    sendEvent: (_, event) => events.push(event) });
+  await loop.sendUserMessage('Hello');
+
+  assert.equal(hits, 2);
+  assert.equal(store.get('a').runState.status, 'completed');
+  assert.ok(events.some(event => event.type === 'retry' && /ngrok tunnel/.test(event.error)));
+  assert.ok(!events.some(event => /<!DOCTYPE|assets\.ngrok\.com/.test(event.error || '')));
+  resetGates();
+});
+
+test('a persistent ngrok HTML 503 pauses after bounded retries with a useful reason', async t => {
+  let hits = 0;
+  const url = await endpoint(t, (_body, res) => {
+    hits++;
+    res.writeHead(503, { 'Content-Type': 'text/html' });
+    res.end('<!DOCTYPE html><html><head><link href="https://assets.ngrok.com/error.css"></head></html>');
+  });
+
+  resetGates();
+  const store = new MemoryStore();
+  const loop = new AgentLoop({ agentId: 'a', store, endpoint: url, model: 'fixture',
+    budgets: { ...defaults, retryLimit: 1, retryBaseMs: 1, retryMaxMs: 1 } });
+  await loop.sendUserMessage('Hello');
+
+  const state = store.get('a').runState;
+  assert.equal(hits, 7, 'one initial attempt plus six recovery retries');
+  assert.equal(state.status, 'paused');
+  assert.match(state.reason, /ngrok tunnel.*REACH relay.*Retry limit reached/);
+  assert.doesNotMatch(state.reason, /<!DOCTYPE|assets\.ngrok\.com/);
+  assert.equal(classifyFailure(state.reason), 'hard-provider', 'a dead tunnel is not woken indefinitely');
+  resetGates();
+});
+
 test('a 503 that states a Retry-After is treated as a pace instruction', async t => {
   let hits = 0;
   const url = await endpoint(t, (_body, res) => {
