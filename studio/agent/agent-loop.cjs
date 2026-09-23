@@ -22,6 +22,7 @@ const { untrustedData } = require('./untrusted.cjs');
 
 const { budgetPolicy, reserveGuard, checkpoint } = require('./budget-awareness.cjs');
 const { resolveBudgets, cap } = require('./budgets.cjs');
+const { gateFor, gateKeyFor, rateLimitInfoFrom, rateLimitDiagnostic } = require('./rate-limit.cjs');
 const { buildCodeContext, formatInjection } = require('./code-context.cjs');
 const { decideContext, recentQuery } = require('./jev-context.cjs');
 const { intersectFeatures } = require('./jev-auto.cjs');
@@ -30,6 +31,10 @@ const { soulPromptBlock } = require('./agent-soul.cjs');
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_ROUNDS = 40;
 const RETRY_LIMIT = 2;
+/* Bounded rate-limit recovery. The wait itself is the shared gate's job (it
+ * honours the provider's Retry-After); this is only the give-up count, so a
+ * provider that is rate limiting for real cannot be retried forever. */
+const RATE_LIMIT_RETRIES = 3;
 
 function normalizeUserInput(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -76,6 +81,12 @@ class AgentLoop {
     this.soulKey = String(soulKey || '');
     this.budgets = budgets;
     this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
+    /* Bounded rate-limit recovery, counted across the recursive retries in
+     * _fetchChat. Initialized here rather than left undefined because
+     * `undefined++` is NaN, and `NaN >= RATE_LIMIT_RETRIES` is false — the bound
+     * would silently never fire and a rate-limited provider would be retried
+     * without limit. Reset per conversation in _runConversation. */
+    this._rateLimitRetries = 0;
     this.requestSignal = null;
     this.abortController = null;
     this.running = false;
@@ -203,6 +214,29 @@ class AgentLoop {
 
   _budgets() { return this.budgets || resolveBudgets({}, this._agent()?.settings); }
 
+  /*
+   * The outbound pace for this loop's provider.
+   *
+   * The gate is looked up PER REQUEST, not cached on the loop, for two reasons:
+   *   1. `this.endpoint` is not final at construction time — main.mjs builds the
+   *      loop with endpoint:'' and resolves the pointer later, so a key computed
+   *      in the constructor would be the wrong provider for the whole session.
+   *   2. `gateFor` returns one gate per provider ORIGIN, shared by every loop in
+   *      the process. That sharing is the point: a 14-agent crew talking to one
+   *      provider shares one pace, instead of each agent independently
+   *      rediscovering the rate limit and re-triggering it.
+   *
+   * configure() is called on every request so a budget change applies to the
+   * next request rather than at the next loop construction — the same rule the
+   * rest of the run follows. Both knobs are global-only fields (budgets.cjs),
+   * so every loop in a session resolves identical values and cannot fight over
+   * the shared gate. */
+  _rateGate() {
+    const budgets = this._budgets();
+    return gateFor(gateKeyFor(this.endpoint))
+      .configure({ enabled: budgets.requestPacing !== false, minRpm: budgets.requestPacingRpm });
+  }
+
   async _fetchChat(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
     const url = this.endpoint.replace(/\/+$/, '') + '/chat/completions';
     const headers = { 'Content-Type': 'application/json' };
@@ -228,6 +262,15 @@ class AgentLoop {
     // that never finishes must not keep a team member working indefinitely.
     this.requestSignal = this.requestTimeoutMs === 0 ? this.abortController.signal
       : AbortSignal.any([this.abortController.signal, AbortSignal.timeout(this.requestTimeoutMs)]);
+    /* Pace before the request, never during it. `acquire` consumes a token from
+     * the provider-shared gate and returns immediately while the endpoint is
+     * healthy, so this costs a crew that never sees a 429 exactly nothing. It is
+     * OUTSIDE the request deadline on purpose: the timeout budget measures the
+     * provider, and time spent waiting for the crew's own pace is not the
+     * provider's fault. */
+    const gate = this._rateGate();
+    await gate.acquire({ signal: this.abortController.signal });
+    this.abortController.signal.throwIfAborted();
     this._emit('request-start', { purpose });
     const response = await fetch(url, {
       method: 'POST',
@@ -236,6 +279,34 @@ class AgentLoop {
       signal: this.requestSignal,
     });
     if (!response.ok) {
+      /* A rate limit is not a failure — it is the provider asking for a slower
+       * pace. Record it on the shared gate so EVERY agent on this provider backs
+       * off together, then retry here rather than letting the error escape into
+       * the run-control loop, where a 429 used to end the conversation or, in
+       * Links mode, stall the member while its peers kept hammering the same
+       * endpoint. The gate has already engaged its pace; acquire() at the top of
+       * the next call is what enforces it. */
+      const limited = rateLimitInfoFrom(response.status, response.headers);
+      if (limited) {
+        const text = await response.text().catch(() => '');
+        gate.note429(limited.retryAfterMs);
+        const waitMs = Math.max(0, gate.snapshot().penaltyMs);
+        if (this._rateLimitRetries++ >= RATE_LIMIT_RETRIES) {
+          const error = new Error(`${rateLimitDiagnostic(this.endpoint, waitMs, limited.status)} Retry limit reached.`);
+          error.status = limited.status;
+          error.rateLimited = true;
+          throw error;
+        }
+        /* One dedicated event type, not a generic 'retry': the renderer renders
+         * a rate limit as waiting rather than as a failure, and a user watching
+         * a paused run must not read it as a broken provider. */
+        this._emit('rate-limit', {
+          status: limited.status,
+          waitMs,
+          note: rateLimitDiagnostic(this.endpoint, waitMs, limited.status) + (text ? ' ' + text.slice(0, 200) : ''),
+        });
+        return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
+      }
       const text = await response.text().catch(() => '');
       if (body.chat_template_kwargs && [400, 422].includes(response.status) && /chat_template_kwargs|enable_thinking/.test(text)) {
         this.noThinkingHint = true;
@@ -246,6 +317,11 @@ class AgentLoop {
       error.contextOverflow = [400, 413, 422].includes(response.status) && /context[_ ](length[_ ]exceeded|window|limit)|maximum context|too many (input )?tokens|input.*(too long|token limit)/i.test(text);
       throw error;
     }
+    /* A successful answer is the only evidence the pace is safe to relax. The
+     * gate decides whether one success is enough (it is not, mid-storm), so this
+     * is called unconditionally and cheaply. */
+    this._rateLimitRetries = 0;
+    gate.noteSuccess();
     return response;
   }
 
@@ -484,6 +560,9 @@ class AgentLoop {
     this.running = true;
     this.turnResults = [];
     this.stopRequested = false;
+    /* A fresh conversation gets a fresh rate-limit allowance: the previous run's
+     * give-up count must not consume part of this one's. */
+    this._rateLimitRetries = 0;
     this.abortController = new AbortController();
     let runState = start(agent.runState);
     // Use one response contract from the first round, including ordinary chat.

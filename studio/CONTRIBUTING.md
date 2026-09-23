@@ -67,6 +67,21 @@ start` and `npm run smoke` inherit it; clear it for the process.
 For each change, add a regression test, run `npm test`, and run `npm run smoke`
 when changing main, preload or renderer behavior. Update the item's status and
 evidence in [the canonical improvement plan](../docs/IMPROVEMENTS.md).
+
+The plan's numbers are **generated, and CI-gated** (item 6.10). If your change
+alters a measured file — `main.mjs`, `renderer/app.js`, `preload.cjs`, the agent
+or renderer module counts, the IPC surface, `src/` — regenerate the plan's
+baseline in the same change, or the build fails:
+
+```bash
+node tools/check-plan-baseline.cjs            # verify (this is what CI runs)
+node tools/check-plan-baseline.cjs --write    # regenerate after your change
+node tools/count-plan-status.cjs              # DONE/PARTIAL/TODO counts
+```
+
+Flipping an item's status requires re-running the counter too: the
+Status-at-a-Glance table is checked against the item rows, so a hand-edited count
+is a failing test rather than a wrong document.
 Use `PARTIAL` when a CI-only platform check or a larger part of an item remains.
 Do not label a passing mock as proof of an actual Windows build or OS notification.
 Preserve unrelated local changes; do not discard or stash another contributor's

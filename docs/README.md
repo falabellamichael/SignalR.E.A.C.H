@@ -11,7 +11,9 @@ finished the job: there is now exactly **one** document that states plan numbers
 | If you want to… | Read |
 | --- | --- |
 | Know what to work on next, with measured evidence | [`IMPROVEMENTS.md`](./IMPROVEMENTS.md) *— the single canonical plan* |
-| Re-measure the baseline before trusting any number | `bash docs/verify-improvements.sh` |
+| Trust a number in the plan | read its generated **BASELINE** block — `node tools/check-plan-baseline.cjs` verifies it, and CI fails if it drifts (item 6.10) |
+| Re-measure the baseline by hand | `bash docs/verify-improvements.sh` (human-readable snapshot) |
+| Recount the status table | `node tools/count-plan-status.cjs` |
 | Know the main↔renderer channel surface today | [`STUDIO_IPC.md`](./STUDIO_IPC.md) |
 | Understand the CodeGPT economy tier (two upstreams, the `127.0.0.1` trap, the 503s) | [`CODEGPT_ECONOMY_HANDOFF.md`](./CODEGPT_ECONOMY_HANDOFF.md) |
 | Understand the engine surfaces (relay Chromium + bridge, web panel, fetcher, Studio browser, Reach CLI) | [`engines/README.md`](./engines/README.md) |
@@ -21,6 +23,16 @@ finished the job: there is now exactly **one** document that states plan numbers
 **`IMPROVEMENTS.md` wins.** Every number in it was produced by a command printed
 beside it. If a number stops matching the tree, fix it in the same change that moved
 the number — documents rotted precisely because nobody did.
+
+Since item 6.10 that rule is not a promise, it is a gate. The plan's **BASELINE** block
+and its Status-at-a-Glance counts are *generated*, and CI runs the checkers, so a
+measured file moving by one line without regenerating the table fails the build:
+
+```bash
+node tools/check-plan-baseline.cjs          # verify (what CI runs)
+node tools/check-plan-baseline.cjs --write  # regenerate after landing a change
+node tools/count-plan-status.cjs            # the DONE/PARTIAL/TODO counts
+```
 
 Do **not** add a second improvement plan. Add items to the existing one.
 

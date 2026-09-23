@@ -1428,6 +1428,11 @@ $('#btn-agent-delete').onclick = async () => {
 // ---------- agent events ----------
 let streamBubble = null;
 let recoveryBubble = null;
+/* The last rate-limit line shown in the transcript. A crew shares one pace per
+ * provider, so several members can hit the same limit in a row; the line is
+ * emitted with an identical note each time, so comparing it dedupes the burst
+ * without suppressing a genuinely new wait (a shorter or longer one). */
+let lastRateLimitNote = null;
 function handleAgentEvent(ev) {
   const follow = shouldFollowChat();
   window.ReachActivity.ingest(ev);
@@ -1503,6 +1508,9 @@ function handleAgentEvent(ev) {
       break;
     case 'run-state':
       if (ev.status !== 'running') recoveryBubble = null;
+      /* A fresh run may report the same limit again; the earlier line was in a
+       * previous run's context, so it must not suppress the new one. */
+      if (ev.status === 'running') lastRateLimitNote = null;
       agentRunning = ev.status === 'running';
       updateStatusPill(ev.status, ev.reason);
       if (ev.status !== 'running') refreshContextStatus();
@@ -1540,6 +1548,21 @@ function handleAgentEvent(ev) {
     case 'retry':
       appendChatMessage('system', `Retrying… ${ev.error}`);
       break;
+    /*
+     * A provider rate limit is waiting, not failing, so it is reported as its
+     * own kind of line. It is DEDUPED: a crew sharing one pace can hit the limit
+     * several times in a row, and one line per attempt would bury the
+     * conversation. The activity trail still shows every occurrence — that is
+     * where repetition is informative; the transcript only needs to say it once.
+     */
+    case 'rate-limit': {
+      const note = ev.note || 'The provider is rate limiting this crew; requests will retry at a slower pace.';
+      if (lastRateLimitNote !== note) {
+        lastRateLimitNote = note;
+        appendChatMessage('system', note);
+      }
+      break;
+    }
   }
   followChatTail(follow);
 }

@@ -2,9 +2,32 @@
 
 // One schema for validation, the settings form, and every execution path.
 // Zero is an explicit absence of an application cap, never a missing value.
+//
+// GLOBAL-ONLY FIELDS. A budget field is either per-conversation or app-wide,
+// and the difference is not cosmetic.
+//
+// Most fields describe ONE agent's run, so overriding them per conversation is
+// the point. These do not:
+//
+//   maxConversations  the saved-chat limit is a property of the history store
+//   requestPacing     the pace is shared per provider ORIGIN (agent/rate-limit.cjs),
+//   requestPacingRpm  so it belongs to the endpoint, not to one of the agents using it
+//
+// A per-conversation override of a shared setting is not a preference, it is a
+// race: two conversations writing different values into one shared gate, last
+// writer winning per request. So 'global only' is enforced HERE, in the one
+// resolver every execution path reads, not only in the settings UI — a
+// hand-written IPC call must not be able to reach around it either.
+//
+// Declared before `fields` because the schema's globalOnly flag is derived from
+// it at module load (a later const would be in the temporal dead zone).
+const GLOBAL_ONLY_KEYS = new Set(['maxConversations', 'requestPacing', 'requestPacingRpm']);
+
 const fields = [
   ['maxTokens', 'Output tokens per request', 16384, 'Generation', 'Includes shared reasoning tokens. Studio reserves room for a response and may make one concise retry with the same per-request cap. 0 omits max_tokens; the provider chooses its default, which may still be small.'],
   ['requestTimeoutMs', 'Request timeout (milliseconds)', 180000, 'Generation', 'Covers connection and streaming. 0 waits until completion or Stop.'],
+  ['requestPacing', 'Pace outbound provider requests', true, 'Generation', 'One request pace per provider, shared by the whole crew, so a team cannot burst a provider into HTTP 429. After a rate limit Studio honors the provider Retry-After, then resumes slower until three clean requests. Off removes the app-imposed pace only; a provider Retry-After is still honored, because that instruction comes from the server rather than from Studio.'],
+  ['requestPacingRpm', 'Slowest pace after a rate limit (requests per minute)', 6, 'Generation', 'The floor Studio paces down to after a provider rate limit. Lower is gentler; the first limit engages 4x this value.', 1],
   ['maxRounds', 'Rounds per conversation / team member', 40, 'Execution', 'A round is a model request plus its actions. 0 continues until completion, input, failure, or Stop.'],
   ['subagentMaxRounds', 'Rounds per spawned agent', 12, 'Execution', '0 removes the spawned worker round cap.'],
   ['resumeCycles', 'Review / question resumptions per team member', 6, 'Execution', '0 allows any number of user review and question pauses.'],
@@ -24,7 +47,7 @@ const fields = [
   ['codeContextChars', 'Codebase context characters per request', 6000, 'Context', 'Upper bound on injected source text. Skipped entirely once the conversation is at the compression trigger. 0 disables injection.', 0],
   ['storedMessages', 'Retained messages per conversation', 0, 'History', '0 keeps the complete chat. Context compression never replaces saved history. Lowering this applies on the next appended message.'],
   ['maxConversations', 'Saved conversations', 200, 'History', '0 removes the saved-chat count cap. Existing chats are never deleted by this setting.'],
-].map(([key, label, value, group, help, min = 0]) => ({ key, label, value, group, help, min, globalOnly: key === 'maxConversations', type: typeof value === 'boolean' ? 'boolean' : 'number' }));
+].map(([key, label, value, group, help, min = 0]) => ({ key, label, value, group, help, min, globalOnly: GLOBAL_ONLY_KEYS.has(key), type: typeof value === 'boolean' ? 'boolean' : 'number' }));
 const defaults = Object.fromEntries(fields.map(f => [f.key, f.value]));
 const presets = {
   balanced: { ...defaults },
@@ -47,7 +70,9 @@ function validateBudgets(value) {
 function resolveBudgets(global = {}, settings = {}) {
   // Legacy chat caps remain effective until global budgeting is configured.
   const legacy = global.budgets ? {} : Object.fromEntries(['maxTokens', 'maxRounds'].filter(k => Number.isSafeInteger(settings[k]) && settings[k] >= 0).map(k => [k, settings[k]]));
-  return { ...defaults, ...legacy, ...validateBudgets(global.budgets || {}), ...validateBudgets(settings.budgetOverrides || {}) };
+  const overrides = Object.fromEntries(Object.entries(validateBudgets(settings.budgetOverrides || {}))
+    .filter(([key]) => !GLOBAL_ONLY_KEYS.has(key)));
+  return { ...defaults, ...legacy, ...validateBudgets(global.budgets || {}), ...overrides };
 }
 const cap = value => value === 0 ? Infinity : value;
-module.exports = { fields, defaults, presets, validateBudgets, resolveBudgets, cap };
+module.exports = { fields, defaults, presets, validateBudgets, resolveBudgets, cap, GLOBAL_ONLY_KEYS };

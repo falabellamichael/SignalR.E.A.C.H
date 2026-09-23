@@ -10,8 +10,11 @@
 > `docs/archive/IMPROVEMENTS.md`, `docs/archive/DESIGN_IMPROVEMENTS.md`,
 > `docs/archive/IMPROVEMENTS_REVIEW.md`, `docs/archive/IMPROVEMENTS_PRIORITIZATION.md`,
 > `PROJECT_SUMMARY.md`. The first two were moved into `docs/archive/` on 2026-09-22.
-> **Last measured:** working tree, 2026-09-22 — every number below is reproducible from
-> `bash docs/verify-improvements.sh` or the commands in **Verification**.
+> **Last measured:** the **BASELINE** block below is GENERATED from the working tree by
+> `node tools/check-plan-baseline.cjs` (item 6.10) and CI fails if it drifts, so it is always
+> current. The human-readable snapshot is `bash docs/verify-improvements.sh`. The
+> date-stamped prose below is historical: where it disagrees with the BASELINE block,
+> the BASELINE block wins.
 
 ---
 
@@ -23,21 +26,24 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 
 | Status | Count | What it means |
 |--------|-------|---------------|
-| **DONE** | 21 | Implemented, tested, verified in working tree |
+| **DONE** | 22 | Implemented, tested, verified in working tree |
 | **PARTIAL** | 12 | Partially implemented; evidence or tests remain |
-| **TODO** | 28 | Not yet started; ordered by dependency and priority |
+| **TODO** | 30 | Not yet started; ordered by dependency and priority |
+
+> Counts are generated, not hand-written: `node tools/count-plan-status.cjs`
+> (64 item rows: 22 DONE / 12 PARTIAL / 30 TODO). Re-run it after flipping a status.
 
 ### Top 10 Highest-Impact Remaining Items
 
-1. **Split `main.mjs`** (4,116 lines, 86 static handlers — measured 2026-09-22) into domain modules
-2. **Split `renderer/app.js`** (4,573 lines — measured 2026-09-22) into concern-based modules
+1. **Split `main.mjs`** (4,115 lines, 86 static handlers — see BASELINE) into domain modules
+2. **Split `renderer/app.js`** (4,595 lines — see BASELINE) into concern-based modules
 3. **IPC manifest: runtime return-shape validation** — channel set is machine-checked (87 entries); argument/return shapes are still documentation (item 2.3, finding N2)
 4. **Per-conversation size limits** with archive, never-delete
 5. **Audit every IPC handler** for input validation gaps (7 documented)
-6. **Rate-limit outbound agent requests** to avoid provider 429s
+6. ~~**Rate-limit outbound agent requests** to avoid provider 429s~~ — **DONE** (item 2.8); the strongest remaining item is **per-conversation storage** (5.8)
 7. **Ship Windows installers** from CI fully
 8. **Per-conversation storage** and durable team recovery (the README's top UX complaint)
-9. **Generate the plan's baseline instead of hand-copying it** (item 6.10, finding A1 — this document's own failure mode)
+9. ~~**Generate the plan's baseline instead of hand-copying it**~~ — **DONE** (item 6.10): the BASELINE block below is generated and CI-gated
 10. **macOS notarization** (requires Apple Developer ID credentials)
 
 ---
@@ -82,7 +88,7 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 | 2.5 | Guard `browser:command` dynamic channel | DONE | Preload returns `{ok:false, err}` when no tab; regression tests cover missing handler |
 | 2.6 | **Per-conversation size limits** (archive, never delete) | TODO | `MAX_AGENTS=200`, `MAX_STORED_MESSAGES=400` exist but serialized bytes unbounded; needs `.history.jsonl` archive (invariant I4) |
 | 2.7 | Treat tool/file output as untrusted data | DONE | Escaped delimiters around tool/source data; forged approval fixture cannot bypass edit review |
-| 2.8 | **Rate-limit outbound agent requests** | TODO | Per-connection gate needed; relay already has `RateLimiter`; client-side missing |
+| 2.8 | **Rate-limit outbound agent requests** | DONE | `agent/rate-limit.cjs`: one adaptive token-bucket pace per provider ORIGIN, shared by every `AgentLoop` (single chat, team members, spawned workers), so a 14-agent crew cannot burst a provider into 429s. A 429/`Retry-After` becomes an absolute deadline every waiter shares (one window, not one per waiter) and engages a pace that tightens toward `requestPacingRpm` (floor 6, first limit 4×); the pace releases only after `recoverMs` quiet **and** 3 successes after that window. Happy path is free — `acquire()` resolves immediately while unpaced, so a crew that never sees a 429 pays nothing. `agent-loop.cjs` retries a rate limit (bounded, `RATE_LIMIT_RETRIES`) instead of throwing; a `rate-limit` activity step + one deduped transcript line render it as *waiting*, never as failure. New: `test/rate-limit.test.cjs` (20 tests). **Preserved contract:** a bare `503` stays a HARD failure so the Nurse still quarantines a dead provider route (`test/agent.test.cjs` links-hard-provider case; guard asserted in the new suite); `503` *with* `Retry-After` is a load shedder and is paced. Off switch `requestPacing` removes the app-imposed rate only — a provider `Retry-After` is still honored. Both are global-only fields, enforced in `resolveBudgets`, not just hidden in the UI |
 | 2.9 | Approval notifications | PARTIAL | Background notifications, beep, Dock badge, click-to-focus, burst coalescing; OS delivery needs manual verification |
 
 ---
@@ -91,8 +97,8 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 
 | # | Item | Status | Impact |
 |---|------|--------|--------|
-| 3.1 | **Split `main.mjs`** (4,116 lines → domain modules, measured 2026-09-22) | PARTIAL | Settings, endpoint, notifications extracted to independent modules; IPC/bootstrap/smoke extraction remains |
-| 3.2 | **Split `renderer/app.js`** (4,573 lines, measured 2026-09-22) | TODO | Mixed chat, drawer, tree, composer, persona/crew logic — now the single largest file in Studio |
+| 3.1 | **Split `main.mjs`** (4,115 lines → domain modules, see BASELINE) | PARTIAL | Settings, endpoint, notifications extracted to independent modules; IPC/bootstrap/smoke extraction remains |
+| 3.2 | **Split `renderer/app.js`** (4,595 lines, see BASELINE) | TODO | Mixed chat, drawer, tree, composer, persona/crew logic — now the single largest file in Studio |
 | 3.3 | Extract `agent-loop.cjs` into smaller testable modules | PARTIAL | Many sub-modules exist; full loop still monolithic |
 | 3.4 | IPC TypeScript contracts (or equivalent runtime schema) | TODO | Stringly-typed IPC is the #0 source of bugs; depends on 3.1 |
 | 3.5 | Resolve code-index ownership (`code-context.cjs` → `code-index.cjs`) | TODO | TTL + invalidation still in wrong module |
@@ -112,7 +118,7 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 | 4.7 | Browser panel history search | TODO |
 | 4.8 | Network inspector (developer toggle) | TODO |
 | 4.9 | VS Code contributor workflow (large-module split) | PARTIAL |
-| 4.10 | Parse coverage (JS/CJS/MJS, all surfaces) | DONE | `studio/scripts/check-syntax.cjs` recursive; 155 files parse clean (measured 2026-09-22) |
+| 4.10 | Parse coverage (JS/CJS/MJS, all surfaces) | DONE | `studio/scripts/check-syntax.cjs` recursive; run it for the current count (it prints its own total) |
 | 4.11 | Tray test entry point | DONE | `copilot/tray && npm test` |
 | 4.12 | Persona Modal & Soul/Memory UI responsiveness | DONE | See evidence below |
 | 4.13 | Command palette (`Ctrl/Cmd+K`) | TODO | The SimpleRAG panel has one; Studio has none. Most actions already exist as renderer functions |
@@ -154,7 +160,7 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 | 6.7 | Flatpak bundle size optimization | TODO |
 | 6.8 | API documentation for relay endpoints | TODO | Every route in `server/reachd/handler.py` must appear in the doc; a thinner router (7.1) makes this mechanical |
 | 6.9 | Test coverage baseline + CI gate | DONE | CI checks coverage (`npm run test:coverage`) |
-| 6.10 | Generate the plan's baseline instead of hand-copying it (finding A1) | TODO | The verify script computes the truth; the prose is copied from it by hand and drifts (this happened five times). Cheapest first: extend `docs/verify-improvements.sh` to emit the baseline table and reference it here; stronger: a CI check that greps the numbers out of the prose and fails on mismatch. **Done check:** changing `studio/main.mjs` by one line without updating the prose fails a check |
+| 6.10 | Generate the plan's baseline instead of hand-copying it (finding A1) | DONE | `tools/check-plan-baseline.cjs` measures 10 metrics from the tree and generates the **BASELINE** block below; CI runs the checker (no `--write`), so drift fails the build. **Done check — verified by executing it, not by inspection:** appending one line to `studio/main.mjs` printed `plan says 4,115, tree has 4,117` and exited 1; restoring the file made it green again. The generator re-renders the committed block byte-for-byte, so a hand-edit is detected too. New: `studio/test/plan-baseline.test.cjs` (11 tests). `docs/verify-improvements.sh` remains as the human-readable snapshot; this is the machine-checked half |
 | 6.11 | Complete or remove the two missing engine docs (finding A2) | TODO | `docs/engines/README.md` lists `STUDIO_BROWSER.md` and `REACH_CLI.md` as maintained; both are absent (engine docs 2/4). Either write them or drop the rows — a "maintained" label on a missing file is worse than no index |
 
 ---
@@ -231,12 +237,12 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 
 | File | Items that touch it | Rule |
 | --- | --- | --- |
-| `studio/main.mjs` (4,116) | 2.3, 2.4, 3.1, 3.4, 2.6, 5.8 | **One writer until 3.1 lands** |
-| `studio/renderer/app.js` (4,573) | 3.2, 4.12, 4.13–4.18 | Serialize behind 3.2 |
-| `studio/preload.cjs` (200) | 2.3, 2.5 | One writer (manifest touches every channel) |
+| `studio/main.mjs` (4,115) | 2.3, 2.4, 3.1, 3.4, 2.6, 5.8 | **One writer until 3.1 lands** |
+| `studio/renderer/app.js` (4,595) | 3.2, 4.12, 4.13–4.18 | Serialize behind 3.2 |
+| `studio/preload.cjs` (199) | 2.3, 2.5 | One writer (manifest touches every channel) |
 | `studio/agent/agent-store.cjs` | 2.6, 5.8 | Serialize — 5.8 supersedes 2.6's shape |
 | `studio/agent/code-index.cjs` + `code-context.cjs` (1,157) | 3.5 | Single owner |
-| `.github/workflows/ci.yml` | 0.3, 1.9, 6.9 | Batch |
+| `.github/workflows/ci.yml` | 0.3, 1.9, 6.9, 6.10 | Batch |
 | `.github/dependabot.yml` | 6.5 | Batch |
 | `docs/*.md` baseline prose | 6.4, 6.10, 6.11 | Land 6.10 **first**, then the prose edits become mechanical |
 
@@ -254,21 +260,37 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 
 ---
 
+<!-- BASELINE:START -->
+| Metric | Value |
+| --- | --- |
+| `studio/main.mjs lines` | 4,115 |
+| `studio/renderer/app.js lines` | 4,595 |
+| `studio/preload.cjs lines` | 199 |
+| `studio/agent modules` | 55 |
+| `studio/renderer scripts` | 22 |
+| `studio/test files` | 60 |
+| `static IPC handlers` | 86 |
+| `preload invoke channels` | 87 |
+| `IPC manifest entries` | 87 |
+| `SimpleRAG plugin files` | 21 |
+<!-- BASELINE:END -->
+
 ## Verification
 
-Measured 2026-09-22 on the working tree:
+The **BASELINE** block above is generated and CI-gated (item 6.10) — read it, do not
+memorise it. To re-measure it by hand, and to check what it guards:
 
 ```bash
-# Full re-verification
+# The generated numbers, and the check that keeps them true
+node tools/check-plan-baseline.cjs            # verify (what CI runs)
+node tools/check-plan-baseline.cjs --write    # regenerate after landing a change
+node tools/count-plan-status.cjs              # the Status-at-a-Glance counts
+
+# Full human-readable re-verification
 bash docs/verify-improvements.sh
 
-# Key metrics (values measured 2026-09-22)
-wc -l studio/main.mjs                              # → 4,116 lines
-grep -c "ipcMain.handle" studio/main.mjs           # → 87 mentions / 86 unique static handlers
-grep -c "ipcRenderer.invoke" studio/preload.cjs    # → 90 mentions / 87 unique channels (87 manifest entries)
-ls studio/agent/*.cjs | wc -l                      # → 54 modules
-ls studio/test/*.test.cjs | wc -l                  # → 58 test files
-cd studio && npm test                              # → 579 tests, 574 pass, 0 fail, 5 skipped
+# Then the behavioural gates (these are the numbers that matter most)
+cd studio && npm test                              # green is the requirement; count it, don't quote it
 cd studio && npm run test:persona-ui               # → persona modal fits the window; SOUL.md/MEMORY.md side by side
 (cd vscode && npm test)
 (cd copilot/tray && npm test)
@@ -315,7 +337,8 @@ node tools/check-javascript.cjs
 | A4 | Conversation trimming archives, never deletes | archive replays trimmed messages |
 | A5 | Channel sets agree in both directions | delete a handler → `npm test` prints the set diff |
 | A6 | `resolveEndpoint` guards hold in `agent/endpoint.cjs` | 4 tests, each red before its guard |
-| A7 | `npm test` fully green | `cd studio && npm test; echo $?` → `0` (579/574/0/5 on 2026-09-22) |
+| A7 | `npm test` fully green | `cd studio && npm test; echo $?` → `0` (counts grow as tests are added — the invariant is `0` failures, not a fixed total) |
+| A10 | The plan's own numbers match the tree | `node tools/check-plan-baseline.cjs` → exit `0` (CI-gated, item 6.10) |
 | A8 | Code index has no phantom symbols | `node --test test/code-index.test.cjs` |
 | A9 | Tree is clean | `git status --porcelain` → 0 lines (measure at re-verification; dirty paths are intentionally not a fixed number) |
 

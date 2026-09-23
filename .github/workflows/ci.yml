@@ -72,6 +72,12 @@ jobs:
         run: node tools/check-javascript.cjs
       - name: Test desktop tray and VS Code providers
         run: node --test tests/*.test.cjs
+      - name: Check the plan's baseline against the tree (item 6.10)
+        # docs/IMPROVEMENTS.md is the single document that states plan numbers, and
+        # this is the check that keeps them true: the baseline is GENERATED, so a
+        # measured file moving by one line without regenerating the table fails
+        # here instead of rotting the plan. Run with --write to fix it.
+        run: node tools/check-plan-baseline.cjs
       - name: Parse JSON
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
 

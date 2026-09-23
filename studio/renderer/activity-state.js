@@ -4,7 +4,7 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.ReachActivityState = factory();
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const relevant = new Set(['run-state','round','request-start','message-start','reasoning','delta','message-end','tool-call','tool-result','approval-wait','approval-end','retry','budget-recovery','recovery','compaction-start','compaction-progress','compacted','code-context','jev-context','jev-auto','error','stopped']);
+  const relevant = new Set(['run-state','round','request-start','message-start','reasoning','delta','message-end','tool-call','tool-result','approval-wait','approval-end','rate-limit','retry','budget-recovery','recovery','compaction-start','compaction-progress','compacted','code-context','jev-context','jev-auto','error','stopped']);
   function reduce(state, event, now = event.at || Date.now()) {
     if (!relevant.has(event.type)) return state;
     if (!state || event.type === 'run-state' && event.status === 'running' && state.status !== 'running') {
@@ -96,6 +96,17 @@
       case 'approval-end': if (step && !step.endedAt) step.status = 'running'; note('Approval received · continuing'); break;
       case 'tool-result': close(event.pending ? 'waiting' : event.ok ? 'done' : 'error', event.error || JSON.stringify(event.result || {}).slice(0, 6000)); break;
       case 'budget-recovery': start('Finish within budget', event.note, 'budget'); break;
+      /*
+       * A rate limit is not an error: the provider is asking for a slower pace
+       * and Studio is honoring it. Tracking it as its own kind of step keeps the
+       * timeline honest — the crew really is still working, so a paused run must
+       * never render as a failure. The gate's own wait is the note, so the user
+       * sees the same instruction the provider gave Studio.
+       */
+      case 'rate-limit':
+        start('Provider rate limit', event.note || 'Slowing this crew\u2019s requests', 'rate-limit');
+        close('waiting', event.note || 'Waiting for the provider to accept requests again');
+        break;
       case 'retry': close('error', event.error); start('Retry request', event.error || 'Retrying the provider request', 'retry'); break;
       case 'recovery': start('Request executable actions', event.reason || 'Requesting a usable action response', 'recovery'); break;
       case 'error': close('error', event.message); state.status = 'error'; state.endedAt = now; state.reason = event.message; break;
