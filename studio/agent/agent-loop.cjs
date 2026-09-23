@@ -12,6 +12,11 @@
 const { compactMessages, normalizeChatMessages, contextChars } = require('./context.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
 const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
+// E1: Retry-After parsing, backoff and the retry-vs-give-up decision live in a leaf
+// module so the timing policy is testable without a fake clock.
+const { retryAfterMs, retryDelayMs, isRetryableStatus } = require('./retry.cjs');
+// One adaptive provider-origin gate, shared by every loop on the same provider.
+const { gateFor, gateKeyFor, rateLimitInfoFrom, rateLimitDiagnostic } = require('./rate-limit.cjs');
 const { protocol, start, decide } = require('./agent-run.cjs');
 const { actionInstruction, nativeInstruction, toolDefs } = require('./agent-action.cjs');
 const { parseAgentResponse, extractToolBlocks } = require('./agent-response.cjs');
@@ -22,18 +27,14 @@ const { untrustedData } = require('./untrusted.cjs');
 
 const { budgetPolicy, reserveGuard, checkpoint } = require('./budget-awareness.cjs');
 const { resolveBudgets, cap } = require('./budgets.cjs');
-const { gateFor, gateKeyFor, rateLimitInfoFrom, rateLimitDiagnostic } = require('./rate-limit.cjs');
 const { buildCodeContext, formatInjection } = require('./code-context.cjs');
 const { decideContext, recentQuery } = require('./jev-context.cjs');
 const { intersectFeatures } = require('./jev-auto.cjs');
 const { soulPromptBlock } = require('./agent-soul.cjs');
+const { diagnosticLog } = require('./diagnostic-log.cjs');
+const { ReadMemo } = require('./read-memo.cjs');
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
-const MAX_ROUNDS = 40;
-const RETRY_LIMIT = 2;
-/* Bounded rate-limit recovery. The wait itself is the shared gate's job (it
- * honours the provider's Retry-After); this is only the give-up count, so a
- * provider that is rate limiting for real cannot be retried forever. */
 const RATE_LIMIT_RETRIES = 3;
 
 function normalizeUserInput(value) {
@@ -48,12 +49,19 @@ function normalizeUserInput(value) {
 }
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, nativeTools = false, jev = null, featureMask = null }) {
+  constructor({ agentId, store, endpoint, accessKey, connectionId = '', capabilityStore = null, journal = null, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, logger = null, nativeTools = false, jev = null, featureMask = null }) {
     this.agentId = agentId;
     this.store = store;
     this.endpoint = endpoint;
     this.accessKey = accessKey || '';
     this.model = model || DEFAULT_MODEL;
+    this.connectionId = connectionId;
+    this.capabilityStore = capabilityStore;
+    this.journal = journal;
+    this.noThinkingHint = capabilityStore?.get(connectionId, endpoint, this.model)?.reasoningParam === false;
+    this.noToolCalling = capabilityStore?.get(connectionId, endpoint, this.model)?.toolCalling === false;
+    this.noStreaming = capabilityStore?.get(connectionId, endpoint, this.model)?.streaming === false;
+    this.maxTokensCeiling = capabilityStore?.get(connectionId, endpoint, this.model)?.maxTokensCeiling || null;
     this.projectDir = projectDir;
     this.reachExecutor = reachExecutor;
     this.browserExecutor = browserExecutor;
@@ -64,6 +72,7 @@ class AgentLoop {
     // every sandbox denial to it when present; without it denials are refused but
     // not recorded, which the PRD's sandbox AC requires.
     this.auditLog = auditLog;
+    this.logger = logger;
     // Native (OpenAI) tool-calling protocol: advertise real function defs in the
     // request and execute the endpoint's tool_calls directly. Team members only;
     // single-agent chat keeps the universal JSON contract.
@@ -81,11 +90,9 @@ class AgentLoop {
     this.soulKey = String(soulKey || '');
     this.budgets = budgets;
     this.requestTimeoutMs = budgets?.requestTimeoutMs ?? requestTimeoutMs;
-    /* Bounded rate-limit recovery, counted across the recursive retries in
-     * _fetchChat. Initialized here rather than left undefined because
-     * `undefined++` is NaN, and `NaN >= RATE_LIMIT_RETRIES` is false — the bound
-     * would silently never fire and a rate-limited provider would be retried
-     * without limit. Reset per conversation in _runConversation. */
+    // Injectable jitter source for E1's backoff, so a test can assert both
+    // bounds of a delay without sleeping or stubbing Math.random globally.
+    this.retryRand = Math.random;
     this._rateLimitRetries = 0;
     this.requestSignal = null;
     this.abortController = null;
@@ -126,11 +133,10 @@ class AgentLoop {
     return this.featureMask ? intersectFeatures(settings, this.featureMask) : settings;
   }
 
-  /* Is this loop part of a live crew network? Lazy require: agent-net depends
-   * on AgentLoop, so a top-level require here would be a cycle. */
+  /* Is this loop part of a live crew network? The registry is a leaf module. */
   _inCrew() {
     try {
-      const { netForAgent } = require('./agent-net.cjs');
+      const { netForAgent } = require('./net-registry.cjs');
       return !!netForAgent(this.agentId);
     } catch {
       return false;
@@ -147,7 +153,14 @@ class AgentLoop {
 
   _emit(type, payload) {
     const event = { agentId: this.agentId, type, ...payload, at: Date.now() };
-    const activity = require('../renderer/activity-state.js');
+    if (['round', 'request-start', 'tool-call', 'tool-result', 'compacted'].includes(type)) {
+      diagnosticLog(this.logger, { event: type, agentId: this.agentId, at: event.at,
+        round: payload.round, purpose: payload.purpose, tool: payload.tool,
+        ok: payload.ok, before: payload.before, after: payload.after });
+    }
+    // E9: the reducer is engine-owned (agent/activity.cjs). The renderer keeps a
+    // generated copy because it loads scripts under CSP without require().
+    const activity = require('./activity.cjs');
     this.activity = activity.reduce(this.activity, event);
     const agent = this._agent();
     if (agent && this.activity) agent.activity = this.activity;
@@ -214,27 +227,29 @@ class AgentLoop {
 
   _budgets() { return this.budgets || resolveBudgets({}, this._agent()?.settings); }
 
-  /*
-   * The outbound pace for this loop's provider.
-   *
-   * The gate is looked up PER REQUEST, not cached on the loop, for two reasons:
-   *   1. `this.endpoint` is not final at construction time — main.mjs builds the
-   *      loop with endpoint:'' and resolves the pointer later, so a key computed
-   *      in the constructor would be the wrong provider for the whole session.
-   *   2. `gateFor` returns one gate per provider ORIGIN, shared by every loop in
-   *      the process. That sharing is the point: a 14-agent crew talking to one
-   *      provider shares one pace, instead of each agent independently
-   *      rediscovering the rate limit and re-triggering it.
-   *
-   * configure() is called on every request so a budget change applies to the
-   * next request rather than at the next loop construction — the same rule the
-   * rest of the run follows. Both knobs are global-only fields (budgets.cjs),
-   * so every loop in a session resolves identical values and cannot fight over
-   * the shared gate. */
+  /* The endpoint is resolved after construction in some Studio paths, so look
+   * up and configure the shared provider gate for each outbound request. */
   _rateGate() {
     const budgets = this._budgets();
     return gateFor(gateKeyFor(this.endpoint))
       .configure({ enabled: budgets.requestPacing !== false, minRpm: budgets.requestPacingRpm });
+  }
+
+  /**
+   * E1: consume the provider's own Retry-After when it sent one, otherwise back
+   * off exponentially with jitter. Clamped by retryAfterCapMs so an hour-long
+   * reset window becomes a bounded wait rather than a stalled run.
+   */
+  _retryDelay(attempt, retryAfter = null) {
+    const budgets = this._budgets();
+    return retryDelayMs({
+      attempt,
+      retryAfter,
+      baseMs: budgets.retryBaseMs,
+      maxMs: budgets.retryMaxMs,
+      retryAfterCapMs: budgets.retryAfterCapMs,
+      rand: this.retryRand,
+    });
   }
 
   async _fetchChat(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
@@ -245,13 +260,14 @@ class AgentLoop {
     const body = {
       model: this.model,
       messages: normalizeChatMessages([...messages, { role: 'system', content: budgetPolicy({ maxTokens, purpose, budgets: this._budgets(), round: this.requestRound || 1, contextChars: contextChars(messages), concise }) }]),
-      stream,
+      stream: stream && !this.noStreaming,
     };
     if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
-    if (maxTokens > 0) body.max_tokens = maxTokens;
+    if (maxTokens > 0) body.max_tokens = this.maxTokensCeiling
+      ? Math.min(maxTokens, this.maxTokensCeiling) : maxTokens;
     // Native protocol: advertise the same registry as real OpenAI functions.
     // Summary/compaction requests never carry tools — they must not act.
-    if (this.nativeTools && purpose !== 'summary') {
+    if (this.nativeTools && purpose !== 'summary' && !this.noToolCalling) {
       body.tools = toolDefs({ includeCollab: this._inCrew(), disabled: disabledTools(settings, TOOLS) });
     }
     if (settings.temperature !== null && settings.temperature !== undefined) {
@@ -262,12 +278,8 @@ class AgentLoop {
     // that never finishes must not keep a team member working indefinitely.
     this.requestSignal = this.requestTimeoutMs === 0 ? this.abortController.signal
       : AbortSignal.any([this.abortController.signal, AbortSignal.timeout(this.requestTimeoutMs)]);
-    /* Pace before the request, never during it. `acquire` consumes a token from
-     * the provider-shared gate and returns immediately while the endpoint is
-     * healthy, so this costs a crew that never sees a 429 exactly nothing. It is
-     * OUTSIDE the request deadline on purpose: the timeout budget measures the
-     * provider, and time spent waiting for the crew's own pace is not the
-     * provider's fault. */
+    // Pacing waits are outside the provider request deadline; Stop still
+    // interrupts them through the run's AbortSignal.
     const gate = this._rateGate();
     await gate.acquire({ signal: this.abortController.signal });
     this.abortController.signal.throwIfAborted();
@@ -279,16 +291,9 @@ class AgentLoop {
       signal: this.requestSignal,
     });
     if (!response.ok) {
-      /* A rate limit is not a failure — it is the provider asking for a slower
-       * pace. Record it on the shared gate so EVERY agent on this provider backs
-       * off together, then retry here rather than letting the error escape into
-       * the run-control loop, where a 429 used to end the conversation or, in
-       * Links mode, stall the member while its peers kept hammering the same
-       * endpoint. The gate has already engaged its pace; acquire() at the top of
-       * the next call is what enforces it. */
       const limited = rateLimitInfoFrom(response.status, response.headers);
       if (limited) {
-        const text = await response.text().catch(() => '');
+        const limitedBody = await response.text().catch(() => '');
         gate.note429(limited.retryAfterMs);
         const waitMs = Math.max(0, gate.snapshot().penaltyMs);
         if (this._rateLimitRetries++ >= RATE_LIMIT_RETRIES) {
@@ -297,29 +302,56 @@ class AgentLoop {
           error.rateLimited = true;
           throw error;
         }
-        /* One dedicated event type, not a generic 'retry': the renderer renders
-         * a rate limit as waiting rather than as a failure, and a user watching
-         * a paused run must not read it as a broken provider. */
         this._emit('rate-limit', {
           status: limited.status,
           waitMs,
-          note: rateLimitDiagnostic(this.endpoint, waitMs, limited.status) + (text ? ' ' + text.slice(0, 200) : ''),
+          note: rateLimitDiagnostic(this.endpoint, waitMs, limited.status) + (limitedBody ? ' ' + limitedBody.slice(0, 200) : ''),
         });
         return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
       }
       const text = await response.text().catch(() => '');
       if (body.chat_template_kwargs && [400, 422].includes(response.status) && /chat_template_kwargs|enable_thinking/.test(text)) {
         this.noThinkingHint = true;
+        this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { reasoningParam: false });
         return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
+      }
+      if ([400, 422].includes(response.status)) {
+        const { observedMaxTokensCeiling } = require('./provider-capabilities.cjs');
+        const ceiling = observedMaxTokensCeiling(text);
+        if (ceiling && body.max_tokens > ceiling) {
+          this.maxTokensCeiling = ceiling;
+          this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { maxTokensCeiling: ceiling });
+          return this._fetchChat(messages, { stream, maxTokens: ceiling, purpose, concise });
+        }
+        if (body.tools && /(?:unsupported|not supported|unknown|unrecognized).{0,80}(?:tools|function.calling)|(?:tools|function.calling).{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
+          this.noToolCalling = true;
+          this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { toolCalling: false });
+          return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
+        }
+        if (body.stream && /(?:unsupported|not supported|unknown|unrecognized).{0,80}stream|stream.{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
+          this.noStreaming = true;
+          this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { streaming: false });
+          return this._fetchChat(messages, { stream: false, maxTokens, purpose, concise });
+        }
       }
       const error = new Error(`Endpoint returned HTTP ${response.status}: ${text.slice(0, 500)}`);
       error.status = response.status;
+      // E1: remember the provider's own retry instruction so the caller can
+      // honour it instead of guessing at a fixed delay. Rate limits were
+      // handled by the shared gate above; a bare 503 stays non-retryable.
+      error.retryAfter = retryAfterMs(response);
+      // A bare 503 keeps the Nurse's hard-provider contract. A 503 with a
+      // Retry-After was handled by the shared provider gate above.
+      error.retryable = isRetryableStatus(response.status)
+        && !(response.status === 503 && error.retryAfter === null);
       error.contextOverflow = [400, 413, 422].includes(response.status) && /context[_ ](length[_ ]exceeded|window|limit)|maximum context|too many (input )?tokens|input.*(too long|token limit)/i.test(text);
       throw error;
     }
-    /* A successful answer is the only evidence the pace is safe to relax. The
-     * gate decides whether one success is enough (it is not, mid-storm), so this
-     * is called unconditionally and cheaply. */
+    const observed = {};
+    if (body.chat_template_kwargs) observed.reasoningParam = true;
+    if (body.tools) observed.toolCalling = true;
+    if (body.stream) observed.streaming = true;
+    if (Object.keys(observed).length) this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, observed);
     this._rateLimitRetries = 0;
     gate.noteSuccess();
     return response;
@@ -327,7 +359,8 @@ class AgentLoop {
 
   _budgetCheckpoint(cause = 'output') {
     const agent = this._agent();
-    return checkpoint({ maxTokens: this._budgets().maxTokens, results: this.turnResults || [], todos: agent?.todos || [], pendingEdits: agent?.pendingEdits || {}, cause });
+    const evidence = this.journal?.evidence(this.agentId).map(item => ({ tool: item.tool, path: item.path, ok: item.ok, pending: item.pending })) || this.turnResults || [];
+    return checkpoint({ maxTokens: this._budgets().maxTokens, results: evidence, todos: agent?.todos || [], pendingEdits: agent?.pendingEdits || {}, cause });
   }
 
   async _readAnswer(messages, concise = false) {
@@ -457,9 +490,10 @@ class AgentLoop {
               onReasoning: count => this._emit('compaction-progress', { note: `Preparing memory · ${count} reasoning characters received` }),
               onText: text => { chars += text.length; this._emit('compaction-progress', { note: `Writing memory · ${chars} characters received` }); } });
           } catch (error) {
-            if (this.abortController.signal.aborted || retry >= RETRY_LIMIT || !isTransientTransportError(error)) throw error;
+            const retryLimit = this._budgets().retryLimit;
+            if (this.abortController.signal.aborted || retry >= retryLimit || !(isTransientTransportError(error) || error.retryable === true)) throw error;
             this._emit('compaction-progress', { note: 'Connection interrupted · retrying this segment' });
-            await waitForRetry(1500, this.abortController.signal);
+            await waitForRetry(this._retryDelay(retry + 1, error.retryAfter ?? null), this.abortController.signal);
           }
         }
       } });
@@ -559,10 +593,9 @@ class AgentLoop {
 
     this.running = true;
     this.turnResults = [];
-    this.stopRequested = false;
-    /* A fresh conversation gets a fresh rate-limit allowance: the previous run's
-     * give-up count must not consume part of this one's. */
+    this.readMemo = this._budgets().memoizeReads ? new ReadMemo(this.projectDir) : null;
     this._rateLimitRetries = 0;
+    this.stopRequested = false;
     this.abortController = new AbortController();
     let runState = start(agent.runState);
     // Use one response contract from the first round, including ordinary chat.
@@ -592,11 +625,28 @@ class AgentLoop {
             round--; // A rejected request did not execute a model round or any tool.
             continue;
           }
-          if (isTransientTransportError(error)) {
-            const diagnostic = transportDiagnostic(error, this.endpoint);
-            if (++transportRetries > RETRY_LIMIT) throw new Error(diagnostic + ' Retry limit reached.');
-            this._emit('retry', { error: diagnostic });
-            await waitForRetry(1500, this.abortController.signal);
+          // E1: a provider rate limit (429/503/5xx with a retryable status) is
+          // now the same class as a transport failure — back off and try again
+          // — instead of falling straight through as a permanent error. The
+          // delay honours Retry-After when the provider sent one.
+          if (isTransientTransportError(error) || error.retryable === true) {
+            // The legacy `Endpoint returned HTTP <status>: <body>` text is kept
+            // verbatim as the diagnostic prefix on the non-transport branch.
+            // That matters: team-nurse.cjs classifies by TEXT, and its
+            // HARD_FAILURE_RE treats a bare 5xx with no rate-limit evidence as a
+            // quarantinable hard provider failure. Rewording this message
+            // invented rate-limit evidence out of our own prose and silently
+            // stopped the Nurse from quarantining a dead route (caught by
+            // agent.test.cjs:784). Only a REAL Retry-After header earns the word.
+            const diagnostic = isTransientTransportError(error)
+              ? transportDiagnostic(error, this.endpoint)
+              : `Endpoint returned HTTP ${error.status}: ${error.message.replace(/^Endpoint returned HTTP \d+: /, '')}`
+                + (error.retryAfter !== null && error.retryAfter !== undefined ? ' (retry-after received)' : '');
+            const retryLimit = this._budgets().retryLimit;
+            if (++transportRetries > retryLimit) throw new Error(diagnostic + ' Retry limit reached.');
+            const delay = this._retryDelay(transportRetries, error.retryAfter ?? null);
+            this._emit('retry', { error: diagnostic, attempt: transportRetries, retryInMs: delay, retryAfter: error.retryAfter ?? null });
+            await waitForRetry(delay, this.abortController.signal);
             continue;
           }
           throw error;
@@ -631,7 +681,7 @@ class AgentLoop {
           tools: !parsed.invalid && parsed.actions.length > 0,
           rounds: round + 1,
           roundLimit: cap(this._budgets().maxRounds),
-          retryLimit: RETRY_LIMIT,
+          retryLimit: this._budgets().retryLimit,
         };
 
         let decision = decide(runState, input);
@@ -679,10 +729,13 @@ class AgentLoop {
             soulKey: this.soulKey,
             getSettings: () => this._settings(),
             auditLog: this.auditLog,
+            journal: this.journal,
             reachExecutor: this.reachExecutor,
             browserExecutor: this.browserExecutor,
             browserTimeoutMs: this.requestTimeoutMs,
             sendEvent: this.sendEvent,
+            readMemo: this.readMemo,
+            onCache: tool => this._emit('cache', { tool }),
             requestApproval: this.requestApproval ? async payload => {
               const approvalSignal = this.abortController.signal;
               this._emit('approval-wait', {});
@@ -731,6 +784,8 @@ class AgentLoop {
       if (!stopped) this._emit('error', { message: error.message });
     } finally {
       this.running = false;
+      this.readMemo?.close();
+      this.readMemo = null;
       this.abortController = null;
       this.requestSignal = null;
       this._saveRunState(runState);

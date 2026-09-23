@@ -31,6 +31,7 @@
  */
 
 const crypto = require('node:crypto');
+const { normalizeCapabilities } = require('./provider-capabilities.cjs');
 
 /** Hard cap: a connection list is a handful of providers, not a data store. */
 const MAX_CONNECTIONS = 20;
@@ -115,7 +116,9 @@ function sanitizeConnection(raw, index) {
   // written before the pool existed must keep working, and a hand-edited file
   // that omits the field should not silently drop itself out of every team.
   const enabled = raw.enabled === false ? false : true;
-  return { id, name, endpoint, accessKey, model, enabled };
+  const capabilities = normalizeCapabilities(raw.capabilities);
+  return { id, name, endpoint, accessKey, model, enabled,
+    ...(capabilities.length ? { capabilities } : {}) };
 }
 
 /**
@@ -369,6 +372,7 @@ function updateConnection(settings, id, fields = {}) {
   if (fields.accessKey !== undefined) patch.accessKey = clip(fields.accessKey, MAX_KEY_CHARS);
   if (fields.model !== undefined) patch.model = clip(fields.model, MAX_MODEL_CHARS).trim();
   if (patch.endpoint !== undefined && !patch.endpoint) return { error: 'An endpoint URL is required.' };
+  if (patch.endpoint && patch.endpoint !== target.endpoint) patch.capabilities = [];
   // Re-derive an empty name from the (possibly new) endpoint rather than storing
   // a blank, so the list never shows an unnamed row.
   if (patch.name === '' ) delete patch.name;
@@ -520,9 +524,21 @@ function applyLegacyWrite(incoming, options = {}) {
     if (patch.endpoint !== c.endpoint && c.name === defaultName(c.endpoint)) {
       patch.name = defaultName(patch.endpoint) || c.name;
     }
+    if (patch.endpoint !== c.endpoint) patch.capabilities = [];
     return patch;
   });
   return normalizeSettings({ ...incoming, connections: nextList, activeConnection: activeId }).settings;
+}
+
+// The settings form submits visible fields only. Preserve learned provider
+// facts on a matching connection when it saves, and discard them on URL change.
+function preserveCapabilities(current, incoming) {
+  if (!Array.isArray(incoming?.connections)) return incoming;
+  return { ...incoming, connections: incoming.connections.map(connection => {
+    const old = current?.connections?.find(c => c.id === connection.id);
+    if (!old || old.endpoint !== normalizeEndpoint(connection.endpoint) || connection.capabilities) return connection;
+    return { ...connection, capabilities: old.capabilities || [] };
+  }) };
 }
 
 module.exports = {
@@ -547,5 +563,6 @@ module.exports = {
   setConnectionEnabled,
   publicConnections,
   applyLegacyWrite,
+  preserveCapabilities,
   scopedSettings,
 };

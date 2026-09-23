@@ -2563,6 +2563,7 @@ function syncSelectedTeamRun() {
 async function loadCreatePage() {
   personas = await reachApi.personas.list();
   teams = await reachApi.teams.list();
+  const recoverableRuns = await reachApi.teams.recoverable().catch(() => []);
   roles = await reachApi.roles.list();
   /* Load connections too, so a persona card can NAME the connection it is pinned
    * to instead of showing a bare id. Best-effort: if the list cannot load the
@@ -2570,7 +2571,39 @@ async function loadCreatePage() {
   await loadConnectionChoices();
   renderPersonaList();
   renderTeamList();
+  renderRecoverableTeamRuns(recoverableRuns);
   window.ReachTeamComposer?.sync();
+}
+
+function renderRecoverableTeamRuns(runs) {
+  const el = $('#team-recovery-list');
+  el.replaceChildren();
+  for (const run of runs) {
+    const card = document.createElement('div');
+    card.className = 'team-card';
+    const heading = document.createElement('strong');
+    heading.textContent = `${run.manifest?.team?.name || 'Crew'} · recoverable run`;
+    const note = document.createElement('div');
+    note.className = 'persona-card-prompt';
+    note.textContent = `${run.manifest?.task || 'Crew task'}\n${run.members.length} saved member turn(s) · ${run.messages.length} crew message(s) · ${run.evidence.length} tool result(s)`;
+    const button = document.createElement('button');
+    button.className = 'ghost small';
+    button.textContent = 'Harvest partial results';
+    button.onclick = async () => {
+      const recovered = await reachApi.teams.harvest(run.runId);
+      if (!recovered.ok) { note.textContent = recovered.err || 'The crew journal could not be read.'; return; }
+      let pre = card.querySelector('pre');
+      if (!pre) { pre = document.createElement('pre'); pre.className = 'team-recovery-output'; card.append(pre); }
+      pre.textContent = [
+        `Original task: ${recovered.manifest.task}`,
+        recovered.members.map(member => `${member.name} (${member.status})\n${member.output || member.error || '(no answer yet)'}`).join('\n\n'),
+        recovered.messages.map(message => `${message.from} → ${message.to}: ${message.message}`).join('\n'),
+        recovered.evidence.map(item => `${item.agentId}: ${item.tool} ${item.ok ? 'ok' : 'failed'}${item.path ? ` ${item.path}` : ''}${item.decision ? ` (${item.decision})` : ''}`).join('\n'),
+      ].filter(Boolean).join('\n\n').slice(0, 100000);
+    };
+    card.append(heading, note, button);
+    el.append(card);
+  }
 }
 
 /** Connection display name for an id, or null when unknown/deleted. */

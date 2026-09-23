@@ -104,6 +104,8 @@ contextBridge.exposeInMainWorld('reach', {
   },
   teams: {
     list: () => ipcRenderer.invoke('teams:list'),
+    recoverable: () => ipcRenderer.invoke('teams:recoverable'),
+    harvest: (teamRunId) => ipcRenderer.invoke('teams:harvest', { teamRunId }),
     get: (id) => ipcRenderer.invoke('teams:get', id),
     create: (t) => ipcRenderer.invoke('teams:create', t),
     update: (id, patch) => ipcRenderer.invoke('teams:update', { id, ...patch }),

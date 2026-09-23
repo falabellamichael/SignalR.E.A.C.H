@@ -1,13 +1,3 @@
-/* GENERATED FILE — DO NOT EDIT.
- *
- * Generated from agent/activity.cjs by scripts/build-activity.cjs (npm run build:activity).
- * Every line below is a byte-for-byte copy of that engine module, which is the
- * single source of truth for the activity reducer. Edit the engine file and
- * re-run the build; activity.test.cjs fails the gate if this file is stale.
- *
- * source: agent/activity.cjs
- * sha256: 98d8513158d892f797536bc93c074eb4dd561126def842c6309b1d176e8fc7b6
- */
 /* Shared event model for Studio's VS Code-style activity timeline.
  * Timers measure waiting; only provider/tool events count as reported activity.
  *

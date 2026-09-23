@@ -13,7 +13,9 @@
   },
   "agents:autoPlan": {
     "module": "main.mjs",
-    "args": ["{ id, text, hasAttachments = false }"],
+    "args": [
+      "{ id, text, hasAttachments = false }"
+    ],
     "returns": "{ ok, token?, kind?, team?, label?, reason?, features?, usage?, cached?, err? }"
   },
   "agents:clear": {
@@ -273,7 +275,9 @@
   },
   "projects:remove": {
     "module": "main.mjs",
-    "args": ["dir"],
+    "args": [
+      "dir"
+    ],
     "returns": "{ ok: true } or { ok: false, err: string }; removes only the saved project shortcut"
   },
   "projects:save": {
@@ -385,6 +389,13 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "shell:openDir": {
+    "module": "main.mjs",
+    "args": [
+      "dir"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
   "soul:defaults": {
     "module": "main.mjs",
     "args": [
@@ -405,13 +416,6 @@
       "{ key, kind, text }"
     ],
     "returns": "{ ok, chars, truncated } or { ok:false, err }"
-  },
-  "shell:openDir": {
-    "module": "main.mjs",
-    "args": [
-      "dir"
-    ],
-    "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
   "teams:addAgent": {
     "module": "main.mjs",
@@ -469,6 +473,13 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "teams:harvest": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId }"
+    ],
+    "returns": "{ ok, runId?, manifest?, members?, messages?, nurse?, evidence?, err? }"
+  },
   "teams:list": {
     "module": "main.mjs",
     "args": [],
@@ -487,6 +498,11 @@
       "{ teamRunId, target, message }"
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "teams:recoverable": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "Recoverable crew journal snapshots with partial member results, messages, nurse actions, and evidence"
   },
   "teams:resolveEdit": {
     "module": "main.mjs",

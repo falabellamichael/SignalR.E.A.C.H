@@ -1,3 +1,8 @@
 # Shell scripts must keep LF endings or they break under sh on Windows.
 .githooks/** text eol=lf
 *.sh text eol=lf
+
+# These files are compared byte-for-byte by generated-source and plan checks.
+studio/agent/activity.cjs text eol=lf
+studio/renderer/activity-state.js text eol=lf
+docs/IMPROVEMENTS.md text eol=lf

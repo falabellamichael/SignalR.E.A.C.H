@@ -837,6 +837,7 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
   white-space: pre-wrap; word-break: break-word;
 }
 .team-card-actions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
+.team-recovery-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 280px; overflow: auto; color: var(--text); font-size: 12px; }
 
 /* Persona editor modal. The dialog is a pinned FRAME: its title and its
    Delete/Cancel/Save row stay put and only `.persona-modal-body` scrolls. That

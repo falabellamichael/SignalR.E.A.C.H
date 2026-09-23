@@ -33,6 +33,25 @@ const { planFromEdits, applyPlan, summarizePlan, validateSyntax } = require('./r
  * change nothing — the cap is a ceiling, not a target.
  */
 const DEFAULT_MAX_ATTEMPTS = 10;
+/*
+ * E14: the three constants below are now the DEFAULTS of budgets fields
+ * (maxAttempts, noProgressLimit, gateOutputChars), so a run can tune the
+ * self-correction loop without editing engine source. Each stays exported and
+ * each keeps its old value when no budgets are supplied, so a caller that does
+ * not pass them — every existing test, and main.mjs before its call site is
+ * updated — behaves byte-identically.
+ */
+function loopLimits(budgets) {
+  const positive = (key, fallback) => {
+    const value = budgets?.[key];
+    return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  };
+  return {
+    maxAttempts: positive('maxAttempts', DEFAULT_MAX_ATTEMPTS),
+    noProgressLimit: positive('noProgressLimit', DEFAULT_NO_PROGRESS_LIMIT),
+    gateOutputChars: positive('gateOutputChars', MAX_OUTPUT_CHARS),
+  };
+}
 /**
  * How many consecutive attempts may produce an IDENTICAL failure set before the
  * loop gives up. One repeat is not proof of stalling: a multi-file fix often
@@ -637,13 +656,13 @@ function parserFor(runner) {
  * code, not from parsing: a runner that fails to produce parseable output must
  * never be reported as green.
  */
-function interpret(result, runner) {
+function interpret(result, runner, { maxOutputChars = MAX_OUTPUT_CHARS } = {}) {
   const res = result || {};
   // Strip escape codes before slicing: a colour sequence can split across the
   // cut point and leave a stray escape in the UI, and every parser below needs
   // plain text to match at all.
-  const stdout = stripAnsi(res.stdout).slice(0, MAX_OUTPUT_CHARS);
-  const stderr = stripAnsi(res.stderr).slice(0, MAX_OUTPUT_CHARS);
+  const stdout = stripAnsi(res.stdout).slice(0, maxOutputChars);
+  const stderr = stripAnsi(res.stderr).slice(0, maxOutputChars);
   const spec = parserFor(runner);
   const parsed = spec.parse(stdout, stderr, res);
   const ok = res.ok === true;
@@ -706,7 +725,8 @@ async function runSelfCorrectionLoop(options = {}) {
     proposeFix,
     quickFix,
     projectDir = null,
-    maxAttempts = DEFAULT_MAX_ATTEMPTS,
+    maxAttempts = null,
+    budgets = null,
     keepOnFailure = false,
     onEvent = () => {},
     signal = null,
@@ -724,9 +744,13 @@ async function runSelfCorrectionLoop(options = {}) {
   if (typeof runGate !== 'function') {
     return { passed: false, attempts: 0, iterations: [], restoredFiles: [], report: 'runGate is required.', error: 'runGate is required.' };
   }
-  const attempts = Number.isSafeInteger(maxAttempts) && maxAttempts > 0 ? Math.min(maxAttempts, 50) : DEFAULT_MAX_ATTEMPTS;
+  // E14: budgets supply the defaults; an explicit option still wins, so the
+  // existing callers and tests keep today's numbers exactly.
+  const limits = loopLimits(budgets);
+  const attempts = Number.isSafeInteger(maxAttempts) && maxAttempts > 0
+    ? Math.min(maxAttempts, 50) : limits.maxAttempts;
   const noProgressLimit = Number.isSafeInteger(options.noProgressLimit) && options.noProgressLimit > 0
-    ? Math.min(options.noProgressLimit, 10) : DEFAULT_NO_PROGRESS_LIMIT;
+    ? Math.min(options.noProgressLimit, 10) : limits.noProgressLimit;
   // The rollback and fix plans MUST be built with the same projectDir the loop
   // was given. An earlier version passed the caller's bare `planOptions` here,
   // so planFromEdits resolved relative to the process cwd, failed to find the
@@ -746,7 +770,7 @@ async function runSelfCorrectionLoop(options = {}) {
       } catch (error) {
         raw = { ok: false, exitCode: null, stdout: '', stderr: String(error && error.message || error) };
       }
-      const interpreted = interpret({ ...raw, durationMs: raw && raw.durationMs !== undefined ? raw.durationMs : Date.now() - started }, gate.runner);
+      const interpreted = interpret({ ...raw, durationMs: raw && raw.durationMs !== undefined ? raw.durationMs : Date.now() - started }, gate.runner, { maxOutputChars: limits.gateOutputChars });
       emit('gate-result', { gate: gate.id || gate.command, ok: interpreted.ok, failures: interpreted.failures.length, durationMs: interpreted.durationMs });
       if (!interpreted.ok) return { ok: false, gate, interpreted };
     }

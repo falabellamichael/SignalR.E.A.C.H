@@ -6,10 +6,8 @@
  * inject top relevant symbol definitions and dependency snippets into the prompt
  * context buffer."
  *
- * This module is the single owner of the cached project index. Both the agent
- * tools (code.index / code.search / …) and prompt injection go through here, so
- * there is exactly one cache and the two cannot disagree about file contents
- * after an edit.
+ * The cached project index belongs to code-index.cjs. Both code tools and
+ * prompt injection use that module's accessors and write invalidation.
  *
  * Design constraints, all deliberate:
  *
@@ -29,83 +27,13 @@
  *   than dependent on an embedding model the packaged app does not ship.
  */
 
-const path = require('node:path');
 const codeIndex = require('./code-index.cjs');
-
-/* One index per project directory, oldest-first eviction. The index holds full
- * source text per file, so the bound is about memory rather than lookup speed. */
-const indexCache = new Map();
-const MAX_INDEX_CACHE = 4;
-
-/** An index older than this is rebuilt: a long conversation edits files as it
- *  goes, and stale definitions are worse than none. */
-const INDEX_TTL_MS = 2 * 60 * 1000;
+const { getIndex, invalidateIndex, invalidateForFile, cacheSize } = codeIndex;
 
 /** Hard ceiling regardless of caller-supplied budgets. */
 const MAX_CONTEXT_CHARS = 12000;
 const MAX_CONTEXT_SYMBOLS = 12;
 
-/**
- * Return the cached index for a project, rebuilding when missing or stale.
- *
- * `force` bypasses the TTL (used by code.index with refresh:true). Errors are
- * NOT swallowed here — indexProject reports an unreadable root as a warning
- * entry rather than throwing, and a caller that cannot tolerate a throw should
- * use buildCodeContext(), which does.
- */
-function getIndex(projectDir, { force = false, maxFiles = 2000 } = {}) {
-  const dir = path.resolve(String(projectDir || ''));
-  if (!dir) throw new Error('This agent is not bound to a project directory.');
-  const now = Date.now();
-  const cached = indexCache.get(dir);
-  if (!force && cached && now - cached.at < INDEX_TTL_MS) return cached.index;
-
-  const index = codeIndex.indexProject(dir, { maxFiles });
-  if (indexCache.size >= MAX_INDEX_CACHE) {
-    const oldest = indexCache.keys().next().value;
-    if (oldest !== undefined) indexCache.delete(oldest);
-  }
-  indexCache.set(dir, { at: now, index });
-  return index;
-}
-
-/** Drop a cached index. Call this after ANY write to the project tree, including
- *  writes made by tools that do not go through the refactor engine. */
-function invalidateIndex(projectDir) {
-  if (!projectDir) { indexCache.clear(); return; }
-  indexCache.delete(path.resolve(String(projectDir)));
-}
-
-/**
- * Invalidate whichever cached project(s) contain a written file.
- *
- * The write observer only knows the absolute path of the file that changed, not
- * which project it belongs to. A file under a cached root makes that root's index
- * stale, so drop it. Checking containment rather than a single exact dir means a
- * write to a nested file (src/a.ts) still invalidates the project it lives in.
- *
- * Cheap: at most MAX_INDEX_CACHE entries to test, and only on a write.
- */
-function invalidateForFile(file) {
-  if (!file) return;
-  const abs = path.resolve(String(file));
-  for (const dir of indexCache.keys()) {
-    const rootWithSep = dir.endsWith(path.sep) ? dir : dir + path.sep;
-    if (abs === dir || abs.startsWith(rootWithSep)) indexCache.delete(dir);
-  }
-}
-
-/* Self-register so that any code writing through writeTextFile automatically
- * keeps the index honest, without the writer needing to know an index exists.
- * A failing listener is swallowed by the write path, and clear-on-error keeps a
- * broken observer from ever serving stale definitions. */
-try {
-  const { onFileWrite } = require('./text-files.cjs');
-  if (typeof onFileWrite === 'function') onFileWrite(invalidateForFile);
-} catch { /* text-files unavailable (unit-test slice): index still TTL-bounded */ }
-
-/** Test/inspection helper: how many projects are cached. */
-function cacheSize() { return indexCache.size; }
 
 /**
  * Derive a search query from the recent conversation.
@@ -234,5 +162,4 @@ module.exports = {
   formatInjection,
   MAX_CONTEXT_CHARS,
   MAX_CONTEXT_SYMBOLS,
-  INDEX_TTL_MS,
 };

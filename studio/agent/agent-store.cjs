@@ -25,8 +25,6 @@ const path = require('path');
 const { resolveBudgets } = require('./budgets.cjs');
 const { atomicWriteJson } = require('./atomic-write.cjs');
 
-const MAX_AGENTS = 200;
-const MAX_STORED_MESSAGES = 400;
 // Item 1.5: every conversation is serialized into agents.json on every save, so
 // one unbounded chat inflates every write and risks the whole store. Messages
 // above this ceiling move to the append-only archive below — never deleted (A4).
@@ -52,7 +50,7 @@ class AgentStore {
       if (!raw || !Array.isArray(raw.agents)) return [];
       return raw.agents.filter(a => a && !a.draft && typeof a.id === 'string' && typeof a.name === 'string').map(a => {
         if (a.runState?.status === 'running') {
-          if (a.activity) a.activity = require('../renderer/activity-state.js').reduce(a.activity, { type: 'run-state', status: 'paused', reason: 'Previous app session ended.' });
+          if (a.activity) a.activity = require('./activity.cjs').reduce(a.activity, { type: 'run-state', status: 'paused', reason: 'Previous app session ended.' });
           a.runState = { ...a.runState, status: 'paused', reason: 'The previous app session ended. Continue to resume this conversation.' };
         }
         return a;

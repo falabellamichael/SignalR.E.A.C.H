@@ -34,7 +34,7 @@ const { runCommand } = require('./platform.cjs');
 
 /* ------------------------------------------------------------------- caching */
 
-/* The index cache lives in code-context.cjs, which is the single owner.
+/* The index cache lives in code-index.cjs, which is the single owner.
  *
  * An earlier revision of this file kept its own cache. Two caches for the same
  * project disagree the moment anything writes to the tree: prompt injection
@@ -42,7 +42,7 @@ const { runCommand } = require('./platform.cjs');
  * and the agent would be reasoning about source that no longer exists. Both call
  * sites now share one Map and one TTL.
  */
-const { getIndex, invalidateIndex } = require('./code-context.cjs');
+const { getIndex, invalidateIndex } = codeIndex;
 
 /* ------------------------------------------------------------ bounded output */
 
@@ -369,7 +369,7 @@ const CODE_TOOLS = {
       if (!rel) return { ok: false, error: 'A project-relative path is required.' };
       if (typeof args.content !== 'string') return { ok: false, error: 'content must be the full proposed file text.' };
       let abs;
-      try { abs = require('./tool-registry.cjs').resolveInProject(ctx.projectDir, rel); }
+      try { abs = require('./paths.cjs').resolveInProject(ctx.projectDir, rel); }
       catch (error) { return { ok: false, error: String(error && error.message || error) }; }
       let before = null;
       try { if (fs.existsSync(abs)) before = fs.readFileSync(abs, 'utf8'); }
@@ -456,7 +456,7 @@ const CODE_TOOLS = {
       try {
         if (wanted) {
           for (const rel of wanted) {
-            const abs = require('./tool-registry.cjs').resolveInProject(ctx.projectDir, rel);
+            const abs = require('./paths.cjs').resolveInProject(ctx.projectDir, rel);
             if (fs.existsSync(abs)) before.set(rel, fs.readFileSync(abs, 'utf8'));
           }
         } else {
@@ -477,7 +477,7 @@ const CODE_TOOLS = {
       const changes = [];
       for (const [rel, oldText] of before) {
         let abs;
-        try { abs = require('./tool-registry.cjs').resolveInProject(ctx.projectDir, rel); } catch { continue; }
+        try { abs = require('./paths.cjs').resolveInProject(ctx.projectDir, rel); } catch { continue; }
         let now = null;
         try { if (fs.existsSync(abs)) now = fs.readFileSync(abs, 'utf8'); } catch { continue; }
         if (now !== null && now !== oldText) {

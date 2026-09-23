@@ -17,6 +17,7 @@ finished the job: there is now exactly **one** document that states plan numbers
 | Know the main↔renderer channel surface today | [`STUDIO_IPC.md`](./STUDIO_IPC.md) |
 | Understand the CodeGPT economy tier (two upstreams, the `127.0.0.1` trap, the 503s) | [`CODEGPT_ECONOMY_HANDOFF.md`](./CODEGPT_ECONOMY_HANDOFF.md) |
 | Understand the engine surfaces (relay Chromium + bridge, web panel, fetcher, Studio browser, Reach CLI) | [`engines/README.md`](./engines/README.md) |
+| Improve the **agent engine** (`studio/agent/*.cjs`) specifically | [`AGENT_ENGINE_IMPROVEMENTS.md`](./AGENT_ENGINE_IMPROVEMENTS.md) *— engine-scoped annex to the plan* |
 
 ## The one rule
 
@@ -34,7 +35,7 @@ node tools/check-plan-baseline.cjs --write  # regenerate after landing a change
 node tools/count-plan-status.cjs            # the DONE/PARTIAL/TODO counts
 ```
 
-Do **not** add a second improvement plan. Add items to the existing one.
+Do **not** add a second repo-wide improvement plan. Add items to the existing one — or to the engine-scoped annex, which owns only `studio/agent/*.cjs`, states no repo-wide numbers, renumbers nothing, and defers to `IMPROVEMENTS.md` on any conflict. Any engine item that grows beyond the engine moves into `IMPROVEMENTS.md` and leaves a pointer behind.
 
 ## Active documents
 
@@ -45,6 +46,8 @@ Do **not** add a second improvement plan. Add items to the existing one.
 | `CODEGPT_ECONOMY_HANDOFF.md` | Operating notes for the economy tier: why it 503s, how routing/auth follow the model | maintained |
 | `engines/README.md` | The engine surfaces: map, invariants, document contract | maintained |
 | `engines/BROWSER_ENGINE.md` | Deep dive: relay-side Chromium engine + Python bridge + web panel + Reader fetcher | maintained |
+| `AGENT_ENGINE_IMPROVEMENTS.md` | Engine-scoped annex to the plan: `studio/agent/*.cjs`, items `E1`–`E19` | **annex** |
+| `verify-agent-engine.sh` | Re-measures the engine baseline (module/line counts, require cycles, un-homed policy constants, dead constants) | maintained |
 | `engines/STUDIO_BROWSER.md` | Deep dive: Studio in-app browser (`studio/browser/{host,agent,page}.cjs`) | **missing — item 6.11** |
 | `engines/REACH_CLI.md` | Deep dive: Reach CLI surface (`studio/agent/{platform,reach-process,reach-tool-executor}.cjs`) | **missing — item 6.11** |
 | `verify-improvements.sh` | Re-measures the baseline; run it before trusting the plan's numbers | maintained |

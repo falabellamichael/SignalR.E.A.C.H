@@ -23,6 +23,48 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// The index owns its cache. Prompt injection and code tools use these same
+// accessors, so a project write invalidates both views at once.
+const indexCache = new Map();
+const MAX_INDEX_CACHE = 4;
+const INDEX_TTL_MS = 2 * 60 * 1000;
+
+function getIndex(projectDir, { force = false, maxFiles = 2000 } = {}) {
+  if (!projectDir) throw new Error('This agent is not bound to a project directory.');
+  const dir = path.resolve(String(projectDir));
+  const now = Date.now();
+  const cached = indexCache.get(dir);
+  if (!force && cached && now - cached.at < INDEX_TTL_MS) return cached.index;
+  const index = indexProject(dir, { maxFiles });
+  if (indexCache.size >= MAX_INDEX_CACHE) {
+    const oldest = indexCache.keys().next().value;
+    if (oldest !== undefined) indexCache.delete(oldest);
+  }
+  indexCache.set(dir, { at: now, index });
+  return index;
+}
+
+function invalidateIndex(projectDir) {
+  if (!projectDir) { indexCache.clear(); return; }
+  indexCache.delete(path.resolve(String(projectDir)));
+}
+
+function invalidateForFile(file) {
+  if (!file) return;
+  const abs = path.resolve(String(file));
+  for (const dir of indexCache.keys()) {
+    const rootWithSep = dir.endsWith(path.sep) ? dir : dir + path.sep;
+    if (abs === dir || abs.startsWith(rootWithSep)) indexCache.delete(dir);
+  }
+}
+
+try {
+  const { onFileWrite } = require('./text-files.cjs');
+  if (typeof onFileWrite === 'function') onFileWrite(invalidateForFile);
+} catch { /* TTL still bounds cache age when the write observer is unavailable. */ }
+
+function cacheSize() { return indexCache.size; }
+
 /* ------------------------------------------------------------------ languages */
 
 const LANGUAGES = {
@@ -1151,6 +1193,11 @@ module.exports = {
   formatContext,
   buildIndex,
   indexProject,
+  getIndex,
+  invalidateIndex,
+  invalidateForFile,
+  cacheSize,
+  INDEX_TTL_MS,
   summarize,
   isIdentifierName,
 };

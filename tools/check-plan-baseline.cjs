@@ -44,8 +44,8 @@ const END = '<!-- BASELINE:END -->';
 const INSERT_BEFORE = '## Verification';
 
 const read = rel => fs.readFileSync(path.join(ROOT, rel), 'utf8');
-const countFiles = (dir, suffix) =>
-  fs.readdirSync(path.join(ROOT, dir)).filter(name => name.endsWith(suffix)).length;
+const countFiles = (dir, suffix, exclude = []) =>
+  fs.readdirSync(path.join(ROOT, dir)).filter(name => name.endsWith(suffix) && !exclude.includes(name)).length;
 /* Newline count, so this agrees with `wc -l` and with verify-improvements.sh. */
 const lines = rel => read(rel).split('\n').length - 1;
 const uniqueMatches = (rel, pattern) => new Set([...read(rel).matchAll(pattern)].map(m => m[1])).size;
@@ -60,7 +60,9 @@ const METRICS = [
   { id: 'studio/renderer/app.js lines', measure: () => lines('studio/renderer/app.js') },
   { id: 'studio/preload.cjs lines', measure: () => lines('studio/preload.cjs') },
   { id: 'studio/agent modules', measure: () => countFiles('studio/agent', '.cjs') },
-  { id: 'studio/renderer scripts', measure: () => countFiles('studio/renderer', '.js') },
+  // Exclude the build output so a prior `build:editor` cannot change the
+  // measurement based on whether the checkout has been built yet.
+  { id: 'studio/renderer scripts', measure: () => countFiles('studio/renderer', '.js', ['editor.bundle.js']) },
   { id: 'studio/test files', measure: () => countFiles('studio/test', '.test.cjs') },
   { id: 'static IPC handlers', measure: () => uniqueMatches('studio/main.mjs', /^\s*ipcMain\.handle\('([^']+)'/gm) },
   { id: 'preload invoke channels', measure: () => uniqueMatches('studio/preload.cjs', /ipcRenderer\.invoke\('([^']+)'/g) },

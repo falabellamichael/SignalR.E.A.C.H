@@ -18,6 +18,8 @@ const path = require('path');
 const { reviewDiff, stats } = require('./diff.cjs');
 const { readTextFile, writeTextFile, assertTextPath } = require('./text-files.cjs');
 const { runFileScan } = require('./file-scan.cjs');
+const { PARAMS, COMMAND_PATHS } = require('./tool-params.cjs');
+const { resolveInProject } = require('./paths.cjs');
 
 function scanBudget(limit) {
   const deadline = Date.now() + 10000;
@@ -54,6 +56,8 @@ function proposeEdit(ctx, filePath, absPath, proposed, existed) {
   const hunks = reviewDiff(current, proposed, 3);
   const s = stats(hunks);
   const editId = 'edit-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  require('./audit-event.cjs').auditEvent(ctx.auditLog, 'edit.review', { agent: ctx.agentId,
+    detail: { editId, path: filePath, isNew: !existed } });
   ctx.requestEditReview({
     editId,
     path: filePath,
@@ -78,21 +82,6 @@ function proposeEdit(ctx, filePath, absPath, proposed, existed) {
 /* Path safety: every tool that touches the filesystem resolves against the
  * agent's bound project directory. No absolute paths, no parent traversal,
  * no drive letters. Returns the resolved absolute path or throws. */
-function resolveInProject(projectDir, requested) {
-  if (!projectDir) throw new Error('This agent is not bound to a project directory.');
-  const raw = String(requested || '').trim();
-  if (!raw) throw new Error('A path is required.');
-  if (/^([a-zA-Z]:[\\/]|\\\\|\/|~)/.test(raw)) throw new Error('Absolute paths are not allowed. Use a project-relative path.');
-  if (/(^|[\\/])\.\.([\\/]|$)/.test(raw)) throw new Error('Parent-directory traversal (..) is not allowed.');
-  const resolved = path.resolve(projectDir, raw);
-  const rootResolved = path.resolve(projectDir);
-  const rootWithSep = rootResolved.endsWith(path.sep) ? rootResolved : rootResolved + path.sep;
-  if (!resolved.startsWith(rootWithSep) && resolved !== rootResolved) {
-    throw new Error('Path escapes the project directory.');
-  }
-  return resolved;
-}
-
 /* Resolve the `memory` tool to (store, key) for THIS run.
  *
  * The loop supplies its own AgentSoulStore + soulKey, which is the
@@ -417,7 +406,7 @@ const REACH_TOOLS = {
  * get_agent_status / read_agent_transcript / await tool set. */
 function netFromCtx(ctx) {
   // Lazy require: tool-registry is required BY agent-net's AgentLoop chain.
-  const { netForAgent } = require('./agent-net.cjs');
+  const { netForAgent } = require('./net-registry.cjs');
   return netForAgent(ctx.agentId);
 }
 function noNet() {
@@ -502,6 +491,11 @@ const COLLAB_TOOLS = {
 };
 
 const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS, ...require('./code-tools.cjs') };
+for (const [name, tool] of Object.entries(TOOLS)) {
+  if (!Array.isArray(PARAMS[name])) throw new Error(`Tool ${name} has no argument schema.`);
+  tool.params = PARAMS[name];
+  tool.commandPaths = COMMAND_PATHS[name] || [];
+}
 
 function allowedNames() {
   return Object.keys(TOOLS);
