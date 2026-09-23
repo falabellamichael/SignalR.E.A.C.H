@@ -1,0 +1,48 @@
+#!/bin/sh
+# Keeps the generated baseline in docs/IMPROVEMENTS.md in step with the tree.
+# Enable with: git config core.hooksPath .githooks
+#
+# Mirrors the "Check the plan's baseline against the tree (item 6.10)" step in
+# .github/workflows/ci.yml, but REGENERATES the block instead of only reporting
+# it. That check is a tripwire with no automatic reset: any commit touching a
+# measured file (studio/main.mjs, studio/renderer/app.js, the test count, ...)
+# turns the lint job and all three REACH Studio jobs red for everyone until
+# somebody re-runs the generator by hand. Commit abd9b5e did exactly that with a
+# 51-line change to app.js, and blocked the release PR until it was noticed.
+#
+# The check stays strict on the CI side — item 6.10 wants a one-line drift to
+# fail. This hook just means the drift never reaches CI in the first place.
+
+# No node here: never block the commit. CI still verifies the block.
+command -v node >/dev/null 2>&1 || exit 0
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+cd "$root" || exit 0
+[ -f tools/check-plan-baseline.cjs ] || exit 0
+
+plan=docs/IMPROVEMENTS.md
+
+# The generator measures the WORKING TREE, not the index. If a measured file
+# carries unstaged edits, the refreshed numbers describe something this commit
+# does not contain — so say so instead of staging a number it cannot justify.
+dirty=$(git diff --name-only -- studio src 2>/dev/null)
+
+if ! node tools/check-plan-baseline.cjs --write >/dev/null 2>&1; then
+    echo "pre-commit: could not regenerate the plan baseline; leaving it alone." >&2
+    exit 0
+fi
+
+# Nothing to do when the block was already current.
+git diff --quiet -- "$plan" 2>/dev/null && exit 0
+
+git add -- "$plan" || exit 0
+echo "pre-commit: refreshed the generated baseline in $plan and staged it."
+
+if [ -n "$dirty" ]; then
+    echo "pre-commit: note - the baseline measures your working tree, and these" >&2
+    echo "  files have unstaged edits, so the committed numbers may not match the" >&2
+    echo "  committed code:" >&2
+    echo "$dirty" | sed 's/^/    /' >&2
+fi
+
+exit 0
