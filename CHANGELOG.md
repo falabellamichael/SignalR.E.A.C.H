@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.9.7](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.6...v26.9.7) (2026-09-23)
+
+
+### Bug Fixes
+
+* **studio:** stop a pasted /v1/models endpoint producing a doubled version path ([#104](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/104)) ([836e0d7](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/836e0d7e5b81c558e7aa5ca7d83e8a0af4fce87a))
+
 ## [26.9.6](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.5...v26.9.6) (2026-09-22)
 
 
