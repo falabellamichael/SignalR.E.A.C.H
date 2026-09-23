@@ -1,9 +1,9 @@
 'use strict';
 
-/* Reach Studio — reach CLI subprocess spawner + per-run pub/sub.
+/* Reach Studio — Projects subprocess spawner + per-run pub/sub.
  *
- * This is the single place that launches the platform-specific Reach CLI. Everything else (the
- * Projects page command bar, agent reach.* tools) subscribes through
+ * This launches project commands and the platform-specific Reach CLI. The
+ * Projects page command bar and agent reach.* tools subscribe through
  * onRunEvent, which is a MAIN-PROCESS bus — renderer events are a separate
  * concern that main.mjs mirrors to the window.
  */
@@ -30,19 +30,37 @@ function onRunEvent(fn) {
   return () => listeners.delete(fn);
 }
 
-function runReach({ cwd, args = [] }) {
+function runProcess({ cwd, command, args = [], label }) {
   const runId = ++runSeq;
-  const spec = reachCommand(args, settingsProvider());
-  const proc = spawnCommand(spec.command, spec.args, { cwd: cwd || undefined });
+  const proc = spawnCommand(command, args, { cwd: cwd || undefined });
   running.set(runId, { proc, killed: false });
+  let launchError = false;
   proc.stdout.on('data', (d) => emit({ type: 'output', runId, channel: 'out', data: d.toString() }));
   proc.stderr.on('data', (d) => emit({ type: 'output', runId, channel: 'err', data: d.toString() }));
-  proc.on('error', (e) => emit({ type: 'output', runId, channel: 'err', data: `Failed to launch reach: ${e.message}\n` }));
+  proc.on('error', (e) => {
+    launchError = true;
+    const hint = label === 'Reach CLI' && e.code === 'ENOENT'
+      ? 'Reach CLI is unavailable. Install it or set its executable in Settings → Connection.'
+      : `${label} could not start: ${e.message}`;
+    emit({ type: 'output', runId, channel: 'err', data: `${hint}\n` });
+  });
   proc.on('close', (code) => {
+    const stopped = running.get(runId)?.killed === true;
     running.delete(runId);
-    emit({ type: 'exit', runId, code });
+    emit({ type: 'exit', runId, code, launchError, stopped });
   });
   return runId;
+}
+
+function runReach({ cwd, args = [] }) {
+  const spec = reachCommand(args, settingsProvider());
+  return runProcess({ cwd, ...spec, label: 'Reach CLI' });
+}
+
+function runProject({ cwd, args = [] }) {
+  if (!cwd || !Array.isArray(args) || !args.length || args.some(arg => typeof arg !== 'string' || !arg || arg.includes('\0')))
+    throw new Error('Choose a project and enter a command to run.');
+  return runProcess({ cwd, command: args[0], args: args.slice(1), label: args[0] });
 }
 
 function killRun(runId) {
@@ -64,4 +82,4 @@ async function reachVersion() {
   return `Optional Reach CLI unavailable. Configure its executable in Settings. ${result.error || result.stderr.trim() || `Exit ${result.exitCode}`}`;
 }
 
-module.exports = { configure, runReach, killRun, killAllRuns, onRunEvent, reachVersion, WSL_DISTRO, REACH_BIN };
+module.exports = { configure, runReach, runProject, killRun, killAllRuns, onRunEvent, reachVersion, WSL_DISTRO, REACH_BIN };

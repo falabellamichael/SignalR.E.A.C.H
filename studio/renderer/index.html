@@ -102,7 +102,7 @@
         <div id="no-project" class="empty">
           <div class="big-mark">R</div>
           <p>Select a project or create a new one.</p>
-          <p class="sub">Manage projects and run your optional Reach CLI toolchain.</p>
+          <p class="sub">Manage projects, run project commands, and optionally use the Reach CLI.</p>
         </div>
 
         <div id="project-view" class="hidden">
@@ -112,19 +112,25 @@
               <div id="project-path" class="path"></div>
             </div>
             <div class="project-actions">
-              <button id="btn-compile" class="gold">Compile</button>
-              <button id="btn-clean" class="ghost">Clean</button>
-              <button id="btn-info" class="ghost">Info</button>
+              <button id="btn-compile" class="gold">Reach Compile</button>
+              <button id="btn-clean" class="ghost">Reach Clean</button>
+              <button id="btn-info" class="ghost">Reach Info</button>
               <button id="btn-folder" class="ghost">Open Folder</button>
             </div>
           </div>
 
           <div class="cmdbar">
-            <span class="prompt">reach</span>
-            <input id="cmd-input" type="text" placeholder="type any reach command, e.g. scaffold eth" spellcheck="false" />
+            <label class="sr-only" for="cmd-mode">Command type</label>
+            <select id="cmd-mode" aria-label="Command type">
+              <option value="project">Project command</option>
+              <option value="reach">Reach CLI</option>
+            </select>
+            <span class="prompt" id="cmd-prompt">$</span>
+            <input id="cmd-input" type="text" placeholder="e.g. npm --prefix studio test" spellcheck="false" />
             <button id="btn-run" class="gold small">Run</button>
             <button id="btn-stop" class="ghost small hidden">Stop</button>
           </div>
+          <p class="dim command-hint" id="cmd-hint">Runs a program in this project folder. No shell pipes or redirects.</p>
 
           <div class="log" id="log"></div>
         </div>

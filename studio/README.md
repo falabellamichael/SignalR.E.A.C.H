@@ -69,6 +69,17 @@ creates a new Reach DApp scaffold; it does not import another project's files.
 The Files panel loads the selected directory and expands folders on demand.
 Compiled Python bytecode (`.pyc`) and other binary files are not editable source.
 
+The **Projects** command bar has two explicit modes. **Project command** runs a
+program in the selected directory, such as `git status`,
+`npm --prefix studio test`, or `python3 -m unittest discover -s tests -q`
+when this repository is selected. It launches the program directly, without a
+shell; pipes, redirects, and shell quoting are not interpreted. **Reach CLI**
+runs Reach DApp subcommands such as `version`, `compile index.rsh`, and `run
+index.rsh`. The Reach Compile, Reach Clean, and Reach Info buttons always use
+the optional Reach CLI. Both modes show output and exit status in the log, and
+**Stop** terminates the running process tree. Reach Compile requires
+`index.rsh` at the selected project's root.
+
 **New Chat** stays at the top of conversation history. The **+ New Chat** button
 returns to that starting view; opening it does not save an empty conversation.
 Choose a model, adjust controls, or attach files before sending. The first message

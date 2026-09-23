@@ -268,6 +268,13 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "project:run": {
+    "module": "main.mjs",
+    "args": [
+      "{ cwd, args }"
+    ],
+    "returns": "runId"
+  },
   "projects:get": {
     "module": "main.mjs",
     "args": [],

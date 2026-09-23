@@ -441,6 +441,7 @@ function registerIpc() {
   });
   ipcMain.handle('reach:version', () => reachProcess.reachVersion());
   ipcMain.handle('reach:run', (_e, { cwd, args }) => reachProcess.runReach({ cwd, args }));
+  ipcMain.handle('project:run', (_e, { cwd, args }) => reachProcess.runProject({ cwd, args }));
   ipcMain.handle('reach:kill', (_e, runId) => reachProcess.killRun(runId));
 
   ipcMain.handle('projects:get', () => loadProjects());
@@ -3219,6 +3220,21 @@ app.whenReady().then(() => {
             const clickProject = dir => [...projectList.children].find(li => li.title === dir).click();
             clickProject(first);
             await until(() => drawerContext.textContent === first && fileTreeEl.querySelector('[data-path="index.rsh"]'));
+            const commandMode = document.querySelector('#cmd-mode');
+            if (!commandMode || commandMode.value !== 'project') throw new Error('Project command mode is missing');
+            commandMode.value = 'reach';
+            commandMode.dispatchEvent(new Event('change'));
+            if (document.querySelector('#cmd-prompt').textContent !== 'reach') throw new Error('Reach command mode did not update its prompt');
+            commandMode.value = 'project';
+            commandMode.dispatchEvent(new Event('change'));
+            cmdInput.value = 'node --version';
+            await document.querySelector('#btn-run').onclick();
+            await until(() => logEl.textContent.includes('process exited with code 0'));
+            if (!logEl.textContent.includes('$ node --version')) throw new Error('Project command did not run through the Projects log');
+            cmdInput.value = 'reach-project-command-does-not-exist';
+            await document.querySelector('#btn-run').onclick();
+            await until(() => logEl.textContent.includes('command could not start'));
+            if (!logEl.textContent.includes('reach-project-command-does-not-exist could not start')) throw new Error('Fast command launch error was lost');
             await openFile('index.rsh');
             if (openFiles.get('index.rsh').editor.getText() !== '// FIRST PROJECT') throw new Error('First project source wrong');
             clickProject(second);

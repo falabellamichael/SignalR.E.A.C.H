@@ -79,6 +79,26 @@ test('Reach pub/sub uses configured native executable and reports exit', { skip:
   assert.match(events.find(e => e.type === 'output').data, /reach fixture/);
   assert.equal(events.at(-1).code, 0);
 });
+test('Projects commands run directly in the selected folder and report launch errors', async t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'reach project command '));
+  t.after(() => { reach.killAllRuns(); fs.rmSync(cwd, { recursive: true, force: true }); });
+  const collect = args => new Promise(resolve => {
+    const events = [];
+    const id = reach.runProject({ cwd, args });
+    const detach = reach.onRunEvent(event => {
+      if (event.runId !== id) return;
+      events.push(event);
+      if (event.type === 'exit') { detach(); resolve(events); }
+    });
+  });
+  const ok = await collect([process.execPath, '-e', 'console.log(process.cwd())']);
+  assert.equal(fs.realpathSync(ok.find(event => event.type === 'output').data.trim()), fs.realpathSync(cwd));
+  assert.equal(ok.at(-1).code, 0);
+  const missing = await collect([path.join(cwd, 'missing-command')]);
+  assert.match(missing.find(event => event.type === 'output').data, /could not start/);
+  assert.equal(missing.at(-1).launchError, true);
+  assert.throws(() => reach.runProject({ cwd, args: [] }), /enter a command/);
+});
 test('optional CLI status supports executable paths with spaces', { skip: process.platform === 'win32' }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach cli '));
   const executable = path.join(root, 'reach fixture');
