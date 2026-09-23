@@ -1,5 +1,21 @@
 # Changelog
 
+## [26.9.8](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.7...reach-studio-v26.9.8) (2026-09-23)
+
+
+### Features
+
+* **studio:** complete agent engine through E19 ([#106](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/106)) ([8bc0c06](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8bc0c06462bf8efe54930867aaa25f92869e5722))
+* **studio:** pace provider requests per endpoint and enforce global-only budget fields ([7f0381d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/7f0381d42d3e9e7e75b8c47b3251f27cf3396905))
+* **studio:** show reasoning on hover ([abd9b5e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/abd9b5e2fa5c68d3ae962619f69296ac9466b9d0))
+
+
+### Bug Fixes
+
+* **ci:** regenerate the stale plan baseline and stop it going stale again ([#107](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/107)) ([e5e5e7b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e5e5e7bd0355cf1583e55c2990ae6150f36cf65b))
+* **release:** align Studio version files and changelog ([#108](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/108)) ([6a8c48d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6a8c48dc20b8799c2ee142c7725dc2820e356138))
+* **studio:** keep thought hover card in view ([9dcd5dd](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9dcd5dd2dee11c28ca633a6c4d914667160aa811))
+
 ## [26.9.7](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.6...reach-studio-v26.9.7) (2026-09-23)
 
 
