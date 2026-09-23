@@ -197,6 +197,7 @@ class TeamRunner {
     this._stopDeferred = null;
     this._linkDeclared = null;   // member declared LINKS: COMPLETE in its answer
     this._linksAnswer = null;    // final crew answer for links runs
+    this._linksPreviousSuccesses = []; // usable turns retained if synthesis fails
     this._linksMeta = null;      // rounds / exchanges / completedBy telemetry
     this._linksSuperseded = new Map(); // live peers cancelled after another member completes
     this._linksConclusionTimer = null; // short grace for productive in-flight peers
@@ -484,17 +485,32 @@ class TeamRunner {
       this.running = false;
     }
 
+    const usableByIndex = new Map();
+    for (const result of [...(mode === 'links' ? this._linksPreviousSuccesses : []), ...results]) {
+      if (result?.ok && String(result.output || '').trim()) usableByIndex.set(result.index, result);
+    }
+    const successfulCount = usableByIndex.size;
+    const failedCount = results.filter(result => !result.ok && !(mode === 'links'
+      && this._linksDone() && result.status === 'skipped')).length;
+    const outcome = this.stopped ? 'stopped' : !successfulCount ? 'failed'
+      : failedCount ? 'partial' : 'completed';
+    // Provider diagnostics belong to member status, never to assistant text.
+    // In particular, an all-failed Links run must not manufacture an answer.
+    const answer = this.stopped || !successfulCount ? '' : mode === 'chain'
+      ? [...results].reverse().find(result => result.ok && result.output)?.output || ''
+      : mode === 'links' ? this._linksAnswer || [...usableByIndex.values()]
+        .map(result => `【${result.name}】\n${result.output}`).join('\n\n')
+        : results.filter(result => result.ok && result.output)
+          .map(result => `【${result.name}】\n${result.output}`).join('\n\n');
     this._emit('done', {
       mode,
       stopped: this.stopped,
+      outcome,
+      successfulCount,
+      failedCount,
       results: results.map(r => ({ index: r.index, name: r.name, ok: r.ok, status: r.status || null, error: r.error || null,
         completionReason: r.completionReason || null, chars: (r.output || '').length })),
-      // The crew answer: chain → last successful output; parallel → all outputs.
-      answer: mode === 'chain'
-        ? (results.length && results[results.length - 1].ok ? results[results.length - 1].output : '')
-        : mode === 'links'
-          ? (this._linksAnswer || results.map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n'))
-          : results.map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n'),
+      answer,
       links: mode === 'links' ? (this._linksMeta || null) : null,
     });
     this.journal?.append('complete', { stopped: this.stopped, memberCount: results.length });

@@ -2731,7 +2731,7 @@ function renderRecoverableTeamRuns(runs) {
       if (!pre) { pre = document.createElement('pre'); pre.className = 'team-recovery-output'; card.append(pre); }
       pre.textContent = [
         `Original task: ${recovered.manifest.task}`,
-        recovered.members.map(member => `${member.name} (${member.status})\n${member.output || member.error || '(no answer yet)'}`).join('\n\n'),
+        recovered.members.map(member => `${member.name} (${member.status})\n${member.output || teamErrorSummary(member.error) || '(no answer yet)'}`).join('\n\n'),
         recovered.messages.map(message => `${message.from} → ${message.to}: ${message.message}`).join('\n'),
         recovered.evidence.map(item => `${item.agentId}: ${item.tool} ${item.ok ? 'ok' : 'failed'}${item.path ? ` ${item.path}` : ''}${item.decision ? ` (${item.decision})` : ''}`).join('\n'),
       ].filter(Boolean).join('\n\n').slice(0, 100000);
@@ -3293,7 +3293,7 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id, { a
     previous.deck.finish('stopped');
     teamRunViews.delete(previous.teamRunId);
   }
-  const run = { teamRunId, team, agentId, cards: new Map(), subCards: new Map(), buffer: new Map() };
+  const run = { teamRunId, team, task, agentId, cards: new Map(), subCards: new Map(), buffer: new Map() };
   invalidateComposerCatalog();
   // Endpoint/model validation can take long enough for the user to navigate.
   // Never mount conversation A's team deck inside conversation B. The retained
@@ -4332,6 +4332,29 @@ function attachAskBox(card, questionId, name, question) {
   return ask;
 }
 
+function teamErrorSummary(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (/ECONOMY_CONCURRENCY_LIMIT/i.test(raw)) {
+    return 'CodeGPT Economy allows one active stream per account. Wait for the other stream to finish, then retry this request.';
+  }
+  const objectAt = raw.indexOf('{');
+  if (objectAt >= 0) {
+    const prefix = raw.slice(0, objectAt).trim().replace(/:\s*$/, '');
+    try {
+      const data = JSON.parse(raw.slice(objectAt));
+      const detail = [data?.aiErrorMessage, data?.errorMessage, data?.error?.aiErrorMessage,
+        data?.error?.errorMessage, data?.error?.message, data?.error, data?.message]
+        .find(message => typeof message === 'string' && message.trim());
+      return (detail ? `${prefix ? prefix + ': ' : ''}${detail.trim()}`
+        : `${prefix ? prefix + ': ' : ''}The provider returned an error. Check its connection and retry.`).slice(0, 320);
+    } catch {
+      return `${prefix ? prefix + ': ' : ''}The provider returned an unreadable error. Check its connection and retry.`.slice(0, 320);
+    }
+  }
+  return raw.slice(0, 320);
+}
+
 function handleTeamEvent(ev) {
   // A paused run may still be displayed while main tears it down and starts the
   // replacement. Buffer events for the not-yet-installed run instead of
@@ -4352,7 +4375,16 @@ function handleTeamEvent(ev) {
     return;
   }
   const activityCard = ev.type === 'subagent' && ev.agentId ? workerCard(ev.agentId, ev.name, ev.model || '', ev.depth) : ev.index !== undefined ? memberCard(ev.index, ev.name, ev.model) : null;
-  window.ReachActivity.team(ev, activityCard);
+  const hasProviderError = ['member-done', 'links-stall', 'chain-broken', 'error'].includes(ev.type)
+    || ev.type === 'member' && ['retry', 'error', 'run-state', 'message-end', 'rate-limit', 'tool-result'].includes(ev.memberType)
+    || ev.type === 'subagent' && ['error', 'agent-state', 'message-end', 'rate-limit', 'tool-result'].includes(ev.netType);
+  window.ReachActivity.team(hasProviderError ? {
+    ...ev,
+    ...(ev.error ? { error: teamErrorSummary(ev.error) } : {}),
+    ...(ev.reason ? { reason: teamErrorSummary(ev.reason) } : {}),
+    ...(ev.message ? { message: teamErrorSummary(ev.message) } : {}),
+    ...(ev.note && (ev.memberType === 'rate-limit' || ev.netType === 'rate-limit') ? { note: teamErrorSummary(ev.note) } : {}),
+  } : ev, activityCard);
   switch (ev.type) {
     case 'start':
       for (const member of ev.members) {
@@ -4408,13 +4440,13 @@ function handleTeamEvent(ev) {
       } else if (ev.memberType === 'reasoning') {
         state.textContent = `Model is thinking… (${ev.chars} characters received)`;
       } else if (ev.memberType === 'retry') {
-        state.textContent = 'Retrying: ' + ev.error;
+        state.textContent = 'Retrying: ' + teamErrorSummary(ev.error);
       } else if (ev.memberType === 'recovery') {
         state.textContent = 'Requesting a usable action response…';
       } else if (ev.memberType === 'error') {
-        state.textContent = ev.message;
+        state.textContent = teamErrorSummary(ev.message);
       } else if (ev.memberType === 'run-state') {
-        state.textContent = card.dataset.paused === 'true' ? 'stopped · ready to start' : ev.status + (ev.reason ? ': ' + ev.reason : '');
+        state.textContent = card.dataset.paused === 'true' ? 'stopped · ready to start' : ev.status + (ev.reason ? ': ' + teamErrorSummary(ev.reason) : '');
       } else if (ev.memberType === 'message-start') {
         clearTimeout(card._renderTimer);
         card._renderTimer = null;
@@ -4451,7 +4483,7 @@ function handleTeamEvent(ev) {
         state.textContent = ev.pending ? 'Waiting for edit review' : `${ev.tool} finished`;
         const line = document.createElement('div');
         line.className = 'member-tool ' + (ev.ok ? 'ok' : 'bad');
-        line.textContent = `${ev.ok ? '✓' : '✗'} ${ev.tool}${ev.error ? ': ' + ev.error : ''}`;
+        line.textContent = `${ev.ok ? '✓' : '✗'} ${ev.tool}${ev.error ? ': ' + teamErrorSummary(ev.error) : ''}`;
         body.appendChild(line);
       }
       break;
@@ -4491,7 +4523,7 @@ function handleTeamEvent(ev) {
           startedAt: Date.now(), steps: [], count: 0,
           ...(card._teamActivity || {}),
           status: terminalStatus,
-          reason: ev.error || '',
+          reason: teamErrorSummary(ev.error),
           endedAt: Date.now(),
         });
         setMemberControl(card, terminalStatus === 'stalled', terminalStatus !== 'stalled');
@@ -4503,7 +4535,7 @@ function handleTeamEvent(ev) {
         if (ev.ok) flashMemberCard(card);
         card.querySelector('.member-state').textContent = ev.completionReason
           ? ev.completionReason
-          : ev.ok ? `done (${ev.chars || 0} chars)` : `${ev.status || 'failed'}: ${ev.error || 'No completed answer.'}`;
+          : ev.ok ? `done (${ev.chars || 0} chars)` : `${ev.status || 'failed'}: ${teamErrorSummary(ev.error) || 'No completed answer.'}`;
       }
       break;
     }
@@ -4561,7 +4593,7 @@ function handleTeamEvent(ev) {
             if (ev.status === 'completed') flashMemberCard(card);
             state.textContent = ev.status === 'completed'
               ? `done (${ev.chars || 0} chars)`
-              : `${ev.status}: ${ev.error || ''}`;
+              : `${ev.status}: ${teamErrorSummary(ev.error)}`;
             if (ev.outputPreview) body.innerHTML = md.render(ev.outputPreview.slice(0, 30000));
           }
           break;
@@ -4613,12 +4645,12 @@ function handleTeamEvent(ev) {
         case 'tool-result': {
           const line = document.createElement('div');
           line.className = 'member-tool ' + (ev.ok ? 'ok' : 'bad');
-          line.textContent = `${ev.ok ? '✓' : '✗'} ${ev.tool}${ev.error ? ': ' + ev.error : ''}`;
+          line.textContent = `${ev.ok ? '✓' : '✗'} ${ev.tool}${ev.error ? ': ' + teamErrorSummary(ev.error) : ''}`;
           body.appendChild(line);
           break;
         }
         case 'error': {
-          state.textContent = ev.message;
+          state.textContent = teamErrorSummary(ev.message);
           break;
         }
         default:
@@ -4637,7 +4669,7 @@ function handleTeamEvent(ev) {
     case 'chain-broken': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      note.textContent = `⛓ Chain broken at ${ev.name}: ${ev.error || 'member failed'} — remaining members skipped.`;
+      note.textContent = `⛓ Chain broken at ${ev.name}: ${teamErrorSummary(ev.error) || 'member failed'} — remaining members skipped.`;
       run.wrap.appendChild(note);
       break;
     }
@@ -4661,7 +4693,7 @@ function handleTeamEvent(ev) {
     case 'links-stall': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      note.textContent = `🔗 Links: ${ev.name} stalled (${ev.error || 'no usable action'}) — press Start to wake it, or a teammate can send new work; the crew continues meanwhile.`;
+      note.textContent = `🔗 Links: ${ev.name} stalled (${teamErrorSummary(ev.error) || 'no usable action'}) — press Start to wake it, or a teammate can send new work; the crew continues meanwhile.`;
       run.wrap.appendChild(note);
       break;
     }
@@ -4682,20 +4714,52 @@ function handleTeamEvent(ev) {
     case 'done': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      const okCount = (ev.results || []).filter(r => r.ok).length;
-      note.textContent = `🏁 Team run ${ev.stopped ? 'stopped' : 'finished'}: ${okCount}/${(ev.results || []).length} members succeeded.`;
-      if (run.team?.id && run.agentId) note.textContent += ' Send a follow-up with Teams on to continue this conversation.';
+      note.setAttribute('role', 'status');
+      const total = (ev.results || []).length;
+      const okCount = Number.isInteger(ev.successfulCount) ? ev.successfulCount : (ev.results || []).filter(r => r.ok).length;
+      const outcome = ev.outcome || (ev.stopped ? 'stopped' : ev.answer?.trim()
+        ? okCount === total ? 'completed' : 'partial' : 'failed');
+      note.textContent = outcome === 'failed'
+        ? `Team could not produce an answer (${okCount}/${total} members answered). Review member errors and check the connections before retrying.`
+        : outcome === 'partial'
+          ? `Team returned a partial answer (${okCount}/${total} members answered). Review the failed members before continuing.`
+          : `🏁 Team run ${outcome === 'stopped' ? 'stopped' : 'finished'}: ${okCount}/${total} members answered.`;
+      if (outcome === 'failed' || outcome === 'partial') {
+        const connections = document.createElement('button');
+        connections.type = 'button';
+        connections.className = 'ghost small';
+        connections.textContent = 'Check connections';
+        connections.onclick = () => openSettingsPanel('connection').catch(error => showNotice(error.message));
+        note.append(' ', connections);
+        if (run.agentId) {
+          const restore = document.createElement('button');
+          restore.type = 'button';
+          restore.className = 'ghost small';
+          restore.textContent = 'Restore request';
+          restore.title = 'Put the original request back in the composer without sending it';
+          restore.onclick = () => {
+            if (currentAgent?.id !== run.agentId) return showNotice('Open the original conversation to restore this request.');
+            if (composerInput.value.trim()) return showNotice('Your unsent draft is intact. Clear it before restoring this request.');
+            composerInput.value = run.task;
+            composerInput.dispatchEvent(new Event('input', { bubbles: true }));
+            composerInput.focus();
+          };
+          note.append(' ', restore);
+        }
+      }
+      if (outcome === 'completed' && run.team?.id && run.agentId) note.textContent += ' Send a follow-up with Teams on to continue this conversation.';
       run.wrap.appendChild(note);
       // Persist a compact record into the conversation history so a reload
       // still shows the run happened and what the crew answered.
-      if (run.agentId && ev.answer) {
-        const summary = `【Team ${(run.team || {}).name || ''} · ${ev.mode}】\n${String(ev.answer).slice(0, 12000)}`;
+      if (run.agentId && ['completed', 'partial'].includes(outcome) && ev.answer?.trim()) {
+        const answerNote = `【Team ${(run.team || {}).name || ''} · ${ev.mode}】\n${String(ev.answer).slice(0, 12000)}`;
+        const summary = outcome === 'partial' ? `Partial team result (${okCount}/${total} members answered)\n${answerNote}` : answerNote;
         if (currentAgent?.id === run.agentId) appendChatMessage('assistant', summary);
-        if (!ev.historySaved) reachApi.agents.appendNote(run.agentId, summary).catch(error => { note.textContent += ' Could not save: ' + error.message; });
+        if (!ev.historySaved) reachApi.agents.appendNote(run.agentId, summary).catch(error => { note.append(' Could not save: ' + error.message); });
       }
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
-      run.deck.finish(ev.stopped ? 'stopped' : 'completed');
+      run.deck.finish(outcome === 'failed' ? 'error' : outcome);
       run.stop.remove();
       teamRunViews.delete(run.teamRunId);
       syncSelectedTeamRun();
@@ -4707,7 +4771,7 @@ function handleTeamEvent(ev) {
     case 'error': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
-      note.textContent = 'Team error: ' + ev.message;
+      note.textContent = 'Team error: ' + teamErrorSummary(ev.message);
       run.wrap.appendChild(note);
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);

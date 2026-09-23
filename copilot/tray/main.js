@@ -859,6 +859,51 @@ async function codegptSnapshot() {
     return JSON.parse(raw);
 }
 
+// CodeGPT sometimes nests an HTTP 429 inside a successful /api/runs response,
+// and its message can itself be a JSON string. Keep provider details out of
+// assistant text while giving clients a stable error to handle.
+function codegptProviderError(source, httpStatus = 0) {
+    let status = Number(httpStatus) || 0;
+    let code = '';
+    const messages = [];
+    const inspect = (value, depth = 0) => {
+        if (depth > 5 || value == null) return;
+        if (typeof value === 'string') {
+            const message = value.trim().replace(/^CodeGPT:\s*/i, '');
+            if (!message) return;
+            if (message.startsWith('{')) {
+                try { inspect(JSON.parse(message), depth + 1); return; }
+                catch (_) { /* ordinary provider text */ }
+            }
+            messages.push(message.slice(0, 1000));
+            return;
+        }
+        if (typeof value !== 'object') return;
+        if (Number.isInteger(value.status) && value.status >= 400 && value.status <= 599) status = value.status;
+        if (typeof value.code === 'string' && /^[A-Z][A-Z0-9_]{2,63}$/.test(value.code)) code = value.code;
+        for (const key of ['aiErrorMessage', 'errorMessage', 'message', 'error', 'text']) {
+            if (value[key] != null) inspect(value[key], depth + 1);
+        }
+    };
+    inspect(source);
+    const detail = messages.join(' ');
+    const economy = code === 'ECONOMY_CONCURRENCY_LIMIT'
+        || /ECONOMY_CONCURRENCY_LIMIT|one interactive session at a time|another stream on this account/i.test(detail);
+    const limited = economy || status === 429;
+    const message = economy
+        ? 'CodeGPT Economy is already serving another interactive session. Wait for it to finish, then retry. Parallel runs require credits or your own API key.'
+        : limited
+            ? 'CodeGPT is limiting requests on this account. Check the CodeGPT window and retry after a short wait.'
+            : (detail && !/[{}]/.test(detail) ? detail.slice(0, 240) : 'CodeGPT could not complete this request. Check the CodeGPT window.');
+    return Object.assign(new Error(message), {
+        provider: 'codegpt',
+        code: economy ? 'ECONOMY_CONCURRENCY_LIMIT' : limited ? 'CODEGPT_RATE_LIMIT' : code || 'CODEGPT_PROVIDER_ERROR',
+        status: limited ? 429 : status || 502,
+        retryable: limited || status >= 500,
+        ...(limited ? { retryAfterSeconds: 15 } : {}),
+    });
+}
+
 // Local /api/runs is NDJSON; only its final event is a completed reply.
 // Do not return progress, private reasoning, old turns, or server errors as text.
 function extractCodegptRunReply(body) {
@@ -867,7 +912,7 @@ function extractCodegptRunReply(body) {
         catch (_) { throw new Error('CodeGPT returned an invalid run response. Check the extension API port (54113).'); }
     });
     const failure = events.find(event => event.t === 'error' || event.error);
-    if (failure) throw new Error('CodeGPT: ' + (failure.message || failure.error?.message || failure.error || failure.text || 'run failed'));
+    if (failure) throw codegptProviderError(failure, failure.status || failure.error?.status);
     const final = events.filter(event => event.t === 'final').pop();
     if (!final || !final.done || final.pending || final.continueTurn) {
         throw new Error('CodeGPT did not finish the chat request (it may require approval in the CodeGPT window).');
@@ -886,6 +931,7 @@ function extractCodegptApiReply(body) {
     if (!body) return '';
     try {
         const data = JSON.parse(body);
+        if (data.error || (data.status >= 400 && data.code)) throw codegptProviderError(data, data.status);
         for (const ch of (data.choices || [])) {
             const c = ch.message && ch.message.content;
             if (typeof c === 'string' && c.trim()) return c.trim();
@@ -897,7 +943,10 @@ function extractCodegptApiReply(body) {
             }
         }
         return '';
-    } catch (_) { /* not JSON — SSE or plain text */ }
+    } catch (error) {
+        if (error.provider === 'codegpt') throw error;
+        // Not JSON — SSE or plain text.
+    }
     // SSE-style: collect data: payloads, join their delta/content fields
     // (split on LF only; strip a trailing CR — see CRLF patch-tool pitfall)
     const lines = String(body).split('\n');
@@ -910,12 +959,16 @@ function extractCodegptApiReply(body) {
         if (!payload || payload === '[DONE]') continue;
         try {
             const d = JSON.parse(payload);
+            if (d.error || (d.status >= 400 && d.code)) throw codegptProviderError(d, d.status);
             for (const ch of (d.choices || [])) {
                 const delta = ch.delta || ch.message || {};
                 const c = delta.content;
                 if (typeof c === 'string') parts.push(c);
             }
-        } catch (_) { parts.push(payload); }
+        } catch (error) {
+            if (error.provider === 'codegpt') throw error;
+            parts.push(payload);
+        }
     }
     const joined = parts.join('');
     return joined.trim() || String(body).slice(0, 4000).trim();
@@ -1498,7 +1551,9 @@ async function codegptSendRequest(text, signal, engine, label, onDelta, onReason
         if (snap.text && snap.text !== before.text) emitProgress(snap.text);
         if (snap.apiReply && snap.apiReply.ts >= sendStart) {
             if (snap.apiReply.pending) continue; // never mistake a stream pause for completion
-            if (snap.apiReply.status >= 400) throw new Error('CodeGPT request failed (HTTP ' + snap.apiReply.status + ').');
+            if (snap.apiReply.status >= 400) {
+                throw codegptProviderError(snap.apiReply.body, snap.apiReply.status);
+            }
             if (snap.apiReply.run) {
                 const answer = extractCodegptRunReply(snap.apiReply.body);
                 lastReplyAt = Date.now();

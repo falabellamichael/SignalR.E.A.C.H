@@ -6,13 +6,14 @@ Run:  python -m unittest tests.test_reachd -v
   or: python tests/test_reachd.py
 """
 
+import io
 import json
 import os
 import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
@@ -750,6 +751,210 @@ class ConcurrencyGateTests(unittest.TestCase):
             self.assertEqual(state.gate._active, initial_active)
 
 
+
+
+class StreamPreflightTests(unittest.TestCase):
+    """An SSE error or empty reply must not be committed as a successful 200."""
+
+    @staticmethod
+    def _stream(*events):
+        source = io.BytesIO(b"".join(
+            b"data: " + (event if isinstance(event, bytes) else json.dumps(event).encode())
+            + b"\n\n" for event in events))
+        source.headers = {"Content-Type": "text/event-stream"}
+        return source
+
+    def _finalize(self, source, *, upstream_model="bridge/codegpt-eco-test",
+                  fallback=None, urlopen=None, strip_roles=False):
+        from reachd import core
+        from reachd.chat import chat_finalize
+
+        state = MagicMock()
+        state.cfg = {"stream_timeout_s": 300, "data": {}}
+        state.bridge_url = "http://127.0.0.1:21302/v1"
+        state.omniroute_url = "http://127.0.0.1:20128/v1"
+        state.key = "test-key"
+        h = MagicMock()
+        h.headers = {}
+        ctx = {
+            "started": time.time(), "ip": "127.0.0.1",
+            "rl_headers": {"X-RateLimit-Limit": "12"},
+            "requested": "test", "upstream_model": upstream_model,
+            "spec": {**({"fallback": "backup"} if fallback else {}),
+                     **({"strip_trailing_roles": True} if strip_roles else {})},
+            "stream": True, "total_chars": 4, "request_body": None,
+            "fallback_used": False, "cache_cfg": {}, "cache_key": None,
+            "url": "", "payload": {"messages": [{"role": "user", "content": "hi"}]},
+            "models": {"backup": fallback} if fallback else {},
+        }
+        with patch.object(core, "STATE", state):
+            if urlopen:
+                with patch("urllib.request.urlopen", side_effect=urlopen):
+                    chat_finalize(h, source, ctx)
+            else:
+                chat_finalize(h, source, ctx)
+        return h, state
+
+    def test_bridge_sse_error_preserves_429_without_empty_success(self):
+        source = self._stream({"error": {
+            "code": "ECONOMY_CONCURRENCY_LIMIT", "status": 429,
+            "provider": "codegpt", "retryable": True,
+            "retryAfterSeconds": 15, "message": "Another stream is running."}},
+            b"[DONE]")
+        h, state = self._finalize(source)
+        h.send_response.assert_not_called()
+        status, payload, headers = h._json.call_args.args
+        self.assertEqual(status, 429)
+        self.assertEqual(payload["error"]["code"], "ECONOMY_CONCURRENCY_LIMIT")
+        self.assertEqual(payload["error"]["message"], "Another stream is running.")
+        self.assertEqual(payload["error"]["provider"], "codegpt")
+        self.assertEqual(headers["Retry-After"], "15")
+        state.note_failure.assert_not_called()
+        state.note_success.assert_not_called()
+        state.gate.release.assert_called_once()
+        self.assertTrue(source.closed)
+
+    def test_reasoning_only_stream_is_502_and_does_not_clear_breaker(self):
+        source = self._stream(
+            {"choices": [{"delta": {"reasoning_content": "still thinking"}}]},
+            b"[DONE]")
+        h, state = self._finalize(source)
+        self.assertEqual(h._json.call_args.args[0], 502)
+        self.assertEqual(h._json.call_args.args[1]["error"]["code"],
+                         "empty_upstream_response")
+        state.note_failure.assert_called_once_with("bridge")
+        state.note_success.assert_not_called()
+        state.gate.release.assert_called_once()
+        self.assertTrue(source.closed)
+
+    def test_error_after_first_answer_is_forwarded_and_records_failure(self):
+        source = self._stream(
+            {"choices": [{"delta": {"content": "partial"}}]},
+            {"error": {"code": "upstream_broken", "message": "Stream cut."}},
+            b"[DONE]")
+        h, state = self._finalize(source)
+        self.assertEqual(h.send_response.call_args.args[0], 200)
+        self.assertTrue(any(b'"error"' in call.args[0]
+                            for call in h._write_chunk.call_args_list))
+        self.assertFalse(any(b'"usage"' in call.args[0]
+                             for call in h._write_chunk.call_args_list))
+        self.assertEqual(h._log_chat.call_args.kwargs["status"], 502)
+        state.note_failure.assert_called_once_with("bridge")
+        state.note_success.assert_not_called()
+        state.gate.release.assert_called_once()
+
+    def test_capacity_error_after_first_token_logs_429_without_usage(self):
+        source = self._stream(
+            {"choices": [{"delta": {"content": "partial"}}]},
+            {"error": {"code": "ECONOMY_CONCURRENCY_LIMIT", "status": 429,
+                       "message": "Another session is running."}}, b"[DONE]")
+        h, state = self._finalize(source)
+        self.assertEqual(h.send_response.call_args.args[0], 200)
+        self.assertEqual(h._log_chat.call_args.kwargs["status"], 429)
+        self.assertFalse(any(b'"usage"' in call.args[0]
+                             for call in h._write_chunk.call_args_list))
+        state.note_failure.assert_not_called()
+        state.note_success.assert_not_called()
+
+    def test_strip_route_forwards_provider_refusal(self):
+        source = self._stream(
+            {"choices": [{"delta": {"refusal": "I cannot help with that."},
+                          "finish_reason": "content_filter"}]}, b"[DONE]")
+        h, state = self._finalize(source, strip_roles=True)
+        self.assertEqual(h.send_response.call_args.args[0], 200)
+        sent = b"".join(call.args[0] for call in h._write_chunk.call_args_list)
+        self.assertIn(b'I cannot help with that.', sent)
+        self.assertIn(b'content_filter', sent)
+        self.assertNotIn(b'"usage"', sent)
+        self.assertNotIn(b'"finish_reason": "stop"', sent)
+        self.assertEqual(h._log_chat.call_args.kwargs["error"], "content_refused")
+        state.note_failure.assert_not_called()
+        state.note_success.assert_called_once_with("bridge")
+
+    def test_tool_only_reply_is_forwarded_only_when_route_supports_it(self):
+        event = {"choices": [{"delta": {"tool_calls": [{"index": 0,
+            "function": {"name": "lookup", "arguments": "{}"}}]}}]}
+        h, state = self._finalize(self._stream(event, b"[DONE]"))
+        self.assertEqual(h.send_response.call_args.args[0], 200)
+        state.note_success.assert_called_once_with("bridge")
+
+        h, state = self._finalize(self._stream(event, b"[DONE]"), strip_roles=True)
+        h.send_response.assert_not_called()
+        self.assertEqual(h._json.call_args.args[0], 502)
+        state.note_success.assert_not_called()
+
+    def test_fallback_must_emit_answer_and_keeps_bridge_token_free(self):
+        original = self._stream({"error": {"message": "Primary failed."}}, b"[DONE]")
+        fallback = self._stream({"choices": [{"delta": {"content": "Recovered"}}]},
+                                b"[DONE]")
+        captured = []
+
+        def open_fallback(req, timeout):
+            captured.append(req)
+            return fallback
+
+        h, state = self._finalize(
+            original, upstream_model="omniroute/test",
+            fallback={"enabled": True, "upstream": "bridge/codegpt-eco-test"},
+            urlopen=open_fallback)
+        self.assertEqual(h.send_response.call_args.args[0], 200)
+        self.assertTrue(any(b"Recovered" in call.args[0]
+                            for call in h._write_chunk.call_args_list))
+        self.assertIn("127.0.0.1:21302", captured[0].full_url)
+        self.assertNotIn("Authorization", captured[0].headers)
+        state.note_failure.assert_called_once_with("omniroute")
+        state.note_success.assert_called_once_with("bridge")
+        state.gate.release.assert_called_once()
+        self.assertTrue(original.closed)
+        self.assertTrue(fallback.closed)
+
+    def test_json_fallback_to_stream_request_is_forwarded_as_sse(self):
+        original = self._stream({"error": {"message": "Primary failed."}}, b"[DONE]")
+        fallback = io.BytesIO(json.dumps({
+            "choices": [{"message": {"role": "assistant", "content": "Recovered JSON"},
+                         "finish_reason": "stop"}],
+        }).encode())
+        fallback.headers = {"Content-Type": "application/json"}
+        h, state = self._finalize(
+            original, fallback={"enabled": True, "upstream": "bridge/codegpt-eco-backup"},
+            urlopen=lambda req, timeout: fallback)
+        self.assertEqual(h.send_response.call_args.args[0], 200)
+        self.assertIn(("Content-Type", "text/event-stream"),
+                      [call.args for call in h.send_header.call_args_list])
+        sent = b"".join(call.args[0] for call in h._write_chunk.call_args_list)
+        self.assertIn(b'data: ', sent)
+        self.assertIn(b'Recovered JSON', sent)
+        self.assertNotIn(b'{"choices": [{"message"', sent)
+        state.note_success.assert_called_once_with("bridge")
+        state.gate.release.assert_called_once()
+
+    def test_empty_fallback_does_not_turn_into_200(self):
+        original = self._stream({"error": {"message": "Primary failed."}}, b"[DONE]")
+        fallback = self._stream(b"[DONE]")
+        h, state = self._finalize(
+            original, fallback={"enabled": True, "upstream": "bridge/codegpt-eco-backup"},
+            urlopen=lambda req, timeout: fallback)
+        self.assertEqual(h._json.call_args.args[0], 502)
+        h.send_response.assert_not_called()
+        self.assertEqual(state.note_failure.call_count, 2)
+        state.note_success.assert_not_called()
+        state.gate.release.assert_called_once()
+        self.assertTrue(original.closed)
+        self.assertTrue(fallback.closed)
+
+    def test_fallback_capacity_does_not_trip_its_circuit(self):
+        original = self._stream({"error": {"message": "Primary failed."}}, b"[DONE]")
+        fallback = self._stream({"error": {
+            "code": "ECONOMY_CONCURRENCY_LIMIT", "status": 429,
+            "message": "Another session is running."}}, b"[DONE]")
+        h, state = self._finalize(
+            original, upstream_model="omniroute/test",
+            fallback={"enabled": True, "upstream": "bridge/codegpt-eco-backup"},
+            urlopen=lambda req, timeout: fallback)
+        self.assertEqual(h._json.call_args.args[0], 429)
+        state.note_failure.assert_called_once_with("omniroute")
+        state.note_success.assert_not_called()
+        state.gate.release.assert_called_once()
 
 
 class DiagnosticsRouteTests(unittest.TestCase):

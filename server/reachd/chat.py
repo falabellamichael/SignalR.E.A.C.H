@@ -460,59 +460,140 @@ def chat_finalize(h, upstream, ctx):
     # Clear the breaker for the upstream that actually answered — not a global
     # one, or a working bridge reply would mask a broken OmniRoute (and the
     # other way round).
-    circuit = ctx.get("circuit", "omniroute")
+    circuit = "bridge" if upstream_model.startswith("bridge/") else "omniroute"
     if stream:
-        # Pre-read the upstream until the first real content token BEFORE
-        # committing the 200: some routes (Gemini via OmniRoute) answer 200
-        # with only keepalive chunks and then [DONE] -- an empty stream.
-        # Treat that as a failure so the fallback alias can serve instead.
-        pending_prefix = []
-        saw_content = False
-        raw_sock = None
+        # An upstream can answer HTTP 200 and then send an SSE error, reasoning
+        # only, or [DONE] without an answer. Keep the response uncommitted until
+        # actual assistant text arrives, so errors can still use an HTTP status
+        # and a configured fallback can be checked before the client sees 200.
         stream_timeout = int(core.STATE.cfg.get("stream_timeout_s", 300))
-        try:
-            sock = getattr(upstream, "fp", None)
-            raw_sock = getattr(sock, "raw", None) or getattr(sock, "_sock", None)
-            if raw_sock and hasattr(raw_sock, "settimeout"):
-                raw_sock.settimeout(stream_timeout)
-            while True:
-                line = upstream.readline()
-                if not line:
-                    break
-                pending_prefix.append(line)
-                stripped = line.strip()
-                if stripped == b"data: [DONE]":
-                    break
-                if stripped.startswith(b"data:"):
+        max_prefix_bytes = 8 * 1024 * 1024
+
+        def _answer_or_error(parsed, strip_roles):
+            if not isinstance(parsed, dict):
+                return False, None
+            if parsed.get("error") is not None:
+                return False, parsed["error"]
+            choices = parsed.get("choices")
+            if not isinstance(choices, list) or not choices \
+                    or not isinstance(choices[0], dict):
+                return False, None
+            message = choices[0].get("delta") or choices[0].get("message") or {}
+            if not isinstance(message, dict):
+                return False, None
+            # Native tool calls and refusals are valid provider replies even
+            # when there is no assistant text. Preserve them for clients that
+            # requested tools instead of converting them into empty errors.
+            if message.get("tool_calls") or message.get("function_call"):
+                return not strip_roles, None
+            if isinstance(message.get("refusal"), str) and message["refusal"].strip():
+                return True, None
+            content = message.get("content")
+            if isinstance(content, str):
+                return bool(content.strip()), None
+            if isinstance(content, list):
+                return not strip_roles and any(
+                           isinstance(part, dict) and part.get("type") == "text"
+                           and isinstance(part.get("text"), str)
+                           and part["text"].strip() for part in content), None
+            return False, None
+
+        def _probe(source, strip_roles):
+            prefix = []
+            prefix_size = 0
+            raw_sock = None
+            try:
+                sock = getattr(source, "fp", None)
+                raw_sock = getattr(sock, "raw", None) or getattr(sock, "_sock", None)
+                if raw_sock and hasattr(raw_sock, "settimeout"):
+                    raw_sock.settimeout(stream_timeout)
+                while True:
+                    line = source.readline()
+                    if not line:
+                        break
+                    prefix_size += len(line)
+                    if prefix_size > max_prefix_bytes:
+                        return [], False, {"code": "answer_not_received",
+                                           "message": "The upstream sent too much data without an assistant answer."}
+                    prefix.append(line)
+                    stripped = line.strip()
+                    if stripped == b"data: [DONE]":
+                        break
+                    if not stripped.startswith(b"data:"):
+                        continue
                     try:
                         parsed = json.loads(stripped[5:].decode("utf-8", "replace"))
-                        choices = parsed.get("choices") if isinstance(parsed, dict) else None
-                        if isinstance(choices, list) and choices:
-                            delta = choices[0].get("delta", {})
-                            token_text = (delta.get("content")
-                                          or delta.get("reasoning_content")
-                                          or delta.get("reasoning")
-                                          or delta.get("thought"))
-                            if isinstance(token_text, str) and token_text:
-                                saw_content = True
-                                break
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    answered, error = _answer_or_error(parsed, strip_roles)
+                    if error is not None or answered:
+                        return prefix, answered, error
+                # Some providers ignore stream:true and return ordinary JSON.
+                if prefix and not any(line.lstrip().startswith(b"data:") for line in prefix):
+                    try:
+                        parsed = json.loads(b"".join(prefix).decode("utf-8", "replace"))
+                        answered, error = _answer_or_error(parsed, strip_roles)
+                        if error is not None or answered:
+                            return prefix, answered, error
+                    except (ValueError, UnicodeDecodeError):
+                        pass
+                return prefix, False, {"code": "empty_upstream_response",
+                                       "message": "The upstream finished without an assistant answer."}
+            except Exception:
+                return [], False, {"code": "upstream_stream_error",
+                                        "message": "The upstream stream stopped before an assistant answer."}
+            finally:
+                if raw_sock and hasattr(raw_sock, "settimeout"):
+                    try:
+                        raw_sock.settimeout(stream_timeout)
                     except Exception:
                         pass
-        except Exception:
-            pass
-        if raw_sock and hasattr(raw_sock, "settimeout"):
+
+        def _failure_response(error):
+            details = error if isinstance(error, dict) else {"message": error}
+            code = details.get("code")
+            if not isinstance(code, str) or not code.replace("_", "").isalnum() \
+                    or len(code) > 64:
+                code = "upstream_error"
+            message = details.get("message") or details.get("errorMessage")
+            if not isinstance(message, str) or not message.strip():
+                message = "The upstream provider failed before returning an answer."
+            payload = {"error": {"message": message[:1000], "type": "upstream_error",
+                                 "code": code}}
+            for name in ("provider", "retryable"):
+                value = details.get(name)
+                if (name == "provider" and isinstance(value, str) and len(value) <= 40) \
+                        or (name == "retryable" and isinstance(value, bool)):
+                    payload["error"][name] = value
+            retry_after = details.get("retryAfterSeconds")
+            headers = dict(rl_headers)
+            if isinstance(retry_after, int) and not isinstance(retry_after, bool) \
+                    and 1 <= retry_after <= 300:
+                payload["error"]["retryAfterSeconds"] = retry_after
+                headers["Retry-After"] = str(retry_after)
+            status = 429 if code == "ECONOMY_CONCURRENCY_LIMIT" \
+                or details.get("status") == 429 else 502
+            return status, payload, headers
+
+        pending_prefix, saw_content, failure = _probe(
+            upstream, bool(spec.get("strip_trailing_roles")))
+        if not saw_content:
+            # Account capacity is temporary and outside the bridge process.
+            # Repeated 429s must not open its circuit for every other request.
+            if _failure_response(failure)[0] != 429:
+                core.STATE.note_failure(circuit)
             try:
-                raw_sock.settimeout(stream_timeout)
+                upstream.close()
             except Exception:
                 pass
-        if not saw_content:
-            pending_prefix = []
             fallback_alias = spec.get("fallback")
             models = ctx.get("models") or {}
-            if fallback_alias and fallback_alias in models                     and models[fallback_alias].get("enabled"):
+            if fallback_alias and fallback_alias in models \
+                    and models[fallback_alias].get("enabled"):
+                fb_upstream = models[fallback_alias]["upstream"]
+                fb_circuit = "bridge" if fb_upstream.startswith("bridge/") else "omniroute"
                 try:
                     fb_payload = dict(ctx.get("payload") or {})
-                    fb_upstream = models[fallback_alias]["upstream"]
                     # The fallback alias may itself be a bridge alias, so it
                     # routes by its own prefix rather than reusing the original
                     # upstream's URL. Getting this wrong sent a bridge wire id
@@ -530,33 +611,90 @@ def chat_finalize(h, upstream, ctx):
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)
-                    upstream = urllib.request.urlopen(
+                    fallback = urllib.request.urlopen(
                         fb_req,
                         timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)))
-                    upstream_model = fb_upstream
-                    spec = models[fallback_alias]
-                    fallback_used = True
+                    fb_prefix, fb_answered, fb_failure = _probe(
+                        fallback, bool(models[fallback_alias].get("strip_trailing_roles")))
+                    if fb_answered:
+                        upstream = fallback
+                        pending_prefix = fb_prefix
+                        upstream_model = fb_upstream
+                        spec = models[fallback_alias]
+                        circuit = fb_circuit
+                        content_type = upstream.headers.get("Content-Type", "application/json")
+                        fallback_used = True
+                    else:
+                        failure = fb_failure
+                        if _failure_response(failure)[0] != 429:
+                            core.STATE.note_failure(fb_circuit)
+                        try:
+                            fallback.close()
+                        except Exception:
+                            pass
+                except urllib.error.HTTPError as exc:
+                    try:
+                        data = json.loads(exc.read().decode("utf-8", "replace"))
+                        failure = data.get("error") if isinstance(data, dict) else None
+                    except Exception:
+                        failure = None
+                    finally:
+                        try:
+                            exc.close()
+                        except Exception:
+                            pass
+                    if failure is None:
+                        failure = {"code": "fallback_unavailable", "status": exc.code,
+                                   "message": "The configured fallback provider rejected the request."}
+                    if _failure_response(failure)[0] != 429:
+                        core.STATE.note_failure(fb_circuit)
                 except Exception:
-                    upstream = None
-            if upstream is None:
-                core.STATE.note_failure(circuit)
-                h._log_chat(model=requested, upstream_model=upstream_model,
-                               ip=ip, user_agent=h.headers.get("User-Agent"),
-                               status=502, error="upstream_timeout",
-                               latency_ms=int((time.time() - started) * 1000),
-                               tokens_in=0, tokens_out=0, stream=True,
-                               request_body=request_body)
-                h._relay_upstream_error(
-                    OSError("Upstream model failed to emit tokens"),
-                    "OmniRoute model timed out emitting first token")
-                core.STATE.gate.release()
+                    core.STATE.note_failure(fb_circuit)
+                    failure = {"code": "fallback_unavailable",
+                               "message": "The configured fallback provider was unavailable."}
+            if not fallback_used:
+                status, payload, headers = _failure_response(failure)
+                try:
+                    h._log_chat(model=requested, upstream_model=upstream_model,
+                                ip=ip, user_agent=h.headers.get("User-Agent"),
+                                status=status, error=payload["error"]["code"],
+                                latency_ms=int((time.time() - started) * 1000),
+                                tokens_in=0, tokens_out=0, stream=True,
+                                request_body=request_body)
+                    h._json(status, payload, headers)
+                finally:
+                    core.STATE.gate.release()
                 return None
+
+        # A provider may ignore stream:true and return one JSON completion.
+        # Sending that raw body followed by SSE usage would make SSE readers
+        # discard the answer. Convert the validated reply to one SSE chunk.
+        if pending_prefix and not any(line.lstrip().startswith(b"data:")
+                                      for line in pending_prefix):
+            parsed = json.loads(b"".join(pending_prefix).decode("utf-8", "replace"))
+            choice = parsed["choices"][0]
+            delta = choice.get("delta") or choice.get("message") or {}
+            chunk = {
+                "id": parsed.get("id") or "chatcmpl-reach",
+                "object": "chat.completion.chunk",
+                "created": parsed.get("created") or int(time.time()),
+                "model": requested,
+                "choices": [{"index": 0, "delta": delta,
+                             "finish_reason": choice.get("finish_reason")}],
+            }
+            if isinstance(parsed.get("usage"), dict):
+                chunk["usage"] = parsed["usage"]
+            pending_prefix = [("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"),
+                              b"data: [DONE]\n\n"]
+            content_type = "text/event-stream"
 
         def _next_line():
             if pending_prefix:
                 return pending_prefix.pop(0)
             return upstream.readline()
 
+        stream_failure = None
+        refused = False
         try:
             h.send_response(200)
             h.send_header("Content-Type", content_type or "text/event-stream")
@@ -590,10 +728,28 @@ def chat_finalize(h, upstream, ctx):
                         parsed = json.loads(text_line.decode("utf-8", "replace"))
                     except Exception:
                         continue
+                    if isinstance(parsed, dict) and parsed.get("error") is not None:
+                        stream_failure = parsed["error"]
+                        h._write_chunk(("data: " + json.dumps({"error": stream_failure})
+                                        + "\n\n").encode("utf-8"))
+                        break
                     choices = parsed.get("choices") if isinstance(parsed, dict) else None
                     if not (isinstance(choices, list) and choices):
                         continue
                     delta = choices[0].get("delta", {})
+                    if isinstance(delta.get("refusal"), str) and delta["refusal"].strip():
+                        refused = True
+                        pending = ""
+                        h._write_chunk(("data: " + json.dumps({
+                            "id": "chatcmpl-reach",
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": requested,
+                            "choices": [{"index": 0,
+                                         "delta": {"refusal": delta["refusal"]},
+                                         "finish_reason": "content_filter"}]
+                        }) + "\n\n").encode("utf-8"))
+                        break
                     reason = (delta.get("reasoning_content")
                               or delta.get("reasoning")
                               or delta.get("thought"))
@@ -664,24 +820,25 @@ def chat_finalize(h, upstream, ctx):
                 approx_out = count_tokens(scrubbed)
                 tps = round(approx_out / stream_duration, 1)
                 core.STATE.note_speed(tps)
-                for payload_chunk in (
-                    {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
-                     "created": created, "model": requested,
-                     "choices": [{"index": 0, "delta": {},
-                                  "finish_reason": "stop"}]},
-                    {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
-                     "created": created, "model": requested,
-                     "choices": [],
-                     "usage": {"prompt_tokens": approx_in,
-                               "completion_tokens": approx_out,
-                               "total_tokens": approx_in + approx_out,
-                               "tokens_per_second": tps,
-                               "tokensPerSecond": tps,
-                               "completion_tokens_per_second": tps,
-                               "speed_tps": tps}}
-                ):
-                    h._write_chunk(("data: " + json.dumps(payload_chunk)
-                                       + "\n\n").encode("utf-8"))
+                if stream_failure is None and not refused:
+                    for payload_chunk in (
+                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
+                         "created": created, "model": requested,
+                         "choices": [{"index": 0, "delta": {},
+                                      "finish_reason": "stop"}]},
+                        {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
+                         "created": created, "model": requested,
+                         "choices": [],
+                         "usage": {"prompt_tokens": approx_in,
+                                   "completion_tokens": approx_out,
+                                   "total_tokens": approx_in + approx_out,
+                                   "tokens_per_second": tps,
+                                   "tokensPerSecond": tps,
+                                   "completion_tokens_per_second": tps,
+                                   "speed_tps": tps}}
+                    ):
+                        h._write_chunk(("data: " + json.dumps(payload_chunk)
+                                           + "\n\n").encode("utf-8"))
                 try:
                     h._write_chunk(b"data: [DONE]\n\n")
                     h._write_chunk(b"")  # terminating chunk
@@ -707,6 +864,8 @@ def chat_finalize(h, upstream, ctx):
                             try:
                                 parsed_chunk = json.loads(text_line.decode("utf-8", "replace"))
                                 if isinstance(parsed_chunk, dict):
+                                    if parsed_chunk.get("error") is not None:
+                                        stream_failure = parsed_chunk["error"]
                                     if parsed_chunk.get("id"):
                                         last_chunk_id = parsed_chunk["id"]
                                     usage_obj = parsed_chunk.get("usage")
@@ -729,6 +888,8 @@ def chat_finalize(h, upstream, ctx):
                             except Exception:
                                 pass
                         h._write_chunk(line)
+                        if stream_failure is not None:
+                            break
 
                     full_streamed_text = "".join(assembled_chunks)
                     approx_out = streamed_tokens if streamed_tokens > 0 else count_tokens(full_streamed_text)
@@ -770,17 +931,27 @@ def chat_finalize(h, upstream, ctx):
                             "speed_tps": tps
                         }
                     }
-                    h._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
+                    if stream_failure is None:
+                        h._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
                     h._write_chunk(b"data: [DONE]\n\n")
                 finally:
                     try:
                         h._write_chunk(b"")
                     except Exception:
                         pass
-            core.STATE.note_success(circuit)
+            failure_status, failure_payload, _ = _failure_response(stream_failure) \
+                if stream_failure is not None else (200, None, None)
+            error_code = failure_payload["error"]["code"] if failure_payload else \
+                ("content_refused" if refused else None)
+            if stream_failure is not None:
+                if failure_status != 429:
+                    core.STATE.note_failure(circuit)
+            else:
+                core.STATE.note_success(circuit)
             h._log_chat(model=requested, upstream_model=upstream_model,
                            ip=ip, user_agent=h.headers.get("User-Agent"),
-                           status=200, error=None,
+                           status=failure_status,
+                           error=error_code,
                            latency_ms=latency_ms,
                            tokens_in=approx_in, tokens_out=approx_out, stream=True,
                            request_body=request_body)

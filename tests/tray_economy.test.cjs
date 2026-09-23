@@ -7,7 +7,9 @@ const path = require('node:path');
 const economy = require('../copilot/tray/economy-models.js');
 const source = fs.readFileSync(path.join(__dirname, '../copilot/tray/main.js'), 'utf8');
 function section(start, end) { return source.slice(source.indexOf(start), source.indexOf(end)); }
-const parse = vm.runInNewContext(section('function extractCodegptRunReply(', '// Pull the assistant text') + '\nextractCodegptRunReply');
+const { codegptProviderError, extractCodegptRunReply: parse, extractCodegptApiReply } = vm.runInNewContext(
+ section('function codegptProviderError(', 'async function debugCodegptDom()')
+  + '\n({ codegptProviderError, extractCodegptRunReply, extractCodegptApiReply })');
 const run = messages => JSON.stringify({ t: 'final', done: true, messages });
 function listen(handler) {
  return new Promise((resolve) => {
@@ -64,6 +66,27 @@ test('invalid, incomplete, approval and error responses cannot masquerade as ans
   run([{role:'assistant',content:'old'}, {role:'user',content:'new'}]),
   run([{role:'assistant',content:'<think>unfinished'}])
  ]) assert.throws(() => parse(body));
+});
+test('nested CodeGPT Economy concurrency failure becomes a short typed 429', () => {
+ const upstream = { errorMessage: 'Economy models are unlimited for one interactive session at a time. Another stream on this account is still running.',
+  status: 429, code: 'ECONOMY_CONCURRENCY_LIMIT' };
+ const body = JSON.stringify({ t: 'error', message: 'CodeGPT: ' + JSON.stringify(upstream) });
+ for (const call of [() => parse(body), () => extractCodegptApiReply(JSON.stringify({ error: upstream })),
+  () => extractCodegptApiReply('data: ' + JSON.stringify({ error: upstream }) + '\n\ndata: [DONE]\n\n')]) {
+  assert.throws(call, error => {
+   assert.equal(error.code, 'ECONOMY_CONCURRENCY_LIMIT');
+   assert.equal(error.status, 429);
+   assert.equal(error.provider, 'codegpt');
+   assert.equal(error.retryable, true);
+   assert.equal(error.retryAfterSeconds, 15);
+   assert.match(error.message, /one.*session|another interactive session/i);
+   assert.doesNotMatch(error.message, /\{|errorMessage|ECONOMY_CONCURRENCY_LIMIT/);
+   return true;
+  });
+ }
+ const plain429 = codegptProviderError('rate limited', 429);
+ assert.equal(plain429.code, 'CODEGPT_RATE_LIMIT');
+ assert.equal(plain429.status, 429);
 });
 test('capture waits for the entire local run and preserves responses over 6000 chars', async () => {
  let finish;

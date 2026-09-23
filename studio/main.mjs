@@ -1024,10 +1024,14 @@ function registerIpc() {
       const sendEvent = (channel, payload) => {
         // Save before announcing completion so a follow-up sees the answer
         // even after the user switches views or reloads the renderer.
-        if (payload.type === 'done' && agentId && payload.answer) {
+        if (payload.type === 'done' && agentId
+          && ['completed', 'partial'].includes(payload.outcome) && payload.answer?.trim()) {
+          const answerNote = teamAnswerNote(team, payload);
           getAgentStore().appendMessage(agentId, {
-            role: 'assistant', content: teamAnswerNote(team, payload),
-            _reachMeta: { source: 'team-run', teamId, teamRunId },
+            role: 'assistant', content: payload.outcome === 'partial'
+              ? `Partial team result (${payload.successfulCount}/${payload.results.length} members answered)\n${answerNote}`
+              : answerNote,
+            _reachMeta: { source: 'team-run', teamId, teamRunId, outcome: payload.outcome },
           });
           payload = { ...payload, historySaved: true };
         }

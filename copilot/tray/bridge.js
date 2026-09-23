@@ -29,8 +29,8 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
     const note = typeof log === 'function' ? log : () => {};
     const queues = { copilot: Promise.resolve(), chatgpt: Promise.resolve(), codegpt: Promise.resolve() };
     return (req, res) => {
-        const json = (code, data) => {
-            res.writeHead(code, { 'Content-Type': 'application/json' });
+        const json = (code, data, headers = {}) => {
+            res.writeHead(code, { 'Content-Type': 'application/json', ...headers });
             res.end(JSON.stringify(data));
         };
         if (req.headers.origin) return json(403, { error: { message: 'Use the local extension host to access this bridge.' } });
@@ -158,8 +158,22 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     res.end('data: [DONE]\n\n');
                 } catch (error) {
                     if (res.destroyed) return;
-                    if (stream) { event({ error: { message: error.message } }); res.end('data: [DONE]\n\n'); }
-                    else json(502, { ok: false, error: openai ? { message: error.message } : error.message });
+                    const providerError = provider === 'codegpt' && error?.provider === 'codegpt';
+                    const detail = providerError ? {
+                        code: error.code,
+                        status: error.status,
+                        provider: 'codegpt',
+                        message: error.message,
+                        retryable: error.retryable,
+                        ...(error.retryAfterSeconds ? { retryAfterSeconds: error.retryAfterSeconds } : {}),
+                    } : { message: error?.message || 'Provider request failed.' };
+                    if (stream) { event({ error: detail }); res.end('data: [DONE]\n\n'); }
+                    else {
+                        const status = providerError && error.status === 429 ? 429 : 502;
+                        const headers = status === 429 && detail.retryAfterSeconds
+                            ? { 'Retry-After': String(detail.retryAfterSeconds) } : {};
+                        json(status, { ok: false, error: openai ? detail : detail.message }, headers);
+                    }
                 } finally { clearInterval(keepalive); }
             }).catch((error) => {
                 note('bridge: ' + provider + ' request aborted: ' + ((error && error.message) || error));

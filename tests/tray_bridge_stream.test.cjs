@@ -117,3 +117,30 @@ test('non-streaming: one JSON body, onDelta never wired', async () => {
     assert.equal(parsed.object, 'chat.completion');
   } finally { server.close(); }
 });
+
+test('CodeGPT Economy limit has the same structured error in JSON and SSE', async () => {
+  const failure = () => Object.assign(new Error('CodeGPT Economy is already serving another interactive session.'), {
+    code: 'ECONOMY_CONCURRENCY_LIMIT', status: 429, provider: 'codegpt',
+    retryable: true, retryAfterSeconds: 15,
+  });
+  const { server, port } = await startBridge({
+    copilot: async () => 'x', chatgpt: async () => 'x', codegpt: async () => { throw failure(); },
+  });
+  const messages = [{ role: 'user', content: 'hi' }];
+  try {
+    const nonstream = await request(port, { model: 'codegpt-eco', stream: false, messages });
+    assert.equal(nonstream.status, 429);
+    assert.equal(nonstream.headers['retry-after'], '15');
+    const detail = JSON.parse(nonstream.body).error;
+    assert.deepEqual(detail, {
+      code: 'ECONOMY_CONCURRENCY_LIMIT', status: 429, provider: 'codegpt',
+      message: 'CodeGPT Economy is already serving another interactive session.',
+      retryable: true, retryAfterSeconds: 15,
+    });
+    const stream = await request(port, { model: 'codegpt-eco', stream: true, messages });
+    assert.equal(stream.status, 200);
+    const events = parseEvents(stream.body);
+    assert.equal(events.at(-1), '[DONE]');
+    assert.deepEqual(JSON.parse(events[0]).error, detail);
+  } finally { server.close(); }
+});

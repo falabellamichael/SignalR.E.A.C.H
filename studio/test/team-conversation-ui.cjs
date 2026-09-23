@@ -13,12 +13,17 @@ const profile = path.join(root, 'profile'), project = path.join(root, 'project')
 fs.mkdirSync(profile); fs.mkdirSync(project);
 app.setPath('userData', profile);
 app.commandLine.appendSwitch('force-device-scale-factor', '1');
-let win, held = false;
+let win, held = false, failureMode = false;
 const requests = [], releases = [], errors = [];
 const server = http.createServer(async (req, res) => {
   if (req.url.endsWith('/models')) { res.end(JSON.stringify({ data: [{ id: 'fixture-model' }] })); return; }
   let raw = ''; for await (const chunk of req) raw += chunk;
   const body = JSON.parse(raw); requests.push(body);
+  if (failureMode) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ errorMessage: 'Fixture provider is temporarily unavailable.', status: 400, code: 'FIXTURE_UNAVAILABLE' }));
+    return;
+  }
   if (held) await new Promise(resolve => releases.push(resolve));
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'complete', message: 'Remembered answer: COBALT-742.', actions: [], options: [] }) }, finish_reason: 'stop' }] }));
@@ -29,7 +34,10 @@ app.on('browser-window-created', (_event, window) => {
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) errors.push(message); });
 });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-const run = code => win.webContents.executeJavaScript(code, true);
+const run = async code => {
+  try { return await win.webContents.executeJavaScript(code, true); }
+  catch (error) { console.error('Renderer expression failed:', code.slice(0, 240)); throw error; }
+};
 async function until(code, label) {
   for (let i = 0; i < 200; i++) { if (await run(code)) return; await delay(25); }
   throw new Error(label);
@@ -70,11 +78,11 @@ function transcript(start = 0) { return requests.slice(start).map(r => r.message
   await send('Compare the first options: INDIGO-319.'); await finish();
   assert.equal(requests.length, 2, 'normal Send dispatched the two team members');
   assert.match(transcript(), /INDIGO-319/);
-  await run(`window.firstDeck = chatLog.querySelector('.team-deck'); window.firstRail = firstDeck.querySelector('.team-deck-nav'); window.firstTab = firstDeck.querySelector('.team-tab');`);
+  await run(`window.firstDeck = document.querySelector('#team-deck-slot .team-deck'); window.firstRail = firstDeck.querySelector('.team-deck-nav'); window.firstTab = firstDeck.querySelector('.team-tab');`);
   const second = requests.length;
   await send('Explain your previous answer.'); await finish();
-  assert.equal(await run(`chatLog.querySelectorAll('.team-deck').length`), 1, 'Follow-up reuses the existing team deck');
-  assert.equal(await run(`chatLog.querySelector('.team-deck') === firstDeck && firstDeck.querySelector('.team-deck-nav') === firstRail && firstDeck.querySelector('.team-tab') === firstTab`), true, 'Deck, rail and member tabs retain their DOM identity');
+  assert.equal(await run(`document.querySelectorAll('#team-deck-slot .team-deck').length`), 1, 'Follow-up reuses the existing team deck');
+  assert.equal(await run(`document.querySelector('#team-deck-slot .team-deck') === firstDeck && firstDeck.querySelector('.team-deck-nav') === firstRail && firstDeck.querySelector('.team-tab') === firstTab`), true, 'Deck, rail and member tabs retain their DOM identity');
   assert.equal(await run(`firstDeck.querySelectorAll('.team-tabs > .team-tab').length`), 2);
   assert.equal(await run(`firstDeck.querySelector('.team-run-history').open`), false, 'Earlier work starts collapsed');
   assert.match(await run(`firstDeck.querySelector('.team-run-history').textContent`), /COBALT-742/);
@@ -131,6 +139,39 @@ function transcript(start = 0) { return requests.slice(start).map(r => r.message
   assert.equal(requests.length, beforeRejected);
   assert.equal(await run('composerInput.value'), 'Keep this unsent draft.');
   await run(`(async()=>{ const p=await reachApi.personas.list(); const t=await reachApi.teams.create({name:'Team1',mode:'links',members:p.map(a=>({personaId:a.id}))}); await reachApi.agents.update(currentAgent.id,{settings:{teamChat:{enabled:true,teamId:t.team.id}}}); await selectAgent({id:currentAgent.id}); await loadCreatePage(); })()`);
+
+  // An all-failed team must remain a failed run, with readable diagnostics and
+  // no fabricated assistant reply in the conversation or persisted history.
+  saved = JSON.parse(fs.readFileSync(path.join(profile,'agents.json'),'utf8')).agents.find(a=>a.id===fixture.id);
+  const answersBeforeFailure = saved.messages.filter(message => message.role === 'assistant').length;
+  failureMode = true;
+  await send('Try the unavailable provider.'); await finish();
+  saved = JSON.parse(fs.readFileSync(path.join(profile,'agents.json'),'utf8')).agents.find(a=>a.id===fixture.id);
+  assert.equal(saved.messages.filter(message => message.role === 'assistant').length, answersBeforeFailure);
+  assert.equal(await run(`teamConversationViews.get(currentAgent.id).wrap.dataset.finished`), 'error');
+  const failedView = await run(`(() => {
+    const deck=teamConversationViews.get(currentAgent.id).wrap;
+    return {text:deck.textContent,states:[...deck.querySelectorAll('.member-state')].map(node=>node.textContent),
+      restore:[...deck.querySelectorAll('button')].some(button=>button.textContent==='Restore request'),
+      connections:[...deck.querySelectorAll('button')].some(button=>button.textContent==='Check connections')};
+  })()`);
+  assert.match(failedView.text, /could not produce an answer/i);
+  assert.ok(failedView.states.some(state => state.includes('Fixture provider is temporarily unavailable.')));
+  assert.doesNotMatch(failedView.text, /errorMessage|FIXTURE_UNAVAILABLE|\{"/);
+  assert.equal(failedView.restore && failedView.connections, true);
+  const nestedError = await run(`teamErrorSummary('CodeGPT: '+JSON.stringify({error:{message:'Provider stream busy.'},token:'private-fixture'}))`);
+  assert.equal(nestedError, 'CodeGPT: Provider stream busy.');
+  await run(`([...teamConversationViews.get(currentAgent.id).wrap.querySelectorAll('button')]
+    .find(button=>button.textContent==='Check connections')).click()`);
+  await until(`document.querySelector('#page-settings').classList.contains('active')
+    && !document.querySelector('#settings-connection').classList.contains('hidden')`, 'Check connections did not open connection settings');
+  await run(`showTab('agents')`);
+  const requestsBeforeRestore = requests.length;
+  await run(`([...teamConversationViews.get(currentAgent.id).wrap.querySelectorAll('button')]
+    .find(button=>button.textContent==='Restore request')).click()`);
+  assert.equal(await run('composerInput.value'), 'Try the unavailable provider.');
+  assert.equal(requests.length, requestsBeforeRestore, 'restoring the prompt never resends it');
+  await run(`composerInput.value=''; composerInput.dispatchEvent(new Event('input',{bubbles:true}));`);
 
   // Menu stays within the composer at both desktop and narrow app widths.
   for (const width of [1280,1000]) {

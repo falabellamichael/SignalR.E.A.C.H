@@ -345,6 +345,9 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
     // Synthesis reuses (and then replaces) a roster result. Retain every
     // usable pre-synthesis answer so a failed synthesis cannot erase it.
     const preSynthesisOkResults = results.filter(result => result?.ok && result.output);
+    // A failed synthesis replaces its member's final result, but must not erase
+    // that member's earlier usable answer when reporting the crew outcome.
+    this._linksPreviousSuccesses = preSynthesisOkResults;
     let synthesized = null;
     let synthIndex = -1;
     if (!this.stopped && !this._linksDone()) {
@@ -390,7 +393,7 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
       || (synthesized && synthesized.ok && synthesized.output)
       || (fallbackResults.length
         ? fallbackResults.map(r => `【${r.name}】\n${r.output}`).join('\n\n')
-        : results.filter(Boolean).map(r => `【${r.name}】\n(failed: ${r.error || 'unknown'})`).join('\n\n'));
+        : '');
     this._linksMeta = {
       rounds,
       budget,

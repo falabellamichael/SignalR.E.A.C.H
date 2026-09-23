@@ -11,7 +11,7 @@
 
 const { compactMessages, normalizeChatMessages, contextChars } = require('./context.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
-const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
+const { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
 // E1: Retry-After parsing, backoff and the retry-vs-give-up decision live in a leaf
 // module so the timing policy is testable without a fake clock.
 const { retryAfterMs, retryDelayMs, isRetryableStatus, isNgrokTunnelUnavailable } = require('./retry.cjs');
@@ -298,13 +298,23 @@ class AgentLoop {
       signal: this.requestSignal,
     });
     if (!response.ok) {
-      const limited = rateLimitInfoFrom(response.status, response.headers);
+      const text = await response.text().catch(() => '');
+      const providerError = providerErrorDetails(text);
+      const status = response.status === 502 && providerError.status === 429 ? 429 : response.status;
+      const limited = rateLimitInfoFrom(status, response.headers);
       if (limited) {
-        const limitedBody = await response.text().catch(() => '');
+        if (['insufficient_quota', 'billing_hard_limit_reached', 'daily_token_limit'].includes(providerError.code.toLowerCase())) {
+          const error = new Error(providerError.message + ' Choose another configured connection or update the provider quota.');
+          error.status = status;
+          throw error;
+        }
         gate.note429(limited.retryAfterMs);
         const waitMs = Math.max(0, gate.snapshot().penaltyMs);
+        const diagnostic = providerError.code === 'ECONOMY_CONCURRENCY_LIMIT'
+          ? `CodeGPT Economy concurrency limit (HTTP 429). ${providerError.message}`
+          : rateLimitDiagnostic(this.endpoint, waitMs, limited.status);
         if (this._rateLimitRetries++ >= RATE_LIMIT_RETRIES) {
-          const error = new Error(`${rateLimitDiagnostic(this.endpoint, waitMs, limited.status)} Retry limit reached.`);
+          const error = new Error(`${diagnostic} Retry limit reached.`);
           error.status = limited.status;
           error.rateLimited = true;
           throw error;
@@ -312,11 +322,10 @@ class AgentLoop {
         this._emit('rate-limit', {
           status: limited.status,
           waitMs,
-          note: rateLimitDiagnostic(this.endpoint, waitMs, limited.status) + (limitedBody ? ' ' + limitedBody.slice(0, 200) : ''),
+          note: diagnostic + (providerError.code ? '' : ' ' + providerError.message),
         });
         return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
       }
-      const text = await response.text().catch(() => '');
       if (body.chat_template_kwargs && [400, 422].includes(response.status) && /chat_template_kwargs|enable_thinking/.test(text)) {
         this.noThinkingHint = true;
         this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { reasoningParam: false });
@@ -346,7 +355,7 @@ class AgentLoop {
       const detail = ngrokTunnelUnavailable
         ? 'The ngrok tunnel cannot reach the REACH relay. Check that the local relay and tunnel are running, then Continue.'
         : htmlError ? 'The endpoint returned an HTML error page. Check the connection URL and upstream service.'
-          : text.slice(0, 500);
+          : providerError.message;
       const error = new Error(`Endpoint returned HTTP ${response.status}: ${detail}`);
       error.status = response.status;
       error.ngrokTunnelUnavailable = ngrokTunnelUnavailable;
@@ -473,7 +482,18 @@ class AgentLoop {
       if (error.code !== 'REACH_OUTPUT_RESERVE') throw error;
       reply = { finishReason: 'length' };
     }
-    if (reply.error) throw new Error(reply.error);
+    this._throwReplyError(reply);
+    if (!reply.content?.trim() && !reply.nativeActions?.length && !reply.toolCalls
+        && !reply.reasoningChars && !['content_filter', 'length'].includes(reply.finishReason)) {
+      // A successful HTTP stream can still contain no answer at all. No action
+      // ran and no text reached the conversation, so one bounded retry is safe.
+      this.abortController.signal.throwIfAborted();
+      this._emit('message-end', { role: 'assistant', provisional: true });
+      this._emit('retry', { error: 'The model returned an empty response · retrying once', attempt: 1 });
+      reply = await this._readAnswer([...requestMessages, { role: 'user', content:
+        'The previous response contained no answer and no actions were executed. Return a concise complete answer, or explain why you cannot answer.' }], true);
+      this._throwReplyError(reply);
+    }
     if (reply.finishReason !== 'length' && !(reply.reasoningChars && !reply.content?.trim() && !reply.nativeActions?.length)) return reply;
     this.abortController.signal.throwIfAborted();
     this._emit('message-end', { role: 'assistant', provisional: true });
@@ -484,10 +504,29 @@ class AgentLoop {
       if (this.abortController.signal.aborted || error.code !== 'REACH_OUTPUT_RESERVE') throw error;
       return this._budgetCheckpoint();
     }
-    if (reply.error) throw new Error(reply.error);
+    this._throwReplyError(reply);
     const parsed = parseAgentResponse(reply.content || '', reply.nativeActions || []);
     if (reply.finishReason === 'length' || parsed.invalid || !parsed.actions.length && !parsed.control && !parsed.confirm) return this._budgetCheckpoint();
     return reply;
+  }
+
+  _throwReplyError(reply) {
+    if (!reply?.error) return;
+    const detail = reply.errorDetails;
+    const error = new Error(reply.error);
+    if (Number.isInteger(detail?.status)) error.status = detail.status;
+    if (detail?.status === 429) {
+      error.retryAfter = Number.isInteger(detail.retryAfterSeconds)
+        ? Math.min(detail.retryAfterSeconds * 1000, 60000) : null;
+      this._rateGate().note429(error.retryAfter);
+    }
+    // An SSE error can arrive after answer text or native actions. Replaying
+    // that stream could duplicate visible output or an action, so only retry a
+    // provider error that arrived before either kind of output.
+    error.retryable = !reply.content?.trim() && !reply.nativeActions?.length
+      && !reply.toolCalls && !reply.reasoningChars
+      && (detail?.retryable === true || detail?.status === 429 && detail.retryable !== false);
+    throw error;
   }
 
   async _summarizeForCompaction(archived, { maxChars }) {

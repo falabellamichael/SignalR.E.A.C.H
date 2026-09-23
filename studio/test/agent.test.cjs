@@ -699,6 +699,27 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.ok(events.some(e => e.type === 'member' && e.memberType === 'delta' && e.name === 'Alpha'), 'member deltas forwarded with identity');
     console.log('✓ team-runner parallel');
 
+    // A failed peer is reported separately; only genuine model output may be
+    // used as the assistant answer.
+    events.length = 0;
+    const partialRun = new TeamRunner({
+      team: parallelTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'pb', name: 'Beta', model: 'm-hard', prompt: 'You are Beta.' },
+      ],
+      task: 'Compare provider results.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0', sendEvent,
+    });
+    await partialRun.run('run-partial');
+    const partialDone = events.findLast(e => e.type === 'done');
+    assert.strictEqual(partialDone.outcome, 'partial');
+    assert.strictEqual(partialDone.successfulCount, 1);
+    assert.strictEqual(partialDone.failedCount, 1);
+    assert.match(partialDone.answer, /I am Alpha/);
+    assert.doesNotMatch(partialDone.answer, /failed:|provider unavailable|【Beta】/);
+    console.log('✓ team-runner partial answer keeps provider failures separate');
+
     // --- chain: member 2 receives member 1's output ---
     events.length = 0;
     const chainTeam = { id: 't2', name: 'Chain', mode: 'chain', members: [{ personaId: 'pa' }, { personaId: 'pb' }] };
@@ -722,6 +743,22 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.ok(cDone.results.every(r => r.ok));
     assert.ok(cDone.answer.includes('Relay from Alpha'), 'chain answer reflects relayed context');
     console.log('✓ team-runner chain');
+
+    events.length = 0;
+    const brokenChain = new TeamRunner({
+      team: chainTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm1', prompt: 'You are Alpha.' },
+        { id: 'pb', name: 'Beta', model: 'm-hard', prompt: 'You are Beta.' },
+      ],
+      task: 'Review then document.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0', sendEvent,
+    });
+    await brokenChain.run('run-broken-chain');
+    const brokenDone = events.findLast(e => e.type === 'done');
+    assert.strictEqual(brokenDone.outcome, 'partial');
+    assert.match(brokenDone.answer, /I am Alpha/);
+    assert.doesNotMatch(brokenDone.answer, /provider unavailable|failed:/);
 
     // --- links: a peer network. A mid-run message (the delivery a member's
     // agent.send tool makes) wakes the finished peer for one more turn; that
@@ -791,6 +828,24 @@ const { TeamRunner } = require('../agent/team-runner.cjs');
     assert.ok(stDone.answer.includes('I am Alpha'), 'the answer carries the live member output');
     assert.ok(!stDone.answer.includes('(failed:'), 'no failure dump when a live member answered');
     console.log('✓ team-runner links hard-provider quarantine');
+
+    events.length = 0;
+    const failedLinks = new TeamRunner({
+      team: linksTeam,
+      personas: [
+        { id: 'pa', name: 'Alpha', model: 'm-hard', prompt: 'You are Alpha.' },
+        { id: 'pb', name: 'Beta', model: 'm-hard', prompt: 'You are Beta.' },
+      ],
+      task: 'Report the provider state.',
+      projectDir: '', endpoint, accessKey: '', defaultModel: 'm0', sendEvent,
+    });
+    await failedLinks.run('run-all-failed');
+    const failedDone = events.findLast(e => e.type === 'done');
+    assert.strictEqual(failedDone.outcome, 'failed');
+    assert.strictEqual(failedDone.successfulCount, 0);
+    assert.strictEqual(failedDone.answer, '', 'all provider errors are diagnostics, not an assistant answer');
+    assert.ok(failedDone.results.every(result => !result.ok));
+    console.log('✓ team-runner all-failed Links has no assistant answer');
 
     // --- links: a protocol-stalled member is silently recovered once when a
     // healthy peer has NEW evidence. This is the Nurse path (no peer send). ---

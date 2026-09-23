@@ -13,12 +13,46 @@ function textContent(value) {
     .map(part => part.text).join('');
 }
 
+function providerErrorDetails(value) {
+  let current = value, code = '', status = null, retryAfterSeconds = null, retryable = null;
+  const finish = message => ({ message, code, status, retryAfterSeconds, retryable });
+  for (let depth = 0; depth < 6; depth++) {
+    if (typeof current === 'string') {
+      const text = current.trim();
+      const jsonAt = text.indexOf('{');
+      if (jsonAt >= 0 && jsonAt < 32) {
+        try { current = JSON.parse(text.slice(jsonAt)); continue; } catch { /* plain error text */ }
+      }
+      if (code === 'ECONOMY_CONCURRENCY_LIMIT') return {
+        message: 'CodeGPT Economy already has an active stream on this account. Wait for it to finish or choose another configured connection for parallel team work.',
+        code, status: status || 429, retryAfterSeconds, retryable: retryable ?? true,
+      };
+      return finish(text.replace(/\s+/g, ' ').slice(0, 400) || 'Provider request failed.');
+    }
+    if (!current || typeof current !== 'object' || Array.isArray(current)) break;
+    if (typeof current.code === 'string') code = current.code.slice(0, 80);
+    if (Number.isInteger(current.status)) status = current.status;
+    if (Number.isInteger(current.retryAfterSeconds) && current.retryAfterSeconds >= 0) retryAfterSeconds = current.retryAfterSeconds;
+    if (typeof current.retryable === 'boolean') retryable = current.retryable;
+    if (current.error && typeof current.error === 'object') { current = current.error; continue; }
+    const message = current.errorMessage || current.aiErrorMessage || current.message || current.error || current.detail;
+    if (message && message !== current) { current = message; continue; }
+    break;
+  }
+  if (code === 'ECONOMY_CONCURRENCY_LIMIT') return {
+    message: 'CodeGPT Economy already has an active stream on this account. Wait for it to finish or choose another configured connection for parallel team work.',
+    code, status: status || 429, retryAfterSeconds, retryable: retryable ?? true,
+  };
+  return finish('Provider request failed.');
+}
+
 async function readChatResponse(response, { stream = false, onText = () => {}, onReasoning = () => {}, onProgress = () => {}, signal } = {}) {
-  const result = { content: '', reasoning: '', reasoningChars: 0, finishReason: null, usage: null, error: null, toolCalls: false };
+  const result = { content: '', reasoning: '', reasoningChars: 0, finishReason: null, usage: null, error: null, errorDetails: null, toolCalls: false };
   const native = new Map();
   const accept = data => {
     if (data.error) {
-      result.error = typeof data.error === 'string' ? data.error : data.error.message || 'Provider request failed.';
+      result.errorDetails = providerErrorDetails(data.error);
+      result.error = result.errorDetails.message;
       return;
     }
     if (data.usage) result.usage = data.usage;
@@ -183,4 +217,4 @@ function emptyReplyDiagnostic(reply, model) {
   return `${name} returned no answer.${limit || (reply.finishReason ? ' Finish reason: ' + reply.finishReason + '.' : ' The response ended without any answer text.')}`;
 }
 
-module.exports = { readChatResponse, emptyReplyDiagnostic, transportErrorCode, isTransientTransportError, transportDiagnostic, waitForRetry };
+module.exports = { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, transportErrorCode, isTransientTransportError, transportDiagnostic, waitForRetry };
