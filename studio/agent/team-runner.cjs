@@ -30,15 +30,11 @@
  * outcome — up to MAX_RESUME_CYCLES per member.
  */
 
-const { AgentLoop } = require('./agent-loop.cjs');
-const { MemoryStore } = require('./memory-store.cjs');
 const { RunControl } = require('./run-control.cjs');
 const { parseAgentResponse } = require('./agent-response.cjs');
 const { AgentNet } = require('./agent-net.cjs');
 const { linksCompleteIn } = require('./agent-net.cjs');
-const { TeamNurse } = require('./team-nurse.cjs');
 const { getRole } = require('./roles.cjs');
-const { runToTerminal, MAX_RESUME_CYCLES: DRIVER_MAX_CYCLES } = require('./pause-resume.cjs');
 
 const { resolveBudgets, cap } = require('./budgets.cjs');
 
@@ -54,6 +50,27 @@ const LINKS_RATE = 3;
 const MAX_LINK_ROUNDS = 12;
 const MEMBER_LINK_TURNS = 4;
 const LINKS_COMPLETION_GRACE_MS = 250;
+
+/*
+ * E14: the four Links constants above were previously readable only by editing
+ * this file — team-runner already honoured budgets.teamConcurrency and
+ * budgets.resumeCycles, so a user who selected "heavy" budgets still got a
+ * 12-round cap and 4 turns per member. Each constant is now the DEFAULT of a
+ * budgets field, so behaviour is byte-identical until someone changes one.
+ *
+ * maxLinkRounds / memberLinkTurns / linksRate are hard caps whose 0 means
+ * "no cap" (cap() → Infinity). linksCompletionGraceMs keeps 0 as a literal
+ * zero — a 0 ms grace is a legitimate "stop peers immediately" choice.
+ */
+function linksPolicy(budgets) {
+  const pick = (key, fallback) => (Number.isSafeInteger(budgets?.[key]) ? budgets[key] : fallback);
+  return {
+    rate: pick('linksRate', LINKS_RATE),
+    maxRounds: cap(pick('maxLinkRounds', MAX_LINK_ROUNDS)),
+    memberTurns: cap(pick('memberLinkTurns', MEMBER_LINK_TURNS)),
+    graceMs: pick('linksCompletionGraceMs', LINKS_COMPLETION_GRACE_MS),
+  };
+}
 /* Interactive chats may wait forever when requestTimeoutMs is 0. A crew cannot:
  * one silent provider would otherwise prevent every other member from reaching
  * the Links wake/synthesis phase. Preserve any explicit positive deadline and
@@ -117,7 +134,7 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null, jev = null, featureMask = null, soulStore = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, capabilityStore = null, journal = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null, logger = null, jev = null, featureMask = null, soulStore = null }) {
     // SOUL.md + MEMORY.md store (agent/agent-soul.cjs). Every member reads ITS
     // OWN persona's files, keyed by persona id, so one persona carries one soul
     // and one memory into every crew it joins. Null keeps pre-feature behaviour.
@@ -126,9 +143,12 @@ class TeamRunner {
     this.jev = jev;
     this.featureMask = featureMask;
     this.budgets = budgets;
+    // E14: resolved once per run so every Links read site agrees.
+    this.links = linksPolicy(budgets);
     // Shared security audit log: every member runs tools, so every member's
     // sandbox denials must be recorded, not just the orchestrator's.
     this.auditLog = auditLog;
+    this.logger = logger;
     this.team = team;
     /* Native tool protocol (OpenAI tool_calls) vs the universal JSON contract.
      * Absent/legacy teams stay on the JSON contract. */
@@ -147,6 +167,8 @@ class TeamRunner {
      * and what direct-construction tests pass) means "one endpoint for the whole
      * crew", the pre-feature behaviour. */
     this.memberConnections = Array.isArray(memberConnections) ? memberConnections : null;
+    this.capabilityStore = capabilityStore;
+    this.journal = journal;
     this.reachExecutor = reachExecutor;
     this.browserExecutor = browserExecutor;
     this.sendEvent = sendEvent;
@@ -221,6 +243,7 @@ class TeamRunner {
   }
 
   _emit(type, payload = {}) {
+    if (type === 'nurse') this.journal?.append('nurse-action', { action: payload.action, index: payload.index, name: payload.name, status: payload.status });
     this.sendEvent('team:event', { teamRunId: this.teamRunId, type, ...payload, at: payload.at ?? Date.now() });
   }
 
@@ -309,6 +332,10 @@ class TeamRunner {
   async run(teamRunId) {
     this.teamRunId = teamRunId;
     const mode = this.team.mode === 'links' ? 'links' : this.team.mode === 'chain' ? 'chain' : 'parallel';
+    this.journal?.append('manifest', { runId: teamRunId, team: { id: this.team.id, name: this.team.name, mode },
+      task: this.task, projectDir: this.projectDir,
+      members: this.personas.map((persona, index) => ({ id: persona.id, name: persona.name,
+        prompt: persona.prompt || '', model: this._memberConn(index).model, role: this.roleOf(index) })) });
     // One network per crew run: roster members register into it, and any of
     // them may spawn/message/await peers through the agent.* collab tools.
     this.net = new AgentNet({
@@ -348,6 +375,9 @@ class TeamRunner {
       requestTimeoutMs: this.requestTimeoutMs,
       budgets: this.budgets,
       auditLog: this.auditLog,
+      logger: this.logger,
+      capabilityStore: this.capabilityStore,
+      journal: this.journal,
       nativeTools: this.nativeTools,
       /* SOUL.md + MEMORY.md store. Handed to the net so anything a member
        * SPAWNS owns its own pair, derived from the member's persona key — a
@@ -358,7 +388,7 @@ class TeamRunner {
        * between turns, and the total exchange count is capped at 3× a chain
        * crew's rate. Both options are inert in the other modes. */
       rosterMailbox: mode === 'links',
-      linkBudget: mode === 'links' ? LINKS_RATE * Math.max(1, this.personas.length - 1) : null,
+      linkBudget: mode === 'links' ? this.links.rate * Math.max(1, this.personas.length - 1) : null,
     });
     this.acceptingRuntimeAgents = true;
     this._emit('start', {
@@ -400,6 +430,7 @@ class TeamRunner {
          * exist. The key travels in-process only and is never emitted. */
         endpoint: conn.endpoint,
         accessKey: conn.accessKey,
+        ...(conn.connectionId ? { connectionId: conn.connectionId } : {}),
         /* The member's OWN identity (its persona id, not the run-scoped
          * `m<i>-<id>` key): a worker it spawns derives its own key from this,
          * and the roster position must never change which files an agent owns. */
@@ -466,6 +497,7 @@ class TeamRunner {
           : results.map(r => `【${r.name}】\n${r.ok ? r.output : '(failed: ' + (r.error || 'unknown') + ')'}`).join('\n\n'),
       links: mode === 'links' ? (this._linksMeta || null) : null,
     });
+    this.journal?.append('complete', { stopped: this.stopped, memberCount: results.length });
     return results;
   }
 
@@ -489,7 +521,7 @@ class TeamRunner {
   /* Links protocol: the rules of the peer network. Rendering per member so the
    * budget line carries the actual number the crew has to spend. */
   _linksBlock() {
-    const budget = LINKS_RATE * Math.max(1, this.personas.length - 1);
+    const budget = this.links.rate * Math.max(1, this.personas.length - 1);
     const peers = this.personas.length - 1;
     return [
       `LINKS MODE — an open peer network, not a pipeline. You have ${peers} peer(s).`,
@@ -503,315 +535,12 @@ class TeamRunner {
 
   /* Shared pause/resume drive for one member turn — the first turn and every
    * Links wake-up use the same callbacks, so resume behaviour cannot diverge. */
-  async _drive(key, index, persona, model, prompt, control) {
-    const store = this.memberStores.get(key);
-    const messageBoundary = store.get(key).messages.length;
-    const end = await runToTerminal({
-      loop: this.loops.get(key),
-      store,
-      agentId: key,
-      firstPrompt: prompt,
-      control,
-      maxCycles: cap(this.budgets?.resumeCycles ?? MAX_RESUME_CYCLES),
-      isStopped: () => this.stopped,
-      stopSignal: () => this._stopSignal(),
-      getPendingEdits: () => this.memberEdits.get(key) || [],
-      clearPendingEdits: () => this.memberEdits.set(key, []),
-      awaitEditResolution: this.awaitEditResolution,
-      requestMemberAnswer: this.requestMemberAnswer
-        ? (q) => this.requestMemberAnswer({ ...q, agentId: key, index, name: persona.name, model })
-        : null,
-      onWaiting: (edits) => this._emit('member-waiting', {
-        index, name: persona.name, status: 'waiting_edits',
-        edits: edits.map(e => ({ editId: e.editId, path: e.path, stats: e.stats })),
-      }),
-      onQuestion: (questionId, question) => this._emit('member-question', { index, name: persona.name, questionId, question }),
-      onResumed: (cycle, status) => this._emit('member-resumed', { index, name: persona.name, cycle, status }),
-    });
-    return { ...end, messageBoundary };
-  }
-
-  async _runMember(persona, index, prompt, { keep = false } = {}) {
-    const key = `m${index}-${persona.id}`;
-    /* Give this member its OWN SOUL.md + MEMORY.md if it does not have them
-     * yet. A persona created before the soul feature existed, or whose files
-     * were removed by hand, would otherwise run through a crew with no persona
-     * or memory at all while a fresh one had both — the difference would be
-     * invisible until an agent behaved differently than its card suggested.
-     * scaffold() only ever creates MISSING files, so this can never overwrite
-     * an agent's own writing, and a failure here must not stop the run: the
-     * member simply runs without a soul block, exactly as before the feature. */
-    try { this.soulStore?.scaffold?.(persona.id, { name: persona.name, role: this.roleOf(index) }); }
-    catch { /* soul files are best-effort; never break the run over them */ }
-    const store = new MemoryStore();
-    Object.assign(store.get(key).settings, structuredClone(this.agentSettings));
-    /* THIS is the per-member routing that makes Teams the multi-endpoint case.
-     * Before this, every member shared one endpoint/accessKey and only the model
-     * varied, so a member whose model lived on another provider would 404.
-     * _memberConn falls back to the team-wide values when nothing was resolved,
-     * so single-endpoint teams behave exactly as they did. */
-    const conn = this._memberConn(index);
-    const model = conn.model;
-    const loop = new AgentLoop({
-      agentId: key,
-      store,
-      endpoint: conn.endpoint,
-      accessKey: conn.accessKey,
-      model,
-      projectDir: this.projectDir,
-      reachExecutor: this.reachExecutor,
-      browserExecutor: this.browserExecutor,
-      personaPrompt: persona.prompt || '',
-      soulStore: this.soulStore,
-      // The KEY is the persona id, NOT the run-scoped member key (`m0-<id>`):
-      // the roster position must not change which files an agent owns, or a
-      // persona would lose its memory every time the roster was reordered.
-      soulKey: persona.id,
-      requestTimeoutMs: this.requestTimeoutMs,
-      budgets: this.budgets,
-      jev: this.jev,
-      featureMask: this.featureMask,
-      auditLog: this.auditLog,
-      nativeTools: this.nativeTools,
-      sendEvent: (_channel, payload) => {
-        // Tag every loop event with member identity and forward it.
-        // Field order matters: spread the inner event FIRST, then override
-        // type/index/name — otherwise the inner type clobbers 'member'.
-        if (!payload || payload.agentId !== key) return;
-        const { agentId, ...rest } = payload;
-        this.sendEvent('team:event', {
-          ...rest,
-          teamRunId: this.teamRunId,
-          type: 'member',
-          memberType: rest.type,
-          index,
-          name: persona.name,
-          model,
-        });
-      },
-      requestApproval: this.requestApproval
-        ? (payload) => this.requestApproval({ ...payload, memberName: persona.name, memberIndex: index })
-        : undefined,
-      requestEditReview: this.requestEditReview
-        ? (edit) => {
-            // Track per member so the pause resolver knows what to await.
-            const list = this.memberEdits.get(key) || [];
-            list.push(edit);
-            this.memberEdits.set(key, list);
-            this.requestEditReview({ ...edit, memberName: persona.name, memberIndex: index, memberKey: key });
-          }
-        : undefined,
-    });
-    this.loops.set(key, loop);
-    const control = this.controls[index];
-    control.loop = loop;
-    this.memberStores.set(key, store);
-    // Join the crew net: attach the live loop to the pre-registered record so
-    // peers can message/await it, and deliver anything buffered while pending.
-    let fullPrompt = prompt;
-    if (this.net) {
-      const rec = this.net.attach(key, loop, store, persona.id);
-      if (rec) {
-        rec.control = control;
-        rec.status = control.paused ? 'paused' : 'running';
-        const inbox = rec.inbox || [];
-        rec.inbox = [];
-        if (inbox.length) {
-          fullPrompt = `${prompt}\n\nMESSAGES WAITING FOR YOU (from crew members, deliver before finishing):\n${inbox.join('\n\n')}`;
-        }
-      }
-    }
-    this._emit('member-start', { index, name: persona.name, model, role: this.roleOf(index), promptChars: fullPrompt.length });
-    let last = { index, name: persona.name, model, ok: false, output: '', status: 'error', error: 'member did not run' };
-    try {
-      const end = await this._drive(key, index, persona, model, fullPrompt, control);
-      last = this._asLinksResult(this._harvest(key, store, persona, index, model, end.error, end.messageBoundary));
-      last.completedAt = Date.now();
-      this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, completionReason: last.completionReason });
-      return last;
-    } catch (e) {
-      last = this._asLinksResult({ index, name: persona.name, model, ok: false, output: '', status: 'error', error: e.message });
-      last.completedAt = Date.now();
-      this._emit('member-done', { index, name: persona.name, ok: false, status: last.status, error: e.message });
-      return last;
-    } finally {
-      control.finished = true;
-      /* Links rounds re-use the member's loop/store across wake-ups; single
-       * turn modes release them here as always. */
-      if (!keep) {
-        this.loops.delete(key);
-        this.memberStores.delete(key);
-      }
-      // Keep the crew net's view of this member truthful so peers that
-      // agent.status / agent.await it see the real terminal state.
-      if (this.net) {
-        this.net.syncMember(key, { status: last.status, error: last.error, output: last.output });
-      }
-      this.updatePausedState();
-    }
-  }
-
-  /* Read the member's terminal state + cleaned answer out of its store.
-   * driverError: the pause/resume driver's failure reason, if any (it knows
-   * why a resume chain ended; runState alone can't tell those apart). */
-  _harvest(key, store, persona, index, model, driverError = null, messageBoundary = 0) {
-    const output = cleanOutput(assistantTextSince(store, key, messageBoundary));
-    if (output && linksCompleteIn(output) && !this._linkDeclared) {
-      this._linkDeclared = { by: persona.name, index };
-      this._concludeLinkPeers(key, persona.name);
-    }
-    const completedByPeer = this._linksSuperseded.get(key);
-    if (completedByPeer) {
-      return {
-        index, name: persona.name, model, ok: true, output,
-        status: 'completed', error: null,
-        completionReason: `Links completed by ${completedByPeer}`,
-      };
-    }
-    const runState = store.get(key).runState;
-    const status = runState?.status || 'unknown';
-    const ok = !this.stopped && !!output && status === 'completed' && !driverError;
-    const error = ok
-      ? null
-      : (this.stopped ? 'Stopped by you.' : driverError || runState?.reason || `Member ${status}; no completed answer.`);
-    return { index, name: persona.name, model, ok, output, status, error, question: runState?.reason || null };
-  }
 
   /* A failed Links turn is terminal for that turn, but not permanently dead:
    * peers can see the stalled status and revive it by sending new instructions.
    * User waits and explicit Stop retain their distinct meanings. */
-  _asLinksResult(result) {
-    if (this.team.mode !== 'links' || !result || result.ok) return result;
-    if (['waiting_input', 'waiting_edits', 'stopped'].includes(result.status)) return result;
-    return { ...result, status: 'stalled' };
-  }
-
-  /* ---------- LINKS mode: the peer network ---------- */
-
-  _operatorHelpers(status) {
-    if (!this.net) return [];
-    return [...this.net.agents.values()].filter(rec =>
-      rec.origin === 'spawned'
-      && rec.operatorAdded === true
-      && (!status || rec.status === status));
-  }
-
-  _activeOperatorHelperCount() {
-    const terminal = new Set(['completed', 'failed', 'stopped', 'abandoned', 'stalled', 'skipped']);
-    return this._operatorHelpers().filter(rec =>
-      !terminal.has(rec.status) && this.net.activeTasks.has(rec.id)).length;
-  }
-
-  _cancelQueuedOperatorAgents(reason) {
-    if (!this.net?.cancelQueuedSpawned) return 0;
-    let cancelled = 0;
-    for (const rec of this._operatorHelpers('queued')) {
-      if (this.net.cancelQueuedSpawned(rec.id, reason)) cancelled++;
-    }
-    return cancelled;
-  }
-
-  /* A completion declaration is terminal for the whole peer network, but an
-   * immediate abort can cut off a peer between a successful tool result and
-   * its final response. Give active peers one short grace window, then abort
-   * anything still hanging (including endpoints that never send headers).
-   * This is not a user Stop and is reported as successful team completion. */
-  _concludeLinkPeers(declarerKey, declarerName, { includeDeclarer = false } = {}) {
-    // Completion is terminal for operator admission too. Do not accept mail or
-    // launch paid helper work during the short grace used only to harvest
-    // already-running peers.
-    this.acceptingRuntimeAgents = false;
-    this._cancelQueuedOperatorAgents('Links completed before this helper started.');
-    if (this._linksConclusionTimer) return;
-    this._linksConclusionTimer = setTimeout(() => {
-      this._linksConclusionTimer = null;
-      for (const [key, loop] of this.loops) {
-        if ((!includeDeclarer && key === declarerKey) || !loop.running) continue;
-        this._linksSuperseded.set(key, declarerName);
-        loop.stop();
-      }
-    }, LINKS_COMPLETION_GRACE_MS);
-  }
-
-  /* Completion declared? By a member in its own answer (this._linkDeclared)
-   * or in a message to a peer (net.linksComplete set on send). */
-  _linksDone() {
-    return this._linkDeclared || (this.net ? this.net.linksComplete : null);
-  }
 
   /* Drain a member's Links inbox (messages that arrived between its turns). */
-  _takeLinkInbox(index) {
-    if (!this.net) return [];
-    const rec = this.net.agents.get(`m${index}-${this.personas[index].id}`);
-    if (!rec || !Array.isArray(rec.inbox) || !rec.inbox.length) return [];
-    const box = rec.inbox.slice();
-    rec.inbox = [];
-    return box;
-  }
-
-  _restoreLinkInbox(index, messages) {
-    if (!this.net || !messages?.length) return;
-    const rec = this.net.agents.get(`m${index}-${this.personas[index].id}`);
-    if (!rec) return;
-    rec.inbox = [...messages, ...(rec.inbox || [])];
-  }
-
-  /* Wake a member for one more Links turn, re-using the SAME loop + store so
-   * the member keeps its full conversation and everything it learned. */
-  async _wakeMember(index, inbox, { synthesize = false, note = '', handoff = '' } = {}) {
-    const persona = this.personas[index];
-    const key = `m${index}-${persona.id}`;
-    const store = this.memberStores.get(key);
-    const conn = this._memberConn(index);
-    if (!store || !this.loops.has(key)) {
-      return { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: 'Member loop was not kept alive for the Links round.' };
-    }
-    const control = this.controls[index];
-    control.finished = false;
-    // A queued Links batch may outlive the first active wake. If the user
-    // pauses while another slot is still pending, do not let that later item
-    // begin a provider request just because its previous turn was marked
-    // finished (RunControl.pause intentionally ignores finished controls).
-    if (this.userPaused) control.pause();
-    await control.wait(() => this._stopSignal());
-    if (this.stopped) {
-      control.finished = true;
-      return { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'stopped', error: 'Stopped by you.', completedAt: Date.now(), wakeDeferred: true };
-    }
-    const parts = [`Original task:\n${this.task}`, this._crewContext(index, 'links')];
-    const role = this._roleBlock(index);
-    if (role) parts.push(role);
-    parts.push(this._linksBlock());
-    if (synthesize) {
-      if (handoff) {
-        parts.push(handoff);
-        parts.push(`${note} You are asked for the FINAL SYNTHESIS: use the Team Nurse handoff above as the current crew state. Call agent.list / agent.status only if something is genuinely missing, then write the definitive answer to the original task now. State clearly what is DONE (with evidence), what is NOT, and what each unfinished piece still needs.`);
-      } else {
-        parts.push(`${note} You are asked for the FINAL SYNTHESIS: use the real crew state and agent.list / agent.status to collect any missing peer results, then write the definitive answer to the original task now. State clearly what is DONE (with evidence), what is NOT, and what each unfinished piece still needs.`);
-      }
-    } else {
-      parts.push(`LINK MESSAGES from the crew (deliver on them, then continue your role's work):\n${inbox.join('\n\n')}`);
-    }
-    const prompt = parts.filter(Boolean).join('\n\n');
-    this._emit('member-start', { index, name: persona.name, model: conn.model, role: this.roleOf(index), promptChars: prompt.length, retake: true });
-    if (this.net) {
-      const rec = this.net.agents.get(key);
-      if (rec) rec.status = control.paused ? 'paused' : 'running';
-    }
-    let last;
-    try {
-      const end = await this._drive(key, index, persona, conn.model, prompt, control);
-      last = this._asLinksResult(this._harvest(key, store, persona, index, conn.model, end.error, end.messageBoundary));
-    } catch (e) {
-      last = this._asLinksResult({ index, name: persona.name, model: conn.model, ok: false, output: '', status: 'error', error: e.message });
-    }
-    last.completedAt = Date.now();
-    this._emit('member-done', { index, name: persona.name, ok: last.ok, chars: last.output.length, status: last.status, error: last.error, completionReason: last.completionReason, retake: true });
-    if (this.net) this.net.syncMember(key, { status: last.status, error: last.error, output: last.output });
-    control.finished = true;
-    this.updatePausedState();
-    return last;
-  }
 
   /* Who synthesizes when nobody declared? The Coordinator if one exists,
    * else the member that talked the most, else the last of the roster. */
@@ -835,346 +564,10 @@ class TeamRunner {
    * alive. Rounds wake exactly the members that have mail; the run ends when
    * completion is declared, the exchange budget is spent, or the network goes
    * quiet (then the Coordinator / busiest member synthesizes the answer). */
-  async _linksRun() {
-    const n = this.personas.length;
-    const budget = LINKS_RATE * Math.max(1, n - 1);
-    const results = new Array(n);
-    const turns = new Array(n).fill(0);
-    // A failed turn stalls the member. Peers carry on, but an explicit message
-    // to that member is a bounded recovery signal: the next Links round wakes
-    // it with the new instruction instead of silently leaving mail undelivered.
-    const stalled = new Map();
-    const nurse = new TeamNurse({
-      personas: this.personas,
-      team: this.team,
-      net: this.net,
-      enabled: this.team.nurse !== false,
-      policy: this.team.nursePolicy || null,
-      emit: (_type, payload) => this._emit('nurse', { ...payload, nurseType: payload.action, silent: true }),
-    });
-    this.nurse = nurse;
-    const noteStall = (index, error) => {
-      stalled.set(index, error || 'member stalled');
-      this.net?.syncMember(`m${index}-${this.personas[index].id}`, { status: 'stalled', error: stalled.get(index) });
-      this._emit('links-stall', { index, name: this.personas[index].name, error: stalled.get(index) });
-    };
-
-    /* One event-driven pool owns both initial turns and Links wake-ups. The old
-     * pair of mapWithConcurrency barriers left fast, recoverable members idle
-     * behind one unrelated provider timeout. Here every settlement immediately
-     * pulses the Nurse and refills any free slot, while the same concurrency,
-     * message, round, and per-member turn caps remain in force. */
-    const maxTurns = MEMBER_LINK_TURNS + 1;
-    const jobQueue = this.personas.map((_, index) => ({ kind: 'initial', index, generation: 0 }));
-    const activeJobs = new Map();
-    const memberBusy = new Set();
-    const queuedWake = new Set();
-    const operatorWakes = new Set();
-    const memberGeneration = new Array(n).fill(0);
-    let nextJobId = 0;
-    let rounds = 0;
-    let seenActivityVersion = this._linksActivityVersion;
-    // Alternate helper and roster admission when both are queued. This lets a
-    // newly-added specialist join promptly without starving the fixed roster.
-    let preferOperatorHelper = true;
-
-    const failedJobResult = (index, error) => ({
-      index,
-      name: this.personas[index].name,
-      model: this._memberConn(index).model,
-      ok: false,
-      output: '',
-      status: this.stopped ? 'stopped' : 'stalled',
-      error: error?.message || String(error || 'Links member job failed.'),
-      completedAt: Date.now(),
-    });
-
-    const queueReadyWakes = (triggerGeneration = 0) => {
-      if (this.stopped || this._linksDone()) return 0;
-      const queued = [];
-      for (let index = 0; index < n; index++) {
-        // A pending roster member consumes its mail in the initial prompt. A
-        // busy or already-queued member keeps accumulating mail for one bounded
-        // coalesced follow-up rather than starting a concurrent turn.
-        if (!turns[index] || turns[index] >= maxTurns || memberBusy.has(index) || queuedWake.has(index)) continue;
-        const rec = this.net?.agents.get(`m${index}-${this.personas[index].id}`);
-        if (!rec?.inbox?.length) continue;
-        const generation = Math.max(memberGeneration[index] + 1, triggerGeneration + 1);
-        if (generation > MAX_LINK_ROUNDS) continue; // preserve over-cap mail for status/diagnostics
-        const job = { kind: 'wake', index, generation };
-        jobQueue.push(job);
-        queuedWake.add(index);
-        queued.push(job);
-      }
-      if (queued.length) rounds = Math.max(rounds, ...queued.map(job => job.generation));
-      return queued.length;
-    };
-
-    const launchJob = (job) => {
-      const { index } = job;
-      if (this.stopped || this._linksDone() || memberBusy.has(index)) return false;
-
-      let box = [];
-      let nurseWake = false;
-      let reviving = false;
-      if (job.kind === 'initial') {
-        if (turns[index]) return false;
-        turns[index] = 1;
-      } else {
-        queuedWake.delete(index);
-        operatorWakes.delete(index);
-        if (!turns[index] || turns[index] >= maxTurns || job.generation > MAX_LINK_ROUNDS) return false;
-        // Drain only when the slot is actually reserved. Until this point the
-        // inbox stays visible to the Nurse, coalesces new mail, and survives a
-        // Stop/completion without any restoration bookkeeping.
-        box = this._takeLinkInbox(index);
-        if (!box.length) return false;
-        nurseWake = box.some(message => String(message).startsWith('TEAM NURSE RECOVERY'));
-        reviving = stalled.has(index);
-        this._emit('links-round', {
-          round: job.generation,
-          waking: [this.personas[index].name],
-          nurseWaking: nurseWake ? [this.personas[index].name] : [],
-          silent: nurseWake,
-          exchanges: this.net ? this.net.linkSends : 0,
-          budget,
-        });
-        if (reviving) {
-          stalled.delete(index);
-          this._emit('links-revive', { index, name: this.personas[index].name, messages: box.length, source: nurseWake ? 'nurse' : 'peer', silent: nurseWake });
-        }
-        if (nurseWake) nurse.recordWakeStarted(index);
-        turns[index]++;
-      }
-
-      memberBusy.add(index);
-      memberGeneration[index] = Math.max(memberGeneration[index], job.generation);
-      const jobId = ++nextJobId;
-      job.nurse = nurseWake;
-      const running = (async () => {
-        if (job.kind === 'initial') {
-          return this._runMember(this.personas[index], index, this._memberPrompt(index, 'links', []), { keep: true });
-        }
-        const result = await this._wakeMember(index, box);
-        if (result?.wakeDeferred) this._restoreLinkInbox(index, box);
-        return result;
-      })();
-      const tracked = Promise.resolve(running)
-        .then(result => ({ type: 'settled', jobId, job, result }))
-        .catch(error => ({ type: 'settled', jobId, job, result: failedJobResult(index, error) }));
-      activeJobs.set(jobId, tracked);
-      return true;
-    };
-
-    const pump = () => {
-      let launched = 0;
-      while (!this.stopped && !this.userPaused && this.acceptingRuntimeAgents && !this._linksDone()
-        && activeJobs.size + this._activeOperatorHelperCount() < this.concurrency) {
-        const queuedHelper = this._operatorHelpers('queued')[0] || null;
-        const tryHelper = queuedHelper && (preferOperatorHelper || !jobQueue.length);
-        if (tryHelper) {
-          const started = this.net.startSpawned(queuedHelper.id);
-          if (!started.ok) break;
-          preferOperatorHelper = false;
-          launched++;
-          continue;
-        }
-        if (jobQueue.length) {
-          if (launchJob(jobQueue.shift())) {
-            preferOperatorHelper = true;
-            launched++;
-          }
-          continue;
-        }
-        if (queuedHelper) {
-          const started = this.net.startSpawned(queuedHelper.id);
-          if (!started.ok) break;
-          preferOperatorHelper = false;
-          launched++;
-          continue;
-        }
-        break;
-      }
-      return launched;
-    };
-    this._linksPump = pump;
-    this._requestLinksWake = index => {
-      if (!this.running || this.stopped || !this.acceptingRuntimeAgents || this._linksDone()) {
-        throw new Error('The team run is finalizing. Start a new team run to retry this member.');
-      }
-      if (this.userPaused) throw new Error('Start the team before waking this stalled member.');
-      if (turns[index] >= maxTurns || memberGeneration[index] >= MAX_LINK_ROUNDS) {
-        throw new Error('This member reached its recovery limit. Start a new team run to retry it.');
-      }
-      // Coalesce repeated clicks and existing recovery mail into one scheduled
-      // turn. Never run a second loop outside the team's concurrency pool.
-      if (operatorWakes.has(index) || queuedWake.has(index)) return;
-      operatorWakes.add(index);
-      const result = this.messageMember(`m${index}-${this.personas[index].id}`,
-        'The user pressed Start to wake you after a stall. Resume your original task using your saved context. Take a concrete next action, or explain any blocker that still needs user input.');
-      if (!result.ok) { operatorWakes.delete(index); throw new Error(result.error); }
-      this._emit('member-wake-queued', { index, name: this.personas[index].name });
-    };
-
-    const settleJob = ({ jobId, job, result }) => {
-      activeJobs.delete(jobId);
-      memberBusy.delete(job.index);
-      results[job.index] = result || failedJobResult(job.index, 'Member returned no result.');
-      memberGeneration[job.index] = Math.max(memberGeneration[job.index], job.generation);
-      if (job.nurse) nurse.recordWakeResult(job.index, results[job.index]);
-      if (results[job.index]?.status === 'stalled') noteStall(job.index, results[job.index].error);
-      else stalled.delete(job.index);
-    };
-
-    const pulse = (triggerGeneration = 0) => {
-      if (this.stopped || this._linksDone()) return;
-      nurse.stageRecoveries({ results, stalled, turns, maxTurns });
-      queueReadyWakes(triggerGeneration);
-      pump();
-    };
-
-    pump();
-    for (;;) {
-      if (this.stopped || this._linksDone()) {
-        // Existing Stop/conclusion-grace handling unwinds running loops. Never
-        // launch queued work after the terminal signal, but do harvest anything
-        // that was already in flight so result state remains truthful.
-        if (!activeJobs.size) break;
-        settleJob(await Promise.race(activeJobs.values()));
-        continue;
-      }
-
-      pulse(0);
-      if (activeJobs.size) {
-        const activityWait = this._waitForLinksActivity(seenActivityVersion)
-          .then(({ version, activity }) => ({ type: 'activity', version, activity }));
-        const event = await Promise.race([...activeJobs.values(), activityWait]);
-        if (event.type === 'activity') {
-          seenActivityVersion = Math.max(seenActivityVersion, event.version);
-          const senderIndex = event.activity?.from
-            ? this.personas.findIndex((persona, index) => `m${index}-${persona.id}` === event.activity.from)
-            : -1;
-          pulse(senderIndex >= 0 ? memberGeneration[senderIndex] : 0);
-          continue;
-        }
-        settleJob(event);
-        pulse(event.job.generation);
-        continue;
-      }
-
-      // `pump` can discard a stale queued job (for example, an inbox consumed
-      // by its initial turn). Re-scan before declaring the roster quiescent.
-      pulse(0);
-      if (activeJobs.size || jobQueue.length) {
-        pump();
-        if (activeJobs.size) continue;
-      }
-
-      // A roster member may have delegated useful work and finished before its
-      // worker. Await already-paid work (event-driven, no polling); its mail or
-      // completed output is then considered before paying for synthesis.
-      if (this.net) await this.net.drainActiveSpawned();
-      if (!this.stopped && !this._linksDone()) {
-        // A very fast helper can settle between drainActiveSpawned's final
-        // scan and this continuation. Its onSettled hook may already have
-        // launched a roster job, so always re-pump and inspect the whole pool
-        // before declaring Links quiescent.
-        pulse(0);
-        if (activeJobs.size || jobQueue.length
-          || this._activeOperatorHelperCount()
-          || this._operatorHelpers('queued').length) continue;
-      }
-      break;
-    }
-
-    // Completion/Stop may deliberately leave not-yet-started initial jobs.
-    // Keep the result array dense so final event serialization cannot trip on
-    // sparse entries, and keep the network roster consistent for diagnostics.
-    for (let index = 0; index < n; index++) {
-      if (results[index]) continue;
-      const result = {
-        index,
-        name: this.personas[index].name,
-        model: this._memberConn(index).model,
-        ok: false,
-        output: '',
-        status: this.stopped ? 'stopped' : 'skipped',
-        error: this.stopped ? 'Stopped by you.' : 'Links completed before this member started.',
-        completedAt: Date.now(),
-      };
-      results[index] = result;
-      this.net?.syncMember(`m${index}-${this.personas[index].id}`, { status: result.status, error: result.error, output: '' });
-    }
-    this._linksActivityDeferred = null;
-
-    // The roster is quiescent. Do not accept an operator helper after this
-    // boundary: Links may now synthesize/finalize and cannot safely enroll new
-    // work in the answer it is already constructing.
-    this.acceptingRuntimeAgents = false;
-    this._linksPump = null;
-    this._requestLinksWake = null;
-    this._cancelQueuedOperatorAgents('Links finalized before this helper started.');
-
-    // Synthesis reuses (and then replaces) a roster result. Retain every
-    // usable pre-synthesis answer so a failed synthesis cannot erase it.
-    const preSynthesisOkResults = results.filter(result => result?.ok && result.output);
-    let synthesized = null;
-    let synthIndex = -1;
-    if (!this.stopped && !this._linksDone()) {
-      synthIndex = this._synthesisIndex();
-      const viable = [...Array(n).keys()].filter(i => results[i]?.ok && results[i]?.status === 'completed' && !stalled.has(i));
-      if (!viable.includes(synthIndex)) {
-        const coordinator = viable.find(i => (this.team.members[i] || {}).roleId === 'coordinator');
-        synthIndex = coordinator ?? (viable.length ? viable[viable.length - 1] : -1);
-      }
-      if (synthIndex >= 0) {
-        const note = (this.net && this.net.linkSends >= budget)
-          ? 'The crew has spent its full Links exchange budget (3× the chain rate).'
-          : 'The crew has gone quiet without a completion declaration.';
-        const stallNote = stalled.size
-          ? ` Note: ${[...stalled.keys()].map(i => this.personas[i].name).join(', ')} stalled and produced no usable work — cover that gap or state it as missing.`
-          : '';
-        const workerResults = this.net
-          ? this.net.snapshot().filter(worker => worker.origin === 'spawned')
-          : [];
-        const pendingMail = this.net
-          ? this.personas.map((persona, index) => {
-              const rec = this.net.agents.get(`m${index}-${persona.id}`);
-              return rec?.inbox?.length ? { name: persona.name, messages: rec.inbox.slice() } : null;
-            }).filter(Boolean)
-          : [];
-        const handoff = nurse.synthesisHandoff(results, stalled, workerResults, pendingMail);
-        synthesized = await this._wakeMember(synthIndex, [], { synthesize: true, note: note + stallNote, handoff });
-        results[synthIndex] = synthesized;
-        this._emit('links-synthesis', { index: synthIndex, name: this.personas[synthIndex].name, budgetSpent: this.net ? this.net.linkSends : 0, nurseHandoffs: nurse.meta().handoffs });
-      }
-    }
-
-    const done = this._linksDone();
-    const declarerResult = results.find(r => r && r.ok && linksCompleteIn(r.output));
-    const declarationMessage = done?.message ? cleanOutput(done.message) : '';
-    const okResults = results.filter(r => r && r.ok);
-    const fallbackResults = synthesized && !synthesized.ok ? preSynthesisOkResults : okResults;
-    this._linksAnswer = (declarerResult && declarerResult.output)
-      || declarationMessage
-      || (synthesized && synthesized.ok && synthesized.output)
-      || (fallbackResults.length
-        ? fallbackResults.map(r => `【${r.name}】\n${r.output}`).join('\n\n')
-        : results.filter(Boolean).map(r => `【${r.name}】\n(failed: ${r.error || 'unknown'})`).join('\n\n'));
-    this._linksMeta = {
-      rounds,
-      budget,
-      exchanges: this.net ? this.net.linkSends : 0,
-      completedBy: done && done.by ? done.by : (synthesized?.ok && synthIndex >= 0 ? this.personas[synthIndex].name : null),
-      synthesized: !!synthesized?.ok,
-      synthesisAttempted: !!synthesized,
-      stalled: stalled.size,
-      nurse: nurse.meta(),
-    };
-    return results;
-  }
 
   stop() {
+    require('./audit-event.cjs').auditEvent(this.auditLog, 'crew.stop', { allowed: true,
+      detail: { teamId: this.team?.id || null } });
     this.stopped = true;
     this._signalLinksActivity({ type: 'stop' });
     if (this._linksConclusionTimer) {
@@ -1239,7 +632,7 @@ class TeamRunner {
    * snapshot roster indexes at dispatch. The worker still has tools, its own
    * tab/control, direct team messaging, and is awaited before run finalization;
    * Links synthesis also incorporates spawned-worker results. */
-  addRuntimeAgent({ name, model = '', prompt = '', task = '', role = '', endpoint = '', accessKey = '', soulKey = '' } = {}) {
+  addRuntimeAgent({ name, model = '', prompt = '', task = '', role = '', endpoint = '', accessKey = '', connectionId = '', soulKey = '' } = {}) {
     if (this.team.mode !== 'links') return { ok: false, error: 'Run-only agents can join Links teams. Parallel and chain teams have a fixed result roster.' };
     if (!this.net || !this.running || this.stopped || !this.acceptingRuntimeAgents || this._linksDone()) return { ok: false, error: 'The team run is finalizing and is no longer accepting agents.' };
     if (this.paused || this.userPaused) return { ok: false, error: 'Resume the team before adding an agent.' };
@@ -1249,6 +642,7 @@ class TeamRunner {
     const result = this.net.spawn({
       name, model, prompt: instructions, task: assignment,
       parentId: null, depth: 0, callerName: 'You', endpoint, accessKey,
+      ...(connectionId ? { connectionId } : {}),
       deferStart: true, operatorAdded: true,
       /* A helper adopted FROM a saved persona joins with that persona's own
        * soul and memory: it is the agent the user created, not an anonymous
@@ -1278,5 +672,10 @@ class TeamRunner {
     this._emit('control', { paused: this.paused });
   }
 }
+
+Object.assign(TeamRunner.prototype,
+  require('./team-member-driver.cjs')({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME_CYCLES }),
+  require('./team-inbox.cjs'),
+  require('./team-links-loop.cjs')({ cleanOutput, linksCompleteIn }));
 
 module.exports = { TeamRunner, cleanOutput, boundedRelay, mapWithConcurrency, PARALLEL_CONCURRENCY, MAX_RESUME_CYCLES, LINKS_RATE, MAX_LINK_ROUNDS, MEMBER_LINK_TURNS, TEAM_REQUEST_TIMEOUT_MS };

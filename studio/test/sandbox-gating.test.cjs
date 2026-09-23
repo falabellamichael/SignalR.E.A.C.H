@@ -287,13 +287,13 @@ test('every loop factory forwards auditLog to the loops it builds', () => {
   assert.match(team, /auditLog = null/, 'TeamRunner must accept an auditLog option');
   assert.match(team, /this\.auditLog = auditLog/, 'TeamRunner must store it');
   // TeamRunner builds an AgentNet and per-member AgentLoops; both need it.
-  assert.equal(team.match(/auditLog: this\.auditLog/g).length, 2,
+  assert.equal((team.match(/auditLog: this\.auditLog/g) || []).length + (read('team-member-driver.cjs').match(/auditLog: this\.auditLog/g) || []).length, 2,
     'TeamRunner must forward auditLog to BOTH its AgentNet and its member loops');
 
   const net = read('agent-net.cjs');
   assert.match(net, /auditLog = null/, 'AgentNet must accept an auditLog option');
   assert.match(net, /this\.auditLog = auditLog/, 'AgentNet must store it');
-  assert.match(net, /auditLog: this\.auditLog/, 'AgentNet must pass it to subagent loops');
+  assert.match(read('team-spawn.cjs'), /auditLog: this\.auditLog/, 'AgentNet must pass it to subagent loops');
 });
 
 test('main.mjs constructs the audit log and gives it to both loop factories', () => {

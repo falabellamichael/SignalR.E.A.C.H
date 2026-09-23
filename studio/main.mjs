@@ -33,16 +33,19 @@ const refactorEngine = require('./agent/refactor.cjs');
 const patchEngine = require('./agent/patch-manager.cjs');
 const testLoop = require('./agent/test-loop.cjs');
 const { runCommand } = require('./agent/platform.cjs');
-// The index cache is owned by code-context.cjs, which is also what prompt
+// The index cache is owned by code-index.cjs, which is also what prompt
 // injection and the code.* agent tools use. This file previously kept its own
 // Map; three caches for one tree disagree the moment anything writes a file, and
 // this one had no TTL and no write-invalidation, so the dashboard could keep
 // showing symbols the agent had already renamed or deleted.
-const { getIndex: sharedGetIndex, invalidateIndex } = require('./agent/code-context.cjs');
+const { getIndex: sharedGetIndex, invalidateIndex } = codeIndex;
 const { AuditLog } = require('./agent/audit-log.cjs');
+const { CrewJournal, journalPath, listRecoverable } = require('./agent/crew-journal.cjs');
+const { auditEvent } = require('./agent/audit-event.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
 const { createSettingsStore } = require('./agent/settings-store.cjs');
+const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
 const { resolveEndpoint } = require('./agent/endpoint.cjs');
 const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
@@ -196,6 +199,7 @@ function loadSettings() {
 function saveSettings(s) {
   settingsStore.save(s);
 }
+const capabilityStore = createCapabilityStore({ load: loadSettings, save: saveSettings });
 function autoModeEnabled(settings, agent) {
   return (agent?.settings?.jevAutoMode ?? settings.jevAutoMode) === true;
 }
@@ -383,6 +387,8 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     store,
     endpoint,
     accessKey,
+    connectionId: selectedConnection?.id || '',
+    capabilityStore,
     model: route?.model || agent.model || selectedConnection?.model || settings.model || 'gpt-4o-mini',
     personaPrompt: agent.personaPrompt || '',
     /* SOUL.md + MEMORY.md for the agent this conversation is running as. Keyed
@@ -477,7 +483,8 @@ function registerIpc() {
      * call shape in several places.
      */
     const connectionsAuthoritative = Array.isArray(patch.connections);
-    saveSettings(connections.applyLegacyWrite(next, { connectionsAuthoritative }));
+    saveSettings(connections.preserveCapabilities(current,
+      connections.applyLegacyWrite(next, { connectionsAuthoritative })));
     // Settings drive every agent loop's endpoint + default model — drop the
     // cache so the next message builds a fresh loop with the new values.
     for (const [id, loop] of agentLoops) {
@@ -802,6 +809,8 @@ function registerIpc() {
       }
     }
     store.resolvePendingEdit(id, editId, accepted);
+    auditEvent(getAuditLog(), 'edit.apply', { agent: id, allowed: accepted,
+      reason: accepted ? 'accepted' : 'rejected', detail: { editId, path: edit.path } });
     store.appendMessage(id, { role: 'user', content: `TOOL RESULTS\nEdit ${edit.path}: ${accepted ? 'accepted and written to disk' : 'rejected by the user'}.`, _reachMeta: { source: 'tool-summary' } });
 
     // A model turn may propose several files. Resume only after the final card
@@ -866,6 +875,14 @@ function registerIpc() {
   ipcMain.handle('roles:list', () => listRoleChoices());
 
   ipcMain.handle('teams:list', () => getPersonaStore().listTeams());
+  ipcMain.handle('teams:recoverable', () => listRecoverable(path.join(app.getPath('userData'), 'agents')).filter(item => !teamRuns.has(item.runId)));
+  ipcMain.handle('teams:harvest', (_e, { teamRunId }) => {
+    try {
+      const journal = new CrewJournal(journalPath(path.join(app.getPath('userData'), 'agents'), teamRunId));
+      const snapshot = journal.snapshot();
+      return snapshot.manifest ? { ok: true, ...snapshot } : { ok: false, err: 'Crew journal not found.' };
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('teams:get', (_e, id) => getPersonaStore().getTeam(id));
   ipcMain.handle('teams:create', (_e, t) => {
     try { return { ok: true, team: getPersonaStore().createTeam(t) }; }
@@ -1003,6 +1020,7 @@ function registerIpc() {
 
       if (agentId && !getAgentStore().get(agentId)) return { ok: false, err: 'Conversation was deleted while the team was starting.' };
       const teamRunId = 'teamrun-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+      const journal = new CrewJournal(journalPath(path.join(app.getPath('userData'), 'agents'), teamRunId));
       const sendEvent = (channel, payload) => {
         // Save before announcing completion so a follow-up sees the answer
         // even after the user switches views or reloads the renderer.
@@ -1030,6 +1048,8 @@ function registerIpc() {
          * used for anything the runner does not have a member resolution for, and
          * as the documented fallback when a member's resolution is unusable. */
         memberConnections,
+        capabilityStore,
+        journal,
         soulStore: getSoulStore(),
         budgets,
         jev: jevConfig(settings, conversation),
@@ -1209,6 +1229,7 @@ function registerIpc() {
         task,
         endpoint: route.endpoint,
         accessKey: route.accessKey,
+        connectionId: route.connectionId || '',
         /* When the helper was ADOPTED from a saved persona, hand over that
          * persona's identity so it joins with its OWN SOUL.md + MEMORY.md — it
          * is the agent the user created on the Create page, not an anonymous
@@ -1239,6 +1260,9 @@ function registerIpc() {
       }
     }
     pendingTeamEdits.delete(editId);
+    teamRuns.get(entry.teamRunId)?.journal?.append('evidence-decision', { editId, accepted });
+    auditEvent(getAuditLog(), 'edit.apply', { agent: entry.agentId || null, allowed: accepted,
+      reason: accepted ? 'accepted' : 'rejected', detail: { editId, path: entry.edit.path } });
     attention.resolve(editId);
     // Unblock the paused team member (if this edit belongs to one).
     const resolver = pendingEditResolvers.get(editId);
@@ -2387,7 +2411,11 @@ function registerIpc() {
         proposeFix,
         quickFix,
         projectDir: dir,
-        maxAttempts: Number.isSafeInteger(payload.maxAttempts) ? Math.max(1, Math.min(10, payload.maxAttempts)) : 10,
+        // E14: the loop's attempt cap, stall limit and per-gate output cap are
+        // budgets fields. Passing the resolved budgets here is what makes them
+        // live; an explicit per-run maxAttempts from the UI still wins.
+        budgets: resolveBudgets(loadSettings()),
+        maxAttempts: Number.isSafeInteger(payload.maxAttempts) ? Math.max(1, Math.min(10, payload.maxAttempts)) : null,
         // Keep the last attempted fix on failure: the Review Modal offers
         // "Manually edit", which is useless if the tree was already rolled back.
         // "Revert changes" performs the rollback explicitly instead.
@@ -3761,7 +3789,9 @@ app.whenReady().then(() => {
         getAgentStore().setTodos(layoutAgent.id, Array.from({ length: 30 }, (_, i) => ({ text: 'Review project component ' + i, status: 'completed' })));
         getAgentStore().setRunState(layoutAgent.id, { status: 'completed', reason: report });
         let layoutActivity = null;
-        const activityReducer = require('./renderer/activity-state.js').reduce;
+        // E9: the reducer is engine-owned (agent/activity.cjs); the renderer file
+        // is a generated copy for the CSP-bound browser side.
+        const activityReducer = require('./agent/activity.cjs').reduce;
         for (let i = 0; i < 80; i++) {
           layoutActivity = activityReducer(layoutActivity, { type: 'tool-call', tool: 'read', arguments: { path: 'src/component-' + i + '.py' } });
           layoutActivity = activityReducer(layoutActivity, { type: 'tool-result', ok: true, result: { content: report } });

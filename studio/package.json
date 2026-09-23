@@ -19,6 +19,8 @@
     "test:agents-ui": "electron test/agents-scroll-ui.cjs",
     "test:persona-ui": "electron test/persona-modal-ui.cjs",
     "build:editor": "esbuild renderer/editor.src.js --bundle --minify --format=iife --outfile=renderer/editor.bundle.js",
+    "build:activity": "node scripts/build-activity.cjs",
+    "check:activity": "node scripts/build-activity.cjs --check",
     "dist": "npm run build:editor && electron-builder",
     "dist:mac": "npm run build:editor && electron-builder --mac",
     "dist:win": "npm run build:editor && electron-builder --win",

@@ -26,25 +26,25 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 
 | Status | Count | What it means |
 |--------|-------|---------------|
-| **DONE** | 22 | Implemented, tested, verified in working tree |
-| **PARTIAL** | 12 | Partially implemented; evidence or tests remain |
-| **TODO** | 30 | Not yet started; ordered by dependency and priority |
+| **DONE** | 25 | Implemented, tested, verified in working tree |
+| **PARTIAL** | 13 | Partially implemented; evidence or tests remain |
+| **TODO** | 26 | Not yet started; ordered by dependency and priority |
 
 > Counts are generated, not hand-written: `node tools/count-plan-status.cjs`
-> (64 item rows: 22 DONE / 12 PARTIAL / 30 TODO). Re-run it after flipping a status.
+> (64 item rows: 25 DONE / 13 PARTIAL / 26 TODO). Re-run it after flipping a status.
 
 ### Top 10 Highest-Impact Remaining Items
 
-1. **Split `main.mjs`** (4,115 lines, 86 static handlers — see BASELINE) into domain modules
-2. **Split `renderer/app.js`** (4,595 lines — see BASELINE) into concern-based modules
-3. **IPC manifest: runtime return-shape validation** — channel set is machine-checked (87 entries); argument/return shapes are still documentation (item 2.3, finding N2)
-4. **Per-conversation size limits** with archive, never-delete
-5. **Audit every IPC handler** for input validation gaps (7 documented)
-6. ~~**Rate-limit outbound agent requests** to avoid provider 429s~~ — **DONE** (item 2.8); the strongest remaining item is **per-conversation storage** (5.8)
-7. **Ship Windows installers** from CI fully
-8. **Per-conversation storage** and durable team recovery (the README's top UX complaint)
-9. ~~**Generate the plan's baseline instead of hand-copying it**~~ — **DONE** (item 6.10): the BASELINE block below is generated and CI-gated
-10. **macOS notarization** (requires Apple Developer ID credentials)
+1. **Split `main.mjs`** (4,145 lines, 88 static handlers — see BASELINE) into domain modules
+2. **Split `renderer/app.js`** (4,628 lines — see BASELINE) into concern-based modules
+3. **IPC manifest: runtime return-shape validation** — channel set is machine-checked (89 entries); argument/return shapes are still documentation (item 2.3, finding N2)
+4. **Audit every IPC handler** for input validation gaps (7 documented)
+5. **Ship Windows installers** from CI fully
+6. **Per-conversation storage** and durable team recovery (the README's top UX complaint)
+7. **Document the Node version floor and test matrix consistently** (item 1.9)
+8. **macOS notarization** (item 5.7; requires Apple Developer ID credentials)
+9. **Finish extracting `agent-loop.cjs` into testable modules** (item 3.3)
+10. **Verify OS delivery for approval notifications** (item 2.9)
 
 ---
 
@@ -83,10 +83,10 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 |---|------|--------|-----------------|
 | 2.1 | **Encrypt API keys at rest** (`safeStorage`) | DONE | Settings store encrypts keys; OS vault used; explicit fallback warning when unavailable |
 | 2.2 | Protect Copilot shim token | DONE | `chmod 0600` + loud warning on world-readable load |
-| 2.3 | **IPC manifest + set-equality test** | PARTIAL | All 87 channels have owner/signature metadata (measured 2026-09-22); bidirectional set tests pass (`preload` == `manifest` == `handlers`, delta exactly the dynamic `browser:command`). Return-shape validation (finding N2) and full domain extraction remain |
+| 2.3 | **IPC manifest + set-equality test** | PARTIAL | All 89 channels have owner/signature metadata; bidirectional set tests pass (`preload` == `manifest` == `handlers`, delta exactly the dynamic `browser:command`). Return-shape validation (finding N2) and full domain extraction remain |
 | 2.4 | **Audit every IPC handler** for input validation | PARTIAL | 7 open gaps documented (`agents:setTodos`, `files:write` size, `project:create` path, …) |
 | 2.5 | Guard `browser:command` dynamic channel | DONE | Preload returns `{ok:false, err}` when no tab; regression tests cover missing handler |
-| 2.6 | **Per-conversation size limits** (archive, never delete) | TODO | `MAX_AGENTS=200`, `MAX_STORED_MESSAGES=400` exist but serialized bytes unbounded; needs `.history.jsonl` archive (invariant I4) |
+| 2.6 | **Per-conversation size limits** (archive, never delete) | DONE | `budgets.storedMessages` is enforced by `AgentStore.appendMessage`; an 8 MiB serialized cap archives excess messages to append-only `userData/agents/<id>.history.jsonl`, which is replayed by `readArchive`. Guard: `studio/test/conversation-cap.test.cjs`. |
 | 2.7 | Treat tool/file output as untrusted data | DONE | Escaped delimiters around tool/source data; forged approval fixture cannot bypass edit review |
 | 2.8 | **Rate-limit outbound agent requests** | DONE | `agent/rate-limit.cjs`: one adaptive token-bucket pace per provider ORIGIN, shared by every `AgentLoop` (single chat, team members, spawned workers), so a 14-agent crew cannot burst a provider into 429s. A 429/`Retry-After` becomes an absolute deadline every waiter shares (one window, not one per waiter) and engages a pace that tightens toward `requestPacingRpm` (floor 6, first limit 4×); the pace releases only after `recoverMs` quiet **and** 3 successes after that window. Happy path is free — `acquire()` resolves immediately while unpaced, so a crew that never sees a 429 pays nothing. `agent-loop.cjs` retries a rate limit (bounded, `RATE_LIMIT_RETRIES`) instead of throwing; a `rate-limit` activity step + one deduped transcript line render it as *waiting*, never as failure. New: `test/rate-limit.test.cjs` (20 tests). **Preserved contract:** a bare `503` stays a HARD failure so the Nurse still quarantines a dead provider route (`test/agent.test.cjs` links-hard-provider case; guard asserted in the new suite); `503` *with* `Retry-After` is a load shedder and is paced. Off switch `requestPacing` removes the app-imposed rate only — a provider `Retry-After` is still honored. Both are global-only fields, enforced in `resolveBudgets`, not just hidden in the UI |
 | 2.9 | Approval notifications | PARTIAL | Background notifications, beep, Dock badge, click-to-focus, burst coalescing; OS delivery needs manual verification |
@@ -97,11 +97,11 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 
 | # | Item | Status | Impact |
 |---|------|--------|--------|
-| 3.1 | **Split `main.mjs`** (4,115 lines → domain modules, see BASELINE) | PARTIAL | Settings, endpoint, notifications extracted to independent modules; IPC/bootstrap/smoke extraction remains |
-| 3.2 | **Split `renderer/app.js`** (4,595 lines, see BASELINE) | TODO | Mixed chat, drawer, tree, composer, persona/crew logic — now the single largest file in Studio |
+| 3.1 | **Split `main.mjs`** (4,145 lines → domain modules, see BASELINE) | PARTIAL | Settings, endpoint, notifications extracted to independent modules; IPC/bootstrap/smoke extraction remains |
+| 3.2 | **Split `renderer/app.js`** (4,628 lines, see BASELINE) | TODO | Mixed chat, drawer, tree, composer, persona/crew logic — now the single largest file in Studio |
 | 3.3 | Extract `agent-loop.cjs` into smaller testable modules | PARTIAL | Many sub-modules exist; full loop still monolithic |
 | 3.4 | IPC TypeScript contracts (or equivalent runtime schema) | TODO | Stringly-typed IPC is the #0 source of bugs; depends on 3.1 |
-| 3.5 | Resolve code-index ownership (`code-context.cjs` → `code-index.cjs`) | TODO | TTL + invalidation still in wrong module |
+| 3.5 | Resolve code-index ownership (`code-context.cjs` → `code-index.cjs`) | DONE | Index cache, TTL and write invalidation are owned by `code-index.cjs`; context and tools consume its accessors. |
 
 ---
 
@@ -136,14 +136,14 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 
 | # | Item | Status |
 |---|------|--------|
-| 5.1 | Crew message persistence (WAL) | TODO |
+| 5.1 | Crew message persistence (WAL) | DONE | Atomic per-run JSONL journal records manifests, member turns, crew messages and nurse actions; crash recovery is covered by `studio/test/crew-journal.test.cjs`. |
 | 5.2 | Configurable log levels | TODO |
 | 5.3 | Context window visualizer | TODO |
 | 5.4 | Automatic fallback model | TODO |
 | 5.5 | Team activity timeline aggregation | TODO |
 | 5.6 | Automatic update checker | TODO |
 | 5.7 | macOS notarization | TODO (needs Apple Developer ID credentials) |
-| 5.8 | Per-conversation storage (durable team recovery) | TODO |
+| 5.8 | Per-conversation storage (durable team recovery) | PARTIAL | Incomplete journals appear on the Teams page and partial results can be harvested; automatic re-entry of unfinished members remains. |
 
 ---
 
@@ -237,8 +237,8 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 
 | File | Items that touch it | Rule |
 | --- | --- | --- |
-| `studio/main.mjs` (4,115) | 2.3, 2.4, 3.1, 3.4, 2.6, 5.8 | **One writer until 3.1 lands** |
-| `studio/renderer/app.js` (4,595) | 3.2, 4.12, 4.13–4.18 | Serialize behind 3.2 |
+| `studio/main.mjs` (4,145) | 2.3, 2.4, 3.1, 3.4, 2.6, 5.8 | **One writer until 3.1 lands** |
+| `studio/renderer/app.js` (4,628) | 3.2, 4.12, 4.13–4.18 | Serialize behind 3.2 |
 | `studio/preload.cjs` (199) | 2.3, 2.5 | One writer (manifest touches every channel) |
 | `studio/agent/agent-store.cjs` | 2.6, 5.8 | Serialize — 5.8 supersedes 2.6's shape |
 | `studio/agent/code-index.cjs` + `code-context.cjs` (1,157) | 3.5 | Single owner |
@@ -263,15 +263,15 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 <!-- BASELINE:START -->
 | Metric | Value |
 | --- | --- |
-| `studio/main.mjs lines` | 4,115 |
-| `studio/renderer/app.js lines` | 4,595 |
-| `studio/preload.cjs lines` | 199 |
-| `studio/agent modules` | 55 |
-| `studio/renderer scripts` | 22 |
-| `studio/test files` | 60 |
-| `static IPC handlers` | 86 |
-| `preload invoke channels` | 87 |
-| `IPC manifest entries` | 87 |
+| `studio/main.mjs lines` | 4,145 |
+| `studio/renderer/app.js lines` | 4,628 |
+| `studio/preload.cjs lines` | 201 |
+| `studio/agent modules` | 72 |
+| `studio/renderer scripts` | 21 |
+| `studio/test files` | 71 |
+| `static IPC handlers` | 88 |
+| `preload invoke channels` | 89 |
+| `IPC manifest entries` | 89 |
 | `SimpleRAG plugin files` | 21 |
 <!-- BASELINE:END -->
 
@@ -322,7 +322,7 @@ node tools/check-javascript.cjs
   `agents/<id>.history.jsonl`.
 - **I5 · IPC set equality** — **Invariant A5:** `set(preload) == set(manifest) == set(handlers)`,
   with `browser:command` whitelisted **explicitly**. Measured delta on 2026-09-22: exactly
-  `browser:command` (86 handlers / 87 channels / 87 manifest entries, both directions clean).
+  `browser:command` (88 handlers / 89 channels / 89 manifest entries, both directions clean).
 - **I6 · `resolveEndpoint` guards live in `agent/endpoint.cjs`**, shared by main-process consumers.
   4 tests: loop detection, credentials, normalization, HTTP failure. (Earlier docs placed this in
   `main.mjs` — that was wrong; the split happened in the 2.1/3.1 work.)

@@ -32,6 +32,15 @@ test('approval waiting, declined actions, retries and Stop never appear complete
   assert.equal(summary(state, 10000).title, 'Stopped');
   assert.equal(state.steps.at(-1).status, 'paused');
 });
+test('provider rate limiting is shown as a wait, not an agent failure or approval request', () => {
+  let state = reduce(null, { type: 'run-state', status: 'running' }, 1000);
+  state = reduce(state, { type: 'rate-limit', note: 'example.com asked for 2s before retrying' }, 2000);
+  assert.equal(state.status, 'running');
+  assert.equal(state.steps.at(-1).status, 'waiting');
+  assert.equal(summary(state, 3000).waiting, true);
+  assert.equal(summary(state, 3000).title, 'Waiting for the provider');
+  assert.match(summary(state, 3000).detail, /asked for 2s/);
+});
 test('trace and results are bounded, while step numbers keep increasing', () => {
   let state;
   for (let i=0;i<100;i++) { state=reduce(state,{type:'tool-call',tool:'read'},1000+i); state=reduce(state,{type:'tool-result',ok:true,result:{output:'x'.repeat(10000)}},1000+i); }

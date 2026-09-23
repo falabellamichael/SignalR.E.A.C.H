@@ -16,12 +16,15 @@
 const { TOOLS, needsApproval, budgetFor, resolveInProject } = require('./tool-registry.cjs');
 const { disabledTools } = require('./tool-policy.cjs');
 const { evaluateCommand, defaultPolicy } = require('./sandbox.cjs');
+// E3: one recursive, total-budget bound for a tool result, replacing a
+// top-level-only string truncation that left arrays and nested objects
+// unbounded and could cost ~5x the stated budget.
+const { boundResult } = require('./bounded-result.cjs');
+const { createHash } = require('node:crypto');
+const { validateToolArgs, commandsAt } = require('./tool-params.cjs');
+const { auditEvent } = require('./audit-event.cjs');
 
-function truncate(text, budget) {
-  const s = String(text === undefined ? '' : text);
-  if (s.length <= budget) return s;
-  return s.slice(0, budget) + '\n… [truncated at ' + budget + ' characters]';
-}
+const disabledAudit = new WeakMap();
 
 /**
  * Enforce the command sandbox for exec-class tools.
@@ -38,10 +41,22 @@ function truncate(text, budget) {
  * fails closed (the command is refused) rather than silently running wide open.
  */
 function enforceSandbox(name, args, settings, context) {
-  const sandbox = settings && settings.sandbox;
-  if (!sandbox || sandbox.enabled !== true) return null;
   const tool = TOOLS[name];
-  if (!tool || tool.class !== 'exec') return null;
+  const sandbox = settings && settings.sandbox;
+  if (!sandbox || sandbox.enabled !== true) {
+    if ((tool?.class === 'write' || tool?.class === 'exec') && context.auditLog?.write) {
+      let agents = disabledAudit.get(context.auditLog);
+      if (!agents) { agents = new Set(); disabledAudit.set(context.auditLog, agents); }
+      const key = String(context.agentId || 'unknown');
+      if (!agents.has(key)) {
+        agents.add(key);
+        try { context.auditLog.write({ event: 'sandbox.disabled', agent: key,
+          allowed: true, detail: { tool: name } }); } catch { /* never fail an action over audit I/O */ }
+      }
+    }
+    return null;
+  }
+  if (!tool?.commandPaths?.length) return null;
   // `reach.*` tools carry no shell command: they spawn a fixed internal binary
   // with structured argv through spawnCommand(), which uses no shell (verified:
   // platform.cjs passes args as an array with shell unset), so there is no
@@ -62,7 +77,7 @@ function enforceSandbox(name, args, settings, context) {
   // for the wrong reason, and never evaluated the real gate commands. Collect
   // every command string the tool could execute and evaluate each, so a nested
   // command cannot bypass the policy.
-  const commands = collectCommands(args);
+  const commands = commandsAt(args, tool.commandPaths);
   if (!commands.length) {
     // No command found at all — an exec tool with nothing to run is a no-op, but
     // fail closed rather than assume a shape we do not recognise is safe.
@@ -101,32 +116,8 @@ function enforceSandbox(name, args, settings, context) {
 }
 
 /**
- * Every command string an exec-class tool invocation would run.
- *
- * Covers `args.command` (shell, reach.run) and one level of nesting in
- * `args.gates[].command` (tests.run) and `args[].command` (batch forms). Depth is
- * bounded deliberately: a tool could in principle hide a command deeper, but the
- * registered exec tools only nest this far, and walking arbitrary structures
- * would be both slow and a false sense of completeness. A tool that adds a new
- * command shape must extend this function — the sandbox tests cover it.
+ * Command provenance comes from each tool's declarative commandPaths schema.
  */
-function collectCommands(args) {
-  const out = [];
-  if (!args || typeof args !== 'object') return out;
-  if (typeof args.command === 'string' && args.command.trim()) out.push(args.command);
-  const scanList = (list) => {
-    if (!Array.isArray(list)) return;
-    for (const item of list) {
-      if (item && typeof item === 'object' && typeof item.command === 'string' && item.command.trim()) {
-        out.push(item.command);
-      }
-    }
-  };
-  scanList(args.gates);
-  scanList(args.commands);
-  return out;
-}
-
 async function runToolCall(agentId, name, args, context) {
   context.signal?.throwIfAborted();
   const tool = TOOLS[name];
@@ -135,7 +126,7 @@ async function runToolCall(agentId, name, args, context) {
   if (!tool) {
     const error = `Unknown tool "${name}". The allowed tools are: ${Object.keys(TOOLS).join(', ')}.`;
     record.error = error;
-    await persistToolResult(agentId, name, args, { ok: false, error }, context);
+    await persistToolResult(agentId, name, args, { ok: false, error }, context, record);
     return { ok: false, error, record };
   }
 
@@ -145,9 +136,18 @@ async function runToolCall(agentId, name, args, context) {
   const settings = getSettings();
   if (disabledTools(settings, TOOLS).includes(name)) {
     const error = `The ${name} tool is disabled in this conversation's tool controls.`;
-    await persistToolResult(agentId, name, args, { ok: false, error }, context);
+    await persistToolResult(agentId, name, args, { ok: false, error }, context, record);
     return { ok: false, error, record };
   }
+
+  const validated = validateToolArgs(tool.params, args || {});
+  if (!validated.ok) {
+    record.error = validated.error;
+    await persistToolResult(agentId, name, args, { ok: false, error: validated.error }, context, record);
+    return { ok: false, error: validated.error, record };
+  }
+  args = validated.args;
+  record.arguments = args;
 
   // Sandbox policy is checked BEFORE the approval prompt. A command the policy
   // forbids must never reach the user as something they can click through:
@@ -156,7 +156,7 @@ async function runToolCall(agentId, name, args, context) {
   const sandboxDenial = enforceSandbox(name, args, settings, context);
   if (sandboxDenial) {
     record.error = sandboxDenial;
-    await persistToolResult(agentId, name, args, { ok: false, error: sandboxDenial }, context);
+    await persistToolResult(agentId, name, args, { ok: false, error: sandboxDenial }, context, record);
     return { ok: false, error: sandboxDenial, record };
   }
 
@@ -166,6 +166,7 @@ async function runToolCall(agentId, name, args, context) {
   const needsFinalPrompt = needsPrompt && !(approvalMode === 'auto-read' && tool.class === 'read');
 
   if (needsFinalPrompt && typeof context.requestApproval === 'function') {
+    auditEvent(context.auditLog, 'approval.request', { agent: agentId, detail: { tool: name, class: tool.class } });
     const approval = context.requestApproval({
       agentId,
       tool: name,
@@ -180,10 +181,12 @@ async function runToolCall(agentId, name, args, context) {
       if (context.signal?.aborted) abort();
     });
     context.signal?.throwIfAborted();
+    auditEvent(context.auditLog, 'approval.decision', { agent: agentId, allowed: !!approved,
+      reason: approved ? 'approved' : 'declined', detail: { tool: name, class: tool.class } });
     if (!approved) {
       const error = `The user declined the ${name} action.`;
       record.error = error;
-      await persistToolResult(agentId, name, args, { ok: false, error }, context);
+      await persistToolResult(agentId, name, args, { ok: false, error }, context, record);
       return { ok: false, error, record };
     }
   }
@@ -192,7 +195,12 @@ async function runToolCall(agentId, name, args, context) {
   try {
     // Controls may change while an approval dialog is open.
     if (disabledTools(getSettings(), TOOLS).includes(name)) throw new Error(`The ${name} tool is now disabled.`);
-    if (name.startsWith('reach.')) {
+    const cached = context.readMemo?.get(name, args);
+    if (cached) {
+      result = cached;
+      record.cached = true;
+      context.onCache?.(name);
+    } else if (name.startsWith('reach.')) {
       if (typeof context.reachExecutor !== 'function') throw new Error('Reach tools are not available.');
       result = await context.reachExecutor(name, args || {}, context);
     } else if (typeof tool.execute === 'function') {
@@ -204,25 +212,43 @@ async function runToolCall(agentId, name, args, context) {
     result = { ok: false, error: String(e && e.message || e) };
   }
 
-  const budget = budgetFor(name);
-  const serialized = JSON.stringify(result, null, 2);
-  const truncated = serialized.length > budget ? JSON.parse(JSON.stringify(result)) : result;
-  if (serialized.length > budget) {
-    // Truncate the largest string fields first.
-    for (const key of Object.keys(truncated)) {
-      if (typeof truncated[key] === 'string') truncated[key] = truncate(truncated[key], Math.floor(budget / 2));
-    }
-  }
+  // E3: bound the WHOLE result — arrays and nested objects included — against
+  // ONE total budget, and use that same bounded value for both the returned
+  // object and the persisted message. The previous code truncated only
+  // top-level strings, left collections untouched, and applied the cut to the
+  // caller's copy while persisting the full shape.
+  const { value: truncated, bytes, truncated: wasTruncated, elided } = boundResult(result, { budget: budgetFor(name) });
+  if (!record.cached) context.readMemo?.set(name, args, truncated);
 
   record.ok = !!result.ok;
   if (result.error) record.error = result.error;
-  await persistToolResult(agentId, name, args, truncated, context);
+  if (wasTruncated) {
+    // Surface the loss so the model and the UI can see it was bounded rather
+    // than assuming the result is complete (see bounded-result.cjs).
+    record.bounded = { bytes, elidedItems: elided.total };
+    context.sendEvent?.('agent:tool-bounded', { agentId, tool: name, bytes, elidedItems: elided.total });
+  }
+  await persistToolResult(agentId, name, args, truncated, context, record);
+  if (tool.class === 'write' && truncated.ok && !truncated.pending && !truncated.unchanged) {
+    auditEvent(context.auditLog, 'tool.allow', { agent: agentId, allowed: true,
+      detail: { tool: name, path: truncated.path || args.path || null, cached: !!record.cached } });
+  }
   return { ...truncated, record };
 }
 
-async function persistToolResult(agentId, name, args, result, context) {
+async function persistToolResult(agentId, name, args, result, context, record = null) {
+  // The loop appends the complete, fenced tool-summary after a batch. Keep a
+  // small provenance record here for interrupted batches and audit history;
+  // storing the body twice bloats saved conversations and compaction input.
+  const digest = createHash('sha256').update(JSON.stringify(result)).digest('hex');
+  const argumentsSha256 = createHash('sha256').update(JSON.stringify(args || {})).digest('hex');
+  context.journal?.append('evidence', { agentId, tool: name, argumentsSha256,
+    ok: !!result.ok, pending: !!result.pending, editId: result.editId || null,
+    path: String(result.path || args?.path || args?.filePath || '').slice(0, 300),
+    elapsedMs: Math.max(0, Date.now() - (record?.timestamp || Date.now())), resultSha256: digest });
   if (!context.agentStore || !agentId) return;
-  const content = `Tool ${name}(${JSON.stringify(args)}) → ${result.ok ? 'ok' : 'error'}\n${JSON.stringify(result, null, 2)}`;
+  const content = JSON.stringify({ tool: name, ok: !!result.ok, argumentsSha256, resultSha256: digest,
+    error: result.error ? String(result.error).slice(0, 500) : undefined });
   context.agentStore.appendMessage(agentId, {
     role: 'tool',
     tool_call_id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,

@@ -18,6 +18,19 @@
  * event-driven (zero polling interval).
  */
 
+/* E1: a provider that is merely rate limiting must PAUSE a member, not
+ * quarantine it for the rest of the run. Rate-limit evidence is therefore split
+ * out before the hard-failure test and given its own recoverable class.
+ *
+ * The predicate is imported rather than re-written: retry.cjs already owns the
+ * definition of "the provider is telling us to slow down", and a second regex
+ * here would drift from it. It is deliberately narrow — an explicit 429, a
+ * Retry-After instruction, or literal rate-limit wording — because the bare
+ * `503` in HARD_FAILURE_RE is a locked contract (agent.test.cjs proves a 503
+ * provider route quarantines).
+ *
+ * retry.cjs is a leaf (no engine imports), so this cannot create a cycle. */
+const { isRateLimitEvidence } = require('./retry.cjs');
 const HARD_FAILURE_RE = /(?:endpoint returned http\s+[45]\d\d|\b(?:401|403|404|408|422|429|500|502|503|504)\b|quota|rate[ -]?limit|no backend|model[^\n]*(?:not found|unavailable)|service unavailable|invalid[^\n]*(?:api[ -]?key|access[ -]?key|token)|unauthori[sz]ed|forbidden|billing|insufficient[^\n]*(?:credit|fund)|model request exceeded|request timed out|timeout[^\n]*seconds)/i;
 const TRANSIENT_FAILURE_RE = /(?:econn|fetch failed|socket|network|connection (?:closed|reset)|temporar)/i;
 const PROTOCOL_FAILURE_RE = /(?:usable action|structured recovery|invalid[^\n]*action|action[^\n]*(?:schema|protocol)|round limit|executable actions)/i;
@@ -30,10 +43,26 @@ const DEFAULT_NURSE_POLICY = Object.freeze({
   priorWakePenalty: 3,
 });
 
-const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator - 3*priorWakes; wake>=8; providerOrTransport=-Infinity';
+const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator - 3*priorWakes; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable';
 
+/*
+ * Order matters. Rate-limit evidence is checked FIRST because HARD_FAILURE_RE
+ * also matches `429` and `rate limit`, and a rate limit is the one "hard" text
+ * that is genuinely temporary: quarantining on it throws away a perfectly good
+ * crew member for a condition that clears on its own.
+ *
+ * A `503` with no rate-limit evidence still falls through to hard-provider, so
+ * a dead provider route is not retried forever by the Nurse.
+ */
 function classifyFailure(error) {
   const text = String(error || '');
+  if (isRateLimitEvidence({ message: text })) {
+    // AgentLoop has already spent its bounded provider retries by the time a
+    // terminal diagnostic reaches the Nurse. Do not wake a member into the
+    // same provider limit again; the bounded run has now failed hard.
+    if (/retry limit reached/i.test(text)) return 'hard-provider';
+    return 'rate-limited';
+  }
   if (HARD_FAILURE_RE.test(text)) return 'hard-provider';
   if (PROTOCOL_FAILURE_RE.test(text)) return 'protocol';
   if (TRANSIENT_FAILURE_RE.test(text)) return 'transport';
@@ -52,6 +81,8 @@ function fingerprint(value) {
 
 function recoveryScore({ failureKind, priorWakes = 0, sourceChars = 0, sourceIsCoordinator = false, hasNewEvidence = false } = {}, policy = DEFAULT_NURSE_POLICY) {
   if (failureKind === 'hard-provider' || failureKind === 'transport' || !hasNewEvidence) return Number.NEGATIVE_INFINITY;
+  // E1: a rate limit is recoverable, so it is scored like protocol work. The
+  // status is also marked so the UI can explain WHY a member paused.
   return 3
     + 4
     + (failureKind === 'protocol' ? 2 : 0)
