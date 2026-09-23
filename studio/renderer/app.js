@@ -78,6 +78,7 @@ const agentNameEl = $('#agent-name');
 const agentMetaEl = $('#agent-meta');
 const chatLog = $('#chat-log');
 const chatScroll = $('#chat-scroll');
+const teamDeckSlot = $('#team-deck-slot');
 const composerInput = $('#composer-input');
 const composerSuggestionsEl = $('#composer-suggestions');
 const composerSuggestionStatus = $('#composer-suggestion-status');
@@ -1126,12 +1127,13 @@ function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
 
 function renderChatHistory() {
   dismissThoughtPreview?.();
-  for (const deck of chatLog.querySelectorAll('.team-deck')) {
+  for (const deck of [...teamDeckSlot.querySelectorAll(':scope > .team-deck'), ...chatLog.querySelectorAll(':scope > .team-deck')]) {
     deck._teamDeck?.unmount();
     if (![...teamConversationViews.values()].some(run => run.wrap === deck)) deck._teamDeck?.dispose();
   }
+  teamDeckSlot.replaceChildren();
   chatLog.innerHTML = '';
-  if (!currentAgent || !currentAgent.messages) return;
+  if (!currentAgent || !currentAgent.messages) { window.ReachActivity.setTeamVisible(false); return; }
   currentAgent.messages.forEach((m, idx) => {
     if (m.role === 'system' || m.role === 'developer') return;
     if (['recovery', 'recovery-attempt', 'tool-summary'].includes(m._reachMeta?.source)) return;
@@ -1151,11 +1153,7 @@ function renderChatHistory() {
     note.textContent = `⑂ branched from "${currentAgent.name.replace(/ \(branch \d+\)$/, '')}" at message ${currentAgent.forkIndex}`;
     chatLog.insertBefore(note, chatLog.firstChild);
   }
-  const teamView = teamConversationViews.get(currentAgent.id);
-  if (teamView) {
-    chatLog.prepend(teamView.wrap);
-    teamView.deck.mount(chatScroll);
-  }
+  placeSelectedTeamDeck();
 }
 
 function renderPendingEdits() {
@@ -2679,7 +2677,22 @@ function syncSelectedTeamRun() {
     if (run !== selected) run.deck.unmount();
   }
   if (activeTeamRun?.stop) document.querySelector('header .statusbar').prepend(activeTeamRun.stop);
+  placeSelectedTeamDeck();
   invalidateComposerCatalog();
+}
+
+function placeSelectedTeamDeck() {
+  const selected = currentAgent ? teamConversationViews.get(currentAgent.id) : null;
+  const inSlot = !!selected && (selected === activeTeamRun || currentAgent.settings?.teamChat?.enabled === true);
+  for (const deck of teamDeckSlot.querySelectorAll(':scope > .team-deck')) {
+    if (deck !== selected?.wrap || !inSlot) { deck._teamDeck?.unmount(); deck.remove(); }
+  }
+  window.ReachActivity.setTeamVisible(inSlot);
+  if (!selected) return;
+  const host = inSlot ? teamDeckSlot : chatLog;
+  if (selected.wrap.parentElement !== host) host.prepend(selected.wrap);
+  if (inSlot) selected.deck.mount(chatScroll);
+  else selected.deck.unmount();
 }
 
 async function loadCreatePage() {
@@ -3290,7 +3303,7 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id, { a
     if (!autoRouted) currentAgent.settings = { ...currentAgent.settings, teamChat: { ...currentAgent.settings?.teamChat, enabled: true, teamId: team.id } };
     appendChatMessage('user', task);
   }
-  const host = boundToCurrent ? chatLog : !agentId ? noAgent : null;
+  const host = boundToCurrent ? teamDeckSlot : !agentId ? noAgent : null;
   if (!boundToCurrent && !currentAgent) { noAgent.classList.remove('hidden'); agentView.classList.add('hidden'); }
   const teamKey = team.id || `${team.name}:${team.mode}`;
   const existing = previous?.wrap.dataset.teamKey === teamKey ? previous.wrap : null;
@@ -3330,7 +3343,7 @@ function startTeamRunView(teamRunId, team, task, agentId = currentAgent?.id, { a
   if (host) {
     const scroller = boundToCurrent ? chatScroll : host;
     scroller.scrollTop = 0;
-    run.deck.mount(scroller);
+    if (!boundToCurrent) run.deck.mount(scroller);
   }
 }
 

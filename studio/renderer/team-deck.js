@@ -51,11 +51,9 @@
       const top = viewport.top + scroller.clientTop;
       const offset = top - origin.top;
       const delta = scroller.scrollTop - lastScroll;
-      // Follow through the first part of the conversation. Thereafter, even a
-      // small upward scroll recalls this SAME rail, beyond the deck's end too.
-      const cutoff = Math.max(260, scroller.clientHeight * .6);
-      if (offset <= cutoff) concealed = false;
-      else if (scrolled && Math.abs(delta) >= 1) concealed = delta > 0;
+      // The same rail returns on an upward scroll, even beyond the deck's end.
+      if (scroller.scrollTop <= 8 || offset <= 0) concealed = false;
+      else if (scrolled && Math.abs(delta) >= 2) concealed = delta > 0;
       lastScroll = scroller.scrollTop;
       const floating = offset > 0;
       anchor.style.height = floating ? nav.offsetHeight + 'px' : '';

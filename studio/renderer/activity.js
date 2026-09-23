@@ -4,6 +4,23 @@
   let selected = null, frame = false;
   const panel = document.querySelector('#agent-activity');
   const badge = document.querySelector('#activity-global');
+  const scroller = document.querySelector('#chat-scroll');
+  let teamVisible = false, concealed = false, lastScroll = scroller.scrollTop;
+  function updateVisibility() {
+    const unavailable = teamVisible || !states.get(selected);
+    const hidden = !unavailable && concealed && !panel.querySelector(':focus-visible');
+    panel.classList.toggle('is-concealed', hidden);
+    panel.inert = unavailable || hidden;
+    panel.setAttribute('aria-hidden', String(unavailable || hidden));
+  }
+  scroller.addEventListener('scroll', () => {
+    const next = scroller.scrollTop, delta = next - lastScroll;
+    if (next <= 8) concealed = false;
+    else if (Math.abs(delta) >= 2) concealed = delta > 0;
+    lastScroll = next;
+    updateVisibility();
+  }, { passive: true });
+  panel.addEventListener('focusout', () => queueMicrotask(updateVisibility));
   function createView(host) {
     host.classList.add('activity-panel');
     host.innerHTML = '<div class="activity-head"><span class="activity-spinner" aria-hidden="true"></span><strong class="activity-title" role="status" aria-live="polite"></strong><span class="activity-time"></span></div><p class="activity-note"></p><div class="activity-progress" aria-hidden="true"><i></i></div><details class="activity-details"><summary>Agent activity <span class="activity-count"></span></summary><div class="activity-steps" tabindex="0" role="region" aria-label="Agent activity steps"></div></details>';
@@ -13,7 +30,7 @@
   function text(el, value) { if (el.textContent !== value) el.textContent = value; }
   function paint(view, state, now, key) {
     const host = view.host;
-    host.classList.toggle('hidden', !state);
+    host.classList.toggle('hidden', !state || view === mainView && teamVisible);
     if (!state) return;
     const summary = model.summary(state, now);
     view.card?._teamDeck?.update(view.card, state, now);
@@ -57,6 +74,7 @@
     frame = false;
     const now = Date.now();
     paint(mainView, states.get(selected), now, selected);
+    updateVisibility();
     for (const [key, view] of views) {
       if (!view.host.isConnected) {
         // Switching conversations temporarily detaches a live team. Its tabs
@@ -84,8 +102,16 @@
   }
   function select(agent) {
     selected = agent?.id || null;
+    lastScroll = scroller.scrollTop;
+    concealed = false;
     if (agent?.activity && (!states.has(selected) || agent.activity.updatedAt > states.get(selected).updatedAt)) states.set(selected, structuredClone(agent.activity));
     if (agent?.runState?.status === 'running' && !states.has(selected)) ingest({ type:'run-state', status:'running', agentId:selected });
+    schedule();
+  }
+  function setTeamVisible(visible) {
+    teamVisible = !!visible;
+    panel.classList.toggle('hidden', teamVisible || !states.get(selected));
+    updateVisibility();
     schedule();
   }
   function team(event, card) {
@@ -110,6 +136,6 @@
       }
     }
   }
-  window.ReachActivity = { ingest, select, team };
+  window.ReachActivity = { ingest, select, team, setTeamVisible };
   setInterval(() => { if ([...states.values()].some(s => s?.status === 'running')) schedule(); }, 1000);
 })();

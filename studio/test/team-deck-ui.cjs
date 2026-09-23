@@ -53,6 +53,8 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`document.querySelector('#agent-model-info').open`), false);
   assert.equal(await run(`document.querySelector('#agent-name').textContent`), 'Team interface preview');
   await run(`document.querySelector('#agent-model-info > summary').click()`);
+  await run(`ReachActivity.ingest({type:'run-state',status:'paused',reason:'Fixture',agentId:currentAgent.id})`);
+  await until(`!document.querySelector('#agent-activity').classList.contains('hidden')`, 'Individual activity did not occupy the shared slot');
   await run(`(() => {
     startTeamRunView('deck-preview', { name: 'Team 1', mode: 'parallel' }, 'Repository cleanup · isolated preview');
     window.previewRun = activeTeamRun;
@@ -91,6 +93,8 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
     chatScroll.scrollTop = 0;
   })()`);
   await until(`document.querySelectorAll('.team-tab[data-status=working]').length === 2 && document.querySelector('.team-tab[data-status=waiting]')`, 'Tab states did not render');
+  assert.equal(await run(`document.querySelector('#team-deck-slot').contains(previewRun.wrap)`), true, 'Live team deck uses the individual activity slot');
+  assert.equal(await run(`document.querySelector('#agent-activity').classList.contains('hidden')`), true, 'Individual activity yields to the live team');
   assert.equal(await run(`document.querySelectorAll('.member-card:not([hidden])').length`), 1);
   assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-name').textContent`), 'Seeker');
   assert.equal(await run(`document.querySelector('.team-tab[aria-selected=true] .team-tab-step').textContent`), 'Step 5');
@@ -114,7 +118,11 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   })()`);
   assert.ok(sticky.amount > 0, 'Fixture must scroll to verify the stationary team information');
   assert.ok(sticky.navTop >= sticky.scrollTop - 1 && sticky.navTop <= sticky.scrollTop + 2, 'Team information stays pinned while the conversation scrolls');
+  await until(`previewRun.wrap.querySelector('.team-deck-nav').classList.contains('is-concealed')`, 'Team tabs did not hide on downward scroll');
+  await run(`chatScroll.scrollTop=Math.max(0,chatScroll.scrollTop-60)`);
+  await until(`!previewRun.wrap.querySelector('.team-deck-nav').classList.contains('is-concealed')`, 'Team tabs did not return on upward scroll');
   await run(`chatScroll.scrollTop=0`);
+  await until(`!previewRun.wrap.querySelector('.team-deck-nav').classList.contains('is-concealed')`, 'Team tabs stayed hidden at the top');
   assert.equal(await run(`previewRun.wrap.querySelector('.team-deck-nurse').hidden`), true);
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=working] .team-orbit-icon')).animationName`), 'activity-spin');
   assert.equal(await run(`getComputedStyle(document.querySelector('.team-tab[data-status=waiting] .team-orbit-icon')).animationName`), 'none');
@@ -207,7 +215,7 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
     const geometry = await run(`(() => { const send = document.querySelector('#btn-send').getBoundingClientRect(); const deck = previewRun.wrap.getBoundingClientRect(); const panel = previewRun.cards.get(2).getBoundingClientRect(); return { overflow:document.body.scrollWidth>innerWidth, sendBottom:send.bottom, height:innerHeight, deck:deck.width, panel:panel.width, tabs:previewRun.wrap.querySelector('.team-tabs').clientWidth }; })()`);
     assert.equal(geometry.overflow, false);
     assert.ok(geometry.sendBottom <= geometry.height);
-    assert.ok(Math.abs(geometry.deck - geometry.panel) <= 1);
+    assert.ok(geometry.deck >= geometry.panel && geometry.deck - geometry.panel <= 32, 'The member panel fits the shared status frame');
     assert.ok(geometry.tabs > 150);
     await capture('narrow-' + theme);
   }
@@ -286,6 +294,15 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
   assert.equal(await run(`previewRun.wrap.querySelectorAll('.team-tab[data-status=working]').length`), 0);
   assert.equal(await run(`previewRun.cards.get(2).dataset.teamStatus`), 'error');
   assert.equal(await run(`previewRun.wrap.querySelectorAll('.member-control:not(:disabled)').length`), 0);
+  await run(`currentAgent.settings.teamChat={...currentAgent.settings.teamChat,enabled:false}; placeSelectedTeamDeck(); chatScroll.scrollTop=0`);
+  assert.equal(await run(`chatLog.contains(previewRun.wrap)`), true, 'Finished team work remains in chat history when Teams is off');
+  await until(`!document.querySelector('#agent-activity').classList.contains('hidden')`, 'Individual activity did not return when Teams was turned off');
+  await run(`chatScroll.scrollTop=180`);
+  await until(`document.querySelector('#agent-activity').classList.contains('is-concealed')`, 'Individual activity did not hide on downward scroll');
+  await run(`chatScroll.scrollTop=Math.max(0,chatScroll.scrollTop-60)`);
+  await until(`!document.querySelector('#agent-activity').classList.contains('is-concealed')`, 'Individual activity did not return on upward scroll');
+  const activityPosition = await run(`({top:document.querySelector('#agent-activity').getBoundingClientRect().top,viewport:chatScroll.getBoundingClientRect().top})`);
+  assert.ok(Math.abs(activityPosition.top - activityPosition.viewport) <= 2, 'Individual activity returns at the top of the scrolling conversation');
   await run(`previewRun.deck.select(previewRun.cards.get(3))`);
   assert.equal(await run(`previewRun.cards.get(3).querySelector('.member-body').textContent`), 'Validation complete. All checks passed.');
   assert.equal(await run(`previewRun.wrap.querySelectorAll('.member-card:not([hidden])').length`), 1);
@@ -302,7 +319,7 @@ const timeout = setTimeout(() => { console.error('Team deck UI timed out'); app.
     startTeamRunView('deck-followup',{name:'Team 1',mode:'parallel'},'Continue with a smaller roster');
     handleTeamEvent({teamRunId:'deck-followup',type:'start',members:[{index:0,name:'CEO',model:'qwen-27b'},{index:1,name:'Thinker',model:'qwen-35b'}]});
   })()`);
-  assert.equal(await run(`chatLog.querySelectorAll('.team-deck').length`), 1);
+  assert.equal(await run(`document.querySelector('#team-deck-slot').querySelectorAll('.team-deck').length`), 1);
   assert.equal(await run(`activeTeamRun.wrap === previewRun.wrap && activeTeamRun.wrap.querySelector('.team-deck-nav') === retainedRail && activeTeamRun.wrap.querySelector('.team-tab') === retainedTab`), true);
   assert.equal(await run(`activeTeamRun.wrap.querySelectorAll('.team-tab').length`), 2, 'Removed workers must not linger in the current rail');
   assert.equal(await run(`retainedReview.element.isConnected`), true, 'Pending review nodes survive deck reuse');

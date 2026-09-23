@@ -58,7 +58,10 @@
     try {
       const result = await reachApi.agents.update(id, { settings: { teamChat: next } });
       if (!result.ok) throw new Error(result.err);
-      if (currentAgent?.id === id) currentAgent.settings = { ...currentAgent.settings, teamChat: next };
+      if (currentAgent?.id === id) {
+        currentAgent.settings = { ...currentAgent.settings, teamChat: next };
+        placeSelectedTeamDeck();
+      }
     } catch (error) { showNotice(error.message); }
     finally { saving = false; updateSendControl(); }
   }

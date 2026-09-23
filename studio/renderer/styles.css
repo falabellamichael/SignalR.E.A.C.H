@@ -1151,7 +1151,11 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 .chat-status .context-bar { padding: var(--chat-context-padding); flex-wrap: nowrap; }
 #agent-context { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #btn-agent-compact { flex-shrink: 0; }
-#agent-activity { padding: var(--chat-status-padding); display: flex; flex-direction: column; min-height: 0; }
+#agent-activity { position: sticky; top: 0; z-index: 4; padding: var(--chat-status-padding); display: flex; flex-direction: column; min-height: 0; }
+#agent-activity.is-concealed { visibility: hidden; pointer-events: none; }
+#team-deck-slot { min-width: 0; }
+#team-deck-slot:empty { display: none; }
+#team-deck-slot > .team-deck { width: 100%; box-sizing: border-box; padding: 0 14px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
 #agent-activity > :not(.activity-details) { flex-shrink: 0; }
 #agent-activity .activity-note { -webkit-line-clamp: var(--chat-note-lines); }
 #agent-activity .activity-progress { margin: var(--chat-status-gap) 0; }
