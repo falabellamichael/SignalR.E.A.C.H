@@ -14,7 +14,7 @@ function textContent(value) {
 }
 
 async function readChatResponse(response, { stream = false, onText = () => {}, onReasoning = () => {}, onProgress = () => {}, signal } = {}) {
-  const result = { content: '', reasoningChars: 0, finishReason: null, usage: null, error: null, toolCalls: false };
+  const result = { content: '', reasoning: '', reasoningChars: 0, finishReason: null, usage: null, error: null, toolCalls: false };
   const native = new Map();
   const accept = data => {
     if (data.error) {
@@ -28,6 +28,7 @@ async function readChatResponse(response, { stream = false, onText = () => {}, o
     const message = choice.delta || choice.message || {};
     const reasoning = textContent(message.reasoning_content) || textContent(message.reasoning);
     if (reasoning) {
+      result.reasoning += reasoning;
       result.reasoningChars += reasoning.length;
       onReasoning(result.reasoningChars);
     }

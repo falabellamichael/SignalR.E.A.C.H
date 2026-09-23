@@ -622,7 +622,56 @@ function timeStamp() {
   return d.toTimeString().slice(0, 8);
 }
 
-function appendChatMessage(role, text, msgIndex = null) {
+function appendThoughtIndicator(bubble, thought) {
+  const text = String(thought || '').trim();
+  if (!text || bubble.dataset.hasThought === 'true') return;
+  bubble.dataset.hasThought = 'true';
+
+  const detail = document.createElement('div');
+  detail.className = 'thought-detail';
+  detail.textContent = text;
+  detail.hidden = true;
+
+  const toggles = [];
+  const makeToggle = () => {
+    const hover = document.createElement('span');
+    hover.className = 'thought-hover';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'thought-icon';
+    button.textContent = '💭';
+    button.setAttribute('aria-label', 'Show model reasoning');
+    button.setAttribute('aria-expanded', 'false');
+    const preview = document.createElement('span');
+    preview.className = 'thought-hover-box';
+    preview.setAttribute('role', 'tooltip');
+    preview.textContent = text;
+    hover.append(button, preview);
+    toggles.push(button);
+    return hover;
+  };
+  const lead = document.createElement('span');
+  lead.className = 'thought-lead';
+  lead.append(makeToggle(), document.createTextNode('... '));
+  const firstBlock = [...bubble.children].find(child => !child.classList.contains('msg-ts'));
+  if (firstBlock?.tagName === 'P') firstBlock.prepend(lead);
+  else bubble.insertBefore(lead, firstBlock || bubble.firstChild);
+
+  const trail = document.createElement('span');
+  trail.className = 'thought-trail';
+  trail.append(document.createTextNode(' ...'), makeToggle());
+  const timestamp = bubble.querySelector(':scope > .msg-ts');
+  bubble.insertBefore(trail, timestamp);
+  bubble.insertAdjacentElement('afterend', detail);
+
+  const toggle = () => {
+    detail.hidden = !detail.hidden;
+    for (const button of toggles) button.setAttribute('aria-expanded', String(!detail.hidden));
+  };
+  for (const button of toggles) button.addEventListener('click', toggle);
+}
+
+function appendChatMessage(role, text, msgIndex = null, thought = '') {
   const follow = role === 'user' || shouldFollowChat();
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
@@ -645,6 +694,7 @@ function appendChatMessage(role, text, msgIndex = null) {
     div.appendChild(fork);
   }
   chatLog.appendChild(div);
+  if (role === 'assistant') appendThoughtIndicator(div, thought);
   followChatTail(follow);
   return div;
 }
@@ -1019,7 +1069,7 @@ function renderChatHistory() {
         String(m.content).includes('→ error') ? 'error' : null, m.content);
     } else {
       const text = m._reachMeta?.display ?? m.content;
-      if (text) appendChatMessage(m.role, text, m.role === 'user' ? idx : null);
+      if (text) appendChatMessage(m.role, text, m.role === 'user' ? idx : null, m._reachMeta?.thought);
       if (m._reachMeta?.question) appendQuestion(m._reachMeta.question);
     }
   });
@@ -1480,8 +1530,9 @@ function handleAgentEvent(ev) {
     case 'message-end':
       if (streamBubble) {
         streamBubble.innerHTML = md.render(ev.content || '');
-        if (!ev.content) streamBubble.classList.add('hidden');
+        if (!ev.content && !ev.thought) streamBubble.classList.add('hidden');
         streamBubble.classList.remove('streaming');
+        if (!ev.provisional) appendThoughtIndicator(streamBubble, ev.thought);
         const ts = document.createElement('span');
         ts.className = 'msg-ts';
         ts.textContent = timeStamp();

@@ -661,8 +661,9 @@ class AgentLoop {
 
         let content = reply.content || '';
         if (!features(this._settings()).agent) {
-          this._emit('message-end', { role: 'assistant', content });
-          this.store.appendMessage(this.agentId, { role: 'assistant', content, _reachMeta: { display: content } });
+          this._emit('message-end', { role: 'assistant', content, thought: reply.reasoning || '' });
+          this.store.appendMessage(this.agentId, { role: 'assistant', content,
+            _reachMeta: { display: content, ...(reply.reasoning?.trim() ? { thought: reply.reasoning } : {}) } });
           runState = { ...runState, status: 'completed', reason: '' };
           break;
         }
@@ -694,9 +695,11 @@ class AgentLoop {
         // task_complete.summary) — store the display so lastAssistantText and
         // the member harvest see the real final answer.
         const storedContent = content.trim() ? content : (parsed.display || content);
-        this._emit('message-end', { role: 'assistant', content: parsed.display, question: parsed.confirm, provisional });
+        this._emit('message-end', { role: 'assistant', content: parsed.display, question: parsed.confirm,
+          thought: reply.reasoning || '', provisional });
         this.store.appendMessage(this.agentId, { role: 'assistant', content: storedContent,
           _reachMeta: { display: parsed.display, question: parsed.confirm || null,
+            ...(reply.reasoning?.trim() ? { thought: reply.reasoning } : {}),
             ...(reply.budgetFallback ? { source: 'budget-checkpoint' } : provisional ? { source: 'recovery-attempt' } : {}) } });
         runState = decision.state;
         this._saveRunState(runState);

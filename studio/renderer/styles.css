@@ -628,6 +628,28 @@ body.resizing-y, body.resizing-y * {
 /* chat polish */
 .msg-ts { display: block; font-size: 10px; color: var(--muted); margin-top: 6px; }
 .chat-msg.streaming { border-color: var(--gold-dim); }
+.thought-lead, .thought-trail { color: var(--muted); font-size: 11px; line-height: 1; white-space: nowrap; }
+.thought-icon {
+  appearance: none; border: 0; background: transparent; color: inherit; cursor: pointer;
+  font: inherit; font-size: 11px; line-height: 1; padding: 0 2px; vertical-align: baseline;
+}
+.thought-icon:hover, .thought-icon[aria-expanded="true"] { color: var(--gold); }
+.thought-hover { position: relative; display: inline-block; }
+.thought-hover-box {
+  display: none; position: absolute; z-index: 80; left: 0; bottom: 100%;
+  width: min(420px, calc(100vw - 48px)); max-height: min(65vh, 480px); overflow: auto;
+  padding: 9px 11px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); color: var(--text); box-shadow: 0 8px 24px #0008;
+  font-size: 11px; font-weight: 400; line-height: 1.5; text-align: left;
+  white-space: pre-wrap; overflow-wrap: anywhere; cursor: text;
+}
+.thought-hover:hover .thought-hover-box, .thought-hover:focus-within .thought-hover-box { display: block; }
+.thought-trail .thought-hover-box { left: auto; right: 0; }
+.thought-detail {
+  align-self: flex-start; max-width: 78%; padding: 7px 10px; border-left: 2px solid var(--gold-dim);
+  border-radius: 5px; background: var(--panel); color: var(--muted); font-size: 11px;
+  line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
+}
 :is(.chat-msg, .member-body) pre.md-code {
   position: relative; background: var(--surface); border: 1px solid var(--line);
   border-radius: 8px; padding: 8px; margin: 6px 0; overflow-x: auto; white-space: pre;
