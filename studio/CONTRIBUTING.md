@@ -5,12 +5,14 @@ Use Node.js 24 or newer and npm. From the repository root:
 ```sh
 cd studio
 npm ci
+npx install-electron
 npm test
 npm start
 ```
 
 `npm test` recursively parses the source and discovers `test/**/*.test.cjs`.
 Tests use temporary projects and mock endpoints; no provider key is required.
+
 `npm run smoke` builds the editor and exercises the real Electron app with an
 isolated temporary profile. It opens windows and needs a graphical session
 (`xvfb-run -a npm run smoke` on headless Linux). Never point tests at your real
@@ -20,6 +22,25 @@ restart controls; `npm run test:workspace` covers workspace UI.
 `npm run test:coverage` reports coverage of executed agent/browser/renderer
 modules. It does not measure the entire Electron application or replace smoke
 tests. The CI baseline is informational, not a coverage-percentage gate.
+
+## Installing the Electron binary
+
+`npx install-electron` is required after `npm ci`. Electron 44 publishes no
+`install` script (`scripts` is empty in the registry manifest) and exposes the
+download as the separate `install-electron` bin instead, so nothing fetches
+`node_modules/electron/dist` during install. Without this step `npm ci` reports
+success and leaves a tree that cannot launch: `electron .` falls through to
+plain Node and fails with
+`does not provide an export named 'BrowserWindow'`.
+
+This is not a sandbox or `ignore-scripts` problem, so an `allowScripts` entry in
+`package.json` does not help — there is no script to allow. Run the command (or
+have it cached from a previous install) before `npm start` or `npm run smoke`.
+
+On Windows, launch from a shell that does not set `ELECTRON_RUN_AS_NODE`. VS
+Code's integrated terminal injects `ELECTRON_RUN_AS_NODE=1`, which makes
+`electron.exe` behave as plain Node and produces the same import error. `npm
+start` and `npm run smoke` inherit it; clear it for the process.
 
 ## Extension points
 

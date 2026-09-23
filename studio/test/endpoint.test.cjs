@@ -17,6 +17,22 @@ test('endpoint rejects non-HTTP schemes and embedded credentials', async () => {
   }
 });
 
+/* Regression: a pasted endpoint that already carries a version segment AND a
+ * trailing API path used to gain a second version segment, because the /v1$
+ * strip could not match a path ending in "/models". The result was
+ * ".../v1/models/v1" and an HTTP 404 from the relay. */
+test('endpoint collapses a pasted API path to a single version root', async () => {
+  for (const raw of [
+    'https://relay.test/v1/models',
+    'https://relay.test/v1/models/',
+    'https://relay.test/v1/chat/completions',
+    'https://relay.test/v1/completions',
+    'https://relay.test/models',
+  ]) {
+    assert.equal(await resolveEndpoint(raw), 'https://relay.test/v1', raw);
+  }
+});
+
 test('pointer resolution normalizes .txt/v1, follows chains and rejects loops and HTTP failures', async t => {
   let base;
   const hits = [];
