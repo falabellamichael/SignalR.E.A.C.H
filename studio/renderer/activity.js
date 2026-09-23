@@ -5,10 +5,10 @@
   const panel = document.querySelector('#agent-activity');
   const badge = document.querySelector('#activity-global');
   const scroller = document.querySelector('#chat-scroll');
-  let teamVisible = false, concealed = false, lastScroll = scroller.scrollTop;
+  let teamVisible = false, concealed = false, restoringDetails = false, lastScroll = scroller.scrollTop;
   function updateVisibility() {
     const unavailable = teamVisible || !states.get(selected);
-    const hidden = !unavailable && concealed && !panel.querySelector(':focus-visible');
+    const hidden = !unavailable && concealed && !restoringDetails && !panel.querySelector(':focus-visible');
     panel.classList.toggle('is-concealed', hidden);
     panel.inert = unavailable || hidden;
     panel.setAttribute('aria-hidden', String(unavailable || hidden));
@@ -27,6 +27,19 @@
     return { host, rows: new Map() };
   }
   const mainView = createView(panel);
+  panel.querySelector('.activity-details > summary').addEventListener('click', () => {
+    // Expanding the sticky panel can move the scroll anchor. Keep the user's
+    // reading position so that layout movement is not treated as a scroll down.
+    const top = scroller.scrollTop;
+    restoringDetails = true;
+    requestAnimationFrame(() => {
+      scroller.scrollTop = top;
+      lastScroll = scroller.scrollTop;
+      concealed = false;
+      restoringDetails = false;
+      updateVisibility();
+    });
+  });
   function text(el, value) { if (el.textContent !== value) el.textContent = value; }
   function paint(view, state, now, key) {
     const host = view.host;
