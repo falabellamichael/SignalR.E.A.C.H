@@ -79,6 +79,17 @@ node tools/check-plan-baseline.cjs --write    # regenerate after your change
 node tools/count-plan-status.cjs              # DONE/PARTIAL/TODO counts
 ```
 
+Enable the repository hooks once per clone and the regenerate step happens for
+you — `.githooks/pre-commit` runs the generator and stages the plan, so the
+baseline cannot fall a commit behind the tree:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+CI stays the backstop, because the hooks are opt-in. Forgetting to enable them
+fails the build exactly as before, rather than landing a stale number.
+
 Flipping an item's status requires re-running the counter too: the
 Status-at-a-Glance table is checked against the item rows, so a hand-edited count
 is a failing test rather than a wrong document.
