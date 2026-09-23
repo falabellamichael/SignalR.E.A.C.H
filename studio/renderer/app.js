@@ -622,6 +622,82 @@ function timeStamp() {
   return d.toTimeString().slice(0, 8);
 }
 
+let dismissThoughtPreview = null;
+function attachThoughtPreview(button, text) {
+  let preview = null;
+  let hideTimer = null;
+  let overButton = false;
+  let overPreview = false;
+  let resizeObserver = null;
+
+  const place = () => {
+    if (!preview?.isConnected) return;
+    const anchor = button.getBoundingClientRect();
+    const scroll = chatScroll.getBoundingClientRect();
+    if (anchor.bottom < scroll.top || anchor.top > scroll.bottom) { hide(); return; }
+
+    const leftEdge = Math.max(12, scroll.left + 8);
+    const rightEdge = Math.min(window.innerWidth - 12, scroll.right - 8);
+    const width = Math.min(420, rightEdge - leftEdge);
+    if (width < 80) { hide(); return; }
+    preview.style.width = `${width}px`;
+    preview.style.maxHeight = '480px';
+    const desiredHeight = preview.getBoundingClientRect().height;
+    const gap = 6;
+    const above = Math.max(0, anchor.top - 12 - gap);
+    const below = Math.max(0, window.innerHeight - 12 - anchor.bottom - gap);
+    const showAbove = above >= desiredHeight || (below < desiredHeight && above >= below);
+    preview.style.maxHeight = `${Math.min(480, showAbove ? above : below)}px`;
+    const height = preview.getBoundingClientRect().height;
+    const left = Math.max(leftEdge, Math.min(anchor.left, rightEdge - width));
+    const top = showAbove ? anchor.top - gap - height : anchor.bottom + gap;
+    preview.style.left = `${left}px`;
+    preview.style.top = `${Math.max(12, Math.min(top, window.innerHeight - 12 - height))}px`;
+    preview.style.visibility = 'visible';
+  };
+  const hide = () => {
+    clearTimeout(hideTimer);
+    preview?.remove();
+    preview = null;
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    chatScroll.removeEventListener('scroll', place);
+    window.removeEventListener('scroll', place);
+    window.removeEventListener('resize', place);
+    if (dismissThoughtPreview === hide) dismissThoughtPreview = null;
+  };
+  const scheduleHide = () => {
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      if (!overButton && !overPreview && document.activeElement !== button) hide();
+    }, 120);
+  };
+  const show = () => {
+    clearTimeout(hideTimer);
+    if (preview) return place();
+    dismissThoughtPreview?.();
+    preview = document.createElement('div');
+    preview.className = 'thought-hover-box';
+    preview.setAttribute('role', 'tooltip');
+    preview.textContent = text;
+    preview.style.visibility = 'hidden';
+    preview.addEventListener('mouseenter', () => { overPreview = true; clearTimeout(hideTimer); });
+    preview.addEventListener('mouseleave', () => { overPreview = false; scheduleHide(); });
+    document.body.appendChild(preview);
+    dismissThoughtPreview = hide;
+    chatScroll.addEventListener('scroll', place);
+    window.addEventListener('scroll', place);
+    window.addEventListener('resize', place);
+    resizeObserver = new ResizeObserver(place);
+    resizeObserver.observe(chatScroll);
+    place();
+  };
+  button.addEventListener('mouseenter', () => { overButton = true; show(); });
+  button.addEventListener('mouseleave', () => { overButton = false; scheduleHide(); });
+  button.addEventListener('focus', show);
+  button.addEventListener('blur', scheduleHide);
+}
+
 function appendThoughtIndicator(bubble, thought) {
   const text = String(thought || '').trim();
   if (!text || bubble.dataset.hasThought === 'true') return;
@@ -634,21 +710,15 @@ function appendThoughtIndicator(bubble, thought) {
 
   const toggles = [];
   const makeToggle = () => {
-    const hover = document.createElement('span');
-    hover.className = 'thought-hover';
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'thought-icon';
     button.textContent = '💭';
     button.setAttribute('aria-label', 'Show model reasoning');
     button.setAttribute('aria-expanded', 'false');
-    const preview = document.createElement('span');
-    preview.className = 'thought-hover-box';
-    preview.setAttribute('role', 'tooltip');
-    preview.textContent = text;
-    hover.append(button, preview);
+    attachThoughtPreview(button, text);
     toggles.push(button);
-    return hover;
+    return button;
   };
   const lead = document.createElement('span');
   lead.className = 'thought-lead';
@@ -1055,6 +1125,7 @@ function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
 }
 
 function renderChatHistory() {
+  dismissThoughtPreview?.();
   for (const deck of chatLog.querySelectorAll('.team-deck')) {
     deck._teamDeck?.unmount();
     if (![...teamConversationViews.values()].some(run => run.wrap === deck)) deck._teamDeck?.dispose();
