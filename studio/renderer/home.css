@@ -145,3 +145,19 @@
   .home-plan-grid { grid-template-columns: 1fr; }
   .home-plan-card { min-height: 130px; }
 }
+
+/* Hosted account state uses the same compact cards and gold accents as Home. */
+.home-account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.home-account-url-row { display: flex; gap: 8px; }
+.home-account-url-row input { flex: 1; }
+.home-account-url-row button { white-space: nowrap; }
+.home-wallet-address { min-height: 30px; color: var(--text); font: 11px/1.6 Consolas, 'Courier New', monospace; overflow-wrap: anywhere; }
+.home-account-models { display: flex; flex-wrap: wrap; gap: 6px; max-height: 130px; overflow: auto; }
+.home-account-models span { padding: 5px 8px; border: 1px solid var(--line); border-radius: 5px; color: var(--dim); font-size: 10px; overflow-wrap: anywhere; }
+.home-allowance-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin-top: 16px; }
+.home-allowance-grid .home-plan-card { min-height: 125px; gap: 7px; padding: 18px; }
+.home-allowance-grid h3 { font-size: clamp(18px, 1.8vw, 25px); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.home-allowance-grid span { color: var(--dim); font-size: 10px; line-height: 1.5; }
+.home-action-row [hidden] { display: none; }
+@media (max-width: 1040px) { .home-account-grid { grid-template-columns: 1fr; } .home-allowance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .home-account-url-row { flex-wrap: wrap; } .home-account-url-row input { flex-basis: 100%; } }

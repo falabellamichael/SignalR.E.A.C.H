@@ -656,9 +656,11 @@ class AdminGateTests(unittest.TestCase):
         h = self._fake({"X-Forwarded-For": "1.1.1.1, 203.0.113.9"})
         self.assertEqual(h._client_ip(), "203.0.113.9")
 
-    def test_client_ip_prefers_cf_connecting_ip(self):
-        h = self._fake({"Cf-Connecting-Ip": "203.0.113.9",
-                        "X-Forwarded-For": "1.1.1.1"})
+    def test_client_ip_prefers_proxy_appended_xff_over_caller_cf_header(self):
+        # ngrok appends the actual peer to XFF but may preserve a caller's CF
+        # header. That caller-controlled header cannot select a rate bucket.
+        h = self._fake({"Cf-Connecting-Ip": "1.1.1.1",
+                        "X-Forwarded-For": "2.2.2.2, 203.0.113.9"})
         self.assertEqual(h._client_ip(), "203.0.113.9")
 
     def test_ip_in_list_cidr_and_exact(self):
