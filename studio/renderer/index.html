@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="workspace.css" />
   <link rel="stylesheet" href="studio-prd.css" />
   <link rel="stylesheet" href="team-deck.css" />
+  <link rel="stylesheet" href="home.css" />
 </head>
 <body>
   <header>
@@ -18,7 +19,8 @@
       <h1>Reach Studio</h1>
     </div>
     <nav class="tabs">
-      <button id="tab-projects" class="tab active">Projects</button>
+      <button id="tab-home" class="tab active">Home</button>
+      <button id="tab-projects" class="tab">Projects</button>
       <button id="tab-agents" class="tab">Agents</button>
       <button id="tab-create" class="tab">Create</button>
       <div class="settings-menu">
@@ -63,6 +65,9 @@
       <span class="rail-icon" aria-hidden="true">&#9655;</span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
     </button>
     <div class="rail-sep" role="separator"></div>
+    <button class="rail-item" id="rail-home" data-view="home" title="Home overview">
+      <span class="rail-icon" aria-hidden="true">&#8962;</span><span class="rail-label">Home</span>
+    </button>
     <button class="rail-item" id="rail-projects" data-view="projects" data-hotkey="3" title="Projects (Ctrl+3)">
       <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd>
     </button>
@@ -87,8 +92,136 @@
     </button>
   </nav>
   <main>
+    <!-- ========== HOME PAGE ========== -->
+    <section id="page-home" class="page active" aria-label="Home">
+      <div class="home-scroll">
+        <div class="home-content">
+          <section class="home-hero" aria-labelledby="home-title">
+            <div class="home-hero-copy">
+              <p class="home-eyebrow">REACH STUDIO <span aria-hidden="true">/</span> YOUR WORKSPACE</p>
+              <h2 id="home-title">A clearer place to build.</h2>
+              <p class="home-lead">Run project commands, check an AI endpoint, and move from an idea to working software in one focused workspace.</p>
+              <div class="home-hero-meta" aria-label="Workspace tools">
+                <span><b>01</b> Build</span><span><b>02</b> Test</span><span><b>03</b> Create</span>
+              </div>
+            </div>
+            <div class="home-hero-art" aria-hidden="true">
+              <div class="home-art-orbit home-art-orbit-one"></div>
+              <div class="home-art-orbit home-art-orbit-two"></div>
+              <div class="home-art-core">R</div>
+              <span class="home-art-caption">REACH / STUDIO</span>
+            </div>
+          </section>
+
+          <section class="home-tools" aria-label="Quick tools">
+            <div class="home-section-intro">
+              <div><p class="home-eyebrow">WORKSPACE TOOLS</p><h2>Pick up where you left off.</h2></div>
+              <p>Two everyday tools, ready when you are.</p>
+            </div>
+            <div class="home-tool-grid">
+              <section class="home-card home-tool-card" aria-labelledby="home-command-title">
+                <div class="home-card-head">
+                  <div class="home-card-title"><span class="home-card-icon" aria-hidden="true">&gt;_</span><div><p class="home-card-kicker">PROJECTS / QUICK RUN</p><h3 id="home-command-title">Project runner</h3></div></div>
+                  <button id="home-projects-link" class="home-text-link" type="button">Open Projects <span aria-hidden="true">&#8599;</span></button>
+                </div>
+                <p class="home-card-description">Run a command in one of your saved project folders.</p>
+                <div class="home-field">
+                  <label for="home-project-select">Project</label>
+                  <select id="home-project-select"></select>
+                  <p id="home-project-path" class="home-field-note"></p>
+                </div>
+                <div class="home-command-row">
+                  <div class="home-field home-command-mode-field">
+                    <label for="home-command-mode">Mode</label>
+                    <select id="home-command-mode"><option value="project">Project command</option><option value="reach">Reach CLI</option></select>
+                  </div>
+                  <div class="home-field home-command-entry">
+                    <label for="home-command-input">Command</label>
+                    <input id="home-command-input" type="text" spellcheck="false" placeholder="e.g. git status" />
+                  </div>
+                </div>
+                <div class="home-action-row">
+                  <button id="home-command-run" class="gold small" type="button">Run command</button>
+                  <button id="home-command-stop" class="ghost small" type="button" disabled>Stop</button>
+                  <span id="home-command-status" class="home-inline-status" role="status">Ready</span>
+                </div>
+                <div id="home-command-log" class="home-command-log" role="log" aria-live="polite"><span class="home-log-empty">Command output will appear here.</span></div>
+                <p class="home-card-footnote">Project commands run without a shell. Reach mode requires the optional CLI.</p>
+              </section>
+
+              <section class="home-card home-tool-card" aria-labelledby="home-chat-title">
+                <div class="home-card-head">
+                  <div class="home-card-title"><span class="home-card-icon home-chat-icon" aria-hidden="true">&#9672;</span><div><p class="home-card-kicker">ENDPOINTS / QUICK TEST</p><h3 id="home-chat-title">Endpoint chat</h3></div></div>
+                  <button id="home-playground-link" class="home-text-link" type="button">Open Console <span aria-hidden="true">&#8599;</span></button>
+                </div>
+                <p class="home-card-description">Ping a configured endpoint, then try one independent prompt.</p>
+                <div class="home-endpoint-row">
+                  <div class="home-field">
+                    <label for="home-connection">Connection</label>
+                    <select id="home-connection"></select>
+                  </div>
+                  <button id="home-endpoint-ping" class="ghost small" type="button">Ping</button>
+                </div>
+                <div class="home-endpoint-row home-model-row">
+                  <div class="home-field">
+                    <label for="home-model">Model</label>
+                    <input id="home-model" type="text" spellcheck="false" placeholder="Choose or type a model" list="home-model-list" />
+                    <datalist id="home-model-list"></datalist>
+                  </div>
+                  <button id="home-model-browse" class="ghost small" type="button">Browse</button>
+                </div>
+                <p id="home-endpoint-status" class="home-inline-status" role="status">Choose a connection to begin.</p>
+                <div id="home-chat-log" class="home-chat-log" role="log" aria-live="polite"><p class="home-log-empty">Your endpoint test appears here. Each prompt runs separately.</p></div>
+                <div class="home-chat-compose">
+                  <label class="sr-only" for="home-chat-prompt">Test prompt</label>
+                  <textarea id="home-chat-prompt" rows="2" spellcheck="false" placeholder="Ask a question to test this endpoint..."></textarea>
+                  <div class="home-action-row"><button id="home-chat-send" class="gold small" type="button">Send test</button><button id="home-chat-stop" class="ghost small" type="button" disabled>Stop</button><span class="home-card-footnote">Uses the selected provider.</span></div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section class="home-section" aria-labelledby="home-subscription-title">
+            <div class="home-section-intro">
+              <div><p class="home-eyebrow">COMING LATER / SUBSCRIPTIONS</p><h2 id="home-subscription-title">Room for every stage of work.</h2></div>
+              <p>Plan management is being designed for individuals and teams. Plans and billing are not available yet.</p>
+            </div>
+            <div class="home-plan-grid">
+              <article class="home-plan-card"><span class="home-preview-badge">PLAN CONCEPT</span><h3>Individual</h3><p>A focused workspace for one builder.</p><div class="home-plan-end">Subscription setup <span>Coming later</span></div></article>
+              <article class="home-plan-card"><span class="home-preview-badge">PLAN CONCEPT</span><h3>Team</h3><p>Shared tools and coordination for growing teams.</p><div class="home-plan-end">Team billing <span>Coming later</span></div></article>
+              <article class="home-plan-card"><span class="home-preview-badge">PLAN CONCEPT</span><h3>Organization</h3><p>Account controls for larger workspaces.</p><div class="home-plan-end">Managed plans <span>Coming later</span></div></article>
+            </div>
+          </section>
+
+          <section class="home-section home-value-section" aria-labelledby="home-topup-title">
+            <div class="home-section-intro">
+              <div><p class="home-eyebrow">COMING LATER / VALUE</p><h2 id="home-topup-title">Top up and token plans.</h2></div>
+              <p>Future funding and private token options are shown as concepts. No payments, balances, transfers, or trades are active.</p>
+            </div>
+            <div class="home-value-grid">
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">+</span><div><p class="home-card-kicker">FUNDING</p><h3>Top up</h3></div></div><span class="home-preview-badge">PLANNED</span></div>
+                <p class="home-card-description">A future way to add value for Studio services.</p>
+                <div class="home-field"><label for="home-topup-amount">Amount</label><input id="home-topup-amount" type="text" placeholder="Unavailable" disabled /></div>
+                <div class="home-field"><label for="home-topup-method">Payment method</label><select id="home-topup-method" disabled><option>Credit card, debit card, or crypto — planned</option></select></div>
+                <button class="ghost small home-disabled-action" type="button" disabled>Top up unavailable</button>
+              </article>
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">R</span><div><p class="home-card-kicker">PRIVATE TOKEN CONCEPT</p><h3>REACH currency</h3></div></div><span class="home-preview-badge">EXPLORING</span></div>
+                <p class="home-card-description">A proposed Studio token with future private transfer, trading, and sale options. The token design and terms have not been established.</p>
+                <div class="home-token-points"><span>Private transfers</span><span>Private trading</span><span>Private sales</span></div>
+                <p class="home-card-footnote">No token, wallet, marketplace, or smart contract exists yet.</p>
+              </article>
+            </div>
+          </section>
+
+          <footer class="home-footer"><span><b>REACH STUDIO</b> &nbsp; Build with purpose.</span><span>Projects <span aria-hidden="true">/</span> Agents <span aria-hidden="true">/</span> Create</span><span>Home overview</span></footer>
+        </div>
+      </div>
+    </section>
+
     <!-- ========== PROJECTS PAGE ========== -->
-    <section id="page-projects" class="page active">
+    <section id="page-projects" class="page">
       <aside>
         <div class="side-title">Projects</div>
         <ul id="project-list"></ul>
@@ -866,6 +999,7 @@
   <script src="telemetry.js"></script>
   <script src="workspace-shell.js"></script>
   <script src="connections-ui.js"></script>
+  <script src="home.js"></script>
   <script src="playground.js"></script>
   <script src="about.js"></script>
   <script src="refactor.js"></script>

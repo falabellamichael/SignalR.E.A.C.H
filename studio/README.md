@@ -80,6 +80,18 @@ the optional Reach CLI. Both modes show output and exit status in the log, and
 **Stop** terminates the running process tree. Reach Compile requires
 `index.rsh` at the selected project's root.
 
+## Home
+
+Open **Home** from the top ribbon or left rail for a compact workspace overview.
+Its mini Projects CLI runs commands in the chosen saved project, and its mini chat
+tests the chosen configured endpoint without saving a conversation. Command output
+and endpoint responses stay in their respective panels.
+
+The Subscription and Top Up sections preview planned account and token features.
+They do not create subscriptions, charge cards, move crypto, mint tokens, or place
+private trades. The proposed blockchain, crypto, credit card, and debit card
+top-up methods need separate service and contract work before they can be used.
+
 **New Chat** stays at the top of conversation history. The **+ New Chat** button
 returns to that starting view; opening it does not save an empty conversation.
 Choose a model, adjust controls, or attach files before sending. The first message

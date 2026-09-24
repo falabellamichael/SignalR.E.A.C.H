@@ -125,10 +125,12 @@ async function showTab(name) {
   window.ReachWorkspace?.sync();
   window.ReachWorkspaceShell?.markRail();
   if (name === 'workspace') window.ReachWorkspaceDash?.sync();
+  if (name === 'home') window.ReachHome?.sync?.();
   if (name === 'about') window.ReachAbout?.sync();
   if (name === 'refactor') window.ReachRefactor?.sync();
   return refreshFileTree();
 }
+$('#tab-home').onclick = () => showTab('home');
 $('#tab-projects').onclick = () => showTab('projects');
 $('#tab-agents').onclick = () => showTab('agents');
 $('#tab-create').onclick = () => showTab('create');

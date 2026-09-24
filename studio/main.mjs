@@ -3958,10 +3958,30 @@ app.whenReady().then(() => {
             const rail = document.querySelector('#nav-rail');
             if (!rail) return { err: 'nav rail missing' };
             const items = [...rail.querySelectorAll('.rail-item')].map(b => b.dataset.view);
-            const pages = ['workspace', 'playground', 'projects', 'agents', 'create', 'settings', 'refactor', 'about'];
+            const pages = ['home', 'workspace', 'playground', 'projects', 'agents', 'create', 'settings', 'refactor', 'about'];
             const missing = pages.filter(p => !document.querySelector('#page-' + p));
             if (missing.length) return { err: 'missing pages: ' + missing.join(',') };
             const railViews = rail.querySelectorAll('.rail-item').length;
+            const tabs = [...document.querySelectorAll('.tabs > .tab')];
+            const homeTab = document.querySelector('#tab-home');
+            const projectsTab = document.querySelector('#tab-projects');
+            const homeRail = document.querySelector('#rail-home');
+            const homeBeforeProjectsInTabs = tabs.indexOf(homeTab) !== -1 && tabs.indexOf(homeTab) < tabs.indexOf(projectsTab);
+            const homeBeforeProjectsInRail = items.indexOf('home') !== -1 && items.indexOf('home') < items.indexOf('projects');
+            const homeControls = ['home-project-select', 'home-command-run', 'home-connection', 'home-chat-send']
+              .every(id => !!document.getElementById(id));
+
+            // Home is reachable from both navigation surfaces. These checks do
+            // not run commands or call a paid endpoint.
+            homeTab?.click();
+            const homeTabActive = document.querySelector('#page-home').classList.contains('active')
+              && homeTab?.classList.contains('active') && homeRail?.classList.contains('active');
+            projectsTab?.click();
+            homeRail?.click();
+            await new Promise(r => setTimeout(r, 0));
+            const homeRailActive = document.querySelector('#page-home').classList.contains('active')
+              && homeTab?.classList.contains('active') && homeRail?.classList.contains('active');
+            const homeHasHotkey = homeRail?.hasAttribute('data-hotkey');
 
             // Rail navigation drives the same showTab() path as the header tabs.
             await window.ReachWorkspaceShell.goView('workspace');
@@ -3986,10 +4006,16 @@ app.whenReady().then(() => {
 
             // Back to a view the existing smoke assertions may still rely on.
             await window.ReachWorkspaceShell.goView('projects');
-            return { railViews, items, wsActive, railActive, aboutActive, refactorActive, refactorRailActive, refactorHasHotkey, hasSb: !!sb, endpointText: endpointText && endpointText.textContent };
+            return { railViews, items, homeBeforeProjectsInTabs, homeBeforeProjectsInRail, homeControls, homeTabActive, homeRailActive, homeHasHotkey, wsActive, railActive, aboutActive, refactorActive, refactorRailActive, refactorHasHotkey, hasSb: !!sb, endpointText: endpointText && endpointText.textContent };
           })()`);
           if (shell.err) throw new Error(shell.err);
-          if (shell.railViews !== 8) throw new Error('Expected 8 rail items, got ' + shell.railViews);
+          if (shell.railViews !== 9) throw new Error('Expected 9 rail items, got ' + shell.railViews);
+          if (!shell.homeBeforeProjectsInTabs) throw new Error('Home tab must precede Projects');
+          if (!shell.homeBeforeProjectsInRail) throw new Error('Home rail item must precede Projects');
+          if (!shell.homeControls) throw new Error('Home mini CLI or endpoint chat controls are missing');
+          if (!shell.homeTabActive) throw new Error('Home tab did not activate Home and mark the rail');
+          if (!shell.homeRailActive) throw new Error('Home rail item did not activate Home and mark the tab');
+          if (shell.homeHasHotkey) throw new Error('Home must not claim a numeric hotkey (Ctrl/Cmd+1-6 are pinned to existing views)');
           if (!shell.wsActive) throw new Error('Workspace page did not activate via the rail');
           if (!shell.railActive) throw new Error('Rail did not mark Workspace active');
           if (!shell.aboutActive) throw new Error('About page did not activate via the rail');
@@ -3998,6 +4024,84 @@ app.whenReady().then(() => {
           if (shell.refactorHasHotkey) throw new Error('Refactor rail item must not claim a numeric hotkey (Ctrl/Cmd+1-6 are pinned to the primary views)');
           if (!shell.hasSb) throw new Error('Bottom status bar missing');
           if (shell.endpointText === 'no endpoint') throw new Error('Status bar did not reflect the configured endpoint');
+
+          // Keep a rendered Home capture with the smoke artifacts so layout
+          // regressions can be inspected without contacting an endpoint.
+          await win.webContents.executeJavaScript(`window.ReachWorkspaceShell.goView('home')`);
+          fs.writeFileSync(path.join(smokeRoot, 'home-page.png'), (await win.capturePage()).toPNG());
+          const savedHomeTheme = await win.webContents.executeJavaScript(`document.documentElement.dataset.theme`);
+          await win.webContents.executeJavaScript(`document.documentElement.dataset.theme = 'dark'`);
+          await new Promise(resolve => setTimeout(resolve, 60));
+          fs.writeFileSync(path.join(smokeRoot, 'home-page-dark.png'), (await win.capturePage()).toPNG());
+          await win.webContents.executeJavaScript(`document.querySelector('.home-scroll').scrollTop = document.querySelector('.home-scroll').scrollHeight`);
+          await new Promise(resolve => setTimeout(resolve, 60));
+          fs.writeFileSync(path.join(smokeRoot, 'home-value-dark.png'), (await win.capturePage()).toPNG());
+          await win.webContents.executeJavaScript(`document.documentElement.dataset.theme = ${JSON.stringify(savedHomeTheme)}; document.querySelector('.home-scroll').scrollTop = 0`);
+          await win.webContents.executeJavaScript(`window.ReachWorkspaceShell.goView('projects')`);
+
+          // Exercise both Home tools against disposable local fixtures. The
+          // endpoint test never sends a request to a real provider.
+          const homeCommand = await win.webContents.executeJavaScript(`(async () => {
+            await window.ReachWorkspaceShell.goView('home');
+            await window.ReachHome.sync();
+            const input = document.querySelector('#home-command-input');
+            if (!document.querySelector('#home-project-select').value) return { err: 'Home has no selected project' };
+            input.value = 'node --version';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            document.querySelector('#home-command-run').click();
+            const end = Date.now() + 5000;
+            while (Date.now() < end && !document.querySelector('#home-command-log').textContent.includes('Process exited with code 0.')) {
+              await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            return { log: document.querySelector('#home-command-log').textContent };
+          })()`);
+          if (homeCommand.err || !homeCommand.log.includes('Process exited with code 0.')) throw new Error('Home mini runner failed: ' + (homeCommand.err || homeCommand.log));
+
+          const homeServer = require('node:http').createServer((req, res) => {
+            if (req.url === '/v1/models') {
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ data: [{ id: 'home-smoke-model' }] }));
+            } else if (req.url === '/v1/chat/completions') {
+              res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+              res.end('data: {"choices":[{"delta":{"content":"Home endpoint OK"}}]}\n\ndata: [DONE]\n\n');
+            } else { res.writeHead(404); res.end(); }
+          });
+          await new Promise(resolve => homeServer.listen(0, '127.0.0.1', resolve));
+          const homeOriginalSettings = loadSettings();
+          try {
+            const homeActiveId = homeOriginalSettings.activeConnection;
+            const homeEndpoint = `http://127.0.0.1:${homeServer.address().port}/v1`;
+            saveSettings({ ...homeOriginalSettings, connections: homeOriginalSettings.connections.map(connection =>
+              connection.id === homeActiveId ? { ...connection, endpoint: homeEndpoint, accessKey: '', model: 'home-smoke-model' } : connection) });
+            const homeEndpointTest = await win.webContents.executeJavaScript(`(async () => {
+              await window.ReachHome.sync();
+              document.querySelector('#home-model').value = 'home-smoke-model';
+              document.querySelector('#home-model').dispatchEvent(new Event('input', { bubbles: true }));
+              document.querySelector('#home-endpoint-ping').click();
+              const pingEnd = Date.now() + 5000;
+              while (Date.now() < pingEnd && !document.querySelector('#home-endpoint-status').textContent.includes('Endpoint reachable')) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+              }
+              const ping = document.querySelector('#home-endpoint-status').textContent;
+              const prompt = document.querySelector('#home-chat-prompt');
+              prompt.value = 'Home smoke prompt';
+              prompt.dispatchEvent(new Event('input', { bubbles: true }));
+              document.querySelector('#home-chat-send').click();
+              const chatEnd = Date.now() + 5000;
+              while (Date.now() < chatEnd && !document.querySelector('#home-chat-log').textContent.includes('Home endpoint OK')) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+              }
+              return { ping, chat: document.querySelector('#home-chat-log').textContent };
+            })()`);
+            if (!homeEndpointTest.ping.includes('Endpoint reachable') || !homeEndpointTest.chat.includes('Home endpoint OK')) {
+              throw new Error('Home endpoint tester failed: ' + JSON.stringify(homeEndpointTest));
+            }
+          } finally {
+            saveSettings(homeOriginalSettings);
+            await new Promise(resolve => homeServer.close(resolve));
+            await win.webContents.executeJavaScript(`window.ReachWorkspaceShell.goView('projects')`);
+          }
+          console.log('HOME SMOKE OK: mini project command, local endpoint ping, and streamed prompt.');
 
           // Ctrl/Cmd+1..6 hotkeys switch views (and never fire while typing).
           const hotkeys = await win.webContents.executeJavaScript(`(async () => {
@@ -4132,7 +4236,7 @@ app.whenReady().then(() => {
           // The second hunk was NOT accepted, so the export line must be untouched.
           if (!rfAfter.includes('module.exports = { computeTotal }')) throw new Error('An unaccepted chunk was written to disk');
 
-          console.log('WORKSPACE SHELL SMOKE OK: 8-item nav rail, rail+hotkey navigation, typing guard, persistent status bar, Workspace/Playground/About pages, About version info, refactor workbench plan/partial-apply/single-use/path-jail.');
+          console.log('WORKSPACE SHELL SMOKE OK: 9-item nav rail, rail+hotkey navigation, typing guard, persistent status bar, Home/Workspace/Playground/About pages, About version info, refactor workbench plan/partial-apply/single-use/path-jail.');
         }
 
         console.log(`SMOKE OK: preload, renderer controls, projects, conversations+branching, personas+teams, editor, markdown, real parallel scans, responsive IPC, Stop team, clean saved answers, dialog cancel+confirm, keyboard text input and send after dialogs, project selection+same-name files+safe saves+unsaved cancellation+rapid switching, settings dropdowns+budget presets+scope inheritance+credential preservation+validation+save-during-run+Stop+next-run-budget, workspace shell+rail+hotkeys+status bar, refactor workbench, optional CLI -> ${v}`);
