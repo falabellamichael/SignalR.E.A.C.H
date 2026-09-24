@@ -11,7 +11,8 @@
  *     webContents (insertText + trusted sendInputEvent), exactly the input
  *     path proven by the CDP bridge v3.
  *   - Tray: left click = popover panel (status, test chat, controls);
- *     right click = native menu. Chrome/CDP/junction are all gone.
+ *     right click = native menu. Each browser provider has its own persistent
+ *     Electron session and a window that can be opened for manual sign-in.
  */
 'use strict';
 
@@ -27,6 +28,7 @@ const os = require('node:os');
 // Keep the existing Copilot session directory across source and packaged launches.
 app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
 const { createEndpointClient } = require('./endpoint');
+const { createGeminiBrowser } = require('./gemini');
 const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX, discoverCodegptApiPort } = require('./economy-models');
 const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'));
 let clickTimer = null;
@@ -115,8 +117,10 @@ let tray = null;
 let panel = null;
 let panelReady = null;
 let browserWin = null;
+let copilotNavigationAt = 0;
 let chatgptWin = null;
 let codegptWin = null;
+const geminiBrowser = createGeminiBrowser(app.getPath('userData'), log);
 let bridgeServer = null;
 let lastReplyAt = 0;
 let lastError = '';
@@ -226,6 +230,7 @@ function ensureBrowser() {
     // When the auth flow completes, Electron lands back on an APP host with a
     // composer — auto-hide the window so it returns to invisible on its own.
     browserWin.webContents.on('did-navigate', (_e, url) => {
+        copilotNavigationAt = Date.now();
         log('navigated: ' + url.slice(0, 100));
         if (isAppHost(url)) maybeAutoHideAfterSignIn();
     });
@@ -234,6 +239,7 @@ function ensureBrowser() {
     });
     browserWin.on('closed', () => { browserWin = null; });
     browserWin.loadURL(COPILOT_URL);
+    copilotNavigationAt = Date.now();
     // Install the shared tile up-front (not only on first show) so the
     // account/user icon is covered from the very first paint.
     void installControlTile(browserWin, {
@@ -770,7 +776,7 @@ const CODEGPT_SNAPSHOT_JS = `(() => {
                 const t = (m.innerText || '').trim();
                 return t && !/^user:\\s/i.test(t);
             });
-        let text = (nonEmpty ? nonEmpty.innerText : '').trim().slice(0, 12000);
+        let text = (nonEmpty ? nonEmpty.innerText : '').trim();
         text = text.replace(/^assistant:\\s*/i, '');
         const stopBtn = [...document.querySelectorAll('button')].filter(vis)
             .some(b => /stop|halt|square/i.test((b.getAttribute('aria-label') || b.title || b.innerText || '')));
@@ -931,7 +937,14 @@ function extractCodegptApiReply(body) {
     if (!body) return '';
     try {
         const data = JSON.parse(body);
-        if (data.error || (data.status >= 400 && data.code)) throw codegptProviderError(data, data.status);
+        if (typeof data === 'string') {
+            if (/^CodeGPT:/i.test(data)) throw codegptProviderError(data, 502);
+            return data.trim();
+        }
+        if (data == null || typeof data !== 'object') return '';
+        if (data.error || data.errorMessage || data.errorName || (data.status >= 400 && data.code)) {
+            throw codegptProviderError(data, data.status);
+        }
         for (const ch of (data.choices || [])) {
             const c = ch.message && ch.message.content;
             if (typeof c === 'string' && c.trim()) return c.trim();
@@ -959,7 +972,16 @@ function extractCodegptApiReply(body) {
         if (!payload || payload === '[DONE]') continue;
         try {
             const d = JSON.parse(payload);
-            if (d.error || (d.status >= 400 && d.code)) throw codegptProviderError(d, d.status);
+            if (d == null) continue;
+            if (typeof d === 'string') {
+                if (/^CodeGPT:/i.test(d)) throw codegptProviderError(d, 502);
+                parts.push(d);
+                continue;
+            }
+            if (typeof d !== 'object') continue;
+            if (d.error || d.errorMessage || d.errorName || (d.status >= 400 && d.code)) {
+                throw codegptProviderError(d, d.status);
+            }
             for (const ch of (d.choices || [])) {
                 const delta = ch.delta || ch.message || {};
                 const c = delta.content;
@@ -967,11 +989,19 @@ function extractCodegptApiReply(body) {
             }
         } catch (error) {
             if (error.provider === 'codegpt') throw error;
-            parts.push(payload);
+            // Malformed JSON or HTML is not an assistant answer.
+            if (!payload.startsWith('{') && !payload.startsWith('[') && !payload.startsWith('<')) {
+                parts.push(payload);
+            }
         }
     }
-    const joined = parts.join('');
-    return joined.trim() || String(body).slice(0, 4000).trim();
+    const joined = parts.join('').trim();
+    if (joined) return joined;
+    const raw = String(body).trim();
+    if (/^CodeGPT:/i.test(raw)) throw codegptProviderError(raw, 502);
+    if (lines.some((line) => line.trim().startsWith('data:'))
+            || raw.startsWith('{') || raw.startsWith('[') || raw.startsWith('<')) return '';
+    return raw.slice(0, 4000);
 }
 
 async function debugCodegptDom() {
@@ -1372,10 +1402,7 @@ function codegptToolLine(ev) {
 }
 
 async function codegptSend(text, { signal, model, label, onDelta, onReasoning } = {}) {
-    if (!codegptWin || codegptWin.isDestroyed()) {
-        showCodegpt();
-        throw new Error('Opening the CodeGPT window. Please complete sign in and retry.');
-    }
+    await waitForProviderWindow(ensureCodegpt, codegptSnapshot, showCodegpt, 'CodeGPT', signal);
     const started = Date.now();
     const defaultModel = !model || model === ECONOMY_PREFIX || model === ECONOMY_PREFIX + '-gpt-4o-mini';
     const engine = economyModelFor(defaultModel ? economyBridgeIds()[1] : model);
@@ -1708,10 +1735,18 @@ const CHATGPT_SNAPSHOT_JS = `(() => {
 
         if (count) {
             const last = turns[turns.length - 1];
-            const md = last.querySelector('.markdown, [class*="markdown"], .prose, [class*="prose"], .whitespace-pre-wrap');
-            text = (${chatgptReplyText.toString()})(md || last);
+            // A ChatGPT assistant turn can contain a Thinking summary followed
+            // by the actual answer. The first markdown block is often that
+            // summary; take the last visible answer block outside thinking UI.
+            const thinking = '[data-testid*="thought"], [data-testid*="reasoning"], [data-testid*="thinking"], details';
+            const blocks = [...last.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"], .whitespace-pre-wrap')]
+                .filter(el => vis(el) && !el.closest(thinking));
+            const answer = blocks[blocks.length - 1];
+            text = answer ? (${chatgptReplyText.toString()})(answer)
+                : (last.querySelector(thinking) ? '' : (${chatgptReplyText.toString()})(last));
         } else {
-            const mds = [...document.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"]')].filter(vis);
+            const mds = [...document.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"]')]
+                .filter(el => vis(el) && !el.closest('[data-testid*="thought"], [data-testid*="reasoning"], [data-testid*="thinking"], details'));
             count = mds.length;
             if (mds.length) text = (${chatgptReplyText.toString()})(mds[mds.length - 1]);
         }
@@ -1720,7 +1755,7 @@ const CHATGPT_SNAPSHOT_JS = `(() => {
         const signIn = !composer && /Log in|Sign up|Welcome back/i.test((document.querySelector('main') || document.body || {}).innerText || '');
 
         return JSON.stringify({
-            text: text.slice(0, 12000),
+            text: text,
             count: count,
             composer: composer,
             generating: !!document.querySelector('button[data-testid="stop-button"], button[aria-label="Stop generating"]'),
@@ -1744,7 +1779,7 @@ const CHATGPT_SNAPSHOT_JS = `(() => {
 
 async function chatgptSnapshot() {
     if (!chatgptWin || chatgptWin.isDestroyed()) throw new Error('chatgpt browser closed');
-    const raw = await chatgptWin.webContents.executeJavaScript(CHATGPT_SNAPSHOT_JS);
+    const raw = await browserScriptDeadline(chatgptWin.webContents.executeJavaScript(CHATGPT_SNAPSHOT_JS), 'ChatGPT page');
     return JSON.parse(raw);
 }
 
@@ -1804,10 +1839,7 @@ function sendChatgptQueued(text, options = {}) {
 }
 
 async function chatgptSend(text, { signal, onDelta } = {}) {
-    if (!chatgptWin || chatgptWin.isDestroyed()) {
-        showChatgpt();
-        throw new Error('Opening the ChatGPT window. Please complete sign in and retry.');
-    }
+    await waitForProviderWindow(ensureChatgpt, chatgptSnapshot, showChatgpt, 'ChatGPT', signal);
     const started = Date.now();
     log('chatgpt request started (' + text.length + ' chars)');
     try {
@@ -1878,6 +1910,7 @@ async function chatgptSendRequest(text, signal, onDelta) {
             log('chatgpt still waiting for the page (' + Math.round(waiting / 1000) + 's): composer='
                 + !!(snap && snap.composer) + ' generating=' + !!(snap && snap.generating));
         }
+        if (waiting >= 90000) throw new Error('ChatGPT composer stayed busy for 90 seconds. Check the ChatGPT window and retry.');
         await sleep(400);
         waiting += 400;
     }
@@ -1938,8 +1971,10 @@ async function chatgptSendRequest(text, signal, onDelta) {
     let forming = null;
     let stable = 0;
     let completed = false;
+    let lastProgressAt = Date.now();
     while (!completed) {
         signal?.throwIfAborted();
+        if (Date.now() - lastProgressAt > 180000) throw new Error('ChatGPT produced no new answer text for three minutes. Check the ChatGPT window and retry.');
         await sleep(POLL_MS);
         let snap;
         try {
@@ -1954,6 +1989,7 @@ async function chatgptSendRequest(text, signal, onDelta) {
         const isNew = snap.count > before.count ||
             (snap.text && snap.text !== before.text);
         if (!isNew) continue;
+        if (snap.text && snap.text !== forming) lastProgressAt = Date.now();
         if (!forming) {
             forming = snap.text;
             stable = 0;
@@ -1978,6 +2014,71 @@ async function chatgptSendRequest(text, signal, onDelta) {
 // Same DOM contract as bridge v3 (proven against live M365):
 // reply text lives in .fai-CopilotMessage__content; markers as fallback.
 
+function copilotReplyText(root) {
+    const selector = 'p, h1, h2, h3, h4, h5, h6, pre, ul, ol, blockquote, table';
+    const controls = 'button, input, select, textarea, svg, iframe, [role="button"], [role="toolbar"], [aria-hidden="true"]';
+    const codeUi = '[data-testid*="code-header"], [data-testid*="code-toolbar"], [class*="CodeBlockHeader"], [class*="codeBlockHeader"], [class*="code-block-header"], [class*="code-toolbar"], [class*="codeLanguage"], [class*="code-language"]';
+    const blocks = [...root.querySelectorAll(selector)].filter(el => {
+        const parent = el.parentElement && el.parentElement.closest(selector);
+        return (!parent || !root.contains(parent)) && !el.closest(controls + ', ' + codeUi);
+    });
+    let codeBlocks = 0;
+    let unlabeledCodeBlocks = 0;
+    const codeLanguageKinds = [];
+    const parts = blocks.map(el => {
+        if (el.tagName === 'PRE') {
+            codeBlocks++;
+            const code = el.querySelector('code');
+            const attrs = ['data-language', 'data-lang', 'data-code-language', 'data-code-block-language'];
+            const candidates = [code, el, el.parentElement].filter(Boolean);
+            let language = '';
+            for (const node of candidates) {
+                language = attrs.map(name => node.getAttribute?.(name)).find(value => typeof value === 'string' && value.trim()) || '';
+                if (!language) {
+                    const match = /(?:^|\s)language-([A-Za-z][\w+-]*)\b/i.exec(String(node.className || ''));
+                    if (match) language = match[1];
+                }
+                if (language) break;
+            }
+            language = /^[A-Za-z][\w+-]{0,63}$/.test(language) ? language : '';
+            if (!language) unlabeledCodeBlocks++;
+            codeLanguageKinds.push(language === 'agent_status' ? 'agent_status' : language ? 'other' : 'missing');
+            const body = String(code ? code.textContent : el.textContent || '').replace(/\n$/, '');
+            return '```' + language + '\n' + body + '\n```';
+        }
+        const copy = el.cloneNode(true);
+        copy.querySelectorAll(controls + ', ' + codeUi).forEach(node => node.remove());
+        copy.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+        if (el.tagName === 'UL' || el.tagName === 'OL') {
+            copy.querySelectorAll('li').forEach((li, i) => li.prepend(el.tagName === 'OL' ? (i + 1) + '. ' : '- '));
+        }
+        return (copy.innerText || copy.textContent || '').trim();
+    }).filter(Boolean);
+    return {
+        text: parts.length ? parts.join('\n\n') : (root.innerText || root.textContent || '').trim(),
+        codeBlocks, unlabeledCodeBlocks, codeLanguageKinds
+    };
+}
+
+function normalizeCopilotStatusWidgetText(value) {
+    const text = String(value || '');
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length - 2; i++) {
+        if (lines[i].trim() !== 'Plain Text'
+                || !/^agent_status isn['’]t fully supported\. Syntax highlighting is based on Plain Text\.$/.test(lines[i + 1].trim())) continue;
+        const body = lines.slice(i + 2).join('\n').trim();
+        let status;
+        try { status = JSON.parse(body); } catch (_) { continue; }
+        if (!status || Array.isArray(status) || typeof status !== 'object'
+                || !['complete', 'blocked', 'continue'].includes(status.status)
+                || (status.status === 'complete' && !(typeof status.summary === 'string' && status.summary.trim()))
+                || (status.status === 'blocked' && !(typeof status.reason === 'string' && status.reason.trim()))) continue;
+        const preceding = lines.slice(0, i).join('\n').trimEnd();
+        return (preceding ? preceding + '\n\n' : '') + '```agent_status\n' + body + '\n```';
+    }
+    return text;
+}
+
 const SNAPSHOT_JS = `(() => {
     const vis = (e) => !!(e.offsetWidth || e.offsetHeight);
     const stops = ${JSON.stringify(REPLY_STOP_MARKERS)};
@@ -1986,15 +2087,23 @@ const SNAPSHOT_JS = `(() => {
             const i = s.indexOf(stop);
             if (i >= 0) s = s.slice(0, i);
         }
-        return s.replace(/\\s+/g, ' ').trim();
+        return s.trim();
     };
 
     const contents = [...document.querySelectorAll('.fai-CopilotMessage__content')].filter(vis);
     let text = '';
     let count = contents.length;
+    let codeBlocks = 0;
+    let unlabeledCodeBlocks = 0;
+    let codeLanguageKinds = [];
+    let statusWidgetNormalized = false;
 
     if (count) {
-        text = trimStops(contents[contents.length - 1].innerText || '');
+        const reply = (${copilotReplyText.toString()})(contents[contents.length - 1]);
+        text = trimStops(reply.text);
+        codeBlocks = reply.codeBlocks;
+        unlabeledCodeBlocks = reply.unlabeledCodeBlocks;
+        codeLanguageKinds = reply.codeLanguageKinds;
     } else {
         const body = document.body.innerText || '';
         const marker = 'Copilot said:';
@@ -2006,10 +2115,18 @@ const SNAPSHOT_JS = `(() => {
             const msgs = [...document.querySelectorAll('[data-testid*="chat-message"]')].filter(vis);
             if (msgs.length) {
                 count = Math.max(count, msgs.length);
-                text = trimStops(msgs[msgs.length - 1].innerText || '');
+                const reply = (${copilotReplyText.toString()})(msgs[msgs.length - 1]);
+                text = trimStops(reply.text);
+                codeBlocks = reply.codeBlocks;
+                unlabeledCodeBlocks = reply.unlabeledCodeBlocks;
+                codeLanguageKinds = reply.codeLanguageKinds;
             }
         }
     }
+
+    const normalized = (${normalizeCopilotStatusWidgetText.toString()})(text);
+    statusWidgetNormalized = normalized !== text;
+    text = normalized;
 
     const composer = !!document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
     const challenge = !!document.querySelector(
@@ -2018,9 +2135,14 @@ const SNAPSHOT_JS = `(() => {
             .test(document.body.innerText || '') && !composer;
 
     return JSON.stringify({
-        text: text.slice(0, 12000),
+        text: text,
         count: count,
+        codeBlocks: codeBlocks,
+        unlabeledCodeBlocks: unlabeledCodeBlocks,
+        codeLanguageKinds: codeLanguageKinds,
+        statusWidgetNormalized: statusWidgetNormalized,
         composer: composer,
+        generating: [...document.querySelectorAll('button')].some(e => vis(e) && /stop (generating|response)|cancel response/i.test((e.getAttribute('aria-label') || '') + ' ' + (e.getAttribute('title') || ''))),
         challenge: challenge,
         signIn: signIn,
         url: location.href.slice(0, 140)
@@ -2029,10 +2151,65 @@ const SNAPSHOT_JS = `(() => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+function browserScriptDeadline(promise, label, timeoutMs = 10000) {
+    let timer;
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label + ' did not respond within ' + Math.round(timeoutMs / 1000) + ' seconds.')), timeoutMs); })
+    ]).finally(() => clearTimeout(timer));
+}
+
+async function waitForProviderWindow(ensureWindow, takeSnapshot, showWindow, name, signal) {
+    ensureWindow();
+    const deadline = Date.now() + 20000;
+    let lastState = null;
+    while (Date.now() < deadline) {
+        signal?.throwIfAborted();
+        let snap;
+        try {
+            snap = await browserScriptDeadline(Promise.resolve().then(takeSnapshot), name + ' page',
+                Math.min(5000, Math.max(1000, deadline - Date.now())));
+        } catch (_) { /* page may be navigating */ }
+        signal?.throwIfAborted();
+        if (snap?.composer && !snap.signIn && !snap.challenge) return;
+        if (snap) lastState = snap;
+        await sleep(400);
+    }
+    showWindow();
+    if (lastState?.signIn || lastState?.challenge) {
+        throw new Error(name + ' is still on a sign-in or challenge page. Complete it in the browser window, then retry.');
+    }
+    throw new Error(name + ' browser did not become ready within 20 seconds. Check its window and retry.');
+}
+
 async function snapshot() {
     if (!browserWin || browserWin.isDestroyed()) throw new Error('browser closed');
-    const raw = await browserWin.webContents.executeJavaScript(SNAPSHOT_JS);
+    const raw = await browserScriptDeadline(browserWin.webContents.executeJavaScript(SNAPSHOT_JS), 'Copilot page');
     return JSON.parse(raw);
+}
+
+async function waitForCopilotHydration(signal) {
+    const deadline = Date.now() + 20000;
+    let lastUrl = '';
+    let stable = 0;
+    while (Date.now() < deadline) {
+        signal?.throwIfAborted();
+        let snap;
+        try { snap = await snapshot(); } catch (_) { /* navigation in progress */ }
+        signal?.throwIfAborted();
+        if (snap?.composer && !snap.signIn && !snap.challenge && isAppHost(snap.url)
+                && Date.now() - copilotNavigationAt >= 5000) {
+            stable = snap.url === lastUrl ? stable + 1 : 1;
+            lastUrl = snap.url;
+            if (stable >= 2) return;
+        } else {
+            stable = 0;
+            lastUrl = '';
+        }
+        await sleep(400);
+    }
+    showBrowser();
+    throw new Error('Microsoft 365 Copilot chat did not finish loading. Check its window and retry.');
 }
 
 async function checkSignedIn() {
@@ -2066,13 +2243,20 @@ async function sendEnter() {
 
 async function clickSendButton() {
     // fallback: trusted mouse click on the send button
-    const box = await browserWin.webContents.executeJavaScript(`(() => {
+    const box = await browserScriptDeadline(browserWin.webContents.executeJavaScript(`(() => {
         const sel = 'button[data-testid*="send"], button[aria-label*="Send"], button[type="submit"]';
-        const b = [...document.querySelectorAll(sel)].find(e => e.offsetWidth && !e.disabled);
+        const editor = document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
+        const near = editor && (editor.closest('form, [data-testid*="composer"], [class*="composer"]')
+            || editor.parentElement?.parentElement?.parentElement);
+        const visible = e => !!(e.offsetWidth || e.offsetHeight) && !e.disabled;
+        const label = e => (e.getAttribute('aria-label') || e.getAttribute('title') || e.innerText || '').trim();
+        const local = near ? [...near.querySelectorAll(sel)].filter(visible) : [];
+        const all = local.length ? local : [...document.querySelectorAll(sel)].filter(visible);
+        const b = all.find(e => /send|submit/i.test(label(e))) || all[0];
         if (!b) return null;
         const r = b.getBoundingClientRect();
         return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
-    })()`);
+    })()`), 'Copilot send button');
     if (!box) return false;
     const wc = browserWin.webContents;
     wc.sendInputEvent({ type: 'mouseDown', x: box.x, y: box.y, button: 'left', clickCount: 1 });
@@ -2098,40 +2282,59 @@ function sendCopilotQueued(text, options = {}) {
 async function copilotSend(text, options = {}) {
     const signal = options?.signal;
     const onDelta = options?.onDelta;
-    if (!browserWin || browserWin.isDestroyed()) {
-        showBrowser();
-        throw new Error('Open the Microsoft 365 session in the Copilot window, then retry.');
-    }
+    const started = Date.now();
+    log('copilot request started');
+    await waitForProviderWindow(ensureBrowser, snapshot, showBrowser, 'Microsoft 365 Copilot', signal);
+    await waitForCopilotHydration(signal);
     const auth = await checkSignedIn();
     if (!auth.ok) throw new Error(auth.why + ' — use tray menu: Show Copilot window');
+    log('copilot composer ready after ' + Math.round((Date.now() - started) / 1000) + 's');
 
     const before = await snapshot();
     const wc = browserWin.webContents;
 
-    const focused = await wc.executeJavaScript(`(() => {
+    const focused = await browserScriptDeadline(wc.executeJavaScript(`(() => {
         const ta = document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
         if (!ta) return false;
         ta.focus();
+        // A failed previous send can leave a draft behind. Replace that draft
+        // so this request cannot append to or accidentally resend it.
+        if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') ta.select();
+        else {
+            const range = document.createRange();
+            range.selectNodeContents(ta);
+            const selection = window.getSelection();
+            if (selection) { selection.removeAllRanges(); selection.addRange(range); }
+        }
         return document.activeElement === ta ||
                ta.contains(document.activeElement) ||
                (ta.shadowRoot && ta.shadowRoot.activeElement);
-    })()`);
+    })()`), 'Copilot composer');
     if (!focused) throw new Error('composer not found/focusable');
 
-    await wc.insertText(text);          // trusted IME-style insertion
+    await browserScriptDeadline(wc.insertText(text), 'Copilot text insertion'); // trusted IME-style insertion
     await sleep(300);
     await sendEnter();
     await sleep(1200);
 
     // did the message actually go? if composer still holds the text, click Send
-    const still = await wc.executeJavaScript(`(() => {
+    const readComposer = () => browserScriptDeadline(wc.executeJavaScript(`(() => {
         const ta = document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
         return ta ? (ta.innerText || ta.value || '').trim().slice(0, 40) : '';
-    })()`);
+    })()`), 'Copilot composer');
+    let still = await readComposer();
     if (still && still.includes(text.slice(0, 20))) {
         log('Enter did not send — clicking send button');
-        await clickSendButton();
+        if (!await clickSendButton()) throw new Error('Copilot did not expose an enabled Send button. Check the Copilot window.');
+        for (let attempt = 0; attempt < 12 && still.includes(text.slice(0, 20)); attempt++) {
+            signal?.throwIfAborted();
+            await sleep(500);
+            still = await readComposer();
+        }
+        if (still.includes(text.slice(0, 20))) throw new Error('Copilot did not submit the message. Check the Copilot window and retry.');
     }
+    const submittedAt = Date.now();
+    log('copilot message submitted after ' + Math.round((submittedAt - started) / 1000) + 's');
 
     // wait for a NEW reply, then for it to stop growing
     // Progressive streaming (same contract as codegptSendRequest).
@@ -2146,8 +2349,13 @@ async function copilotSend(text, options = {}) {
     };
     let forming = null;
     let stable = 0;
+    let lastProgressAt = Date.now();
+    let finalSnap = null;
+    let firstReplyLogged = false;
+    let noReplyLogged = false;
     while (true) {
         signal?.throwIfAborted();
+        if (Date.now() - lastProgressAt > 180000) throw new Error('Copilot produced no new answer text for three minutes. Check the Copilot window and retry.');
         await sleep(POLL_MS);
         let snap;
         try { snap = await snapshot(); } catch (e) { log('poll error: ' + e.message); continue; }
@@ -2157,7 +2365,27 @@ async function copilotSend(text, options = {}) {
         if (snap.text && snap.text !== before.text) emitProgress(snap.text);
         const isNew = snap.count > before.count ||
             (snap.text && snap.text !== before.text);
-        if (!isNew) continue;
+        // A new but still-empty reply container is not an answer. Copilot can
+        // create one before generation starts, then leave it empty on a failed send.
+        if (!isNew || !snap.text) {
+            const waiting = Date.now() - submittedAt;
+            if (waiting >= 20000 && !noReplyLogged) {
+                noReplyLogged = true;
+                log('copilot awaiting first reply after 20s: countChanged='
+                    + (snap.count > before.count) + ', generating=' + !!snap.generating
+                    + ', appHost=' + isAppHost(snap.url));
+            }
+            if (waiting >= 60000 && !snap.generating) {
+                showBrowser();
+                throw new Error('Copilot did not show a reply within 60 seconds. Check the Copilot window and retry.');
+            }
+            continue;
+        }
+        if (!firstReplyLogged && snap.text) {
+            firstReplyLogged = true;
+            log('copilot first reply after ' + Math.round((Date.now() - submittedAt) / 1000) + 's');
+        }
+        if (snap.text && snap.text !== forming) lastProgressAt = Date.now();
         if (!forming) {
             forming = snap.text;
             stable = 0;
@@ -2165,11 +2393,21 @@ async function copilotSend(text, options = {}) {
         }
         if (snap.text === forming) {
             stable++;
-            if (stable >= 2 && forming.length > 0) break;   // settled
+            if (stable >= 2 && forming.length > 0 && !snap.generating) {
+                finalSnap = snap;
+                break;
+            }
         } else {
             forming = snap.text;
             stable = 0;
         }
+    }
+    log('copilot request finished after ' + Math.round((Date.now() - started) / 1000) + 's');
+    if (finalSnap?.statusWidgetNormalized) log('copilot explicit agent_status widget normalized');
+    if (finalSnap?.codeBlocks) {
+        log('copilot reply code blocks: ' + finalSnap.codeBlocks
+            + ', unlabeled=' + finalSnap.unlabeledCodeBlocks
+            + ', kinds=' + finalSnap.codeLanguageKinds.join(','));
     }
     lastReplyAt = Date.now();
     return forming;
@@ -2185,6 +2423,7 @@ function startBridge() {
         const cVis = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
         const gVis = !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible());
         const eVis = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
+        const gemini = geminiBrowser.health();
         return {
             ok: true, service: 'signalreach-tray', bridge: BRIDGE_PORT,
             codeVer: 'cg-bridge-12',
@@ -2192,10 +2431,13 @@ function startBridge() {
             copilotVisible: cVis,
             chatgptVisible: gVis,
             codegptVisible: eVis,
-            browserVisible: prov === 'chatgpt' ? gVis : prov === 'codegpt' ? eVis : cVis,
+            geminiVisible: gemini.visible,
+            gemini,
+            browserVisible: prov === 'chatgpt' ? gVis : prov === 'codegpt' ? eVis
+                : prov === 'gemini' ? gemini.visible : cVis,
             lastReplyAt, lastError
         };
-    }, debugCodegptDom, log));
+    }, debugCodegptDom, log, sendGeminiQueued));
     bridgeServer.timeout = 0;
     bridgeServer.requestTimeout = 0;
     bridgeServer.headersTimeout = 0;
@@ -2283,10 +2525,18 @@ async function showPanel() {
     win.focus();
 }
 
+function runGeminiBrowser(action) {
+    void Promise.resolve().then(action).catch(error => {
+        lastError = error.message;
+        log('Gemini browser action failed: ' + error.message);
+    }).finally(refreshNativeMenus);
+}
+
 function buildTrayMenu() {
     const visible = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
     const chatgptVisible = !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible());
     const codegptVisible = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
+    const geminiVisible = geminiBrowser.health().visible;
     return Menu.buildFromTemplate([
         { label: 'Free model endpoints', type: 'radio', checked: endpoints.getSettings().provider === 'endpoint',
           click: () => { saveTraySettings({ provider: 'endpoint' }); openPanel(); } },
@@ -2294,6 +2544,8 @@ function buildTrayMenu() {
           click: () => { saveTraySettings({ provider: 'copilot' }); openPanel(); } },
         { label: 'ChatGPT', type: 'radio', checked: endpoints.getSettings().provider === 'chatgpt',
           click: () => { saveTraySettings({ provider: 'chatgpt' }); openPanel(); } },
+        { label: 'Gemini (web)', type: 'radio', checked: endpoints.getSettings().provider === 'gemini',
+          click: () => { saveTraySettings({ provider: 'gemini' }); openPanel(); } },
         { label: 'CodeGPT (economy)', type: 'radio', checked: endpoints.getSettings().provider === 'codegpt',
           click: () => { saveTraySettings({ provider: 'codegpt' }); openPanel(); } },
         { type: 'separator' },
@@ -2321,13 +2573,27 @@ function buildTrayMenu() {
                 setTimeout(() => { refreshNativeMenus(); }, 100);
             }
         },
+        {
+            label: geminiVisible ? 'Hide Browser \u2014 Gemini' : 'Show Browser \u2014 Gemini (manual sign-in)',
+            click: () => runGeminiBrowser(async () => {
+                if (await geminiBrowser.isVisible()) await geminiBrowser.hide();
+                else await geminiBrowser.show();
+            })
+        },
         { type: 'separator' },
         { label: 'Refresh Page  ⟳', click: () => {
+            if (endpoints.getSettings().provider === 'gemini') return runGeminiBrowser(() => geminiBrowser.reload());
             const win = ensureBrowser();
             win.webContents.reload();
         } },
-        { label: 'Back to Home', click: reloadBrowser },
-        { label: 'Sign Out (clear session)', click: () => { void signOutBrowser(); } },
+        { label: 'Back to Home', click: () => {
+            if (endpoints.getSettings().provider === 'gemini') runGeminiBrowser(() => geminiBrowser.home());
+            else reloadBrowser();
+        } },
+        { label: 'Sign Out (clear session)', click: () => {
+            if (endpoints.getSettings().provider === 'gemini') runGeminiBrowser(() => geminiBrowser.signOut());
+            else void signOutBrowser();
+        } },
         { type: 'separator' },
         {
             label: 'Open Tray Panel',
@@ -2342,7 +2608,7 @@ function openPanel() {
 }
 
 function saveTraySettings(value) {
-    const saved = endpoints.saveSettings(value);
+    const saved = endpoints.saveSettings(value?.provider === 'gemini' ? { ...value, model: '' } : value);
     refreshNativeMenus();
     if (saved.provider === 'copilot') ensureBrowser();
     if (saved.provider === 'chatgpt') ensureChatgpt();
@@ -2365,7 +2631,7 @@ function createTray() {
     if (image.isEmpty()) throw new Error('SignalREACH tray-icon.png is missing.');
     if (process.platform === 'darwin') image = image.resize({ width: 18, height: 18 });
     tray = new Tray(image);
-    tray.setToolTip('SignalREACH — free endpoints, Copilot, and ChatGPT');
+    tray.setToolTip('SignalREACH — free endpoints, Copilot, ChatGPT, and Gemini');
     refreshNativeMenus();
     if (process.platform === 'darwin') {
         tray.setIgnoreDoubleClickEvents(true);
@@ -2380,7 +2646,12 @@ function createTray() {
             void togglePanel().catch(error => log('Panel failed: ' + error.message));
             return;
         }
-        if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; showBrowser(); return; }
+        if (clickTimer) {
+            clearTimeout(clickTimer); clickTimer = null;
+            if (endpoints.getSettings().provider === 'gemini') runGeminiBrowser(() => geminiBrowser.show());
+            else showBrowser();
+            return;
+        }
         clickTimer = setTimeout(() => { clickTimer = null; void togglePanel().catch(error => log(error.message)); }, 220);
     });
     log('tray created');
@@ -2523,12 +2794,21 @@ async function webSearch(query, count) {
     return [];
 }
 
+let geminiQueue = Promise.resolve();
+function sendGeminiQueued(text, options) {
+    const result = geminiQueue.then(() => geminiBrowser.send(text, options));
+    geminiQueue = result.catch(() => {});
+    return result;
+}
+
 async function sendChatMessages(config, messages, onDelta) {
     let content;
     if (config.provider === 'endpoint') {
         content = await endpoints.chat(config, messages, onDelta);
     } else if (config.provider === 'chatgpt') {
         content = await sendChatgptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'), { onDelta });
+    } else if (config.provider === 'gemini') {
+        content = await sendGeminiQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'));
     } else if (config.provider === 'codegpt') {
         content = await sendCodegptQueued(messages.map(m => `${m.role}: ${m.content}`).join('\n\n'), { onDelta });
     } else {
@@ -2571,6 +2851,9 @@ function installIpc() {
             } catch (error) { auth = { ok: false, why: error.message }; }
         } else if (config.provider === 'chatgpt') {
             auth = await checkChatgptSignedIn().catch(error => ({ ok: false, why: error.message }));
+        } else if (config.provider === 'gemini') {
+            models = ['gemini-chat'];
+            auth = await geminiBrowser.status();
         } else if (config.provider === 'codegpt') {
             // The economy ids this bridge serves, so the panel can offer them.
             models = economyBridgeIds();
@@ -2582,21 +2865,25 @@ function installIpc() {
             auth = await checkSignedIn().catch(error => ({ ok: false, why: error.message }));
         }
         const isChatgpt = config.provider === 'chatgpt';
-        const isCopilot = config.provider === 'copilot';
         const isCodegpt = config.provider === 'codegpt';
-        const activeWin = isChatgpt ? chatgptWin : isCodegpt ? codegptWin : browserWin;
+        const isGemini = config.provider === 'gemini';
+        const activeWin = isChatgpt ? chatgptWin : isCodegpt ? codegptWin : isGemini ? null : browserWin;
+        const geminiState = geminiBrowser.health();
         return {
             ...config, models, base,
             signedIn: !!auth.ok, why: auth.ok ? '' : auth.why || '',
             bridgePort: BRIDGE_PORT, bridgeUp: !!bridgeServer,
-            browserVisible: !!(activeWin && !activeWin.isDestroyed() && activeWin.isVisible()),
+            browserVisible: isGemini ? !!auth.visible : !!(activeWin && !activeWin.isDestroyed() && activeWin.isVisible()),
             chatgptVisible: !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()),
             copilotVisible: !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible()),
             codegptVisible: !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()),
+            geminiVisible: geminiState.visible,
+            geminiReady: geminiState.ready,
             codegptRequested: lastCodegptRequested,
             codegptServed: lastCodegptServed,
-            lastReplyAt, lastError,
-            url: config.provider === 'endpoint' ? base : (activeWin && !activeWin.isDestroyed() ? activeWin.webContents.getURL().slice(0, 120) : '')
+            lastReplyAt, lastError: isGemini ? geminiState.lastError || lastError : lastError,
+            url: config.provider === 'endpoint' ? base : isGemini ? auth.url || geminiState.url
+                : (activeWin && !activeWin.isDestroyed() ? activeWin.webContents.getURL().slice(0, 120) : '')
         };
     });
     handle('tray-test', async (_ev, text) => {
@@ -2683,12 +2970,14 @@ function installIpc() {
     listen('show-browser', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') showChatgpt();
+        else if (p === 'gemini') runGeminiBrowser(() => geminiBrowser.show());
         else if (p === 'codegpt') showCodegpt();
         else showBrowser();
     });
     listen('hide-browser', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') hideChatgpt();
+        else if (p === 'gemini') runGeminiBrowser(() => geminiBrowser.hide());
         else if (p === 'codegpt') hideCodegpt();
         else hideBrowser();
     });
@@ -2699,6 +2988,11 @@ function installIpc() {
         if (p === 'chatgpt') {
             if (chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible()) hideChatgpt();
             else showChatgpt();
+        } else if (p === 'gemini') {
+            runGeminiBrowser(async () => {
+                if (await geminiBrowser.isVisible()) await geminiBrowser.hide();
+                else await geminiBrowser.show();
+            });
         } else if (p === 'codegpt') {
             if (codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible()) hideCodegpt();
             else showCodegpt();
@@ -2710,12 +3004,14 @@ function installIpc() {
     listen('reload-browser', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') reloadChatgpt();
+        else if (p === 'gemini') runGeminiBrowser(() => geminiBrowser.home());
         else if (p === 'codegpt') reloadCodegpt();
         else reloadBrowser();
     });
     listen('refresh-page', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') { const win = ensureChatgpt(); win.webContents.reload(); }
+        else if (p === 'gemini') runGeminiBrowser(() => geminiBrowser.reload());
         else if (p === 'codegpt') { const win = ensureCodegpt(); win.webContents.reload(); }
         else { const win = ensureBrowser(); win.webContents.reload(); }
     });
@@ -2728,6 +3024,7 @@ function installIpc() {
     listen('sign-out', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') void signOutChatgpt();
+        else if (p === 'gemini') runGeminiBrowser(() => geminiBrowser.signOut());
         else if (p === 'codegpt') void signOutCodegpt();
         else void signOutBrowser();
     });

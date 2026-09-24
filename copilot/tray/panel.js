@@ -42,16 +42,18 @@ async function refresh() {
         const isEndpoint = st.provider === 'endpoint';
         const isChatgpt = st.provider === 'chatgpt';
         const isCodegpt = st.provider === 'codegpt';
+        const isGemini = st.provider === 'gemini';
         updateModelOptions(st.models || [], st.model);
         const pill = $('#pill');
         pill.classList.toggle('ok', !!st.signedIn);
         pill.classList.toggle('bad', !st.signedIn);
-        $('#pill-text').textContent = st.signedIn ? (isEndpoint ? 'online' : 'signed in') : 'not ready';
+        $('#pill-text').textContent = st.signedIn ? (isEndpoint ? 'online' : isGemini ? 'ready' : 'signed in') : 'not ready';
         $('#connection-error').textContent = st.why || '';
         pill.title = st.why || '';
         $('#st-session').textContent = isEndpoint
             ? (st.model || st.models?.[0] || 'Free endpoints')
-            : isChatgpt ? 'ChatGPT' : isCodegpt ? (st.model || 'CodeGPT economy') : 'Microsoft 365 Copilot';
+            : isChatgpt ? 'ChatGPT' : isCodegpt ? (st.model || 'CodeGPT economy')
+                : isGemini ? 'Gemini (web)' : 'Microsoft 365 Copilot';
         $('#st-port').textContent = st.bridgeUp ? (st.bridgePort + ' listening') : 'DOWN';
         $('#st-visible').textContent = st.browserVisible ? 'visible' : 'hidden';
         $('#st-last').textContent = ago(st.lastReplyAt);
@@ -63,7 +65,8 @@ async function refresh() {
         const tileSub = $('#tile-window-sub');
         if (tileLabel && tileSub) {
             tileLabel.textContent = st.browserVisible ? 'Hide Browser' : 'Browser';
-            const providerName = isEndpoint ? 'Endpoint' : isChatgpt ? 'ChatGPT' : isCodegpt ? 'CodeGPT' : 'Copilot';
+            const providerName = isEndpoint ? 'Endpoint' : isChatgpt ? 'ChatGPT'
+                : isCodegpt ? 'CodeGPT' : isGemini ? 'Gemini' : 'Copilot';
             tileSub.textContent = st.browserVisible ? providerName + ' — running — click to hide' : providerName + ' — sign in / verify';
         }
     } catch (e) {
@@ -223,7 +226,8 @@ $('#btn-refresh-page').addEventListener('click', () => window.copilotTray.refres
 $('#btn-home').addEventListener('click', () => window.copilotTray.reloadBrowser());
 $('#btn-signout').addEventListener('click', () => {
     const prov = $('#provider').value;
-    const label = prov === 'chatgpt' ? 'ChatGPT' : prov === 'codegpt' ? 'CodeGPT' : 'Microsoft 365';
+    const label = prov === 'chatgpt' ? 'ChatGPT' : prov === 'codegpt' ? 'CodeGPT'
+        : prov === 'gemini' ? 'Gemini' : 'Microsoft 365';
     if (confirm('Clear the ' + label + ' session? You will need to sign in again.')) {
         window.copilotTray.signOut();
         setTimeout(refresh, 3000);
@@ -273,14 +277,15 @@ async function loadSettings() {
         const pickModel = config.provider === 'endpoint' || config.provider === 'codegpt';
         $('#endpoint-model').hidden = $('#model-label').hidden = !pickModel;
         $('#endpoint-settings').hidden = config.provider !== 'endpoint';
-        // Copilot/ChatGPT/CodeGPT home button label
+        // The selected browser provider controls the home button label.
         const homeBtn = $('#btn-home');
         if (homeBtn) {
             const svg = homeBtn.querySelector('svg');
             homeBtn.textContent = '';
             if (svg) homeBtn.appendChild(svg);
             const homeLabel = config.provider === 'chatgpt' ? 'ChatGPT home'
-                : config.provider === 'codegpt' ? 'CodeGPT home' : 'Copilot home';
+                : config.provider === 'codegpt' ? 'CodeGPT home'
+                    : config.provider === 'gemini' ? 'Gemini home' : 'Copilot home';
             homeBtn.appendChild(document.createTextNode(homeLabel));
         }
         await refresh();
@@ -294,7 +299,13 @@ async function saveSettings(value) {
         return true;
     } catch (error) { $('#endpoint-feedback').textContent = error.message; return false; }
 }
-$('#provider').addEventListener('change', () => saveSettings({ provider: $('#provider').value }));
+$('#provider').addEventListener('change', () => {
+    // A provider switch starts a new MiniChat context, so a new request to
+    // Gemini cannot accidentally include a prior provider's chat history.
+    messages = [];
+    renderChat();
+    void saveSettings({ provider: $('#provider').value });
+});
 $('#endpoint-model').addEventListener('change', () => saveSettings({ model: $('#endpoint-model').value }));
 $('#endpoint-save').addEventListener('click', async () => {
     $('#endpoint-feedback').textContent = 'Connecting…';

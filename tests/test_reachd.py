@@ -151,6 +151,33 @@ class SettingsTests(unittest.TestCase):
             reachd.validate_settings(cfg)
 
 
+class GeminiBridgeAliasTests(unittest.TestCase):
+    def test_web_ui_alias_stays_private_until_tray_sign_in_is_verified(self):
+        spec = reachd.DEFAULT_SETTINGS["models"]["gemini-chat"]
+        self.assertEqual(spec["upstream"], "bridge/gemini-chat")
+        self.assertFalse(spec["enabled"])
+        self.assertFalse(spec["public"])
+        reachd.validate_settings(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)))
+
+    def test_saved_model_choices_survive_additive_default_merge(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.json"
+            path.write_text(json.dumps({"models": {"gpt-4o": {
+                "upstream": "codegpt/codegpt-gpt-4o"}}}), encoding="utf-8")
+            self.assertFalse(reachd.load_config(path)["models"]["gemini-chat"]["enabled"])
+
+            path.write_text(json.dumps({"models": {"gemini-chat": {
+                "upstream": "bridge/gemini-chat", "enabled": True, "public": True}}}),
+                encoding="utf-8")
+            saved = reachd.load_config(path)["models"]["gemini-chat"]
+            self.assertTrue(saved["enabled"])
+            self.assertTrue(saved["public"])
+
+            path.write_text(json.dumps({"models": {},
+                "_removed_models": ["gemini-chat"]}), encoding="utf-8")
+            self.assertNotIn("gemini-chat", reachd.load_config(path)["models"])
+
+
 class CodegptEconomyTests(unittest.TestCase):
     """The endpoint's CodeGPT economy aliases.
 

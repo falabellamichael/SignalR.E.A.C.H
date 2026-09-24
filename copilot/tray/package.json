@@ -25,6 +25,8 @@
       "main.js",
       "endpoint.js",
       "bridge.js",
+      "economy-models.js",
+      "gemini.js",
       "preload.js",
       "panel.html",
       "panel.js",

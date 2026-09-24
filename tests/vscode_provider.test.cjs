@@ -18,6 +18,7 @@ function host(values, response, workspace = {}, api = {}) {
  vm.runInNewContext(source+'\nmodule.exports.TestProvider=ReachChatViewProvider; module.exports.testConfig=config;',context,{filename:extensionPath});
  const provider=new context.module.exports.TestProvider({fsPath:'/extension'});
  provider._ideBridge={handles:()=>false}; // Legacy provider tests; bridge activation is covered separately.
+ provider._secrets={store:async()=>{}};
  provider._post=(type,payload)=>posts.push({type,...payload});
  let receive;
  provider._html=()=>'';
@@ -131,6 +132,21 @@ test('VS Code Copilot uses its bridge/model and never sends the free endpoint ke
  assert.equal(h.calls[0].options.headers.Authorization,undefined);
  assert.equal(h.posts.find(p=>p.type==='delta').text,'COPILOT OK');
  assert.ok(h.posts.some(p=>p.type==='done'));
+});
+
+test('Gemini provider lists only its model and sends selected chats to the local tray',async()=>{
+ const h=host({provider:'gemini',additionalEndpoints:['https://second.example/v1']},(url)=>
+   url.endsWith('/models')
+     ? new Response(JSON.stringify({data:['copilot-chat','chatgpt-chat','gemini-chat','codegpt-eco'].map(id=>({id}))}))
+     : new Response(JSON.stringify({choices:[{message:{content:'GEMINI OK'}}]})));
+ const catalog=await h.provider._discoverModels(h.readConfig());
+ assert.deepEqual(Array.from(catalog.routes.keys()),['gemini-chat']);
+ assert.ok(h.calls.every(call=>call.url.startsWith('http://127.0.0.1:21302/')));
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'old-free-model',stream:false});
+ assert.equal(h.calls.at(-1).url,'http://127.0.0.1:21302/v1/chat/completions');
+ assert.equal(JSON.parse(h.calls.at(-1).options.body).model,'gemini-chat');
+ assert.equal(h.calls.at(-1).options.headers.Authorization,undefined);
+ assert.equal(h.posts.find(p=>p.type==='done').full,'GEMINI OK');
 });
 
 test('VS Code shows streaming provider errors and retains prefixed model IDs',async()=>{

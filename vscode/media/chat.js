@@ -1796,6 +1796,7 @@
     others.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
     others.appendChild(new Option('ChatGPT', 'chatgpt'));
     others.appendChild(new Option('CodeGPT economy models', 'codegpt'));
+    others.appendChild(new Option('Gemini web', 'gemini'));
     providerSelect.appendChild(others);
     providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
   }

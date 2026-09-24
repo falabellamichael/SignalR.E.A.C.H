@@ -23,6 +23,36 @@
         const body = el('div', 'reach-stack');
         container.appendChild(body);
 
+        const startCard = el('section', 'reach-card');
+        startCard.appendChild(el('header', 'reach-card-head', 'Endpoint hosting'));
+        const startBody = el('div', 'reach-card-body');
+        startBody.appendChild(el('p', 'reach-copy',
+            'Start or restore the local relay and public tunnel with one click.'));
+        const startBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Start Endpoint');
+        const startResult = el('div', 'reach-result');
+        startResult.hidden = true;
+        startBtn.addEventListener('click', () => {
+            startBtn.disabled = true;
+            startResult.hidden = false;
+            startResult.textContent = 'Starting relay and public tunnel…';
+            core.startEndpoint()
+                .then(data => {
+                    startResult.className = 'reach-result reach-result-ok';
+                    startResult.textContent = 'Ready: ' + data.public_url + '/v1';
+                    toast('Endpoint ready', 'ok');
+                })
+                .catch(err => {
+                    startResult.className = 'reach-result reach-result-error';
+                    startResult.textContent = 'Start failed: ' + err.message;
+                    toast('Endpoint could not start', 'error');
+                })
+                .finally(() => { startBtn.disabled = false; });
+        });
+        startBody.appendChild(startBtn);
+        startBody.appendChild(startResult);
+        startCard.appendChild(startBody);
+        body.appendChild(startCard);
+
         const urlCard = el('section', 'reach-card');
         urlCard.appendChild(el('header', 'reach-card-head', 'Base URL'));
         const urlRow = el('div', 'reach-url-row');

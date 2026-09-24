@@ -182,7 +182,7 @@ function createEndpointClient(settingsPath) {
     let inFlight = null;
 
     function validate(value) {
-        if (!['endpoint', 'copilot', 'chatgpt', 'codegpt'].includes(value.provider)) throw new Error('Choose Free endpoints, Microsoft 365 Copilot, ChatGPT, or CodeGPT economy models.');
+        if (!['endpoint', 'copilot', 'chatgpt', 'codegpt', 'gemini'].includes(value.provider)) throw new Error('Choose Free endpoints, Microsoft 365 Copilot, ChatGPT, CodeGPT economy models, or Gemini.');
         const endpoint = endpointUrl(value.endpoint || DEFAULT_POINTER).toString();
         return { provider: value.provider, endpoint, model: String(value.model || '').trim().slice(0, 200) };
     }

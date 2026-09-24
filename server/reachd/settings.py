@@ -112,6 +112,16 @@ DEFAULT_SETTINGS = {
             "description": "Google Gemini 3.7 Flash (via OmniRoute)",
             "min_output_tokens": 1024,
         },
+        # Gemini's consumer web UI is driven by the local tray. Keep this
+        # route dormant until that dedicated browser session is signed in and
+        # verified, then enable/public it in the saved relay settings.
+        "gemini-chat": {
+            **MODEL_SPEC_DEFAULTS,
+            "upstream": "bridge/gemini-chat",
+            "enabled": False,
+            "public": False,
+            "description": "Experimental Gemini web UI via local tray (sign in before enabling)",
+        },
     },
     # ---- rate limits ----
     "rate_limits": {

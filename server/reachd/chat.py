@@ -312,7 +312,7 @@ def chat_execute(h):
     circuit = "bridge" if use_bridge else "omniroute"
     if core.STATE.circuit_open(circuit):
         h._json(503, {"error": {"message":
-                                "The CodeGPT bridge is in a failure cool-down — retry shortly."
+                                "The local tray bridge is in a failure cool-down — retry shortly."
                                 if use_bridge else
                                 "Upstream is in a failure cool-down — retry shortly.",
                                 "type": "server_error",
@@ -442,7 +442,7 @@ def chat_execute(h):
                                request_body=request_body)
                 h._relay_upstream_error(
                     last_error,
-                    "CodeGPT bridge rejected the request" if use_bridge
+                    "Local tray bridge rejected the request" if use_bridge
                     else "OmniRoute rejected the request")
                 return None
             core.STATE.note_failure(circuit)
@@ -454,7 +454,7 @@ def chat_execute(h):
                            request_body=request_body)
             h._relay_upstream_error(
                 last_error,
-                "CodeGPT bridge unreachable (is the SignalREACH tray running?)"
+                "Local tray bridge unreachable (is the SignalREACH tray running?)"
                 if use_bridge else "OmniRoute unreachable")
             return None
     finally:
