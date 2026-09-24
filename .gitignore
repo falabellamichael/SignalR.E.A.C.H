@@ -49,3 +49,13 @@ dist/
 # produced while working. ~40MB across hundreds of files, including whole-tree
 # pre-change snapshots. Untracked but NOT ignored, so `git add -A` swept it in.
 .files-work/
+
+# Installed JavaScript dependencies at any project level.
+node_modules/
+
+# Personal wallet data and recovery exports (wallet tooling remains source).
+wallet.json
+wallet.previous-*.json
+.wallet-pending-*.json
+.backup-check.json
+RCH-Wallet-Backup/

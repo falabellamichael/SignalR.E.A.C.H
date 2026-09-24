@@ -1,0 +1,11 @@
+{
+  "chainId": 11155111,
+  "deployer": "REPLACE_WITH_PUBLIC_DEPLOYER_ADDRESS",
+  "admin": "REPLACE_WITH_PUBLIC_ADMINISTRATOR_ADDRESS",
+  "treasury": "REPLACE_WITH_PUBLIC_TREASURY_ADDRESS",
+  "feed": "REPLACE_WITH_VERIFIED_ETH_USD_FEED_ADDRESS",
+  "maxOracleAgeSeconds": 7200,
+  "minEthUsd": "100",
+  "maxEthUsd": "100000",
+  "maxDeploymentFeeEth": "0.02"
+}
