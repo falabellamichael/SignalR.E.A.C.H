@@ -1,0 +1,15 @@
+{
+  "copilot/tray/main.js": 3550,
+  "server/reachd/chat.py": 1350,
+  "server/reachd/handler.py": 1500,
+  "server/reachd/settings.py": 1200,
+  "src/reach.js": 1500,
+  "studio/agent/code-index.cjs": 1450,
+  "studio/agent/team-runner.cjs": 850,
+  "studio/agent/test-loop.cjs": 1350,
+  "studio/main.mjs": 5300,
+  "studio/preload.cjs": 250,
+  "studio/renderer/app.js": 6200,
+  "vscode/extension.js": 3500,
+  "vscode/media/chat.js": 3900
+}
