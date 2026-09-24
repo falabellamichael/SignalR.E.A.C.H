@@ -4,7 +4,7 @@
  * version details, reachd daemon connection info, build status, and license").
  *
  * Relay management is out of scope, so instead of reachd daemon connection
- * info this reports the configured OpenAI-compatible endpoint and the Reach CLI
+ * info this reports the configured OpenAI-compatible endpoint and native Reach compiler
  * version Studio can find — the same connection facts, honestly labelled.
  */
 (() => {
@@ -56,11 +56,11 @@
       row(els.list, 'Access key', s.accessKey ? 'set (hidden)' : 'none');
     } catch { row(els.list, 'Endpoint', 'settings unavailable'); }
 
-    // Reach CLI version, best effort: it may not be installed at all.
+    // Native Reach compiler version, best effort: it may not be installed.
     try {
       const v = await window.reach.getVersion();
-      row(els.build, 'Reach CLI', (v && (v.version || v.stdout || v.err)) || 'not found');
-    } catch { row(els.build, 'Reach CLI', 'not found'); }
+      row(els.build, 'Native Reach compiler', typeof v === 'string' ? v : 'not found');
+    } catch { row(els.build, 'Native Reach compiler', 'not found'); }
 
     if (!loaded) {
       loaded = true;

@@ -6,7 +6,7 @@
     workspace: 'Allow project file reads, edits and commands. Off blocks new access; previously shared conversation context remains.',
     think: 'Allow normal model reasoning. Off requests brief answers and disables Qwen thinking when supported. Provider limitations still apply.',
     web: 'Allow web search and in-app browser tools. This controls agent access; you can still browse manually.',
-    terminal: 'Allow shell and Reach CLI commands. Existing approval and edit-review rules still apply. Turning off blocks subsequent commands.',
+    terminal: 'Allow shell and native Reach compiler commands. Existing approval and edit-review rules still apply. Turning off blocks subsequent commands.',
   };
   let saving = false, modelAgentId = null;
   let manualHeight = 0, inputWidth = 0, appliedHeight = 0;

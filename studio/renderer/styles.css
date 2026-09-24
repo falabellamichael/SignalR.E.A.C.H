@@ -203,6 +203,39 @@ button:disabled { opacity: .45; cursor: default; }
   color: var(--text); font-family: Consolas, monospace; font-size: 13px; padding: 4px 2px;
 }
 
+/* Projects command sessions */
+.project-command-tabs-row {
+  display: flex; align-items: stretch; min-width: 0; flex-shrink: 0;
+  border-bottom: 1px solid var(--line); margin-bottom: -14px;
+}
+.project-command-tabs { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.project-command-tab-wrap { display: flex; align-items: stretch; flex: 0 0 auto; max-width: 190px; }
+.project-command-tab, .project-command-tab-close, .project-command-tab-add {
+  border-radius: 6px 6px 0 0; border-bottom: 0; padding: 6px 9px;
+  font-size: 11px; background: var(--panel); color: var(--dim);
+}
+.project-command-tab { display: flex; align-items: center; gap: 7px; min-width: 0; padding-right: 4px; }
+.project-command-tab[aria-selected="true"] { color: var(--text); border-color: var(--gold-dim); background: var(--surface); }
+.project-command-tab-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 128px; }
+.project-command-tab-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: var(--dim); }
+.project-command-tab-dot.starting, .project-command-tab-dot.running, .project-command-tab-dot.stopping { background: var(--gold); }
+.project-command-tab-dot.success { background: var(--ok); }
+.project-command-tab-dot.failed { background: var(--err); }
+.project-command-tab-close { border-left: 0; padding: 4px 7px; font-size: 14px; line-height: 1; }
+.project-command-tab-close:disabled { opacity: .35; }
+.project-command-tab-add { margin-left: 5px; font-size: 16px; line-height: 1; min-width: 30px; }
+.project-tab-status { color: var(--dim); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: -9px 0 -8px; }
+.project-run-split { display: flex; position: relative; flex-shrink: 0; }
+.project-run-split #btn-run { border-radius: 6px 0 0 6px; }
+.project-run-split #btn-run-options { border-radius: 0 6px 6px 0; border-left-color: var(--button-text); padding-left: 8px; padding-right: 8px; }
+.project-run-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 20;
+  width: 178px; padding: 4px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--panel); box-shadow: 0 10px 25px var(--scrim);
+}
+.project-run-menu button { display: block; width: 100%; border: 0; text-align: left; padding: 7px 9px; font-size: 11px; }
+.project-run-menu button:hover, .project-run-menu button:focus-visible { background: var(--surface); }
+
 /* log */
 .log {
   flex: 1; min-height: 0; overflow-y: auto;

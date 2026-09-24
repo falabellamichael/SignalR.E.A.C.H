@@ -55,6 +55,29 @@
 .home-field :is(input, select):disabled { opacity: .58; }
 .home-field input::placeholder, .home-chat-compose textarea::placeholder { color: var(--dim); }
 .home-field-note { min-height: 15px; color: var(--dim); font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.home-command-tab-bar { display: flex; align-items: stretch; min-width: 0; border-bottom: 1px solid var(--line); }
+.home-command-tabs { display: flex; align-items: stretch; gap: 3px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.home-command-tab-wrap { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 180px; border: 1px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--surface); }
+.home-command-tab-wrap:has(.home-command-tab[aria-selected="true"]) { border-color: var(--gold-dim); background: var(--panel2); }
+.home-command-tab { display: inline-flex; align-items: center; gap: 6px; min-width: 0; padding: 7px 5px 7px 9px; border: 0; color: var(--dim); font-size: 10px; white-space: nowrap; }
+.home-command-tab[aria-selected="true"] { color: var(--text); }
+.home-command-tab-dot { flex: 0 0 5px; height: 5px; border-radius: 50%; background: var(--dim); }
+.home-command-tab[data-state="running"] .home-command-tab-dot { background: var(--gold); box-shadow: 0 0 6px var(--gold); }
+.home-command-tab[data-state="success"] .home-command-tab-dot { background: var(--ok); }
+.home-command-tab[data-state="error"] .home-command-tab-dot { background: var(--err); }
+.home-command-tab-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.home-command-tab-close, .home-command-new-tab { flex: 0 0 auto; border: 0; color: var(--dim); font-size: 15px; line-height: 1; }
+.home-command-tab-close { padding: 5px 7px 5px 2px; }
+.home-command-tab-close:disabled { opacity: .35; cursor: not-allowed; }
+.home-command-tab-close:not(:disabled):hover, .home-command-new-tab:hover { color: var(--gold); }
+.home-command-new-tab { padding: 4px 9px; border: 1px solid var(--line); border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--surface); }
+.home-run-split { position: relative; display: inline-flex; align-items: stretch; }
+.home-run-split #home-command-run { border-radius: 6px 0 0 6px; }
+.home-run-split #home-command-run-more { min-width: 27px; padding-inline: 7px; border-left: 1px solid color-mix(in srgb, var(--surface) 30%, transparent); border-radius: 0 6px 6px 0; }
+.home-run-menu { position: absolute; z-index: 10; top: calc(100% + 4px); right: 0; min-width: 165px; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel2); box-shadow: 0 8px 24px var(--shadow); }
+.home-run-menu[hidden] { display: none; }
+.home-run-menu button { display: block; width: 100%; padding: 8px 9px; border: 0; border-radius: 4px; color: var(--text); font-size: 11px; text-align: left; white-space: nowrap; }
+.home-run-menu button:hover:not(:disabled) { background: var(--surface); color: var(--gold); }
 .home-command-row { display: flex; gap: 9px; align-items: end; }
 .home-command-mode-field { flex: 0 0 139px; }
 .home-command-entry { flex: 1; }

@@ -1,0 +1,4 @@
+node_modules/
+build/
+contract-info.json
+session-report*.json

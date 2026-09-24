@@ -64,8 +64,10 @@ conversation context, unavailable keys, uncertain results, oversized candidate
 pools, and service failures use your selected setup. Stop cancels routing. The
 composer and Activity show the chosen route; repeated decisions are cached.
 
-Use **Open Folder** to work with an existing project. **New Project → Create & Init**
-creates a new Reach DApp scaffold; it does not import another project's files.
+Use **Open Folder** to work with an existing project. **New Project → General project**
+creates an empty folder without Docker or a Reach compiler. **New Project → Reach DApp**
+initializes a Reach scaffold using the configured native compiler; it does not
+import another project's files.
 The Files panel loads the selected directory and expands folders on demand.
 Compiled Python bytecode (`.pyc`) and other binary files are not editable source.
 
@@ -73,12 +75,26 @@ The **Projects** command bar has two explicit modes. **Project command** runs a
 program in the selected directory, such as `git status`,
 `npm --prefix studio test`, or `python3 -m unittest discover -s tests -q`
 when this repository is selected. It launches the program directly, without a
-shell; pipes, redirects, and shell quoting are not interpreted. **Reach CLI**
-runs Reach DApp subcommands such as `version`, `compile index.rsh`, and `run
-index.rsh`. The Reach Compile, Reach Clean, and Reach Info buttons always use
-the optional Reach CLI. Both modes show output and exit status in the log, and
-**Stop** terminates the running process tree. Reach Compile requires
+shell; single or double quotes group arguments, but pipes, redirects, and shell
+expansion are not interpreted. **Native Reach** runs Reach DApp subcommands
+such as `version`,
+`compile index.rsh`, `init`, `clean`, and `info` through the locally built
+`reachc` compiler or Studio filesystem helpers. Select a Reach DApp project
+containing `index.rsh`, or run `init` in the intended folder before compiling.
+`run index.rsh` launches the compiled Node frontend using local Ganache at
+`http://127.0.0.1:8545` by default; start Ganache separately. The Reach
+Compile, Reach Clean, and Reach Info buttons use this native integration.
+Both modes show output and exit status in the log. Reach Compile requires
 `index.rsh` at the selected project's root.
+
+Projects and the Home mini Projects panel have terminal-style command tabs. The
+main **Run** button or Enter starts the current command; if its tab is busy,
+Studio opens a new tab so the existing process continues. **+** opens a blank
+tab. The arrow attached to Run only opens its menu; choose **Run in new tab**
+there to start a separate session explicitly. Each tab keeps its own output and
+exit status. **Stop** targets the selected tab's process tree. Switch tabs or
+views while Ganache runs; stop a running command before closing its tab. Closing
+the final Studio window or quitting the app stops active commands.
 
 ## Home
 
@@ -322,25 +338,54 @@ charcoal theme and a warm Solarized light theme with ivory backgrounds, white
 writing surfaces, and amber accents. The preference persists across launches and
 updates open editors without losing edits, selections, or undo history.
 
-## Optional Reach CLI integration
+## Native Reach compiler integration (Docker-free)
 
-The Projects command bar and agent tools share the same CLI configuration.
-On macOS and Linux, Studio finds `reach` on PATH, including `/opt/homebrew/bin`,
-`/usr/local/bin`, `~/.local/bin`, and `~/bin` when launched from Finder or a
-desktop launcher. Set
-**Settings → Connection → Reach CLI executable** to an existing executable
-if installed elsewhere. Paths containing spaces are supported. The environment
-variable `REACH_STUDIO_CLI` supplies a fallback path.
+Projects and the Home mini Projects panel run ordinary project commands directly
+in the selected folder without Docker. The **Native Reach** mode compiles Reach
+DApps with `reachc`, not the Docker-backed `reach` launcher. Build the official
+Reach compiler from source and set **Settings → Connection → Native Reach
+compiler (reachc) executable** to the resulting binary. On macOS and Linux,
+Studio also searches PATH, including `/opt/homebrew/bin`, `/usr/local/bin`,
+`~/.local/bin`, and `~/bin`. The environment variable `REACH_STUDIO_REACHC`
+provides a fallback. A setting pointing to an executable named `reach` is
+rejected because the official launcher still probes Docker in native mode.
 
-On Windows, Studio retains `wsl.exe -d Ubuntu -- /usr/local/bin/reach` by default;
-the executable setting refers to a path inside WSL Ubuntu.
+`compile index.rsh` maps to `reachc --disable-reporting index.rsh`; `version`
+uses `reachc --version`. `init` writes `index.rsh` and `index.mjs` starter files
+without overwriting existing files. `clean` removes `build/index.main.mjs`,
+matching the upstream default. `info` shows the native compiler and project
+source files. `run index.rsh` launches its already-compiled `index.mjs` with Node
+using `ETH-devnet` and `http://127.0.0.1:8545` by default. Start Ganache on that
+address first. `--connector` and `--node` override these defaults;
+`--connector` also accepts `ETH-live`, `ALGO-live`, or `ALGO-devnet`.
+`--node` currently supports Ethereum only. Install the frontend
+dependency in the selected project, using a version compatible with the compiler.
+For the native `reachc` 0.1.13 build, this Docker-free local Ethereum workflow
+has been verified with Ganache 7.9.2 and `@reach-sh/stdlib@0.1.13-rc.3`:
 
-The installer does not install the optional Reach language compiler, Solidity/Z3,
-WSL, or blockchain devnets. AI conversations, browser tools and file editing
-work independently. Missing CLI installations display a configuration hint.
-Shell tools use the native platform shell, and Stop terminates the subprocess
-tree for shell commands and Reach commands. macOS keeps the app in the Dock
-when its last window closes; clicking the Dock icon reopens the workspace.
+Select a Reach DApp project with `index.rsh`, create one through **New Project →
+Reach DApp**, or run `init` in the intended project folder. Then:
+
+1. In the project folder, run `npm install @reach-sh/stdlib@0.1.13-rc.3` in
+   **Project command** mode.
+2. Start Ganache in the **Home mini Projects** panel's **Project command** mode:
+   `ganache --server.host 127.0.0.1 --server.port 8545 --chain.chainId 1337 --logging.quiet`.
+   Keep that command running while testing the frontend.
+3. In **Projects → Native Reach**, run `compile index.rsh`, then
+   `run index.rsh`.
+
+Install Ganache with `npm install --global ganache@7.9.2` if it is not already
+available. Studio does not start Ganache for you. `clean`
+works even before reachc is installed. Native
+compilation gives Algorand's `goal` a temporary data directory when none is
+configured. On Windows, the compiler path is interpreted inside WSL Ubuntu.
+
+The installer does not bundle the Reach compiler, Z3, Solidity compiler, Node
+frontend dependencies, or a blockchain connector. AI conversations, browser
+tools and file editing work independently. Missing compiler installations show
+a configuration hint. Stop terminates native compiler or frontend processes.
+Shell tools use the native platform shell. macOS keeps the app in the Dock when
+its last window closes; clicking the Dock icon reopens the workspace.
 
 ## Test and build
 

@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { commandEnv, reachCommand, runCommand } = require('../agent/platform.cjs');
 const reach = require('../agent/reach-process.cjs');
-const { createReachToolExecutor } = require('../agent/reach-tool-executor.cjs');
+const { createReachToolExecutor, safeProjectPath, buildReachArgs } = require('../agent/reach-tool-executor.cjs');
 
 test('Finder PATH contains Apple Silicon, Intel and user executables without replacing inherited values', () => {
   const env = commandEnv({ PATH: '/custom/bin:/usr/bin', KEEP: 'yes' }, 'darwin', '/Users/test person');
@@ -15,10 +15,10 @@ test('Finder PATH contains Apple Silicon, Intel and user executables without rep
   assert.deepEqual(commandEnv({ Path: 'C:\\bin' }, 'win32'), { Path: 'C:\\bin' });
 });
 test('Mac/Linux commands preserve argument boundaries and Windows retains WSL', () => {
-  assert.deepEqual(reachCommand(['run', 'a b.rsh'], { reachCli: '/Users/test person/reach' }, 'darwin'), { command: '/Users/test person/reach', args: ['run', 'a b.rsh'] });
-  assert.equal(reachCommand([], {}, 'linux', { REACH_STUDIO_CLI: '/bin/my-reach' }).command, '/bin/my-reach');
-  assert.deepEqual(reachCommand(['version'], {}, 'win32'), { command: 'wsl.exe', args: ['-d', 'Ubuntu', '--', '/usr/local/bin/reach', 'version'] });
-  assert.equal(reachCommand([], { reachCli: '/custom/reach' }, 'win32').args[3], '/custom/reach');
+  assert.deepEqual(reachCommand(['index.rsh'], { reachCli: '/Users/test person/reachc' }, 'darwin'), { command: '/Users/test person/reachc', args: ['index.rsh'] });
+  assert.equal(reachCommand([], {}, 'linux', { REACH_STUDIO_REACHC: '/bin/reachc' }).command, '/bin/reachc');
+  assert.deepEqual(reachCommand(['--version'], {}, 'win32'), { command: 'wsl.exe', args: ['-d', 'Ubuntu', '--', 'reachc', '--version'] });
+  assert.equal(reachCommand([], { reachCli: '/custom/reachc' }, 'win32').args[3], '/custom/reachc');
 });
 test('commands execute from directories with spaces and preserve literal arguments', async t => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'reach space '));
@@ -64,19 +64,23 @@ test('Stop kills shell descendants, including children inheriting pipes', { skip
   await new Promise(r => setTimeout(r, 1100));
   assert.equal(fs.existsSync(marker), false, 'descendant cannot continue writing after Stop');
 });
-test('Reach pub/sub uses configured native executable and reports exit', { skip: process.platform === 'win32' }, async t => {
-  reach.configure(() => ({ reachCli: process.execPath }));
-  t.after(() => { reach.killAllRuns(); reach.configure(() => ({})); });
-  const events = [];
-  await new Promise(resolve => {
-    const id = reach.runReach({ cwd: os.tmpdir(), args: ['-e', 'console.log("reach fixture")'] });
+test('Reach pub/sub maps compile directly to reachc without a Docker launcher', { skip: process.platform === 'win32' }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'native-reach-'));
+  const executable = path.join(root, 'reachc');
+  fs.writeFileSync(executable, '#!/bin/sh\nprintf "%s\\n" "$@"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, 'sample.rsh'), "'reach 0.1';\n");
+  reach.configure(() => ({ reachCli: executable }));
+  t.after(() => { reach.killAllRuns(); reach.configure(() => ({})); fs.rmSync(root, { recursive: true, force: true }); });
+  const events = await new Promise(resolve => {
+    const seen = [];
+    const id = reach.runReach({ cwd: root, args: ['compile', 'sample.rsh'] });
     const detach = reach.onRunEvent(event => {
       if (event.runId !== id) return;
-      events.push(event);
-      if (event.type === 'exit') { detach(); resolve(); }
+      seen.push(event);
+      if (event.type === 'exit') { detach(); resolve(seen); }
     });
   });
-  assert.match(events.find(e => e.type === 'output').data, /reach fixture/);
+  assert.match(events.filter(e => e.type === 'output').map(e => e.data).join(''), /--disable-reporting\nsample.rsh/);
   assert.equal(events.at(-1).code, 0);
 });
 test('Projects commands run directly in the selected folder and report launch errors', async t => {
@@ -99,24 +103,235 @@ test('Projects commands run directly in the selected folder and report launch er
   assert.equal(missing.at(-1).launchError, true);
   assert.throws(() => reach.runProject({ cwd, args: [] }), /enter a command/);
 });
+test('project commands can run concurrently and Stop targets one run', async t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'reach parallel commands '));
+  const events = [];
+  const detach = reach.onRunEvent(event => events.push(event));
+  t.after(() => { reach.killAllRuns(); detach(); fs.rmSync(cwd, { recursive: true, force: true }); });
+  const first = reach.runProject({ cwd, args: [process.execPath, '-e', 'console.log("LONG_READY");setInterval(()=>{},1000)'] });
+  const second = reach.runProject({ cwd, args: [process.execPath, '-e', 'console.log("SHORT_DONE")'] });
+  assert.notEqual(first, second);
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && !(
+    events.some(event => event.runId === first && event.type === 'output' && event.data.includes('LONG_READY')) &&
+    events.some(event => event.runId === second && event.type === 'exit')
+  )) await new Promise(resolve => setTimeout(resolve, 10));
+  assert.ok(events.some(event => event.runId === first && event.type === 'output' && event.data.includes('LONG_READY')));
+  assert.ok(events.some(event => event.runId === second && event.type === 'output' && event.data.includes('SHORT_DONE')));
+  assert.equal(events.find(event => event.runId === second && event.type === 'exit')?.code, 0);
+  assert.equal(events.some(event => event.runId === first && event.type === 'exit'), false, 'long run survives the second command');
+  assert.equal(reach.killRun(first), true);
+  const stoppedDeadline = Date.now() + 5000;
+  while (Date.now() < stoppedDeadline && !events.some(event => event.runId === first && event.type === 'exit'))
+    await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(events.find(event => event.runId === first && event.type === 'exit')?.stopped, true);
+});
 test('optional CLI status supports executable paths with spaces', { skip: process.platform === 'win32' }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach cli '));
-  const executable = path.join(root, 'reach fixture');
-  fs.writeFileSync(executable, '#!/bin/sh\n[ "$1" = version ] && echo "reach 0.1.fixture"\n', { mode: 0o755 });
+  const executable = path.join(root, 'reachc');
+  fs.writeFileSync(executable, '#!/bin/sh\n[ "$1" = --version ] && echo "reachc 0.1.13"\n', { mode: 0o755 });
   reach.configure(() => ({ reachCli: executable }));
   t.after(() => { reach.configure(() => ({})); fs.rmSync(root, { recursive: true, force: true }); });
-  assert.equal(await reach.reachVersion(), 'reach 0.1.fixture');
+  assert.equal(await reach.reachVersion(), 'reachc 0.1.13');
   reach.configure(() => ({ reachCli: path.join(root, 'missing') }));
-  assert.match(await reach.reachVersion(), /Optional Reach CLI unavailable.*Settings/);
+  assert.match(await reach.reachVersion(), /Native Reach compiler unavailable.*Settings/);
 });
 test('Reach agent tools honour Stop', { skip: process.platform === 'win32' }, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-stop-'));
-  const executable = path.join(root, 'reach');
+  const executable = path.join(root, 'reachc');
   fs.writeFileSync(executable, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, 'index.rsh'), "'reach 0.1';\n");
   reach.configure(() => ({ reachCli: executable }));
   t.after(() => { reach.killAllRuns(); reach.configure(() => ({})); fs.rmSync(root, { recursive: true, force: true }); });
   const controller = new AbortController();
   const promise = createReachToolExecutor()('reach.compile', {}, { projectDir: root, signal: controller.signal });
   setTimeout(() => controller.abort(), 100);
   assert.equal((await promise).ok, false);
+});
+
+test('native compile explains a missing source in the selected project', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-missing-source-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.throws(() => reach.runReach({ cwd: root, args: ['compile', 'index.rsh'] }),
+    error => error.message.includes(root) && /file not found.*Native Reach init.*Ganache supplies a node for run, not compile/.test(error.message));
+  assert.throws(() => reach.runReach({ cwd: root, args: ['compile'] }), /Cannot compile index.rsh: file not found/);
+});
+
+test('native init and clean work without Docker and preserve unrelated build files', { skip: process.platform === 'win32' }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-native-project-'));
+  const executable = path.join(root, 'reachc');
+  fs.writeFileSync(executable, '#!/bin/sh\ncase "$1" in --numeric-version) echo 0.1.13;; --version) echo "reachc 0.1.13";; esac\n', { mode: 0o755 });
+  reach.configure(() => ({ reachCli: executable }));
+  t.after(() => { reach.killAllRuns(); reach.configure(() => ({})); fs.rmSync(root, { recursive: true, force: true }); });
+  const collect = args => new Promise(resolve => {
+    const events = [];
+    const id = reach.runReach({ cwd: root, args });
+    const detach = reach.onRunEvent(event => {
+      if (event.runId !== id) return;
+      events.push(event);
+      if (event.type === 'exit') { detach(); resolve(events); }
+    });
+  });
+  assert.equal((await collect(['init'])).at(-1).code, 0);
+  assert.match(fs.readFileSync(path.join(root, 'index.rsh'), 'utf8'), /^'reach 0\.1';/);
+  assert.ok(fs.existsSync(path.join(root, 'index.mjs')));
+  assert.equal((await collect(['init'])).at(-1).code, 1, 'init refuses overwrite');
+  const build = path.join(root, 'build');
+  fs.mkdirSync(build);
+  fs.writeFileSync(path.join(build, 'index.main.mjs'), 'compiled');
+  fs.writeFileSync(path.join(build, 'keep.txt'), 'user file');
+  assert.equal((await collect(['clean'])).at(-1).code, 0);
+  assert.equal(fs.existsSync(path.join(build, 'index.main.mjs')), false);
+  assert.equal(fs.readFileSync(path.join(build, 'keep.txt'), 'utf8'), 'user file');
+  assert.equal((await collect(['info'])).at(-1).code, 0);
+});
+
+test('native Reach mode refuses the Docker-backed reach launcher', async () => {
+  reach.configure(() => ({ reachCli: '/tmp/reach' }));
+  try {
+    assert.match(await reach.reachVersion(), /configured `reach` launcher uses Docker/);
+    assert.throws(() => reach.runReach({ cwd: os.tmpdir(), args: ['version'] }), /launcher uses Docker/);
+  } finally { reach.configure(() => ({})); }
+});
+
+test('native run requires an existing frontend and backend', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-native-run-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run'] }), /Compile index.rsh first/);
+  fs.mkdirSync(path.join(root, 'build'));
+  fs.writeFileSync(path.join(root, 'index.mjs'), '');
+  fs.writeFileSync(path.join(root, 'build', 'index.main.mjs'), '');
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run'] }), /Compile index.rsh first/);
+});
+
+function collectReach(cwd, args) {
+  return new Promise(resolve => {
+    const events = [];
+    const id = reach.runReach({ cwd, args });
+    const detach = reach.onRunEvent(event => {
+      if (event.runId !== id) return;
+      events.push(event);
+      if (event.type === 'exit') { detach(); resolve(events); }
+    });
+  });
+}
+
+test('native compiler probe rejects empty, foreign, symlinked and copied Docker launchers', { skip: process.platform === 'win32' }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-compiler-check-'));
+  t.after(() => { reach.configure(() => ({})); fs.rmSync(root, { recursive: true, force: true }); });
+  const empty = path.join(root, 'empty');
+  fs.writeFileSync(empty, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  reach.configure(() => ({ reachCli: empty }));
+  assert.match(await reach.reachVersion(), /Unexpected native reachc version output/);
+  const foreign = path.join(root, 'foreign');
+  fs.writeFileSync(foreign, '#!/bin/sh\necho "other 1.0"\n', { mode: 0o755 });
+  reach.configure(() => ({ reachCli: foreign }));
+  assert.match(await reach.reachVersion(), /Unexpected native reachc version output/);
+  const launcher = path.join(root, 'reach');
+  fs.writeFileSync(launcher, '#!/bin/sh\necho "reachc 0.1.13"\n', { mode: 0o755 });
+  const linked = path.join(root, 'reachc');
+  fs.symlinkSync(launcher, linked);
+  reach.configure(() => ({ reachCli: linked }));
+  assert.match(await reach.reachVersion(), /resolves to the Docker-backed/);
+  fs.unlinkSync(linked);
+  fs.writeFileSync(linked, '#!/bin/sh\nIMG=reachsh/reach-cli:latest\necho "reachc 0.1.13"\n', { mode: 0o755 });
+  assert.match(await reach.reachVersion(), /script invokes the Docker-backed/);
+});
+
+test('native clean refuses a build symlink outside the project', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-clean-root-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-clean-outside-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); });
+  const target = path.join(outside, 'index.main.mjs');
+  fs.writeFileSync(target, 'keep');
+  fs.symlinkSync(outside, path.join(root, 'build'));
+  const events = await collectReach(root, ['clean']);
+  assert.equal(events.at(-1).code, 1);
+  assert.match(events.filter(e => e.channel === 'err').map(e => e.data).join(''), /outside the selected project/);
+  assert.equal(fs.readFileSync(target, 'utf8'), 'keep');
+});
+
+test('native run passes connector/node settings to Node without inheriting Finder environment', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-run-root-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, 'build'));
+  fs.mkdirSync(path.join(root, 'node_modules', '@reach-sh', 'stdlib'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'node_modules', '@reach-sh', 'stdlib', 'package.json'), '{"name":"@reach-sh/stdlib","main":"index.js"}');
+  fs.writeFileSync(path.join(root, 'node_modules', '@reach-sh', 'stdlib', 'index.js'), '');
+  fs.writeFileSync(path.join(root, 'index.rsh'), "'reach 0.1';\n");
+  fs.writeFileSync(path.join(root, 'build', 'index.main.mjs'), '');
+  fs.writeFileSync(path.join(root, 'index.mjs'), 'console.log(JSON.stringify({mode:process.env.REACH_CONNECTOR_MODE,node:process.env.ETH_NODE_URI,args:process.argv.slice(2)}))');
+  const priorConnector = process.env.REACH_CONNECTOR_MODE;
+  const priorNode = process.env.ETH_NODE_URI;
+  delete process.env.REACH_CONNECTOR_MODE;
+  delete process.env.ETH_NODE_URI;
+  t.after(() => {
+    if (priorConnector === undefined) delete process.env.REACH_CONNECTOR_MODE;
+    else process.env.REACH_CONNECTOR_MODE = priorConnector;
+    if (priorNode === undefined) delete process.env.ETH_NODE_URI;
+    else process.env.ETH_NODE_URI = priorNode;
+  });
+  const local = await collectReach(root, ['run', 'index.rsh']);
+  assert.equal(local.at(-1).code, 0);
+  assert.deepEqual(JSON.parse(local.filter(e => e.channel === 'out').map(e => e.data).join('')),
+    { mode: 'ETH-devnet', node: 'http://127.0.0.1:8545', args: [] });
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run', 'index.rsh', '--connector', 'ETH-live'] }),
+    /ETH-live needs --node URI or ETH_NODE_URI/);
+  process.env.ETH_NODE_URI = 'http://127.0.0.1:8546';
+  const inheritedNode = await collectReach(root, ['run', 'index.rsh']);
+  assert.deepEqual(JSON.parse(inheritedNode.filter(e => e.channel === 'out').map(e => e.data).join('')),
+    { mode: 'ETH-devnet', node: 'http://127.0.0.1:8546', args: [] });
+  process.env.REACH_CONNECTOR_MODE = 'ALGO-live';
+  const explicitConnector = await collectReach(root, ['run', 'index.rsh', '--connector', 'ETH-devnet']);
+  assert.deepEqual(JSON.parse(explicitConnector.filter(e => e.channel === 'out').map(e => e.data).join('')),
+    { mode: 'ETH-devnet', node: 'http://127.0.0.1:8546', args: [] });
+  const events = await collectReach(root, ['run', 'index.rsh', '--connector', 'ETH-live', '--node', 'http://127.0.0.1:8545', '--', 'hello']);
+  assert.equal(events.at(-1).code, 0);
+  const output = events.filter(e => e.channel === 'out').map(e => e.data).join('');
+  assert.deepEqual(JSON.parse(output), { mode: 'ETH-live', node: 'http://127.0.0.1:8545', args: ['hello'] });
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run', '--connector', 'ALGO-live', '--node', 'http://127.0.0.1:4001'] }), /ETH only/);
+});
+
+test('native run and agent source tools reject symlink escapes', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-safe-root-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-safe-outside-'));
+  t.after(() => { fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); });
+  fs.mkdirSync(path.join(root, 'build'));
+  fs.writeFileSync(path.join(root, 'index.mjs'), '');
+  fs.writeFileSync(path.join(root, 'build', 'index.main.mjs'), '');
+  fs.writeFileSync(path.join(outside, 'index.rsh'), "'reach 0.1';\n");
+  fs.symlinkSync(path.join(outside, 'index.rsh'), path.join(root, 'index.rsh'));
+  assert.equal(safeProjectPath(root, 'index.rsh'), null);
+  assert.equal(buildReachArgs('reach.compile', { path: '../index.rsh' }), null);
+  const agentResult = await createReachToolExecutor()('reach.compile', { path: 'index.rsh' }, { projectDir: root });
+  assert.equal(agentResult.ok, false);
+  assert.match(agentResult.error, /outside the project/);
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run', 'index.rsh', '--connector', 'ETH-devnet'] }), /source resolves outside/);
+  fs.unlinkSync(path.join(root, 'index.rsh'));
+  fs.writeFileSync(path.join(root, 'index.rsh'), "'reach 0.1';\n");
+  fs.writeFileSync(path.join(outside, 'index.mjs'), '');
+  fs.unlinkSync(path.join(root, 'index.mjs'));
+  fs.symlinkSync(path.join(outside, 'index.mjs'), path.join(root, 'index.mjs'));
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run', 'index.rsh', '--connector', 'ETH-devnet'] }), /frontend resolves outside/);
+  fs.unlinkSync(path.join(root, 'index.mjs'));
+  fs.writeFileSync(path.join(root, 'index.mjs'), '');
+  fs.writeFileSync(path.join(outside, 'index.main.mjs'), '');
+  fs.unlinkSync(path.join(root, 'build', 'index.main.mjs'));
+  fs.symlinkSync(path.join(outside, 'index.main.mjs'), path.join(root, 'build', 'index.main.mjs'));
+  assert.throws(() => reach.runReach({ cwd: root, args: ['run', 'index.rsh', '--connector', 'ETH-devnet'] }), /backend resolves outside/);
+});
+
+test('native compile supplies temporary ALGORAND_DATA for goal without a node', { skip: process.platform === 'win32' }, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-goal-env-'));
+  const executable = path.join(root, 'reachc');
+  fs.writeFileSync(executable, '#!/bin/sh\n[ -d "$ALGORAND_DATA" ] || exit 7\nprintf "%s\\n" "$ALGORAND_DATA"\n', { mode: 0o755 });
+  fs.writeFileSync(path.join(root, 'index.rsh'), "'reach 0.1';\n");
+  reach.configure(() => ({ reachCli: executable }));
+  t.after(() => { reach.configure(() => ({})); fs.rmSync(root, { recursive: true, force: true }); });
+  if (process.env.ALGORAND_DATA) return; // the caller's data directory is preserved
+  const events = await collectReach(root, ['compile', 'index.rsh']);
+  assert.equal(events.at(-1).code, 0);
+  const dataDir = events.filter(e => e.channel === 'out').map(e => e.data).join('').trim();
+  assert.match(dataDir, /reach-studio-goal-/);
+  assert.equal(fs.existsSync(dataDir), false, 'temporary goal data is removed after compile');
 });

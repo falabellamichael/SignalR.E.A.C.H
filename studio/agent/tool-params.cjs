@@ -51,7 +51,7 @@ const PARAMS = {
   'tests.quickfix': [command(true), a('paths', false, 400)],
 };
 
-// @fixed denotes a structured invocation of Studio's bundled Reach CLI. All
+// @fixed denotes a structured native Reach compiler invocation. All
 // other paths name argument fields that can reach a shell.
 const COMMAND_PATHS = {
   shell: ['command'],

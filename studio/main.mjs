@@ -525,14 +525,20 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('project:create', async (_e, { name, parent }) => {
+  ipcMain.handle('project:create', async (_e, { name, parent, kind = 'general' }) => {
     if (!name || !/^[A-Za-z0-9 _-]+$/.test(name)) return { ok: false, err: 'Invalid project name' };
+    if (!parent || !path.isAbsolute(parent) || !fs.existsSync(parent) || !fs.statSync(parent).isDirectory())
+      return { ok: false, err: 'Choose an existing project location' };
+    if (!['general', 'reach'].includes(kind)) return { ok: false, err: 'Invalid project type' };
     const dir = path.join(parent, name);
     if (fs.existsSync(dir)) return { ok: false, err: 'Folder already exists' };
-    try { fs.mkdirSync(dir, { recursive: true }); }
+    try { fs.mkdirSync(dir); }
     catch (e) { return { ok: false, err: e.message }; }
-    const runId = reachProcess.runReach({ cwd: dir, args: ['init'] });
-    return { ok: true, dir, runId };
+    if (kind === 'reach') {
+      const runId = reachProcess.runReach({ cwd: dir, args: ['init'] });
+      return { ok: true, dir, runId };
+    }
+    return { ok: true, dir, runId: null };
   });
 
   ipcMain.handle('project:list', (_e, dir) => {
@@ -2576,13 +2582,26 @@ app.whenReady().then(() => {
             await window.reach.getProjects();
             await window.reach.agents.list();
             document.querySelector('#btn-new').click();
-            if (document.querySelector('#modal').classList.contains('hidden')) {
+            if (document.querySelector('#modal').classList.contains('hidden'))
               throw new Error('New Project handler did not open the dialog');
-            }
-            document.querySelector('#btn-cancel').click();
-            if (!document.querySelector('#modal').classList.contains('hidden')) {
-              throw new Error('Cancel handler did not close the dialog');
-            }
+            if (document.querySelector('#new-kind').value !== 'general')
+              throw new Error('New Project did not default to General');
+            const generalDir = ${JSON.stringify(path.join(smokeRoot, 'General Smoke'))};
+            document.querySelector('#new-name').value = 'General Smoke';
+            document.querySelector('#new-parent').value = ${JSON.stringify(smokeRoot)};
+            // A General project must work even when no Reach compiler is available.
+            const wasReachAvailable = reachCliAvailable;
+            reachCliAvailable = false;
+            try { await document.querySelector('#btn-create').onclick(); }
+            finally { reachCliAvailable = wasReachAvailable; }
+            if (!document.querySelector('#modal').classList.contains('hidden'))
+              throw new Error('General project dialog did not close');
+            if (currentProject?.dir !== generalDir || projectPath.textContent !== generalDir)
+              throw new Error('General project was not selected');
+            if (projectCommandRuns.size || projectCommandPending.size || projectCommandCreating)
+              throw new Error('General project unexpectedly started a Reach run');
+            if (!(await window.reach.getProjects()).some(p => p.dir === generalDir))
+              throw new Error('General project was not saved');
             document.querySelector('#tab-projects').click();
             if (!document.querySelector('#page-projects').classList.contains('active')) {
               throw new Error('Projects tab did not activate');
@@ -2844,6 +2863,9 @@ app.whenReady().then(() => {
             return version;
           })()
         `);
+        const generalSmokeDir = path.join(smokeRoot, 'General Smoke');
+        if (!fs.statSync(generalSmokeDir).isDirectory() || fs.readdirSync(generalSmokeDir).length !== 0)
+          throw new Error('General project did not create an empty folder without a compiler');
         // Exercise actual team IPC, workers, renderer updates and cancellation
         // against synthetic files and a local endpoint, never private projects.
         fs.mkdirSync(path.join(smokeProject, 'slow'));
@@ -3224,13 +3246,18 @@ app.whenReady().then(() => {
             if (!commandMode || commandMode.value !== 'project') throw new Error('Project command mode is missing');
             commandMode.value = 'reach';
             commandMode.dispatchEvent(new Event('change'));
-            if (document.querySelector('#cmd-prompt').textContent !== 'reach') throw new Error('Reach command mode did not update its prompt');
+            if (document.querySelector('#cmd-prompt').textContent !== 'Reach') throw new Error('Reach command mode did not update its prompt');
             commandMode.value = 'project';
             commandMode.dispatchEvent(new Event('change'));
-            cmdInput.value = 'node --version';
+            // Exercise the visible Projects input through the parser, IPC and
+            // child process. Quoted code and a quoted argument must stay intact.
+            const projectLogOffset = logEl.textContent.length;
+            cmdInput.value = 'node -e "console.log( process.cwd(), process.argv[1] )" "PROJECTS quoted argument"';
             await document.querySelector('#btn-run').onclick();
-            await until(() => logEl.textContent.includes('process exited with code 0'));
-            if (!logEl.textContent.includes('$ node --version')) throw new Error('Project command did not run through the Projects log');
+            await until(() => logEl.textContent.slice(projectLogOffset).includes('process exited with code 0'));
+            const quotedProjectLog = logEl.textContent.slice(projectLogOffset);
+            if (!quotedProjectLog.includes(first + ' PROJECTS quoted argument'))
+              throw new Error('Projects command lost a quoted argument or ran in the wrong folder: ' + quotedProjectLog);
             cmdInput.value = 'reach-project-command-does-not-exist';
             await document.querySelector('#btn-run').onclick();
             await until(() => logEl.textContent.includes('command could not start'));
@@ -3331,6 +3358,63 @@ app.whenReady().then(() => {
             if (window.__errors.length) throw new Error('Renderer errors: ' + window.__errors.join('; '));
           })()
         `);
+        const projectTabs = await win.webContents.executeJavaScript(`(async () => {
+          const q = selector => document.querySelector(selector);
+          const tabs = () => [...document.querySelectorAll('#project-command-tabs [role="tab"]')];
+          const outputHas = marker => [...q('#log').querySelectorAll('.out')].some(line => line.textContent.includes(marker));
+          const waitFor = async (predicate, label) => {
+            const deadline = Date.now() + 6000;
+            while (!predicate()) {
+              if (Date.now() > deadline) throw new Error('Projects command tabs: ' + label);
+              await new Promise(resolve => setTimeout(resolve, 20));
+            }
+          };
+          await selectProject({ name: 'SimpleREACH', dir: ${JSON.stringify(smokeProject)} });
+          await showTab('projects');
+          q('#cmd-mode').value = 'project';
+          q('#cmd-mode').dispatchEvent(new Event('change'));
+          q('#cmd-input').value = 'node -e "console.log(314159265);setInterval(()=>{},1000)"';
+          q('#btn-run').click();
+          await waitFor(() => outputHas('314159265'), 'long command did not start');
+          const initialTabs = tabs().length;
+          q('#cmd-input').value = 'node -e "console.log(271828182)"';
+          q('#btn-run-options').click();
+          if (q('#project-run-menu').classList.contains('hidden') || tabs().length !== initialTabs)
+            throw new Error('Projects Run arrow must only open its menu');
+          q('#btn-run-new-tab').click();
+          await waitFor(() => outputHas('271828182') && q('#log').textContent.includes('process exited with code 0'),
+            'second command did not complete');
+          if (tabs().length !== initialTabs + 1 || !q('#project-run-menu').classList.contains('hidden'))
+            throw new Error('Projects Run in new tab did not create one independent tab');
+          return initialTabs;
+        })()`);
+        await new Promise(resolve => setTimeout(resolve, 80));
+        fs.writeFileSync(path.join(smokeRoot, 'project-command-tabs.png'), (await win.capturePage()).toPNG());
+        fs.copyFileSync(path.join(smokeRoot, 'project-command-tabs.png'), '/private/tmp/reach-studio-project-command-tabs.png');
+        await win.webContents.executeJavaScript(`(async () => {
+          const q = selector => document.querySelector(selector);
+          const tabs = () => [...document.querySelectorAll('#project-command-tabs [role="tab"]')];
+          const waitFor = async (predicate, label) => {
+            const deadline = Date.now() + 6000;
+            while (!predicate()) {
+              if (Date.now() > deadline) throw new Error('Projects command tabs: ' + label);
+              await new Promise(resolve => setTimeout(resolve, 20));
+            }
+          };
+          q('#project-tab-add').click();
+          if (tabs().length !== ${projectTabs} + 2 || q('#cmd-input').value)
+            throw new Error('Projects plus button did not create a blank tab');
+          tabs()[${projectTabs} - 1].click();
+          if (!q('#log').textContent.includes('314159265') || q('#btn-stop').classList.contains('hidden'))
+            throw new Error('Projects running tab lost its output or Stop control');
+          q('#btn-stop').click();
+          await waitFor(() => q('#log').textContent.includes('command stopped'), 'Stop did not target running tab');
+          tabs()[${projectTabs}].click();
+          if (!q('#log').textContent.includes('271828182') || !q('#btn-stop').classList.contains('hidden'))
+            throw new Error('Projects completed tab lost its result or remained active');
+        })()`);
+        console.log('PROJECT COMMAND TABS SMOKE OK: split Run menu, concurrent commands, per-tab output and Stop.');
+
         await win.webContents.executeJavaScript(`
           (async () => {
             const fixture = await reachApi.agents.create('Budget settings check', ${JSON.stringify(smokeProject)}, 'fixture');
@@ -4046,16 +4130,67 @@ app.whenReady().then(() => {
             await window.ReachHome.sync();
             const input = document.querySelector('#home-command-input');
             if (!document.querySelector('#home-project-select').value) return { err: 'Home has no selected project' };
-            input.value = 'node --version';
+            const projectDir = document.querySelector('#home-project-select').value;
+            const log = document.querySelector('#home-command-log');
+            const logOffset = log.textContent.length;
+            input.value = 'node -e "console.log( process.cwd(), process.argv[1] )" "HOME quoted argument"';
             input.dispatchEvent(new Event('input', { bubbles: true }));
             document.querySelector('#home-command-run').click();
             const end = Date.now() + 5000;
-            while (Date.now() < end && !document.querySelector('#home-command-log').textContent.includes('Process exited with code 0.')) {
+            while (Date.now() < end && !log.textContent.slice(logOffset).includes('Process exited with code 0.')) {
               await new Promise(resolve => setTimeout(resolve, 25));
             }
-            return { log: document.querySelector('#home-command-log').textContent };
+            return { log: log.textContent.slice(logOffset), projectDir };
           })()`);
-          if (homeCommand.err || !homeCommand.log.includes('Process exited with code 0.')) throw new Error('Home mini runner failed: ' + (homeCommand.err || homeCommand.log));
+          if (homeCommand.err || !homeCommand.log.includes('Process exited with code 0.')
+              || !homeCommand.log.includes(homeCommand.projectDir + ' HOME quoted argument'))
+            throw new Error('Home mini runner lost a quoted argument or ran in the wrong folder: ' + (homeCommand.err || homeCommand.log));
+
+          const homeTabs = await win.webContents.executeJavaScript(`(async () => {
+            const q = selector => document.querySelector(selector);
+            const tabs = () => [...document.querySelectorAll('#home-command-tabs .home-command-tab')];
+            const waitFor = async (predicate, label) => {
+              const deadline = Date.now() + 6000;
+              while (!predicate()) {
+                if (Date.now() > deadline) throw new Error('Home command tabs: ' + label);
+                await new Promise(resolve => setTimeout(resolve, 20));
+              }
+            };
+            const input = q('#home-command-input');
+            input.value = 'node -e "console.log(31415926);setInterval(()=>{},1000)"';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            q('#home-command-run').click();
+            await waitFor(() => [...q('#home-command-log').querySelectorAll('.home-command-line.out')].some(line => line.textContent.includes('31415926')), 'long command did not start');
+            const initialTabs = tabs().length;
+            input.value = 'node -e "console.log(27182818)"';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            q('#home-command-run-more').click();
+            if (q('#home-command-run-menu').hidden || tabs().length !== initialTabs)
+              throw new Error('Home Run arrow must only open its menu');
+            q('#home-command-run-new-tab').click();
+            await waitFor(() => q('#home-command-log').textContent.includes('27182818')
+              && q('#home-command-log').textContent.includes('Process exited with code 0.'), 'second command did not complete');
+            if (tabs().length !== initialTabs + 1 || !q('#home-command-run-menu').hidden)
+              throw new Error('Home Run in new tab did not create one independent tab');
+            tabs()[initialTabs - 1].click();
+            if (!q('#home-command-log').textContent.includes('31415926') || q('#home-command-stop').disabled)
+              throw new Error('Home running tab lost its output or Stop control');
+            q('#home-command-stop').click();
+            await waitFor(() => q('#home-command-log').textContent.includes('Command stopped.'), 'Stop did not target running tab');
+            tabs()[initialTabs].click();
+            if (!q('#home-command-log').textContent.includes('27182818') || !q('#home-command-stop').disabled)
+              throw new Error('Home completed tab lost its result or remained active');
+            q('#home-command-new-tab').click();
+            if (tabs().length !== initialTabs + 2 || input.value)
+              throw new Error('Home plus button did not create a blank command tab');
+            return tabs().length;
+          })()`);
+          await win.webContents.executeJavaScript(`document.querySelector('.home-scroll').scrollTop = 420`);
+          await new Promise(resolve => setTimeout(resolve, 80));
+          fs.writeFileSync(path.join(smokeRoot, 'home-command-tabs.png'), (await win.capturePage()).toPNG());
+          fs.copyFileSync(path.join(smokeRoot, 'home-command-tabs.png'), '/private/tmp/reach-studio-home-command-tabs.png');
+          await win.webContents.executeJavaScript(`document.querySelector('.home-scroll').scrollTop = 0`);
+          console.log('HOME COMMAND TABS SMOKE OK: ' + homeTabs + ' tabs, split Run menu, concurrent commands, per-tab output and Stop.');
 
           const homeServer = require('node:http').createServer((req, res) => {
             if (req.url === '/v1/models') {

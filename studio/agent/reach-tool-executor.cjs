@@ -2,18 +2,20 @@
 
 /* Reach Studio — first-class agent tools for the Reach language.
  *
- * Exposes the reach CLI as agent-callable tools with explicit contracts:
+ * Exposes native Reach compiler and project actions as agent-callable tools:
  *
- *   reach.compile {path?}        → reach compile <path||index.rsh>
- *   reach.run     {path?, args?} → reach run <path> [args...]
- *   reach.init    {}             → reach init
- *   reach.clean   {}             → reach clean
- *   reach.version {}             → reach version
+ *   reach.compile {path?}        → reachc <path||index.rsh>
+ *   reach.run     {path?, args?} → Node frontend after native compile
+ *   reach.init    {}             → write Reach starter files
+ *   reach.clean   {}             → remove compiled backend
+ *   reach.version {}             → reachc --version
  *
- * All of them use the platform-specific CLI against the agent's bound project directory via
+ * All use the agent's bound project directory via
  * reach-process.cjs. Exec-class tools require approval per the registry.
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
 const reachProcess = require('./reach-process.cjs');
 
 /* Sanitize a model-supplied project-relative path. The agent must never
@@ -26,7 +28,16 @@ function safeProjectPath(projectDir, requested) {
   // Disallow absolute paths, drive letters, WSL mounts, and parent traversal.
   if (/^([a-zA-Z]:[\\/]|\\\\|\/|~)/.test(s)) return null;
   if (/(^|[\\/])\.\.([\\/]|$)/.test(s)) return null;
-  return s.replace(/\\/g, '/');
+  const normalized = s.replace(/\\/g, '/');
+  if (!projectDir) return normalized;
+  try {
+    const root = fs.realpathSync(projectDir);
+    const target = fs.realpathSync(path.resolve(root, normalized));
+    const relative = path.relative(root, target);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+    return normalized;
+  } catch { return null; } // a compiler source must exist before execution
+
 }
 
 /* Build the argv for a reach invocation. `toolName` is one of the reach.*
@@ -36,11 +47,12 @@ function buildReachArgs(toolName, args = {}) {
     case 'reach.version':
       return ['version'];
     case 'reach.compile': {
-      const p = safeProjectPath(null, args.path) || 'index.rsh';
-      return ['compile', p];
+      const p = args.path === undefined ? 'index.rsh' : safeProjectPath(null, args.path);
+      return p ? ['compile', p] : null;
     }
     case 'reach.run': {
-      const p = safeProjectPath(null, args.path) || 'index.rsh';
+      const p = args.path === undefined ? 'index.rsh' : safeProjectPath(null, args.path);
+      if (!p) return null;
       const extra = Array.isArray(args.args) ? args.args.map(a => String(a)) : [];
       return ['run', p, ...extra];
     }
@@ -59,10 +71,18 @@ function buildReachArgs(toolName, args = {}) {
 function createReachToolExecutor() {
   return async function executeReachTool(toolName, args, context) {
     const argv = buildReachArgs(toolName, args);
-    if (!argv) return { ok: false, error: `Unknown reach tool: ${toolName}` };
+    if (!argv) return { ok: false, error: ['reach.compile', 'reach.run'].includes(toolName)
+      ? 'Invalid Reach source path.' : `Unknown reach tool: ${toolName}` };
 
     const cwd = context && context.projectDir;
     if (!cwd) return { ok: false, error: 'This agent is not bound to a project directory.' };
+    if (['reach.compile', 'reach.run'].includes(toolName)) {
+      const source = safeProjectPath(cwd, argv[1]);
+      if (!source) return { ok: false, error: 'Reach source is missing or resolves outside the project.' };
+      if (toolName === 'reach.run' && path.basename(source) !== source)
+        return { ok: false, error: 'Native Reach run needs a source file at the project root.' };
+      argv[1] = source;
+    }
 
     if (context.signal?.aborted) return { ok: false, error: 'reach command cancelled' };
     const runId = reachProcess.runReach({ cwd, args: argv });

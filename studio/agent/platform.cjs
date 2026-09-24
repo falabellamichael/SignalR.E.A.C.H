@@ -10,9 +10,11 @@ function commandEnv(env = process.env, platform = process.platform, home = os.ho
   return { ...env, PATH: [...new Set(dirs.join(':').split(':').filter(Boolean))].join(':') };
 }
 function reachCommand(args = [], settings = {}, platform = process.platform, env = process.env) {
-  const executable = String(settings.reachCli || env.REACH_STUDIO_CLI || '').trim();
-  if (platform === 'win32') return { command: 'wsl.exe', args: ['-d', 'Ubuntu', '--', executable || '/usr/local/bin/reach', ...args] };
-  return { command: executable || 'reach', args: [...args] };
+  // Use the compiler directly. The upstream `reach` launcher probes Docker even
+  // when REACH_DOCKER=0, so it cannot back a Docker-free Studio mode.
+  const executable = String(settings.reachCli || env.REACH_STUDIO_REACHC || '').trim();
+  if (platform === 'win32') return { command: 'wsl.exe', args: ['-d', 'Ubuntu', '--', executable || 'reachc', ...args] };
+  return { command: executable || 'reachc', args: [...args] };
 }
 function spawnCommand(command, args = [], options = {}) {
   return spawn(command, args, { ...options, env: commandEnv(options.env), detached: process.platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });

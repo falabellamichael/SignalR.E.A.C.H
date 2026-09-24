@@ -367,31 +367,31 @@ const CORE_TOOLS = {
 const REACH_TOOLS = {
   'reach.compile': {
     class: 'exec', tier: 'reach', approval: true, budget: 40000,
-    help: 'compiles a Reach source file. Optional path (default index.rsh). Runs through the configured Reach CLI in the project directory.',
+    help: 'compiles a Reach source file. Optional path (default index.rsh). Uses the configured native reachc compiler in the project directory.',
     example: { action: 'reach.compile', path: 'index.rsh' },
     execute: null, // wired in agent-tool-runner.cjs via createReachToolExecutor
   },
   'reach.run': {
     class: 'exec', tier: 'reach', approval: true, budget: 40000,
-    help: 'runs a Reach program. Optional path (default index.rsh) and args array. Runs through the configured Reach CLI.',
+    help: 'runs a Reach program. Optional path (default index.rsh) and args array. Runs an existing Node frontend; pass --connector MODE and optional --node URI in args, or set connector environment. Studio does not start a devnet.',
     example: { action: 'reach.run', path: 'index.rsh', args: [] },
     execute: null,
   },
   'reach.init': {
     class: 'exec', tier: 'reach', approval: true, budget: 40000,
-    help: 'initializes a Reach project in the bound directory (reach init).',
+    help: 'creates a native Reach starter source and frontend in the bound directory.',
     example: { action: 'reach.init' },
     execute: null,
   },
   'reach.clean': {
     class: 'exec', tier: 'reach', approval: true, budget: 40000,
-    help: 'cleans Reach build artifacts (reach clean).',
+    help: 'removes the default Reach compiled backend file (build/index.main.mjs).',
     example: { action: 'reach.clean' },
     execute: null,
   },
   'reach.version': {
     class: 'read', tier: 'reach', approval: false, budget: 40000,
-    help: 'returns the installed reach version.',
+    help: 'returns the installed native Reach compiler (reachc) version.',
     example: { action: 'reach.version' },
     execute: null,
   },

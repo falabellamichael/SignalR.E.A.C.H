@@ -13,6 +13,11 @@
     commandMode: $('#home-command-mode'),
     commandInput: $('#home-command-input'),
     commandRun: $('#home-command-run'),
+    commandRunMore: $('#home-command-run-more'),
+    commandRunMenu: $('#home-command-run-menu'),
+    commandRunNewTab: $('#home-command-run-new-tab'),
+    commandTabs: $('#home-command-tabs'),
+    commandNewTab: $('#home-command-new-tab'),
     commandStop: $('#home-command-stop'),
     commandStatus: $('#home-command-status'),
     commandLog: $('#home-command-log'),
@@ -33,7 +38,8 @@
   // The page is optional to older test fixtures that load individual scripts.
   if (!els.project || !els.connection || !els.chatLog) return;
 
-  const command = { runId: null, starting: false, early: [], cliAvailable: false };
+  const command = { sessions: [], activeId: null, nextId: 1, early: [], cliAvailable: false };
+  let linkedProjectDir = window.ReachCurrentProjectDir || '';
   const chat = { runId: null, running: false, firstChunk: false, response: null, pinging: false, browsing: false, modelConnectionId: '' };
   const MAX_LOG_LINES = 200;
   const MAX_CHAT_MESSAGES = 16;
@@ -46,18 +52,160 @@
     el.classList.toggle('bad', state === 'error' || state === 'warning');
   }
 
+  function isNativeClean(text) {
+    try {
+      const args = window.ReachCommandLine.parse(text || '');
+      if (['reach', 'reachc'].includes(args[0])) args.shift();
+      return args[0] === 'clean';
+    } catch { return false; }
+  }
+
+  function activeSession() {
+    return command.sessions.find(session => session.id === command.activeId) || null;
+  }
+
+  function saveDraft() {
+    const session = activeSession();
+    if (!session) return;
+    session.cwd = els.project.value || '';
+    session.mode = els.commandMode?.value === 'reach' ? 'reach' : 'project';
+    session.input = els.commandInput?.value || '';
+  }
+
   function setCommandControls() {
-    const busy = command.starting || command.runId !== null;
+    const session = activeSession();
     const hasProject = !!els.project.value;
     const hasInput = !!els.commandInput?.value.trim();
-    const reachUnavailable = els.commandMode?.value === 'reach' && !command.cliAvailable;
-    if (els.commandRun) els.commandRun.disabled = busy || !hasProject || !hasInput || reachUnavailable;
-    if (els.commandStop) els.commandStop.disabled = command.runId === null;
-    els.project.disabled = busy || !els.project.options.length;
-    if (els.commandMode) els.commandMode.disabled = busy || !hasProject;
-    if (els.commandInput) els.commandInput.disabled = busy || !hasProject;
+    const reachUnavailable = els.commandMode?.value === 'reach' && !command.cliAvailable && !isNativeClean(els.commandInput?.value);
+    const canStart = hasProject && hasInput && !reachUnavailable;
+    if (els.commandRun) els.commandRun.disabled = !canStart;
+    if (els.commandRunMore) els.commandRunMore.disabled = !canStart;
+    if (els.commandRunNewTab) els.commandRunNewTab.disabled = !canStart;
+    if (els.commandStop) els.commandStop.disabled = !session?.runId || session.stopping;
+    els.project.disabled = !els.project.options.length;
+    if (els.commandMode) els.commandMode.disabled = !hasProject;
+    if (els.commandInput) els.commandInput.disabled = !hasProject;
     if (els.commandInput) els.commandInput.placeholder = els.commandMode?.value === 'reach'
       ? 'compile index.rsh' : 'npm test';
+  }
+
+  function renderTabs() {
+    if (!els.commandTabs) return;
+    els.commandTabs.replaceChildren();
+    for (const session of command.sessions) {
+      const wrap = document.createElement('div');
+      wrap.className = 'home-command-tab-wrap';
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'home-command-tab';
+      tab.role = 'tab';
+      tab.dataset.sessionId = String(session.id);
+      tab.dataset.state = session.starting || session.runId !== null ? 'running' : session.statusState;
+      tab.setAttribute('aria-selected', String(session.id === command.activeId));
+      tab.setAttribute('aria-label', `${session.title}: ${session.statusText}`);
+      tab.title = `${session.title} — ${session.statusText}`;
+      const dot = document.createElement('span');
+      dot.className = 'home-command-tab-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      const label = document.createElement('span');
+      label.className = 'home-command-tab-label';
+      label.textContent = session.title;
+      tab.append(dot, label);
+      tab.addEventListener('click', () => selectSession(session.id));
+      tab.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const index = command.sessions.indexOf(session);
+        const next = event.key === 'Home' ? 0 : event.key === 'End' ? command.sessions.length - 1
+          : (index + (event.key === 'ArrowRight' ? 1 : -1) + command.sessions.length) % command.sessions.length;
+        selectSession(command.sessions[next].id);
+        els.commandTabs.querySelector(`[data-session-id="${command.sessions[next].id}"]`)?.focus();
+      });
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'home-command-tab-close';
+      close.textContent = '×';
+      close.setAttribute('aria-label', `Close ${session.title}`);
+      close.title = session.starting || session.runId !== null ? 'Stop this command before closing its tab' : `Close ${session.title}`;
+      close.disabled = session.starting || session.runId !== null;
+      close.addEventListener('click', () => closeSession(session.id));
+      wrap.append(tab, close);
+      els.commandTabs.appendChild(wrap);
+    }
+  }
+
+  function renderLog() {
+    if (!els.commandLog) return;
+    const session = activeSession();
+    els.commandLog.replaceChildren();
+    if (!session?.lines.length) {
+      const empty = document.createElement('span');
+      empty.className = 'home-log-empty';
+      empty.textContent = 'Command output will appear here.';
+      els.commandLog.appendChild(empty);
+    } else {
+      for (const line of session.lines) appendLogElement(line.kind, line.message);
+    }
+    els.commandLog.scrollTop = els.commandLog.scrollHeight;
+    status(els.commandStatus, session?.statusText || 'Ready', session?.statusState || 'ready');
+  }
+
+  function appendLogElement(kind, message) {
+    const line = document.createElement('div');
+    const style = { prompt: 'sys', output: 'out', error: 'err', success: 'exit0' }[kind] || 'out';
+    line.className = 'home-command-line ' + style;
+    line.textContent = message;
+    els.commandLog.appendChild(line);
+  }
+
+  function selectSession(id) {
+    if (command.activeId === id) return;
+    saveDraft();
+    const session = command.sessions.find(item => item.id === id);
+    if (!session) return;
+    command.activeId = id;
+    if ([...els.project.options].some(option => option.value === session.cwd)) els.project.value = session.cwd;
+    else session.cwd = els.project.value || '';
+    if (els.commandMode) els.commandMode.value = session.mode;
+    if (els.commandInput) els.commandInput.value = session.input;
+    closeRunMenu();
+    renderTabs();
+    renderLog();
+    syncProjectPath();
+  }
+
+  function createSession({ copyInput = false } = {}) {
+    saveDraft();
+    const prior = activeSession();
+    const id = command.nextId++;
+    const session = {
+      id, title: `Terminal ${id}`, cwd: prior?.cwd || els.project.value || '',
+      mode: prior?.mode || els.commandMode?.value || 'project',
+      input: copyInput ? (prior?.input || '') : '', runId: null,
+      starting: false, stopping: false, lines: [],
+      statusText: 'Ready in the selected project folder.', statusState: 'ready',
+    };
+    command.sessions.push(session);
+    command.activeId = null;
+    selectSession(id);
+    return session;
+  }
+
+  function closeSession(id) {
+    const session = command.sessions.find(item => item.id === id);
+    if (!session || session.starting || session.runId !== null) return;
+    const index = command.sessions.indexOf(session);
+    command.sessions.splice(index, 1);
+    if (command.activeId === id) {
+      command.activeId = null;
+      if (command.sessions.length) selectSession(command.sessions[Math.min(index, command.sessions.length - 1)].id);
+      else createSession();
+    } else renderTabs();
+  }
+
+  function closeRunMenu() {
+    if (els.commandRunMenu) els.commandRunMenu.hidden = true;
+    els.commandRunMore?.setAttribute('aria-expanded', 'false');
   }
 
   function setChatControls() {
@@ -79,11 +227,20 @@
   function syncProjectPath() {
     const dir = selectedProject();
     if (els.projectPath) els.projectPath.textContent = dir || 'Open a folder in Projects to get started.';
-    if (!command.starting && command.runId === null) {
-      if (!dir) status(els.commandStatus, 'Add a project to run commands.', 'muted');
-      else if (els.commandMode?.value === 'reach' && !command.cliAvailable)
-        status(els.commandStatus, 'Reach CLI unavailable. Configure it in Settings.', 'warning');
-      else status(els.commandStatus, 'Ready in the selected project folder.', 'ready');
+    saveDraft();
+    const session = activeSession();
+    if (session && !session.starting && session.runId === null && !session.lines.length) {
+      if (!dir) {
+        session.statusText = 'Add a project to run commands.';
+        session.statusState = 'muted';
+      } else if (els.commandMode?.value === 'reach' && !command.cliAvailable && !isNativeClean(els.commandInput?.value)) {
+        session.statusText = 'Native Reach compiler unavailable. Set reachc in Settings.';
+        session.statusState = 'warning';
+      } else {
+        session.statusText = 'Ready in the selected project folder.';
+        session.statusState = 'ready';
+      }
+      status(els.commandStatus, session.statusText, session.statusState);
     }
     setCommandControls();
   }
@@ -100,7 +257,9 @@
         option.textContent = String(project.name || project.dir.split(/[\\/]/).pop() || project.dir);
         els.project.appendChild(option);
       }
-      if ([...els.project.options].some(option => option.value === previous)) els.project.value = previous;
+      const preferred = linkedProjectDir || previous;
+      if ([...els.project.options].some(option => option.value === preferred)) els.project.value = preferred;
+      else if ([...els.project.options].some(option => option.value === previous)) els.project.value = previous;
       syncProjectPath();
     } catch (error) {
       status(els.commandStatus, 'Could not load projects: ' + error.message, 'error');
@@ -111,32 +270,33 @@
   async function refreshReachCli() {
     try {
       const version = await api.getVersion();
-      command.cliAvailable = typeof version === 'string' && !version.startsWith('Optional Reach CLI unavailable.');
+      command.cliAvailable = typeof version === 'string' && !version.startsWith('Native Reach compiler unavailable.');
     } catch { command.cliAvailable = false; }
     syncProjectPath();
   }
 
-  function logLine(kind, message) {
-    if (!els.commandLog) return;
+  function logLine(session, kind, message) {
+    if (!session) return;
+    session.lines.push({ kind, message });
+    while (session.lines.length > MAX_LOG_LINES) session.lines.shift();
+    if (session.id !== command.activeId || !els.commandLog) return;
     els.commandLog.querySelector('.home-log-empty')?.remove();
-    const line = document.createElement('div');
-    const style = { prompt: 'sys', output: 'out', error: 'err', success: 'exit0' }[kind] || 'out';
-    line.className = 'home-command-line ' + style;
-    line.textContent = message;
-    els.commandLog.appendChild(line);
+    appendLogElement(kind, message);
     while (els.commandLog.children.length > MAX_LOG_LINES) els.commandLog.firstElementChild.remove();
     els.commandLog.scrollTop = els.commandLog.scrollHeight;
   }
 
   function commandEvent(event) {
-    if (!event || event.runId !== command.runId) {
-      // A very short process may emit output and exit before invoke returns.
-      if (command.starting && command.early.length < 200) command.early.push(event);
+    if (!event?.runId) return;
+    const session = command.sessions.find(item => item.runId === event.runId);
+    if (!session) {
+      // A short process may emit output and exit before invoke returns.
+      if (command.sessions.some(item => item.starting) && command.early.length < 500) command.early.push(event);
       return;
     }
     if (event.type === 'output') {
       for (const line of String(event.data || '').split(/\r?\n/)) {
-        if (line) logLine(event.channel === 'err' ? 'error' : 'output', line);
+        if (line) logLine(session, event.channel === 'err' ? 'error' : 'output', line);
       }
       return;
     }
@@ -144,53 +304,113 @@
       const message = event.launchError ? 'Command could not start.'
         : event.stopped ? 'Command stopped.'
           : `Process exited with code ${event.code}.`;
-      logLine(event.code === 0 ? 'success' : 'error', message);
-      status(els.commandStatus, message, event.code === 0 ? 'success' : 'error');
-      command.runId = null;
-      setCommandControls();
+      logLine(session, event.code === 0 ? 'success' : 'error', message);
+      session.statusText = message;
+      session.statusState = event.code === 0 ? 'success' : 'error';
+      session.runId = null;
+      session.stopping = false;
+      if (session.id === command.activeId) {
+        status(els.commandStatus, message, session.statusState);
+        setCommandControls();
+      }
+      renderTabs();
     }
   }
 
-  async function runCommand() {
-    if (command.starting || command.runId !== null) return;
-    const cwd = selectedProject();
-    const text = els.commandInput?.value.trim() || '';
-    const mode = els.commandMode?.value === 'reach' ? 'reach' : 'project';
+  async function runCommand(session = activeSession()) {
+    if (!session || session.starting || session.runId !== null) return;
+    if (session.id === command.activeId) saveDraft();
+    const cwd = session.cwd;
+    const text = session.input.trim();
+    const mode = session.mode;
     if (!cwd || !text) return;
-    if (mode === 'reach' && !command.cliAvailable) {
-      status(els.commandStatus, 'Reach CLI unavailable. Configure it in Settings.', 'warning');
+    // Match the Projects command bar: quote-aware argv, without a shell.
+    let args;
+    try { args = window.ReachCommandLine.parse(text); }
+    catch (error) {
+      logLine(session, 'error', error.message);
+      session.statusText = error.message;
+      session.statusState = 'error';
+      if (session.id === command.activeId) status(els.commandStatus, error.message, 'error');
+      renderTabs();
       return;
     }
-    // Match the Projects command bar: executable plus whitespace-separated
-    // arguments, without shell evaluation or redirection.
-    const args = text.split(/\s+/).filter(Boolean);
-    if (mode === 'reach' && args[0] === 'reach') args.shift();
+    if (mode === 'reach' && ['reach', 'reachc'].includes(args[0])) args.shift();
     if (!args.length) return;
-    logLine('prompt', `$ ${mode === 'reach' ? 'reach ' : ''}${args.join(' ')}`);
-    status(els.commandStatus, 'Running…', 'running');
-    command.starting = true;
-    command.early = [];
-    setCommandControls();
+    if (mode === 'reach' && !command.cliAvailable && args[0] !== 'clean') {
+      session.statusText = 'Native Reach compiler unavailable. Set reachc in Settings.';
+      session.statusState = 'warning';
+      if (session.id === command.activeId) status(els.commandStatus, session.statusText, 'warning');
+      renderTabs();
+      return;
+    }
+    session.title = text.length > 22 ? `${text.slice(0, 21)}…` : text;
+    logLine(session, 'prompt', mode === 'reach' ? `Native Reach · ${args.join(' ')}` : `$ ${args.join(' ')}`);
+    session.statusText = 'Running…';
+    session.statusState = 'running';
+    session.starting = true;
+    if (session.id === command.activeId) {
+      status(els.commandStatus, 'Running…', 'running');
+      setCommandControls();
+    }
+    renderTabs();
     try {
-      command.runId = mode === 'reach' ? await api.run(cwd, args) : await api.runProject(cwd, args);
-      command.starting = false;
-      for (const event of command.early.splice(0)) commandEvent(event);
-      setCommandControls();
+      const runId = mode === 'reach' ? await api.run(cwd, args) : await api.runProject(cwd, args);
+      session.runId = runId;
+      session.starting = false;
+      const early = command.early.filter(event => event.runId === runId);
+      command.early = command.early.filter(event => event.runId !== runId);
+      for (const event of early) commandEvent(event);
+      if (!command.sessions.some(item => item.starting)) command.early.length = 0;
+      if (session.id === command.activeId) setCommandControls();
+      renderTabs();
     } catch (error) {
-      command.starting = false;
-      command.early = [];
+      session.starting = false;
+      if (!command.sessions.some(item => item.starting)) command.early.length = 0;
       const message = error?.message || 'Command could not start.';
-      logLine('error', message);
-      status(els.commandStatus, message, 'error');
-      setCommandControls();
+      logLine(session, 'error', message);
+      session.statusText = message;
+      session.statusState = 'error';
+      if (session.id === command.activeId) {
+        status(els.commandStatus, message, 'error');
+        setCommandControls();
+      }
+      renderTabs();
     }
   }
 
   async function stopCommand() {
-    if (command.runId === null) return;
-    status(els.commandStatus, 'Stopping command…', 'running');
-    try { await api.kill(command.runId); }
-    catch (error) { status(els.commandStatus, 'Could not stop command: ' + error.message, 'error'); }
+    const session = activeSession();
+    if (!session?.runId || session.stopping) return;
+    session.stopping = true;
+    session.statusText = 'Stopping command…';
+    session.statusState = 'running';
+    status(els.commandStatus, session.statusText, 'running');
+    setCommandControls();
+    renderTabs();
+    try { await api.kill(session.runId); }
+    catch (error) {
+      session.stopping = false;
+      session.statusText = 'Could not stop command: ' + error.message;
+      session.statusState = 'error';
+      status(els.commandStatus, session.statusText, 'error');
+      setCommandControls();
+      renderTabs();
+    }
+  }
+
+  function runPrimaryCommand() {
+    const session = activeSession();
+    if (session?.starting || session?.runId !== null) {
+      void runCommand(createSession({ copyInput: true }));
+    } else void runCommand();
+  }
+
+  function runInNewTab() {
+    if (els.commandRunNewTab?.disabled) return;
+    closeRunMenu();
+    const session = createSession({ copyInput: true });
+    void runCommand(session);
   }
 
   function addChatMessage(role, text) {
@@ -374,13 +594,32 @@
   });
 
   window.ReachConnections?.bind('home', els.connection, { onChange: syncModel });
-  els.project.addEventListener('change', syncProjectPath);
-  els.commandMode?.addEventListener('change', syncProjectPath);
-  els.commandInput?.addEventListener('input', setCommandControls);
-  els.commandInput?.addEventListener('keydown', event => {
-    if (event.key === 'Enter') { event.preventDefault(); runCommand(); }
+  els.project.addEventListener('change', () => {
+    linkedProjectDir = '';
+    syncProjectPath();
   });
-  els.commandRun?.addEventListener('click', runCommand);
+  window.addEventListener('reach:project-selected', event => {
+    linkedProjectDir = String(event.detail?.dir || '');
+    void refreshProjects();
+  });
+  els.commandMode?.addEventListener('change', syncProjectPath);
+  els.commandInput?.addEventListener('input', syncProjectPath);
+  els.commandInput?.addEventListener('keydown', event => {
+    if (event.key === 'Enter') { event.preventDefault(); closeRunMenu(); runPrimaryCommand(); }
+  });
+  els.commandRun?.addEventListener('click', () => { closeRunMenu(); runPrimaryCommand(); });
+  els.commandRunMore?.addEventListener('click', event => {
+    event.stopPropagation();
+    const open = !els.commandRunMenu.hidden;
+    els.commandRunMenu.hidden = open;
+    els.commandRunMore.setAttribute('aria-expanded', String(!open));
+  });
+  els.commandRunNewTab?.addEventListener('click', runInNewTab);
+  els.commandNewTab?.addEventListener('click', () => createSession());
+  document.addEventListener('click', event => {
+    if (!event.target.closest('.home-run-split')) closeRunMenu();
+  });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') closeRunMenu(); });
   els.commandStop?.addEventListener('click', stopCommand);
   els.projectsLink?.addEventListener('click', event => openPage('projects', event));
   els.model?.addEventListener('input', setChatControls);
@@ -401,5 +640,6 @@
   }
 
   window.ReachHome = { sync };
+  createSession();
   sync();
 })();

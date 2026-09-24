@@ -125,6 +125,10 @@
                   <button id="home-projects-link" class="home-text-link" type="button">Open Projects <span aria-hidden="true">&#8599;</span></button>
                 </div>
                 <p class="home-card-description">Run a command in one of your saved project folders.</p>
+                <div class="home-command-tab-bar">
+                  <div id="home-command-tabs" class="home-command-tabs" role="tablist" aria-label="Project command tabs"></div>
+                  <button id="home-command-new-tab" class="home-command-new-tab" type="button" aria-label="New command tab" title="New command tab">+</button>
+                </div>
                 <div class="home-field">
                   <label for="home-project-select">Project</label>
                   <select id="home-project-select"></select>
@@ -133,20 +137,27 @@
                 <div class="home-command-row">
                   <div class="home-field home-command-mode-field">
                     <label for="home-command-mode">Mode</label>
-                    <select id="home-command-mode"><option value="project">Project command</option><option value="reach">Reach CLI</option></select>
+                    <select id="home-command-mode"><option value="project">Project command</option><option value="reach">Native Reach</option></select>
                   </div>
                   <div class="home-field home-command-entry">
                     <label for="home-command-input">Command</label>
                     <input id="home-command-input" type="text" spellcheck="false" placeholder="e.g. git status" />
                   </div>
                 </div>
+                <p class="home-field-note">Native Reach: select a Reach DApp project or run init in this folder, then compile index.rsh. With Ganache on 127.0.0.1:8545, run index.rsh.</p>
                 <div class="home-action-row">
-                  <button id="home-command-run" class="gold small" type="button">Run command</button>
+                  <div class="home-run-split">
+                    <button id="home-command-run" class="gold small" type="button">Run command</button>
+                    <button id="home-command-run-more" class="gold small" type="button" aria-label="More run options" aria-haspopup="menu" aria-expanded="false" aria-controls="home-command-run-menu" title="More run options">&#9662;</button>
+                    <div id="home-command-run-menu" class="home-run-menu" role="menu" hidden>
+                      <button id="home-command-run-new-tab" type="button" role="menuitem">Run in new tab</button>
+                    </div>
+                  </div>
                   <button id="home-command-stop" class="ghost small" type="button" disabled>Stop</button>
                   <span id="home-command-status" class="home-inline-status" role="status">Ready</span>
                 </div>
                 <div id="home-command-log" class="home-command-log" role="log" aria-live="polite"><span class="home-log-empty">Command output will appear here.</span></div>
-                <p class="home-card-footnote">Project commands run without a shell. Reach mode requires the optional CLI.</p>
+                <p class="home-card-footnote">Project commands run without a shell. Native Reach uses the optional reachc compiler; --connector and --node override run defaults.</p>
               </section>
 
               <section class="home-card home-tool-card" aria-labelledby="home-chat-title">
@@ -235,7 +246,7 @@
         <div id="no-project" class="empty">
           <div class="big-mark">R</div>
           <p>Select a project or create a new one.</p>
-          <p class="sub">Manage projects, run project commands, and optionally use the Reach CLI.</p>
+          <p class="sub">Manage projects, run project commands, and compile Reach DApps with a native compiler.</p>
         </div>
 
         <div id="project-view" class="hidden">
@@ -252,20 +263,31 @@
             </div>
           </div>
 
+          <div class="project-command-tabs-row">
+            <div id="project-command-tabs" class="project-command-tabs" role="tablist" aria-label="Project command tabs"></div>
+            <button id="project-tab-add" class="project-command-tab-add" type="button" aria-label="New command tab" title="New command tab">+</button>
+          </div>
           <div class="cmdbar">
             <label class="sr-only" for="cmd-mode">Command type</label>
             <select id="cmd-mode" aria-label="Command type">
               <option value="project">Project command</option>
-              <option value="reach">Reach CLI</option>
+              <option value="reach">Native Reach</option>
             </select>
             <span class="prompt" id="cmd-prompt">$</span>
             <input id="cmd-input" type="text" placeholder="e.g. npm --prefix studio test" spellcheck="false" />
-            <button id="btn-run" class="gold small">Run</button>
-            <button id="btn-stop" class="ghost small hidden">Stop</button>
+            <div class="project-run-split">
+              <button id="btn-run" class="gold small" type="button">Run</button>
+              <button id="btn-run-options" class="gold small" type="button" aria-label="Run options" aria-haspopup="menu" aria-expanded="false" aria-controls="project-run-menu" title="Run options">▾</button>
+              <div id="project-run-menu" class="project-run-menu hidden" role="menu" aria-label="Run options">
+                <button id="btn-run-new-tab" type="button" role="menuitem">Run in new tab</button>
+                <button id="btn-run-empty-tab" type="button" role="menuitem">Open empty tab</button>
+              </div>
+            </div>
+            <button id="btn-stop" class="ghost small hidden" type="button">Stop</button>
           </div>
           <p class="dim command-hint" id="cmd-hint">Runs a program in this project folder. No shell pipes or redirects.</p>
-
-          <div class="log" id="log"></div>
+          <div id="project-tab-status" class="project-tab-status" role="status" aria-live="polite"></div>
+          <div class="log" id="log" role="tabpanel" aria-live="polite"></div>
         </div>
       </section>
     </section>
@@ -440,8 +462,8 @@
           <span id="conn-count" class="dim"></span>
         </div>
 
-        <label for="set-reach-cli">Reach CLI executable (optional)</label>
-        <input id="set-reach-cli" type="text" placeholder="Automatic discovery" spellcheck="false" />
+        <label for="set-reach-cli">Native Reach compiler (reachc) executable (optional)</label>
+        <input id="set-reach-cli" type="text" placeholder="Auto-discover reachc" spellcheck="false" />
         <p id="set-reach-cli-help" class="dim"></p>
         <h3>TypeSafe Jev context selection</h3>
         <label class="check"><input id="set-jev-enabled" type="checkbox" /> Use Jev to skip unrelated automatic code context</label>
@@ -830,9 +852,15 @@
         <input id="new-parent" type="text" readonly />
         <button id="btn-pick-parent" class="ghost small">Browse&hellip;</button>
       </div>
+      <label for="new-kind">Project type</label>
+      <select id="new-kind">
+        <option value="general">General project</option>
+        <option value="reach">Reach DApp</option>
+      </select>
+      <p class="dim field-hint">General projects create a folder without a toolchain. Reach DApps use the configured native compiler.</p>
       <div class="modal-actions">
         <button id="btn-cancel" class="ghost">Cancel</button>
-        <button id="btn-create" class="gold">Create &amp; Init</button>
+        <button id="btn-create" class="gold">Create Project</button>
       </div>
     </div>
   </div>
@@ -990,6 +1018,7 @@
   <script src="activity.js"></script>
   <script src="team-deck.js"></script>
   <script src="composer-intents.js"></script>
+  <script src="command-line.js"></script>
   <script src="app.js"></script>
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>
