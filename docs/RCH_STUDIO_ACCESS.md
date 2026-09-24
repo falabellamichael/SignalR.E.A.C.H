@@ -4,7 +4,7 @@
 
 Wallet sign-in, the hosted account gateway, durable shared usage accounting, the Studio Home account controls, and RCH burn-to-credit settlement are implemented. The chosen public origin is `https://unbent-semicolon-hermit.ngrok-free.dev` on the existing SignalREACH host.
 
-The supplied initial configuration enables account sign-in with **no paid models and no live redemption** once installed. The public endpoint runs on the other PC; installation there is still required. Actual plan sizes/renewals have not been chosen, the current CodeGPT bridge does not supply reliable usage records, and RCH has not been deployed to Ethereum mainnet. These conditions are represented as unavailable UI states, not simulated purchases or invented balances. Card checkout, automated subscription payments, wallet recovery/linking, mobile WalletConnect, and a token exchange are separate future work.
+The supplied initial configuration enables account sign-in with **no paid models and no live redemption** once installed. The account service must run on the PC serving the public SignalREACH endpoint, with the relay configured to proxy account routes to it. Actual plan sizes/renewals have not been chosen, the current CodeGPT bridge does not supply reliable usage records, and RCH has not been deployed to Ethereum mainnet. These conditions are represented as unavailable UI states, not simulated purchases or invented balances. Card checkout, automated subscription payments, wallet recovery/linking, mobile WalletConnect, and a token exchange are separate future work.
 
 ## Product rules
 

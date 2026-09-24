@@ -105,7 +105,9 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
     let response;
     try {
       response = await fetchImpl(origin + route, { method, redirect: 'error', signal: AbortSignal.timeout(15000),
-        headers: { Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        headers: { Accept: 'application/json',
+          ...(/\.ngrok-free\.(?:app|dev)$/.test(new URL(origin).hostname) ? { 'ngrok-skip-browser-warning': '1' } : {}),
+          ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}) });
     } catch { throw new Error('The REACH service could not be reached. Check its URL and connection.'); }
     if (response.status === 401 && token && token === session?.accessToken && origin === baseUrl) {

@@ -49,6 +49,13 @@ test('service and browser origins reject redirects, credentials and unsafe trans
   assert.throws(() => browserUrl('https://user:pass@reach.test/login', 'https://reach.test'));
 });
 
+test('hosted ngrok API requests pass through the tunnel warning', async t => {
+  const ngrok = fixture(t); await ngrok.manager.configure('https://example.ngrok-free.dev');
+  assert.equal(ngrok.requests[0].headers['ngrok-skip-browser-warning'], '1');
+  const direct = fixture(t); await direct.manager.configure('https://reach.test');
+  assert.equal(direct.requests[0].headers['ngrok-skip-browser-warning'], undefined);
+});
+
 test('PKCE login keeps credentials and verifiers out of public state and settings', async t => {
   const f = fixture(t); await f.manager.configure('https://reach.test'); await f.manager.connect();
   assert.equal(f.manager.state().status, 'connecting'); await f.manager.poll();
