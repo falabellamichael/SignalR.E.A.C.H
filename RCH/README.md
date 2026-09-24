@@ -1,6 +1,8 @@
 # REACH Credits (RCH)
 
-RCH is an Ethereum ERC-20 currency with an open ETH purchase contract. The initial sale targets **$0.01 per RCH**, using an ETH/USD oracle. **1,000 RCH costs approximately $10 plus gas.** The proposed future Studio conversion is **1 RCH to 1,000,000 AI usage tokens**. AI accounting, subscription limits, credit redemption, and public liquidity pools are later work.
+RCH is an Ethereum ERC-20 currency with an open ETH purchase contract. The initial sale targets **$0.01 per RCH**, using an ETH/USD oracle. **1,000 RCH costs approximately $10 plus gas.** The implemented redemption conversion is **1 RCH to 1,000,000 AI usage tokens**. Live deployment, actual subscription limits, automated subscription checkout, and public liquidity pools are later work.
+
+Studio wallet sign-in links a verified customer wallet to an account and an operator-provisioned subscription. **CodeGPT and qualified free endpoint models share one plan allowance.** Redemption burns RCH and credits the account once after verified finality; model calls then consume that ledger. CodeGPT currently lacks reliable usage records and remains unavailable for paid metering. Live redemption is disabled until deployment. See [Studio access, accounting, and host setup](../docs/RCH_STUDIO_ACCESS.md).
 
 The contracts are implemented and tested locally. They have not been deployed to a public network or independently audited. This directory uses Solidity and Node.js through REACH Studio's **Project command** runner.
 
@@ -15,7 +17,7 @@ npm test
 npm run demo
 ```
 
-Node.js 22 or newer is required. `demo` creates an ephemeral Ethereum chain inside the process, deploys RCH and its sale, purchases 1,000 RCH for 0.004 test ETH at a mock $2,500/ETH quote, mints an authorized reward, transfers RCH, delivers the sale proceeds, and closes the sale. It needs no wallet, RPC endpoint, Docker, or running Ganache server. The chain disappears when the command exits. Ganache's native-module fallback notices on Apple Silicon do not prevent these tests from running.
+Node.js 22.13 or newer is required. `demo` creates an ephemeral Ethereum chain inside the process, deploys RCH and its sale, purchases 1,000 RCH for 0.004 test ETH at a mock $2,500/ETH quote, mints an authorized reward, transfers RCH, delivers the sale proceeds, and closes the sale. It needs no wallet, RPC endpoint, Docker, or running Ganache server. The chain disappears when the command exits. Ganache's native-module fallback notices on Apple Silicon do not prevent these tests from running.
 
 ## Currency and issuance
 
@@ -26,7 +28,7 @@ Node.js 22 or newer is required. `demo` creates an ephemeral Ethereum chain insi
 - Every reward has a unique, nonzero `bytes32` reference. Reusing it fails, even across different reward operators. Use an opaque ID, never customer information. A failed mint consumes neither its ID nor its allowance.
 - Revoking or renouncing a reward role clears its allowance. Regranting the role starts with zero allowance.
 - The token administrator may pause new issuance while existing transfers and approvals continue.
-- `totalPurchased` and `totalRewarded` provide separate issuance totals. No transfer tax, automatic rebasing, token burn, or subscription logic is implemented.
+- `totalPurchased` and `totalRewarded` provide separate issuance totals. No transfer tax or automatic rebasing is implemented. `redeem(amount, redemptionId)` burns the caller's RCH for usage; redemption starts paused and is independent of issuance pause. `totalRedeemed` and `totalUsageTokensRedeemed` track confirmed contract redemptions. Subscription accounting lives in the hosted service.
 
 RCH is minted under these rules. Ethereum mining does not create it. The administrator controls roles and budgets and can authorize other sale contracts; the system therefore trusts that administrator. Reward allowances constrain reward operators, not a malicious administrator. The two-day administrator transfer delay applies to changing the default administrator; role grants and budget changes are immediate. The administrator receives no minter role automatically.
 
@@ -127,7 +129,7 @@ To use this account as a deployment signer, set the configuration's public `depl
 
    This verifies deployed code and active sale state, then returns the ETH value, RCH quote, 0.5% minimum-output tolerance, and ten-minute deadline. It does not sign or send a purchase. Prices and the configured oracle bounds may change what the next quote permits; gas is additional.
 
-Mainnet uses the same workflow with chain ID 1 and a separately reviewed mainnet configuration. Mainnet deployment has not been performed. Live deployment still needs actual wallet and oracle choices, a successful testnet rehearsal, and independent review of the custom contracts and service economics. Do not promise funded AI usage solely because an RCH transfer succeeded: the later redemption system must verify finality, consume or collect the RCH, and credit usage exactly once. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
+Mainnet uses the same workflow with chain ID 1 and a separately reviewed mainnet configuration. Mainnet deployment has not been performed. Live deployment still needs actual wallet and oracle choices, a successful testnet rehearsal, and independent review of the custom contracts and service economics. Do not promise funded AI usage solely because an RCH transfer succeeded: the hosted redemption system must be configured for the reviewed deployment and verify a matching burn before crediting usage exactly once. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
 
 ## Verification coverage
 

@@ -3,3 +3,10 @@ artifacts/
 deployments/
 .env
 .env.*
+
+# Hosted account data and operator configuration
+private/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+config/accounts.local.json

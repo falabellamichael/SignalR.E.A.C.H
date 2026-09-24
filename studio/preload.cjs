@@ -48,6 +48,22 @@ contextBridge.exposeInMainWorld('reach', {
   listFiles: (dir) => ipcRenderer.invoke('project:list', dir),
   openDir: (dir) => ipcRenderer.invoke('shell:openDir', dir),
 
+  // Customer account credentials remain in main; no signing or key import IPC.
+  account: {
+    get: () => ipcRenderer.invoke('account:get'),
+    configure: url => ipcRenderer.invoke('account:configure', url),
+    connect: () => ipcRenderer.invoke('account:connect'),
+    cancel: () => ipcRenderer.invoke('account:cancel'),
+    refresh: () => ipcRenderer.invoke('account:refresh'),
+    disconnect: () => ipcRenderer.invoke('account:disconnect'),
+    redeem: amountRch => ipcRenderer.invoke('account:redeem', amountRch),
+    onState: callback => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('account:state', listener);
+      return () => ipcRenderer.removeListener('account:state', listener);
+    },
+  },
+
   // Settings
   getBudgetSchema: () => ipcRenderer.invoke('settings:budgetSchema'),
   getSettings: () => ipcRenderer.invoke('settings:get'),

@@ -54,6 +54,7 @@ DEFAULT_SETTINGS = {
     # only). An alias whose upstream starts with "bridge/" is sent here instead
     # of OmniRoute and never carries the OmniRoute bearer token.
     "bridge_url": "http://127.0.0.1:21302/v1",
+    "account_service_url": "",  # optional hosted accounts service, literal loopback origin
     "port": 20777,
     "host": "127.0.0.1",
     "upstream_timeout_s": 600,
@@ -497,6 +498,16 @@ def validate_settings(cfg):
     _require_local_url(cfg.get("omniroute_url", ""), "omniroute_url")
     _require_local_url(cfg.get("bridge_url", DEFAULT_SETTINGS["bridge_url"]),
                        "bridge_url")
+    account_service_url = cfg.get("account_service_url", "")
+    _str(account_service_url, "account_service_url", 0, 500)
+    if account_service_url:
+        from reachd.account_proxy import account_service_target
+        try:
+            _scheme, _host, account_port = account_service_target(account_service_url)
+            _expect(account_port != cfg.get("port", DEFAULT_SETTINGS["port"]),
+                    "account_service_url must use a different port than the relay")
+        except ValueError as exc:
+            raise SettingsError(str(exc)) from exc
     # A sealed value is a dict envelope, so accept either shape: validation
     # may see plaintext (in memory) or ciphertext (straight off disk).
     _omniroute_key = cfg.get("omniroute_key", "")

@@ -2478,6 +2478,7 @@ function renderConnections() {
     nameInput.type = 'text';
     nameInput.className = 'conn-name';
     nameInput.value = c.name || '';
+    nameInput.readOnly = c.id === 'reach_hosted';
     nameInput.placeholder = 'Connection name';
     nameInput.spellcheck = false;
     nameInput.setAttribute('aria-label', 'Connection name');
@@ -2559,7 +2560,8 @@ function renderConnections() {
     removeBtn.className = 'ghost small conn-remove';
     removeBtn.textContent = 'Remove connection';
     removeBtn.title = connDraft.length <= 1 ? 'At least one connection must remain' : 'Remove connection';
-    removeBtn.disabled = connDraft.length <= 1;
+    removeBtn.disabled = connDraft.length <= 1 || c.id === 'reach_hosted';
+    if (c.id === 'reach_hosted') removeBtn.title = 'Manage the REACH service from Home';
     removeBtn.setAttribute('aria-label', `Remove ${c.name || 'connection'}`);
     removeBtn.onclick = () => {
       if (connDraft.length <= 1) return;
@@ -2633,6 +2635,7 @@ function renderConnections() {
       input.type = 'text';
       input.className = 'conn-url';
       input.value = c.endpoint || '';
+      input.readOnly = c.id === 'reach_hosted';
       input.placeholder = 'https://your-endpoint.example.com/v1';
       input.spellcheck = false;
       input.oninput = () => { c.endpoint = input.value.trim(); syncSummary(); clearConnStatus(c.id); markUnsaved(); };
@@ -2646,7 +2649,8 @@ function renderConnections() {
       const input = document.createElement('input');
       input.type = 'password';
       input.value = c.accessKey || '';
-      input.placeholder = 'leave blank for none';
+      input.placeholder = c.id === 'reach_hosted' ? 'Managed securely by wallet sign-in' : 'leave blank for none';
+      input.disabled = c.id === 'reach_hosted';
       input.autocomplete = 'off';
       input.spellcheck = false;
       input.oninput = () => { c.accessKey = input.value; clearConnStatus(c.id); markUnsaved(); };
@@ -2654,6 +2658,7 @@ function renderConnections() {
       reveal.type = 'button';
       reveal.className = 'ghost small';
       reveal.textContent = 'Show';
+      reveal.disabled = c.id === 'reach_hosted';
       reveal.onclick = () => {
         const showing = input.type === 'text';
         input.type = showing ? 'password' : 'text';
@@ -2681,7 +2686,7 @@ function renderConnections() {
       // configuring this connection and may not have saved it yet. Listing from
       // the stored value would make the button appear broken on a new row.
       browse.onclick = () => openModelPicker({
-        target: { endpoint: (urlInput ? urlInput.value : c.endpoint).trim(), accessKey: c.accessKey || '' },
+        target: c.id === 'reach_hosted' ? { connectionId: c.id } : { endpoint: (urlInput ? urlInput.value : c.endpoint).trim(), accessKey: c.accessKey || '' },
         onPick: (id) => { c.model = id; input.value = id; syncSummary(); markUnsaved(); },
         label: c.name || (urlInput ? urlInput.value : c.endpoint),
       });

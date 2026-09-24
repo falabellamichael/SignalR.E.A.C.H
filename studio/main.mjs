@@ -48,6 +48,7 @@ const { auditEvent } = require('./agent/audit-event.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
 const { createSettingsStore } = require('./agent/settings-store.cjs');
+const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
 const { resolveEndpoint } = require('./agent/endpoint.cjs');
 const { createAttention } = require('./agent/attention.cjs');
@@ -196,11 +197,39 @@ const settingsStore = createSettingsStore({ file: settingsFile, safeStorage });
  * projection of whichever connection is active. Normalizing here rather than at
  * each call site is what keeps the ~10 existing `settings.endpoint` readers
  * correct without touching them. */
+let hostedRoutingSignature = '';
+const hostedAccount = createHostedAccount({
+  file: () => path.join(app.getPath('userData'), 'hosted-account.json'), safeStorage,
+  openExternal: url => shell.openExternal(url),
+  onChange: state => {
+    // Persist only the public connection descriptor; bearer tokens never enter
+    // settings, settings backups, exports, or renderer-owned connection drafts.
+    saveSettings(settingsStore.load());
+    const managed = loadSettings().connections.find(connection => connection.id === HOSTED_CONNECTION_ID);
+    const signature = createHash('sha256').update(JSON.stringify(managed || null)).digest('hex');
+    if (signature !== hostedRoutingSignature) {
+      hostedRoutingSignature = signature;
+      for (const [id, loop] of agentLoops) {
+        if (loop.connectionId !== HOSTED_CONNECTION_ID) continue;
+        if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
+        else agentLoops.delete(id);
+      }
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('account:state', state);
+  },
+});
 function loadSettings() {
-  return settingsStore.load();
+  return hostedAccount.hydrate(settingsStore.load());
 }
 function saveSettings(s) {
-  settingsStore.save(s);
+  const existing = s.connections?.find(connection => connection.id === HOSTED_CONNECTION_ID);
+  const managed = hostedAccount.managedConnection(existing);
+  const list = (s.connections || []).filter(connection => connection.id !== HOSTED_CONNECTION_ID);
+  if (managed) list.push(managed);
+  settingsStore.save(hostedAccount.sanitize({ ...s, connections: list }));
+}
+function publicHostedConnections(settings) {
+  return hostedAccount.sanitize(connections.publicConnections(hostedAccount.sanitize(settings)));
 }
 const capabilityStore = createCapabilityStore({ load: loadSettings, save: saveSettings });
 function autoModeEnabled(settings, agent) {
@@ -458,11 +487,33 @@ function registerIpc() {
 
   ipcMain.handle('settings:get', () => {
     const settings = loadSettings();
-    const { jevApiKey, ...publicSettings } = settings;
+    const { jevApiKey, ...publicSettings } = hostedAccount.sanitize(settings);
     return { ...publicSettings, jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
       jevKeySource: jevApiKey ? 'saved' : process.env.TYPESAFE_API_KEY ? 'environment' : '' };
   });
   ipcMain.handle('engines:report', () => engines.getLedger().report());
+  // Narrow account IPC; only state projections and explicit actions cross to
+  // the renderer. Authentication and blockchain signing happen in the browser.
+  const accountAction = async action => {
+    try { return { ok: true, state: await action() }; }
+    catch (error) { return { ok: false, err: error.message, state: hostedAccount.state() }; }
+  };
+  ipcMain.handle('account:get', () => hostedAccount.state());
+  ipcMain.handle('account:configure', (_event, value) => accountAction(async () => {
+    const current = settingsStore.load();
+    if (!current.connections.some(connection => connection.id === HOSTED_CONNECTION_ID) && current.connections.length >= connections.MAX_CONNECTIONS) {
+      throw new Error('Remove one connection in Settings before adding the REACH service.');
+    }
+    return hostedAccount.configure(value);
+  }));
+  ipcMain.handle('account:connect', () => accountAction(() => hostedAccount.connect()));
+  ipcMain.handle('account:cancel', () => accountAction(() => hostedAccount.cancel()));
+  ipcMain.handle('account:refresh', () => accountAction(() => hostedAccount.refresh()));
+  ipcMain.handle('account:disconnect', () => accountAction(() => hostedAccount.disconnect()));
+  ipcMain.handle('account:redeem', async (_event, amount) => {
+    try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
@@ -1465,12 +1516,14 @@ function registerIpc() {
   });
 
   /* ---------------- multiple endpoint connections (VS Code parity) --------------
-   * The renderer gets the whole list INCLUDING access keys: unlike a web page,
+   * Personal provider keys retain the existing settings editing behavior. The
+   * hosted subscription session is always removed by publicHostedConnections.
+   * For personal providers, the renderer gets the list including access keys:
    * this is a local desktop app whose own settings form must be able to redisplay
    * and re-save a key. The keys never leave the machine — they are read from and
    * written to userData/settings.json, exactly as the single-endpoint form did.
    */
-  ipcMain.handle('connections:list', () => connections.publicConnections(loadSettings()));
+  ipcMain.handle('connections:list', () => publicHostedConnections(loadSettings()));
 
   /* One handler for add/update/remove/activate rather than four, because all
    * four are "change the list, persist, tell the loops". A per-action handler set
@@ -1482,6 +1535,10 @@ function registerIpc() {
    */
   ipcMain.handle('connections:save', (_e, payload = {}) => {
     const action = String(payload.action || '').trim();
+    if (payload.id === HOSTED_CONNECTION_ID && ['remove', 'update'].includes(action) &&
+        (action === 'remove' || payload.endpoint || payload.accessKey || payload.name)) {
+      return { ok: false, err: 'Manage the REACH subscription connection from Home. Its service address and credentials are managed there.' };
+    }
     const current = loadSettings();
     let result;
     switch (action) {
@@ -1538,7 +1595,7 @@ function registerIpc() {
         else agentLoops.delete(id);
       }
     }
-    return { ok: true, connections: connections.publicConnections(result.settings) };
+    return { ok: true, connections: publicHostedConnections(result.settings) };
   });
 
   /* Ping one specific connection (default: the active one) so the Connection
@@ -2609,6 +2666,9 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = loadSettings().theme === 'light' ? 'light' : 'dark';
   reachProcess.configure(loadSettings);
   registerIpc();
+  const accountTimer = setInterval(() => { void hostedAccount.poll().catch(() => {}); }, 2000);
+  accountTimer.unref();
+  app.once('before-quit', () => clearInterval(accountTimer));
   if (process.argv.includes('--smoke')) {
     (async () => {
       const timeout = setTimeout(() => {
