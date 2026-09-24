@@ -29,7 +29,7 @@ const server = createServer(async (req, res) => {
   }
   const chunks = []; for await (const chunk of req) chunks.push(chunk);
   const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
-  requests.push({ path: url.pathname, body });
+  requests.push({ path: url.pathname, body, tunnelHeader: req.headers['ngrok-skip-browser-warning'] });
   let value, status = 200;
   if (url.pathname === '/v1/account/config') value = publicConfig;
   else if (url.pathname === '/v1/auth/challenge') value = { challengeId: 'fixture-challenge', message: 'Fixture REACH wallet sign-in\nNo token transaction or payment.', address };
@@ -118,6 +118,7 @@ const timeout = setTimeout(() => { console.error('RCH wallet UI timed out'); ser
   await run("document.querySelector('#primary').click()");
   await until("document.querySelector('#primary').hidden", 'Successful sign-in did not complete');
   assert.equal(requests.filter(request => request.path === '/v1/auth/verify').length, 1);
+  assert(requests.every(request => request.tunnelHeader === '1'), 'Wallet API calls must reach the account service through ngrok');
   assert.equal(await run("walletFixture.calls.some(call => call.method === 'eth_sendTransaction')"), false);
   console.log('PASS declined signature recovery and verified sign-in without transaction');
 

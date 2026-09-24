@@ -9,7 +9,8 @@ let challenge = null, selectedAddress = null, redemption = null, config = null;
 $('origin').textContent = location.origin;
 async function api(path, body) {
   const response = await fetch(path, { method: body ? 'POST' : 'GET', credentials:'omit', redirect:'error',
-    headers: body ? {'Content-Type':'application/json'} : {}, ...(body ? {body:JSON.stringify(body)} : {}) });
+    headers: {'ngrok-skip-browser-warning':'1', ...(body ? {'Content-Type':'application/json'} : {})},
+    ...(body ? {body:JSON.stringify(body)} : {}) });
   const data = await response.json();
   if (!response.ok) throw new Error(data.error?.message || 'REACH could not complete this request.');
   return data;
