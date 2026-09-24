@@ -50,7 +50,9 @@ def chat_execute(h):
         return
 
     # ---- rate limit (global buckets; per-model applied after parsing) ----
-    allowed, rl_headers, reason = core.STATE.limiter.check(ip, core.STATE.cfg)
+    key_bucket, key_rpm, key_tokens_day = h.key_limits()
+    allowed, rl_headers, reason = core.STATE.limiter.check(
+        ip, core.STATE.cfg, key_bucket=key_bucket, key_rpm=key_rpm)
     if not allowed:
         h._log_chat(model=None, upstream_model=None, ip=ip,
                        user_agent=h.headers.get("User-Agent"), status=429,
@@ -62,6 +64,25 @@ def chat_execute(h):
                       "type": "rate_limit_error", "code": "rate_limit"},
         }, rl_headers)
         return
+
+    # Refuse before calling upstream rather than after. The shared budgets are
+    # checked once the answer is back (they meter what was actually produced),
+    # but a key that is ALREADY over its allowance should not buy another
+    # completion first: that is the difference between a budget and a bill.
+    if key_bucket and key_tokens_day > 0:
+        spent = core.STATE.analytics.tokens_today(key_bucket)
+        if spent >= key_tokens_day:
+            h._log_chat(model=None, upstream_model=None, ip=ip,
+                        user_agent=h.headers.get("User-Agent"), status=429,
+                        error="key_daily_token_limit", latency_ms=0,
+                        tokens_in=0, tokens_out=0, stream=False)
+            h._json(429, {
+                "error": {"message": "This API key reached its daily token budget "
+                                     "(%d). It resets at 00:00 UTC." % key_tokens_day,
+                          "type": "rate_limit_error",
+                          "code": "key_daily_token_limit"},
+            }, {**rl_headers, "Retry-After": "86400"})
+            return
 
     started = time.time()
     body = h._read_body()
@@ -106,6 +127,9 @@ def chat_execute(h):
         return
 
     # ---- per-model rate limit bucket ----
+    # No key_bucket here on purpose: the limiter is consulted twice per chat
+    # request (shared buckets above, per-model here) and the key must be
+    # charged exactly once, or its cap would be halved.
     allowed, rl_headers, reason = core.STATE.limiter.check(ip, core.STATE.cfg,
                                                       model=requested)
     if not allowed:
@@ -1055,6 +1079,22 @@ def chat_finalize(h, upstream, ctx):
                     "error": {"message": "Daily token budget reached.",
                               "type": "rate_limit_error",
                               "code": "daily_token_limit"},
+                }, {**rl_headers, "Retry-After": "86400"})
+        # Per-key spend. Recorded even when the key sets no budget of its own,
+        # so switching a cap on later starts from a real number instead of zero.
+        key_bucket, _key_rpm, key_tokens_day = h.key_limits()
+        if key_bucket is None:
+            key_id = getattr(h, "_auth_key_id", "")
+            key_bucket = ("key::" + key_id) if key_id else None
+        if key_bucket:
+            spent = core.STATE.analytics.add_tokens(key_bucket, int(tokens_out))
+            if key_tokens_day and spent > key_tokens_day:
+                return h._json(429, {
+                    "error": {"message": "This API key reached its daily token "
+                                         "budget (%d). It resets at 00:00 UTC."
+                                         % key_tokens_day,
+                              "type": "rate_limit_error",
+                              "code": "key_daily_token_limit"},
                 }, {**rl_headers, "Retry-After": "86400"})
         model_budget = int((spec.get("rate_limits") or {})
                            .get("tokens_day", 0) or 0)

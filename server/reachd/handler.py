@@ -25,6 +25,7 @@ from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
 from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
     DEFAULT_SETTINGS,
+    key_expired,
     SettingsError,
     generate_client_key,
     merged_settings,
@@ -346,8 +347,23 @@ class RelayHandler(BaseHTTPRequestHandler):
                 matched_key = {"id": "legacy", "name": "Legacy Key", "key": legacy_key}
 
         if matched_key:
+            # An expired key is a real key whose term ended, not a guess, so it
+            # never counts toward the lockout: locking someone out for holding a
+            # lapsed key would punish the one person we can positively identify.
+            if key_expired(matched_key):
+                core.STATE.auth_guard.record_success(gid)
+                self._log_auth_refusal(ip, "key_expired")
+                self._json(401, {"error": {
+                    "message": "This SignalR.E.A.C.H API key expired on %s."
+                               % matched_key.get("expires_at"),
+                    "type": "authentication_error",
+                    "code": "key_expired"}}, {"WWW-Authenticate": "Bearer"})
+                return False
             self._auth_key_name = matched_key.get("name", "Key")
             self._auth_key_id = matched_key.get("id", "")
+            # The request pipeline meters this key, so it has to travel with the
+            # request rather than be looked up again by a token comparison.
+            self._auth_key = matched_key
             matched_key["last_used_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             core.STATE.auth_guard.record_success(gid)
             return True
@@ -365,13 +381,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             return True
 
         self._note_auth_failure(gid, "key")
-        try:
-            self._log_chat(model=None, upstream_model=None, ip=ip,
-                           user_agent=self.headers.get("User-Agent"), status=401,
-                           error="auth_failed" if presented else "auth_missing",
-                           latency_ms=0, tokens_in=0, tokens_out=0, stream=False)
-        except Exception:
-            pass
+        self._log_auth_refusal(ip, "auth_failed" if presented else "auth_missing")
         if self._deny_if_locked_out(gid):
             return False
         self._json(401, {"error": {"message": "Invalid SignalR.E.A.C.H API Key. Send 'Authorization: Bearer sk-reach-...' or 'X-Reach-Key'.",
@@ -379,6 +389,36 @@ class RelayHandler(BaseHTTPRequestHandler):
                                     "code": "invalid_api_key"}},
                    {"WWW-Authenticate": "Bearer"})
         return False
+
+    def _log_auth_refusal(self, ip, reason):
+        """One record per refused request, whatever refused it. Analytics must
+        never be able to break the gate, so it is best effort."""
+        try:
+            self._log_chat(model=None, upstream_model=None, ip=ip,
+                           user_agent=self.headers.get("User-Agent"), status=401,
+                           error=reason, latency_ms=0, tokens_in=0,
+                           tokens_out=0, stream=False)
+        except Exception:
+            pass
+
+    def key_limits(self):
+        """The caps carried by the key that authenticated this request.
+
+        Returns (bucket_id, rpm, tokens_day) with bucket_id None when nothing
+        should be metered per key — an anonymous or local-bypass request, or a
+        key that sets no caps of its own. The shared rate_limits.* budgets are
+        applied separately and always."""
+        key = getattr(self, "_auth_key", None)
+        if not key:
+            return None, 0, 0
+        try:
+            rpm = int(key.get("rate_limit_rpm", 0) or 0)
+            tokens = int(key.get("tokens_day", 0) or 0)
+        except (TypeError, ValueError):
+            return None, 0, 0
+        if rpm <= 0 and tokens <= 0:
+            return None, 0, 0
+        return "key::" + str(key.get("id") or key.get("name") or "?"), max(0, rpm), max(0, tokens)
 
     def _check_ip_lists(self):
         access = core.STATE.cfg.get("access", {})
@@ -587,6 +627,21 @@ class RelayHandler(BaseHTTPRequestHandler):
                                     k["enabled"] = val
                                 else:
                                     k["enabled"] = str(val).lower() not in ("false", "0", "no", "off", "")
+                            # Per-key caps, so a plan can be changed without a
+                            # whole-settings PUT. Values are validated by
+                            # save_config below; a bad one fails the request
+                            # rather than being silently coerced.
+                            for field in ("rate_limit_rpm", "tokens_day"):
+                                if field in patch:
+                                    try:
+                                        k[field] = max(0, int(patch[field] or 0))
+                                    except (TypeError, ValueError):
+                                        return self._json(400, {"error": {
+                                            "message": "%s must be a whole number" % field,
+                                            "type": "invalid_request"}})
+                            if "expires_at" in patch:
+                                value = patch["expires_at"]
+                                k["expires_at"] = str(value).strip() or None                                     if isinstance(value, str) else None
                             found = k
                             break
                     if found:

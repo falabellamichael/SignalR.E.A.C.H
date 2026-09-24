@@ -626,6 +626,14 @@ and needs none.
 - **Client IPs can't be forged.** `X-Forwarded-For` / `Cf-Connecting-Ip` are
   believed only from loopback (the local tunnel) or `access.trusted_proxies`.
   Otherwise a direct client could claim any address and slip past the IP lists.
+- **Per-key caps.** Each key carries its own `rate_limit_rpm`, `tokens_day` and
+  `expires_at`, editable in Settings → *Client API Keys* or through
+  `PATCH /_reach/keys/<id>`. They are metered against the **key**, not the
+  address, so one holder cannot reset an allowance by changing network and
+  several people behind one address are not charged for each other. A key can
+  only ever be more restrictive than the shared limits, never looser. An
+  expired key is refused with `key_expired` and — because it is identified
+  rather than guessed — never counts toward the failed-attempt lockout.
 - **IP allow / block lists** (addresses or CIDR) apply to every public route,
   checked before the key.
 - **`/health` is redacted for remote callers** — no internal upstream addresses,
@@ -649,8 +657,8 @@ its traffic look local and skip the key. Either make it add the header, or set
 `public_url_override` is set with the bypass on.
 
 **What this does not do.** A key is a bearer secret: anyone you give it to can
-use it, from anywhere, until you disable it. There is no per-key quota or expiry
-yet, and the shared rate limits are per address rather than per key. The tunnel
+use it, from anywhere, until you disable it or it expires. Daily token budgets
+reset at 00:00 UTC and are not prorated. The tunnel
 URL is published to a public gist, so assume it is known — the key, not the URL,
 is what protects the relay. TLS comes from the tunnel.
 

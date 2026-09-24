@@ -603,7 +603,8 @@
                 + '</div>';
             keysCard.appendChild(kHead);
             keysCard.appendChild(el('p', 'reach-copy',
-                'Generate standardized sk-reach tokens for external tools (Postman, Cursor, LibreChat, teammates). SignalR.E.A.C.H authenticates external clients using these keys while securely routing upstream on the fly without revealing your OmniRoute credentials.'));
+                'Generate standardized sk-reach tokens for external tools (Postman, Cursor, LibreChat, teammates). SignalR.E.A.C.H authenticates external clients using these keys while securely routing upstream on the fly without revealing your OmniRoute credentials. '
+                + 'Rate, Tokens/day and Expires are per-key caps: they are metered against the key rather than the address, so one person cannot reset their allowance by changing network, and a lapsed key stops working on its own.'));
 
             const keysBody = el('div', 'reach-card-body');
             keysCard.appendChild(keysBody);
@@ -618,7 +619,11 @@
                     keysList.appendChild(emptyNote('No client API keys generated yet. Create one below.'));
                 } else {
                     const table = el('table', 'reach-table');
-                    table.innerHTML = '<thead><tr><th>Name</th><th>Key ID</th><th>Token</th><th>Status</th><th>Last Used</th><th>Actions</th></tr></thead>';
+                    table.innerHTML = '<thead><tr><th>Name</th><th>Key ID</th><th>Token</th><th>Status</th>'
+                        + '<th title="Requests per minute for this key alone. Blank = no cap of its own.">Rate</th>'
+                        + '<th title="Tokens this key may spend per day, UTC. Blank = no cap of its own.">Tokens/day</th>'
+                        + '<th title="The key stops working at the end of this day. Blank = never expires.">Expires</th>'
+                        + '<th>Last Used</th><th>Actions</th></tr></thead>';
                     const tbody = document.createElement('tbody');
                     keys.forEach((k, idx) => {
                         const tr = document.createElement('tr');
@@ -647,6 +652,51 @@
                         enToggle.appendChild(enInput);
                         enToggle.appendChild(enSlider);
                         tdStatus.appendChild(enToggle);
+
+                        /* Per-key caps. These edit the draft in place exactly like the
+                         * enabled toggle above, so the existing Save round-trips them
+                         * through the validated settings PUT. A blank box means "this
+                         * key adds no cap of its own" - the shared rate limits still
+                         * apply - which is why 0 renders as empty rather than as 0. */
+                        function capCell(field, placeholder, width) {
+                            const td = el('td', null);
+                            const input = document.createElement('input');
+                            input.type = 'number';
+                            input.min = '0';
+                            input.className = 'reach-input reach-input-sm';
+                            input.style.width = width;
+                            input.placeholder = placeholder;
+                            input.value = Number(k[field] || 0) > 0 ? String(k[field]) : '';
+                            input.addEventListener('input', () => {
+                                const next = parseInt(input.value, 10);
+                                k[field] = Number.isFinite(next) && next > 0 ? next : 0;
+                                markDirty(true);
+                            });
+                            td.appendChild(input);
+                            return td;
+                        }
+                        const tdRate = capCell('rate_limit_rpm', 'none', '5.5em');
+                        const tdTokens = capCell('tokens_day', 'none', '7em');
+
+                        const tdExpires = el('td', null);
+                        const expInput = document.createElement('input');
+                        expInput.type = 'date';
+                        expInput.className = 'reach-input reach-input-sm';
+                        expInput.title = 'The key stops working at the end of this day (UTC).';
+                        expInput.value = (k.expires_at || '').slice(0, 10);
+                        expInput.addEventListener('change', () => {
+                            /* End of the chosen day, so "expires 31 Dec" means the key
+                             * works all of 31 Dec rather than dying at midnight. */
+                            k.expires_at = expInput.value
+                                ? expInput.value + 'T23:59:59Z'
+                                : null;
+                            markDirty(true);
+                            renderKeysList();
+                        });
+                        tdExpires.appendChild(expInput);
+                        if (k.expires_at && new Date(k.expires_at) < new Date()) {
+                            tdExpires.appendChild(el('div', 'reach-hint', 'expired'));
+                        }
 
                         const tdUsed = el('td', 'reach-hint', (k.last_used_at ? k.last_used_at.slice(0, 10) : 'never'));
 
@@ -683,6 +733,9 @@
                         tr.appendChild(tdId);
                         tr.appendChild(tdToken);
                         tr.appendChild(tdStatus);
+                        tr.appendChild(tdRate);
+                        tr.appendChild(tdTokens);
+                        tr.appendChild(tdExpires);
                         tr.appendChild(tdUsed);
                         tr.appendChild(tdActions);
                         tbody.appendChild(tr);

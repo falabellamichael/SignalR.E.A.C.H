@@ -59,9 +59,14 @@ class RateLimiter:
                                bucket["tokens"] + (now - bucket["updated"]) * rate)
         bucket["updated"] = now
 
-    def check(self, ip, settings, model=None):
+    def check(self, ip, settings, model=None, key_bucket=None, key_rpm=0):
         """Returns (allowed, headers, reason). Optionally enforces a per-model
-        bucket (rate_limits.rpm on the alias)."""
+        bucket (rate_limits.rpm on the alias) and a per-key bucket.
+
+        The per-key bucket is what makes a plan or a credit balance real: it is
+        metered against the key rather than the address, so one subscriber
+        cannot multiply their allowance by changing IP, and several people
+        behind one address are not charged for each other."""
         rl = settings.get("rate_limits", {})
         if not rl.get("enabled"):
             return True, {}, None
@@ -109,10 +114,27 @@ class RateLimiter:
                                    "Retry-After": str(max(1, int(wait)) + 1)}, \
                         "model_rpm"
 
+            # Per-key pace. Checked after the shared buckets so a key can
+            # only ever be more restrictive than the endpoint as a whole.
+            if key_bucket and key_rpm > 0:
+                k_bucket = bucket_for(key_bucket, key_rpm)
+                if k_bucket["tokens"] < 1:
+                    wait = (1.0 - k_bucket["tokens"]) * 60.0 / float(key_rpm)
+                    return False, {**headers,
+                                   "X-RateLimit-Limit": str(int(key_rpm + burst)),
+                                   "X-RateLimit-Remaining": "0",
+                                   "Retry-After": str(max(1, int(wait)) + 1)}, \
+                        "key_rpm"
+                headers = {**headers,
+                           "X-RateLimit-Limit": str(int(key_rpm + burst)),
+                           "X-RateLimit-Remaining": str(max(0, int(k_bucket["tokens"] - 1)))}
+
             ip_bucket["tokens"] -= 1.0
             self._global["tokens"] -= 1.0
             if model_rpm:
                 self._buckets[ip + "::" + model]["tokens"] -= 1.0
+            if key_bucket and key_rpm > 0:
+                self._buckets[key_bucket]["tokens"] -= 1.0
         return True, headers, None
 
 
