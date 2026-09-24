@@ -42,9 +42,9 @@ module.exports = ({ FINISHED, linksCompleteIn }) => ({
       return { ok: false, error: `${rec.name} already ${rec.status}${rec.error ? ': ' + rec.error : ''}. It cannot be woken.`, status: rec.status };
     }
 
-    /* Links budget: bound the total crew conversation (3× a chain's rate). */
+    /* Bound accepted agent-to-agent messages across the crew. */
     if (countAgainstBudget && this.linkBudget != null && this.linkSends >= this.linkBudget) {
-      return { ok: false, error: `Link budget reached (${this.linkBudget} crew messages = 3× a chain's exchange rate). Finish with what the crew has; ask the Coordinator to declare completion.` };
+      return { ok: false, error: `Message handoff budget reached (${this.linkBudget} configured agent messages). Finish with what the crew has; ask the Coordinator to declare completion.` };
     }
 
     if (source === 'user') {

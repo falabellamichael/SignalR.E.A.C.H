@@ -1,6 +1,6 @@
 'use strict';
 
-const { TeamNurse } = require('./team-nurse.cjs');
+const { cap, defaults: budgetDefaults } = require('./budgets.cjs');
 
 module.exports = ({ cleanOutput, linksCompleteIn }) => ({
   _asLinksResult(result) {
@@ -64,22 +64,14 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
 
   async _linksRun() {
     const n = this.personas.length;
-    const budget = this.links.rate * Math.max(1, n - 1);
+    const budget = cap(this.budgets?.messageHandoffs ?? budgetDefaults.messageHandoffs);
     const results = new Array(n);
     const turns = new Array(n).fill(0);
     // A failed turn stalls the member. Peers carry on, but an explicit message
     // to that member is a bounded recovery signal: the next Links round wakes
     // it with the new instruction instead of silently leaving mail undelivered.
     const stalled = new Map();
-    const nurse = new TeamNurse({
-      personas: this.personas,
-      team: this.team,
-      net: this.net,
-      enabled: this.team.nurse !== false,
-      policy: this.team.nursePolicy || null,
-      emit: (_type, payload) => this._emit('nurse', { ...payload, nurseType: payload.action, silent: true }),
-    });
-    this.nurse = nurse;
+    const nurse = this.nurse;
     const noteStall = (index, error) => {
       stalled.set(index, error || 'member stalled');
       this.net?.syncMember(`m${index}-${this.personas[index].id}`, { status: 'stalled', error: stalled.get(index) });
@@ -123,12 +115,14 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
         // A pending roster member consumes its mail in the initial prompt. A
         // busy or already-queued member keeps accumulating mail for one bounded
         // coalesced follow-up rather than starting a concurrent turn.
-        if (!turns[index] || turns[index] >= maxTurns || memberBusy.has(index) || queuedWake.has(index)) continue;
+        if (!turns[index] || memberBusy.has(index) || queuedWake.has(index)) continue;
         const rec = this.net?.agents.get(`m${index}-${this.personas[index].id}`);
         if (!rec?.inbox?.length) continue;
+        const userWake = rec.inbox.some(message => String(message).startsWith('TEAM NURSE USER HANDOFF'));
+        if (!userWake && turns[index] >= maxTurns) continue;
         const generation = Math.max(memberGeneration[index] + 1, triggerGeneration + 1);
-        if (generation > this.links.maxRounds) continue; // preserve over-cap mail for status/diagnostics
-        const job = { kind: 'wake', index, generation };
+        if (!userWake && generation > this.links.maxRounds) continue; // preserve over-cap peer mail
+        const job = { kind: 'wake', index, generation, userWake };
         jobQueue.push(job);
         queuedWake.add(index);
         queued.push(job);
@@ -150,7 +144,7 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
       } else {
         queuedWake.delete(index);
         operatorWakes.delete(index);
-        if (!turns[index] || turns[index] >= maxTurns || job.generation > this.links.maxRounds) return false;
+        if (!turns[index] || (!job.userWake && (turns[index] >= maxTurns || job.generation > this.links.maxRounds))) return false;
         // Drain only when the slot is actually reserved. Until this point the
         // inbox stays visible to the Nurse, coalesces new mail, and survives a
         // Stop/completion without any restoration bookkeeping.

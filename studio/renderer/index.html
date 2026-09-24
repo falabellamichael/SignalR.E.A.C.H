@@ -366,6 +366,7 @@
               <div id="chat-log" class="chat-log"></div>
             </div>
             <div id="queued-indicator" class="queued hidden"></div>
+            <section id="team-message-queue" class="team-message-queue hidden" aria-label="Queued team messages" aria-live="polite"></section>
             <div class="composer">
               <button id="btn-attach" class="ghost" type="button" aria-label="Attach files" title="Attach files">+</button>
               <textarea id="composer-input" aria-label="Message" placeholder="Start with @ to route, or / for commands&hellip; (Ctrl+Enter sends)" rows="1" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="composer-suggestions"></textarea>
@@ -402,7 +403,10 @@
                 <label class="team-chat-check"><input id="team-chat-history" type="checkbox" checked /> Include recent conversation</label>
                 <p class="dim">Follow-ups include your earlier messages and team answers. Turn this off to send only the new message.</p>
                 <label for="team-chat-recipient">While the team is running, send to</label>
-                <select id="team-chat-recipient"><option value="coordinator">Coordinator (or first member)</option><option value="selected">Selected member tab</option></select>
+                <select id="team-chat-recipient"><option value="coordinator">Coordinator (or working member)</option><option value="selected">Selected member tab</option></select>
+                <label for="team-chat-delivery">Messages during a run</label>
+                <select id="team-chat-delivery"><option value="auto">Auto · Jev decides what needs attention</option><option value="queue">Queue for the next team turn</option><option value="steer">Steer at the next safe opportunity</option></select>
+                <p class="dim">Auto checks the message and a short task description with Jev. Important guidance steers the recipient; other messages wait. Without a configured Jev key, messages stay queued.</p>
                 <p id="team-chat-live-status" class="dim" role="status"></p>
                 <div class="team-chat-menu-actions"><button id="team-chat-pause" class="ghost small" type="button">Pause team</button><button id="team-chat-edit" class="ghost small" type="button">Edit team…</button><button id="team-chat-manage" class="ghost small" type="button">Manage teams…</button></div>
               </div>
@@ -443,7 +447,13 @@
         <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
       </nav>
       <div class="settings-scroll">      <div id="settings-connection" class="settings-panel settings-content">
-        <h2>Connections</h2>
+        <div class="conn-toolbar">
+          <h2>Connections</h2>
+          <div class="settings-actions">
+            <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
+            <button id="btn-add-connection" class="gold small" type="button">Add connection</button>
+          </div>
+        </div>
         <p id="credential-storage-warning" class="settings-description hidden" role="alert"></p>
         <p class="settings-description">
           Each connection is one endpoint with its own access key and default model.
@@ -454,13 +464,11 @@
 
         <p id="conn-summary" class="settings-description conn-summary" role="status"></p>
 
-        <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
-
-        <div class="settings-actions conn-actions">
-          <button id="btn-add-connection" class="ghost small" type="button">+ Add connection</button>
-          <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
-          <span id="conn-count" class="dim"></span>
+        <div id="conn-workspace" class="conn-workspace">
+          <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
+          <section id="conn-editor" class="conn-editor hidden" aria-labelledby="conn-editor-title"></section>
         </div>
+        <span id="conn-count" class="dim"></span>
 
         <label for="set-reach-cli">Native Reach compiler (reachc) executable (optional)</label>
         <input id="set-reach-cli" type="text" placeholder="Auto-discover reachc" spellcheck="false" />
@@ -499,6 +507,7 @@
       </div>
 <p id="agent-settings-status" role="status" class="dim"></p></div><div id="settings-budgeting" class="settings-panel settings-content hidden">
         <h2>Budgeting</h2>
+        <details id="engine-status"><summary>Local engines · active · no model calls</summary><p class="dim">Evidence ledger, file write checks, review scoring and secret redaction. Shell actions use the existing approval controls.</p><button id="btn-engine-report" class="ghost">Refresh engine report</button><pre id="engine-report" style="max-height:260px;overflow:auto;white-space:pre-wrap"></pre></details>
         <p class="settings-description">Control how long agents can work, how much they can generate, and how teams share context. Saved changes apply to new runs.</p>
         <label for="budget-scope">Apply to</label>
         <select id="budget-scope"><option value="global">All conversations and teams (default)</option><option value="conversation">Selected conversation and its teams</option></select>
@@ -955,7 +964,7 @@
       <select id="team-mode">
         <option value="parallel">Parallel — all members work the same task simultaneously</option>
         <option value="chain">Chain — members work in order, passing results along</option>
-        <option value="links">Links — peer network: members message each other until the task is done (3× chain rate)</option>
+        <option value="links">Links — peer network: members message each other until the task is done (uses Teams message budget)</option>
       </select>
       <label>Tool protocol</label>
       <select id="team-protocol" title="How the crew's members turn model output into tool calls">

@@ -1376,6 +1376,7 @@ function appendEditCardToGroup(group, edit) {
   appendReviewMeta(detailMeta, 'AI', edit.memberName || group.actor);
   appendReviewMeta(detailMeta, 'Changes', `${Number(edit.stats?.added || 0)} added · ${Number(edit.stats?.removed || 0)} removed`);
   appendReviewMeta(detailMeta, 'Review ID', String(edit.editId).slice(-10));
+  if (edit.engineReview) appendReviewMeta(detailMeta, 'Engine review', `Risk ${edit.engineReview.risk}/100 · ${edit.engineReview.why.join(', ')} (heuristic)`);
   card.appendChild(detailMeta);
 
   const body = document.createElement('div');
@@ -2365,6 +2366,7 @@ document.addEventListener('keydown', (e) => {
  * could inject markup. Setting .value on a created element has no such hole. */
 let connDraft = [];        // working copy; only written to disk on Save
 let connActiveId = '';
+let connEditingId = '';    // Editing a tile never changes the active connection.
 let jevClearRequested = false;
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
 /* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
@@ -2374,6 +2376,7 @@ const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
  * a result describing values that no longer exist is a lie, not a cache. */
 const connStatus = new Map();   // id -> { text, cls }
 const connTesters = [];         // rebuilt by renderConnections: [{ id, running, run }]
+const connTestsRunning = new Set(); // Survives opening/closing an editor during a ping.
 
 async function loadSettings() {
   const s = await reachApi.getSettings();
@@ -2421,7 +2424,14 @@ function newConnId() {
 function renderConnections() {
   const list = $('#conn-list');
   if (!list) return;
+  const editor = $('#conn-editor');
+  // The narrow layout nests this editor in its tile. Move it out before rebuilding.
+  $('#conn-workspace').appendChild(editor);
   list.replaceChildren();
+  editor.replaceChildren();
+  if (!connDraft.some(c => c.id === connEditingId)) connEditingId = '';
+  editor.classList.toggle('hidden', !connEditingId);
+  $('#conn-workspace').classList.toggle('editing', !!connEditingId);
   // Each card registers its test runner here so "Test all" and the panel's
   // auto-test can drive every row without re-querying handlers off the DOM.
   connTesters.length = 0;
@@ -2430,7 +2440,6 @@ function renderConnections() {
    * the old "OK" described values the user just replaced, and a stale success
    * is worse than no result at all. */
   function clearConnStatus(id) {
-    if (!connStatus.has(id)) return;
     connStatus.delete(id);
     const card = document.querySelector('#conn-list .conn-card[data-conn-id="' + id + '"]');
     const status = card && card.querySelector('.conn-status');
@@ -2442,6 +2451,7 @@ function renderConnections() {
     card.className = 'conn-card';
     card.dataset.connId = c.id;
     if (c.id === connActiveId) card.classList.add('active');
+    if (c.id === connEditingId) card.classList.add('editing');
 
     // --- header: radio (active) + name + status pill ---
     const head = document.createElement('div');
@@ -2454,8 +2464,15 @@ function renderConnections() {
     radio.checked = c.id === connActiveId;
     radio.title = 'Use this connection';
     radio.setAttribute('aria-label', `Use ${c.name || 'this connection'}`);
-    radio.onchange = () => { connActiveId = c.id; renderConnections(); markUnsaved(); };
+    radio.onchange = () => {
+      connActiveId = c.id; c.enabled = true; renderConnections(); markUnsaved();
+      [...list.children].find(el => el.dataset.connId === c.id)?.querySelector('.conn-radio')?.focus();
+    };
     head.appendChild(radio);
+
+    const title = document.createElement('strong');
+    title.className = 'conn-title';
+    head.appendChild(title);
 
     const nameInput = document.createElement('input');
     nameInput.type = 'text';
@@ -2464,8 +2481,7 @@ function renderConnections() {
     nameInput.placeholder = 'Connection name';
     nameInput.spellcheck = false;
     nameInput.setAttribute('aria-label', 'Connection name');
-    nameInput.oninput = () => { c.name = nameInput.value; markUnsaved(); };
-    head.appendChild(nameInput);
+    nameInput.oninput = () => { c.name = nameInput.value; syncSummary(); markUnsaved(); };
 
     const badge = document.createElement('span');
     badge.className = 'conn-badge' + (c.id === connActiveId ? ' on' : '');
@@ -2473,7 +2489,26 @@ function renderConnections() {
     badge.title = c.id === connActiveId
       ? 'Active connection: used by chats, playground and refactor, and the fallback every team member can use.'
       : 'Click the radio to make this the active connection.';
-    head.appendChild(badge);
+    if (c.id === connActiveId) head.appendChild(badge);
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'ghost conn-edit';
+    editBtn.setAttribute('aria-label', `Edit ${c.name || 'connection'}`);
+    editBtn.setAttribute('aria-controls', 'conn-editor');
+    editBtn.setAttribute('aria-expanded', String(c.id === connEditingId));
+    const editIcon = document.createElement('span');
+    editIcon.className = 'conn-icon conn-icon-edit';
+    editIcon.setAttribute('aria-hidden', 'true');
+    editBtn.appendChild(editIcon);
+    editBtn.onclick = () => {
+      const closing = connEditingId === c.id;
+      connEditingId = closing ? '' : c.id;
+      renderConnections();
+      if (closing) [...list.children].find(el => el.dataset.connId === c.id)?.querySelector('.conn-edit')?.focus();
+      else $('#conn-editor .conn-name')?.focus();
+    };
+    head.appendChild(editBtn);
 
     /* Pool toggle — click to include this connection in team runs, click again to
      * take it out. This is the multi-select the user asked for: several
@@ -2493,7 +2528,7 @@ function renderConnections() {
     const poolBtn = document.createElement('button');
     poolBtn.type = 'button';
     poolBtn.className = 'conn-pool' + (enabled ? ' on' : '');
-    poolBtn.textContent = enabled ? '✓ In team pool' : 'Add to team pool';
+    poolBtn.textContent = enabled ? 'In team pool' : 'Add to pool';
     poolBtn.setAttribute('aria-pressed', String(enabled));
     poolBtn.dataset.connId = c.id;
     poolBtn.title = isActive
@@ -2516,25 +2551,53 @@ function renderConnections() {
       c.enabled = next;
       renderConnections();
       markUnsaved();
+      [...list.children].find(el => el.dataset.connId === c.id)?.querySelector('.conn-pool')?.focus();
     };
-    head.appendChild(poolBtn);
 
     const removeBtn = document.createElement('button');
     removeBtn.type = 'button';
-    removeBtn.className = 'icon-btn conn-remove';
-    removeBtn.textContent = '−';
+    removeBtn.className = 'ghost small conn-remove';
+    removeBtn.textContent = 'Remove connection';
     removeBtn.title = connDraft.length <= 1 ? 'At least one connection must remain' : 'Remove connection';
     removeBtn.disabled = connDraft.length <= 1;
     removeBtn.setAttribute('aria-label', `Remove ${c.name || 'connection'}`);
     removeBtn.onclick = () => {
       if (connDraft.length <= 1) return;
       connDraft.splice(i, 1);
-      if (connActiveId === c.id) connActiveId = connDraft[0] ? connDraft[0].id : '';
+      if (connActiveId === c.id) {
+        connActiveId = connDraft[0] ? connDraft[0].id : '';
+        if (connDraft[0]) connDraft[0].enabled = true;
+      }
       renderConnections();
       markUnsaved();
+      $('#btn-add-connection').focus();
     };
-    head.appendChild(removeBtn);
     card.appendChild(head);
+
+    const details = document.createElement('dl');
+    details.className = 'conn-details';
+    const modelLabel = document.createElement('dt');
+    modelLabel.textContent = 'Model';
+    const modelValue = document.createElement('dd');
+    const hostLabel = document.createElement('dt');
+    hostLabel.textContent = 'Host';
+    const hostValue = document.createElement('dd');
+    details.append(modelLabel, modelValue, hostLabel, hostValue);
+    card.appendChild(details);
+    function syncSummary() {
+      title.textContent = c.name || 'New connection';
+      title.title = title.textContent;
+      modelValue.textContent = c.model || 'No default model';
+      modelValue.title = modelValue.textContent;
+      let host = 'Enter a Base URL';
+      try { const url = new URL(c.endpoint); host = url.host + url.pathname.replace(/\/$/, ''); } catch { /* Avoid displaying credentials from malformed URLs. */ }
+      hostValue.textContent = host;
+      hostValue.title = host;
+      radio.setAttribute('aria-label', `Use ${c.name || 'this connection'}`);
+      editBtn.setAttribute('aria-label', `Edit ${c.name || 'connection'}`);
+      if (c.id === connEditingId && $('#conn-editor-title')) $('#conn-editor-title').textContent = 'Edit ' + (c.name || 'connection');
+    }
+    syncSummary();
 
     // --- body: endpoint, key, model ---
     const body = document.createElement('div');
@@ -2546,9 +2609,17 @@ function renderConnections() {
       const label = document.createElement('label');
       label.textContent = labelText;
       row.appendChild(label);
-      row.appendChild(buildInput());
+      const content = buildInput();
+      const input = content.matches('input') ? content : content.querySelector('input');
+      if (input) {
+        input.id = `conn-${i}-${body.children.length}`;
+        label.htmlFor = input.id;
+      }
+      row.appendChild(content);
       body.appendChild(row);
     };
+
+    addField('Name', () => nameInput);
 
     // Keep a reference to the URL field so Browse and Test can read the value the
     // user is currently looking at. (c.endpoint is kept live by its oninput, but
@@ -2564,7 +2635,7 @@ function renderConnections() {
       input.value = c.endpoint || '';
       input.placeholder = 'https://your-endpoint.example.com/v1';
       input.spellcheck = false;
-      input.oninput = () => { c.endpoint = input.value.trim(); clearConnStatus(c.id); markUnsaved(); };
+      input.oninput = () => { c.endpoint = input.value.trim(); syncSummary(); clearConnStatus(c.id); markUnsaved(); };
       urlInput = input;
       return input;
     });
@@ -2600,7 +2671,8 @@ function renderConnections() {
       input.value = c.model || '';
       input.placeholder = 'click Browse to pick from this endpoint';
       input.spellcheck = false;
-      input.oninput = () => { c.model = input.value.trim(); markUnsaved(); };
+      input.className = 'conn-model';
+      input.oninput = () => { c.model = input.value.trim(); syncSummary(); markUnsaved(); };
       const browse = document.createElement('button');
       browse.type = 'button';
       browse.className = 'ghost small';
@@ -2610,7 +2682,7 @@ function renderConnections() {
       // the stored value would make the button appear broken on a new row.
       browse.onclick = () => openModelPicker({
         target: { endpoint: (urlInput ? urlInput.value : c.endpoint).trim(), accessKey: c.accessKey || '' },
-        onPick: (id) => { c.model = id; input.value = id; markUnsaved(); },
+        onPick: (id) => { c.model = id; input.value = id; syncSummary(); markUnsaved(); },
         label: c.name || (urlInput ? urlInput.value : c.endpoint),
       });
       wrap.append(input, browse);
@@ -2634,16 +2706,21 @@ function renderConnections() {
     foot.className = 'conn-foot';
     const testBtn = document.createElement('button');
     testBtn.type = 'button';
-    testBtn.className = 'ghost small';
+    testBtn.className = 'ghost small conn-test';
     testBtn.textContent = 'Test';
+    testBtn.disabled = connTestsRunning.has(c.id);
     const status = document.createElement('span');
     status.className = 'dim conn-status';
     const tester = { id: c.id, running: false, run: null };
+    let testedEndpoint = '', testedKey = '';
+    const stillCurrent = () => connDraft.some(row => row.id === c.id
+      && String(row.endpoint || '').trim() === testedEndpoint && (row.accessKey || '') === testedKey);
 
     /* Write to this card's span AND the live one when they differ: a re-render
      * replaces the card's DOM mid-test, and a result that lands only on the
      * detached node would be invisible until the next render. */
     const setStatus = (text, cls, store = true) => {
+      if (tester.running && !stillCurrent()) return;
       const apply = (el) => {
         if (!el) return;
         el.textContent = text;
@@ -2661,14 +2738,18 @@ function renderConnections() {
 
     const savedStatus = connStatus.get(c.id);
     if (savedStatus) setStatus(savedStatus.text, savedStatus.cls, false);
+    else if (connTestsRunning.has(c.id)) setStatus('Testing…', '', false);
 
     tester.run = async () => {
-      if (tester.running) return { ok: false, skipped: true };
+      if (connTestsRunning.has(c.id)) return { ok: false, skipped: true };
       // Read urlInput, not a CSS query: the model field is ALSO type=text, so
       // `.conn-field input[type=text]` only works by accident of append order.
       const endpoint = (urlInput ? urlInput.value : (c.endpoint || '')).trim();
       if (!endpoint) { setStatus('Enter a Base URL first.', 'bad'); return { ok: false, err: 'no endpoint' }; }
+      testedEndpoint = endpoint;
+      testedKey = c.accessKey || '';
       tester.running = true;
+      connTestsRunning.add(c.id);
       testBtn.disabled = true;
       setStatus('Testing…', '', false);
       const stripSlash = value => String(value || '').trim().replace(/\/+$/, '');
@@ -2678,7 +2759,7 @@ function renderConnections() {
         const rec = earlier && (earlier.connections || []).find(x => x.id === c.id);
         const unchanged = !!rec
           && stripSlash(rec.endpoint) === stripSlash(endpoint)
-          && (rec.accessKey || '') === (c.accessKey || '');
+          && (rec.accessKey || '') === testedKey;
         let result;
         if (unchanged) {
           const ping = await reachApi.connections.ping(c.id);
@@ -2690,9 +2771,9 @@ function renderConnections() {
             result = { ok: false, text: `Failed · ${(ping && ping.err) || 'unreachable'}` };
           }
           // The latency chip speaks for the ACTIVE connection only.
-          if (c.id === connActiveId) window.ReachWorkspaceShell?.setLatency(ok ? ping.latencyMs : null, ok);
+          if (c.id === connActiveId && stillCurrent()) window.ReachWorkspaceShell?.setLatency(ok ? ping.latencyMs : null, ok);
         } else {
-          const res = await reachApi.listModels({ endpoint, accessKey: c.accessKey || '' });
+          const res = await reachApi.listModels({ endpoint, accessKey: testedKey });
           result = res && res.ok
             ? { ok: true, text: `OK · ${res.models.length} model(s)` }
             : { ok: false, text: `Failed · ${(res && res.err) || 'unreachable'}` };
@@ -2704,15 +2785,47 @@ function renderConnections() {
         return { ok: false, err: e.message };
       } finally {
         tester.running = false;
+        connTestsRunning.delete(c.id);
         testBtn.disabled = false;
+        const liveCard = [...list.children].find(el => el.dataset.connId === c.id);
+        const liveButton = liveCard?.querySelector('.conn-test');
+        if (liveButton) liveButton.disabled = false;
+        if (!stillCurrent()) clearConnStatus(c.id);
       }
     };
     testBtn.onclick = () => { void tester.run(); };
     connTesters.push(tester);
-    foot.append(testBtn, status);
+    foot.append(status, poolBtn, testBtn);
 
-    // Append order defines layout: head, then fields, then the Test footer.
-    card.appendChild(body);
+    // Keep the existing inputs and their handlers; only the edited form is visible.
+    if (c.id === connEditingId) {
+      const editorHead = document.createElement('div');
+      editorHead.className = 'conn-editor-head';
+      const heading = document.createElement('h3');
+      heading.id = 'conn-editor-title';
+      heading.textContent = 'Edit ' + (c.name || 'connection');
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'ghost small';
+      close.textContent = 'Close';
+      const closeEditor = () => {
+        connEditingId = '';
+        renderConnections();
+        [...list.querySelectorAll('.conn-card')].find(el => el.dataset.connId === c.id)?.querySelector('.conn-edit')?.focus();
+      };
+      close.onclick = closeEditor;
+      editor.onkeydown = event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeEditor(); }
+      };
+      editorHead.append(heading, close);
+      const hint = document.createElement('p');
+      hint.className = 'dim conn-editor-hint';
+      hint.textContent = 'Changes apply when you press Save Settings.';
+      editor.append(editorHead, body, hint, removeBtn);
+    } else {
+      body.hidden = true;
+      card.appendChild(body);
+    }
     card.appendChild(foot);
     list.appendChild(card);
   });
@@ -2736,7 +2849,28 @@ function renderConnections() {
       ? `Active: ${active.name || active.endpoint || 'connection'}${active.model ? ' — model ' + active.model : ' — no default model'}. Used by every conversation, the playground and the refactor workbench.`
       : 'No active connection yet. Add one below.';
   }
+  layoutConnectionEditor();
 }
+
+function layoutConnectionEditor() {
+  const workspace = $('#conn-workspace');
+  const editor = $('#conn-editor');
+  if (!workspace || !editor) return;
+  const inline = workspace.clientWidth < 900;
+  workspace.classList.toggle('inline-editor', inline);
+  const card = [...$('#conn-list').children].find(el => el.dataset.connId === connEditingId);
+  const parent = inline && card ? card : workspace;
+  if (editor.parentElement !== parent) {
+    // Moving the same form preserves typed values, Show/Hide state and focus.
+    if (parent.moveBefore) parent.moveBefore(editor, null);
+    else parent.appendChild(editor);
+  }
+}
+let connLayoutFrame = 0;
+new ResizeObserver(() => {
+  cancelAnimationFrame(connLayoutFrame);
+  connLayoutFrame = requestAnimationFrame(layoutConnectionEditor);
+}).observe($('#settings-connection'));
 
 function markUnsaved() {
   const el = $('#settings-status');
@@ -2774,11 +2908,10 @@ $('#btn-add-connection').onclick = () => {
   // Activating the new row matches the old single-endpoint behaviour (you are
   // editing what you will use) and makes its Browse/Test target obvious.
   connActiveId = c.id;
+  connEditingId = c.id;
   renderConnections();
   markUnsaved();
-  const cards = document.querySelectorAll('#conn-list .conn-card');
-  const last = cards[cards.length - 1];
-  if (last) { const url = last.querySelector('.conn-field input[type=text]'); if (url) url.focus(); }
+  $('#conn-editor .conn-name')?.focus();
 };
 
 /* "Test all": ping every row with the values on screen, in parallel. Read-only
@@ -2804,9 +2937,8 @@ window.ReachConnPanel = {
   autoTest() {
     for (const tester of connTesters) {
       if (connStatus.has(tester.id)) continue;
-      const card = document.querySelector('#conn-list .conn-card[data-conn-id="' + tester.id + '"]');
-      const url = card && card.querySelector('.conn-url');
-      if (!url || !url.value.trim()) continue;
+      const connection = connDraft.find(c => c.id === tester.id);
+      if (!connection?.endpoint?.trim()) continue;
       void tester.run();
     }
   },
@@ -4663,6 +4795,10 @@ function teamErrorSummary(value) {
 }
 
 function handleTeamEvent(ev) {
+  if (ev.type === 'queue-run-started') {
+    startTeamRunView(ev.teamRunId, ev.team, ev.task, ev.agentId);
+    return;
+  }
   // A paused run may still be displayed while main tears it down and starts the
   // replacement. Buffer events for the not-yet-installed run instead of
   // dropping its fast start/done sequence against the old run id.

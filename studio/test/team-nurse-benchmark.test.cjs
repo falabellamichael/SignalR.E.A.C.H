@@ -22,7 +22,7 @@ test('Team Nurse virtual benchmark is deterministic and correctness-gated', () =
   assert.equal(report.chosen.metrics.safetyViolations, 0);
   assert.deepEqual(report.chosen.policy, {
     minRecoveryScore: 8,
-    priorWakePenalty: 3,
+    priorWakePenalty: 0,
     maxAutoWakesPerMember: 2,
     concurrent: true,
     coalesced: true,

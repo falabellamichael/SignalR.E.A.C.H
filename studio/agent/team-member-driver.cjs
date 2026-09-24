@@ -85,6 +85,7 @@ module.exports = ({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME
         // Field order matters: spread the inner event FIRST, then override
         // type/index/name — otherwise the inner type clobbers 'member'.
         if (!payload || payload.agentId !== key) return;
+        if (payload.type === 'message' && payload.role === 'user') this.nurse?.acknowledgeUserPackets(key, payload.content);
         const { agentId, ...rest } = payload;
         this.sendEvent('team:event', {
           ...rest,

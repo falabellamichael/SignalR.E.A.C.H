@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('reach', {
   platform: process.platform,
+  engines: { report: () => ipcRenderer.invoke('engines:report') },
   initialTheme: ipcRenderer.sendSync('theme:get'),
   setTheme: theme => ipcRenderer.invoke('theme:set', theme),
   telemetry: {
@@ -113,6 +114,10 @@ contextBridge.exposeInMainWorld('reach', {
     delete: (id) => ipcRenderer.invoke('teams:delete', id),
     run: (teamId, task, dir, agentId, useHistory = true, options = {}) => ipcRenderer.invoke('teams:run', { teamId, task, dir, agentId, useHistory, autoToken: options.autoToken }),
     followup: (payload) => ipcRenderer.invoke('teams:followup', payload),
+    queueMessage: payload => ipcRenderer.invoke('teams:queueMessage', payload),
+    queueList: agentId => ipcRenderer.invoke('teams:queueList', agentId),
+    queueAction: payload => ipcRenderer.invoke('teams:queueAction', payload),
+    onQueue: cb => ipcRenderer.on('team:queue', (_e, payload) => cb(payload)),
     stop: (teamRunId) => ipcRenderer.invoke('teams:stop', { teamRunId }),
     start: (teamRunId) => ipcRenderer.invoke('teams:start', { teamRunId }),
     stopAll: () => ipcRenderer.invoke('runs:stop'),

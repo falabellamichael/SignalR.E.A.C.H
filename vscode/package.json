@@ -36,6 +36,10 @@
         "title": "REACH: Reload Models"
       },
       {
+        "command": "simplereach.engineReport",
+        "title": "REACH: Engine Report"
+      },
+      {
         "command": "simplereach.setTypesafeJevApiKey",
         "title": "REACH: Set TypeSafe (Jev) API Key"
       },

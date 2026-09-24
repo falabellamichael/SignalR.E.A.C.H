@@ -33,6 +33,7 @@ const { intersectFeatures } = require('./jev-auto.cjs');
 const { soulPromptBlock } = require('./agent-soul.cjs');
 const { diagnosticLog } = require('./diagnostic-log.cjs');
 const { ReadMemo } = require('./read-memo.cjs');
+const engines = require('./engines.cjs');
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const RATE_LIMIT_RETRIES = 3;
@@ -97,6 +98,8 @@ class AgentLoop {
     this.requestSignal = null;
     this.abortController = null;
     this.running = false;
+    this.steering = [];
+    this.answerController = null;
   }
 
   _agent() {
@@ -283,13 +286,15 @@ class AgentLoop {
     this.abortController.signal.throwIfAborted();
     // The deadline covers connection, headers AND the streamed body. A model
     // that never finishes must not keep a team member working indefinitely.
-    this.requestSignal = this.requestTimeoutMs === 0 ? this.abortController.signal
-      : AbortSignal.any([this.abortController.signal, AbortSignal.timeout(this.requestTimeoutMs)]);
     // Pacing waits are outside the provider request deadline; Stop still
     // interrupts them through the run's AbortSignal.
     const gate = this._rateGate();
     await gate.acquire({ signal: this.abortController.signal });
     this.abortController.signal.throwIfAborted();
+    const signals = [this.abortController.signal];
+    if (purpose === 'answer' && this.answerController) signals.push(this.answerController.signal);
+    if (this.requestTimeoutMs > 0) signals.push(AbortSignal.timeout(this.requestTimeoutMs));
+    this.requestSignal = AbortSignal.any(signals);
     this._emit('request-start', { purpose });
     const response = await fetch(url, {
       method: 'POST',
@@ -605,6 +610,30 @@ class AgentLoop {
     this._emit('stopped', {});
   }
 
+  // Priority guidance joins the current turn. Only the answer request is
+  // interrupted: an executing tool and an outstanding review remain intact.
+  steerUserMessage(text, { id, nurse = false, onApplied = () => {} } = {}) {
+    if (!this.running || this.stopRequested) return { ok: false, error: 'This member is not working. The message remains queued.' };
+    const content = String(text || '').trim();
+    if (!content || content.length > (nurse ? 20500 : 20000) || this.steering.length >= 20) return { ok: false, error: 'Steering message limit reached.' };
+    this.steering.push({ id, content, nurse, onApplied });
+    this.answerController?.abort(new Error('New user guidance is ready.'));
+    this._emit('steering-pending', { id });
+    return { ok: true };
+  }
+
+  _applySteering() {
+    let restart = false;
+    for (const item of this.steering.splice(0)) {
+      restart ||= item.nurse;
+      this.store.appendMessage(this.agentId, { role: 'user', content: item.content, _reachMeta: { source: item.nurse ? 'nurse-user' : 'user-steering', messageId: item.id } });
+      this._emit('message', { role: 'user', content: item.content });
+      this._emit('steering-applied', { id: item.id });
+      item.onApplied();
+    }
+    return restart;
+  }
+
   /* Queue a user message when running; run it immediately when idle. */
   async sendUserMessage(text) {
     const agent = this._agent();
@@ -659,17 +688,33 @@ class AgentLoop {
 
     try {
       let transportRetries = 0, overflowRetries = 0;
-      for (let round = 0; round < cap(this._budgets().maxRounds); round++) {
+      for (let round = 0; round < cap(this._budgets().maxRounds) || this.steering.some(item => item.nurse); round++) {
         this.abortController.signal.throwIfAborted();
+        const restartForNurse = () => {
+          round = 0; transportRetries = 0; overflowRetries = 0;
+          runState = start(runState); runState.structuredActions = !this.nativeTools;
+          this._saveRunState(runState);
+          this._emit('nurse-restarted', { reason: 'New user guidance', round: 1 });
+        };
+        if (this._applySteering()) restartForNurse();
         this.requestRound = round + 1;
         this._emit('round', { round: round + 1 });
-        const requestMessages = await this._maybeCompact(this._messagesForRequest());
+        let requestMessages = await this._maybeCompact(this._messagesForRequest());
+        if (this.steering.length) {
+          if (this._applySteering()) { restartForNurse(); this.requestRound = 1; }
+          requestMessages = this._messagesForRequest();
+        }
 
         let reply;
         try {
+          this.answerController = new AbortController();
           reply = await this._budgetedAnswer(requestMessages);
           transportRetries = 0;
         } catch (error) {
+          if (this.steering.length && !this.abortController.signal.aborted) {
+            this._emit('message-end', { role: 'assistant', provisional: true });
+            continue;
+          }
           this._emit('message-end', { role: 'assistant', error: error.message });
           if (this.abortController.signal.aborted) throw error;
           if (this.requestSignal?.aborted) throw new Error(`${this.model}: model request exceeded ${Math.round(this.requestTimeoutMs / 1000)} seconds. Try again or choose a different model.`);
@@ -705,6 +750,13 @@ class AgentLoop {
             continue;
           }
           throw error;
+        } finally { this.answerController = null; }
+
+        // A provider may race cancellation or ignore it. Never execute its
+        // stale proposed actions once the user has supplied priority guidance.
+        if (this.steering.length) {
+          this._emit('message-end', { role: 'assistant', provisional: true });
+          continue;
         }
 
         if (reply.error) {
@@ -758,6 +810,10 @@ class AgentLoop {
             ...(reply.budgetFallback ? { source: 'budget-checkpoint' } : provisional ? { source: 'recovery-attempt' } : {}) } });
         runState = decision.state;
         this._saveRunState(runState);
+        if (decision.action === 'complete' && parsed.display) {
+          const observations = engines.getLedger().records.filter(r => r.kind === 'observation' && r.scope === this.agentId).slice(-30).map(r => r.id);
+          engines.getLedger().claim(parsed.display, observations, this.agentId);
+        }
 
         if (decision.action === 'stop' || decision.action === 'answer' || decision.action === 'wait' || decision.action === 'pause' || decision.action === 'complete') {
           break;
@@ -799,7 +855,7 @@ class AgentLoop {
               this._emit('approval-wait', {});
               const approved = await this.requestApproval(payload);
               if (!approvalSignal.aborted && approved) this._emit('approval-end', {});
-              return approved;
+              return approved && !this.steering.length;
             } : undefined,
             requestEditReview: this.requestEditReview,
             signal: this.abortController.signal,
@@ -820,7 +876,11 @@ class AgentLoop {
             const settled = await Promise.all(calls.map((call, index) => record(call).then(r => ({ index, ...r }))));
             for (const entry of settled.sort((a, b) => a.index - b.index)) results.push(entry);
           } else {
-            for (const call of calls) results.push(await record(call));
+            for (const call of calls) {
+              if (this.steering.length) {
+                results.push({ tool: call.name, result: { ok: false, error: 'Not executed: new user guidance arrived.' } });
+              } else results.push(await record(call));
+            }
           }
 
           const resultText = results.map(r => {

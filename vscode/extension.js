@@ -24,6 +24,7 @@ const { routeWithJev } = require('./typesafe-auto');
 const { protocol: agentRunProtocol, chatInstruction } = require('./media/agent-run');
 const actionCodec = require('./agent-action');
 const { runAgentCommand } = require('./agent-command');
+const engines = require('./engine-core');
 const { runBrowserAction } = require('./browser-tools');
 const toolsModule = (() => { try { return require('./tools'); } catch (e) { return {}; } })();
 const toolHelp = toolsModule.toolHelp || (() => '');
@@ -901,6 +902,10 @@ class ReachChatViewProvider {
           const rel = String(msg.path || '').replace(/\\/g, '/');
           const reviewed = msg.type === 'reviewEdit';
           try {
+            if (!reviewed) {
+              const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+              engines.assertWritePath(root, rel);
+            }
             const snapshot = await this._editDocument(rel);
             const search = String(msg.search == null ? '' : msg.search);
             const replace = String(msg.replace == null ? '' : msg.replace);
@@ -932,6 +937,7 @@ class ReachChatViewProvider {
               // proposal landed verbatim. Cheap (one ranged read) and it
               // catches a wrong-anchor edit before the model builds on it.
               const applied = doc.getText();
+              engines.receipt(rel, snapshot.doc ? snapshot.text : null, applied, uid, saved ? 'disk' : 'editor');
               const after = applied.slice(change.start, Math.min(applied.length, change.start + 1200));
               const lineOf = applied.slice(0, change.start).split('\n').length;
               this._post('editResult', { uid, ok: true, path: rel, unsaved: !saved,
@@ -997,6 +1003,8 @@ class ReachChatViewProvider {
         case 'toolReq': {
           const uid = String(msg.uid || '');
           const action = String(msg.action || '');
+          this._engineToolRequests ??= new Map();
+          this._engineToolRequests.set(uid, { action, request: msg });
           if (config().disabledTools.includes(action)) {
             this._post('toolResult', { uid, ok:false, error:'The ' + action + ' tool is disabled in REACH settings (simplereach.disabledTools). Enable it to use this tool.' });
             break;
@@ -1104,6 +1112,7 @@ class ReachChatViewProvider {
               result = renderTodos(todoState);
             } else if (action === 'edit_patch') {
               if (!rel || rel.startsWith('/') || /^[a-zA-Z]:/.test(rel) || rel.split('/').some((p) => p === '..')) throw new Error('invalid path');
+              engines.assertWritePath(folders[0].uri.fsPath, rel);
               const uri = vscode.Uri.joinPath(folders[0].uri, rel);
               const doc = await vscode.workspace.openTextDocument(uri);
               const current = doc.getText();
@@ -1114,6 +1123,7 @@ class ReachChatViewProvider {
               edit.replace(uri, fullRange, newText);
               if (!await vscode.workspace.applyEdit(edit)) throw new Error('The editor could not apply this patch.');
               const saved = doc.isDirty ? false : await doc.save().catch(() => false);
+              engines.receipt(rel, current, doc.getText(), uid, saved ? 'disk' : 'editor');
               result = `Patch applied to ${rel} (${hunks.length} hunks). File is now ${newText.split('\n').length} lines.`;
             } else if (action === 'tool_help') {
               const topic = String(msg.topic || 'browser').slice(0, 40);
@@ -1214,6 +1224,14 @@ class ReachChatViewProvider {
   }
 
   _post(type, payload) {
+    if (type === 'toolResult') {
+      const request = this._engineToolRequests?.get(payload.uid);
+      if (request) {
+        this._engineToolRequests.delete(payload.uid);
+        try { engines.getLedger().observe(request.action, request.request, payload, payload.uid); }
+        catch { /* Evidence persistence must not block a real tool result. */ }
+      }
+    }
     if (this._view) this._view.webview.postMessage({ type, ...payload });
   }
 
@@ -2506,9 +2524,18 @@ function browserHtml(extensionUri, webview) {
 }
 
 function activate(context) {
+  if (context.globalStorageUri?.fsPath) {
+    engines.configure(path.join(context.globalStorageUri.fsPath, 'engine-ledger.jsonl'));
+  }
   const provider = new ReachChatViewProvider(context.extensionUri);
   provider._secrets = context.secrets;
   const ideBridge = attachAgentBridge(provider, vscode);
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.engineReport', async () => {
+    const report = engines.getLedger().report();
+    const document = await vscode.workspace.openTextDocument({ language: 'json', content: JSON.stringify(report, null, 2) });
+    await vscode.window.showTextDocument(document, { preview: true });
+    return report;
+  }));
   context.subscriptions.push(vscode.commands.registerCommand('simplereach.setTypesafeJevApiKey', async () => {
     const key = await vscode.window.showInputBox({
       title: 'TypeSafe (Jev) API Key', prompt: 'Stored in VS Code SecretStorage for Jev file selection.',

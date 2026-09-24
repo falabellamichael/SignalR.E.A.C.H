@@ -22,6 +22,7 @@
  * Zero dependencies beyond the repo's own diff.cjs.
  */
 
+const engines = require('./engines.cjs');
 const { diffEntries, stats: diffStats } = require('./diff.cjs');
 
 const DEFAULT_CONTEXT = 3;
@@ -236,6 +237,7 @@ function buildReview(before, after, options = {}) {
     };
   }
   const chunks = buildChunks(a, b, context);
+  for (const chunk of chunks) chunk.engineReview = engines.scoreChange(options.path || '', a, chunk.lines.filter(l => l.type === 'add').map(l => l.text).join('\n'));
   const all = diffEntries(a, b);
   const s = diffStats(all);
   return {

@@ -1,15 +1,17 @@
 'use strict';
 
-/* Reach Studio — silent heuristic nurse for Links teams.
+/* Reach Studio — user-message courier and heuristic team supervisor.
  *
  * This is deliberately NOT another model. It spends no inference request on
  * supervision and has no chat turn of its own. It watches terminal member
  * state between Links rounds, moves already-produced evidence to a recoverable
  * stalled member, and prepares one bounded evidence packet for synthesis.
+ * In every team mode it also carries priority user guidance to the member;
+ * Links can wake an idle recipient through the shared team scheduler.
  *
  * Bounded recovery formula (validated by the committed Nurse scenario corpus):
  *   3 stalled + 4 new evidence + 2 protocol
- *   + 1 substantive source + 1 coordinator source - 3 per prior nurse wake
+ *   + 1 substantive source + 1 coordinator source (no restart penalty)
  *   Wake at >= 8. Provider/config/transport failures are -Infinity because
  *   AgentLoop has already spent its bounded transport retries.
  *
@@ -40,10 +42,10 @@ const DEFAULT_NURSE_POLICY = Object.freeze({
   maxAutoWakesPerMember: 2,
   maxSourceChars: 5000,
   maxSynthesisChars: 18000,
-  priorWakePenalty: 3,
+  priorWakePenalty: 0,
 });
 
-const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator - 3*priorWakes; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable';
+const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator; no restart penalty; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable';
 
 /*
  * Order matters. Rate-limit evidence is checked FIRST because HARD_FAILURE_RE
@@ -87,8 +89,7 @@ function recoveryScore({ failureKind, priorWakes = 0, sourceChars = 0, sourceIsC
     + 4
     + (failureKind === 'protocol' ? 2 : 0)
     + (sourceChars >= 160 ? 1 : 0)
-    + (sourceIsCoordinator ? 1 : 0)
-    - priorWakes * policy.priorWakePenalty;
+    + (sourceIsCoordinator ? 1 : 0);
 }
 
 class TeamNurse {
@@ -98,11 +99,54 @@ class TeamNurse {
     this.net = net;
     this.emit = emit;
     this.enabled = enabled !== false;
-    this.policy = { ...DEFAULT_NURSE_POLICY, ...(policy || {}) };
+    this.policy = { ...DEFAULT_NURSE_POLICY, ...(policy || {}), priorWakePenalty: 0 };
+    this.userMessages = new Map();
     this.wakes = new Map();
     this.deliveries = new Set();
     this.quarantined = new Set();
-    this.stats = { pulses: 0, stagedWakes: 0, wakeStarted: 0, wakeSucceeded: 0, handoffs: 0, quarantined: 0, suppressed: 0 };
+    this.stats = { pulses: 0, stagedWakes: 0, wakeStarted: 0, wakeSucceeded: 0, handoffs: 0, userHandoffs: 0, userRestarts: 0, quarantined: 0, suppressed: 0 };
+  }
+
+  // User-requested direction is independent of heuristic recovery being enabled.
+  // Retain ownership until the loop appends the packet, never acknowledge merely
+  // because an inbox accepted it. Neither path spends agent.send quota.
+  carryUserMessage(target, message, { id, onApplied = () => {}, wake } = {}) {
+    const rec = this.net?.agents.get(target);
+    if (!rec || this.net.stopped) return { ok: false, error: 'The member is unavailable. The message remains queued.' };
+    if (this.net.paused || rec.control?.paused) return { ok: false, error: 'Resume the team or member before the Nurse redirects it.' };
+    const status = rec.store?.get(rec.id)?.runState?.status || rec.status;
+    if (['waiting_input', 'waiting_edits'].includes(status)) return { ok: false, error: 'The Nurse is waiting for the pending answer or edit review.' };
+    if (!id || !String(message || '').trim() || message.length > 20000) return { ok: false, error: 'Invalid Nurse handoff.' };
+    if (this.userMessages.has(id)) return { ok: true, delivered: 'nurse-pending' };
+    const packet = `TEAM NURSE USER HANDOFF [${id}]\nThe user has supplied new direction. Preserve your saved work and redirect the remaining task using this exact message:\n${message}`;
+    const entry = { id, target, packet, message, onApplied, restart: !!rec.loop };
+    this.userMessages.set(id, entry);
+    let result;
+    try {
+      if (rec.loop?.running) result = rec.loop.steerUserMessage(packet, { id, nurse: true, onApplied: () => this.acknowledgeUserMessage(id) });
+      else result = wake?.(rec, packet) || { ok: false, error: 'The member is not ready. The Nurse will retry at its next request.' };
+    } catch (error) { result = { ok: false, error: error.message }; }
+    if (!result.ok) { this.userMessages.delete(id); return result; }
+    rec.messagesReceived++;
+    this.net._emitDelivery?.(null, rec, '__nurse__', message, 'nurse-handoff', { fromName: 'Team Nurse · user guidance', source: 'nurse' });
+    this.emit('nurse', { action: 'user-carry', agentId: target, name: rec.name, messageId: id, restart: entry.restart });
+    return { ok: true, delivered: 'nurse-pending' };
+  }
+
+  acknowledgeUserMessage(id) {
+    const entry = this.userMessages.get(id);
+    if (!entry) return;
+    entry.onApplied();
+    this.userMessages.delete(id);
+    this.stats.userHandoffs++;
+    if (entry.restart) this.stats.userRestarts++;
+    this.emit('nurse', { action: 'user-delivered', agentId: entry.target, name: this.net?.agents.get(entry.target)?.name || '', messageId: id, restart: entry.restart });
+  }
+
+  acknowledgeUserPackets(target, content) {
+    for (const entry of this.userMessages.values()) {
+      if (entry.target === target && String(content || '').includes(entry.packet)) this.acknowledgeUserMessage(entry.id);
+    }
   }
 
   _agentId(index) {
@@ -211,7 +255,7 @@ class TeamNurse {
         continue; // a real teammate already supplied a better, intentional wake
       }
       const priorWakes = this.wakes.get(index) || 0;
-      if (priorWakes >= this.policy.maxAutoWakesPerMember || Number(turns[index] || 0) >= maxTurns) {
+      if (priorWakes >= this.policy.maxAutoWakesPerMember) {
         this.stats.suppressed++;
         continue;
       }

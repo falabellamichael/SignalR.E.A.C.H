@@ -94,6 +94,43 @@ function fixture(commandRunner) {
     } };
 }
 
+test('engine report command exposes real host tool evidence and protected edits fail before applying', async t => {
+  const os = require('node:os');
+  const engines = require(path.join(process.env.REACH_VSCODE_TEST_PATH || path.resolve(__dirname, '../vscode'), 'engine-core.js'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-vscode-engine-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  engines.configure(path.join(root, 'ledger.jsonl'));
+  const f = fixture();
+  f.vscode.workspace.workspaceFolders = [{ uri: fileUri(root), name: 'fixture', index: 0 }];
+  const result = await f.send({ type: 'toolReq', uid: 'guard-test', action: 'edit_patch', path: '.env', hunks: [{ search: 'old', replace: 'new' }] });
+  assert.match(result.find(m => m.type === 'toolResult').error, /protected file/);
+  assert.equal(engines.getLedger().report().observations, 1);
+  assert.equal(engines.getLedger().records[0].tool, 'edit_patch');
+  assert.equal(engines.getLedger().records[0].success, false);
+  await f.commands.get('simplereach.engineReport')();
+  const opened = f.calls.find(c => c[0] === 'document.open');
+  assert.equal(JSON.parse(opened[1].content).observations, 1);
+});
+
+test('real extension edits retain dirty buffers and produce editor receipts', async t => {
+  const os = require('node:os'), engines = require(path.join(process.env.REACH_VSCODE_TEST_PATH || path.resolve(__dirname, '../vscode'), 'engine-core.js'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-vscode-engine-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  engines.configure(path.join(root, 'ledger.jsonl'));
+  const f = fixture(); let content = 'human unsaved work\nold', saves = 0;
+  const doc = { isDirty: true, getText: () => content, positionAt: i => i, save: async () => { saves++; return true; } };
+  f.vscode.workspace.workspaceFolders = [{ uri: fileUri(root), name: 'fixture', index: 0 }];
+  f.vscode.workspace.openTextDocument = async () => doc;
+  f.vscode.Range = class { constructor(start, end) { this.start = start; this.end = end; } };
+  f.vscode.WorkspaceEdit = class { replace(uri, range, text) { this.range = range; this.text = text; } };
+  f.vscode.workspace.applyEdit = async edit => { content = content.slice(0, edit.range.start) + edit.text + content.slice(edit.range.end); return true; };
+  const result = await f.send({ type: 'applyEdit', uid: 'edit-test', path: 'a.txt', search: 'old', replace: 'new' });
+  assert.equal(result.find(m => m.type === 'editResult').ok, true);
+  assert.equal(content, 'human unsaved work\nnew'); assert.equal(saves, 0);
+  const receipt = engines.getLedger().records.find(r => r.kind === 'receipt');
+  assert.equal(receipt.storage, 'editor'); assert.equal(receipt.afterHash, engines.hash(content));
+});
+
 test('real extension activation resolves its webview and installs the actual bridge dependencies', async () => {
   const f = fixture();
   assert.equal(f.webview.options.enableScripts, true);

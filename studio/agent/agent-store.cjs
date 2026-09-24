@@ -402,7 +402,7 @@ class AgentStore {
     if (agent.runState?.status === 'running') throw new Error('Stop the conversation before clearing it.');
     // Keep the project, model, controls and independent branches. Clear every
     // source of conversational memory so a fresh prompt cannot recover it.
-    Object.assign(agent, { name: 'Chat', messages: [], todos: [], runState: null, pendingEdits: {}, queue: [] });
+    Object.assign(agent, { name: 'Chat', messages: [], todos: [], runState: null, pendingEdits: {}, queue: [], teamMessageQueue: [] });
     delete agent.context;
     delete agent.activity;
     agent.updatedAt = Date.now();
@@ -496,6 +496,15 @@ class AgentStore {
     agent.updatedAt = Date.now();
     this._save();
     return agent.queue.length;
+  }
+
+  setTeamMessageQueue(id, items) {
+    const agent = this.get(id);
+    if (!agent) return;
+    const previous = agent.teamMessageQueue;
+    agent.teamMessageQueue = items;
+    try { this._save(); }
+    catch (error) { agent.teamMessageQueue = previous; throw error; }
   }
 
   dequeue(id) {

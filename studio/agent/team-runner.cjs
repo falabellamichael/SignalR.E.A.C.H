@@ -21,7 +21,7 @@
  *              rounds of the runner's wake loop — deciding among themselves
  *              who does what next — until a member declares the task complete
  *              ("LINKS: COMPLETE") or the exchange budget is spent. The
- *              budget is 3× a chain crew's exchange rate (3·(N−1) messages).
+ *              message allowance comes from Settings > Budgeting > Teams.
  *
  * Pause handling is what makes this a working multiagent runtime instead of a
  * batch script: a member that pauses for edit review (waiting_edits) or asks
@@ -35,18 +35,18 @@ const { parseAgentResponse } = require('./agent-response.cjs');
 const { AgentNet } = require('./agent-net.cjs');
 const { linksCompleteIn } = require('./agent-net.cjs');
 const { getRole } = require('./roles.cjs');
+const { TeamNurse } = require('./team-nurse.cjs');
 
-const { resolveBudgets, cap } = require('./budgets.cjs');
+const { resolveBudgets, defaults: budgetDefaults, cap } = require('./budgets.cjs');
 
 const PARALLEL_CONCURRENCY = 3;
 const MAX_RESUME_CYCLES = 6;
 const RELAY_CHAR_BUDGET = 24000;
 
-/* Links mode: the crew conversation allowance is 3× what a chain run would
- * exchange (N−1 serial handoffs) — "triple the chain rate" — and every member
- * may be re-woken for at most MEMBER_LINK_TURNS extra turns to answer its
- * inbox. MAX_LINK_ROUNDS is a hard safety stop on top of both. */
-const LINKS_RATE = 3;
+/* Peer wake turns remain bounded independently of the configured message
+ * allowance. Nurse handoffs do not spend peer wake turns; automatic recovery
+ * retains its separate novelty gate and per-member recovery cap. */
+const LINKS_RATE = 3; // Legacy export; active limits now come from budgets.
 const MAX_LINK_ROUNDS = 12;
 const MEMBER_LINK_TURNS = 4;
 const LINKS_COMPLETION_GRACE_MS = 250;
@@ -201,7 +201,7 @@ class TeamRunner {
     this._linksMeta = null;      // rounds / exchanges / completedBy telemetry
     this._linksSuperseded = new Map(); // live peers cancelled after another member completes
     this._linksConclusionTimer = null; // short grace for productive in-flight peers
-    this.nurse = null;             // heuristic, no-model Links supervisor
+    this.nurse = null;             // message courier and heuristic supervisor
     this._linksActivityVersion = 0; // event-driven scheduler pulse (no polling timer)
     this._linksActivityLast = null;
     this._linksActivityDeferred = null;
@@ -385,11 +385,15 @@ class TeamRunner {
        * spawned worker is a full agent, not a second writer to its parent's
        * memory. Null-safe: without a store the worker runs exactly as before. */
       soulStore: this.soulStore,
-      /* Links owns the crew conversation: roster members accept messages
-       * between turns, and the total exchange count is capped at 3× a chain
-       * crew's rate. Both options are inert in the other modes. */
+      /* Links retains roster mail between turns; every crew shares the
+       * configured allowance for agent-to-agent messages. */
       rosterMailbox: mode === 'links',
-      linkBudget: mode === 'links' ? this.links.rate * Math.max(1, this.personas.length - 1) : null,
+      linkBudget: this.budgets?.messageHandoffs ?? budgetDefaults.messageHandoffs,
+    });
+    this.nurse = new TeamNurse({
+      personas: this.personas, team: this.team, net: this.net,
+      enabled: this.team.nurse !== false, policy: this.team.nursePolicy || null,
+      emit: (_type, payload) => this._emit('nurse', { ...payload, nurseType: payload.action, silent: true }),
     });
     this.acceptingRuntimeAgents = true;
     this._emit('start', {
@@ -537,12 +541,12 @@ class TeamRunner {
   /* Links protocol: the rules of the peer network. Rendering per member so the
    * budget line carries the actual number the crew has to spend. */
   _linksBlock() {
-    const budget = this.links.rate * Math.max(1, this.personas.length - 1);
+    const budget = cap(this.budgets?.messageHandoffs ?? budgetDefaults.messageHandoffs);
     const peers = this.personas.length - 1;
     return [
       `LINKS MODE — an open peer network, not a pipeline. You have ${peers} peer(s).`,
       '- Talk to peers at ANY time: agent.send (by name) to ask, hand off, review or challenge; agent.status to check on someone; agent.await to block for a peer\'s answer; agent.list for the whole crew.',
-      `- Budget: the crew gets ${budget} messages in total (3× what a chain crew would exchange). Spend them where they change the outcome — send what a peer needs EARLY, and prefer one complete message over three fragments.`,
+      `- Budget: ${Number.isFinite(budget) ? budget + ' agent message handoffs for the whole crew' : 'no application cap on agent message handoffs'}. Nurse and user guidance are exempt. Send what a peer needs EARLY, and prefer one complete message over three fragments.`,
       '- Decide among yourselves: no fixed order. If you need a peer\'s work, message them; if you are blocked, say exactly what would unblock you.',
       '- The task ends when a member declares completion: include the exact line "LINKS: COMPLETE" in a message or in your final answer, once the WHOLE task is done and verified against real evidence. Normally the Coordinator declares; any member may if the Coordinator is absent.',
       '- If the network goes quiet before that, the crew will be asked for a final synthesis — so leave your best evidence in your answers.',
@@ -641,6 +645,21 @@ class TeamRunner {
   messageMember(target, message) {
     if (!this.net || !this.running || this.stopped || !this.acceptingRuntimeAgents || this.team.mode === 'links' && this._linksDone()) return { ok: false, error: 'The team run is finalizing and is no longer accepting messages.' };
     return this.net.sendFromUser({ to: target, message });
+  }
+
+  steerMember(target, message, options) {
+    if (!this.running || this.stopped || !this.acceptingRuntimeAgents || this.team.mode === 'links' && this._linksDone()) return { ok: false, error: 'The team is finalizing. Your message remains queued.' };
+    const member = this.net?.agents.get(target);
+    if (this.paused || this.userPaused || member?.control?.paused) return { ok: false, error: 'Team or member is paused. Resume it before steering.' };
+    return this.nurse.carryUserMessage(target, message, {
+      ...options,
+      wake: (rec, packet) => {
+        if (this.team.mode !== 'links' || !this._linksPump || rec.origin !== 'roster') return { ok: false, error: 'The Nurse will deliver this when the member starts working.' };
+        rec.inbox.push(packet);
+        this._signalLinksActivity({ type: 'nurse-user-mail', agentId: rec.id });
+        return { ok: true };
+      },
+    });
   }
 
   /* Join-this-run-only helper. It is intentionally a spawned network worker,

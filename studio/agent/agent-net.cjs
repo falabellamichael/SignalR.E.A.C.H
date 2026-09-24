@@ -161,7 +161,7 @@ class AgentNet {
      * them up). Off by default so parallel/chain behaviour is unchanged. */
     rosterMailbox = false,
     /* Links mode exchange budget: total member-to-member messages allowed in
-     * the run (3× a chain's rate). Null = unlimited (all other modes). */
+     * the run (the configured message allowance). Zero or null = unlimited. */
     linkBudget = null,
     /* SOUL.md + MEMORY.md store (agent/agent-soul.cjs). Members read their own
      * persona's files; this is also what lets anything they spawn own its own
@@ -217,7 +217,7 @@ class AgentNet {
     this._stopDeferred = null;
     this.seq = 0;
     this.rosterMailbox = rosterMailbox === true;
-    this.linkBudget = linkBudget == null ? null : Math.max(1, Number(linkBudget) || 1);
+    this.linkBudget = linkBudget == null ? null : linkBudget === 0 ? Infinity : Math.max(1, Number(linkBudget) || 1);
     this.linkSends = 0;
     this.linksComplete = null;
   }

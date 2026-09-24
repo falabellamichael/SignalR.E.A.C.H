@@ -6,6 +6,7 @@ import { randomUUID, createHash } from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
+const engines = require('./agent/engines.cjs');
 const { AgentStore } = require('./agent/agent-store.cjs');
 const { AgentLoop } = require('./agent/agent-loop.cjs');
 const { decideAuto, intersectFeatures } = require('./agent/jev-auto.cjs');
@@ -15,6 +16,8 @@ const { PersonaStore } = require('./agent/persona-store.cjs');
 const { AgentSoulStore, MAX_SOUL_CHARS, MAX_MEMORY_CHARS } = require('./agent/agent-soul.cjs');
 const { TeamRunner } = require('./agent/team-runner.cjs');
 const { teamConversationTask, teamAnswerNote, teamFollowupTarget } = require('./agent/team-conversation.cjs');
+const { TeamMessageQueue } = require('./agent/team-message-queue.cjs');
+const { decideTeamPriority } = require('./agent/jev-team-priority.cjs');
 const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
@@ -459,6 +462,7 @@ function registerIpc() {
     return { ...publicSettings, jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
       jevKeySource: jevApiKey ? 'saved' : process.env.TYPESAFE_API_KEY ? 'environment' : '' };
   });
+  ipcMain.handle('engines:report', () => engines.getLedger().report());
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
@@ -674,6 +678,7 @@ function registerIpc() {
       if (agentLoops.get(id)?.running || startingTeamConversations.has(id) || [...teamRuns.values()].some(r => r.conversationId === id)) throw new Error('Finish the current agent or team run before clearing this conversation.');
       const agent = getAgentStore().clear(id);
       agentLoops.delete(id);
+      if (agent) teamMessages.notify(id, []);
       return agent ? { ok: true, agent } : { ok: false, err: 'Conversation not found.' };
     } catch (error) { return { ok: false, err: error.message }; }
   });
@@ -810,7 +815,8 @@ function registerIpc() {
     if (accepted) {
       try {
         fs.mkdirSync(path.dirname(edit.absPath), { recursive: true });
-        writeTextFile(edit.absPath, edit.proposed);
+        if (!Object.hasOwn(edit, 'expectedHash') || !edit.root) throw new Error('This older proposal needs to be refreshed before accepting it.');
+        writeTextFile(edit.absPath, edit.proposed, { root: edit.root, scope: id, expectedHash: edit.expectedHash });
       } catch (e) {
         return { ok: false, err: e.message };
       }
@@ -903,7 +909,51 @@ function registerIpc() {
   });
   ipcMain.handle('teams:delete', (_e, id) => ({ ok: getPersonaStore().removeTeam(id) }));
 
-  ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId, useHistory = true, autoToken }) => {
+  const teamMessages = new TeamMessageQueue({
+    read: id => getAgentStore().get(id)?.teamMessageQueue || [],
+    write: (id, items) => getAgentStore().setTeamMessageQueue(id, items),
+    notify: (agentId, items, delivery) => {
+      if (win && !win.isDestroyed()) win.webContents.send('team:queue', { agentId, items, delivery });
+    },
+    findRun: id => [...teamRuns.values()].find(runner => runner.conversationId === id),
+    judge: (id, item, signal) => {
+      const agent = getAgentStore().get(id), config = jevConfig(loadSettings(), agent);
+      const latest = [...(agent?.messages || [])].reverse().find(m => m.role === 'user' && m._reachMeta?.source === 'team-user');
+      const task = typeof latest?.content === 'string' && latest.content.length <= 1000 ? latest.content : '';
+      return decideTeamPriority({ apiKey: config.enabled ? config.apiKey : '', message: item.message, task, signal });
+    },
+    steer: (runner, item, onApplied) => {
+      let target = teamFollowupTarget(runner, item.target);
+      if (!item.target && !runner.net?.agents.get(target)?.loop?.running) {
+        target = [...runner.net.agents.values()].find(member => member.origin === 'roster' && member.loop?.running && !member.control?.paused)?.id || target;
+      }
+      return runner.steerMember(target, item.message, { id: item.id, onApplied });
+    },
+    applied: (agentId, item) => getAgentStore().appendMessage(agentId, { role: 'user', content: item.message, _reachMeta: { source: 'team-user', teamId: item.teamId, teamRunId: item.teamRunId, delivery: 'steer' } }),
+    dispatch: (agentId, item) => runTeam({ teamId: item.teamId, task: item.message, agentId, useHistory: item.useHistory }, { queued: true }),
+  });
+
+  ipcMain.handle('teams:queueList', (_e, agentId) => ({ ok: true, items: teamMessages.list(String(agentId || '')) }));
+  ipcMain.handle('teams:queueMessage', (_e, payload = {}) => {
+    try {
+      const { agentId, teamId, teamRunId } = payload;
+      const runner = teamRuns.get(teamRunId);
+      if (!getAgentStore().get(agentId) || !runner || runner.conversationId !== agentId || runner.team.id !== teamId) throw new Error('The team run has changed. Your draft is still available.');
+      if (payload.target) teamFollowupTarget(runner, payload.target);
+      return { ok: true, item: teamMessages.enqueue(agentId, payload) };
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
+  ipcMain.handle('teams:queueAction', async (_e, { agentId, id, action }) => {
+    try {
+      if (!getAgentStore().get(agentId)) throw new Error('Conversation not found.');
+      if (action === 'cancel') return teamMessages.cancel(agentId, id);
+      if (action === 'steer') return teamMessages.promote(agentId, id);
+      if (action === 'send') { await teamMessages.drain(agentId, true); return { ok: true }; }
+      throw new Error('Unknown queue action.');
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
+
+  async function runTeam({ teamId, task, dir, agentId, useHistory = true, autoToken }, { queued = false } = {}) {
     let reservedConversation, autoRoute;
     try {
       autoRoute = consumeAutoPlan(autoToken, { id: agentId, text: String(task || ''), kind: 'team', teamId });
@@ -1028,7 +1078,10 @@ function registerIpc() {
       if (agentId && !getAgentStore().get(agentId)) return { ok: false, err: 'Conversation was deleted while the team was starting.' };
       const teamRunId = 'teamrun-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
       const journal = new CrewJournal(journalPath(path.join(app.getPath('userData'), 'agents'), teamRunId));
+      let continueQueue = false;
       const sendEvent = (channel, payload) => {
+        if (payload.type === 'done') continueQueue = !payload.stopped;
+        if (agentId && payload.memberType === 'request-start') setImmediate(() => teamMessages.retrySteering(agentId, teamRunId));
         // Save before announcing completion so a follow-up sees the answer
         // even after the user switches views or reloads the renderer.
         if (payload.type === 'done' && agentId
@@ -1130,6 +1183,7 @@ function registerIpc() {
         getAgentStore().appendMessage(agentId, { role: 'user', content: String(task).trim(), _reachMeta: { source: 'team-user', teamId, teamRunId } });
         if (!autoRoute) getAgentStore().update(agentId, { settings: { teamChat: { ...conversation.settings?.teamChat, enabled: true, teamId, useHistory: useHistory !== false } } });
       }
+      if (queued) sendEvent('team:event', { type: 'queue-run-started', teamRunId, agentId, team, task: String(task).trim() });
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
       }).finally(() => {
@@ -1139,6 +1193,7 @@ function registerIpc() {
           pending.resolve(null);
         }
         teamRuns.delete(teamRunId);
+        if (agentId) teamMessages.finished(agentId, teamRunId, continueQueue);
       });
       if (autoRoute && win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId, type: 'jev-auto', ...autoRoute.summary, at: Date.now() });
       return { ok: true, teamRunId, routing, autoRouted: !!autoRoute };
@@ -1148,7 +1203,8 @@ function registerIpc() {
       finishAutoDispatch(autoRoute);
       if (reservedConversation !== undefined) startingTeamConversations.delete(reservedConversation);
     }
-  });
+  }
+  ipcMain.handle('teams:run', (_e, payload) => runTeam(payload));
 
   ipcMain.handle('teams:stop', (_e, { teamRunId }) => {
     const runner = teamRuns.get(teamRunId);
@@ -1263,7 +1319,8 @@ function registerIpc() {
     if (accepted) {
       try {
         fs.mkdirSync(path.dirname(entry.edit.absPath), { recursive: true });
-        writeTextFile(entry.edit.absPath, entry.edit.proposed);
+        if (!Object.hasOwn(entry.edit, 'expectedHash') || !entry.edit.root) throw new Error('This older proposal needs to be refreshed before accepting it.');
+        writeTextFile(entry.edit.absPath, entry.edit.proposed, { root: entry.edit.root, scope: entry.edit.scope, expectedHash: entry.edit.expectedHash });
       } catch (e) {
         // Keep the proposal pending so the review card can report the error
         // and let the user retry after fixing the underlying filesystem issue.
@@ -1343,7 +1400,7 @@ function registerIpc() {
     try {
       const abs = resolveInProject(root, rel);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      writeTextFile(abs, String(content === undefined ? '' : content));
+      writeTextFile(abs, String(content === undefined ? '' : content), { root, scope: agentId || 'editor' });
       return { ok: true };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -2548,6 +2605,7 @@ function createWindow({ show = true } = {}) {
 
 // ---------- lifecycle ----------
 app.whenReady().then(() => {
+  engines.configure(path.join(app.getPath('userData'), 'engine-ledger.jsonl'));
   nativeTheme.themeSource = loadSettings().theme === 'light' ? 'light' : 'dark';
   reachProcess.configure(loadSettings);
   registerIpc();
@@ -3453,12 +3511,13 @@ app.whenReady().then(() => {
             if (document.querySelectorAll('#conn-list .conn-card').length !== 1) throw new Error('Connection list did not render the migrated single connection');
             if (!document.querySelector('#conn-list .conn-url')) throw new Error('Connection card has no Base URL field');
             if (!document.querySelector('#conn-list .conn-radio')) throw new Error('Connection card has no active-connection radio');
-            if (document.querySelector('#conn-list .conn-remove').disabled !== true) throw new Error('The only connection must not be removable');
+            document.querySelector('#conn-list .conn-edit').click();
+            if (document.querySelector('#conn-editor .conn-remove').disabled !== true) throw new Error('The only connection must not be removable');
 
             // Add a second connection through the UI and save it.
             document.querySelector('#btn-add-connection').onclick();
             if (document.querySelectorAll('#conn-list .conn-card').length !== 2) throw new Error('Add connection did not append a card');
-            const connNewUrl = document.querySelector('#conn-list .conn-card:last-child .conn-url');
+            const connNewUrl = document.querySelector('#conn-editor .conn-url');
             connNewUrl.value = connSecond;
             connNewUrl.dispatchEvent(new Event('input', { bubbles: true }));
             await document.querySelector('#btn-save-settings').onclick();
@@ -3548,7 +3607,8 @@ app.whenReady().then(() => {
             if (connRm.ok !== true) throw new Error('Removing a connection failed: ' + connRm.err);
             await loadSettings();
             if (document.querySelectorAll('#conn-list .conn-card').length !== 1) throw new Error('Removed connection still rendered');
-            if (document.querySelector('#conn-list .conn-remove').disabled !== true) throw new Error('The last remaining connection must not be removable');
+            document.querySelector('#conn-list .conn-edit').click();
+            if (document.querySelector('#conn-editor .conn-remove').disabled !== true) throw new Error('The last remaining connection must not be removable');
             const connAfter = await reachApi.getSettings();
             if (connAfter.connections.length !== 1) throw new Error('Expected one connection after cleanup');
             if (connAfter.endpoint !== connFirst.endpoint) throw new Error('Cleanup changed the active endpoint');
