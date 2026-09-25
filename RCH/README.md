@@ -4,7 +4,9 @@ RCH is an Ethereum ERC-20 currency with an open ETH purchase contract. The initi
 
 Studio wallet sign-in links a verified customer wallet to an account and an operator-provisioned subscription. **CodeGPT and qualified free endpoint models share one plan allowance.** Redemption burns RCH and credits the account once after verified finality; model calls then consume that ledger. CodeGPT currently lacks reliable usage records and remains unavailable for paid metering. Live redemption is disabled until deployment. See [Studio access, accounting, and host setup](../docs/RCH_STUDIO_ACCESS.md).
 
-The contracts are implemented and tested locally. They have not been deployed to a public network or independently audited. This directory uses Solidity and Node.js through REACH Studio's **Project command** runner.
+The contracts are implemented, tested locally, and deployed to Ethereum Mainnet. They have not been independently audited. This directory uses Solidity and Node.js through REACH Studio's **Project command** runner.
+
+The deployed RCH token is `0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792`; its sale is `0x0aE51b14eBa99C472a40F798296B3EAa2be2947B`. Deployment transaction: `0xad758e98c78c1ccdeb33e1d23118bd30a9fa1560e685cfd93ad3c89e770028ad` (block 26051181). The simple terminal commands pin the runtime hashes in `terminal/mainnet.json` and check live state before preparing operations. Use `rch status` for current pause and ownership state.
 
 ## Run locally without Docker
 
@@ -90,6 +92,50 @@ Changing a file password does not revoke older backups. Every prior encrypted co
 
 To use this account as a deployment signer, set the configuration's public `deployer` address to the address from `wallet-info`, then add `--wallet primary` to the existing `deploy` command. This replaces `RCH_DEPLOYER_KEY`; supplying both is rejected. Deployment still requires `--broadcast`, chain confirmation, a fresh plan, a matching signer, and the configured fee ceiling. Wallet creation does not assign administrator or treasury roles; those public addresses remain explicit deployment choices. Use a separate wallet name for testnet experiments. RCH has not been deployed just because a wallet exists.
 
+## Simple Projects terminal commands
+
+The deployed Ethereum Mainnet token can be used from Studio's **Project command**
+mode, including the Home mini terminal. Install this checkout's dependencies and
+command once from the repository root:
+
+```text
+npm --prefix RCH ci
+npm --prefix RCH run install:cli
+rch browser opera
+rch connect
+rch status
+rch balance
+rch quote 0.0005
+rch buy 0.0005
+```
+
+`rch open-sale` prepares the owner's activation; an already-open sale is reported
+without a new transaction. `rch tx 0xHASH` reports confirmed, failed, or
+pending/unknown receipt status and actual gas when available. `rch wallet 0xADDRESS`
+selects an address for public balance checks without connecting a wallet.
+`rch ui` opens the complete management page. `rch help` lists options.
+
+The values in `quote` and `buy` are ETH purchase amounts, with gas additional.
+`--max-fee 0.0002` is the default maximum gas allowance per operation. The CLI
+checks bytecode against the verified mainnet runtime hashes, sale state, balances,
+oracle quotes, and gas. `--rpc` or `RCH_RPC_URL` can select another HTTPS Ethereum
+RPC. `--no-open` prints the approval URL without launching a browser.
+
+`buy` and `open-sale` never sign or broadcast through the CLI: they open a local
+MetaMask review page. Connecting generates a fresh quote for the requested action;
+the user must review and confirm it in MetaMask. Keep the command running while
+reviewing. A session expires after 15 minutes. Stop does not cancel an on-chain
+transaction. Pending attempts block repeats; public transaction records survive
+process restarts outside the repository. The wallet's password and private key
+are never requested or imported by these commands. AI redemption remains a
+separate service feature.
+
+The executable uses the current Node installation and this checkout's files. Run
+the installer again after moving the repository or replacing that Node installation.
+Without installation, use `npm run rch -- help` at the repository root, or
+`npm --prefix RCH run terminal -- help`. The existing administrative
+`npm --prefix RCH run rch -- ...` commands below remain available.
+
 ## Deployment workflow
 
 `ReachCreditsLaunch` is the RCH token and creates its initial sale inside its constructor. One transaction deploys both and assigns the sale's mint role. The configured administrator owns both administrative surfaces immediately. The deployment signer receives no temporary administrator privilege. No reward operator is enabled, and the initial sale stays paused.
@@ -129,7 +175,7 @@ To use this account as a deployment signer, set the configuration's public `depl
 
    This verifies deployed code and active sale state, then returns the ETH value, RCH quote, 0.5% minimum-output tolerance, and ten-minute deadline. It does not sign or send a purchase. Prices and the configured oracle bounds may change what the next quote permits; gas is additional.
 
-Mainnet uses the same workflow with chain ID 1 and a separately reviewed mainnet configuration. Mainnet deployment has not been performed. Live deployment still needs actual wallet and oracle choices, a successful testnet rehearsal, and independent review of the custom contracts and service economics. Do not promise funded AI usage solely because an RCH transfer succeeded: the hosted redemption system must be configured for the reviewed deployment and verify a matching burn before crediting usage exactly once. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
+Mainnet uses chain ID 1. The existing deployment above was checked against the compiled runtime and constructor settings; this is not an independent security audit. New deployments should be rehearsed on testnet and reviewed independently. Do not promise funded AI usage solely because an RCH transfer succeeded: the hosted redemption system must be configured for the reviewed deployment and verify a matching burn before crediting usage exactly once. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
 
 ## Verification coverage
 

@@ -446,7 +446,7 @@ function syncCommandMode() {
   cmdInput.placeholder = reachMode ? 'e.g. compile index.rsh' : 'e.g. npm --prefix studio test';
   cmdHint.textContent = reachMode
     ? 'Native Reach: select a Reach DApp project or run init here; then compile index.rsh and run index.rsh with Ganache on 127.0.0.1:8545.'
-    : 'Runs a program in this project folder. No shell pipes or redirects.';
+    : 'Runs a program in this project folder. RCH: rch help (install once with npm --prefix RCH run install:cli). No shell pipes or redirects.';
 }
 cmdMode.onchange = syncCommandMode;
 syncCommandMode();

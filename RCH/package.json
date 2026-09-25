@@ -3,12 +3,17 @@
   "version": "0.2.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "rch": "scripts/credits.mjs"
+  },
   "scripts": {
     "compile": "node scripts/compile.mjs",
     "test": "node --test test/*.test.mjs",
     "rch": "node scripts/rch.mjs",
     "demo": "node scripts/demo.mjs",
-    "accounts": "node scripts/accounts.mjs"
+    "accounts": "node scripts/accounts.mjs",
+    "terminal": "node scripts/credits.mjs",
+    "install:cli": "node scripts/install-cli.mjs"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.6.1",
