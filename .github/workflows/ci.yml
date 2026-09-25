@@ -201,7 +201,8 @@ jobs:
           docker run --rm --shm-size=1g --entrypoint /bin/bash reach-studio -c '
             Xvfb :9 -screen 0 1600x900x24 -nolisten tcp >/dev/null 2>&1 &
             sleep 2
-            DISPLAY=:9 /opt/reach-studio/reach-studio --no-sandbox --smoke
+            exec timeout --signal=TERM --kill-after=10s 120s \
+              env DISPLAY=:9 /opt/reach-studio/reach-studio --no-sandbox --smoke
           '
       - name: Smoke native-window passthrough (external display)
         # The entrypoint must detect an external display and launch Electron
