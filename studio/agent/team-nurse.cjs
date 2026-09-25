@@ -1,15 +1,17 @@
 'use strict';
 
-/* Reach Studio — silent heuristic nurse for Links teams.
+/* Reach Studio — user-message courier and heuristic team supervisor.
  *
  * This is deliberately NOT another model. It spends no inference request on
  * supervision and has no chat turn of its own. It watches terminal member
  * state between Links rounds, moves already-produced evidence to a recoverable
  * stalled member, and prepares one bounded evidence packet for synthesis.
+ * In every team mode it also carries priority user guidance to the member;
+ * Links can wake an idle recipient through the shared team scheduler.
  *
  * Bounded recovery formula (validated by the committed Nurse scenario corpus):
  *   3 stalled + 4 new evidence + 2 protocol
- *   + 1 substantive source + 1 coordinator source - 3 per prior nurse wake
+ *   + 1 substantive source + 1 coordinator source (no restart penalty)
  *   Wake at >= 8. Provider/config/transport failures are -Infinity because
  *   AgentLoop has already spent its bounded transport retries.
  *
@@ -31,19 +33,20 @@
  *
  * retry.cjs is a leaf (no engine imports), so this cannot create a cycle. */
 const { isRateLimitEvidence } = require('./retry.cjs');
+const { completedResult } = require('./team-completion.cjs');
 const HARD_FAILURE_RE = /(?:endpoint returned http\s+[45]\d\d|\b(?:401|403|404|408|422|429|500|502|503|504)\b|quota|rate[ -]?limit|no backend|model[^\n]*(?:not found|unavailable)|service unavailable|invalid[^\n]*(?:api[ -]?key|access[ -]?key|token)|unauthori[sz]ed|forbidden|billing|insufficient[^\n]*(?:credit|fund)|model request exceeded|request timed out|timeout[^\n]*seconds)/i;
 const TRANSIENT_FAILURE_RE = /(?:econn|fetch failed|socket|network|connection (?:closed|reset)|temporar)/i;
-const PROTOCOL_FAILURE_RE = /(?:usable action|structured recovery|invalid[^\n]*action|action[^\n]*(?:schema|protocol)|round limit|executable actions)/i;
+const PROTOCOL_FAILURE_RE = /(?:usable action|structured recovery|invalid[^\n]*action|action[^\n]*(?:schema|protocol)|round limit|executable actions|without task_complete|completion rejected)/i;
 
 const DEFAULT_NURSE_POLICY = Object.freeze({
   minRecoveryScore: 8,
   maxAutoWakesPerMember: 2,
   maxSourceChars: 5000,
   maxSynthesisChars: 18000,
-  priorWakePenalty: 3,
+  priorWakePenalty: 0,
 });
 
-const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator - 3*priorWakes; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable';
+const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator; no restart penalty; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable';
 
 /*
  * Order matters. Rate-limit evidence is checked FIRST because HARD_FAILURE_RE
@@ -87,8 +90,7 @@ function recoveryScore({ failureKind, priorWakes = 0, sourceChars = 0, sourceIsC
     + 4
     + (failureKind === 'protocol' ? 2 : 0)
     + (sourceChars >= 160 ? 1 : 0)
-    + (sourceIsCoordinator ? 1 : 0)
-    - priorWakes * policy.priorWakePenalty;
+    + (sourceIsCoordinator ? 1 : 0);
 }
 
 class TeamNurse {
@@ -98,11 +100,54 @@ class TeamNurse {
     this.net = net;
     this.emit = emit;
     this.enabled = enabled !== false;
-    this.policy = { ...DEFAULT_NURSE_POLICY, ...(policy || {}) };
+    this.policy = { ...DEFAULT_NURSE_POLICY, ...(policy || {}), priorWakePenalty: 0 };
+    this.userMessages = new Map();
     this.wakes = new Map();
     this.deliveries = new Set();
     this.quarantined = new Set();
-    this.stats = { pulses: 0, stagedWakes: 0, wakeStarted: 0, wakeSucceeded: 0, handoffs: 0, quarantined: 0, suppressed: 0 };
+    this.stats = { pulses: 0, stagedWakes: 0, wakeStarted: 0, wakeSucceeded: 0, handoffs: 0, userHandoffs: 0, userRestarts: 0, quarantined: 0, suppressed: 0 };
+  }
+
+  // User-requested direction is independent of heuristic recovery being enabled.
+  // Retain ownership until the loop appends the packet, never acknowledge merely
+  // because an inbox accepted it. Neither path spends agent.send quota.
+  carryUserMessage(target, message, { id, onApplied = () => {}, wake } = {}) {
+    const rec = this.net?.agents.get(target);
+    if (!rec || this.net.stopped) return { ok: false, error: 'The member is unavailable. The message remains queued.' };
+    if (this.net.paused || rec.control?.paused) return { ok: false, error: 'Resume the team or member before the Nurse redirects it.' };
+    const status = rec.store?.get(rec.id)?.runState?.status || rec.status;
+    if (['waiting_input', 'waiting_edits'].includes(status)) return { ok: false, error: 'The Nurse is waiting for the pending answer or edit review.' };
+    if (!id || !String(message || '').trim() || message.length > 20000) return { ok: false, error: 'Invalid Nurse handoff.' };
+    if (this.userMessages.has(id)) return { ok: true, delivered: 'nurse-pending' };
+    const packet = `TEAM NURSE USER HANDOFF [${id}]\nThe user has supplied new direction. Preserve your saved work and redirect the remaining task using this exact message:\n${message}`;
+    const entry = { id, target, packet, message, onApplied, restart: !!rec.loop };
+    this.userMessages.set(id, entry);
+    let result;
+    try {
+      if (rec.loop?.running) result = rec.loop.steerUserMessage(packet, { id, nurse: true, onApplied: () => this.acknowledgeUserMessage(id) });
+      else result = wake?.(rec, packet) || { ok: false, error: 'The member is not ready. The Nurse will retry at its next request.' };
+    } catch (error) { result = { ok: false, error: error.message }; }
+    if (!result.ok) { this.userMessages.delete(id); return result; }
+    rec.messagesReceived++;
+    this.net._emitDelivery?.(null, rec, '__nurse__', message, 'nurse-handoff', { fromName: 'Team Nurse · user guidance', source: 'nurse' });
+    this.emit('nurse', { action: 'user-carry', agentId: target, name: rec.name, messageId: id, restart: entry.restart });
+    return { ok: true, delivered: 'nurse-pending' };
+  }
+
+  acknowledgeUserMessage(id) {
+    const entry = this.userMessages.get(id);
+    if (!entry) return;
+    entry.onApplied();
+    this.userMessages.delete(id);
+    this.stats.userHandoffs++;
+    if (entry.restart) this.stats.userRestarts++;
+    this.emit('nurse', { action: 'user-delivered', agentId: entry.target, name: this.net?.agents.get(entry.target)?.name || '', messageId: id, restart: entry.restart });
+  }
+
+  acknowledgeUserPackets(target, content) {
+    for (const entry of this.userMessages.values()) {
+      if (entry.target === target && String(content || '').includes(entry.packet)) this.acknowledgeUserMessage(entry.id);
+    }
   }
 
   _agentId(index) {
@@ -117,7 +162,7 @@ class TeamNurse {
   _sourcePacket(targetIndex, results, failureKind, priorWakes) {
     const candidates = (results || [])
       .map((result, index) => ({ result, index }))
-      .filter(({ result, index }) => index !== targetIndex && result?.ok && String(result.output || '').trim())
+      .filter(({ result, index }) => index !== targetIndex && completedResult(result))
       .map(({ result, index: fallbackIndex }) => {
         const index = Number.isInteger(result.index) ? result.index : fallbackIndex;
         const output = String(result.output || '').trim();
@@ -187,6 +232,7 @@ class TeamNurse {
       `New completed evidence from ${sourceNames}:`,
       packet.output,
       `Resume the original task as ${target?.name || 'this team member'}. Use the new evidence, do only the remaining useful work, and send concrete results to the peer who needs them. Do not repeat the failed response.`,
+      'The engine requires a valid completed turn with the actual answer. Preserve useful draft work, resolve unfinished plan items or reviews, then return the full deliverable through task_complete in native mode or the active structured completion protocol. Peer messages and plain-text completion claims cannot finish the team.',
     ].join('\n\n');
   }
 
@@ -202,7 +248,7 @@ class TeamNurse {
       const agentId = this._agentId(index);
       const rec = this.net.agents.get(agentId);
       if (!rec) continue;
-      if (rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped'].includes(rec.status)) {
+      if (rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped', 'skipped'].includes(rec.status)) {
         this.stats.suppressed++;
         continue;
       }
@@ -211,7 +257,7 @@ class TeamNurse {
         continue; // a real teammate already supplied a better, intentional wake
       }
       const priorWakes = this.wakes.get(index) || 0;
-      if (priorWakes >= this.policy.maxAutoWakesPerMember || Number(turns[index] || 0) >= maxTurns) {
+      if (priorWakes >= this.policy.maxAutoWakesPerMember) {
         this.stats.suppressed++;
         continue;
       }
@@ -267,9 +313,10 @@ class TeamNurse {
   }
 
   recordWakeResult(index, result) {
-    if (result?.ok) this.stats.wakeSucceeded++;
+    const succeeded = completedResult(result);
+    if (succeeded) this.stats.wakeSucceeded++;
     this.emit('nurse', {
-      action: result?.ok ? 'wake-succeeded' : 'wake-failed',
+      action: succeeded ? 'wake-succeeded' : 'wake-failed',
       index,
       name: this.personas[index]?.name || '',
       status: result?.status || 'unknown',
@@ -283,11 +330,14 @@ class TeamNurse {
     for (let index = 0; index < results.length; index++) {
       const result = results[index];
       if (!result) continue;
-      if (result.ok && String(result.output || '').trim()) {
+      if (completedResult(result)) {
         blocks.push(`【${result.name} · completed】\n${String(result.output).slice(0, this.policy.maxSourceChars)}`);
       } else {
         const error = stalled.get(index) || result.error || 'no completed answer';
         blocks.push(`【${result.name} · ${result.status || 'failed'}】\nUnavailable: ${String(error).slice(0, 1000)}`);
+        if (String(result.output || '').trim()) {
+          blocks.push(`【${result.name} · unverified draft, not a completed result】\n${String(result.output).slice(0, this.policy.maxSourceChars)}`);
+        }
       }
     }
     for (const worker of workers || []) {
@@ -297,7 +347,7 @@ class TeamNurse {
     for (const pending of pendingMail || []) {
       const messages = (pending?.messages || []).map(String).filter(Boolean).join('\n\n');
       if (!messages) continue;
-      blocks.push(`【${pending.name || 'Member'} · queued crew information】\n${messages.slice(0, this.policy.maxSourceChars)}`);
+      blocks.push(`【${pending.name || 'Member'} · queued crew information, not proof of completion】\n${messages.slice(0, this.policy.maxSourceChars)}`);
     }
     if (!blocks.length) return '';
     const kept = [];

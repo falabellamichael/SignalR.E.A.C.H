@@ -1,5 +1,9 @@
 // Settings stay in normal page flow: menus navigate, forms never trap focus.
 let budgetSchema = null;
+document.getElementById('btn-engine-report').onclick = async () => {
+  try { document.getElementById('engine-report').textContent = JSON.stringify(await reachApi.engines.report(), null, 2); }
+  catch (error) { document.getElementById('engine-report').textContent = 'Engine report unavailable: ' + error.message; }
+};
 let budgetGlobal = {};
 let settingsAgent = null;
 

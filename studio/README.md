@@ -96,6 +96,35 @@ exit status. **Stop** targets the selected tab's process tree. Switch tabs or
 views while Ganache runs; stop a running command before closing its tab. Closing
 the final Studio window or quitting the app stops active commands.
 
+### RCH commands in Projects and Home
+
+Choose **Project command** mode. From the SignalR.E.A.C.H repository, install the
+CLI once with `npm --prefix RCH ci`, followed by
+`npm --prefix RCH run install:cli`. On macOS/Linux Studio already includes
+`~/.local/bin` in the command PATH. Windows users must add that directory to
+their user PATH; `npm run rch -- help` from the repository is also available.
+
+| Command | Result |
+| --- | --- |
+| `rch connect` | Connect MetaMask and save its public address |
+| `rch browser opera` | Choose the browser used for wallet review |
+| `rch status` | Verify the deployed RCH token and sale state |
+| `rch balance` | Show the selected address's ETH and RCH |
+| `rch quote 0.0005` | Read-only purchase quote with gas allowance |
+| `rch open-sale` | Owner's sale-activation review in MetaMask |
+| `rch buy 0.0005` | Purchase review with the chosen ETH amount |
+| `rch tx 0xHASH` | Receipt status and actual gas charged |
+| `rch help` | Full command list |
+
+Purchase amounts are ETH and exclude gas. `--max-fee` sets a separate gas ceiling.
+These commands use the verified Ethereum Mainnet RCH deployment; they never
+ask for a private key or seed phrase. Quotes do not send transactions. Write
+commands start a local approval page and keep that terminal tab running for up
+to 15 minutes; review and confirm the transaction yourself in MetaMask. Use a
+second Projects tab for `rch tx` while the approval page is open. **Stop** closes
+the local service, not an already submitted Ethereum transaction. Transaction
+records persist outside the repository for recovery after a restart.
+
 ## Home
 
 Open **Home** from the top ribbon or left rail for a compact workspace overview.
@@ -187,6 +216,15 @@ draft is preserved.
   supervision itself never spends a model call. Provider/transport failures and
   user input/edit gates are not retried; every automatic wake requires new
   evidence and is strictly capped.
+- Team completion is enforced by the engine. Peer mail cannot stop a Links
+  run. A final declaration requires a successfully completed member turn, a
+  nonempty answer, no unfinished plan items or pending edit reviews, and a
+  standalone final `LINKS: COMPLETE` line outside a code block. Interrupted
+  peers are skipped, never counted as answers. The Nurse classifies missing
+  `task_complete` and rejected completion as protocol failures, preserves drafts
+  as unverified material, and counts recovery only after a valid completed
+  result. These checks enforce lifecycle and delivery; they do not prove every
+  factual claim in a model's answer.
 - **Send becomes Stop** while agents or a team are active. It stops all active
   regular chats and the team without sending or clearing the composer draft.
 - Each team member and spawned worker has its own **Stop / Start** control.

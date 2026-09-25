@@ -88,6 +88,23 @@ test('nested CodeGPT Economy concurrency failure becomes a short typed 429', () 
  assert.equal(plain429.code, 'CODEGPT_RATE_LIMIT');
  assert.equal(plain429.status, 429);
 });
+test('empty CodeGPT streams and provider pages never become assistant text', () => {
+ for (const body of [
+  'data: [DONE]\n\n',
+  'data: {"choices":[]}\n\ndata: [DONE]\n\n',
+  'data: {"error":\n\n',
+  'data: null\n\ndata: [DONE]\n\n',
+  '<html>provider unavailable</html>',
+  '{"choices":[]}',
+  'null'
+ ]) assert.equal(extractCodegptApiReply(body), '');
+ assert.equal(extractCodegptApiReply(
+  'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n'), 'OK');
+ assert.equal(extractCodegptApiReply('plain answer'), 'plain answer');
+ assert.throws(() => extractCodegptApiReply('CodeGPT: ' + JSON.stringify({
+  status: 429, code: 'ECONOMY_CONCURRENCY_LIMIT', message: 'Another stream on this account'
+ })), (error) => error.code === 'ECONOMY_CONCURRENCY_LIMIT' && error.status === 429);
+});
 test('capture waits for the entire local run and preserves responses over 6000 chars', async () => {
  let finish;
  const context = { window: { fetch: async () => ({ status: 200, clone: () => ({ text: () => new Promise(resolve => {finish=resolve;}) }) }), XMLHttpRequest: class {} }, Date };
@@ -116,6 +133,7 @@ test('an unavailable requested model fails before sending anything', async () =>
 test('default and legacy requests select a real economy entry, unknown IDs fail', async () => {
  const engines=[];
  const context={codegptWin:{isDestroyed:()=>false}, ECONOMY_PREFIX:'codegpt-eco',
+  waitForProviderWindow:async()=>{}, ensureCodegpt(){}, codegptSnapshot:async()=>({}), showCodegpt(){},
   economyBridgeIds:()=>['codegpt-eco','codegpt-eco-first'],
   economyModelFor:id=>id==='codegpt-eco-first'?{id:'first'}:null,
   codegptSendRequest:async(text,signal,engine)=>{engines.push(engine.id);return 'OK';},log(){}};

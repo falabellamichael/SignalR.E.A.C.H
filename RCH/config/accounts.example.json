@@ -1,0 +1,11 @@
+{
+  "origin": "https://unbent-semicolon-hermit.ngrok-free.dev",
+  "listenHost": "127.0.0.1",
+  "port": 20978,
+  "database": "./private/accounts.sqlite",
+  "chainId": 1,
+  "upstreamUrl": "http://127.0.0.1:20777/v1",
+  "upstreamKeyEnv": "REACH_ACCOUNTS_UPSTREAM_KEY",
+  "models": [],
+  "redemption": { "enabled": false }
+}

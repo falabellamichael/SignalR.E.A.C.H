@@ -295,6 +295,18 @@ function orderFiles(files, dependencyIndex) {
  * Returns {ok, applied[], rolledBack, error}.
  */
 function applyPlan(plan, options = {}) {
+  const engines = require('./engines.cjs');
+  const engineRoot = options.projectDir || plan?.meta?.projectDir;
+  if (engineRoot) {
+    try {
+      for (const file of plan?.files || []) {
+        const target = engines.assertWritePath(engineRoot, file.path);
+        const actual = engines.assertWritePath(engineRoot, path.relative(engineRoot, file.abs));
+        if (target !== actual) throw new Error('Engine write gate: plan target changed.');
+      }
+    }
+    catch (error) { return { ok: false, applied: [], rolledBack: false, error: error.message }; }
+  }
   const {
     readImpl = (p) => fs.readFileSync(p, 'utf8'),
     writeImpl = (p, data) => fs.writeFileSync(p, data, 'utf8'),
@@ -368,7 +380,8 @@ function applyPlan(plan, options = {}) {
       applied.push(file.path);
       onProgress({ phase: 'applied', path: file.path, count: applied.length, total: ordered.length });
     }
-    return { ok: true, applied, rolledBack: false, files: ordered.length };
+    const receipts = ordered.map(file => engines.receipt(file.path, file.creating ? null : file.before, readImpl(file.abs), options.projectDir || 'refactor'));
+    return { ok: true, applied, rolledBack: false, files: ordered.length, receipts };
   } catch (error) {
     cleanupTemps();
     // Undo newest-first so a chain of dependent writes unwinds in reverse.

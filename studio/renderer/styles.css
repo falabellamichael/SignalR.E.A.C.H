@@ -1225,18 +1225,32 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 /* Settings > Connection. One card per provider; the radio picks which one the
    app actually uses. Tokens reused from :root rather than a parallel palette:
    --card/--line/--gold/--gold-dim/--ok/--err/--hover. */
-.conn-list { display: flex; flex-direction: column; gap: 12px; margin: 14px 0 4px; }
+.settings-scroll #settings-connection { max-width: 1280px; container-type: inline-size; }
+.conn-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.conn-toolbar h2, .conn-toolbar .settings-actions { margin: 0; }
+.conn-toolbar .settings-actions { gap: 8px; }
+.conn-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; align-items: start; margin: 8px 0; }
+.conn-workspace.editing:not(.inline-editor) { grid-template-columns: minmax(0, 1fr) minmax(280px, .44fr); }
+.conn-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; min-width: 0; }
 .conn-card {
   border: 1px solid var(--line); border-radius: 8px; background: var(--card);
-  padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
+  min-width: 0; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px;
 }
+.conn-card.editing:not(.active) { border-color: var(--dim); }
 /* The active card is the one every conversation runs against, so it is the only
    place a strong border is warranted — a subtle tint reads as "hovered". */
 .conn-card.active { border-color: var(--gold-dim); box-shadow: 0 0 0 1px var(--gold-dim); }
 
 .conn-head { display: flex; align-items: center; gap: 10px; }
-.conn-radio { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--gold); margin: 0; padding: 0; cursor: pointer; }
+.settings-panel .conn-radio { flex: 0 0 auto; width: 16px; height: 16px; accent-color: var(--gold); margin: 0; padding: 0; cursor: pointer; }
 .conn-name { flex: 1; min-width: 0; }
+.conn-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.conn-edit { display: grid; place-items: center; padding: 6px; width: 30px; height: 30px; flex: 0 0 auto; }
+.conn-icon { display: block; width: 16px; height: 16px; background: currentColor; }
+.conn-icon-edit { mask: url('icons/phosphor/pencil-simple.svg') center / contain no-repeat; }
+.conn-details { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 10px; margin: 0; padding: 10px 0; border-block: 1px solid var(--line); font-size: 12px; }
+.conn-details dt { color: var(--dim); }
+.conn-details dd { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn-badge {
   flex: 0 0 auto; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
   color: var(--dim); border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px;
@@ -1255,10 +1269,17 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 .conn-pool.on { color: var(--gold); border-color: var(--gold-dim); background: var(--hover); }
 .conn-pool:disabled { cursor: not-allowed; opacity: .55; }
 .conn-pool:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 1px; }
-.conn-remove { flex: 0 0 26px; height: 26px; font-size: 18px; line-height: 1; }
+.conn-editor .conn-remove { align-self: flex-start; color: var(--err); margin-top: auto; }
 .conn-remove:focus-visible { outline: 1px solid var(--gold-dim); outline-offset: 1px; }
 
 .conn-body { display: flex; flex-direction: column; gap: 10px; }
+.conn-body[hidden] { display: none; }
+.conn-editor { min-width: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 16px; display: flex; flex-direction: column; gap: 20px; min-height: 410px; }
+.conn-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.conn-editor-head h3 { min-width: 0; overflow-wrap: anywhere; font-size: 20px; font-weight: normal; margin: 0; }
+.conn-editor-head button { flex: 0 0 auto; }
+.conn-editor .conn-body { gap: 16px; }
+.conn-editor-hint { font-size: 12px; line-height: 1.5; }
 .conn-field { display: flex; flex-direction: column; gap: 5px; }
 /* .settings-panel label is already 12px uppercase-dim; keep the per-field labels
    consistent with the rest of the page instead of re-styling them. */
@@ -1267,12 +1288,34 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 .conn-field .row button { flex: 0 0 auto; white-space: nowrap; }
 .conn-field input[type=password], .conn-field input[type=text] { width: 100%; }
 
-.conn-foot { display: flex; align-items: center; gap: 10px; }
-.conn-status { font-size: 12px; }
+.conn-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.conn-foot > .conn-status { flex: 1; min-width: 75px; }
+.conn-status { font-size: 11px; overflow-wrap: anywhere; }
+.conn-foot .small { padding: 4px 10px; font-size: 11px; }
 .conn-status.ok { color: var(--ok); }
 .conn-status.bad { color: var(--err); }
 
 .conn-actions { margin-top: 2px; }
+.conn-workspace.inline-editor .conn-list { grid-template-columns: minmax(0, 1fr); }
+.inline-editor .conn-card { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) auto; gap: 10px 14px; align-items: center; }
+.inline-editor .conn-details { padding: 0 12px; border-block: 0; border-left: 1px solid var(--line); }
+.inline-editor .conn-foot { justify-content: flex-end; }
+.inline-editor .conn-status { flex-basis: 100%; text-align: right; }
+.inline-editor .conn-editor { grid-column: 1 / -1; min-height: 0; margin: 0 -14px -12px; border: 0; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px; padding: 16px; gap: 14px; }
+.inline-editor .conn-editor .conn-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.inline-editor .conn-edit .conn-icon { mask-image: url('icons/phosphor/caret-right.svg'); transform: rotate(90deg); }
+.inline-editor .conn-edit[aria-expanded=true] .conn-icon { transform: rotate(-90deg); }
+@container (max-width: 640px) {
+  .inline-editor .conn-card { grid-template-columns: minmax(0, 1fr) auto; }
+  .inline-editor .conn-head { grid-column: 1 / -1; }
+  .inline-editor .conn-details { border: 0; padding: 0; }
+}
+@container (max-width: 420px) {
+  .inline-editor .conn-card { grid-template-columns: minmax(0, 1fr); }
+  .inline-editor .conn-foot { justify-content: flex-start; }
+  .inline-editor .conn-status { flex-basis: auto; text-align: left; }
+  .inline-editor .conn-editor .conn-body { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* The model picker now says which connection the list came from: with several
    providers configured, "Pick a Model" alone does not say whose models these

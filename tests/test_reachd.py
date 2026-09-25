@@ -151,6 +151,33 @@ class SettingsTests(unittest.TestCase):
             reachd.validate_settings(cfg)
 
 
+class GeminiBridgeAliasTests(unittest.TestCase):
+    def test_web_ui_alias_stays_private_until_tray_sign_in_is_verified(self):
+        spec = reachd.DEFAULT_SETTINGS["models"]["gemini-chat"]
+        self.assertEqual(spec["upstream"], "bridge/gemini-chat")
+        self.assertFalse(spec["enabled"])
+        self.assertFalse(spec["public"])
+        reachd.validate_settings(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)))
+
+    def test_saved_model_choices_survive_additive_default_merge(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "config.json"
+            path.write_text(json.dumps({"models": {"gpt-4o": {
+                "upstream": "codegpt/codegpt-gpt-4o"}}}), encoding="utf-8")
+            self.assertFalse(reachd.load_config(path)["models"]["gemini-chat"]["enabled"])
+
+            path.write_text(json.dumps({"models": {"gemini-chat": {
+                "upstream": "bridge/gemini-chat", "enabled": True, "public": True}}}),
+                encoding="utf-8")
+            saved = reachd.load_config(path)["models"]["gemini-chat"]
+            self.assertTrue(saved["enabled"])
+            self.assertTrue(saved["public"])
+
+            path.write_text(json.dumps({"models": {},
+                "_removed_models": ["gemini-chat"]}), encoding="utf-8")
+            self.assertNotIn("gemini-chat", reachd.load_config(path)["models"])
+
+
 class CodegptEconomyTests(unittest.TestCase):
     """The endpoint's CodeGPT economy aliases.
 
@@ -656,9 +683,11 @@ class AdminGateTests(unittest.TestCase):
         h = self._fake({"X-Forwarded-For": "1.1.1.1, 203.0.113.9"})
         self.assertEqual(h._client_ip(), "203.0.113.9")
 
-    def test_client_ip_prefers_cf_connecting_ip(self):
-        h = self._fake({"Cf-Connecting-Ip": "203.0.113.9",
-                        "X-Forwarded-For": "1.1.1.1"})
+    def test_client_ip_prefers_proxy_appended_xff_over_caller_cf_header(self):
+        # ngrok appends the actual peer to XFF but may preserve a caller's CF
+        # header. That caller-controlled header cannot select a rate bucket.
+        h = self._fake({"Cf-Connecting-Ip": "1.1.1.1",
+                        "X-Forwarded-For": "2.2.2.2, 203.0.113.9"})
         self.assertEqual(h._client_ip(), "203.0.113.9")
 
     def test_ip_in_list_cidr_and_exact(self):

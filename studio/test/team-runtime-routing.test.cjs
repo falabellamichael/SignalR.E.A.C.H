@@ -143,7 +143,7 @@ test('a helper adopted from a saved persona joins with its persona identity', ()
 
 test('Links completion closes operator mail and helper admission immediately', () => {
   const { runner, calls } = fixture();
-  runner.net.linksComplete = { by: 'Planner', message: 'LINKS: COMPLETE' };
+  runner._linkDeclared = { by: 'Planner', index: 0 };
   assert.match(runner.messageMember('m0-p1', 'One more thing').error, /finalizing/i);
   assert.match(runner.addRuntimeAgent({ name: 'Too late' }).error, /finalizing/i);
   assert.equal(calls.messages.length, 0);

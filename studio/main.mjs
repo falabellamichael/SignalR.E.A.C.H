@@ -18,6 +18,7 @@ function copySmokeShot(smokeRoot, name) {
     fs.copyFileSync(path.join(smokeRoot, name), path.join(os.tmpdir(), 'reach-studio-' + name));
   } catch { /* a convenience copy is never worth failing a test run over */ }
 }
+const engines = require('./agent/engines.cjs');
 const { AgentStore } = require('./agent/agent-store.cjs');
 const { AgentLoop } = require('./agent/agent-loop.cjs');
 const { decideAuto, intersectFeatures } = require('./agent/jev-auto.cjs');
@@ -27,6 +28,8 @@ const { PersonaStore } = require('./agent/persona-store.cjs');
 const { AgentSoulStore, MAX_SOUL_CHARS, MAX_MEMORY_CHARS } = require('./agent/agent-soul.cjs');
 const { TeamRunner } = require('./agent/team-runner.cjs');
 const { teamConversationTask, teamAnswerNote, teamFollowupTarget } = require('./agent/team-conversation.cjs');
+const { TeamMessageQueue } = require('./agent/team-message-queue.cjs');
+const { decideTeamPriority } = require('./agent/jev-team-priority.cjs');
 const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
@@ -57,6 +60,7 @@ const { auditEvent } = require('./agent/audit-event.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
 const { createSettingsStore } = require('./agent/settings-store.cjs');
+const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
 const { resolveEndpoint } = require('./agent/endpoint.cjs');
 const { createAttention } = require('./agent/attention.cjs');
@@ -205,11 +209,39 @@ const settingsStore = createSettingsStore({ file: settingsFile, safeStorage });
  * projection of whichever connection is active. Normalizing here rather than at
  * each call site is what keeps the ~10 existing `settings.endpoint` readers
  * correct without touching them. */
+let hostedRoutingSignature = '';
+const hostedAccount = createHostedAccount({
+  file: () => path.join(app.getPath('userData'), 'hosted-account.json'), safeStorage,
+  openExternal: url => shell.openExternal(url),
+  onChange: state => {
+    // Persist only the public connection descriptor; bearer tokens never enter
+    // settings, settings backups, exports, or renderer-owned connection drafts.
+    saveSettings(settingsStore.load());
+    const managed = loadSettings().connections.find(connection => connection.id === HOSTED_CONNECTION_ID);
+    const signature = createHash('sha256').update(JSON.stringify(managed || null)).digest('hex');
+    if (signature !== hostedRoutingSignature) {
+      hostedRoutingSignature = signature;
+      for (const [id, loop] of agentLoops) {
+        if (loop.connectionId !== HOSTED_CONNECTION_ID) continue;
+        if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
+        else agentLoops.delete(id);
+      }
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('account:state', state);
+  },
+});
 function loadSettings() {
-  return settingsStore.load();
+  return hostedAccount.hydrate(settingsStore.load());
 }
 function saveSettings(s) {
-  settingsStore.save(s);
+  const existing = s.connections?.find(connection => connection.id === HOSTED_CONNECTION_ID);
+  const managed = hostedAccount.managedConnection(existing);
+  const list = (s.connections || []).filter(connection => connection.id !== HOSTED_CONNECTION_ID);
+  if (managed) list.push(managed);
+  settingsStore.save(hostedAccount.sanitize({ ...s, connections: list }));
+}
+function publicHostedConnections(settings) {
+  return hostedAccount.sanitize(connections.publicConnections(hostedAccount.sanitize(settings)));
 }
 const capabilityStore = createCapabilityStore({ load: loadSettings, save: saveSettings });
 function autoModeEnabled(settings, agent) {
@@ -467,9 +499,32 @@ function registerIpc() {
 
   ipcMain.handle('settings:get', () => {
     const settings = loadSettings();
-    const { jevApiKey, ...publicSettings } = settings;
+    const { jevApiKey, ...publicSettings } = hostedAccount.sanitize(settings);
     return { ...publicSettings, jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
       jevKeySource: jevApiKey ? 'saved' : process.env.TYPESAFE_API_KEY ? 'environment' : '' };
+  });
+  ipcMain.handle('engines:report', () => engines.getLedger().report());
+  // Narrow account IPC; only state projections and explicit actions cross to
+  // the renderer. Authentication and blockchain signing happen in the browser.
+  const accountAction = async action => {
+    try { return { ok: true, state: await action() }; }
+    catch (error) { return { ok: false, err: error.message, state: hostedAccount.state() }; }
+  };
+  ipcMain.handle('account:get', () => hostedAccount.state());
+  ipcMain.handle('account:configure', (_event, value) => accountAction(async () => {
+    const current = settingsStore.load();
+    if (!current.connections.some(connection => connection.id === HOSTED_CONNECTION_ID) && current.connections.length >= connections.MAX_CONNECTIONS) {
+      throw new Error('Remove one connection in Settings before adding the REACH service.');
+    }
+    return hostedAccount.configure(value);
+  }));
+  ipcMain.handle('account:connect', () => accountAction(() => hostedAccount.connect()));
+  ipcMain.handle('account:cancel', () => accountAction(() => hostedAccount.cancel()));
+  ipcMain.handle('account:refresh', () => accountAction(() => hostedAccount.refresh()));
+  ipcMain.handle('account:disconnect', () => accountAction(() => hostedAccount.disconnect()));
+  ipcMain.handle('account:redeem', async (_event, amount) => {
+    try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
+    catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
@@ -686,6 +741,7 @@ function registerIpc() {
       if (agentLoops.get(id)?.running || startingTeamConversations.has(id) || [...teamRuns.values()].some(r => r.conversationId === id)) throw new Error('Finish the current agent or team run before clearing this conversation.');
       const agent = getAgentStore().clear(id);
       agentLoops.delete(id);
+      if (agent) teamMessages.notify(id, []);
       return agent ? { ok: true, agent } : { ok: false, err: 'Conversation not found.' };
     } catch (error) { return { ok: false, err: error.message }; }
   });
@@ -822,7 +878,8 @@ function registerIpc() {
     if (accepted) {
       try {
         fs.mkdirSync(path.dirname(edit.absPath), { recursive: true });
-        writeTextFile(edit.absPath, edit.proposed);
+        if (!Object.hasOwn(edit, 'expectedHash') || !edit.root) throw new Error('This older proposal needs to be refreshed before accepting it.');
+        writeTextFile(edit.absPath, edit.proposed, { root: edit.root, scope: id, expectedHash: edit.expectedHash });
       } catch (e) {
         return { ok: false, err: e.message };
       }
@@ -915,7 +972,51 @@ function registerIpc() {
   });
   ipcMain.handle('teams:delete', (_e, id) => ({ ok: getPersonaStore().removeTeam(id) }));
 
-  ipcMain.handle('teams:run', async (_e, { teamId, task, dir, agentId, useHistory = true, autoToken }) => {
+  const teamMessages = new TeamMessageQueue({
+    read: id => getAgentStore().get(id)?.teamMessageQueue || [],
+    write: (id, items) => getAgentStore().setTeamMessageQueue(id, items),
+    notify: (agentId, items, delivery) => {
+      if (win && !win.isDestroyed()) win.webContents.send('team:queue', { agentId, items, delivery });
+    },
+    findRun: id => [...teamRuns.values()].find(runner => runner.conversationId === id),
+    judge: (id, item, signal) => {
+      const agent = getAgentStore().get(id), config = jevConfig(loadSettings(), agent);
+      const latest = [...(agent?.messages || [])].reverse().find(m => m.role === 'user' && m._reachMeta?.source === 'team-user');
+      const task = typeof latest?.content === 'string' && latest.content.length <= 1000 ? latest.content : '';
+      return decideTeamPriority({ apiKey: config.enabled ? config.apiKey : '', message: item.message, task, signal });
+    },
+    steer: (runner, item, onApplied) => {
+      let target = teamFollowupTarget(runner, item.target);
+      if (!item.target && !runner.net?.agents.get(target)?.loop?.running) {
+        target = [...runner.net.agents.values()].find(member => member.origin === 'roster' && member.loop?.running && !member.control?.paused)?.id || target;
+      }
+      return runner.steerMember(target, item.message, { id: item.id, onApplied });
+    },
+    applied: (agentId, item) => getAgentStore().appendMessage(agentId, { role: 'user', content: item.message, _reachMeta: { source: 'team-user', teamId: item.teamId, teamRunId: item.teamRunId, delivery: 'steer' } }),
+    dispatch: (agentId, item) => runTeam({ teamId: item.teamId, task: item.message, agentId, useHistory: item.useHistory }, { queued: true }),
+  });
+
+  ipcMain.handle('teams:queueList', (_e, agentId) => ({ ok: true, items: teamMessages.list(String(agentId || '')) }));
+  ipcMain.handle('teams:queueMessage', (_e, payload = {}) => {
+    try {
+      const { agentId, teamId, teamRunId } = payload;
+      const runner = teamRuns.get(teamRunId);
+      if (!getAgentStore().get(agentId) || !runner || runner.conversationId !== agentId || runner.team.id !== teamId) throw new Error('The team run has changed. Your draft is still available.');
+      if (payload.target) teamFollowupTarget(runner, payload.target);
+      return { ok: true, item: teamMessages.enqueue(agentId, payload) };
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
+  ipcMain.handle('teams:queueAction', async (_e, { agentId, id, action }) => {
+    try {
+      if (!getAgentStore().get(agentId)) throw new Error('Conversation not found.');
+      if (action === 'cancel') return teamMessages.cancel(agentId, id);
+      if (action === 'steer') return teamMessages.promote(agentId, id);
+      if (action === 'send') { await teamMessages.drain(agentId, true); return { ok: true }; }
+      throw new Error('Unknown queue action.');
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
+
+  async function runTeam({ teamId, task, dir, agentId, useHistory = true, autoToken }, { queued = false } = {}) {
     let reservedConversation, autoRoute;
     try {
       autoRoute = consumeAutoPlan(autoToken, { id: agentId, text: String(task || ''), kind: 'team', teamId });
@@ -1040,7 +1141,10 @@ function registerIpc() {
       if (agentId && !getAgentStore().get(agentId)) return { ok: false, err: 'Conversation was deleted while the team was starting.' };
       const teamRunId = 'teamrun-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
       const journal = new CrewJournal(journalPath(path.join(app.getPath('userData'), 'agents'), teamRunId));
+      let continueQueue = false;
       const sendEvent = (channel, payload) => {
+        if (payload.type === 'done') continueQueue = !payload.stopped;
+        if (agentId && payload.memberType === 'request-start') setImmediate(() => teamMessages.retrySteering(agentId, teamRunId));
         // Save before announcing completion so a follow-up sees the answer
         // even after the user switches views or reloads the renderer.
         if (payload.type === 'done' && agentId
@@ -1142,6 +1246,7 @@ function registerIpc() {
         getAgentStore().appendMessage(agentId, { role: 'user', content: String(task).trim(), _reachMeta: { source: 'team-user', teamId, teamRunId } });
         if (!autoRoute) getAgentStore().update(agentId, { settings: { teamChat: { ...conversation.settings?.teamChat, enabled: true, teamId, useHistory: useHistory !== false } } });
       }
+      if (queued) sendEvent('team:event', { type: 'queue-run-started', teamRunId, agentId, team, task: String(task).trim() });
       runner.run(teamRunId).catch((err) => {
         sendEvent('team:event', { teamRunId, type: 'error', message: err.message });
       }).finally(() => {
@@ -1151,6 +1256,7 @@ function registerIpc() {
           pending.resolve(null);
         }
         teamRuns.delete(teamRunId);
+        if (agentId) teamMessages.finished(agentId, teamRunId, continueQueue);
       });
       if (autoRoute && win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId, type: 'jev-auto', ...autoRoute.summary, at: Date.now() });
       return { ok: true, teamRunId, routing, autoRouted: !!autoRoute };
@@ -1160,7 +1266,8 @@ function registerIpc() {
       finishAutoDispatch(autoRoute);
       if (reservedConversation !== undefined) startingTeamConversations.delete(reservedConversation);
     }
-  });
+  }
+  ipcMain.handle('teams:run', (_e, payload) => runTeam(payload));
 
   ipcMain.handle('teams:stop', (_e, { teamRunId }) => {
     const runner = teamRuns.get(teamRunId);
@@ -1275,7 +1382,8 @@ function registerIpc() {
     if (accepted) {
       try {
         fs.mkdirSync(path.dirname(entry.edit.absPath), { recursive: true });
-        writeTextFile(entry.edit.absPath, entry.edit.proposed);
+        if (!Object.hasOwn(entry.edit, 'expectedHash') || !entry.edit.root) throw new Error('This older proposal needs to be refreshed before accepting it.');
+        writeTextFile(entry.edit.absPath, entry.edit.proposed, { root: entry.edit.root, scope: entry.edit.scope, expectedHash: entry.edit.expectedHash });
       } catch (e) {
         // Keep the proposal pending so the review card can report the error
         // and let the user retry after fixing the underlying filesystem issue.
@@ -1355,7 +1463,7 @@ function registerIpc() {
     try {
       const abs = resolveInProject(root, rel);
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      writeTextFile(abs, String(content === undefined ? '' : content));
+      writeTextFile(abs, String(content === undefined ? '' : content), { root, scope: agentId || 'editor' });
       return { ok: true };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -1420,12 +1528,14 @@ function registerIpc() {
   });
 
   /* ---------------- multiple endpoint connections (VS Code parity) --------------
-   * The renderer gets the whole list INCLUDING access keys: unlike a web page,
+   * Personal provider keys retain the existing settings editing behavior. The
+   * hosted subscription session is always removed by publicHostedConnections.
+   * For personal providers, the renderer gets the list including access keys:
    * this is a local desktop app whose own settings form must be able to redisplay
    * and re-save a key. The keys never leave the machine — they are read from and
    * written to userData/settings.json, exactly as the single-endpoint form did.
    */
-  ipcMain.handle('connections:list', () => connections.publicConnections(loadSettings()));
+  ipcMain.handle('connections:list', () => publicHostedConnections(loadSettings()));
 
   /* One handler for add/update/remove/activate rather than four, because all
    * four are "change the list, persist, tell the loops". A per-action handler set
@@ -1437,6 +1547,10 @@ function registerIpc() {
    */
   ipcMain.handle('connections:save', (_e, payload = {}) => {
     const action = String(payload.action || '').trim();
+    if (payload.id === HOSTED_CONNECTION_ID && ['remove', 'update'].includes(action) &&
+        (action === 'remove' || payload.endpoint || payload.accessKey || payload.name)) {
+      return { ok: false, err: 'Manage the REACH subscription connection from Home. Its service address and credentials are managed there.' };
+    }
     const current = loadSettings();
     let result;
     switch (action) {
@@ -1493,7 +1607,7 @@ function registerIpc() {
         else agentLoops.delete(id);
       }
     }
-    return { ok: true, connections: connections.publicConnections(result.settings) };
+    return { ok: true, connections: publicHostedConnections(result.settings) };
   });
 
   /* Ping one specific connection (default: the active one) so the Connection
@@ -2560,9 +2674,13 @@ function createWindow({ show = true } = {}) {
 
 // ---------- lifecycle ----------
 app.whenReady().then(() => {
+  engines.configure(path.join(app.getPath('userData'), 'engine-ledger.jsonl'));
   nativeTheme.themeSource = loadSettings().theme === 'light' ? 'light' : 'dark';
   reachProcess.configure(loadSettings);
   registerIpc();
+  const accountTimer = setInterval(() => { void hostedAccount.poll().catch(() => {}); }, 2000);
+  accountTimer.unref();
+  app.once('before-quit', () => clearInterval(accountTimer));
   if (process.argv.includes('--smoke')) {
     (async () => {
       const timeout = setTimeout(() => {
@@ -2944,7 +3062,7 @@ app.whenReady().then(() => {
               // Links member D: idle until the peer's message arrives, then
               // declares the crew complete (the LINKS: COMPLETE sentinel).
               content = all.includes('Review my draft')
-                ? complete('Reviewed and verified. LINKS: COMPLETE')
+                ? complete('Reviewed and verified.\nLINKS: COMPLETE')
                 : complete('D standing by.');
             } else if (request.model === 'fixture-l3') {
               // Links member E answers in the DeepSeek DSML native tool markup
@@ -3465,12 +3583,13 @@ app.whenReady().then(() => {
             if (document.querySelectorAll('#conn-list .conn-card').length !== 1) throw new Error('Connection list did not render the migrated single connection');
             if (!document.querySelector('#conn-list .conn-url')) throw new Error('Connection card has no Base URL field');
             if (!document.querySelector('#conn-list .conn-radio')) throw new Error('Connection card has no active-connection radio');
-            if (document.querySelector('#conn-list .conn-remove').disabled !== true) throw new Error('The only connection must not be removable');
+            document.querySelector('#conn-list .conn-edit').click();
+            if (document.querySelector('#conn-editor .conn-remove').disabled !== true) throw new Error('The only connection must not be removable');
 
             // Add a second connection through the UI and save it.
             document.querySelector('#btn-add-connection').onclick();
             if (document.querySelectorAll('#conn-list .conn-card').length !== 2) throw new Error('Add connection did not append a card');
-            const connNewUrl = document.querySelector('#conn-list .conn-card:last-child .conn-url');
+            const connNewUrl = document.querySelector('#conn-editor .conn-url');
             connNewUrl.value = connSecond;
             connNewUrl.dispatchEvent(new Event('input', { bubbles: true }));
             await document.querySelector('#btn-save-settings').onclick();
@@ -3560,7 +3679,8 @@ app.whenReady().then(() => {
             if (connRm.ok !== true) throw new Error('Removing a connection failed: ' + connRm.err);
             await loadSettings();
             if (document.querySelectorAll('#conn-list .conn-card').length !== 1) throw new Error('Removed connection still rendered');
-            if (document.querySelector('#conn-list .conn-remove').disabled !== true) throw new Error('The last remaining connection must not be removable');
+            document.querySelector('#conn-list .conn-edit').click();
+            if (document.querySelector('#conn-editor .conn-remove').disabled !== true) throw new Error('The last remaining connection must not be removable');
             const connAfter = await reachApi.getSettings();
             if (connAfter.connections.length !== 1) throw new Error('Expected one connection after cleanup');
             if (connAfter.endpoint !== connFirst.endpoint) throw new Error('Cleanup changed the active endpoint');

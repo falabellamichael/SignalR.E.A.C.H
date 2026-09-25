@@ -6,15 +6,12 @@ import subprocess
 from pathlib import Path
 
 from .config import BAT_PATH, CONFIG_DIR
-from .publish import find_gh
 from .tray import electron_binary, tray_dir
 from .runtime import (
     no_window_kwargs,
     resolve_interpreter,
     resolve_pythonw,
-    runtime_port,
 )
-from .tunnel import find_ngrok
 def startup_folder():
     return (Path(os.environ.get("APPDATA", ""))
             / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup")
@@ -36,23 +33,12 @@ def register_autostart():
     subprocess.run(["schtasks", "/Delete", "/TN", "SimpleREACH", "/F"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                    **no_window_kwargs())
-    port = runtime_port()
     pythonw = resolve_pythonw()
-    ngrok = find_ngrok()
-    gh = find_gh()
     lines = [
         "@echo off",
         "cd /d \"%s\"" % CONFIG_DIR,
-        "start \"\" /min \"%s\" server\\reachd.py" % pythonw,
-        "timeout /t 3 /nobreak >nul",
+        "start \"\" /min \"%s\" tools\\reach.py supervise" % pythonw,
     ]
-    if ngrok:
-        lines.append("start \"\" /min \"%s\" http %d --log=stdout" % (ngrok, port))
-        lines.append("timeout /t 12 /nobreak >nul")
-        if gh:
-            lines.append("\"%s\" tools\\reach.py publish --quiet" % resolve_interpreter())
-    else:
-        lines.append("echo ngrok not found - run: winget install ngrok")
     lines.append("\"%s\" tools\\reach.py reassert" % resolve_interpreter())
 
     # Copilot 365: shim (:21301) + the tray (supervises the invisible Electron

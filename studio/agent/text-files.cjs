@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const engines = require('./engines.cjs');
 
 const binaryExtensions = new Set(('.pyc .pyo .exe .dll .so .dylib .png .jpg .jpeg .gif .ico .webp .pdf .zip .gz .7z .rar .mp3 .mp4 .wav .woff .woff2 .ttf .db .sqlite .sqlite3 .asar').split(' '));
 
@@ -51,13 +52,22 @@ function onFileWrite(listener) {
   return () => { const i = writeObservers.indexOf(listener); if (i >= 0) writeObservers.splice(i, 1); };
 }
 
-function writeTextFile(file, content) {
+function writeTextFile(file, content, options = {}) {
   assertTextPath(file);
+  if (options.root) engines.assertWritePath(options.root, path.relative(options.root, file));
+  const before = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  if ('expectedHash' in options && options.expectedHash !== (before === null ? null : engines.hash(before))) {
+    throw new Error('The file changed since this edit was proposed. Refresh the proposal before accepting it.');
+  }
   const existing = fs.existsSync(file) ? readTextFile(file) : { encoding: 'utf-8', bom: Buffer.alloc(0) };
   let body = Buffer.from(String(content), existing.encoding === 'utf-8' ? 'utf8' : 'utf16le');
   if (existing.encoding === 'utf-16be') body = body.swap16();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, Buffer.concat([existing.bom, body]));
+  const bytes = Buffer.concat([existing.bom, body]);
+  const tmp = file + '.reach-' + require('node:crypto').randomUUID() + '.tmp';
+  try { fs.writeFileSync(tmp, bytes); fs.renameSync(tmp, file); }
+  finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
+  engines.receipt(options.root ? path.relative(options.root, file) : path.basename(file), before, fs.readFileSync(file), options.scope || 'editor');
   for (const listener of writeObservers) {
     try { listener(file); } catch { /* a failing observer must not fail the write */ }
   }

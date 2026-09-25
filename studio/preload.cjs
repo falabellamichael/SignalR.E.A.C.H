@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('reach', {
   platform: process.platform,
+  engines: { report: () => ipcRenderer.invoke('engines:report') },
   initialTheme: ipcRenderer.sendSync('theme:get'),
   setTheme: theme => ipcRenderer.invoke('theme:set', theme),
   telemetry: {
@@ -46,6 +47,22 @@ contextBridge.exposeInMainWorld('reach', {
   createProject: (name, parent, kind = 'general') => ipcRenderer.invoke('project:create', { name, parent, kind }),
   listFiles: (dir) => ipcRenderer.invoke('project:list', dir),
   openDir: (dir) => ipcRenderer.invoke('shell:openDir', dir),
+
+  // Customer account credentials remain in main; no signing or key import IPC.
+  account: {
+    get: () => ipcRenderer.invoke('account:get'),
+    configure: url => ipcRenderer.invoke('account:configure', url),
+    connect: () => ipcRenderer.invoke('account:connect'),
+    cancel: () => ipcRenderer.invoke('account:cancel'),
+    refresh: () => ipcRenderer.invoke('account:refresh'),
+    disconnect: () => ipcRenderer.invoke('account:disconnect'),
+    redeem: amountRch => ipcRenderer.invoke('account:redeem', amountRch),
+    onState: callback => {
+      const listener = (_event, state) => callback(state);
+      ipcRenderer.on('account:state', listener);
+      return () => ipcRenderer.removeListener('account:state', listener);
+    },
+  },
 
   // Settings
   getBudgetSchema: () => ipcRenderer.invoke('settings:budgetSchema'),
@@ -113,6 +130,10 @@ contextBridge.exposeInMainWorld('reach', {
     delete: (id) => ipcRenderer.invoke('teams:delete', id),
     run: (teamId, task, dir, agentId, useHistory = true, options = {}) => ipcRenderer.invoke('teams:run', { teamId, task, dir, agentId, useHistory, autoToken: options.autoToken }),
     followup: (payload) => ipcRenderer.invoke('teams:followup', payload),
+    queueMessage: payload => ipcRenderer.invoke('teams:queueMessage', payload),
+    queueList: agentId => ipcRenderer.invoke('teams:queueList', agentId),
+    queueAction: payload => ipcRenderer.invoke('teams:queueAction', payload),
+    onQueue: cb => ipcRenderer.on('team:queue', (_e, payload) => cb(payload)),
     stop: (teamRunId) => ipcRenderer.invoke('teams:stop', { teamRunId }),
     start: (teamRunId) => ipcRenderer.invoke('teams:start', { teamRunId }),
     stopAll: () => ipcRenderer.invoke('runs:stop'),

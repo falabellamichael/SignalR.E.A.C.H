@@ -6,6 +6,7 @@
     'use strict';
 
     const RELAY = 'http://127.0.0.1:20777';
+    const SUPERVISOR = 'http://127.0.0.1:20778';
     const POINTER = 'https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt';
     const REPO_URL = 'https://github.com/falabellamichael/SignalR.E.A.C.H';
     const API_BASE = '/api/extensions/rag-workspace';
@@ -55,6 +56,16 @@
 
     function relayFetch(path, options, timeoutMs) {
         return fetchWithTimeout(RELAY + path, options, timeoutMs || 4000);
+    }
+
+    function startEndpoint() {
+        return fetchWithTimeout(SUPERVISOR + '/start', {
+            method: 'POST',
+            headers: { 'X-Reach-Action': 'start' }
+        }, 90000).then(res => res.json().then(data => {
+            if (!res.ok || !data.ok) throw new Error(data.error || 'Endpoint could not start');
+            return Promise.all([refreshLocal(), refreshPointer(true)]).then(() => data);
+        }));
     }
 
     function refreshLocal() {
@@ -217,6 +228,7 @@
         prefsGet: prefsGet,
         prefsSet: prefsSet,
         relayFetch: relayFetch,
+        startEndpoint: startEndpoint,
         refreshLocal: refreshLocal,
         refreshPointer: refreshPointer,
         loadSettings: loadSettings,

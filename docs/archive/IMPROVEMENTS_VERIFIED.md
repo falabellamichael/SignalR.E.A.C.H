@@ -9,6 +9,67 @@ This is the active plan. The four older improvement documents are preserved in
 `docs/archive/` as historical proposals; their counts, worker assignments and
 instructions to commit/stash are not current task instructions.
 
+## Nurse user handoffs and team message budget — 2026-09-21
+
+- Jev retains the priority decision. The Team Nurse now owns important user
+  handoffs, retains the exact message until it is appended to the receiving
+  member's context, and emits carrying/delivered receipts in the team badge.
+- An active answer request is canceled and restarted with saved context and a
+  fresh round allowance. Executing tools finish safely; pending approvals,
+  reviews and user pauses remain gates. Idle Links members are woken through
+  the existing scheduler, keeping its shared concurrency limit.
+- Nurse handoffs spend no peer-message quota or peer wake turns. Previous
+  Nurse starts no longer reduce recovery scores, including legacy policies
+  that specified a penalty. User handoffs do not spend the two-wake allowance
+  for automatic heuristic recovery; that separate novelty/provider guard stays.
+- Settings > Budgeting > Teams exposes Agent message handoffs per team run:
+  default 9, a configurable whole number, or 0 for unlimited. It uses the same
+  validation, presets and conversation overrides as other budgets. All crew
+  modes receive the configured limit; it counts delivered peer messages, not
+  rejected sends, user guidance or Nurse handoffs. New values apply to new runs.
+- Verification: 546 unit tests passed with four skips. Local HTTP tests proved
+  cancellation and restart at the last model round with an exhausted peer quota,
+  and seven successive Nurse wakes beyond the peer-turn cap. Native Studio QA
+  passed Nurse receipts, the existing queue/steering flow, saving 27 globally,
+  and saving 0 for one conversation while preserving the global value.
+- Jev decisions remain mocked in these tests; real priority quality and token
+  savings are unmeasured. NSIS and portable Windows builds succeeded, with
+  15 runtime files verified against the packaged ASAR. Changes remain
+  uncommitted, unpublished and uninstalled.
+
+## Team message priority and queue — 2026-09-21
+
+- Studio Teams now accepts messages during parallel, chain and Links runs.
+  Auto is the default: one bounded Jev Noul judgment routes important guidance
+  to the coordinator (or a working member), or retains it for the next team
+  turn. A selected member can be targeted instead. Queue and Steer can also be
+  selected explicitly; pending rows expose Steer now and Remove.
+- The application uses a probability threshold of 0.8; this is routing policy,
+  not a measured accuracy claim. Auto requires Jev enabled and a configured key.
+  Missing keys, input over 1,500 characters, invalid responses and a 2.5-second
+  deadline retain the message in the queue. The request contains the new message
+  and a short current task, with no collected files or tool output.
+- Steering cancels the answer request, allows an executing tool to finish,
+  skips remaining stale sequential actions, and preserves approval, edit review,
+  pause and round limits (Nurse user redirects now get a fresh round allowance,
+  as documented above). Guidance is removed from the queue only when appended
+  to the member's turn. Queued messages start in order after normal completion;
+  stopped or restored queues require Send now. Pending text is persisted per
+  conversation and survives switching views or restarting Studio.
+- Verification: Studio suite 541 passed / 4 skipped. The focused queue,
+  interruption and IPC suite passed 25 tests after final recovery refinements.
+  A local HTTP fixture proved answer cancellation and guidance in the next
+  request. The real main/preload/renderer fixture passed Auto queue/steer,
+  cancellation, exactly-once next-turn dispatch, Links recipient selection,
+  transcript persistence and menu geometry at 1280/1000 pixels. A team-rail
+  ResizeObserver layout feedback warning was fixed and that fixture re-passed.
+- Jev responses in tests are mocked. Authenticated priority quality, real
+  provider billing and net token savings are not measured. This change applies
+  to Studio's team runner; the VS Code extension has no matching team surface.
+  Windows NSIS and portable builds succeeded; all 12 changed runtime files
+  match the packaged ASAR. The existing team-deck scrolling/resize fixture also
+  passed. These changes are not yet committed, published or installed.
+
 ## Jev and conversation UI verification — 2026-09-21
 
 - Optional TypeSafe Jev context selection and Auto routing are implemented for
