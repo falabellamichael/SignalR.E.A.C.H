@@ -365,6 +365,17 @@ class KeyPatchRouteTests(RelayFixture):
         self.assertIn("whole number", json.loads(body)["error"]["message"])
         self.assertEqual(self.key["rate_limit_rpm"], 0)
 
+    def test_rejected_patch_does_not_change_the_live_key(self):
+        for bad in (-1, 1.5, True):
+            status, _body = self.patch_key({"name": "Changed", "rate_limit_rpm": bad})
+            self.assertEqual(status, 400)
+            self.assertEqual(self.key["name"], "Subscriber")
+            self.assertEqual(self.key["rate_limit_rpm"], 0)
+        status, _body = self.patch_key({"name": "Changed", "expires_at": "tomorrow"})
+        self.assertEqual(status, 400)
+        self.assertEqual(self.key["name"], "Subscriber")
+        self.assertIsNone(self.key["expires_at"])
+
     def test_the_response_never_carries_the_raw_token(self):
         _s, body = self.patch_key({"rate_limit_rpm": 5})
         self.assertNotIn(self.key["key"], body.decode())

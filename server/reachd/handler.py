@@ -617,35 +617,47 @@ class RelayHandler(BaseHTTPRequestHandler):
                     access = core.STATE.cfg.setdefault("access", {})
                     keys = access.setdefault("keys", [])
                     found = None
-                    for k in keys:
+                    for index, k in enumerate(keys):
                         if k.get("id") == key_id or k.get("key") == key_id:
+                            updated = dict(k)
                             if "name" in patch:
-                                k["name"] = str(patch["name"]).strip()
+                                updated["name"] = str(patch["name"]).strip()
                             if "enabled" in patch:
                                 val = patch["enabled"]
                                 if isinstance(val, bool):
-                                    k["enabled"] = val
+                                    updated["enabled"] = val
                                 else:
-                                    k["enabled"] = str(val).lower() not in ("false", "0", "no", "off", "")
+                                    updated["enabled"] = str(val).lower() not in ("false", "0", "no", "off", "")
                             # Per-key caps, so a plan can be changed without a
-                            # whole-settings PUT. Values are validated by
-                            # save_config below; a bad one fails the request
-                            # rather than being silently coerced.
+                            # whole-settings PUT. Keep the live key unchanged
+                            # until the candidate config validates and saves.
                             for field in ("rate_limit_rpm", "tokens_day"):
                                 if field in patch:
-                                    try:
-                                        k[field] = max(0, int(patch[field] or 0))
-                                    except (TypeError, ValueError):
+                                    value = patch[field]
+                                    if isinstance(value, bool) or not isinstance(value, int):
                                         return self._json(400, {"error": {
                                             "message": "%s must be a whole number" % field,
                                             "type": "invalid_request"}})
+                                    updated[field] = value
                             if "expires_at" in patch:
                                 value = patch["expires_at"]
-                                k["expires_at"] = str(value).strip() or None                                     if isinstance(value, str) else None
+                                if value is not None and not isinstance(value, str):
+                                    return self._json(400, {"error": {
+                                        "message": "expires_at must be an ISO-8601 string or null",
+                                        "type": "invalid_request"}})
+                                updated["expires_at"] = value.strip() or None if isinstance(value, str) else None
+                            candidate = json.loads(json.dumps(core.STATE.cfg))
+                            candidate["access"]["keys"][index] = updated
+                            try:
+                                save_config(candidate, core.STATE.cfg_path)
+                            except SettingsError as exc:
+                                return self._json(400, {"error": {
+                                    "message": str(exc), "type": "invalid_request"}})
+                            k.clear()
+                            k.update(updated)
                             found = k
                             break
                     if found:
-                        save_config(core.STATE.cfg, core.STATE.cfg_path)
                         self._json(200, {"updated": True, "key": public_key_view(found)})
                     else:
                         self._json(404, {"error": {"message": "Key not found", "type": "not_found"}})
