@@ -69,6 +69,26 @@ class RateLimiter:
         behind one address are not charged for each other."""
         rl = settings.get("rate_limits", {})
         if not rl.get("enabled"):
+            if key_bucket and key_rpm > 0:
+                # Disabling shared IP/global limits must not disable a key's
+                # own plan cap. The key still has a bucket across all IPs.
+                with self._lock:
+                    self._evict_stale()
+                    now = time.time()
+                    burst = float(rl.get("burst", 4))
+                    bucket = self._buckets.setdefault(
+                        key_bucket, {"tokens": 0.0, "updated": 0.0})
+                    self._refill(bucket, float(key_rpm) / 60.0,
+                                 float(key_rpm) + burst, now)
+                    headers = {"X-RateLimit-Limit": str(int(key_rpm + burst)),
+                               "X-RateLimit-Remaining": str(max(0, int(bucket["tokens"] - 1)))}
+                    if bucket["tokens"] < 1:
+                        wait = (1.0 - bucket["tokens"]) * 60.0 / float(key_rpm)
+                        return False, {**headers, "X-RateLimit-Remaining": "0",
+                                       "Retry-After": str(max(1, int(wait)) + 1)}, \
+                            "key_rpm"
+                    bucket["tokens"] -= 1.0
+                    return True, headers, None
             return True, {}, None
         with self._lock:
             self._evict_stale()

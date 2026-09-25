@@ -129,6 +129,18 @@ class RateLimiterKeyBucketTests(unittest.TestCase):
         allowed = [limiter.check("1.1.1.1", self.CFG)[0] for _ in range(5)]
         self.assertEqual(allowed, [True] * 5)
 
+    def test_key_cap_still_applies_when_shared_limits_are_disabled(self):
+        limiter = reachd.RateLimiter()
+        cfg = {"rate_limits": {"enabled": False, "burst": 0}}
+        results = [limiter.check("10.0.0.%d" % i, cfg,
+                                 key_bucket="key::k1", key_rpm=2)
+                   for i in range(4)]
+        self.assertEqual([allowed for allowed, _headers, _reason in results],
+                         [True, True, False, False])
+        self.assertEqual(results[2][2], "key_rpm")
+        self.assertEqual(results[2][1]["X-RateLimit-Remaining"], "0")
+        self.assertEqual(limiter.check("10.0.0.4", cfg)[0], True)
+
     def test_key_cap_cannot_loosen_the_shared_cap(self):
         tight = {"rate_limits": {"enabled": True, "per_ip_rpm": 1,
                                  "global_rpm": 1000, "burst": 0}}
@@ -223,11 +235,11 @@ class KeyRpmOverHttpTests(RelayFixture):
     rate_limit_overrides = {"burst": 0}
 
     def chat(self, **extra):
-        body = json.dumps({"model": "gpt-4o",
-                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        # The rate gate runs before parsing. An invalid body reaches it without
+        # making a live provider request, so these tests measure only the cap.
         return self.call("POST", "/v1/chat/completions",
                          self.bearer(**{"Content-Type": "application/json"}, **extra),
-                         body=body)
+                         body=b"not json")
 
     def test_chat_meters_the_key(self):
         codes = [self.chat()[0] for _ in range(5)]
@@ -281,14 +293,13 @@ class KeyDailyTokenTests(RelayFixture):
 
     def test_under_budget_is_not_refused_by_the_key_gate(self):
         self._spend(10)
-        body = json.dumps({"model": "gpt-4o",
-                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        # Invalid JSON reaches body validation after the key gate, without
+        # making a live upstream request that could spend the remaining budget.
         status, payload = self.call(
             "POST", "/v1/chat/completions",
-            self.bearer(**{"Content-Type": "application/json"}), body=body)
-        # No upstream here, so anything but the key gate is a pass for this test.
-        self.assertNotEqual(json.loads(payload).get("error", {}).get("code"),
-                            "key_daily_token_limit")
+            self.bearer(**{"Content-Type": "application/json"}), body=b"not json")
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(payload)["error"]["message"], "invalid JSON body")
 
     def test_spend_is_tracked_per_key_not_per_address(self):
         self._spend(60)
