@@ -1,6 +1,6 @@
 'use strict';
 
-module.exports = ({ FINISHED, linksCompleteIn }) => ({
+module.exports = ({ FINISHED }) => ({
   _emitDelivery(sender, rec, from, text, delivered, { fromName = '', source = 'agent' } = {}) {
     this.journal?.append('crew-message', { from, to: rec.id, source, message: text, delivered });
     require('./audit-event.cjs').auditEvent(this.auditLog, 'crew.handoff', { agent: from,
@@ -19,7 +19,7 @@ module.exports = ({ FINISHED, linksCompleteIn }) => ({
     });
   },
 
-  send({ from, to, message, fromName = '', source = 'agent', countAgainstBudget = true, allowCompletion = true, exact = false }) {
+  send({ from, to, message, fromName = '', source = 'agent', countAgainstBudget = true, exact = false }) {
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
     const text = String(message || '').trim();
     if (!text) return { ok: false, error: 'A message is required.' };
@@ -65,23 +65,9 @@ module.exports = ({ FINISHED, linksCompleteIn }) => ({
     if (sender) sender.messagesSent++;
     rec.messagesReceived++;
 
-    /* The Links completion declaration can also travel as a message. */
+    // Peer messages are data, including any completion claims they contain.
+    // Only TeamRunner's validated terminal result can conclude the crew.
     const senderName = sender ? sender.name : (fromName || String(from));
-    if (allowCompletion && linksCompleteIn(text) && !this.linksComplete) {
-      this.linksComplete = { by: senderName, to: rec.name, message: text };
-      /* A message declaration is terminal even though its sender is still in a
-       * tool turn. Tell the runner immediately so it can apply the same short
-       * completion grace used for declarations in final answers. */
-      try {
-        this.onActivity({
-          type: 'links-complete',
-          agentId: rec.id,
-          from,
-          fromName: senderName,
-          linksComplete: true,
-        });
-      } catch { /* scheduler hook is advisory */ }
-    }
 
     const prefixed = source === 'user'
       ? `MESSAGE FROM ${senderName} (the user directing this crew):\n${text}`
@@ -189,7 +175,6 @@ module.exports = ({ FINISHED, linksCompleteIn }) => ({
       from: '__user__', to, message,
       fromName: 'You', source: 'user',
       countAgainstBudget: false,
-      allowCompletion: false,
       exact: true,
     });
   },

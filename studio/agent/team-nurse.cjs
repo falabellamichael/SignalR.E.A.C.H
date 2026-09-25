@@ -33,9 +33,10 @@
  *
  * retry.cjs is a leaf (no engine imports), so this cannot create a cycle. */
 const { isRateLimitEvidence } = require('./retry.cjs');
+const { completedResult } = require('./team-completion.cjs');
 const HARD_FAILURE_RE = /(?:endpoint returned http\s+[45]\d\d|\b(?:401|403|404|408|422|429|500|502|503|504)\b|quota|rate[ -]?limit|no backend|model[^\n]*(?:not found|unavailable)|service unavailable|invalid[^\n]*(?:api[ -]?key|access[ -]?key|token)|unauthori[sz]ed|forbidden|billing|insufficient[^\n]*(?:credit|fund)|model request exceeded|request timed out|timeout[^\n]*seconds)/i;
 const TRANSIENT_FAILURE_RE = /(?:econn|fetch failed|socket|network|connection (?:closed|reset)|temporar)/i;
-const PROTOCOL_FAILURE_RE = /(?:usable action|structured recovery|invalid[^\n]*action|action[^\n]*(?:schema|protocol)|round limit|executable actions)/i;
+const PROTOCOL_FAILURE_RE = /(?:usable action|structured recovery|invalid[^\n]*action|action[^\n]*(?:schema|protocol)|round limit|executable actions|without task_complete|completion rejected)/i;
 
 const DEFAULT_NURSE_POLICY = Object.freeze({
   minRecoveryScore: 8,
@@ -161,7 +162,7 @@ class TeamNurse {
   _sourcePacket(targetIndex, results, failureKind, priorWakes) {
     const candidates = (results || [])
       .map((result, index) => ({ result, index }))
-      .filter(({ result, index }) => index !== targetIndex && result?.ok && String(result.output || '').trim())
+      .filter(({ result, index }) => index !== targetIndex && completedResult(result))
       .map(({ result, index: fallbackIndex }) => {
         const index = Number.isInteger(result.index) ? result.index : fallbackIndex;
         const output = String(result.output || '').trim();
@@ -231,6 +232,7 @@ class TeamNurse {
       `New completed evidence from ${sourceNames}:`,
       packet.output,
       `Resume the original task as ${target?.name || 'this team member'}. Use the new evidence, do only the remaining useful work, and send concrete results to the peer who needs them. Do not repeat the failed response.`,
+      'The engine requires a valid completed turn with the actual answer. Preserve useful draft work, resolve unfinished plan items or reviews, then return the full deliverable through task_complete in native mode or the active structured completion protocol. Peer messages and plain-text completion claims cannot finish the team.',
     ].join('\n\n');
   }
 
@@ -246,7 +248,7 @@ class TeamNurse {
       const agentId = this._agentId(index);
       const rec = this.net.agents.get(agentId);
       if (!rec) continue;
-      if (rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped'].includes(rec.status)) {
+      if (rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped', 'skipped'].includes(rec.status)) {
         this.stats.suppressed++;
         continue;
       }
@@ -311,9 +313,10 @@ class TeamNurse {
   }
 
   recordWakeResult(index, result) {
-    if (result?.ok) this.stats.wakeSucceeded++;
+    const succeeded = completedResult(result);
+    if (succeeded) this.stats.wakeSucceeded++;
     this.emit('nurse', {
-      action: result?.ok ? 'wake-succeeded' : 'wake-failed',
+      action: succeeded ? 'wake-succeeded' : 'wake-failed',
       index,
       name: this.personas[index]?.name || '',
       status: result?.status || 'unknown',
@@ -327,11 +330,14 @@ class TeamNurse {
     for (let index = 0; index < results.length; index++) {
       const result = results[index];
       if (!result) continue;
-      if (result.ok && String(result.output || '').trim()) {
+      if (completedResult(result)) {
         blocks.push(`【${result.name} · completed】\n${String(result.output).slice(0, this.policy.maxSourceChars)}`);
       } else {
         const error = stalled.get(index) || result.error || 'no completed answer';
         blocks.push(`【${result.name} · ${result.status || 'failed'}】\nUnavailable: ${String(error).slice(0, 1000)}`);
+        if (String(result.output || '').trim()) {
+          blocks.push(`【${result.name} · unverified draft, not a completed result】\n${String(result.output).slice(0, this.policy.maxSourceChars)}`);
+        }
       }
     }
     for (const worker of workers || []) {
@@ -341,7 +347,7 @@ class TeamNurse {
     for (const pending of pendingMail || []) {
       const messages = (pending?.messages || []).map(String).filter(Boolean).join('\n\n');
       if (!messages) continue;
-      blocks.push(`【${pending.name || 'Member'} · queued crew information】\n${messages.slice(0, this.policy.maxSourceChars)}`);
+      blocks.push(`【${pending.name || 'Member'} · queued crew information, not proof of completion】\n${messages.slice(0, this.policy.maxSourceChars)}`);
     }
     if (!blocks.length) return '';
     const kept = [];

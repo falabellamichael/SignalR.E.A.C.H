@@ -216,6 +216,15 @@ draft is preserved.
   supervision itself never spends a model call. Provider/transport failures and
   user input/edit gates are not retried; every automatic wake requires new
   evidence and is strictly capped.
+- Team completion is enforced by the engine. Peer mail cannot stop a Links
+  run. A final declaration requires a successfully completed member turn, a
+  nonempty answer, no unfinished plan items or pending edit reviews, and a
+  standalone final `LINKS: COMPLETE` line outside a code block. Interrupted
+  peers are skipped, never counted as answers. The Nurse classifies missing
+  `task_complete` and rejected completion as protocol failures, preserves drafts
+  as unverified material, and counts recovery only after a valid completed
+  result. These checks enforce lifecycle and delivery; they do not prove every
+  factual claim in a model's answer.
 - **Send becomes Stop** while agents or a team are active. It stops all active
   regular chats and the team without sending or clearing the composer draft.
 - Each team member and spawned worker has its own **Stop / Start** control.

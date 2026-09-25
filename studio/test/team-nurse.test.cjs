@@ -66,6 +66,8 @@ test('Team Nurse classifies provider, protocol, exhausted transport, and work fa
   assert.equal(classifyFailure('Endpoint returned HTTP 500: internal error'), 'hard-provider');
   assert.equal(classifyFailure('model alpha was not found on this endpoint'), 'hard-provider');
   assert.equal(classifyFailure('structured recovery produced an invalid action schema'), 'protocol');
+  assert.equal(classifyFailure('The model stopped calling tools without task_complete.'), 'protocol');
+  assert.equal(classifyFailure('Completion rejected: the final response has no delivered answer.'), 'protocol');
   assert.equal(classifyFailure('socket reset by a temporary network failure'), 'transport');
   assert.equal(classifyFailure('the member could not reconcile the two reports'), 'recoverable');
 
@@ -73,6 +75,41 @@ test('Team Nurse classifies provider, protocol, exhausted transport, and work fa
   assert.equal(recoveryScore({ failureKind: 'transport', hasNewEvidence: true }), Number.NEGATIVE_INFINITY);
   assert.equal(recoveryScore({ failureKind: 'protocol', hasNewEvidence: false }), Number.NEGATIVE_INFINITY);
   assert.ok(recoveryScore({ failureKind: 'protocol', hasNewEvidence: true }) >= 8);
+});
+
+test('Nurse recovers rejected completion with new evidence and preserves drafts without counting them as completed', () => {
+  const f = nurseFixture();
+  const error = 'The model stopped calling tools without task_complete.';
+  const results = recoveryResults({ targetError: error });
+  results[0].output = 'Draft: the relay routes requests to configured model endpoints.';
+  const stalled = new Map([[0, error]]);
+  const staged = f.nurse.stageRecoveries({ results, stalled });
+  assert.equal(staged.length, 1);
+  assert.equal(staged[0].failureKind, 'protocol');
+  assert.match(f.target.inbox[0], /task_complete/);
+  assert.match(f.target.inbox[0], /Peer messages and plain-text completion claims cannot finish the team/);
+  const handoff = f.nurse.synthesisHandoff(results, stalled);
+  assert.match(handoff, /unverified draft, not a completed result/);
+  assert.match(handoff, /Draft: the relay routes requests/);
+  assert.doesNotMatch(handoff, /Target · completed/);
+  f.nurse.recordWakeResult(0, { ok: true, status: 'stalled', output: 'LINKS: COMPLETE' });
+  assert.equal(f.nurse.meta().wakeSucceeded, 0);
+  f.target.inbox = [];
+  assert.equal(f.nurse.stageRecoveries({ results, stalled }).length, 0, 'unchanged evidence cannot cause a retry loop');
+});
+
+test('Nurse never uses skipped, stalled or marker-only replies as completed recovery evidence', () => {
+  for (const source of [
+    { status: 'skipped', output: 'Still reading.' },
+    { status: 'stalled', output: 'Sent the summary to peers.' },
+    { status: 'completed', output: 'LINKS: COMPLETE' },
+  ]) {
+    const f = nurseFixture();
+    const results = recoveryResults();
+    results[1] = { ...results[1], ...source, ok: true };
+    assert.equal(f.nurse.stageRecoveries({ results, stalled: new Map([[0, 'without task_complete']]) }).length, 0);
+    assert.equal(f.target.inbox.length, 0);
+  }
 });
 
 test('Team Nurse delivers each evidence revision once and permits genuinely new evidence', () => {
@@ -86,7 +123,7 @@ test('Team Nurse delivers each evidence revision once and permits genuinely new 
   assert.equal(f.target.inbox.length, 1);
   assert.equal(f.nurse.meta().stagedWakes, 1);
   f.nurse.recordWakeStarted(0);
-  f.nurse.recordWakeResult(0, { ok: true, status: 'completed' });
+  f.nurse.recordWakeResult(0, { ok: true, status: 'completed', output: 'The requested fix is implemented.' });
   assert.equal(f.nurse.meta().wakeStarted, 1);
   assert.equal(f.nurse.meta().wakeSucceeded, 1);
 
