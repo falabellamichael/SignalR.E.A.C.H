@@ -271,7 +271,7 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 | `studio/test files` | 78 |
 | `static IPC handlers` | 100 |
 | `preload invoke channels` | 101 |
-| `IPC manifest entries` | 94 |
+| `IPC manifest entries` | 101 |
 | `SimpleRAG plugin files` | 21 |
 <!-- BASELINE:END -->
 

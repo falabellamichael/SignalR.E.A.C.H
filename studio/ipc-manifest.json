@@ -4,6 +4,41 @@
     "args": [],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "account:cancel": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:configure": {
+    "module": "main.mjs",
+    "args": ["url"],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:connect": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:disconnect": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:get": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "Hosted account state"
+  },
+  "account:redeem": {
+    "module": "main.mjs",
+    "args": ["amountRch"],
+    "returns": "{ ok, err?, ...redemptionResult }"
+  },
+  "account:refresh": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
   "agents:appendNote": {
     "module": "main.mjs",
     "args": [
