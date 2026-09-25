@@ -157,7 +157,7 @@
                   <span id="home-command-status" class="home-inline-status" role="status">Ready</span>
                 </div>
                 <div id="home-command-log" class="home-command-log" role="log" aria-live="polite"><span class="home-log-empty">Command output will appear here.</span></div>
-                <p class="home-card-footnote">Project commands run without a shell. Native Reach uses the optional reachc compiler; --connector and --node override run defaults.</p>
+                <p class="home-card-footnote">Project commands run without a shell. RCH commands: rch help after CLI installation. Native Reach uses the optional reachc compiler; --connector and --node override run defaults.</p>
               </section>
 
               <section class="home-card home-tool-card" aria-labelledby="home-chat-title">
@@ -194,34 +194,53 @@
 
           <section class="home-section" aria-labelledby="home-subscription-title">
             <div class="home-section-intro">
-              <div><p class="home-eyebrow">COMING LATER / SUBSCRIPTIONS</p><h2 id="home-subscription-title">Room for every stage of work.</h2></div>
-              <p>Plan management is being designed for individuals and teams. Plans and billing are not available yet.</p>
+              <div><p class="home-eyebrow">YOUR ACCOUNT / MODEL ACCESS</p><h2 id="home-subscription-title">One allowance. Every supplied model.</h2></div>
+              <p>CodeGPT and supplied free endpoints share your plan allowance across chats, agents, teams, and devices.</p>
             </div>
-            <div class="home-plan-grid">
-              <article class="home-plan-card"><span class="home-preview-badge">PLAN CONCEPT</span><h3>Individual</h3><p>A focused workspace for one builder.</p><div class="home-plan-end">Subscription setup <span>Coming later</span></div></article>
-              <article class="home-plan-card"><span class="home-preview-badge">PLAN CONCEPT</span><h3>Team</h3><p>Shared tools and coordination for growing teams.</p><div class="home-plan-end">Team billing <span>Coming later</span></div></article>
-              <article class="home-plan-card"><span class="home-preview-badge">PLAN CONCEPT</span><h3>Organization</h3><p>Account controls for larger workspaces.</p><div class="home-plan-end">Managed plans <span>Coming later</span></div></article>
+            <div class="home-account-grid">
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">↗</span><div><p class="home-card-kicker">WALLET SIGN-IN</p><h3>Connect to REACH</h3></div></div><span id="home-account-badge" class="home-preview-badge">NOT CONFIGURED</span></div>
+                <div class="home-field"><label for="home-account-service">Hosted REACH service</label><div class="home-account-url-row"><input id="home-account-service" type="url" placeholder="https://your-reach-service.example" autocomplete="off" spellcheck="false" /><button id="home-account-configure" class="ghost small" type="button">Save service</button></div></div>
+                <p id="home-account-wallet" class="home-wallet-address">Your wallet address will appear after sign-in.</p>
+                <div class="home-action-row"><button id="home-account-connect" class="gold small" type="button" disabled>Connect wallet</button><button id="home-account-cancel" class="ghost small" type="button" hidden>Cancel sign-in</button><button id="home-account-refresh" class="ghost small" type="button" disabled>Refresh</button><button id="home-account-disconnect" class="ghost small" type="button" disabled>Disconnect</button></div>
+                <p id="home-account-status" class="home-inline-status" role="status" aria-live="polite">Configure the hosted service to connect your wallet.</p>
+                <p class="home-card-footnote">Sign a login message in your browser wallet. Sign-in does not spend RCH or approve a transaction.</p>
+              </article>
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">◎</span><div><p class="home-card-kicker">SUBSCRIPTION</p><h3 id="home-account-plan">No account connected</h3></div></div><span id="home-account-plan-status" class="home-preview-badge">—</span></div>
+                <p id="home-account-plan-detail" class="home-card-description">Connect your wallet to load your plan and permitted models.</p>
+                <div id="home-account-models" class="home-account-models" aria-label="Models included with this account"></div>
+                <button id="home-account-use" class="ghost small home-disabled-action" type="button" disabled>Use REACH models</button>
+                <p class="home-card-footnote">Select “REACH subscription” in any connection picker. Your own endpoints remain available separately.</p>
+              </article>
+            </div>
+            <div class="home-allowance-grid" aria-label="Shared account allowance">
+              <article class="home-plan-card"><p>Included remaining</p><h3 id="home-allowance-included">—</h3><span>AI usage tokens</span></article>
+              <article class="home-plan-card"><p>Prepaid remaining</p><h3 id="home-allowance-prepaid">—</h3><span>From confirmed RCH redemptions</span></article>
+              <article class="home-plan-card"><p>Reserved by requests</p><h3 id="home-allowance-reserved">—</h3><span>Pending usage settlement</span></article>
+              <article class="home-plan-card"><p>Available to use</p><h3 id="home-allowance-total">—</h3><span id="home-allowance-debt">Shared across supplied models</span></article>
             </div>
           </section>
 
           <section class="home-section home-value-section" aria-labelledby="home-topup-title">
             <div class="home-section-intro">
-              <div><p class="home-eyebrow">COMING LATER / VALUE</p><h2 id="home-topup-title">Top up and token plans.</h2></div>
-              <p>Future funding and private token options are shown as concepts. No payments, balances, transfers, or trades are active.</p>
+              <div><p class="home-eyebrow">REACH CREDITS / RCH</p><h2 id="home-topup-title">Turn RCH into usage credit.</h2></div>
+              <p>Redemption burns RCH permanently. After confirmation, the service adds prepaid AI usage credit to your account.</p>
             </div>
             <div class="home-value-grid">
               <article class="home-card home-value-card">
-                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">+</span><div><p class="home-card-kicker">FUNDING</p><h3>Top up</h3></div></div><span class="home-preview-badge">PLANNED</span></div>
-                <p class="home-card-description">A future way to add value for Studio services.</p>
-                <div class="home-field"><label for="home-topup-amount">Amount</label><input id="home-topup-amount" type="text" placeholder="Unavailable" disabled /></div>
-                <div class="home-field"><label for="home-topup-method">Payment method</label><select id="home-topup-method" disabled><option>Credit card, debit card, or crypto — planned</option></select></div>
-                <button class="ghost small home-disabled-action" type="button" disabled>Top up unavailable</button>
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">R</span><div><p class="home-card-kicker">REDEEM</p><h3>Fund your next session</h3></div></div><span id="home-redemption-badge" class="home-preview-badge">UNAVAILABLE</span></div>
+                <p id="home-redemption-rate" class="home-card-description">The hosted service supplies the confirmed conversion rate and network.</p>
+                <div class="home-field"><label for="home-redemption-amount">RCH to redeem</label><input id="home-redemption-amount" type="text" inputmode="decimal" placeholder="10" disabled /></div>
+                <button id="home-redemption-start" class="gold small home-disabled-action" type="button" disabled>Review redemption in browser</button>
+                <p id="home-redemption-status" class="home-inline-status" role="status" aria-live="polite">Connect your wallet to check whether redemption is enabled.</p>
+                <p class="home-card-footnote">Review the amount, network, contract, and gas fee in your wallet before signing. Refresh your account after confirmation.</p>
               </article>
               <article class="home-card home-value-card">
-                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">R</span><div><p class="home-card-kicker">PRIVATE TOKEN CONCEPT</p><h3>REACH currency</h3></div></div><span class="home-preview-badge">EXPLORING</span></div>
-                <p class="home-card-description">A proposed Studio token with future private transfer, trading, and sale options. The token design and terms have not been established.</p>
-                <div class="home-token-points"><span>Private transfers</span><span>Private trading</span><span>Private sales</span></div>
-                <p class="home-card-footnote">No token, wallet, marketplace, or smart contract exists yet.</p>
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">+</span><div><p class="home-card-kicker">MORE FUNDING OPTIONS</p><h3>Card payments</h3></div></div><span class="home-preview-badge">PLANNED</span></div>
+                <p class="home-card-description">Credit and debit card funding will be available in a later release.</p>
+                <div class="home-token-points"><span>Wallet ownership verified</span><span>One shared allowance</span><span>Confirmed burns credited once</span></div>
+                <p class="home-card-footnote">Holding RCH alone does not activate a subscription. Transfers and trades keep RCH in circulation.</p>
               </article>
             </div>
           </section>
@@ -285,7 +304,7 @@
             </div>
             <button id="btn-stop" class="ghost small hidden" type="button">Stop</button>
           </div>
-          <p class="dim command-hint" id="cmd-hint">Runs a program in this project folder. No shell pipes or redirects.</p>
+          <p class="dim command-hint" id="cmd-hint">Runs a program in this project folder. RCH: rch help (install once with npm --prefix RCH run install:cli). No shell pipes or redirects.</p>
           <div id="project-tab-status" class="project-tab-status" role="status" aria-live="polite"></div>
           <div class="log" id="log" role="tabpanel" aria-live="polite"></div>
         </div>
@@ -366,6 +385,7 @@
               <div id="chat-log" class="chat-log"></div>
             </div>
             <div id="queued-indicator" class="queued hidden"></div>
+            <section id="team-message-queue" class="team-message-queue hidden" aria-label="Queued team messages" aria-live="polite"></section>
             <div class="composer">
               <button id="btn-attach" class="ghost" type="button" aria-label="Attach files" title="Attach files">+</button>
               <textarea id="composer-input" aria-label="Message" placeholder="Start with @ to route, or / for commands&hellip; (Ctrl+Enter sends)" rows="1" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="composer-suggestions"></textarea>
@@ -402,7 +422,10 @@
                 <label class="team-chat-check"><input id="team-chat-history" type="checkbox" checked /> Include recent conversation</label>
                 <p class="dim">Follow-ups include your earlier messages and team answers. Turn this off to send only the new message.</p>
                 <label for="team-chat-recipient">While the team is running, send to</label>
-                <select id="team-chat-recipient"><option value="coordinator">Coordinator (or first member)</option><option value="selected">Selected member tab</option></select>
+                <select id="team-chat-recipient"><option value="coordinator">Coordinator (or working member)</option><option value="selected">Selected member tab</option></select>
+                <label for="team-chat-delivery">Messages during a run</label>
+                <select id="team-chat-delivery"><option value="auto">Auto · Jev decides what needs attention</option><option value="queue">Queue for the next team turn</option><option value="steer">Steer at the next safe opportunity</option></select>
+                <p class="dim">Auto checks the message and a short task description with Jev. Important guidance steers the recipient; other messages wait. Without a configured Jev key, messages stay queued.</p>
                 <p id="team-chat-live-status" class="dim" role="status"></p>
                 <div class="team-chat-menu-actions"><button id="team-chat-pause" class="ghost small" type="button">Pause team</button><button id="team-chat-edit" class="ghost small" type="button">Edit team…</button><button id="team-chat-manage" class="ghost small" type="button">Manage teams…</button></div>
               </div>
@@ -443,7 +466,13 @@
         <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
       </nav>
       <div class="settings-scroll">      <div id="settings-connection" class="settings-panel settings-content">
-        <h2>Connections</h2>
+        <div class="conn-toolbar">
+          <h2>Connections</h2>
+          <div class="settings-actions">
+            <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
+            <button id="btn-add-connection" class="gold small" type="button">Add connection</button>
+          </div>
+        </div>
         <p id="credential-storage-warning" class="settings-description hidden" role="alert"></p>
         <p class="settings-description">
           Each connection is one endpoint with its own access key and default model.
@@ -454,13 +483,11 @@
 
         <p id="conn-summary" class="settings-description conn-summary" role="status"></p>
 
-        <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
-
-        <div class="settings-actions conn-actions">
-          <button id="btn-add-connection" class="ghost small" type="button">+ Add connection</button>
-          <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
-          <span id="conn-count" class="dim"></span>
+        <div id="conn-workspace" class="conn-workspace">
+          <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
+          <section id="conn-editor" class="conn-editor hidden" aria-labelledby="conn-editor-title"></section>
         </div>
+        <span id="conn-count" class="dim"></span>
 
         <label for="set-reach-cli">Native Reach compiler (reachc) executable (optional)</label>
         <input id="set-reach-cli" type="text" placeholder="Auto-discover reachc" spellcheck="false" />
@@ -499,6 +526,7 @@
       </div>
 <p id="agent-settings-status" role="status" class="dim"></p></div><div id="settings-budgeting" class="settings-panel settings-content hidden">
         <h2>Budgeting</h2>
+        <details id="engine-status"><summary>Local engines · active · no model calls</summary><p class="dim">Evidence ledger, file write checks, review scoring and secret redaction. Shell actions use the existing approval controls.</p><button id="btn-engine-report" class="ghost">Refresh engine report</button><pre id="engine-report" style="max-height:260px;overflow:auto;white-space:pre-wrap"></pre></details>
         <p class="settings-description">Control how long agents can work, how much they can generate, and how teams share context. Saved changes apply to new runs.</p>
         <label for="budget-scope">Apply to</label>
         <select id="budget-scope"><option value="global">All conversations and teams (default)</option><option value="conversation">Selected conversation and its teams</option></select>
@@ -955,7 +983,7 @@
       <select id="team-mode">
         <option value="parallel">Parallel — all members work the same task simultaneously</option>
         <option value="chain">Chain — members work in order, passing results along</option>
-        <option value="links">Links — peer network: members message each other until the task is done (3× chain rate)</option>
+        <option value="links">Links — peer network: members message each other until the task is done (uses Teams message budget)</option>
       </select>
       <label>Tool protocol</label>
       <select id="team-protocol" title="How the crew's members turn model output into tool calls">
@@ -1029,6 +1057,8 @@
   <script src="workspace-shell.js"></script>
   <script src="connections-ui.js"></script>
   <script src="home.js"></script>
+  <script src="account-view.js"></script>
+  <script src="account.js"></script>
   <script src="playground.js"></script>
   <script src="about.js"></script>
   <script src="refactor.js"></script>

@@ -59,13 +59,7 @@ function budgetLimit(budgets, key, fallback) {
   return Number.isSafeInteger(value) ? cap(value) : fallback;
 }
 
-/* Links-mode completion declaration: a member ends a message (or its final
- * answer) with this line to say the WHOLE task is done. Scanned on every
- * member-to-member message and on every harvested output. */
-const LINKS_COMPLETE_RE = /links\s*:\s*complete/i;
-function linksCompleteIn(text) {
-  return LINKS_COMPLETE_RE.test(String(text || ''));
-}
+const { linksCompleteIn } = require('./team-completion.cjs');
 
 /* Strip the run-control fence: relay only what a human would read. */
 function cleanOutput(text) {
@@ -161,7 +155,7 @@ class AgentNet {
      * them up). Off by default so parallel/chain behaviour is unchanged. */
     rosterMailbox = false,
     /* Links mode exchange budget: total member-to-member messages allowed in
-     * the run (3× a chain's rate). Null = unlimited (all other modes). */
+     * the run (the configured message allowance). Zero or null = unlimited. */
     linkBudget = null,
     /* SOUL.md + MEMORY.md store (agent/agent-soul.cjs). Members read their own
      * persona's files; this is also what lets anything they spawn own its own
@@ -217,7 +211,7 @@ class AgentNet {
     this._stopDeferred = null;
     this.seq = 0;
     this.rosterMailbox = rosterMailbox === true;
-    this.linkBudget = linkBudget == null ? null : Math.max(1, Number(linkBudget) || 1);
+    this.linkBudget = linkBudget == null ? null : linkBudget === 0 ? Infinity : Math.max(1, Number(linkBudget) || 1);
     this.linkSends = 0;
     this.linksComplete = null;
   }
@@ -615,7 +609,7 @@ class AgentNet {
 
 Object.assign(AgentNet.prototype,
   require('./team-spawn.cjs')({ workerSoulKey, SUBAGENT_MAX_ROUNDS }),
-  require('./team-message.cjs')({ FINISHED, linksCompleteIn }),
+  require('./team-message.cjs')({ FINISHED }),
   require('./team-transcript.cjs')({ FINISHED, cleanOutput }));
 
 module.exports = {
@@ -623,7 +617,6 @@ module.exports = {
   netForAgent,
   cleanOutput,
   linksCompleteIn,
-  LINKS_COMPLETE_RE,
   workerSoulKey,
   MAX_AGENTS,
   MAX_DEPTH,

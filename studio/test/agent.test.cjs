@@ -615,8 +615,8 @@ const { AgentNet, linksCompleteIn } = require('../agent/agent-net.cjs');
   const recTwo = net2.attach('x-2', { running: false }, { get: () => ({}) });
   recTwo.status = 'completed';
   net2.send({ from: 'x-1', to: 'Two', message: 'all work verified\ndone\nLINKS: COMPLETE' });
-  assert.ok(net2.linksComplete && net2.linksComplete.by === 'One', 'completion declaration travels in messages');
-  assert.ok(linksCompleteIn('blah LINKS: complete blah'), 'sentinel matcher is case/space tolerant');
+  assert.equal(net2.linksComplete, null, 'peer messages cannot complete a team');
+  assert.ok(!linksCompleteIn('blah LINKS: complete blah'), 'inline claims are not terminal markers');
   assert.ok(!linksCompleteIn('no declaration here'), 'matcher does not false-positive');
 
   const net3 = new AgentNet({});

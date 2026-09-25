@@ -36,6 +36,10 @@
         "title": "REACH: Reload Models"
       },
       {
+        "command": "simplereach.engineReport",
+        "title": "REACH: Engine Report"
+      },
+      {
         "command": "simplereach.setTypesafeJevApiKey",
         "title": "REACH: Set TypeSafe (Jev) API Key"
       },
@@ -334,13 +338,15 @@
             "endpoint",
             "copilot",
             "chatgpt",
-            "codegpt"
+            "codegpt",
+            "gemini"
           ],
           "enumDescriptions": [
             "Your free OpenAI-compatible endpoints",
             "The local Microsoft 365 Copilot tray bridge",
             "The local ChatGPT tray bridge",
-            "CodeGPT economy models (unlimited on a paid CodeGPT plan) through the local tray bridge"
+            "CodeGPT economy models (unlimited on a paid CodeGPT plan) through the local tray bridge",
+            "Gemini web app through the local SignalREACH tray (sign in yourself in its browser)"
           ],
           "default": "endpoint",
           "description": "Provider used by the REACH chat."

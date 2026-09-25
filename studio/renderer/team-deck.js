@@ -16,7 +16,7 @@
   function create({ team, task }) {
     const id = 'team-deck-' + ++serial;
     const entries = new Map();
-    const nurseStats = { handoffs: 0, wakes: 0, wakeStarted: 0, wakeSucceeded: 0, wakeFailed: 0, skips: 0, quiet: 0 };
+    const nurseStats = { handoffs: 0, userHandoffs: 0, redirects: 0, wakes: 0, wakeStarted: 0, wakeSucceeded: 0, wakeFailed: 0, skips: 0, quiet: 0 };
     let selected = null, ended = false;
     const element = document.createElement('section');
     element.className = 'team-run team-deck';
@@ -69,12 +69,20 @@
       nav.setAttribute('aria-hidden', String(hidden));
     }
     const onScroll = () => positionNav(true);
-    const geometry = new ResizeObserver(() => positionNav());
+    // Queue rows change the chat viewport height. Move the rail's layout writes
+    // outside the observer pass so its height reservation cannot feed back into
+    // the geometry being measured in that same pass.
+    let geometryFrame = 0;
+    const geometry = new ResizeObserver(() => {
+      if (geometryFrame) return;
+      geometryFrame = requestAnimationFrame(() => { geometryFrame = 0; positionNav(); });
+    });
     nav.addEventListener('focusout', () => queueMicrotask(() => positionNav()));
     function unmount() {
       scroller?.removeEventListener('scroll', onScroll);
       window.removeEventListener('resize', positionNav);
       geometry.disconnect();
+      cancelAnimationFrame(geometryFrame); geometryFrame = 0;
       scroller = null;
       anchor.style.height = '';
       nav.classList.remove('is-floating', 'is-concealed');
@@ -179,7 +187,13 @@
       const action = String(event.nurseType || event.action || 'monitoring');
       const name = String(event.name || '').trim();
       let last = 'Nurse · monitoring';
-      if (action === 'handoff') {
+      if (action === 'user-carry') {
+        last = `Nurse · carrying your message${name ? ` to ${name}` : ''}`;
+      } else if (action === 'user-delivered') {
+        nurseStats.userHandoffs++;
+        if (event.restart) nurseStats.redirects++;
+        last = `Nurse · guidance delivered${name ? ` to ${name}` : ''}`;
+      } else if (action === 'handoff') {
         nurseStats.handoffs += Math.max(1, Number(event.count) || 1);
         last = 'Nurse · context handed off';
       } else if (action === 'wake-staged' || action === 'wake') {
@@ -206,6 +220,8 @@
           : 'Nurse · no useful work';
       }
       const bits = [];
+      if (nurseStats.userHandoffs) bits.push(`${nurseStats.userHandoffs} user messages delivered`);
+      if (nurseStats.redirects) bits.push(`${nurseStats.redirects} redirects without restart penalty`);
       if (nurseStats.handoffs) bits.push(`${nurseStats.handoffs} handoff${nurseStats.handoffs === 1 ? '' : 's'}`);
       if (nurseStats.wakes) bits.push(`${nurseStats.wakes} wake${nurseStats.wakes === 1 ? '' : 's'} queued`);
       if (nurseStats.wakeStarted) bits.push(`${nurseStats.wakeStarted} started`);

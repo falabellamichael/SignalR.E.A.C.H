@@ -115,7 +115,13 @@
         "--talk-name=org.freedesktop.secrets",
         "--env=ELECTRON_TRASH=gio"
       ]
-    }
+    },
+    "extraResources": [
+      {
+        "from": "../vscode/engine-core.js",
+        "to": "engine-core.cjs"
+      }
+    ]
   },
   "allowScripts": {
     "electron@44.3.0": true,

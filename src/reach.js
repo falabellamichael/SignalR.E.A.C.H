@@ -361,10 +361,14 @@
         const restartBtn = core.el('button', 'reach-btn reach-btn-sm');
         restartBtn.id = 'reach-stat-restart-btn';
         restartBtn.innerHTML = '<i class="fa-solid fa-rotate"></i> Restart';
+        const startBtn = core.el('button', 'reach-btn reach-btn-primary reach-btn-sm');
+        startBtn.id = 'reach-stat-start-btn';
+        startBtn.innerHTML = '<i class="fa-solid fa-power-off"></i> Start Endpoint';
         const refreshBtn = core.el('button', 'reach-btn reach-btn-sm');
         refreshBtn.id = 'reach-stat-refresh-btn';
         refreshBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i>';
         actRow.appendChild(pingBtn);
+        actRow.appendChild(startBtn);
         actRow.appendChild(restartBtn);
         actRow.appendChild(refreshBtn);
         c1.appendChild(actRow);
@@ -595,6 +599,18 @@
                 })
                 .catch(err => core.toast('Restart: ' + err.message, 'error'))
                 .finally(() => { restartBtn.disabled = false; });
+        });
+
+        startBtn.addEventListener('click', () => {
+            startBtn.disabled = true;
+            core.toast('Starting relay and public tunnel…', 'info');
+            core.startEndpoint()
+                .then(data => {
+                    updateStationaryValues(panel);
+                    core.toast('Endpoint ready: ' + data.public_url, 'ok');
+                })
+                .catch(err => core.toast('Start failed: ' + err.message, 'error'))
+                .finally(() => { startBtn.disabled = false; });
         });
 
         refreshBtn.addEventListener('click', () => {

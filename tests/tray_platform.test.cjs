@@ -21,7 +21,7 @@ for(const platform of ['darwin','win32','linux']) test(platform+' tray opens a p
  const Menu={buildFromTemplate:items=>({items}),setApplicationMenu(){}};
  const req=createRequire(file);
  const ctx={console:{log(){}},process:{platform,env:{}},module:{exports:{}},__dirname:path.dirname(file),URL,Buffer,setTimeout,clearTimeout,setInterval,clearInterval,
- require:name=>name==='electron'?{app,BrowserWindow:Window,Tray,Menu,nativeImage:{createFromPath:()=>image},screen:{getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1200,height:900}}),getCursorScreenPoint:()=>({x:1,y:1})}}:name==='node:fs'?{mkdirSync(){},appendFileSync(){}}:name==='./endpoint'?{createEndpointClient:()=>({getSettings:()=>({provider:'endpoint'})})}:req(name)};
+ require:name=>name==='electron'?{app,BrowserWindow:Window,Tray,Menu,nativeImage:{createFromPath:()=>image},screen:{getDisplayNearestPoint:()=>({workArea:{x:0,y:0,width:1200,height:900}}),getCursorScreenPoint:()=>({x:1,y:1})}}:name==='node:fs'?{mkdirSync(){},appendFileSync(){}}:name==='./endpoint'?{createEndpointClient:()=>({getSettings:()=>({provider:'endpoint'})})}:name==='./gemini'?{createGeminiBrowser:()=>({health:()=>({visible:false})})}:req(name)};
  vm.runInNewContext(source+'\nmodule.exports={createTray,getTray:()=>tray,getPanel:()=>panel};',ctx,{filename:file});
  ctx.module.exports.createTray();const tray=ctx.module.exports.getTray();
  if(platform==='darwin'){
