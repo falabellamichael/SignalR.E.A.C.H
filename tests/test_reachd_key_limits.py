@@ -272,6 +272,25 @@ class KeyRpmOverHttpTests(RelayFixture):
         codes = [self.call("GET", "/v1/models", self.bearer())[0] for _ in range(5)]
         self.assertEqual(codes, [200] * 5)
 
+    def test_keep_alive_does_not_carry_a_key_into_anonymous_requests(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.request("GET", "/v1/models", headers=self.bearer())
+            first = conn.getresponse()
+            self.assertEqual(first.status, 200)
+            first.read()
+            self.state.cfg["access"]["key_required"] = False
+            codes = []
+            for _ in range(3):
+                conn.request("POST", "/v1/chat/completions", body=b"not json",
+                             headers={"Content-Type": "application/json", **TUNNEL})
+                response = conn.getresponse()
+                codes.append(response.status)
+                response.read()
+            self.assertEqual(codes, [400, 400, 400])
+        finally:
+            conn.close()
+
 
 class KeyDailyTokenTests(RelayFixture):
     key_fields = {"tokens_day": 100}

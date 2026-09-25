@@ -322,6 +322,12 @@ class RelayHandler(BaseHTTPRequestHandler):
         """Gate for the public surface (models + chat). Order matters:
         address lists first, so a denied address learns nothing; then the
         lockout, so a locked-out client cannot keep guessing; then the key."""
+        # HTTP/1.1 can reuse this handler for another request on the same
+        # connection. Never carry the previous request's key into a bypass or
+        # anonymous request.
+        self._auth_key = None
+        self._auth_key_id = ""
+        self._auth_key_name = ""
         if not self._check_ip_lists():
             return False
         cfg = core.STATE.cfg
