@@ -21,7 +21,11 @@ COPY studio/package.json studio/package-lock.json ./
 # this container build needs; nothing else runs.
 RUN npm ci
 COPY studio/ ./
-RUN npm run dist:linux -- --dir
+# studio/package.json copies this shared module into resources/engine-core.cjs.
+# The build context includes it, but COPY studio/ alone does not.
+COPY vscode/engine-core.js /src/vscode/engine-core.js
+RUN npm run dist:linux -- --dir \
+    && test -f dist/linux-unpacked/resources/engine-core.cjs
 
 FROM debian:bookworm-slim
 
