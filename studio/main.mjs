@@ -6,6 +6,18 @@ import { randomUUID, createHash } from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
+
+/* Drop a copy of a smoke screenshot somewhere predictable so a developer can
+ * find it without reading the log for the temp directory. Purely a
+ * convenience: the authoritative copy is already in smokeRoot, so this must
+ * never be able to fail the run. It used to write to a literal /private/tmp,
+ * which exists only on macOS - on the Linux and Windows CI runners the copy
+ * threw ENOENT and failed the whole smoke test. */
+function copySmokeShot(smokeRoot, name) {
+  try {
+    fs.copyFileSync(path.join(smokeRoot, name), path.join(os.tmpdir(), 'reach-studio-' + name));
+  } catch { /* a convenience copy is never worth failing a test run over */ }
+}
 const engines = require('./agent/engines.cjs');
 const { AgentStore } = require('./agent/agent-store.cjs');
 const { AgentLoop } = require('./agent/agent-loop.cjs');
@@ -3508,7 +3520,7 @@ app.whenReady().then(() => {
         })()`);
         await new Promise(resolve => setTimeout(resolve, 80));
         fs.writeFileSync(path.join(smokeRoot, 'project-command-tabs.png'), (await win.capturePage()).toPNG());
-        fs.copyFileSync(path.join(smokeRoot, 'project-command-tabs.png'), '/private/tmp/reach-studio-project-command-tabs.png');
+        copySmokeShot(smokeRoot, 'project-command-tabs.png');
         await win.webContents.executeJavaScript(`(async () => {
           const q = selector => document.querySelector(selector);
           const tabs = () => [...document.querySelectorAll('#project-command-tabs [role="tab"]')];
@@ -4308,7 +4320,7 @@ app.whenReady().then(() => {
           await win.webContents.executeJavaScript(`document.querySelector('.home-scroll').scrollTop = 420`);
           await new Promise(resolve => setTimeout(resolve, 80));
           fs.writeFileSync(path.join(smokeRoot, 'home-command-tabs.png'), (await win.capturePage()).toPNG());
-          fs.copyFileSync(path.join(smokeRoot, 'home-command-tabs.png'), '/private/tmp/reach-studio-home-command-tabs.png');
+          copySmokeShot(smokeRoot, 'home-command-tabs.png');
           await win.webContents.executeJavaScript(`document.querySelector('.home-scroll').scrollTop = 0`);
           console.log('HOME COMMAND TABS SMOKE OK: ' + homeTabs + ' tabs, split Run menu, concurrent commands, per-tab output and Stop.');
 
