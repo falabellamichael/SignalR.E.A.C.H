@@ -38,6 +38,7 @@ const fields = [
   ['approvalTimeoutMs', 'Action approval wait (milliseconds)', 300000, 'Execution', '0 keeps the approval request pending until you respond or stop the run.'],
   ['questionTimeoutMs', 'Team question wait (milliseconds)', 300000, 'Execution', '0 lets team members wait for your answer until you stop the run.'],
   ['teamConcurrency', 'Parallel roster members', 3, 'Teams', '0 starts the whole roster concurrently. Spawned agents run independently.'],
+  ['messageHandoffs', 'Agent message handoffs per team run', 9, 'Teams', 'Total messages delivered between agents across the crew. Nurse handoffs and user guidance do not spend this allowance. 0 removes the message cap. Applies to new runs.'],
   ['maxAgents', 'Total agents per team run', 12, 'Teams', 'Counts roster and spawned agents, including finished agents. 0 removes the population cap.'],
   ['maxDepth', 'Subagent nesting depth', 2, 'Teams', '0 allows unlimited nesting. Circular waits remain blocked.'],
   ['awaitTimeoutMs', 'Default peer wait (milliseconds)', 120000, 'Teams', '0 waits until completion or Stop. An agent can still request a shorter wait.'],

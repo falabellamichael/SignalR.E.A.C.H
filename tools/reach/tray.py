@@ -34,7 +34,7 @@ def install_tray(repo_root):
     destination = tray_dir()
     destination.mkdir(parents=True, exist_ok=True)
     # Copy tray source files fast; only copy node_modules if not already installed
-    files = ['bridge.js', 'economy-models.js', 'endpoint.js', 'main.js', 'package.json',
+    files = ['bridge.js', 'economy-models.js', 'endpoint.js', 'gemini.js', 'main.js', 'package.json',
              'package-lock.json', 'panel.css', 'panel.html', 'panel.js',
              'preload.js', 'tray-icon.png']
     for fname in files:
@@ -67,7 +67,7 @@ def _update_packaged_app(source):
     import tempfile
     with tempfile.TemporaryDirectory() as tmpdir:
         staging = Path(tmpdir)
-        files = ['bridge.js', 'economy-models.js', 'endpoint.js', 'main.js', 'package.json',
+        files = ['bridge.js', 'economy-models.js', 'endpoint.js', 'gemini.js', 'main.js', 'package.json',
                  'panel.css', 'panel.html', 'panel.js', 'preload.js', 'tray-icon.png']
         for fname in files:
             src_file = source / fname

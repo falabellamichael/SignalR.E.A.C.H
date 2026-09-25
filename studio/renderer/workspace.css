@@ -23,6 +23,13 @@
 .composer-suggestion-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 11px; }
 .composer-suggestion-kind { color: var(--gold-dim); margin-right: 7px; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
 .sr-only { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.team-message-queue { flex: 0 1 auto; min-height: 0; max-height: 150px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+.team-message-queue > strong { display: block; color: var(--dim); font-size: 11px; margin-bottom: 5px; }
+.team-queued-message { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.team-queued-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.team-queued-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-queued-copy > small { color: var(--gold-dim); font-size: 11px; }
+.team-queued-message > button { flex: 0 0 auto; padding: 4px 8px; font-size: 11px; }
 #composer-model { min-width: 0; max-width: min(220px, 25cqw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .composer-attachments { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
 .composer-attachments.hidden { display: none; }

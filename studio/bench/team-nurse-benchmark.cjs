@@ -22,7 +22,7 @@ const {
 
 const SEARCH_SPACE = Object.freeze({
   minRecoveryScore: Object.freeze([6, 7, 8, 9, 10]),
-  priorWakePenalty: Object.freeze([1, 2, 3, 4]),
+  priorWakePenalty: Object.freeze([0]),
   maxAutoWakesPerMember: Object.freeze([1, 2, 3]),
 });
 

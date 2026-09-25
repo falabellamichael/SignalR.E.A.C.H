@@ -16,7 +16,7 @@
  *   mode 'links'     — members run simultaneously and talk to each other
  *                      DIRECTLY (agent.send/status/await), deciding among
  *                      themselves who does what, until the task is declared
- *                      complete. Up to 3× a chain's exchange rate.
+ *                      complete, within the configured Teams message budget.
  *
  * Stored in userData/personas.json alongside agents.json, atomic writes.
  */

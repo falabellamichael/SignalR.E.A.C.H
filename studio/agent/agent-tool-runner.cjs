@@ -14,6 +14,7 @@
  */
 
 const { TOOLS, needsApproval, budgetFor, resolveInProject } = require('./tool-registry.cjs');
+const engines = require('./engines.cjs');
 const { disabledTools } = require('./tool-policy.cjs');
 const { evaluateCommand, defaultPolicy } = require('./sandbox.cjs');
 // E3: one recursive, total-budget bound for a tool result, replacing a
@@ -237,6 +238,7 @@ async function runToolCall(agentId, name, args, context) {
 }
 
 async function persistToolResult(agentId, name, args, result, context, record = null) {
+  const observation = engines.getLedger().observe(name, args, result, agentId);
   // The loop appends the complete, fenced tool-summary after a batch. Keep a
   // small provenance record here for interrupted batches and audit history;
   // storing the body twice bloats saved conversations and compaction input.
@@ -254,7 +256,7 @@ async function persistToolResult(agentId, name, args, result, context, record = 
     tool_call_id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name,
     content,
-    _reachMeta: { source: 'tool', toolId: name },
+    _reachMeta: { source: 'tool', toolId: name, observationId: observation.id },
   });
 }
 

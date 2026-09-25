@@ -4,6 +4,41 @@
     "args": [],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "account:cancel": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:configure": {
+    "module": "main.mjs",
+    "args": ["url"],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:connect": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:disconnect": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:get": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "Hosted account state"
+  },
+  "account:redeem": {
+    "module": "main.mjs",
+    "args": ["amountRch"],
+    "returns": "{ ok, err?, ...redemptionResult }"
+  },
+  "account:refresh": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
   "agents:appendNote": {
     "module": "main.mjs",
     "args": [
@@ -511,6 +546,27 @@
     "args": [],
     "returns": "Recoverable crew journal snapshots with partial member results, messages, nurse actions, and evidence"
   },
+  "teams:queueAction": {
+    "module": "main.mjs",
+    "args": [
+      "{ agentId, id, action: 'cancel' | 'steer' | 'send' }"
+    ],
+    "returns": "{ ok, err? }"
+  },
+  "teams:queueList": {
+    "module": "main.mjs",
+    "args": [
+      "agentId"
+    ],
+    "returns": "{ ok, items: pending team messages[] }"
+  },
+  "teams:queueMessage": {
+    "module": "main.mjs",
+    "args": [
+      "{ agentId, teamId, teamRunId, message, target?, mode?, useHistory? }"
+    ],
+    "returns": "{ ok, item?, err? }"
+  },
   "teams:resolveEdit": {
     "module": "main.mjs",
     "args": [
@@ -595,5 +651,10 @@
       "{ projectDir, query, limit = 20 } = {}"
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "engines:report": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "Bounded local engine evidence report"
   }
 }

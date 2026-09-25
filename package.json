@@ -1,5 +1,8 @@
 {
   "dependencies": {
     "@reach-sh/stdlib": "^0.1.13-rc.3"
+  },
+  "scripts": {
+    "rch": "node RCH/scripts/credits.mjs"
   }
 }

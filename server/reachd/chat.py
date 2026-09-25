@@ -10,6 +10,26 @@ from reachd.const import CLIENT_DISCONNECT_ERRORS
 from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
 
+def provider_usage(payload):
+    """Only complete, coherent upstream counters are evidence of token usage.
+
+    An explicit estimate/unknown marker from another relay must survive this
+    relay; never promote its synthesized counters to provider measurements.
+    """
+    if not isinstance(payload, dict) or payload.get("usage_source") not in (None, "provider"):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    values = [usage.get(key) for key in ("prompt_tokens", "completion_tokens", "total_tokens")]
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0
+           or value > 1000000000 for value in values):
+        return None
+    if values[0] + values[1] != values[2]:
+        return None
+    return dict(usage)
+
+
 def merge_system_messages(messages):
     """Strict upstreams (vLLM/Qwen-class chat templates) accept exactly ONE
     system message, and only at index 0 — a second system, even one leading,
@@ -100,6 +120,7 @@ def chat_execute(h):
                           rl_headers)
         return None
 
+    metered = h.headers.get("X-Reach-Metered") == "provider-v1"
     req_cfg = core.STATE.cfg.get("request", {})
     models = core.STATE.cfg.get("models", {})
     requested = payload.get("model") or req_cfg.get("default_model", "")
@@ -125,6 +146,11 @@ def chat_execute(h):
                       "code": "model_not_found"},
         }, rl_headers)
         return
+
+    if metered and spec.get("strip_trailing_roles"):
+        h._json(400, {"error": {"message": "This model route cannot preserve final usage.",
+                                "code": "unmetered_route", "type": "invalid_request"}}, rl_headers)
+        return None
 
     # ---- per-model rate limit bucket ----
     # No key_bucket here on purpose: the limiter is consulted twice per chat
@@ -235,6 +261,11 @@ def chat_execute(h):
     # reply as "reasoning consumed N/N tokens — no content output".
     min_out = int(spec.get("min_output_tokens", 0) or 0)
     if min_out:
+        if metered and any(isinstance(payload.get(key), int) and payload[key] < min_out
+                           for key in ("max_tokens", "max_completion_tokens")):
+            h._json(400, {"error": {"message": "Requested output limit is below this model's minimum.",
+                                    "code": "output_limit", "type": "invalid_request"}}, rl_headers)
+            return None
         if "max_tokens" in payload and isinstance(payload["max_tokens"], int):
             payload["max_tokens"] = max(payload["max_tokens"], min_out)
         elif "max_completion_tokens" in payload \
@@ -305,7 +336,7 @@ def chat_execute(h):
     circuit = "bridge" if use_bridge else "omniroute"
     if core.STATE.circuit_open(circuit):
         h._json(503, {"error": {"message":
-                                "The CodeGPT bridge is in a failure cool-down — retry shortly."
+                                "The local tray bridge is in a failure cool-down — retry shortly."
                                 if use_bridge else
                                 "Upstream is in a failure cool-down — retry shortly.",
                                 "type": "server_error",
@@ -314,7 +345,7 @@ def chat_execute(h):
         return None
 
     # ---- cache lookup (non-stream) ----
-    cache_cfg = core.STATE.cfg.get("cache", {})
+    cache_cfg = {} if metered else core.STATE.cfg.get("cache", {})
     cache_key = None
     if cache_cfg.get("enabled") and not stream:
         cache_key = h._cache_key(payload, cache_cfg)
@@ -360,7 +391,7 @@ def chat_execute(h):
         encoded = json.dumps(payload).encode("utf-8")
         if core.STATE.cfg.get("data", {}).get("log_bodies"):
             request_body = body[:2048].decode("utf-8", "replace")
-        retries = int(core.STATE.cfg.get("upstream_retries", 1))
+        retries = 0 if metered else int(core.STATE.cfg.get("upstream_retries", 1))
         retry_delay = float(core.STATE.cfg.get("retry_delay_ms", 1000)) / 1000.0
         upstream = None
         attempts = retries + 1 if not stream else 1
@@ -395,7 +426,7 @@ def chat_execute(h):
                          % (upstream_model, time.time() - started))
         # fallback alias on total failure (streaming or non-streaming)
         if upstream is None:
-            fallback_alias = spec.get("fallback")
+            fallback_alias = None if metered else spec.get("fallback")
             if fallback_alias and fallback_alias in models \
                     and models[fallback_alias].get("enabled"):
                 fb_upstream = models[fallback_alias]["upstream"]
@@ -435,7 +466,7 @@ def chat_execute(h):
                                request_body=request_body)
                 h._relay_upstream_error(
                     last_error,
-                    "CodeGPT bridge rejected the request" if use_bridge
+                    "Local tray bridge rejected the request" if use_bridge
                     else "OmniRoute rejected the request")
                 return None
             core.STATE.note_failure(circuit)
@@ -447,14 +478,14 @@ def chat_execute(h):
                            request_body=request_body)
             h._relay_upstream_error(
                 last_error,
-                "CodeGPT bridge unreachable (is the SignalREACH tray running?)"
+                "Local tray bridge unreachable (is the SignalREACH tray running?)"
                 if use_bridge else "OmniRoute unreachable")
             return None
     finally:
         if not stream or upstream is None:
             core.STATE.gate.release()
     ctx = {
-        "started": started, "ip": ip, "rl_headers": rl_headers,
+        "started": started, "ip": ip, "rl_headers": rl_headers, "metered": metered,
         "requested": requested, "upstream_model": upstream_model,
         "spec": spec, "stream": stream, "total_chars": total_chars,
         "request_body": request_body, "fallback_used": fallback_used,
@@ -468,6 +499,7 @@ def chat_execute(h):
 
 
 def chat_finalize(h, upstream, ctx):
+    metered = ctx.get("metered", False)
     started = ctx["started"]
     ip = ctx["ip"]
     rl_headers = ctx["rl_headers"]
@@ -610,7 +642,7 @@ def chat_finalize(h, upstream, ctx):
                 upstream.close()
             except Exception:
                 pass
-            fallback_alias = spec.get("fallback")
+            fallback_alias = None if metered else spec.get("fallback")
             models = ctx.get("models") or {}
             if fallback_alias and fallback_alias in models \
                     and models[fallback_alias].get("enabled"):
@@ -708,6 +740,7 @@ def chat_finalize(h, upstream, ctx):
             }
             if isinstance(parsed.get("usage"), dict):
                 chunk["usage"] = parsed["usage"]
+                chunk["usage_source"] = "provider" if provider_usage(parsed) is not None else "estimated"
             pending_prefix = [("data: " + json.dumps(chunk) + "\n\n").encode("utf-8"),
                               b"data: [DONE]\n\n"]
             content_type = "text/event-stream"
@@ -725,6 +758,8 @@ def chat_finalize(h, upstream, ctx):
             h._cors()
             h._rate_limit_headers(rl_headers)
             h.send_header("Cache-Control", "no-cache")
+            if metered:
+                h.send_header("X-Reach-Metering", "provider-v1")
             h.send_header("Transfer-Encoding", "chunked")
             if fallback_used:
                 h.send_header("X-Reach-Fallback", "used")
@@ -852,7 +887,7 @@ def chat_finalize(h, upstream, ctx):
                                       "finish_reason": "stop"}]},
                         {"id": "chatcmpl-reach", "object": "chat.completion.chunk",
                          "created": created, "model": requested,
-                         "choices": [],
+                         "choices": [], "usage_source": "estimated",
                          "usage": {"prompt_tokens": approx_in,
                                    "completion_tokens": approx_out,
                                    "total_tokens": approx_in + approx_out,
@@ -874,6 +909,8 @@ def chat_finalize(h, upstream, ctx):
                 token_chunks_count = 0
                 streamed_tokens = 0
                 streamed_prompt_tokens = 0
+                reported_usage = None
+                upstream_done = False
                 assembled_chunks = []
                 last_chunk_id = "chatcmpl-reach"
                 try:
@@ -884,6 +921,7 @@ def chat_finalize(h, upstream, ctx):
                         if line.startswith(b"data:"):
                             text_line = line[5:].strip()
                             if text_line == b"[DONE]":
+                                upstream_done = True
                                 break
                             try:
                                 parsed_chunk = json.loads(text_line.decode("utf-8", "replace"))
@@ -893,7 +931,12 @@ def chat_finalize(h, upstream, ctx):
                                     if parsed_chunk.get("id"):
                                         last_chunk_id = parsed_chunk["id"]
                                     usage_obj = parsed_chunk.get("usage")
+                                    valid_usage = provider_usage(parsed_chunk)
+                                    if valid_usage is not None:
+                                        reported_usage = valid_usage
                                     if isinstance(usage_obj, dict):
+                                        parsed_chunk["usage_source"] = "provider" if valid_usage is not None else "estimated"
+                                        line = ("data: " + json.dumps(parsed_chunk) + "\n\n").encode("utf-8")
                                         if usage_obj.get("completion_tokens"):
                                             streamed_tokens = int(usage_obj["completion_tokens"])
                                         if usage_obj.get("prompt_tokens"):
@@ -915,6 +958,11 @@ def chat_finalize(h, upstream, ctx):
                         if stream_failure is not None:
                             break
 
+                    if metered and not upstream_done and stream_failure is None:
+                        stream_failure = {"code": "upstream_truncated",
+                                          "message": "The provider stream ended before completion."}
+                        h._write_chunk(("data: " + json.dumps({"error": stream_failure})
+                                        + "\n\n").encode("utf-8"))
                     full_streamed_text = "".join(assembled_chunks)
                     approx_out = streamed_tokens if streamed_tokens > 0 else count_tokens(full_streamed_text)
                     now_end = time.time()
@@ -955,6 +1003,9 @@ def chat_finalize(h, upstream, ctx):
                             "speed_tps": tps
                         }
                     }
+                    usage_chunk["usage_source"] = "provider" if reported_usage is not None else "estimated"
+                    if reported_usage is not None:
+                        usage_chunk["usage"].update(reported_usage)
                     if stream_failure is None:
                         h._write_chunk(("data: " + json.dumps(usage_chunk) + "\n\n").encode("utf-8"))
                     h._write_chunk(b"data: [DONE]\n\n")
@@ -991,8 +1042,10 @@ def chat_finalize(h, upstream, ctx):
     tokens_in = tokens_out = None
     response_body = None
     parsed = None
+    reported_usage = None
     try:
         parsed = json.loads(data.decode("utf-8", "replace"))
+        reported_usage = provider_usage(parsed)
         usage = parsed.get("usage") or {}
         tokens_in = usage.get("prompt_tokens")
         tokens_out = usage.get("completion_tokens")
@@ -1019,10 +1072,15 @@ def chat_finalize(h, upstream, ctx):
                     except Exception:
                         pass
 
-    if tokens_out is None or tokens_out == 0:
+    if reported_usage is None:
+        if not isinstance(tokens_in, int) or isinstance(tokens_in, bool) or tokens_in < 0:
+            tokens_in = None
+        if not isinstance(tokens_out, int) or isinstance(tokens_out, bool) or tokens_out < 0:
+            tokens_out = None
+    if reported_usage is None and (tokens_out is None or tokens_out == 0):
         tokens_out = count_tokens(content_text) if content_text else 1
 
-    if tokens_in is None or tokens_in == 0:
+    if reported_usage is None and (tokens_in is None or tokens_in == 0):
         tokens_in = max(1, total_chars // 4)
 
     tps = round(tokens_out / max(0.2, latency_ms / 1000.0), 1)
@@ -1040,6 +1098,7 @@ def chat_finalize(h, upstream, ctx):
         usage["completion_tokens_per_second"] = tps
         usage["speed_tps"] = tps
         parsed["usage"] = usage
+        parsed["usage_source"] = "provider" if reported_usage is not None else "estimated"
 
         if spec.get("strip_trailing_roles"):
             try:
@@ -1121,6 +1180,8 @@ def chat_finalize(h, upstream, ctx):
     h.send_response(200)
     h.send_header("Content-Type", content_type)
     h.send_header("Content-Length", str(len(data)))
+    if metered:
+        h.send_header("X-Reach-Metering", "provider-v1")
     h._cors()
     h._rate_limit_headers(rl_headers)
     if tps > 0:

@@ -21,6 +21,7 @@ import reachd.core as core  # core.STATE is read at call time (cycle-safe)
 from reachd.browser import BrowserError, fetch_page
 from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
+from reachd.account_proxy import try_account_proxy
 from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
 from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
@@ -203,18 +204,18 @@ class RelayHandler(BaseHTTPRequestHandler):
     def _client_ip(self):
         # The tunnel/proxy sets the trustworthy client IP; an attacker can only
         # PREPEND to X-Forwarded-For, so take the value the proxy itself added:
-        # Cf-Connecting-Ip (cloudflared) or the LAST X-Forwarded-For hop, never
+        # The LAST X-Forwarded-For hop, with CF as fallback, never
         # the first (finding: block/allow lists were bypassable via a spoofed
         # first XFF entry). Falls back to the socket peer for direct clients.
         peer = (self.client_address[0] if self.client_address else "?")[:64]
         if not _trusted_proxy(peer):
             return peer
-        cf = self.headers.get("Cf-Connecting-Ip")
-        if cf:
-            return cf.strip()[:64]
         forwarded = self.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[-1].strip()[:64]
+        cf = self.headers.get("Cf-Connecting-Ip")
+        if cf:
+            return cf.strip()[:64]
         return peer
 
     def _is_loopback(self):
@@ -374,7 +375,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             core.STATE.auth_guard.record_success(gid)
             return True
 
-        if not access.get("key_required", False):
+        # Hosted account access must not be bypassed by omitting a session.
+        if not access.get("key_required", False) and not cfg.get("account_service_url"):
             self._auth_key_name = "anonymous"
             self._auth_key_id = ""
             return True
@@ -484,6 +486,8 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if try_account_proxy(self):
+            return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         query = self._query_params()
         try:
@@ -685,6 +689,8 @@ class RelayHandler(BaseHTTPRequestHandler):
                 pass
 
     def do_POST(self):
+        if try_account_proxy(self):
+            return
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         try:
             if path == "/_reach/browser/engine":

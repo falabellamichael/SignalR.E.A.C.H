@@ -1,9 +1,8 @@
 'use strict';
 
-/* The tray bridge must forward the reply while the page forms it: every
- * onDelta from the sender becomes its own SSE chunk, the accumulated deltas
- * must equal the sender's final answer (the bridge tops up any tail), and
- * non-streaming requests must stay single JSON bodies with onDelta unwired. */
+/* Browser providers emit only their settled final answer as content.
+ * Temporary DOM text can include a Thinking header or a block that the
+ * page later rewrites; reasoning/activity events may still stream live. */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -13,7 +12,7 @@ const { createBridgeHandler } = require('../copilot/tray/bridge.js');
 function startBridge(senders) {
   const handler = createBridgeHandler(
     senders.copilot, senders.chatgpt, senders.codegpt,
-    () => ({ ok: true, service: 'test' }), null);
+    () => ({ ok: true, service: 'test' }), null, undefined, senders.gemini);
   const server = http.createServer(handler);
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }));
@@ -39,34 +38,28 @@ function parseEvents(body) {
     .map((line) => line.slice(6).trim()).filter((line) => line !== '');
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-test('streaming: each sender delta is its own SSE chunk and the stream totals the answer', async () => {
-  const seen = [];
-  const sendCopilot = async (text, { onDelta }) => {
-    assert.equal(typeof onDelta, 'function', 'streaming requests wire onDelta');
-    for (const part of ['Hel', 'lo ', 'world']) {
-      onDelta(part);
-      seen.push(part);
-      await sleep(20);
-    }
+test('CodeGPT streaming sends the final answer once while reasoning stays live', async () => {
+  const sendCodegpt = async (_text, { onDelta, onReasoning }) => {
+    assert.equal(onDelta, undefined, 'CodeGPT DOM text is provisional');
+    assert.equal(typeof onReasoning, 'function');
+    onReasoning('Reasoning activity');
     return 'Hello world';
   };
   const { server, port } = await startBridge({
-    copilot: sendCopilot, chatgpt: async () => 'x', codegpt: async () => 'x',
+    copilot: async () => 'x', chatgpt: async () => 'x', codegpt: sendCodegpt,
   });
   try {
-    const res = await request(port, { model: 'copilot-chat', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+    const res = await request(port, { model: 'codegpt-eco', stream: true, messages: [{ role: 'user', content: 'hi' }] });
     assert.equal(res.status, 200);
     assert.match(res.headers['content-type'] || '', /text\/event-stream/);
     const events = parseEvents(res.body);
     assert.equal(events.at(-1), '[DONE]');
     const chunks = events.slice(0, -1).map((event) => JSON.parse(event));
     const contents = chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean);
-    assert.deepEqual(seen, ['Hel', 'lo ', 'world'], 'sender deltas went out live');
-    assert.equal(contents.length, 3, 'no extra content chunk: totals already match');
-    assert.equal(contents.join(''), 'Hello world');
-    assert.equal(chunks[0].choices[0].delta.role, 'assistant', 'first chunk carries the role');
+    const reasoning = chunks.map((chunk) => chunk.choices?.[0]?.delta?.reasoning_content).filter(Boolean);
+    assert.deepEqual(contents, ['Hello world']);
+    assert.deepEqual(reasoning, ['Reasoning activity']);
+    assert.equal(chunks.find((chunk) => chunk.choices?.[0]?.delta?.content)?.choices[0].delta.role, 'assistant');
     assert.equal(chunks.at(-1).choices[0].finish_reason, 'stop');
   } finally { server.close(); }
 });
@@ -84,20 +77,82 @@ test('streaming: a sender without partials still yields one content chunk', asyn
   } finally { server.close(); }
 });
 
-test('streaming: a tail that only exists in the final text is topped up after the deltas', async () => {
-  const sendCopilot = async (text, { onDelta }) => {
-    onDelta('partial');
-    return 'partial answer that continued';
-  };
+test('Gemini requests use only the selected Gemini sender', async () => {
+  const calls = [];
   const { server, port } = await startBridge({
-    copilot: sendCopilot, chatgpt: async () => 'x', codegpt: async () => 'x',
+    copilot: async () => { calls.push('copilot'); return 'wrong'; },
+    chatgpt: async () => { calls.push('chatgpt'); return 'wrong'; },
+    codegpt: async () => { calls.push('codegpt'); return 'wrong'; },
+    gemini: async (text, options) => {
+      calls.push('gemini');
+      assert.equal(text, 'user: hi');
+      assert.equal(options.model, 'gemini-chat');
+      assert.equal(options.onDelta, undefined);
+      return 'Gemini final answer';
+    },
   });
   try {
-    const res = await request(port, { model: 'copilot-chat', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+    const res = await request(port, { model: 'gemini-chat', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls, ['gemini']);
+    const events = parseEvents(res.body);
+    assert.equal(events.at(-1), '[DONE]');
+    const chunks = events.slice(0, -1).map(event => JSON.parse(event));
+    assert.deepEqual(chunks.map(chunk => chunk.choices?.[0]?.delta?.content).filter(Boolean), ['Gemini final answer']);
+  } finally { server.close(); }
+});
+
+test('browser providers send only settled final answers, never provisional DOM text', async () => {
+  const sendBrowser = async (_text, { onDelta }) => {
+    assert.equal(onDelta, undefined, 'browser DOM deltas are unverified and must not be forwarded');
+    return 'final answer';
+  };
+  const { server, port } = await startBridge({
+    copilot: sendBrowser, chatgpt: sendBrowser, codegpt: async () => 'x',
+  });
+  try {
+    for (const model of ['copilot-chat', 'chatgpt-chat']) {
+      const res = await request(port, { model, stream: true, messages: [{ role: 'user', content: 'hi' }] });
+      assert.equal(res.status, 200);
+      const chunks = parseEvents(res.body).slice(0, -1).map((event) => JSON.parse(event));
+      const contents = chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean);
+      assert.deepEqual(contents, ['final answer']);
+      assert.equal(chunks.at(-1).choices[0].finish_reason, 'stop');
+    }
+  } finally { server.close(); }
+});
+
+test('empty browser replies are errors rather than successful completions', async () => {
+  const { server, port } = await startBridge({
+    copilot: async () => ' ', chatgpt: async () => '', codegpt: async () => 'x',
+  });
+  try {
+    const messages = [{ role: 'user', content: 'hi' }];
+    const nonstream = await request(port, { model: 'copilot-chat', stream: false, messages });
+    assert.equal(nonstream.status, 502);
+    assert.match(JSON.parse(nonstream.body).error.message, /no final answer/i);
+    const stream = await request(port, { model: 'chatgpt-chat', stream: true, messages });
+    assert.equal(stream.status, 200);
+    const events = parseEvents(stream.body);
+    assert.match(JSON.parse(events[0]).error.message, /no final answer/i);
+    assert.equal(events.at(-1), '[DONE]');
+  } finally { server.close(); }
+});
+
+test('CodeGPT provisional DOM text cannot contaminate the final stream', async () => {
+  const sendCodegpt = async (_text, { onDelta }) => {
+    assert.equal(onDelta, undefined, 'provisional DOM text must not be emitted');
+    return 'STREAM_CHECK_6A91';
+  };
+  const { server, port } = await startBridge({
+    copilot: async () => 'x', chatgpt: async () => 'x', codegpt: sendCodegpt,
+  });
+  try {
+    const res = await request(port, { model: 'codegpt-eco', stream: true, messages: [{ role: 'user', content: 'hi' }] });
     const chunks = parseEvents(res.body).slice(0, -1).map((event) => JSON.parse(event));
     const contents = chunks.map((chunk) => chunk.choices?.[0]?.delta?.content).filter(Boolean);
-    assert.equal(contents.join(''), 'partial answer that continued', 'stream equals the final answer');
-    assert.equal(contents.length, 2, 'delta + tail');
+    assert.deepEqual(contents, ['STREAM_CHECK_6A91']);
+    assert.equal(chunks.at(-1).choices[0].finish_reason, 'stop');
   } finally { server.close(); }
 });
 

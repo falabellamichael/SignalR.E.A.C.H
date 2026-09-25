@@ -1,3 +1,54 @@
+# Compact Connections design QA — September 21, 2026
+
+final result: passed
+
+## Selected targets and scope
+
+- Wide: displayed concept 3, `C:/Users/Falab/.codex/generated_images/01a0c484-85b5-7163-87ba-7fdad4a4a5d0/exec-7bdc2580-46bf-4967-8f9f-76249c9b2e93.png`.
+- Narrow: displayed concept 2, requested by the user as the responsive alternative, `C:/Users/Falab/.codex/generated_images/01a0c484-85b5-7163-87ba-7fdad4a4a5d0/exec-1de8cfdd-f872-4d15-aead-a846ad91782c.png`.
+- Production Electron Connections panel, preserving Studio navigation, other settings, global Save Settings, theme tokens, existing provider IPC and credential storage. This is not a new standalone website.
+- Breakpoint: 900 CSS pixels of available Connections panel width, including the effect of the Files drawer. Below this, rows replace the tile grid and the same editor moves beneath its row.
+
+## Evidence and normalization
+
+- Final actual-renderer screenshots: `D:/SimpleREACH/.files-work/connections-wide.png` (1660 x 1000) and `D:/SimpleREACH/.files-work/connections-rows.png` (1000 x 900).
+- Complete native fixture evidence: `C:/Users/Falab/AppData/Local/Temp/reach-connections-ui-grXEfN/`.
+- Captures use device scale factor 1 and matching CSS viewport dimensions. Concepts are 1487 x 1058. Compare the Connections content region, excluding the existing native shell, settings navigation and unrelated settings absent from the concepts.
+- Wide state: four connections, CodeGPT active, Deepseek being edited, keys masked, successful local test results. Narrow state adds an unsaved name edit to prove draft preservation.
+- Sources and rendered screenshots were opened together for full-view comparison. Labels, card headers, form controls, state borders and action rows were legible at native size, so separate focused crops were unnecessary.
+- Fictional concept endpoints and timings are replaced by localhost fixture values; these are not production credentials or real provider benchmarks.
+
+## Findings and comparison history
+
+1. Initial wide layout retained a neutral Add connection button. The concept's gold primary action was restored with the existing `gold` button style; final captures confirm it.
+2. ResizeObserver initially reported resize-loop notifications during reflow. Layout changes are now deferred to animation frames; the final native regression run reported zero console errors.
+3. Opening another control during a connection ping could permit duplicate requests or stale results. In-flight tracking now survives rerenders and ignores results when the URL/key changed; exercised in the native test.
+4. No actionable P0/P1/P2 findings remain in the changed Connections surface at supported app widths.
+
+## Required fidelity surfaces
+
+- Typography: existing Bell MT/Georgia headings and Segoe UI body preserved. Compact 14px tile titles, 12px model/host details and 11px result text fit Studio's surrounding controls; long names/models/hosts truncate with full-value tooltips.
+- Spacing/layout: two-column tiles plus a separate side editor on wide panels; compact rows with a two-column inline form below 900px; a one-column form on very narrow panels. Editor state and focus survive the breakpoint. The editor does not inherit the concept's large empty vertical spacer.
+- Colors: existing charcoal, gold, neutral border, success/error and light-theme tokens. Active connection has the gold border; editing alone has a neutral outline.
+- Assets: unmodified MIT Phosphor pencil icon, plus the existing Phosphor caret for narrow rows. No generated raster assets are required by this control-only design.
+- Copy/content: all existing fields and controls remain accessible. Close/Remove use explicit text labels. The hint states that Save Settings applies changes; no fabricated key-saved indicator appears for unsaved drafts.
+
+## Verification
+
+- `node --test studio/test/connections.test.cjs studio/test/team-connections.test.cjs`: 54 passed.
+- `electron studio/test/connections-ui.cjs`: passed against a disposable profile and a local HTTP fixture. Covers draft/save, active versus editing, pool fallback, Browse, key masking, add/remove, blank URL rejection, stale tests, responsive relocation, focus and console errors.
+- Widths exercised: 1660, 1440, 1000, 700 and 440; no horizontal overflow in the Connections scroll region. Studio itself retains its 1000px native minimum; forced smaller sizes stress only this component and do not establish mobile support for the app shell.
+- Light and dark renders inspected. The full unrelated browser smoke suite was not rerun.
+- Syntax: 147 files parsed. `git diff --check` passed.
+- Windows installer and portable build succeeded. Packaged app.js, index.html, styles.css and pencil icon are byte-identical to source.
+- This change is packaged but has not been installed into the user's running Studio or published to GitHub.
+
+## Manual check
+
+Open Settings > Connection, edit a connection, and resize the window or open the Files drawer. Confirm the side editor becomes an inline editor below 900px of panel space while typed values remain. Save Settings to apply the edits.
+
+---
+
 # Deployed team tabs design QA — September 19, 2026
 
 final result: passed

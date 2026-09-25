@@ -375,13 +375,18 @@ for (const bodyStarted of [false, true]) {
 
 test('Links completion cancels a peer request that never sends headers', async t => {
   let stalledStarted = false, stalledClosed = false;
+  let markStalledStarted;
+  const stalledReady = new Promise(resolve => { markStalledStarted = resolve; });
   const endpoint = await localEndpoint(t, (body, res) => {
     if (body.model === 'stalled') {
       stalledStarted = true;
+      markStalledStarted();
       res.on('close', () => { stalledClosed = true; });
       return;
     }
-    setTimeout(() => jsonReply(res, 'The crew result is complete and verified.\nLINKS: COMPLETE\n```agent_status\n{"status":"complete","summary":"Crew result delivered."}\n```'), 20);
+    // Wait until both requests are in flight before the finisher responds.
+    // Otherwise a fast runner can complete Links before the stalled peer starts.
+    stalledReady.then(() => setTimeout(() => jsonReply(res, 'The crew result is complete and verified.\nLINKS: COMPLETE\n```agent_status\n{"status":"complete","summary":"Crew result delivered."}\n```'), 20));
   });
   const events = [];
   const runner = new TeamRunner({
@@ -402,7 +407,9 @@ test('Links completion cancels a peer request that never sends headers', async t
   ]);
 
   assert.equal(result.length, 2);
-  assert.equal(result[0].ok, true);
+  assert.equal(result[0].ok, false);
+  assert.equal(result[0].status, 'skipped');
+  assert.equal(result[0].error, null);
   assert.match(result[0].completionReason, /Finisher/);
   assert.equal(result[1].ok, true);
   for (let attempt = 0; attempt < 20 && !stalledClosed; attempt++) {

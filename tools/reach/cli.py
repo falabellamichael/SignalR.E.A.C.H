@@ -76,6 +76,7 @@ from .http_admin import (
 )
 from .keys import find_omniroute_key, mask_key
 from .publish import publish
+from .supervisor import run as run_supervisor
 from .registry import (
     STASH_DIR,
     extension_home,
@@ -719,6 +720,9 @@ def main():
                          default="ngrok")
     p_start.add_argument("--no-publish", action="store_true")
     p_start.set_defaults(func=cmd_start)
+
+    sub.add_parser("supervise", help="keep relay and tunnel running; serve local Start control") \
+       .set_defaults(func=lambda _a: run_supervisor())
 
     sub.add_parser("stop", help="stop relay + tunnel") \
        .set_defaults(func=cmd_stop)

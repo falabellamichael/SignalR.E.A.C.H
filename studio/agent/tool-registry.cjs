@@ -14,6 +14,7 @@
  */
 
 const fs = require('fs');
+const engines = require('./engines.cjs');
 const path = require('path');
 const { reviewDiff, stats } = require('./diff.cjs');
 const { readTextFile, writeTextFile, assertTextPath } = require('./text-files.cjs');
@@ -48,6 +49,8 @@ function shouldReview(ctx) {
 
 function proposeEdit(ctx, filePath, absPath, proposed, existed) {
   let current = '';
+  engines.assertWritePath(ctx.projectDir, filePath);
+  const expectedHash = existed ? engines.hash(fs.readFileSync(absPath)) : null;
   assertTextPath(absPath);
   if (existed) current = readTextFile(absPath).content;
   if (current === proposed) {
@@ -60,6 +63,10 @@ function proposeEdit(ctx, filePath, absPath, proposed, existed) {
     detail: { editId, path: filePath, isNew: !existed } });
   ctx.requestEditReview({
     editId,
+    root: ctx.projectDir,
+    scope: ctx.agentId,
+    expectedHash,
+    engineReview: engines.scoreChange(filePath, existed ? current : null, proposed),
     path: filePath,
     absPath,
     proposed,
@@ -137,7 +144,7 @@ const CORE_TOOLS = {
         return proposeEdit(ctx, args.path, abs, content, existed);
       }
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      writeTextFile(abs, content);
+      writeTextFile(abs, content, { root: ctx.projectDir, scope: ctx.agentId });
       return { ok: true, path: args.path, bytes: Buffer.byteLength(content, 'utf8') };
     },
   },
@@ -153,7 +160,7 @@ const CORE_TOOLS = {
       if (shouldReview(ctx)) {
         return proposeEdit(ctx, args.path, abs, next, true);
       }
-      writeTextFile(abs, next);
+      writeTextFile(abs, next, { root: ctx.projectDir, scope: ctx.agentId });
       return { ok: true, path: args.path, hunks: args.hunks.length };
     },
   },
