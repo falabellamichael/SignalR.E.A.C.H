@@ -3050,7 +3050,7 @@ app.whenReady().then(() => {
               // Links member D: idle until the peer's message arrives, then
               // declares the crew complete (the LINKS: COMPLETE sentinel).
               content = all.includes('Review my draft')
-                ? complete('Reviewed and verified. LINKS: COMPLETE')
+                ? complete('Reviewed and verified.\nLINKS: COMPLETE')
                 : complete('D standing by.');
             } else if (request.model === 'fixture-l3') {
               // Links member E answers in the DeepSeek DSML native tool markup
