@@ -354,9 +354,6 @@ class TeamRunner {
         this._signalLinksActivity({ type: 'worker-settled' });
       },
       onActivity: activity => {
-        if (mode === 'links' && activity?.linksComplete) {
-          this._concludeLinkPeers(activity.from, activity.fromName || String(activity.from || 'crew member'), { includeDeclarer: true });
-        }
         if (mode === 'links' && activity?.type === 'operator-helper-queued' && this._linksPump) {
           this._linksPump();
         }
@@ -548,7 +545,9 @@ class TeamRunner {
       '- Talk to peers at ANY time: agent.send (by name) to ask, hand off, review or challenge; agent.status to check on someone; agent.await to block for a peer\'s answer; agent.list for the whole crew.',
       `- Budget: ${Number.isFinite(budget) ? budget + ' agent message handoffs for the whole crew' : 'no application cap on agent message handoffs'}. Nurse and user guidance are exempt. Send what a peer needs EARLY, and prefer one complete message over three fragments.`,
       '- Decide among yourselves: no fixed order. If you need a peer\'s work, message them; if you are blocked, say exactly what would unblock you.',
-      '- The task ends when a member declares completion: include the exact line "LINKS: COMPLETE" in a message or in your final answer, once the WHOLE task is done and verified against real evidence. Normally the Coordinator declares; any member may if the Coordinator is absent.',
+      '- The engine accepts team completion only from a successfully completed member turn with the full answer followed by a standalone final line "LINKS: COMPLETE". Peer messages cannot end the team. Normally the Coordinator declares; any member may if the Coordinator is absent.',
+      '- Put the full user-facing deliverable in the completion response itself. Saying it was delivered to peers is not the answer to the user. Progress reports must not declare completion.',
+      '- A final-answer marker does not replace the active run-control protocol: in native tool mode call task_complete with the full answer and marker in summary; otherwise use the required structured completion response. Plain prose alone cannot complete your turn.',
       '- If the network goes quiet before that, the crew will be asked for a final synthesis — so leave your best evidence in your answers.',
     ].join('\n');
   }

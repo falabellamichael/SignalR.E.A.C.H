@@ -4,6 +4,7 @@ const { AgentLoop } = require('./agent-loop.cjs');
 const { MemoryStore } = require('./memory-store.cjs');
 const { runToTerminal } = require('./pause-resume.cjs');
 const { cap } = require('./budgets.cjs');
+const { deliveredContent } = require('./team-completion.cjs');
 
 module.exports = ({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME_CYCLES }) => ({
   async _drive(key, index, persona, model, prompt, control) {
@@ -168,24 +169,34 @@ module.exports = ({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME
    * why a resume chain ended; runState alone can't tell those apart). */
   _harvest(key, store, persona, index, model, driverError = null, messageBoundary = 0) {
     const output = cleanOutput(assistantTextSince(store, key, messageBoundary));
-    if (output && linksCompleteIn(output) && !this._linkDeclared) {
+    const runState = store.get(key).runState;
+    let status = runState?.status || 'unknown';
+    let completionError = null;
+    if (status === 'completed') {
+      const todos = [...(store.get(key).todos || []), ...(runState.todos || [])];
+      if (!deliveredContent(output)) completionError = 'Completion rejected: the final response has no delivered answer.';
+      else if (todos.some(todo => !['completed', 'cancelled'].includes(todo.status))) completionError = 'Completion rejected: unfinished plan items remain.';
+      else if (this.memberEdits.get(key)?.length) completionError = 'Completion rejected: edit review is still pending.';
+      if (completionError) status = 'stalled';
+    }
+    const ok = !this.stopped && !!output && status === 'completed' && !driverError;
+    // The Links marker cannot override the agent's completion protocol. In
+    // native mode a plain-text marker without task_complete is still stalled.
+    if (this.team.mode === 'links' && ok && linksCompleteIn(output) && !this._linkDeclared) {
       this._linkDeclared = { by: persona.name, index };
       this._concludeLinkPeers(key, persona.name);
     }
     const completedByPeer = this._linksSuperseded.get(key);
-    if (completedByPeer) {
+    if (completedByPeer && !ok) {
       return {
-        index, name: persona.name, model, ok: true, output,
-        status: 'completed', error: null,
+        index, name: persona.name, model, ok: false, output: '',
+        status: 'skipped', error: null,
         completionReason: `Links completed by ${completedByPeer}`,
       };
     }
-    const runState = store.get(key).runState;
-    const status = runState?.status || 'unknown';
-    const ok = !this.stopped && !!output && status === 'completed' && !driverError;
     const error = ok
       ? null
-      : (this.stopped ? 'Stopped by you.' : driverError || runState?.reason || `Member ${status}; no completed answer.`);
+      : (this.stopped ? 'Stopped by you.' : driverError || completionError || runState?.reason || `Member ${status}; no completed answer.`);
     return { index, name: persona.name, model, ok, output, status, error, question: runState?.reason || null };
   },
 });

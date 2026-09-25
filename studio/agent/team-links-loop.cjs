@@ -5,7 +5,7 @@ const { cap, defaults: budgetDefaults } = require('./budgets.cjs');
 module.exports = ({ cleanOutput, linksCompleteIn }) => ({
   _asLinksResult(result) {
     if (this.team.mode !== 'links' || !result || result.ok) return result;
-    if (['waiting_input', 'waiting_edits', 'stopped'].includes(result.status)) return result;
+    if (['waiting_input', 'waiting_edits', 'stopped', 'skipped'].includes(result.status)) return result;
     return { ...result, status: 'stalled' };
   },
 
@@ -56,10 +56,9 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
     }, this.links.graceMs);
   },
 
-  /* Completion declared? By a member in its own answer (this._linkDeclared)
-   * or in a message to a peer (net.linksComplete set on send). */
+  /* Only a validated member result can grant team completion. */
   _linksDone() {
-    return this._linkDeclared || (this.net ? this.net.linksComplete : null);
+    return this._linkDeclared;
   },
 
   async _linksRun() {
@@ -379,11 +378,9 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
 
     const done = this._linksDone();
     const declarerResult = results.find(r => r && r.ok && linksCompleteIn(r.output));
-    const declarationMessage = done?.message ? cleanOutput(done.message) : '';
     const okResults = results.filter(r => r && r.ok);
     const fallbackResults = synthesized && !synthesized.ok ? preSynthesisOkResults : okResults;
     this._linksAnswer = (declarerResult && declarerResult.output)
-      || declarationMessage
       || (synthesized && synthesized.ok && synthesized.output)
       || (fallbackResults.length
         ? fallbackResults.map(r => `【${r.name}】\n${r.output}`).join('\n\n')

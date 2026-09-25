@@ -270,8 +270,8 @@ test('finished Links roster members still accept bounded scheduler mail', async 
   assert.equal(target.messagesReceived, 1);
   assert.equal(net.agents.get('m0-sender').messagesSent, 1);
   assert.equal(net.linkSends, 1);
-  assert.equal(net.linksComplete?.by, 'Sender');
-  assert.ok(activities.some(activity => activity.type === 'links-complete'));
+  assert.equal(net.linksComplete, null, 'peer mail is data, not a terminal signal');
+  assert.ok(!activities.some(activity => activity.type === 'links-complete'));
   assert.ok(activities.some(activity => activity.type === 'roster-mail'));
   net.stop();
   await net.settle();

@@ -59,13 +59,7 @@ function budgetLimit(budgets, key, fallback) {
   return Number.isSafeInteger(value) ? cap(value) : fallback;
 }
 
-/* Links-mode completion declaration: a member ends a message (or its final
- * answer) with this line to say the WHOLE task is done. Scanned on every
- * member-to-member message and on every harvested output. */
-const LINKS_COMPLETE_RE = /links\s*:\s*complete/i;
-function linksCompleteIn(text) {
-  return LINKS_COMPLETE_RE.test(String(text || ''));
-}
+const { linksCompleteIn } = require('./team-completion.cjs');
 
 /* Strip the run-control fence: relay only what a human would read. */
 function cleanOutput(text) {
@@ -615,7 +609,7 @@ class AgentNet {
 
 Object.assign(AgentNet.prototype,
   require('./team-spawn.cjs')({ workerSoulKey, SUBAGENT_MAX_ROUNDS }),
-  require('./team-message.cjs')({ FINISHED, linksCompleteIn }),
+  require('./team-message.cjs')({ FINISHED }),
   require('./team-transcript.cjs')({ FINISHED, cleanOutput }));
 
 module.exports = {
@@ -623,7 +617,6 @@ module.exports = {
   netForAgent,
   cleanOutput,
   linksCompleteIn,
-  LINKS_COMPLETE_RE,
   workerSoulKey,
   MAX_AGENTS,
   MAX_DEPTH,

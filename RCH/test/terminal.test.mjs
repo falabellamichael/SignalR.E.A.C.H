@@ -1,0 +1,78 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm,readFile} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {keccak256,parseUnits} from 'ethers';
+import {parseCommand,main} from '../scripts/credits.mjs';
+import {readProfile,saveAddress,saveBrowser,readRecord} from '../terminal/profile.mjs';
+import {createProvider} from '../terminal/rpc.mjs';
+import {startApproval} from '../terminal/approval.mjs';
+import {loadState,prepareOperation,validateOperation,checkReceipt} from '../terminal/public/operations.mjs';
+import {chain,build} from './helpers/chain.mjs';
+
+test('terminal commands require explicit valid amounts and reject unsupported options',async()=>{
+  assert.equal(parseCommand(['buy','0.0005','--max-fee','0.0002']).argument,'0.0005');
+  for(const args of [['buy'],['buy','-1'],['buy','0'],['buy','1e-4'],['buy','0.1234567890123456789'],['buy','0.1','extra'],['tx','bad'],['quote','0.1','--broadcast'],['ui','--browser','sh']])assert.throws(()=>parseCommand(args));
+  let queried=false;const lines=[];
+  await main(['help'],{log:line=>lines.push(line),providerFactory:()=>{queried=true;throw Error('Unexpected network');}});
+  assert.equal(queried,false);assert.match(lines.join('\n'),/rch buy/);
+  assert.throws(()=>createProvider('http://example.com'),/HTTPS/);
+});
+
+test('public wallet profile preserves browser choice and excludes wallet secrets',async t=>{
+  const dir=await mkdtemp(join(tmpdir(),'rch-profile-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  await saveBrowser('opera',dir);
+  const address='0xDa68602c9d65337C75BF0593972d9731895592e3';await saveAddress(address,dir);
+  assert.deepEqual(await readProfile(dir),{address,browser:'opera'});
+  assert.equal((await readFile(join(dir,'profile.json'),'utf8')).includes('privateKey'),false);
+  await assert.rejects(saveAddress('wrong',dir));
+  assert.equal((await readProfile(dir)).address,address);
+});
+
+test('activation, purchase, guards, and durable approval server work without a mainnet signature',async t=>{
+  const f=await chain(t);for(let i=0;i<4;i++)await f.rpc.request({method:'evm_mine',params:[]});
+  const account=await f.admin.getAddress(),token=await f.token.getAddress(),sale=await f.sale.getAddress();
+  const d={chainId:1337,account,token,sale,treasury:await f.treasury.getAddress(),tokenAbi:build.artifacts.ReachCreditsLaunch.abi,saleAbi:build.artifacts.ReachCreditsSale.abi,tokenCodeHash:keccak256(await f.provider.getCode(token)),saleCodeHash:keccak256(await f.provider.getCode(sale))};
+  const dir=await mkdtemp(join(tmpdir(),'rch-approval-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+  const provider=new Proxy(f.provider,{get(target,key){if(key==='destroy')return()=>{};const value=Reflect.get(target,key);return typeof value==='function'?value.bind(target):value;}});
+  const service=await startApproval({deployment:d,action:'open-sale',directory:dir,providerFactory:()=>provider,log:()=>{}});t.after(()=>service.close());
+  const origin=new URL(service.url).origin;
+  const post=(path,body,requestOrigin=origin)=>fetch(service.url+path,{method:'POST',headers:{Origin:requestOrigin,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const html=await fetch(service.url);assert.equal(html.status,200);assert.match(await html.text(),/purchaseForm/);
+  assert.equal((await fetch(origin+'/deployment.json')).status,404);
+  assert.equal((await fetch(service.url+'../../profile.json')).status,404);
+  assert.equal((await post('wallet',{address:account},'https://evil.example')).status,403);
+  assert.equal((await post('wallet',{address:account})).status,200);
+  assert.equal((await readProfile(dir)).address,account);
+  const browserLibrary=await fetch(service.url+'ethers.mjs');assert.equal(browserLibrary.status,200);assert.match(browserLibrary.headers.get('Content-Type'),/javascript/);
+  await assert.rejects(prepareOperation(f.provider,d,account,'buy','0.004','1'),/Open the sale/);
+  await assert.rejects(loadState(f.provider,{...d,tokenCodeHash:'0x00'},account),/code does not match/);
+  const q=await prepareOperation(f.provider,d,account,'open',undefined,'1');
+  const record={status:'requesting',prepared:q};
+  assert.equal((await post('record',{...record,prepared:{...q,transaction:{...q.transaction,to:token}}})).status,400);
+  assert.equal((await post('record',record)).status,200);
+  assert.equal((await post('record',record)).status,400,'A second request cannot overwrite an unresolved attempt');
+  assert.equal((await readRecord(account,dir)).status,'requesting');
+  const tx=await validateOperation(f.provider,d,account,q);const {gas,from,...request}=tx;
+  const sent=await f.admin.sendTransaction({...request,gasLimit:gas});await sent.wait();
+  assert.equal((await post('record',{...record,status:'submitted',hash:sent.hash})).status,200);
+  assert.equal((await post('record',{...record,status:'confirmed',hash:'0x'+'a'.repeat(64)})).status,400);
+  assert.equal((await post('record',{...record,status:'confirmed',hash:sent.hash})).status,200);
+  assert.equal((await readRecord(account,dir)).status,'confirmed');
+  assert.equal((await loadState(f.provider,d,account)).paused,false);
+  await assert.rejects(prepareOperation(f.provider,d,account,'open',undefined,'1'),/already open/);
+  const purchase=await prepareOperation(f.provider,d,account,'buy','0.004','1');
+  await assert.rejects(validateOperation(f.provider,d,account,{...purchase,createdAt:0}),/expired/);
+  await assert.rejects(prepareOperation(f.provider,d,account,'buy','0.004','0.000000001'),/exceeds/);
+  const lowBalance=new Proxy(provider,{get(target,key){if(key==='getBalance')return async()=>0n;return Reflect.get(target,key);}});
+  await assert.rejects(prepareOperation(lowBalance,d,account,'buy','0.004','1'),/balance/);
+  const {gas:buyGas,from:buyer,...buyRequest}=await validateOperation(f.provider,d,account,purchase);
+  const bought=await f.admin.sendTransaction({...buyRequest,gasLimit:buyGas});await bought.wait();
+  assert.equal(await f.token.balanceOf(account),parseUnits(purchase.expectedRch,18));
+  assert.equal((await checkReceipt(f.provider,d,{hash:bought.hash,prepared:purchase})).status,'confirmed');
+  await assert.rejects(checkReceipt(f.provider,d,{hash:sent.hash,prepared:purchase}),/different transaction/);
+  await assert.rejects(validateOperation(f.provider,d,account,purchase),/nonce changed/);
+  const resumed=await startApproval({deployment:d,directory:dir,log:()=>{}});t.after(()=>resumed.close());
+  assert.equal((await (await fetch(resumed.url+'deployment.json')).json()).record.hash,sent.hash);
+});
