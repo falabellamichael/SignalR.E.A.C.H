@@ -266,12 +266,12 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 | `studio/main.mjs lines` | 4,524 |
 | `studio/renderer/app.js lines` | 5,275 |
 | `studio/preload.cjs lines` | 223 |
-| `studio/agent modules` | 76 |
+| `studio/agent modules` | 77 |
 | `studio/renderer scripts` | 25 |
 | `studio/test files` | 78 |
 | `static IPC handlers` | 100 |
 | `preload invoke channels` | 101 |
-| `IPC manifest entries` | 94 |
+| `IPC manifest entries` | 101 |
 | `SimpleRAG plugin files` | 21 |
 <!-- BASELINE:END -->
 
