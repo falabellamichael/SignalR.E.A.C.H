@@ -36,6 +36,7 @@ const { AgentNet } = require('./agent-net.cjs');
 const { linksCompleteIn } = require('./agent-net.cjs');
 const { getRole } = require('./roles.cjs');
 const { TeamNurse } = require('./team-nurse.cjs');
+const { PROMPT: LINKS_CODE_PROMPT } = require('./links-code.cjs');
 
 const { resolveBudgets, defaults: budgetDefaults, cap } = require('./budgets.cjs');
 
@@ -549,6 +550,7 @@ class TeamRunner {
       '- Put the full user-facing deliverable in the completion response itself. Saying it was delivered to peers is not the answer to the user. Progress reports must not declare completion.',
       '- A final-answer marker does not replace the active run-control protocol: in native tool mode call task_complete with the full answer and marker in summary; otherwise use the required structured completion response. Plain prose alone cannot complete your turn.',
       '- If the network goes quiet before that, the crew will be asked for a final synthesis — so leave your best evidence in your answers.',
+      LINKS_CODE_PROMPT,
     ].join('\n');
   }
 

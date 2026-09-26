@@ -209,6 +209,10 @@ draft is preserved.
   reports that instead of pretending to have recorded anything.
 - Team members can create background workers, send messages, inspect progress,
   and await peers. Stop cancels active model requests and filesystem scans.
+- Links members and their helpers share [Links Code v1](../docs/LINKS_CODE.md),
+  a validated symbolic message contract for questions, handoffs, results,
+  blockers, evidence and correlated replies. It carries arbitrary text/code
+  through the existing `agent.send` tool; ordinary language still works.
 - Links teams include a silent, event-driven Team Nurse. It coalesces peer mail,
   hands completed evidence to stalled members, and refills a free team slot on
   each settlement or mailbox arrival instead of waiting for the slowest member.

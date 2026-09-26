@@ -4,6 +4,7 @@ const { AgentLoop } = require('./agent-loop.cjs');
 const { MemoryStore } = require('./memory-store.cjs');
 const { RunControl } = require('./run-control.cjs');
 const { registerNet } = require('./net-registry.cjs');
+const { PROMPT: LINKS_CODE_PROMPT } = require('./links-code.cjs');
 
 module.exports = ({ workerSoulKey, SUBAGENT_MAX_ROUNDS }) => ({
   spawn({ name, model = '', prompt = '', task, parentId = null, depth = 0, callerName = '', endpoint = '', accessKey = '', connectionId = '', deferStart = false, operatorAdded = false, soulKey: explicitSoulKey = '' }) {
@@ -90,7 +91,9 @@ module.exports = ({ workerSoulKey, SUBAGENT_MAX_ROUNDS }) => ({
       projectDir: this.projectDir,
       reachExecutor: this.reachExecutor,
       browserExecutor: this.browserExecutor,
-      personaPrompt: String(prompt || ''),
+      personaPrompt: this.rosterMailbox
+        ? [String(prompt || ''), LINKS_CODE_PROMPT].filter(Boolean).join('\n\n')
+        : String(prompt || ''),
       /* Its own identity, so the `memory` tool resolves ITS directory and the
        * prompt carries ITS soul — never another agent's. */
       soulStore: this.soulStore,

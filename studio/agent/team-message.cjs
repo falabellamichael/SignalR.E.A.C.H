@@ -1,5 +1,7 @@
 'use strict';
 
+const { decode: decodeLinksCode } = require('./links-code.cjs');
+
 module.exports = ({ FINISHED }) => ({
   _emitDelivery(sender, rec, from, text, delivered, { fromName = '', source = 'agent' } = {}) {
     this.journal?.append('crew-message', { from, to: rec.id, source, message: text, delivered });
@@ -23,6 +25,10 @@ module.exports = ({ FINISHED }) => ({
     if (this.stopped) return { ok: false, error: 'The crew run is stopped.' };
     const text = String(message || '').trim();
     if (!text) return { ok: false, error: 'A message is required.' };
+    if (source === 'agent') {
+      try { decodeLinksCode(text); }
+      catch (error) { return { ok: false, code: 'invalid-links-code', error: error.message }; }
+    }
     // Renderer/operator routes carry a main-validated stable id and must never
     // fall back to a display name. Model-facing peer tools retain name lookup.
     const rec = exact ? this.agents.get(String(to || '')) : this._resolve(to, from);
