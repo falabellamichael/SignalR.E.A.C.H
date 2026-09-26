@@ -79,6 +79,19 @@ node tools/check-plan-baseline.cjs --write    # regenerate after your change
 node tools/count-plan-status.cjs              # DONE/PARTIAL/TODO counts
 ```
 
+The biggest modules also carry a **size ceiling** (`tools/size-budgets.json`).
+Going over one fails CI and names the file:
+
+```bash
+node tools/check-size-budgets.cjs --report   # every file and its headroom
+node tools/check-size-budgets.cjs --tighten  # lock in a shrink; never raises
+```
+
+Ceilings sit ~20% above the size they were set at, so ordinary work does not
+trip them. When one does trip, that is the signal to split the module - or to
+raise its ceiling deliberately, as a reviewable one-line diff. No command can
+hand a file more room; only a person editing that file can.
+
 Enable the repository hooks once per clone and the regenerate step happens for
 you — `.githooks/pre-commit` runs the generator and stages the plan, so the
 baseline cannot fall a commit behind the tree:
