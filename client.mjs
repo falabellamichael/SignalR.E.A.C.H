@@ -1,9 +1,11 @@
 function bounded(promise,ms,message){let timer;return Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error(message)),ms);})]).finally(()=>clearTimeout(timer));}
 const unresolved=record=>['requesting','submitted'].includes(record?.status);
-export function mountCheckout({window,document,ethers,operations,manifest}) {
+export function mountCheckout({window,document,ethers,operations,manifest,initialAmount}) {
   const {BrowserProvider,getAddress}=ethers;
   const {loadState,prepareOperation,validateOperation,checkReceipt}=operations;
   const $=id=>document.getElementById(id);
+  const hasInitialAmount=typeof initialAmount==='string'&&/^(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(initialAmount)&&/[1-9]/.test(initialAmount);
+  if(hasInitialAmount)$('amount').value=initialAmount;
   const providers=new Map();
   let wallet,account,state,quote,record,busy=false,generation=0,wrongChain=false;
   const storage=window.localStorage;
@@ -83,6 +85,7 @@ export function mountCheckout({window,document,ethers,operations,manifest}) {
     wrongChain=BigInt(chain)!==BigInt(manifest.chainId);
     if(wrongChain)throw Error('Select Ethereum Mainnet to purchase RCH.');
     await refresh(account,epoch);
+    if(hasInitialAmount&&!unresolved(record))await prepareQuote();
   });
   $('switch').onclick=()=>task(async()=>{
     await wallet.request({method:'wallet_switchEthereumChain',params:[{chainId:'0x1'}]});
@@ -90,7 +93,7 @@ export function mountCheckout({window,document,ethers,operations,manifest}) {
   });
   const clearQuote=()=>{generation++;quote=undefined;render();status('Purchase inputs changed. Get a fresh quote.');};
   $('amount').oninput=clearQuote;$('fee').oninput=clearQuote;
-  $('purchaseForm').onsubmit=event=>{event.preventDefault();if($('quote').disabled)return;return task(async()=>{
+  async function prepareQuote(){
     quote=undefined;const epoch=generation,address=account;
     record=loadRecord(address);if(unresolved(record))throw Error('Resolve the previous purchase first.');
     status('Checking the sale, price, balance and network fees…');
@@ -98,7 +101,8 @@ export function mountCheckout({window,document,ethers,operations,manifest}) {
     checkContext(epoch);quote=prepared;
     for(const[id,value]of Object.entries({rch:quote.expectedRch,minimum:quote.minimumRch+' RCH',payment:quote.amountEth+' ETH',gas:quote.estimatedFeeEth+' ETH',maxGas:quote.maximumFeeEth+' ETH',total:quote.maximumTotalEth+' ETH',deadline:new Date(quote.deadline*1000).toLocaleTimeString()}))$(id).textContent=value;
     status('Quote ready. Review the amounts, then continue to MetaMask. No ETH has been spent.');
-  });};
+  }
+  $('purchaseForm').onsubmit=event=>{event.preventDefault();if($('quote').disabled)return;return task(prepareQuote);};
   $('buy').onclick=()=>task(async()=>{
     if(!quote||!account||unresolved(record))throw Error('Get a fresh quote and resolve any pending purchase first.');
     if(!window.navigator.locks?.request)throw Error('This browser cannot safely coordinate purchases across tabs. Use a current MetaMask-compatible browser.');
