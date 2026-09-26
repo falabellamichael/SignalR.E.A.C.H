@@ -28,7 +28,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | **Auth** | API key required by default (`sk-reach-…`), constant-time check, failed-attempt lockout, optional IP allow/block lists — see [Security](#security) |
 | **Streaming** | SSE, OpenAI wire format |
 | **Caching** | optional response cache (LRU, TTL, temperature-aware keys) |
-| **Version** | 26.9.8 <!-- x-release-please-version --> |
+| **Version** | 26.9.9 <!-- x-release-please-version --> |
 
 ## Standalone REACH Studio desktop app
 
