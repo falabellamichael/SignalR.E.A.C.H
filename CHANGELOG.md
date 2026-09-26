@@ -1,5 +1,36 @@
 # Changelog
 
+## [26.9.9](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.8...v26.9.9) (2026-09-26)
+
+
+### Features
+
+* add RCH commands for Studio project terminals ([fd9c439](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/fd9c439d94dff934031bce53f4795eaf210d4cd3))
+* add source module size budgets ([85f02b3](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/85f02b324a38b9b3656d9c262616b367b623d6fd))
+* deliver RCH purchases to treasury ([860b6b6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/860b6b6b9d2c11fc4cf928022cb77760b475f21c))
+* enforce relay key quotas and expiry ([27b027a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/27b027a43b920d159d544b7d7ec4ab5f7c1d5dc9))
+* integrate Studio provider and relay updates ([60c98cb](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/60c98cb2bf98063ca1ba1a4d17ecb3fc4dea3c71))
+* integrate wallet accounts with team updates ([592bfb1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/592bfb1c98bdb4f9b94f7ee1aecb5b2978bd900a))
+* **rch:** add credits contracts and deployment tooling ([2ba7c3b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/2ba7c3b47213943c2bd6d4ea45c82155544a1949))
+* **rch:** add wallet accounts and shared model allowance ([55104c3](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/55104c30080c7c7be377dee163ad89cbcda5acb3))
+* restore team guidance and local evidence engines ([6df06b8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6df06b82c032cd128cc9269d4b0dbbde775c0be9))
+* share activity panel with team agents ([d84999c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d84999c98818c775a269517a557b82358f91c8fb))
+* **studio:** add Home dashboard and quick tools ([32af057](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/32af05765da9721d6fe66695f8f74b8231af2ba8))
+* **studio:** add native Reach workflows and command tabs ([b06f9b2](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b06f9b2b41029056fbd3b970ea93273fd9ee44bd))
+
+
+### Bug Fixes
+
+* enforce team completion and Nurse recovery in runtime ([9117a04](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9117a047c7e7807500ec45c941df4d339dc6a83b))
+* keep agent activity visible when expanded ([115e283](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/115e283fc1d6a2457c968187d799f7c7fbc3fb04))
+* mark macOS fsevents optional in RCH lockfile ([e786fe3](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e786fe369533c5b3b3a64726befa0adc3140ddef))
+* open wallet login through ngrok account API ([c3d9ee3](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c3d9ee3a07b4bed3641b3e965b0dcce8a6cbc59b))
+* recover bridge and team failures without false answers ([8bd812d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8bd812dd505a736365eccbe01906059080ccaa5c))
+* recover Reach Studio from ngrok tunnel 503 ([602a06e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/602a06ebd2cbf096a384d17e53a12d8f1a412c9b))
+* send ngrok header from wallet page ([56999a0](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/56999a0c8d8fd871d6aa624fee2a22da2d1fb087))
+* **studio:** restore portable smoke and packaged engine ([537322c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/537322c4032335c0ee91118e39bf1cefaf23066a))
+* **studio:** run project commands beside optional Reach CLI ([#110](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/110)) ([f351840](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f351840cce6fe261464c76e508756e61f0654e76))
+
 ## [26.9.8](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.7...v26.9.8) (2026-09-23)
 
 

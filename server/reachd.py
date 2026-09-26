@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # x-release-please-start-version
-"""SignalR.E.A.C.H relay daemon — launcher shim (v26.9.8).
+"""SignalR.E.A.C.H relay daemon — launcher shim (v26.9.9).
 
 All implementation lives in the ``reachd`` package next to this file.
 This shim exists so the documented entry point ``python server/reachd.py``
