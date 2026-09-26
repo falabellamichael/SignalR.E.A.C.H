@@ -78,6 +78,11 @@ jobs:
         # measured file moving by one line without regenerating the table fails
         # here instead of rotting the plan. Run with --write to fix it.
         run: node tools/check-plan-baseline.cjs
+      - name: Check module size budgets
+        # The plan baseline records module sizes as facts, so it reports growth
+        # but cannot object to it. These are ceilings: over one fails here and
+        # names the file. Raise a ceiling deliberately in tools/size-budgets.json.
+        run: node tools/check-size-budgets.cjs --report
       - name: Parse JSON
         run: for f in src/plugin.json vscode/package.json release-please-config.json .release-please-manifest.json; do python -c "import json,sys;json.load(open(sys.argv[1]))" "$f"; done
 
