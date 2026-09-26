@@ -50,6 +50,9 @@ test('reviewed local plan deploys atomically, verifies code, and produces execut
   assert.equal(state.salePaused, true);
   await assert.rejects(purchaseQuote(f.provider, record, build, '0.004'), /not accepting/);
   await send(sale.connect(f.admin).unpause());
+  await assert.rejects(purchaseQuote(f.provider, record, build, '0.0009'), /Minimum purchase is 0.001 ETH/);
+  const minimumQuote = await purchaseQuote(f.provider, record, build, '0.001');
+  assert.equal(minimumQuote.transaction.value, `0x${parseEther('0.001').toString(16)}`);
   const quote = await purchaseQuote(f.provider, record, build, '0.004');
   const tx = await f.buyer.sendTransaction(quote.transaction);
   await tx.wait();

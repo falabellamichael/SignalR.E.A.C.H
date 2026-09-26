@@ -20,8 +20,7 @@ try {
   console.log(`Reward: 5 RCH; remaining operator allowance: ${formatUnits(await f.token.rewardAllowance(operator), 18)} RCH`);
   await send(f.token.connect(f.buyer).transfer(await f.other.getAddress(), parseUnits('1', 18)));
   console.log('Transfer: 1 RCH sent to another wallet.');
-  await send(f.sale.connect(f.other).withdrawProceeds());
   await send(f.sale.closeSale());
-  console.log(`Total supply: ${formatUnits(await f.token.totalSupply(), 18)} RCH; proceeds delivered; sale closed.`);
-  console.log('Future usage conversion: 1 RCH -> 1,000,000 AI usage tokens. Redemption is not implemented yet.');
+  console.log(`Total supply: ${formatUnits(await f.token.totalSupply(), 18)} RCH; proceeds delivered during purchase; sale closed.`);
+  console.log('Usage conversion: 1 RCH -> 1,000,000 AI usage tokens. Live hosted redemption remains disabled.');
 } finally { await f.cleanup(); }

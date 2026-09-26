@@ -43,10 +43,12 @@ test('USD pricing moves with ETH; purchases mint exact integer output and preser
   const f = await chain(t); await open(f);
   assert.equal((await f.sale.quote(parseEther('1')))[0], units(264964));
   const paid = parseEther('0.01');
+  const treasuryBefore = await f.provider.getBalance(await f.treasury.getAddress());
   await buy(f, paid);
   assert.equal(await f.token.balanceOf(await f.buyer.getAddress()), units('2649.64'));
   assert.equal(await f.token.totalPurchased(), units('2649.64'));
-  assert.equal(await f.provider.getBalance(await f.sale.getAddress()), paid);
+  assert.equal(await f.provider.getBalance(await f.sale.getAddress()), 0n);
+  assert.equal(await f.provider.getBalance(await f.treasury.getAddress()), treasuryBefore + paid);
   await send(f.feed.setAnswer(price * 2n, await f.now()));
   assert.equal((await f.sale.quote(parseEther('1')))[0], units(529928));
   for (const wei of [1n, 99n, 123456789n, parseEther('2.175')]) {
@@ -54,7 +56,7 @@ test('USD pricing moves with ETH; purchases mint exact integer output and preser
   }
 });
 
-test('purchase rejects expired, zero, and below-minimum requests before issuing tokens', async (t) => {
+test('purchase rejects expired, zero, under 0.001 ETH, and low-output requests', async (t) => {
   const f = await chain(t); await open(f);
   const sale = f.sale.connect(f.buyer), now = await f.now(), paid = parseEther('0.01');
   const [out] = await sale.quote(paid);
@@ -62,9 +64,16 @@ test('purchase rejects expired, zero, and below-minimum requests before issuing 
   await revert(sale, 'buy', [out + 1n, now + 60, { value: paid }], 'OutputBelowMinimum');
   await revert(sale, 'buy', [0, now + 60, { value: paid }], 'EmptyPurchase');
   await revert(sale, 'buy', [1, now + 60, { value: 0 }], 'EmptyPurchase');
+  await revert(sale, 'buy', [1, now + 60, { value: parseEther('0.000999999999999999') }], 'PaymentBelowMinimum');
+  const treasuryBefore = await f.provider.getBalance(await f.treasury.getAddress());
+  const minimum = parseEther('0.001');
+  const [minimumOut] = await sale.quote(minimum);
+  await send(sale.buy(minimumOut, now + 60, { value: minimum }));
+  assert.equal(await f.token.balanceOf(await f.buyer.getAddress()), minimumOut);
+  assert.equal(await f.provider.getBalance(await f.treasury.getAddress()), treasuryBefore + minimum);
   // Execute a reverting transaction too, so rollback is tested beyond eth_call.
   await assert.rejects(send(sale.buy(out + 1n, now + 60, { value: paid, gasLimit: 300000 })));
-  assert.equal(await f.token.totalSupply(), 0n);
+  assert.equal(await f.token.totalSupply(), minimumOut);
   assert.equal(await f.provider.getBalance(await sale.getAddress()), 0n);
 });
 
@@ -109,7 +118,7 @@ test('issuance pause blocks paid and reward minting while ERC20 transfers and ap
   const f = await chain(t); await open(f); await rewardSetup(f); await buy(f);
   await send(f.token.connect(f.admin).setIssuancePaused(true));
   await revert(f.token.connect(f.rewardMinter), 'mintReward', [await f.buyer.getAddress(), 1, id('pause')], 'IssuancePaused');
-  await revert(f.sale.connect(f.buyer), 'buy', [1, await f.now() + 60, { value: 1n }], 'IssuancePaused', f.token.interface);
+  await revert(f.sale.connect(f.buyer), 'buy', [1, await f.now() + 60, { value: parseEther('0.001') }], 'IssuancePaused', f.token.interface);
   await send(f.token.connect(f.buyer).transfer(await f.other.getAddress(), units(2)));
   await send(f.token.connect(f.buyer).approve(await f.other.getAddress(), units(1)));
   await send(f.token.connect(f.other).transferFrom(await f.buyer.getAddress(), await f.other.getAddress(), units(1)));
@@ -127,10 +136,10 @@ test('mint-role revocation atomically rolls back a purchase', async (t) => {
   assert.equal(await f.provider.getBalance(await f.sale.getAddress()), 0n);
 });
 
-test('any caller may deliver proceeds, but only to the immutable treasury', async (t) => {
-  const f = await chain(t); await open(f); await buy(f);
+test('each purchase sends ETH to the immutable treasury', async (t) => {
+  const f = await chain(t); await open(f);
   const before = await f.provider.getBalance(await f.treasury.getAddress());
-  await send(f.sale.connect(f.other).withdrawProceeds());
+  await buy(f);
   assert.equal(await f.provider.getBalance(await f.treasury.getAddress()), before + parseEther('0.01'));
   assert.equal(await f.provider.getBalance(await f.sale.getAddress()), 0n);
   await revert(f.sale, 'withdrawProceeds', [], 'EmptyPurchase');
@@ -175,18 +184,18 @@ test('deployment rejects wrong oracle identity, decimals, addresses, and bounds'
   await assert.rejects(f.deploy('ReachCreditsLaunch', args));
 });
 
-test('failed treasury delivery preserves ETH and callback reentry cannot withdraw twice', async (t) => {
+test('failed treasury delivery rolls back payment and mint; callback cannot reenter', async (t) => {
   const f = await chain(t);
   const treasury = await f.deploy('TreasuryHarness');
   const launch = await f.deploy('ReachCreditsLaunch', [await f.admin.getAddress(), await treasury.getAddress(), await f.feed.getAddress(), 3600, floor, ceiling]);
   const sale = f.sale.attach(await launch.initialSale());
   await send(treasury.configure(await sale.getAddress(), true, false));
   await send(sale.unpause());
-  await send(sale.connect(f.buyer).buy(1, await f.now() + 60, { value: parseEther('0.01') }));
-  await revert(sale, 'withdrawProceeds', [], 'TreasuryTransferFailed');
-  assert.equal(await f.provider.getBalance(await sale.getAddress()), parseEther('0.01'));
+  await revert(sale.connect(f.buyer), 'buy', [1, await f.now() + 60, { value: parseEther('0.01') }], 'TreasuryTransferFailed');
+  assert.equal(await launch.balanceOf(await f.buyer.getAddress()), 0n);
+  assert.equal(await f.provider.getBalance(await sale.getAddress()), 0n);
   await send(treasury.configure(await sale.getAddress(), false, true));
-  await send(sale.withdrawProceeds());
+  await send(sale.connect(f.buyer).buy(1, await f.now() + 60, { value: parseEther('0.01') }));
   assert.equal(await treasury.reentrySucceeded(), false);
   assert.equal(await f.provider.getBalance(await treasury.getAddress()), parseEther('0.01'));
   assert.equal(await f.provider.getBalance(await sale.getAddress()), 0n);

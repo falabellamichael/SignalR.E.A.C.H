@@ -14,6 +14,7 @@ import {IEthUsdFeed} from "./interfaces/IEthUsdFeed.sol";
 contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
     uint8 public constant FEED_DECIMALS = 8;
     uint256 public constant USD_PRICE_E8_PER_RCH = 1_000_000; // $0.01
+    uint256 public constant MIN_PURCHASE_WEI = 0.001 ether;
 
     ReachCredits public immutable rch;
     IEthUsdFeed public immutable ethUsdFeed;
@@ -28,6 +29,7 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
     error StaleOraclePrice();
     error PurchaseExpired();
     error EmptyPurchase();
+    error PaymentBelowMinimum(uint256 paid, uint256 minimum);
     error OutputBelowMinimum(uint256 actual, uint256 minimum);
     error TreasuryTransferFailed();
     error SaleClosed();
@@ -86,18 +88,24 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
         if (saleClosed) revert SaleClosed();
         if (block.timestamp > deadline) revert PurchaseExpired();
         if (msg.value == 0 || minRchOut == 0) revert EmptyPurchase();
+        if (msg.value < MIN_PURCHASE_WEI) revert PaymentBelowMinimum(msg.value, MIN_PURCHASE_WEI);
         (uint256 rchOut, uint256 ethUsdPriceE8) = quote(msg.value);
         if (rchOut == 0) revert EmptyPurchase();
         if (rchOut < minRchOut) revert OutputBelowMinimum(rchOut, minRchOut);
 
         rch.mintPurchased(msg.sender, rchOut);
+        _sendToTreasury(msg.value);
         emit Purchased(msg.sender, msg.value, rchOut, ethUsdPriceE8);
     }
 
-    /// @notice Anyone may trigger delivery; the destination is always the fixed treasury.
+    /// @notice Deliver any ETH sent outside a purchase to the fixed treasury.
     function withdrawProceeds() external nonReentrant {
         uint256 amount = address(this).balance;
         if (amount == 0) revert EmptyPurchase();
+        _sendToTreasury(amount);
+    }
+
+    function _sendToTreasury(uint256 amount) private {
         (bool ok,) = treasury.call{value: amount}("");
         if (!ok) revert TreasuryTransferFailed();
         emit ProceedsWithdrawn(treasury, amount);
