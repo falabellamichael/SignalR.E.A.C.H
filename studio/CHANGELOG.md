@@ -1,5 +1,13 @@
 # Changelog
 
+## [26.9.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.9...reach-studio-v26.9.10) (2026-09-26)
+
+
+### Features
+
+* add Links Code agent communication contract ([6b3eb7c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6b3eb7c70361046c23dca4a599103d3495200cc1))
+* **studio:** reveal a team member's status when its tile is clicked ([1b3d94a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1b3d94a869022222c494086fcbbafd546e75cb80))
+
 ## [26.9.9](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.8...reach-studio-v26.9.9) (2026-09-26)
 
 
