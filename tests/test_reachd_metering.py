@@ -30,6 +30,7 @@ class MeteredRelayTests(unittest.TestCase):
     def handler(self, extra=None):
         h = MagicMock()
         h.headers = {"X-Reach-Metered": "provider-v1"}
+        h.key_limits.return_value = (None, 0, 0)
         h._check_ip_lists.return_value = True
         h._read_body.return_value = json.dumps({"model": "test",
             "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 20,

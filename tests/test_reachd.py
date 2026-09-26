@@ -760,6 +760,8 @@ class ConcurrencyGateTests(unittest.TestCase):
 
         h = MagicMock()
         h._client_ip.return_value = "127.0.0.1"
+        # No per-key caps: the handler reports this as (bucket, rpm, tokens).
+        h.key_limits.return_value = (None, 0, 0)
         raw_bytes = json.dumps({
             "model": "gpt-4o",
             "messages": [{"role": "user", "content": "hi"}],
@@ -805,6 +807,7 @@ class StreamPreflightTests(unittest.TestCase):
         state.key = "test-key"
         h = MagicMock()
         h.headers = {}
+        h.key_limits.return_value = (None, 0, 0)
         ctx = {
             "started": time.time(), "ip": "127.0.0.1",
             "rl_headers": {"X-RateLimit-Limit": "12"},
@@ -1216,6 +1219,8 @@ class SystemMessageMergeTests(unittest.TestCase):
 
         h = MagicMock()
         h._client_ip.return_value = "127.0.0.1"
+        # No per-key caps: the handler reports this as (bucket, rpm, tokens).
+        h.key_limits.return_value = (None, 0, 0)
         raw = json.dumps({
             "model": "gpt-4o",
             "messages": [

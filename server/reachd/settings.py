@@ -1,5 +1,6 @@
 """Settings schema, defaults, validation and config persistence."""
 
+import calendar
 import ipaddress
 import json
 import os
@@ -140,7 +141,12 @@ DEFAULT_SETTINGS = {
         # install and migrates old ones (system.security_revision).
         "key_required": False,
         "access_key": "",
-        "keys": [],                    # client API keys: list of {"id", "name", "key", "created_at", "last_used_at", "enabled", "rate_limit_rpm"}
+        # client API keys: {"id", "name", "key", "created_at", "last_used_at",
+        # "enabled", "rate_limit_rpm", "tokens_day", "expires_at"}.
+        # rate_limit_rpm / tokens_day are per-key caps (0 = no cap of its own,
+        # the shared rate_limits still apply); expires_at is an ISO-8601 UTC
+        # instant or None for a key that never expires.
+        "keys": [],
         "ip_allowlist": [],            # empty = everyone (loopback always ok)
         "ip_blocklist": [],
         "cors_origins": "*",           # "*" or comma-separated origins
@@ -459,8 +465,35 @@ def generate_client_key(name="Default"):
         "created_at": now_iso,
         "last_used_at": None,
         "enabled": True,
+        # Per-key caps. 0 means "this key adds no cap of its own"; the shared
+        # rate_limits.* budgets still apply on top. A key is the unit a person
+        # is given, so metering it is what makes a plan or a credit balance
+        # enforceable rather than advisory.
         "rate_limit_rpm": 0,
+        "tokens_day": 0,
+        "expires_at": None,
     }
+
+
+def key_expired(key, now=None):
+    """True when a key carries an expiry that has passed.
+
+    A missing, empty or unparseable expires_at means "never expires": a key
+    must not become unusable because its timestamp was hand-edited into
+    something this function cannot read. Comparison is done in UTC on the
+    same ISO-8601 shape every other timestamp in the config uses.
+    """
+    raw = (key or {}).get("expires_at")
+    if not raw or not isinstance(raw, str):
+        return False
+    stamp = raw.strip()
+    if not stamp:
+        return False
+    try:
+        parsed = time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, TypeError):
+        return False
+    return calendar.timegm(parsed) <= (now if now is not None else time.time())
 
 
 def generate_admin_token():
@@ -599,6 +632,17 @@ def validate_settings(cfg):
                                     and len(key_value) >= 6),
                 "access.keys key must be empty or at least 6 chars")
         _expect(isinstance(k.get("name", "Key"), str), "access.keys name must be string")
+        _int(k.get("rate_limit_rpm", 0), 0, 100000, "access.keys rate_limit_rpm")
+        _int(k.get("tokens_day", 0), 0, 1000000000, "access.keys tokens_day")
+        expires = k.get("expires_at", None)
+        _expect(expires is None or isinstance(expires, str),
+                "access.keys expires_at must be an ISO-8601 string or null")
+        if isinstance(expires, str) and expires.strip():
+            try:
+                time.strptime(expires.strip(), "%Y-%m-%dT%H:%M:%SZ")
+            except ValueError:
+                raise SettingsError(
+                    "access.keys expires_at must look like 2026-12-31T23:59:59Z")
     if access.get("key_required"):
         has_key = len(access.get("access_key", "") or "") >= 6 \
             or any(k.get("enabled", True) and k.get("key")
