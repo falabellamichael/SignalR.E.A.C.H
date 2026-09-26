@@ -123,6 +123,40 @@
     }, { passive: false });
     const resize = new ResizeObserver(overflow);
     resize.observe(tabs);
+    // Bring the selected member's surface to the top of the conversation, but
+    // only when it is actually obscured: the rail floats over the viewport top
+    // once the deck's origin has scrolled past it, so a member clicked from a
+    // scrolled-away position would otherwise land behind the pinned tabs.
+    // A member that is already fully visible below the rail is left alone — a
+    // click must not yank the conversation when there is nothing to reveal.
+    // Purely presentational: it moves only the scroller the deck is mounted on.
+    function revealCard(card) {
+      if (!scroller || !card.isConnected) return;
+      // The rail floats only past its origin, so measure where the card would
+      // sit: bring it into view first, then correct for whatever the rail
+      // actually covers there.
+      const covered = () => nav.classList.contains('is-floating') && !nav.classList.contains('is-concealed')
+        ? nav.offsetHeight : 0;
+      const box = () => {
+        const viewportTop = scroller.getBoundingClientRect().top + scroller.clientTop;
+        const rect = card.getBoundingClientRect();
+        return { top: rect.top - (viewportTop + covered()), bottom: rect.bottom - viewportTop,
+          viewport: scroller.clientHeight };
+      };
+      // Nothing is in the way while the deck still sits in the viewport: the
+      // card is on screen and the rail is not covering it.
+      positionNav();
+      const current = box();
+      if (current.top >= -1 && current.bottom <= current.viewport + 1) return;
+      concealed = false;
+      for (let pass = 0; pass < 3; pass++) {
+        positionNav();
+        const offset = box().top;
+        if (Math.abs(offset) <= 1) break;
+        scroller.scrollTop += offset;
+      }
+      positionNav();
+    }
     // The owning run disposes observers/listeners when history is discarded.
     function select(card, focus = false) {
       if (!entries.has(card)) return;
@@ -142,6 +176,10 @@
       modelInfo.hidden = false;
       syncModelInfo();
       overflow();
+      // Keyboard navigation keeps the reading position (roving focus and the
+      // Home/End keys must not move the conversation); a deliberate click on a
+      // tab surfaces the member it selects.
+      if (focus === 'reveal') revealCard(card);
     }
     function syncModelInfo() {
       const entry = selected && entries.get(selected);
@@ -276,7 +314,7 @@
       tab.dataset.worker = String(worker);
       tabs.appendChild(tab); panels.appendChild(card);
       card._teamDeck = api;
-      tab.onclick = () => select(card);
+      tab.onclick = () => select(card, 'reveal');
       identify(card, name, model);
       update(card);
       if (!selected || n === preferredIndex) select(card); else card.hidden = true;
