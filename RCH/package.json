@@ -10,7 +10,9 @@
     "compile": "node scripts/compile.mjs",
     "test": "node --test test/*.test.mjs",
     "rch": "node scripts/rch.mjs",
+    "launch-ui": "node scripts/launch-ui.mjs",
     "demo": "node scripts/demo.mjs",
+    "demo:purchase": "node scripts/demo-purchase.mjs",
     "accounts": "node scripts/accounts.mjs",
     "terminal": "node scripts/credits.mjs",
     "install:cli": "node scripts/install-cli.mjs"

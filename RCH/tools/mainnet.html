@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RCH mainnet launch</title>
+  <style>
+    body { max-width: 760px; margin: 2rem auto; padding: 0 1rem; background: #151515; color: #f2eee4; font: 16px/1.5 system-ui, sans-serif; }
+    h1, h2 { line-height: 1.2; }
+    section { border: 1px solid #59523f; border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    dl { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: .4rem 1rem; }
+    dt { color: #d9bf75; } dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    button { background: #d5b75f; color: #201d15; border: 0; border-radius: 8px; padding: .7rem 1rem; margin: .35rem .35rem .35rem 0; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    a { color: #e0c675; } #status { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .note { color: #d8d0bd; } .hash { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    @media (max-width: 560px) { dl { display: block; } dt { margin-top: .7rem; } }
+  </style>
+</head>
+<body>
+  <h1>RCH mainnet launch</h1>
+  <p class="note">This page runs only on this PC. Each button asks MetaMask to show and approve its own transaction. Review the network, address, amount, and gas in MetaMask before approving.</p>
+  <section>
+    <h2>Deployment plan</h2>
+    <dl>
+      <dt>Network</dt><dd id="network">Loading</dd>
+      <dt>Deployment payer</dt><dd id="deployer">Loading</dd>
+      <dt>Treasury</dt><dd id="treasury">Loading</dd>
+      <dt>Administrator</dt><dd id="admin">Loading</dd>
+      <dt>ETH/USD feed</dt><dd id="feed">Loading</dd>
+      <dt>Token address</dt><dd id="token">Loading</dd>
+      <dt>Sale address</dt><dd id="sale">Loading</dd>
+      <dt>Maximum fee</dt><dd id="max-fee">Loading</dd>
+      <dt>Plan created</dt><dd id="created">Loading</dd>
+      <dt>Source hash</dt><dd id="source-hash">Loading</dd>
+      <dt>Wallet account</dt><dd id="account">Connect MetaMask</dd>
+    </dl>
+    <button id="connect" disabled>Connect MetaMask</button>
+    <button id="refresh" disabled>Refresh sale status</button>
+    <button id="deploy" disabled>Deploy token and paused sale</button>
+    <button id="open-sale" disabled>Open sale</button>
+    <p class="note">The sale is paused after deployment. Wait for deployment finality before opening it with a separate administrator transaction.</p>
+  </section>
+  <section>
+    <h2>Smallest purchase</h2>
+    <p>Pay <strong>0.001 ETH plus gas</strong> from the deployment payer account. The buyer receives RCH; the ETH goes to the treasury above.</p>
+    <dl><dt>Buyer</dt><dd id="buyer">Select the deployment payer account in MetaMask</dd>
+      <dt>Expected RCH</dt><dd id="quote">Get a live quote</dd>
+      <dt>ETH/USD</dt><dd id="eth-usd">Get a live quote</dd></dl>
+    <button id="get-quote" disabled>Get live quote</button>
+    <button id="buy" disabled>Buy with 0.001 ETH</button>
+  </section>
+  <section><h2>Status</h2><p id="status" role="status">Loading local deployment plan...</p><p id="transaction" class="hash"></p></section>
+  <script src="/ethers.js"></script>
+  <script src="/mainnet.js"></script>
+</body>
+</html>

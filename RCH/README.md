@@ -17,9 +17,12 @@ npm ci --ignore-scripts
 npm run compile
 npm test
 npm run demo
+npm run demo:purchase
 ```
 
 Node.js 22.13 or newer is required. `demo` creates an ephemeral Ethereum chain inside the process, deploys RCH and its sale, purchases 1,000 RCH for 0.004 test ETH at a mock $2,500/ETH quote, mints an authorized reward, transfers RCH, delivers the sale proceeds, and closes the sale. It needs no wallet, RPC endpoint, Docker, or running Ganache server. The chain disappears when the command exits. Ganache's native-module fallback notices on Apple Silicon do not prevent these tests from running.
+
+`demo:purchase` runs a focused, no-cost 0.001 test ETH purchase on the same ephemeral chain. One local account deploys, administers, and buys; a separate local treasury receives the ETH. Pass `-- --treasury PUBLIC_ADDRESS` to test delivery to a particular public wallet address. It prints transaction hashes and verifies that the buyer received RCH, the treasury gained 0.001 test ETH, and the sale retained no ETH. Its accounts and funds do not exist on mainnet.
 
 ## Currency and issuance
 
@@ -38,7 +41,7 @@ RCH is minted under these rules. Ethereum mining does not create it. The adminis
 
 The sale starts **paused**. The configured administrator must call `unpause()` to open it. The feed must identify itself as `ETH / USD`, report eight decimals, and return a positive, complete, current round inside the configured price bounds. The feed's description is a configuration check, not proof of authenticity: verify its address and network against the feed provider's official registry.
 
-The contract computes output using full-precision integer arithmetic and rounds down. Buyers supply a nonzero minimum RCH amount and a deadline. ETH and minted RCH either settle together or the transaction reverts. ETH stays in the sale until `withdrawProceeds()` is called. Anyone may trigger delivery, but all ETH goes only to the immutable treasury. Failed delivery preserves the balance. Treasury callbacks cannot withdraw twice.
+The minimum payment is **0.001 ETH**, plus network gas. The contract computes output using full-precision integer arithmetic and rounds down. Buyers supply a nonzero minimum RCH amount and a deadline. ETH, treasury delivery, and minted RCH either settle together or the transaction reverts. Each purchase sends its ETH directly to the immutable treasury; failed delivery rolls back the purchase. Anyone may call `withdrawProceeds()` to deliver ETH that reaches the sale outside a purchase. Treasury callbacks cannot withdraw twice.
 
 The administrator can pause purchases or permanently close this sale. Closing it does not freeze RCH or stop independently authorized rewards. It also does not prevent the token administrator from authorizing a replacement sale. Opening an uncapped sale at $0.01 can constrain a later market price through arbitrage; the sale target never guarantees a resale price.
 
@@ -170,12 +173,18 @@ Without installation, use `npm run rch -- help` at the repository root, or
 7. Generate a purchase quote and unsigned transaction for a buyer's wallet:
 
    ```text
-   npm run rch -- quote --manifest deployments/sepolia-deployment.json --eth 0.004 --slippage-bps 50
+   npm run rch -- quote --manifest deployments/sepolia-deployment.json --eth 0.001 --slippage-bps 50
    ```
 
-   This verifies deployed code and active sale state, then returns the ETH value, RCH quote, 0.5% minimum-output tolerance, and ten-minute deadline. It does not sign or send a purchase. Prices and the configured oracle bounds may change what the next quote permits; gas is additional.
+   This verifies deployed code and active sale state, then returns the ETH value, RCH quote, 0.5% minimum-output tolerance, and ten-minute deadline. It does not sign or send a purchase. Payments below 0.001 ETH are rejected; gas is additional. Prices and the configured oracle bounds may change what the next quote permits.
 
 Mainnet uses chain ID 1. The existing deployment above was checked against the compiled runtime and constructor settings; this is not an independent security audit. New deployments should be rehearsed on testnet and reviewed independently. Do not promise funded AI usage solely because an RCH transfer succeeded: the hosted redemption system must be configured for the reviewed deployment and verify a matching burn before crediting usage exactly once. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
+
+### Local MetaMask launch review on Windows
+
+For a reviewed Ethereum mainnet configuration, prepare `private/mainnet-plan.json` with the `prepare` command above, using chain ID 1 and a current HTTPS mainnet RPC in `RCH_RPC_URL`. The plan and compiled artifacts must match the current source. The plan expires after 15 minutes for deployment, so prepare a new one after funding and immediately before signing. Preserve an earlier plan and any transaction record when a request's result is uncertain; never overwrite a record to retry a deployment.
+
+Run `npm run launch-ui` from this directory with the same `RCH_RPC_URL`, then open `http://127.0.0.1:8765/` in Edge with MetaMask. The server binds only to loopback and serves the reviewed plan, compiled artifacts, and launch page. It does not access the encrypted wallet backup or sign transactions. The page checks the connected mainnet account, reconstructs deployment data from the compiled artifact, verifies the feed and nonce, and asks MetaMask to approve each transaction. The reviewed deployment payer may differ from the treasury; the administrator must be one of those two accounts. It saves the returned deployment hash in ignored `deployments/mainnet-deployment.json`; run `npm run rch -- verify --manifest deployments/mainnet-deployment.json` to inspect the deployment independently. Opening the sale requires a separate MetaMask transaction from the administrator after the deployment is finalized and its runtime matches the reviewed build. The deployment payer can then request a live 0.001 ETH quote and approve the purchase in MetaMask. Network gas is additional for every transaction.
 
 ## Verification coverage
 

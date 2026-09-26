@@ -148,7 +148,7 @@ export async function purchaseQuote(provider, record, build, eth, slippageBps = 
   const { sale, state } = await inspectDeployment(provider, record, build);
   if (state.salePaused || state.saleClosed || state.issuancePaused || !state.saleCanMint) fail('The sale is not accepting purchases.');
   const value = parseEther(eth);
-  if (value <= 0n) fail('ETH payment must be positive.');
+  if (value < await sale.MIN_PURCHASE_WEI()) fail('Minimum purchase is 0.001 ETH.');
   const [amount, price] = await sale.quote(value);
   const minimum = amount * BigInt(10000 - slippageBps) / 10000n;
   if (minimum === 0n) fail('Payment is too small.');

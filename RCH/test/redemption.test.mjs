@@ -146,8 +146,9 @@ test('redemption pause and issuance pause are independent and preserve ordinary 
   await send(holder.approve(await f.other.getAddress(), units(1)));
   await send(f.token.connect(f.other).transferFrom(await f.buyer.getAddress(), await f.other.getAddress(), units(1)));
   assert.equal(await f.token.balanceOf(await f.other.getAddress()), units(2));
-  const [out] = await f.sale.quote(1n);
-  await send(f.sale.connect(f.buyer).buy(out, await f.now() + 600, { value: 1n }));
+  const payment = parseEther('0.001');
+  const [out] = await f.sale.quote(payment);
+  await send(f.sale.connect(f.buyer).buy(out, await f.now() + 600, { value: payment }));
   await send(admin.setRedemptionPaused(false));
   await send(holder.redeem(units(1), redemptionId));
   assert.equal(await f.token.totalRedeemed(), units(2));
