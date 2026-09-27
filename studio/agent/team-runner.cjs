@@ -393,6 +393,7 @@ class TeamRunner {
       enabled: this.team.nurse !== false, policy: this.team.nursePolicy || null,
       emit: (_type, payload) => this._emit('nurse', { ...payload, nurseType: payload.action, silent: true }),
     });
+    this.net.nurse = this.nurse;
     this.acceptingRuntimeAgents = true;
     this._emit('start', {
       teamName: this.team.name,

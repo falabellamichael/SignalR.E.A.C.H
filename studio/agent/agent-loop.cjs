@@ -35,6 +35,7 @@ const { soulPromptBlock } = require('./agent-soul.cjs');
 const { diagnosticLog } = require('./diagnostic-log.cjs');
 const { ReadMemo } = require('./read-memo.cjs');
 const engines = require('./engines.cjs');
+const { netForAgent } = require('./net-registry.cjs');
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const RATE_LIMIT_RETRIES = 3;
@@ -141,7 +142,6 @@ class AgentLoop {
   /* Is this loop part of a live crew network? The registry is a leaf module. */
   _inCrew() {
     try {
-      const { netForAgent } = require('./net-registry.cjs');
       return !!netForAgent(this.agentId);
     } catch {
       return false;
@@ -661,6 +661,21 @@ class AgentLoop {
     return restart;
   }
 
+  // Peer mail belongs to the current conversation. Consume it only between
+  // requests: never interrupt a tool, create a hidden turn, or reset its budget.
+  _appendPeerMessages(messages) {
+    for (const content of messages) {
+      this.store.appendMessage(this.agentId, { role: 'user', content, _reachMeta: { source: 'team-message' } });
+      this._emit('message', { role: 'user', content });
+    }
+    return messages.length;
+  }
+
+  _receivePeerMessages() {
+    if (this.stopRequested) return 0;
+    return this._appendPeerMessages(netForAgent(this.agentId)?.takePendingMessages?.(this.agentId) || []);
+  }
+
   /* Queue a user message when running; run it immediately when idle. */
   async sendUserMessage(text) {
     const agent = this._agent();
@@ -725,11 +740,17 @@ class AgentLoop {
           this._emit('nurse-restarted', { reason: 'New user guidance', round: 1 });
         };
         if (this._applySteering()) restartForNurse();
+        if (this._receivePeerMessages()) runState.noActionRounds = 0;
         this.requestRound = round + 1;
         this._emit('round', { round: round + 1 });
         let requestMessages = await this._maybeCompact(this._messagesForRequest());
         if (this.steering.length) {
           if (this._applySteering()) { restartForNurse(); this.requestRound = 1; }
+          requestMessages = this._messagesForRequest();
+        }
+        // Mail can arrive while context compaction is in flight.
+        if (this._receivePeerMessages()) {
+          runState.noActionRounds = 0;
           requestMessages = this._messagesForRequest();
         }
 
@@ -834,6 +855,26 @@ class AgentLoop {
           if (compliance === 'pause') decision = { action: 'pause', state: { ...runState, status: 'paused',
             reason: 'Jev task check still failed after one correction. Review the answer before continuing.' } };
         }
+        // A reply generated before newly delivered peer evidence cannot close
+        // the team over that unread evidence. Keep the reply as a draft and
+        // address the mail in this turn (or a scheduled wake at the round cap).
+        let peerMessages = [];
+        const net = netForAgent(this.agentId);
+        const protocolPause = decision.action === 'pause'
+          && /stopped calling tools|usable action after structured recovery/.test(decision.reason || '');
+        if (['complete', 'continue'].includes(decision.action) || protocolPause) {
+          if (round + 1 < cap(this._budgets().maxRounds)) {
+            peerMessages = net?.takePendingMessages?.(this.agentId) || [];
+            if (peerMessages.length) decision = {
+              action: 'continue', reason: 'New peer information is ready.',
+              state: { ...runState, status: 'running', reason: '', noActionRounds: 0 },
+              instruction: 'New crew messages arrived during your last request. Use them for the remaining work before completing. Preserve verified results and do not repeat actions already performed.',
+            };
+          } else if (decision.action === 'complete' && net?.agents.get(this.agentId)?.inbox?.length) {
+            decision = { action: 'pause', state: { ...runState, status: 'paused',
+              reason: 'Unread crew messages remain at the round limit. Resume with the queued information before completing.' } };
+          }
+        }
         const provisional = decision.action === 'continue';
         // A native control turn can have empty content (the answer lives in
         // task_complete.summary) — store the display so lastAssistantText and
@@ -845,6 +886,7 @@ class AgentLoop {
           _reachMeta: { display: parsed.display, question: parsed.confirm || null,
             ...(reply.reasoning?.trim() ? { thought: reply.reasoning } : {}),
             ...(reply.budgetFallback ? { source: 'budget-checkpoint' } : provisional ? { source: 'recovery-attempt' } : {}) } });
+        this._appendPeerMessages(peerMessages);
         runState = decision.state;
         this._saveRunState(runState);
         if (decision.action === 'complete' && parsed.display) {
@@ -857,7 +899,8 @@ class AgentLoop {
         }
 
         if (decision.action === 'continue') {
-          this.store.appendMessage(this.agentId, { role: 'user', content: decision.instruction, _reachMeta: { source: 'recovery' } });
+          const progress = net?.nurse?.progressContext?.(this.agentId, parsed.display || content) || '';
+          this.store.appendMessage(this.agentId, { role: 'user', content: [decision.instruction, progress].filter(Boolean).join('\n\n'), _reachMeta: { source: 'recovery' } });
           this._emit('recovery', { reason: decision.reason });
           continue;
         }

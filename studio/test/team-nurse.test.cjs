@@ -107,8 +107,11 @@ test('Nurse never uses skipped, stalled or marker-only replies as completed reco
     const f = nurseFixture();
     const results = recoveryResults();
     results[1] = { ...results[1], ...source, ok: true };
-    assert.equal(f.nurse.stageRecoveries({ results, stalled: new Map([[0, 'without task_complete']]) }).length, 0);
-    assert.equal(f.target.inbox.length, 0);
+    const wakes = f.nurse.stageRecoveries({ results, stalled: new Map([[0, 'without task_complete']]) });
+    assert.equal(wakes.length, 1, 'one saved-context protocol rescue can run without completed evidence');
+    assert.equal(wakes[0].recoveryKind, 'protocol-rescue');
+    assert.deepEqual(wakes[0].sourceNames, []);
+    assert.doesNotMatch(f.target.inbox[0], /New completed evidence|FROM Source/);
   }
 });
 

@@ -79,10 +79,9 @@ module.exports = ({ FINISHED }) => ({
       ? `MESSAGE FROM ${senderName} (the user directing this crew):\n${text}`
       : `MESSAGE FROM ${senderName} (a crew member):\n${text}`;
     if (linksRosterMailbox) {
-      /* Links owns roster scheduling. Coalesce ALL peer mail in the roster
-       * inbox—even while its loop is running—so the bounded Links wake loop
-       * accounts for one follow-up turn instead of AgentLoop secretly draining
-       * each queued message as an uncounted conversation. */
+      /* Links owns roster scheduling. Keep mail in one inbox: an active turn
+       * consumes it before its next model request, while an idle member gets
+       * one counted scheduler wake. Never start hidden conversation turns. */
       rec.inbox = rec.inbox || [];
       rec.inbox.push(prefixed);
       if (countAgainstBudget) this._bumpLink();
@@ -105,7 +104,7 @@ module.exports = ({ FINISHED }) => ({
         note: rec.status === 'stalled'
           ? `${rec.name} was stalled. Your message is queued and Links will wake it for another bounded turn.`
           : rec.loop?.running
-            ? `${rec.name} is working. Links coalesced your message for one bounded follow-up turn.`
+            ? `${rec.name} is working. Your message is queued for its next model request; any remaining mail stays with the Links scheduler.`
             : !rec.loop
               ? `${rec.name} has not started yet; your message will be waiting when it does.`
               : `${rec.name} is between Links rounds; your message is queued for its next turn.`,

@@ -268,7 +268,7 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 | `studio/preload.cjs lines` | 223 |
 | `studio/agent modules` | 79 |
 | `studio/renderer scripts` | 25 |
-| `studio/test files` | 80 |
+| `studio/test files` | 83 |
 | `static IPC handlers` | 100 |
 | `preload invoke channels` | 101 |
 | `IPC manifest entries` | 101 |

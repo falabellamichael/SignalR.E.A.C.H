@@ -41,7 +41,7 @@ const fields = [
   ['messageHandoffs', 'Agent message handoffs per team run', 9, 'Teams', 'Total messages delivered between agents across the crew. Nurse handoffs and user guidance do not spend this allowance. 0 removes the message cap. Applies to new runs.'],
   ['maxAgents', 'Total agents per team run', 12, 'Teams', 'Counts roster and spawned agents, including finished agents. 0 removes the population cap.'],
   ['maxDepth', 'Subagent nesting depth', 2, 'Teams', '0 allows unlimited nesting. Circular waits remain blocked.'],
-  ['awaitTimeoutMs', 'Default peer wait (milliseconds)', 120000, 'Teams', '0 waits until completion or Stop. An agent can still request a shorter wait.'],
+  ['awaitTimeoutMs', 'Default peer wait (milliseconds)', 30000, 'Teams', 'The Team Nurse returns a progress update after at most 30 seconds. Without the Nurse, 0 waits until completion or Stop. Shorter requested waits are honored.'],
   ['relayChars', 'Chain handoff characters', 24000, 'Teams', '0 relays all completed member reports. Display previews remain bounded for responsiveness.'],
   ['autoCompact', 'Automatically compress conversation context', true, 'Context', 'Turn off to send the full retained conversation. The provider context window still applies.'],
   ['contextTrigger', 'Compress above this many characters', 96000, 'Context', 'Character estimate, not tokens. 0 disables this trigger.'],

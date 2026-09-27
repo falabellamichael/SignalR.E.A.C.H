@@ -6,6 +6,9 @@
  * supervision and has no chat turn of its own. It watches terminal member
  * state between Links rounds, moves already-produced evidence to a recoverable
  * stalled member, and prepares one bounded evidence packet for synthesis.
+ * A protocol stall also gets a saved-context rescue when no peer has finished;
+ * another requires new successful tool work. Otherwise an entire crew waiting
+ * on each other has no way to recover.
  * In every team mode it also carries priority user guidance to the member;
  * Links can wake an idle recipient through the shared team scheduler.
  *
@@ -15,9 +18,9 @@
  *   Wake at >= 8. Provider/config/transport failures are -Infinity because
  *   AgentLoop has already spent its bounded transport retries.
  *
- * The novelty gate and two-wake cap matter more than a timer: they prevent a
- * dead provider from becoming a retry storm while making useful recovery
- * event-driven (zero polling interval).
+ * Completed evidence uses a novelty gate; a second saved-context rescue requires
+ * actual new tool evidence. The two-wake cap prevents retry storms while
+ * keeping recovery event-driven (zero polling interval).
  */
 
 /* E1: a provider that is merely rate limiting must PAUSE a member, not
@@ -46,7 +49,7 @@ const DEFAULT_NURSE_POLICY = Object.freeze({
   priorWakePenalty: 0,
 });
 
-const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator; no restart penalty; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable';
+const NURSE_FORMULA = '3*stalled + 4*newEvidence + 2*protocol + 1*substantive + 1*coordinator; no restart penalty; wake>=8; providerOrTransport=-Infinity; rateLimited=recoverable; protocolRescue=firstWakeOrNewToolWork';
 
 /*
  * Order matters. Rate-limit evidence is checked FIRST because HARD_FAILURE_RE
@@ -104,6 +107,7 @@ class TeamNurse {
     this.userMessages = new Map();
     this.wakes = new Map();
     this.deliveries = new Set();
+    this.protocolProgress = new Map();
     this.quarantined = new Set();
     this.stats = { pulses: 0, stagedWakes: 0, wakeStarted: 0, wakeSucceeded: 0, handoffs: 0, userHandoffs: 0, userRestarts: 0, quarantined: 0, suppressed: 0 };
   }
@@ -160,8 +164,17 @@ class TeamNurse {
   }
 
   _sourcePacket(targetIndex, results, failureKind, priorWakes) {
-    const candidates = (results || [])
-      .map((result, index) => ({ result, index }))
+    const workers = [...this.net.agents.values()]
+      .filter(rec => {
+        if (rec.origin !== 'spawned' || !completedResult({ ...rec, ok: rec.status === 'completed' })) return false;
+        const saved = rec.store?.get(rec.id);
+        const todos = [...(saved?.todos || []), ...(saved?.runState?.todos || [])];
+        return !todos.some(todo => !['completed', 'cancelled'].includes(todo.status))
+          && !Object.keys(saved?.pendingEdits || {}).length && !this.net.spawnedEdits?.get(rec.id)?.length;
+      })
+      .map((rec, index) => ({ ...rec, ok: true, index: this.personas.length + index, completedAt: rec.finishedAt, sourceIsWorker: true }));
+    const candidates = [...(results || []), ...workers]
+      .map((result, index) => ({ result, index: Number.isInteger(result?.index) ? result.index : index }))
       .filter(({ result, index }) => index !== targetIndex && completedResult(result))
       .map(({ result, index: fallbackIndex }) => {
         const index = Number.isInteger(result.index) ? result.index : fallbackIndex;
@@ -201,7 +214,7 @@ class TeamNurse {
     const evidenceParts = [];
     let chars = 0;
     for (const source of distinct) {
-      const label = `FROM ${source.name || `member ${source.index + 1}`}\n`;
+      const label = `FROM ${source.name || `member ${source.index + 1}`}${source.sourceIsWorker ? ' (completed worker)' : ''}\n`;
       const available = this.policy.maxSourceChars - chars - label.length;
       if (available <= 0) break;
       const deliveredEvidence = source.output.slice(0, available);
@@ -223,13 +236,80 @@ class TeamNurse {
     };
   }
 
+  // The loop can request this snapshot after a tool-less reply without starting
+  // a new conversation or spending a Nurse wake. Only observed state is used;
+  // a draft or a successful tool call never certifies the whole task complete.
+  progressContext(agentId, draft = '') {
+    if (!this.enabled || !this.net || this.net.stopped || this.net.paused) return '';
+    const rec = this.net.agents.get(agentId);
+    const saved = rec?.store?.get(agentId);
+    if (!rec || rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped', 'skipped'].some(status => status === saved?.runState?.status || status === rec.status)) return '';
+    if (Object.keys(saved?.pendingEdits || {}).length) return '';
+    const blocks = ['TEAM NURSE PROGRESS — observed crew state; this is not proof of task completion.'];
+    const peers = [...this.net.agents.values()].filter(peer => peer.id !== agentId);
+    blocks.push('Current peers:\n' + (peers.slice(0, 24).map(peer => {
+      const waitingFor = this.net.awaiting?.get(peer.id);
+      const dependency = waitingFor ? `; awaiting ${this.net.agents.get(waitingFor)?.name || waitingFor}` : '';
+      const savedStatus = peer.store?.get(peer.id)?.runState?.status;
+      const status = this.net._peerStatus?.(peer)
+        || (['waiting_input', 'waiting_edits'].includes(savedStatus) ? savedStatus : peer.status);
+      return `- ${peer.name || peer.id}: ${status || 'unknown'}${dependency}${peer.inbox?.length ? `; ${peer.inbox.length} queued messages` : ''}`;
+    }).join('\n') || 'No other crew members are available.'));
+    const todos = [...(saved?.todos || []), ...(saved?.runState?.todos || [])]
+      .filter(todo => !['completed', 'cancelled'].includes(todo.status));
+    if (todos.length) blocks.push('Your unfinished plan items:\n' + [...new Set(todos.map(todo => String(todo.text || todo.content || todo.id || 'Unnamed item').slice(0, 240)))].slice(0, 12).map(text => `- ${text}`).join('\n'));
+    const evidence = [rec, ...peers].flatMap(peer => (peer.loop?.turnResults || []).slice(-4).map(result =>
+      `- ${peer.name || peer.id}: ${result.tool}${result.path ? ` ${String(result.path).slice(0, 180)}` : ''}: ${result.pending ? 'awaiting review; not applied' : result.ok ? 'tool succeeded' : 'tool failed'}`));
+    if (evidence.length) blocks.push('Observed partial tool results (not completed deliverables):\n' + evidence.slice(0, 16).join('\n'));
+    const lastAssistant = [...(saved?.messages || [])].reverse().find(message => message.role === 'assistant');
+    const savedDraft = String(draft || lastAssistant?._reachMeta?.display || lastAssistant?.content || '');
+    if (savedDraft.trim()) blocks.push('Your unverified draft (not a completed result):\n' + savedDraft.slice(0, 1200));
+    const guidance = 'Use available peer messages and tool evidence, then take the next concrete action on your remaining task. If a dependency is still running, continue independent work or use agent.await for that specific peer. Do not wait on a pending or queued peer while holding its only team slot. If peers are stalled, continue work you can do yourself and send a concrete request or result to the peer who needs it. A statement that you are waiting is not a completed turn; preserve the active task_complete or structured completion protocol.';
+    return [blocks[0], guidance, ...blocks.slice(1)].join('\n\n').slice(0, this.policy.maxSourceChars);
+  }
+
+  _substantiveProgress(agentId) {
+    const substantive = result => result.ok === true && !result.pending && typeof result.tool === 'string' && !result.tool.startsWith('agent.');
+    if (this.net.journal?.evidence) {
+      return new Set(this.net.journal.evidence(agentId).filter(substantive)
+        .map(result => `${result.seq}:${result.tool}:${result.resultSha256}`));
+    }
+    // Without a run journal, use the engine's persisted tool receipts. Prose,
+    // status polls and changed waiting text cannot manufacture progress.
+    const rec = this.net.agents.get(agentId);
+    const pending = new Set((rec?.loop?.turnResults || []).filter(result => result.pending).map(result => result.tool));
+    const receipts = (rec?.store?.get(agentId)?.messages || []).filter(message => message.role === 'tool' && message._reachMeta?.source === 'tool');
+    const keys = [];
+    for (const message of receipts) {
+      let result;
+      try { result = JSON.parse(message.content); } catch { continue; }
+      if (substantive(result) && !pending.has(result.tool) && result.resultSha256) {
+        keys.push(`${message._reachMeta.observationId || message.tool_call_id || ''}:${result.tool}:${result.resultSha256}`);
+      }
+    }
+    return new Set(keys);
+  }
+
+  _protocolPacket(targetIndex, results, priorWakes) {
+    const agentId = this._agentId(targetIndex);
+    const progress = this._substantiveProgress(agentId);
+    const previous = this.protocolProgress.get(targetIndex);
+    if (priorWakes > 0 && (!previous || ![...progress].some(key => !previous.has(key)))) return null;
+    const output = this.progressContext(agentId, String(results[targetIndex]?.output || ''));
+    if (!output) return null;
+    return { kind: 'protocol-rescue', sources: [], anchor: null, output, chars: output.length,
+      progress, evidenceKey: fingerprint(output + '\n' + [...progress].join('\n')) };
+  }
+
   _recoveryMessage(targetIndex, packet, error) {
     const target = this.personas[targetIndex];
     const sourceNames = packet.sources.map(source => source.name || `member ${source.index + 1}`).join(', ');
     return [
       'TEAM NURSE RECOVERY — silent orchestration handoff.',
       `Your previous turn stalled: ${String(error || 'no usable completed action').slice(0, 800)}`,
-      `New completed evidence from ${sourceNames}:`,
+      packet.kind === 'protocol-rescue'
+        ? 'This bounded protocol rescue uses your saved context and the current crew state. Drafts remain unverified; another rescue requires new successful tool work.'
+        : `New completed evidence from ${sourceNames}:`,
       packet.output,
       `Resume the original task as ${target?.name || 'this team member'}. Use the new evidence, do only the remaining useful work, and send concrete results to the peer who needs them. Do not repeat the failed response.`,
       'The engine requires a valid completed turn with the actual answer. Preserve useful draft work, resolve unfinished plan items or reviews, then return the full deliverable through task_complete in native mode or the active structured completion protocol. Peer messages and plain-text completion claims cannot finish the team.',
@@ -238,7 +318,7 @@ class TeamNurse {
 
   stageRecoveries({ results = [], stalled = new Map(), turns = [], maxTurns = Infinity } = {}) {
     this.stats.pulses++;
-    if (!this.enabled || !this.net) return [];
+    if (!this.enabled || !this.net || this.net.stopped) return [];
     if (this.net.paused) {
       if (stalled.size) this.stats.suppressed += stalled.size;
       return [];
@@ -248,7 +328,9 @@ class TeamNurse {
       const agentId = this._agentId(index);
       const rec = this.net.agents.get(agentId);
       if (!rec) continue;
-      if (rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped', 'skipped'].includes(rec.status)) {
+      const saved = rec.store?.get(agentId);
+      if (rec.loop?.running || rec.control?.paused || ['waiting_input', 'waiting_edits', 'stopped', 'skipped'].some(status => status === rec.status || status === saved?.runState?.status)
+        || Object.keys(saved?.pendingEdits || {}).length || turns[index] >= maxTurns) {
         this.stats.suppressed++;
         continue;
       }
@@ -270,21 +352,26 @@ class TeamNurse {
         }
         continue;
       }
-      const packet = this._sourcePacket(index, results, failureKind, priorWakes);
-      if (!packet) continue; // retrying without new information is churn, not nursing
+      let packet = this._sourcePacket(index, results, failureKind, priorWakes);
+      if (packet && this.deliveries.has(`${index}:${packet.evidenceKey}`)) {
+        this.stats.suppressed++;
+        packet = null;
+      }
+      packet ||= failureKind === 'protocol' ? this._protocolPacket(index, results, priorWakes) : null;
+      if (!packet) continue;
       const evidenceId = `${index}:${packet.evidenceKey}`;
       if (this.deliveries.has(evidenceId)) {
         this.stats.suppressed++;
         continue;
       }
-      const score = recoveryScore({
+      const score = packet.kind === 'protocol-rescue' ? null : recoveryScore({
         failureKind,
         priorWakes,
         sourceChars: packet.chars,
         sourceIsCoordinator: packet.sourceIsCoordinator,
         hasNewEvidence: true,
       }, this.policy);
-      if (score < this.policy.minRecoveryScore) {
+      if (score !== null && score < this.policy.minRecoveryScore) {
         this.stats.suppressed++;
         continue;
       }
@@ -293,12 +380,14 @@ class TeamNurse {
       rec.inbox.push(message);
       rec.messagesReceived++;
       this.deliveries.add(evidenceId);
+      if (packet.kind === 'protocol-rescue') this.protocolProgress.set(index, packet.progress);
       this.wakes.set(index, priorWakes + 1);
       this.stats.stagedWakes++;
       const action = {
         action: 'wake-staged', index, name: this.personas[index]?.name || rec.name,
-        sourceIndex: packet.anchor.index, sourceName: packet.anchor.name,
+        sourceIndex: packet.anchor?.index, sourceName: packet.anchor?.name,
         sourceNames: packet.sources.map(source => source.name), failureKind, score,
+        recoveryKind: packet.kind || 'completed-evidence',
         inbox: rec.inbox.length, nurseWakes: priorWakes + 1,
       };
       planned.push(action);
