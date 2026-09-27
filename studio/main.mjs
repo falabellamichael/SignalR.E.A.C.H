@@ -22,6 +22,7 @@ const engines = require('./agent/engines.cjs');
 const { AgentStore } = require('./agent/agent-store.cjs');
 const { AgentLoop } = require('./agent/agent-loop.cjs');
 const { decideAuto, intersectFeatures } = require('./agent/jev-auto.cjs');
+const { notice: jevNotice } = require('./agent/jev-policy.cjs');
 const { parseAgentResponse } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
@@ -772,6 +773,10 @@ function registerIpc() {
       const summary = { ok: true, kind: route?.kind || 'current', label: route?.label || 'Current selection',
         reason: decision.reason, features: intersectFeatures(agent.settings || {}, decision.features).features,
         usage: decision.usage || null, cached: decision.cached === true };
+      const compliance = jevNotice('model and tool routing', { ...decision, usage: null });
+      if (compliance.severity === 'warning' && win && !win.isDestroyed()) {
+        win.webContents.send('agent:event', { agentId: id, type: 'jev-policy', ...compliance, at: Date.now() });
+      }
       if (!route) return summary;
       const token = randomUUID();
       for (const [key, plan] of autoPlans) if (plan.expires < Date.now()) autoPlans.delete(key);

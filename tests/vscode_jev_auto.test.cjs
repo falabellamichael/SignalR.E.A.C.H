@@ -18,8 +18,9 @@ function answers(body, overrides = {}) {
   })), usage: { input_tokens: 130, output_tokens: 25 } };
 }
 
-function host({ enabled = true, key = 'secret-for-test', trusted = true, route = {}, rawResponse } = {}) {
-  const calls = [], posts = [], contexts = [];
+function host({ enabled = true, key = 'secret-for-test', trusted = true, route = {}, rawResponse,
+  reviewResponse, answerResponse } = {}) {
+  const calls = [], reviews = [], posts = [], contexts = [];
   const settings = { provider: 'endpoint', endpoint: 'https://chat.example/v1', model: 'large-code-model',
     typesafeAutoMode: enabled, think: false, webSearch: false, disabledTools: ['shell'] };
   const request = createRequire(extensionPath);
@@ -31,10 +32,15 @@ function host({ enabled = true, key = 'secret-for-test', trusted = true, route =
     require: name => name === 'vscode' ? vscode : name === './search' ? {} : request(name),
     fetch: async (url, options) => {
       const body = JSON.parse(options.body || '{}');
+      if (body.questions?.requirements) {
+        reviews.push({ url, options, body });
+        return reviewResponse ? reviewResponse(body, reviews.length)
+          : new Response(JSON.stringify(answers(body, { requirements: 0.97, evidence: 0.96 })));
+      }
       calls.push({ url, options, body });
       if (url === 'https://api.typesafe.ai/v1/systemone') return new Response(JSON.stringify(
         rawResponse ? rawResponse(body) : answers(body, route)));
-      return new Response(JSON.stringify({ choices: [{ message: { content: 'A useful answer.' }, finish_reason: 'stop' }] }));
+      return new Response(JSON.stringify({ choices: [{ message: { content: answerResponse ? answerResponse(body) : 'A useful answer.' }, finish_reason: 'stop' }] }));
     } };
   vm.runInNewContext(source + '\nmodule.exports.Provider = ReachChatViewProvider; module.exports.config = config;', sandbox,
     { filename: extensionPath });
@@ -52,8 +58,56 @@ function host({ enabled = true, key = 'secret-for-test', trusted = true, route =
   const body = (extra = {}) => ({ autoTurnId: 'turn-1', autoRequest: 'Explain the difference between a list and a tuple.',
     model: 'large-code-model', agentic: true, includeWorkspace: true, think: false, webSearch: false,
     messages: [{ role: 'user', content: 'Explain the difference between a list and a tuple.\nPRIVATE ATTACHMENT CONTENT' }], ...extra });
-  return { provider, settings, vscode, calls, posts, contexts, receive, body };
+  return { provider, settings, vscode, calls, reviews, posts, contexts, receive, body };
 }
+
+test('completion review is automatic only with Jev enabled and identical checks reuse the cache', async () => {
+  const h = host();
+  await h.provider._chat(h.body());
+  assert.equal(h.reviews.length, 1);
+  assert.equal(h.reviews[0].body.state.task, h.body().autoRequest);
+  assert.equal(JSON.stringify(h.reviews[0].body).includes('PRIVATE ATTACHMENT'), false);
+  await h.provider._chat(h.body({ autoTurnId: 'next' }));
+  assert.equal(h.reviews.length, 1);
+  assert.ok(h.posts.some(post => post.result?.includes('Cached judgment')));
+  const off = host({ enabled: false });
+  await off.provider._chat(off.body());
+  assert.equal(off.reviews.length, 0);
+  assert.equal(off.posts.some(post => post.title?.includes('Jev')), false);
+});
+
+test('failed completion gets one correction, then blocks structured Agent completion', async () => {
+  const h = host({ route: { mode: 'agent', tools: 'inspect', workspace: 0.95 },
+    reviewResponse: body => new Response(JSON.stringify(answers(body, { requirements: 0.02, evidence: 0.98 }))),
+    answerResponse: () => JSON.stringify({ status: 'complete', message: 'All work is finished.', actions: [], options: [] }) });
+  await h.provider._chat(h.body({ structuredActions: true }));
+  const providerCalls = h.calls.filter(call => !call.url.includes('typesafe'));
+  assert.equal(providerCalls.length, 2);
+  assert.match(providerCalls[1].body.messages.at(-1).content, /runtime task-compliance/);
+  assert.equal(h.reviews.length, 1, 'identical failed answer reuses its verdict');
+  assert.equal(h.posts.findLast(post => post.type === 'done').agentAction.control.status, 'blocked');
+});
+
+test('uncertainty and outages alert without unbounded retries or certifying the answer', async () => {
+  for (const reviewResponse of [body => new Response(JSON.stringify(answers(body, { requirements: 0.5, evidence: 0.5 }))),
+    () => new Response('', { status: 429 })]) {
+    const h = host({ reviewResponse });
+    await h.provider._chat(h.body());
+    assert.equal(h.calls.filter(call => !call.url.includes('typesafe')).length, 1);
+    assert.equal(h.reviews.length, 1);
+    assert.ok(h.posts.some(post => post.title === 'Jev compliance alert'));
+    assert.equal(h.posts.findLast(post => post.type === 'done').full, 'A useful answer.');
+  }
+});
+
+test('disabling Jev between rounds drops Auto restrictions and skips further reviews', async () => {
+  const h = host({ route: { mode: 'agent', tools: 'inspect', workspace: 0.95 } });
+  await h.provider._chat(h.body());
+  h.settings.typesafeAutoMode = false;
+  await h.provider._chat(h.body({ autoContinuation: true }));
+  assert.equal(h.provider._jevActiveTurn, null);
+  assert.equal(h.reviews.length, 1);
+});
 
 test('Auto applies chosen model and direct route without changing saved setup or sending attached context', async () => {
   const h = host();

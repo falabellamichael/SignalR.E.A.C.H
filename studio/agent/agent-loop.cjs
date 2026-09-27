@@ -30,6 +30,7 @@ const { resolveBudgets, cap } = require('./budgets.cjs');
 const { buildCodeContext, formatInjection } = require('./code-context.cjs');
 const { decideContext, recentQuery } = require('./jev-context.cjs');
 const { intersectFeatures } = require('./jev-auto.cjs');
+const { reviewCompletion, notice: jevNotice, correctionInstruction, taskForReview } = require('./jev-policy.cjs');
 const { soulPromptBlock } = require('./agent-soul.cjs');
 const { diagnosticLog } = require('./diagnostic-log.cjs');
 const { ReadMemo } = require('./read-memo.cjs');
@@ -80,6 +81,7 @@ class AgentLoop {
     this.nativeTools = !!nativeTools;
     this.jev = jev?.enabled ? { apiKey: jev.apiKey || '', fetchImpl: jev.fetchImpl } : null;
     this.jevContextCache = new Map();
+    this.jevReviewCache = new Map();
     this.featureMask = featureMask ? structuredClone(featureMask) : null;
     this.personaPrompt = String(personaPrompt || '');
     // SOUL.md + MEMORY.md for this agent (agent/agent-soul.cjs). Optional: when
@@ -156,10 +158,11 @@ class AgentLoop {
 
   _emit(type, payload) {
     const event = { agentId: this.agentId, type, ...payload, at: Date.now() };
-    if (['round', 'request-start', 'tool-call', 'tool-result', 'compacted'].includes(type)) {
+    if (['round', 'request-start', 'tool-call', 'tool-result', 'compacted', 'jev-policy'].includes(type)) {
       diagnosticLog(this.logger, { event: type, agentId: this.agentId, at: event.at,
         round: payload.round, purpose: payload.purpose, tool: payload.tool,
-        ok: payload.ok, before: payload.before, after: payload.after });
+        ok: payload.ok, before: payload.before, after: payload.after,
+        ...(type === 'jev-policy' ? { stage: payload.stage, reason: payload.reason, severity: payload.severity, usage: payload.usage } : {}) });
     }
     // E9: the reducer is engine-owned (agent/activity.cjs). The renderer keeps a
     // generated copy because it loads scripts under CSP without require().
@@ -474,9 +477,33 @@ class AgentLoop {
     }
     this._emit('jev-context', { reason: decision.reason, injected: decision.inject, cached,
       probability: decision.probability, usage: cached ? null : decision.usage || null });
+    // The selection event already accounts for this request's usage.
+    const compliance = jevNotice('context selection', { ...decision, cached, usage: null });
+    if (compliance.severity === 'warning') this._emit('jev-policy', compliance);
     if (decision.inject) return this._withCodeContext(messages, block);
     this._emit('code-context', { injected: false, reason: 'Jev judged the retrieved symbols unrelated to this request.' });
     return messages;
+  }
+
+  async _checkJevCompletion(answer) {
+    if (!this.jev) return null;
+    const request = taskForReview(this._agent()?.messages);
+    const result = await reviewCompletion({ apiKey: this.jev.apiKey, request, answer,
+      observations: this.turnResults, cache: this.jevReviewCache, signal: this.abortController?.signal,
+      ...(this.jev.fetchImpl ? { fetchImpl: this.jev.fetchImpl } : {}) });
+    this.abortController?.signal.throwIfAborted();
+    // Guidance arriving while a verdict is pending invalidates that verdict.
+    if (this.steering.length) return 'retry';
+    this._emit('jev-policy', jevNotice('task completion', result));
+    if (result.reason !== 'failed') return null;
+    if (this.jevRepairUsed) return 'pause';
+    this.jevRepairUsed = true;
+    this.store.appendMessage(this.agentId, { role: 'assistant', content: answer,
+      _reachMeta: { source: 'recovery-attempt', display: answer } });
+    this.store.appendMessage(this.agentId, { role: 'user', content: correctionInstruction(result),
+      _reachMeta: { source: 'recovery' } });
+    this._emit('message-end', { role: 'assistant', provisional: true });
+    return 'retry';
   }
 
   async _budgetedAnswer(messages) {
@@ -676,6 +703,7 @@ class AgentLoop {
 
     this.running = true;
     this.turnResults = [];
+    this.jevRepairUsed = false;
     this.readMemo = this._budgets().memoizeReads ? new ReadMemo(this.projectDir) : null;
     this._rateLimitRetries = 0;
     this.stopRequested = false;
@@ -768,10 +796,13 @@ class AgentLoop {
 
         let content = reply.content || '';
         if (!features(this._settings()).agent) {
+          const compliance = await this._checkJevCompletion(content);
+          if (compliance === 'retry') continue;
           this._emit('message-end', { role: 'assistant', content, thought: reply.reasoning || '' });
           this.store.appendMessage(this.agentId, { role: 'assistant', content,
             _reachMeta: { display: content, ...(reply.reasoning?.trim() ? { thought: reply.reasoning } : {}) } });
-          runState = { ...runState, status: 'completed', reason: '' };
+          runState = { ...runState, status: compliance === 'pause' ? 'paused' : 'completed',
+            reason: compliance === 'pause' ? 'Jev task check still failed after one correction. Review the answer before continuing.' : '' };
           break;
         }
         let parsed = parseAgentResponse(content, reply.nativeActions || []);
@@ -796,6 +827,12 @@ class AgentLoop {
         if (reply.budgetFallback || decision.action === 'pause' && decision.reason?.startsWith('Agent round limit')) {
           if (!reply.budgetFallback) { reply = this._budgetCheckpoint('round'); content = reply.content; parsed = parseAgentResponse(content); }
           decision = { action: 'pause', state: { ...runState, status: 'paused', reason: 'Budget reached. Progress saved; Continue to resume.' } };
+        }
+        if (decision.action === 'complete') {
+          const compliance = await this._checkJevCompletion(parsed.display || content);
+          if (compliance === 'retry') continue;
+          if (compliance === 'pause') decision = { action: 'pause', state: { ...runState, status: 'paused',
+            reason: 'Jev task check still failed after one correction. Review the answer before continuing.' } };
         }
         const provisional = decision.action === 'continue';
         // A native control turn can have empty content (the answer lives in

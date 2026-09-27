@@ -6,7 +6,7 @@
  * re-run the build; activity.test.cjs fails the gate if this file is stale.
  *
  * source: agent/activity.cjs
- * sha256: 98d8513158d892f797536bc93c074eb4dd561126def842c6309b1d176e8fc7b6
+ * sha256: a1fef2eb59815db3f136655ef837e8ebd0e1275561c817613e96a8034c075822
  */
 /* Shared event model for Studio's VS Code-style activity timeline.
  * Timers measure waiting; only provider/tool events count as reported activity.
@@ -27,7 +27,7 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.ReachActivityState = factory();
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-  const relevant = new Set(['run-state','round','request-start','message-start','reasoning','delta','message-end','tool-call','tool-result','approval-wait','approval-end','rate-limit','retry','budget-recovery','recovery','compaction-start','compaction-progress','compacted','code-context','jev-context','jev-auto','error','stopped']);
+  const relevant = new Set(['run-state','round','request-start','message-start','reasoning','delta','message-end','tool-call','tool-result','approval-wait','approval-end','rate-limit','retry','budget-recovery','recovery','compaction-start','compaction-progress','compacted','code-context','jev-context','jev-auto','jev-policy','error','stopped']);
   function reduce(state, event, now = event.at || Date.now()) {
     if (!relevant.has(event.type)) return state;
     if (!state || event.type === 'run-state' && event.status === 'running' && state.status !== 'running') {
@@ -54,6 +54,13 @@
         else { close(event.status === 'completed' ? 'done' : event.status === 'error' ? 'error' : 'paused'); state.endedAt = now; state.reason = event.reason || ''; }
         break;
       case 'round': state.round = event.round; break;
+      case 'jev-policy': {
+        const usage = event.usage ? ` · ${event.usage.inputTokens} Jev input / ${event.usage.outputTokens} output tokens` : '';
+        start(event.severity === 'warning' ? 'Jev compliance alert' : 'Jev task check',
+          event.message + (event.cached ? ' · cached' : '') + usage, 'prepare');
+        close(event.severity === 'warning' ? 'error' : 'done', event.message + usage);
+        break;
+      }
       case 'jev-auto': {
         const usage = event.usage ? ` · ${event.usage.inputTokens} Jev input tokens` : '';
         const action = event.label || 'Kept your selected setup';

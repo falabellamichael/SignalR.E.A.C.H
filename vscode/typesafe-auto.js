@@ -91,7 +91,8 @@ async function routeWithJev({ key, request, models, currentModel, manualModel, p
     const agentic = permissions.agent && mode !== 'direct';
     return { model: selected === 'current' ? currentModel : alternatives[Number(selected.slice(6))],
       agentic, permissions: enabled, tools: agentic ? toolsForProfile(tools, profile) : [],
-      profile: agentic ? profile : 'none', usage };
+      profile: agentic ? profile : 'none', usage,
+      uncertain: ['workspace', 'web', 'think'].some(name => questions[name] && data.answers[name].noul > 0.15 && data.answers[name].noul < 0.85) };
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', onAbort);

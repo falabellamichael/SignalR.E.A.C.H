@@ -21,6 +21,7 @@ const { compactMessages, contextChars } = require('./context');
 const { readChatResponse, emptyReplyDiagnostic, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response');
 const { jevRequestIsSelfContained, jevShortlistCoversRequest, selectWorkspaceFilesWithJev, shortlistPaths } = require('./typesafe-jev');
 const { routeWithJev } = require('./typesafe-auto');
+const { reviewCompletion, notice: jevNotice, correctionInstruction, taskForReview } = require('./jev-policy');
 const { protocol: agentRunProtocol, chatInstruction } = require('./media/agent-run');
 const actionCodec = require('./agent-action');
 const { runAgentCommand } = require('./agent-command');
@@ -1062,7 +1063,7 @@ class ReachChatViewProvider {
           const uid = String(msg.uid || '');
           const action = String(msg.action || '');
           this._engineToolRequests ??= new Map();
-          this._engineToolRequests.set(uid, { action, request: msg });
+          this._engineToolRequests.set(uid, { action, request: msg, jevTurn: this._jevEvidence });
           if (config().disabledTools.includes(action)) {
             this._post('toolResult', { uid, ok:false, error:'The ' + action + ' tool is disabled in REACH settings (simplereach.disabledTools). Enable it to use this tool.' });
             break;
@@ -1286,6 +1287,9 @@ class ReachChatViewProvider {
       const request = this._engineToolRequests?.get(payload.uid);
       if (request) {
         this._engineToolRequests.delete(payload.uid);
+        if (request.jevTurn && request.jevTurn === this._jevEvidence) {
+          request.jevTurn.observations.push({ tool: request.action, ok: payload.ok === true, pending: payload.pending === true });
+        }
         try { engines.getLedger().observe(request.action, request.request, payload, payload.uid); }
         catch { /* Evidence persistence must not block a real tool result. */ }
       }
@@ -1567,6 +1571,37 @@ class ReachChatViewProvider {
 
   _finishActivity(uid, result, status = 'completed') {
     this._post('agentStep', { uid, status, result });
+  }
+
+  _jevPolicyNotice(stage, result) {
+    const event = jevNotice(stage, result);
+    const usage = event.usage ? ` ${event.usage.inputTokens} Jev input / ${event.usage.outputTokens} output tokens.` : '';
+    const activity = this._beginActivity(event.severity === 'warning' ? 'Jev compliance alert' : 'Jev task check');
+    this._finishActivity(activity, event.message + usage + (event.cached ? ' Cached judgment; no new request.' : ''),
+      event.severity === 'warning' ? 'error' : 'completed');
+  }
+
+  async _reviewJevCompletion(body, answer, controller) {
+    // Re-read the setting: switching Jev off must stop subsequent reviews.
+    if (!config().typesafeFileSelection) return null;
+    let apiKey;
+    try { apiKey = await this._secrets?.get('typesafe.jev.apiKey'); }
+    catch (_) {
+      controller.signal.throwIfAborted();
+      if (this._controller !== controller) throw new Error('Jev task check was superseded.');
+      this._jevPolicyNotice('task completion', { reason: 'key-storage-unavailable' });
+      return null;
+    }
+    controller.signal.throwIfAborted();
+    if (this._controller !== controller) throw new Error('Jev task check was superseded.');
+    const request = this._jevEvidence?.request ?? taskForReview(body.messages, body.autoRequest);
+    this._jevReviewCache ??= new Map();
+    const result = await reviewCompletion({ apiKey, request, answer, signal: controller.signal,
+      observations: this._jevEvidence?.observations || [], cache: this._jevReviewCache, fetchImpl: fetch });
+    controller.signal.throwIfAborted();
+    if (this._controller !== controller) throw new Error('Jev task check was superseded.');
+    this._jevPolicyNotice('task completion', result);
+    return result;
   }
 
   // Retry inference/metadata requests only. Tool execution is outside this path.
@@ -1978,6 +2013,7 @@ class ReachChatViewProvider {
       const prompt = typeof lastUser?.content === 'string' ? lastUser.content : '';
       const selectionPrompt = typeof requestText === 'string' ? requestText : prompt;
       let usedJev = false;
+      let jevFallback = 'ineligible-request-or-catalog';
       const catalog = connection.typesafeFileSelection
         ? shortlistPaths([...candidates.keys()].filter(path => !excludeAutoContext(candidates.get(path))), selectionPrompt) : [];
       if (catalog.length && connection.typesafeFileSelection && this._secrets && jevRequestIsSelfContained(selectionPrompt)
@@ -1998,6 +2034,7 @@ class ReachChatViewProvider {
             }
             assertCurrent();
             const usage = result.usage;
+            jevFallback = result.abstained ? 'uncertain' : 'selected';
             this._post('agentStep', { uid: selectionActivity, status: 'running',
               note: cached ? result.abstained
                 ? 'Jev selection was previously uncertain; using the selected provider without another Jev request.'
@@ -2010,12 +2047,13 @@ class ReachChatViewProvider {
               paths = result.paths;
               usedJev = true;
             }
-          }
+          } else jevFallback = 'missing-key';
         } catch (_) {
           assertCurrent();
-          // Jev is optional. Preserve the provider selection path on service errors.
+          jevFallback = 'request-failed';
         }
       }
+      if (!usedJev && connection.typesafeFileSelection) this._jevPolicyNotice('file selection', { reason: jevFallback });
       if (!usedJev) try {
         assertCurrent();
         const response = await this._fetchRetry(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
@@ -2106,6 +2144,10 @@ class ReachChatViewProvider {
   }
 
   async _applyJevAuto(body, connection, controller) {
+    if (!connection.typesafeAutoMode) {
+      this._jevActiveTurn = null;
+      return { body, connection };
+    }
     const assertCurrent = () => {
       controller.signal.throwIfAborted();
       if (this._controller !== controller) throw new Error('Jev Auto request was superseded.');
@@ -2144,6 +2186,7 @@ class ReachChatViewProvider {
     const activity = this._beginActivity('Jev Auto · choose model and tools');
     const request = typeof body.autoRequest === 'string' ? body.autoRequest.trim() : '';
     if (!jevRequestIsSelfContained(request)) {
+      this._jevPolicyNotice('model and tool routing', { reason: 'context-required-or-input-limit' });
       this._finishActivity(activity, 'Keeping your current setup: this request needs conversation context or exceeds the routing limit.');
       return { body, connection };
     }
@@ -2151,6 +2194,7 @@ class ReachChatViewProvider {
       const apiKey = await this._secrets?.get('typesafe.jev.apiKey');
       assertCurrent();
       if (!apiKey) {
+        this._jevPolicyNotice('model and tool routing', { reason: 'missing-key' });
         this._finishActivity(activity, 'Keeping your current setup: save a TypeSafe key with REACH: Set TypeSafe (Jev) API Key to use Auto.');
         return { body, connection };
       }
@@ -2176,13 +2220,16 @@ class ReachChatViewProvider {
         : cached ? 'Reused the previous decision; no new Jev request.'
         : result.usage ? `Jev used ${result.usage.input_tokens} input / ${result.usage.output_tokens} output tokens.` : 'Jev token usage unavailable.';
       if (result.abstained) {
+        this._jevPolicyNotice('model and tool routing', { reason: 'uncertain' });
         this._finishActivity(activity, 'Keeping your current setup: Jev was uncertain. ' + usage);
         return { body, connection };
       }
+      if (result.uncertain) this._jevPolicyNotice('model and tool routing', { reason: 'uncertain' });
       this._finishActivity(activity, `${result.model} · ${result.agentic ? 'Agent' : 'Direct answer'} · ${result.profile} tools. ${usage}`);
       return apply(result);
     } catch (error) {
       assertCurrent();
+      this._jevPolicyNotice('model and tool routing', { reason: 'request-failed' });
       this._finishActivity(activity, 'Keeping your current setup: Jev Auto is unavailable.');
       return { body, connection };
     }
@@ -2200,6 +2247,9 @@ class ReachChatViewProvider {
     this._controller = controller;
     try {
       let connection = config();
+      if (!body.autoContinuation || !this._jevEvidence || this._jevEvidence.id !== body.autoTurnId) {
+        this._jevEvidence = { id: body.autoTurnId, request: taskForReview(body.messages, body.autoRequest), observations: [], repairUsed: false };
+      }
       ({ body, connection } = await this._applyJevAuto(body, connection, controller));
       if (Array.isArray(body.runTodos)) todoState = normalizeTodos(body.runTodos);
       // The relay publishes the economy models under their bare ids while the
@@ -2520,11 +2570,47 @@ class ReachChatViewProvider {
               if (fixed.error) throw new Error(fixed.error);
               action = actionCodec.decodeReply(fixed);
             }
+            if (action.control?.status === 'complete') {
+              let review = await this._reviewJevCompletion(body, action.message, controller);
+              if (review?.reason === 'failed' && !this._jevEvidence.repairUsed) {
+                this._jevEvidence.repairUsed = true;
+                const repair = { ...payload, stream: false, messages: [...payload.messages,
+                  { role: 'assistant', content: action.context },
+                  { role: 'user', content: correctionInstruction(review) }] };
+                const repaired = await sendCompatible(repair);
+                if (!repaired.ok) throw new Error('Jev requested a correction, but the answer provider failed. The task is preserved.');
+                const fixed = await readReply(repaired, false);
+                if (fixed.error) throw new Error(fixed.error);
+                action = actionCodec.decodeReply(fixed);
+                review = action.control?.status === 'complete' ? await this._reviewJevCompletion(body, action.message, controller) : null;
+              }
+              if (review?.reason === 'failed') action = actionCodec.decode(JSON.stringify({ status: 'blocked',
+                message: 'Jev task check still failed after one correction. Review before continuing.\n\n' + action.message,
+                actions: [], options: [] }));
+            }
             controller.signal.throwIfAborted();
             this._actionFormats.set(actionFormatKey, payload.response_format?.type || 'text');
             if (omitActionTemplate) this._actionNoTemplate.add(actionFormatKey);
             if (this._controller === controller) this._post('done', { full: action.message, agentAction: action });
-          } else this._post('done', payload.stream ? {} : { full: reply.content });
+          } else {
+            let review = await this._reviewJevCompletion(body, reply.content, controller);
+            let corrected = false;
+            if (review?.reason === 'failed' && !this._jevEvidence.repairUsed) {
+              this._jevEvidence.repairUsed = true;
+              const repair = { ...payload, stream: false, messages: [...payload.messages,
+                { role: 'assistant', content: reply.content }, { role: 'user', content: correctionInstruction(review) }] };
+              const repaired = await sendCompatible(repair);
+              if (!repaired.ok) throw new Error('Jev requested a correction, but the answer provider failed. The conversation is preserved.');
+              reply = await readReply(repaired, false);
+              if (reply.error || !reply.content.trim()) throw new Error(reply.error || 'The correction was empty. The conversation is preserved.');
+              corrected = true;
+              review = await this._reviewJevCompletion(body, reply.content, controller);
+            }
+            controller.signal.throwIfAborted();
+            if (this._controller === controller) this._post('done', review?.reason === 'failed'
+              ? { full: 'Jev task check still failed after one correction. Review before continuing.\n\n' + reply.content }
+              : corrected || !payload.stream ? { full: reply.content } : {});
+          }
         }
       }
     } catch (err) {

@@ -263,12 +263,12 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 <!-- BASELINE:START -->
 | Metric | Value |
 | --- | --- |
-| `studio/main.mjs lines` | 4,536 |
+| `studio/main.mjs lines` | 4,541 |
 | `studio/renderer/app.js lines` | 5,275 |
 | `studio/preload.cjs lines` | 223 |
-| `studio/agent modules` | 78 |
+| `studio/agent modules` | 79 |
 | `studio/renderer scripts` | 25 |
-| `studio/test files` | 79 |
+| `studio/test files` | 80 |
 | `static IPC handlers` | 100 |
 | `preload invoke channels` | 101 |
 | `IPC manifest entries` | 101 |

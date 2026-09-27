@@ -202,6 +202,11 @@
                 <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">↗</span><div><p class="home-card-kicker">WALLET SIGN-IN</p><h3>Connect to REACH</h3></div></div><span id="home-account-badge" class="home-preview-badge">NOT CONFIGURED</span></div>
                 <div class="home-field"><label for="home-account-service">Hosted REACH service</label><div class="home-account-url-row"><input id="home-account-service" type="url" placeholder="https://your-reach-service.example" autocomplete="off" spellcheck="false" /><button id="home-account-configure" class="ghost small" type="button">Save service</button></div></div>
                 <p id="home-account-wallet" class="home-wallet-address">Your wallet address will appear after sign-in.</p>
+                <div class="home-wallet-holdings">
+                  <p class="home-card-kicker">RCH wallet balance</p>
+                  <p id="home-wallet-balance" class="home-wallet-balance" role="status" aria-live="polite">—</p>
+                  <p id="home-wallet-balance-detail" class="home-card-footnote">Connect your wallet to see your RCH balance.</p>
+                </div>
                 <div class="home-action-row"><button id="home-account-connect" class="gold small" type="button" disabled>Connect wallet</button><button id="home-account-cancel" class="ghost small" type="button" hidden>Cancel sign-in</button><button id="home-account-refresh" class="ghost small" type="button" disabled>Refresh</button><button id="home-account-disconnect" class="ghost small" type="button" disabled>Disconnect</button></div>
                 <p id="home-account-status" class="home-inline-status" role="status" aria-live="polite">Configure the hosted service to connect your wallet.</p>
                 <p class="home-card-footnote">Sign a login message in your browser wallet. Sign-in does not spend RCH or approve a transaction.</p>
@@ -492,11 +497,11 @@
         <label for="set-reach-cli">Native Reach compiler (reachc) executable (optional)</label>
         <input id="set-reach-cli" type="text" placeholder="Auto-discover reachc" spellcheck="false" />
         <p id="set-reach-cli-help" class="dim"></p>
-        <h3>TypeSafe Jev context selection</h3>
-        <label class="check"><input id="set-jev-enabled" type="checkbox" /> Use Jev to skip unrelated automatic code context</label>
+        <h3>TypeSafe Jev assistance</h3>
+        <label class="check"><input id="set-jev-enabled" type="checkbox" /> Use Jev for context selection and task compliance checks</label>
         <label class="check"><input id="set-jev-auto-mode" type="checkbox" /> Auto mode by default: choose a configured model or team, tools and context for each prompt</label>
         <p class="settings-description">Auto uses enabled connection models and saved teams. It keeps your permissions and falls back to your selected setup when uncertain. The Auto switch in each conversation overrides this default. Explicit @ routes, slash commands and a manually selected team take priority.</p>
-        <p class="settings-description">Sends a short user request and candidate symbol names and paths to TypeSafe to check whether code context is useful. Retrieved source and tool output are excluded from the Jev request. Uncertain or failed decisions keep the usual context. Jev calls use API tokens.</p>
+        <p class="settings-description">When either Jev option is enabled, the app automatically checks context relevance and proposed task completion. TypeSafe receives the task (up to 1,500 characters), proposed answer (up to 6,000 characters), and tool names with success or pending status; context selection also sends candidate symbol names and paths. Raw tool output is excluded, but the proposed answer may quote source text. Compliance alerts show fallbacks, uncertainty and failed checks. A failed task check gets one correction attempt, then pauses if it still fails. Jev calls use API tokens; identical checks are cached. Turn both options off to disable these checks.</p>
         <label for="set-jev-key">TypeSafe API key</label>
         <div class="row"><input id="set-jev-key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved key" spellcheck="false" /><button id="btn-clear-jev-key" class="ghost small" type="button">Clear saved key</button></div>
         <p id="set-jev-key-status" class="dim" role="status"></p>

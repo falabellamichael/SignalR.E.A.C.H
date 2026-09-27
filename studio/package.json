@@ -121,6 +121,10 @@
       {
         "from": "../vscode/engine-core.js",
         "to": "engine-core.cjs"
+      },
+      {
+        "from": "../vscode/jev-policy.js",
+        "to": "jev-policy.cjs"
       }
     ]
   },

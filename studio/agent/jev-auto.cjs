@@ -150,7 +150,9 @@ async function decideAuto({ apiKey, query, candidates, features = {}, signal, fe
     const selected = route.confidence >= 0.8 && route.probabilities[route.choice] >= 0.8
       ? choices.find(choice => choice.option === route.choice) : null;
     const changed = !!selected || FEATURE_NAMES.some(key => effective[key] !== allowed[key]);
-    const result = { candidateId: selected?.id || null, features: effective, reason: changed ? 'jev-auto' : 'jev-keep', usage, cached: false };
+    const uncertain = route.confidence < 0.8 || route.probabilities[route.choice] < 0.8
+      || FEATURE_NAMES.some(key => allowed[key] && answers[`need_${key}`].noul > 0.1 && answers[`need_${key}`].noul < 0.9);
+    const result = { candidateId: selected?.id || null, features: effective, reason: changed ? 'jev-auto' : 'jev-keep', usage, cached: false, uncertain };
     if (cache instanceof Map) {
       cache.set(cacheKey, { at: Date.now(), result: { ...result, features: { ...effective }, usage: null } });
       while (cache.size > MAX_CACHE) cache.delete(cache.keys().next().value);
