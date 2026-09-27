@@ -55,7 +55,7 @@ const { runCommand } = require('./agent/platform.cjs');
 // showing symbols the agent had already renamed or deleted.
 const { getIndex: sharedGetIndex, invalidateIndex } = codeIndex;
 const { AuditLog } = require('./agent/audit-log.cjs');
-const { CrewJournal, journalPath, listRecoverable } = require('./agent/crew-journal.cjs');
+const { CrewJournal, journalPath, listRecoverable, discardJournal } = require('./agent/crew-journal.cjs');
 const { auditEvent } = require('./agent/audit-event.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
@@ -958,6 +958,15 @@ function registerIpc() {
       const snapshot = journal.snapshot();
       return snapshot.manifest ? { ok: true, ...snapshot } : { ok: false, err: 'Crew journal not found.' };
     } catch (error) { return { ok: false, err: error.message }; }
+  });
+  /* Discarding a recoverable run is the one destructive thing this feature can
+   * do, so it is deliberately narrow: the UI confirms first, main refuses while
+   * the run is still in teamRuns (its journal is live and being written), and
+   * only the single named journal file is removed — never a directory sweep. */
+  ipcMain.handle('teams:discard', (_e, { teamRunId } = {}) => {
+    if (teamRuns.has(teamRunId)) return { ok: false, err: 'That run is still active. Stop it before discarding.' };
+    try { return { ok: true, removed: discardJournal(path.join(app.getPath('userData'), 'agents'), teamRunId) }; }
+    catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('teams:get', (_e, id) => getPersonaStore().getTeam(id));
   ipcMain.handle('teams:create', (_e, t) => {

@@ -3168,6 +3168,8 @@ function renderRecoverableTeamRuns(runs) {
     const note = document.createElement('div');
     note.className = 'persona-card-prompt';
     note.textContent = `${run.manifest?.task || 'Crew task'}\n${run.members.length} saved member turn(s) · ${run.messages.length} crew message(s) · ${run.evidence.length} tool result(s)`;
+    const actions = document.createElement('div');
+    actions.className = 'team-card-actions';
     const button = document.createElement('button');
     button.className = 'ghost small';
     button.textContent = 'Harvest partial results';
@@ -3183,7 +3185,22 @@ function renderRecoverableTeamRuns(runs) {
         recovered.evidence.map(item => `${item.agentId}: ${item.tool} ${item.ok ? 'ok' : 'failed'}${item.path ? ` ${item.path}` : ''}${item.decision ? ` (${item.decision})` : ''}`).join('\n'),
       ].filter(Boolean).join('\n\n').slice(0, 100000);
     };
-    card.append(heading, note, button);
+    /* Discard deletes the only record of this crashed run's partial work, so it
+     * asks first, names that consequence in the prompt, and treats a successful
+     * delete as re-rendering the recovery section from main rather than removing
+     * the card locally — main and the visible list must not drift apart. */
+    const discard = document.createElement('button');
+    discard.className = 'ghost small danger';
+    discard.textContent = 'Discard';
+    discard.onclick = async () => {
+      const label = run.manifest?.task ? `"${run.manifest.task.slice(0, 60)}${run.manifest.task.length > 60 ? '…' : ''}"` : 'this run';
+      if (!await confirmAction(`Discard the saved results of ${label}? The crew journal is deleted and this partial work cannot be recovered.`)) return;
+      const res = await reachApi.teams.discard(run.runId);
+      if (!res.ok) { note.textContent = res.err || 'The run could not be discarded.'; return; }
+      renderRecoverableTeamRuns(await reachApi.teams.recoverable().catch(() => []));
+    };
+    actions.append(button, discard);
+    card.append(heading, note, actions);
     el.append(card);
   }
 }

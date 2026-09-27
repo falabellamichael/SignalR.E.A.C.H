@@ -68,4 +68,19 @@ function listRecoverable(dir) {
   }).filter(item => item.recoverable);
 }
 
-module.exports = { CrewJournal, journalPath, listRecoverable };
+/* Remove one crew journal on explicit, confirmed user request.
+ *
+ * A journal is the ONLY record of a crashed run's partial work, so discarding it
+ * is irreversible — the caller asks first. The run id goes through journalPath,
+ * which validates the `teamrun-…` shape, so a crafted value cannot escape the
+ * agents directory and delete an unrelated file. Returns true only when a file
+ * was actually removed, so the caller can tell "discarded" from "already gone"
+ * without a second existence check racing the delete. */
+function discardJournal(dir, id) {
+  const file = journalPath(dir, id);
+  if (!fs.existsSync(file)) return false;
+  fs.rmSync(file, { force: true });
+  return true;
+}
+
+module.exports = { CrewJournal, journalPath, listRecoverable, discardJournal };

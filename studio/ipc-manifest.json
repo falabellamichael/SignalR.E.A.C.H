@@ -501,6 +501,13 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "teams:discard": {
+    "module": "main.mjs",
+    "args": [
+      "{ teamRunId }"
+    ],
+    "returns": "{ ok, removed?, err? } — deletes one recoverable crew journal after a confirmed user action"
+  },
   "teams:followup": {
     "module": "main.mjs",
     "args": [
