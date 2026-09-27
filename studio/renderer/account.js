@@ -4,11 +4,11 @@
   if (!api || !view || !document.getElementById('home-account-service')) return;
   const defaultServiceOrigin = 'https://unbent-semicolon-hermit.ngrok-free.dev';
   const el = id => document.getElementById('home-' + id);
-  let state = {}, busy = false, refreshing = false;
+  let state = {}, busy = false, refreshing = false, serviceDirty = false;
   function render(next) {
     state = next || {}; const model = view.derive(state);
     el('account-badge').textContent = model.badge;
-    if (document.activeElement !== el('account-service')) el('account-service').value = state.baseUrl || defaultServiceOrigin;
+    if (!serviceDirty && document.activeElement !== el('account-service')) el('account-service').value = state.baseUrl || defaultServiceOrigin;
     el('account-service').disabled = busy || model.connecting;
     el('account-configure').disabled = busy || model.connecting;
     el('account-connect').disabled = busy || !model.canConnect;
@@ -20,6 +20,9 @@
     el('account-status').textContent = model.message;
     el('account-status').dataset.state = state.error || state.status === 'locked' ? 'error' : model.connected ? 'success' : '';
     el('account-wallet').textContent = state.account?.walletAddress || 'Your wallet address will appear after sign-in.';
+    el('wallet-balance').textContent = model.walletBalance;
+    el('wallet-balance-detail').textContent = model.walletBalanceDetail;
+    window.ReachAccountMenu?.update(state, model);
     el('account-plan').textContent = model.plan;
     el('account-plan-status').textContent = String(state.account?.plan?.status || '—').toUpperCase();
     const expiry = Date.parse(state.account?.plan?.expiresAt);
@@ -42,7 +45,8 @@
       : 'The hosted service supplies the confirmed conversion rate and network.';
     el('redemption-amount').disabled = busy || !model.canRedeem;
     el('redemption-start').disabled = busy || !model.canRedeem || !el('redemption-amount').value.trim();
-    if (!model.canRedeem) el('redemption-status').textContent = model.connected ? 'RCH redemption is not enabled on this service.' : 'Connect your wallet to check whether redemption is enabled.';
+    if (!model.canRedeem || el('redemption-status').dataset.unavailable === 'true') el('redemption-status').textContent = model.redemptionMessage;
+    el('redemption-status').dataset.unavailable = String(!model.canRedeem);
   }
   async function action(fn) {
     if (busy) return;
@@ -62,7 +66,10 @@
     catch { el('account-status').textContent = 'Could not refresh your account. Check your connection.'; }
     finally { refreshing = false; }
   }
-  el('account-configure').addEventListener('click', () => { const url = el('account-service').value; void action(() => api.configure(url)); });
+  el('account-service').addEventListener('input', () => { serviceDirty = true; });
+  el('account-configure').addEventListener('click', () => { const url = el('account-service').value; void action(async () => {
+    const result = await api.configure(url); if (result?.ok !== false) serviceDirty = false; return result;
+  }); });
   el('account-connect').addEventListener('click', () => action(() => api.connect()));
   el('account-cancel').addEventListener('click', async () => { const result = await api.cancel(); render(result.state); });
   el('account-refresh').addEventListener('click', refresh);

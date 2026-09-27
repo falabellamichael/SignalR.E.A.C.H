@@ -25,6 +25,7 @@ const { reviewCompletion, notice: jevNotice, correctionInstruction, taskForRevie
 const { protocol: agentRunProtocol, chatInstruction } = require('./media/agent-run');
 const actionCodec = require('./agent-action');
 const { runAgentCommand } = require('./agent-command');
+const { createHostedAccount } = require('./hosted-account');
 const engines = require('./engine-core');
 const { runBrowserAction } = require('./browser-tools');
 const toolsModule = (() => { try { return require('./tools'); } catch (e) { return {}; } })();
@@ -36,6 +37,7 @@ const budgetFor = toolsModule.budgetFor || ((_, fallback = 40000) => fallback);
 const CONFIG_SECTION = 'simplereach';
 const PROVIDER_SELECTION_STATE = 'simplereach.providerSelection';
 let providerSelectionOverride;
+let hostedAccount;
 const { resolveEndpoint, trayDirectory, trayBinary, DEFAULT_ENDPOINT } = require('./connection');
 
 const FREE_ENDPOINT_KEY_SECRET = 'simplereach.freeEndpointAccessKey';
@@ -437,12 +439,13 @@ function config() {
   const additionalEndpoints = (Array.isArray(cfg.get('additionalEndpoints')) ? cfg.get('additionalEndpoints') : [])
     .filter(value => typeof value === 'string').map(value => value.trim()).filter(Boolean);
   const selection = providerSelectionOverride;
-  const useOverride = selection === 'endpoint' || TRAY_PROVIDERS.includes(selection)
+  const useOverride = selection === 'subscription' || selection === 'endpoint' || TRAY_PROVIDERS.includes(selection)
     || (typeof selection === 'string' && selection.startsWith('endpoint:')
       && additionalEndpoints.includes(selection.slice(9)));
   const rawProvider = useOverride
-    ? (TRAY_PROVIDERS.includes(selection) ? selection : 'endpoint') : cfg.get('provider');
-  const provider = TRAY_PROVIDERS.includes(rawProvider) ? rawProvider : 'endpoint';
+    ? (selection === 'subscription' || TRAY_PROVIDERS.includes(selection) ? selection : 'endpoint') : cfg.get('provider');
+  const provider = rawProvider === 'subscription' || TRAY_PROVIDERS.includes(rawProvider) ? rawProvider : 'endpoint';
+  const hosted = provider === 'subscription' ? hostedAccount?.connection() : null;
   const selectedEndpoint = useOverride
     ? (selection.startsWith('endpoint:') ? selection.slice(9) : '')
     : (additionalEndpoints.includes(cfg.get('selectedEndpoint')) ? cfg.get('selectedEndpoint') : '');
@@ -458,14 +461,15 @@ function config() {
   };
   return {
     provider,
-    providerSelection: isTrayBridge ? provider : selectedEndpoint ? 'endpoint:' + selectedEndpoint : 'endpoint',
+    providerSelection: provider === 'subscription' ? 'subscription' : isTrayBridge ? provider : selectedEndpoint ? 'endpoint:' + selectedEndpoint : 'endpoint',
     selectedEndpoint,
-    endpoint: isTrayBridge ? 'http://127.0.0.1:21302/v1' : selectedEndpoint || freeEndpoint,
+    endpoint: provider === 'subscription' ? hosted?.endpoint || '' : isTrayBridge ? 'http://127.0.0.1:21302/v1' : selectedEndpoint || freeEndpoint,
+    hostedConfigured: !!hostedAccount?.state().baseUrl,
     freeEndpoint,
     additionalEndpoints,
     freeAccessKey,
     endpointAccessKeys,
-    accessKey: isTrayBridge ? '' : selectedEndpoint ? endpointAccessKeys[selectedEndpoint] : freeAccessKey,
+    accessKey: provider === 'subscription' ? hosted?.accessKey || '' : isTrayBridge ? '' : selectedEndpoint ? endpointAccessKeys[selectedEndpoint] : freeAccessKey,
     model: directTrayModel(provider)
       || (provider === 'codegpt' ? (isEconomyModel(cfg.get('model')) ? String(cfg.get('model')) : 'codegpt-eco')
         : String(cfg.get('model') || 'gpt-4o-mini')),
@@ -815,6 +819,22 @@ class ReachChatViewProvider {
     wv.html = this._html(wv);
     wv.onDidReceiveMessage(async (msg) => {
       switch (msg && msg.type) {
+        case 'account': {
+          try {
+            if (!this._account) throw new Error('REACH account access is unavailable. Reload the extension.');
+            const action = String(msg.action || 'state');
+            if (!['state', 'configure', 'connect', 'cancel', 'refresh', 'disconnect', 'redeem'].includes(action)) break;
+            if (action === 'configure') await this._account.configure(msg.value);
+            else if (action === 'redeem') await this._account.redeem(msg.value);
+            else if (action === 'state') await this._account.initialize();
+            else await this._account[action]();
+            this._post('accountState', { state: this._account.state(), completed: true, requestId: msg.requestId });
+            if (action === 'configure') this._post('configSaved', { key: 'account', config: config() });
+          } catch (error) {
+            this._post('accountState', { state: this._account?.state(), error: error.message, completed: true, requestId: msg.requestId });
+          }
+          break;
+        }
         case 'trayStatus':
           this._post('trayState', { status: await trayHealth() ? 'running' : 'stopped' });
           break;
@@ -825,6 +845,7 @@ class ReachChatViewProvider {
           break;
         }
         case 'getConfig':
+          await this._account?.initialize();
           this._post('config', config());
           break;
         case 'fetchModels':
@@ -888,14 +909,18 @@ class ReachChatViewProvider {
           if (key === 'provider') {
             const selection = String(msg.value || '');
             const connection = config();
-            if (!['endpoint', ...TRAY_PROVIDERS].includes(selection) &&
+            if (selection === 'subscription' && !this._account?.state().baseUrl) {
+              this._post('error', { message: 'Configure your REACH account service first.' });
+              break;
+            }
+            if (!['endpoint', 'subscription', ...TRAY_PROVIDERS].includes(selection) &&
                 !(selection.startsWith('endpoint:') && connection.additionalEndpoints.includes(selection.slice(9)))) break;
             const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
             try {
               await cfg.update('selectedEndpoint', selection.startsWith('endpoint:') ? selection.slice(9) : '', vscode.ConfigurationTarget.Global);
-              await cfg.update('provider', TRAY_PROVIDERS.includes(selection) ? selection : 'endpoint', vscode.ConfigurationTarget.Global);
+              await cfg.update('provider', selection === 'subscription' || TRAY_PROVIDERS.includes(selection) ? selection : 'endpoint', vscode.ConfigurationTarget.Global);
               const applied = vscode.workspace.getConfiguration(CONFIG_SECTION);
-              const effective = TRAY_PROVIDERS.includes(applied.get('provider'))
+              const effective = applied.get('provider') === 'subscription' || TRAY_PROVIDERS.includes(applied.get('provider'))
                 ? applied.get('provider')
                 : applied.get('selectedEndpoint') ? 'endpoint:' + applied.get('selectedEndpoint') : 'endpoint';
               if (effective !== selection) throw new Error('Provider setting was overridden.');
@@ -1294,6 +1319,9 @@ class ReachChatViewProvider {
         catch { /* Evidence persistence must not block a real tool result. */ }
       }
     }
+    // Account credentials never cross into the webview, including config refreshes.
+    if (type === 'config' && payload.provider === 'subscription') payload = { ...payload, accessKey: '' };
+    if (type === 'configSaved' && payload.config?.provider === 'subscription') payload = { ...payload, config: { ...payload.config, accessKey: '' } };
     if (this._view) this._view.webview.postMessage({ type, ...payload });
   }
 
@@ -1399,6 +1427,13 @@ class ReachChatViewProvider {
    * never wants the free endpoint's access key (and must not receive it). */
   _authHeaders(extra, connection = config(), model = null) {
     const headers = Object.assign({ 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' }, extra || {});
+    if (connection.provider === 'subscription') {
+      // Every generation gets one key, retained by the existing transport retry.
+      // Custom endpoint headers and browser routes cannot replace account auth.
+      headers.Authorization = 'Bearer ' + hostedAccount.authorize(connection.endpoint);
+      headers['Idempotency-Key'] = require('node:crypto').randomUUID();
+      return headers;
+    }
     const { accessKey } = connection;
     const toBridge = TRAY_PROVIDERS.includes(connection.provider)
       || (model !== null && isEconomyModel(model));
@@ -1419,7 +1454,7 @@ class ReachChatViewProvider {
       // Tray providers cannot work at all without the bridge. Free endpoints
       // can — the economy group is just omitted — so a missing tray is a note
       // there, never a failure of the whole refresh.
-      if (!await trayHealth()) {
+      if (connection.provider !== 'subscription' && !await trayHealth()) {
         const state = await startTray();
         const missing = state === 'missing' || state === 'error';
         if (missing && TRAY_PROVIDERS.includes(connection.provider)) {
@@ -1439,12 +1474,12 @@ class ReachChatViewProvider {
       // the ordinary free aliases, so it is obvious which ids the bridge serves
       // (and which ones therefore keep working when the endpoint does not).
       const all = [...catalog.routes.keys()];
-      const economy = all.filter(isEconomyModel);
-      const regular = all.filter(id => !isEconomyModel(id));
+      const economy = connection.provider === 'subscription' ? [] : all.filter(isEconomyModel);
+      const regular = connection.provider === 'subscription' ? all : all.filter(id => !isEconomyModel(id));
       this._post('models', {
         models: all,
         groups: [
-          ...(regular.length ? [{ label: TRAY_PROVIDERS.includes(connection.provider) ? 'Models' : 'Free models', models: regular }] : []),
+          ...(regular.length ? [{ label: connection.provider === 'subscription' ? 'Subscription models' : TRAY_PROVIDERS.includes(connection.provider) ? 'Models' : 'Free models', models: regular }] : []),
           ...(economy.length ? [{ label: 'CodeGPT economy', models: economy }] : []),
         ],
         endpoint: catalog.bases.join(' · '),
@@ -1452,7 +1487,7 @@ class ReachChatViewProvider {
         providerSelection: connection.providerSelection,
       });
       if (catalog.errors.length) this._post('error', { message: 'Some endpoints could not load: ' + catalog.errors.join('; ') });
-      if (!TRAY_PROVIDERS.includes(connection.provider) && !economy.length && (catalog.bridgeError || trayDown)) {
+      if (connection.provider !== 'subscription' && !TRAY_PROVIDERS.includes(connection.provider) && !economy.length && (catalog.bridgeError || trayDown)) {
         this._post('error', { message: 'CodeGPT economy models are unavailable — start the SignalREACH tray and sign in to CodeGPT.'
           + (catalog.bridgeError ? ' (' + catalog.bridgeError + ')' : '') });
       }
@@ -1478,6 +1513,11 @@ class ReachChatViewProvider {
    * is simply absent (with a note) rather than failing the whole refresh — the
    * free aliases must keep working. */
   async _discoverModels(connection) {
+    if (connection.provider === 'subscription') {
+      const models = await this._account.models();
+      this._bridgeIds = new Map();
+      return { routes: new Map(models.map(model => [model, connection.endpoint])), bases: [connection.endpoint], errors: [], bridgeError: '' };
+    }
     const endpoints = [connection.endpoint];
     const isTray = TRAY_PROVIDERS.includes(connection.provider);
     // Free endpoints also pulls the economy group from the local bridge.
@@ -1607,6 +1647,7 @@ class ReachChatViewProvider {
   // Retry inference/metadata requests only. Tool execution is outside this path.
   // Fetch can reject before HTTP headers exist, so statuses alone are insufficient.
   async _fetchRetry(url, options = {}, activity) {
+    if (options.headers?.['Idempotency-Key']) options = { ...options, redirect: 'error' };
     const transient = new Set([502, 503, 504]);
     const signal = options.signal || this._controller?.signal;
     for (let attempt = 0; ; attempt++) {
@@ -1867,6 +1908,10 @@ class ReachChatViewProvider {
    * including the bare aliases the endpoint advertises for the same models.
    * Everything else keeps using the configured endpoint. */
   async _modelEndpoint(connection, model) {
+    if (connection.provider === 'subscription') {
+      hostedAccount.authorize(connection.endpoint);
+      return connection.endpoint;
+    }
     if (isEconomyModel(model) || (this._bridgeIds && this._bridgeIds.has(model))) {
       // Reuse the provider's own bridge base so port/token handling stays in
       // one place (`config()` already returns it for tray providers).
@@ -1881,6 +1926,7 @@ class ReachChatViewProvider {
    * Translate a bare alias to the bridge form — only for models the bridge
    * actually advertised, so other providers' ids are never rewritten. */
   _wireModel(model) {
+    if (config().provider === 'subscription') return model;
     if (typeof model !== 'string' || !model) return model;
     if (!this._bridgeIds || !this._bridgeIds.has(model)) return model;
     return this._bridgeIds.get(model);
@@ -1924,6 +1970,7 @@ class ReachChatViewProvider {
     };
     try {
       const resp = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
+        ...(connection.provider === 'subscription' ? { redirect: 'error' } : {}),
         method: 'POST',
         headers: this._authHeaders({}, connection),
         body: await this._encodePayload(payload, 'think'),
@@ -1946,6 +1993,7 @@ class ReachChatViewProvider {
     const clean = prompt.replace(/\s+/g, ' ').trim().slice(0, 500);
     try {
       const resp = await fetch(`${await this._modelEndpoint(connection, model)}/chat/completions`, {
+        ...(connection.provider === 'subscription' ? { redirect: 'error' } : {}),
         method: 'POST',
         headers: this._authHeaders({}, connection),
         body: encodeChatPayload({
@@ -2644,6 +2692,7 @@ class ReachChatViewProvider {
       .replace(/\{\{styleUri\}\}/g, mediaUri('style.css'))
       .replace(/\{\{scriptUri\}\}/g, mediaUri('chat.js'))
       .replace(/\{\{agentRunUri\}\}/g, mediaUri('agent-run.js'))
+      .replace(/\{\{accountViewUri\}\}/g, mediaUri('account-view.js'))
       // The parser's allow-list is generated from the tool registry, so the
       // webview and the executor can never disagree about what is executable.
       .replace(/\{\{toolNames\}\}/g, JSON.stringify(allowedNames().filter(name => !config().disabledTools.includes(name))));
@@ -2694,6 +2743,34 @@ async function activate(context) {
   const provider = new ReachChatViewProvider(context.extensionUri);
   provider._secrets = context.secrets;
   provider._globalState = context.globalState;
+  let lastAccountStatus = '';
+  hostedAccount = createHostedAccount({ secrets: context.secrets,
+    openExternal: url => vscode.env.openExternal(vscode.Uri.parse(url)),
+    onChange: state => {
+      provider._post('accountState', { state });
+      const becameConnected = state.status === 'connected' && lastAccountStatus !== 'connected';
+      lastAccountStatus = state.status;
+      if (becameConnected && config().provider === 'subscription' && provider._view) provider._fetchModels().catch(() => {});
+    } });
+  provider._account = hostedAccount;
+  hostedAccount.initialize().catch(() => {});
+  let accountTick = 0, accountRefreshing = false;
+  const accountTimer = setInterval(async () => {
+    if (accountRefreshing) return;
+    accountRefreshing = true;
+    try {
+      const status = provider._account.state().status;
+      if (status !== lastAccountStatus) {
+        lastAccountStatus = status;
+        provider._post('accountState', { state: provider._account.state() });
+      }
+      if (status === 'connecting') await provider._account.poll();
+      else if (++accountTick % 15 === 0 && status === 'connected') await provider._account.refresh();
+    } catch (error) { provider._post('accountState', { state: provider._account.state(), error: error.message }); }
+    finally { accountRefreshing = false; }
+  }, 2000);
+  accountTimer.unref?.();
+  context.subscriptions.push({ dispose() { clearInterval(accountTimer); provider._account.cancel(); } });
   const ideBridge = attachAgentBridge(provider, vscode);
   context.subscriptions.push(vscode.commands.registerCommand('simplereach.engineReport', async () => {
     const report = engines.getLedger().report();

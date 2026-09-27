@@ -51,14 +51,14 @@ const timeout = setTimeout(() => { console.error('Connections UI timed out', pro
   await run('openSettingsPanel("connection")');
   await run('document.querySelector("#btn-close-drawer").click()');
   await until('connStatus.size === 4 && connTestsRunning.size === 0', 'Automatic test results');
-  await until('document.querySelector("#conn-workspace").clientWidth >= 900', 'Wide panel ready');
+  await until('document.querySelector("#conn-workspace").clientWidth >= 700', 'Account settings panel ready');
   assert.equal(await run('document.querySelectorAll(".conn-card").length'), 4);
   assert.equal(await run('document.querySelector("#conn-editor").classList.contains("hidden")'), true);
   await run('document.querySelector(".conn-edit").click()');
   assert.equal(await run('connActiveId'), 'connection_3', 'Editing must not activate');
   console.log('Layout:', await run('({ width: innerWidth, panel: document.querySelector("#settings-connection").clientWidth, workspace: document.querySelector("#conn-workspace").clientWidth })'));
   await capture('initial');
-  assert.equal(await run('document.querySelector("#conn-editor").parentElement.id'), 'conn-workspace');
+  assert.equal(await run('document.querySelector("#conn-editor").parentElement.dataset.connId'), 'connection_0');
   assert.equal(await run('document.querySelector("#conn-editor input[type=password]").value'), 'dummy-fixture');
   await capture('connections-wide');
   await run(`(() => {
@@ -83,9 +83,15 @@ const timeout = setTimeout(() => { console.error('Connections UI timed out', pro
   assert.equal(await run('document.querySelector("#conn-editor .row input").type'), 'password', 'Reopening masks key');
   await run('document.querySelector("#conn-editor .conn-model").nextElementSibling.click()');
   await until('document.querySelector("#model-choices")?.textContent.includes("fixture-model")', 'Browse uses edited connection');
+  assert.equal(await run('document.querySelector("#account-menu").hidden'), false, 'Browse keeps Settings open');
+  assert.equal(await run('Number(getComputedStyle(document.querySelector("#model-modal")).zIndex) > Number(getComputedStyle(document.querySelector("#account-menu")).zIndex)'), true, 'Model picker is above the account panel');
   await run(`(() => { const button = [...document.querySelectorAll('#model-choices button')].find(el => el.textContent.includes('second-model')); button.click(); })()`);
   assert.equal(await run('document.querySelector("#conn-editor .conn-model").value'), 'second-model');
   assert.equal(await run('document.querySelector(".conn-details dd").textContent'), 'second-model');
+  assert.equal(await run('document.querySelector("#account-menu").hidden'), false);
+  await run('document.querySelector("#account-menu-close").click(); document.querySelector("#account-menu-button").click()');
+  await delay(50);
+  assert.equal(await run('document.querySelector("#conn-editor .conn-name").value'), 'Deepseek edited', 'Closing preserves unsaved connection edits');
   // In-flight tests must neither duplicate on re-render nor paint stale results.
   await run(`(() => { const input = document.querySelector('#conn-editor .conn-url'); input.value = ${JSON.stringify(endpoint + '/slow/v1')}; input.dispatchEvent(new Event('input')); document.querySelector('.conn-test').click(); })()`);
   await run('document.querySelectorAll(".conn-pool")[1].click()');

@@ -228,7 +228,7 @@
         "simplereach.maxTokens": {
           "type": "number",
           "default": 0,
-          "markdownDescription": "Answer output budget (tokens). **0 = no limit** \u2014 the `max_tokens` field is omitted and the provider\u2019s own maximum applies. Also on the Budgets page in the REACH panel (gear icon)."
+          "markdownDescription": "Answer output budget (tokens). **0 = no limit** \u2014 the `max_tokens` field is omitted and the provider\u2019s own maximum applies. Also on the Budgets page inside the top-right REACH account menu."
         },
         "simplereach.agentMaxRounds": {
           "type": "number",
@@ -336,6 +336,7 @@
           "type": "string",
           "enum": [
             "endpoint",
+            "subscription",
             "copilot",
             "chatgpt",
             "codegpt",
@@ -343,6 +344,7 @@
           ],
           "enumDescriptions": [
             "Your free OpenAI-compatible endpoints",
+            "Your REACH subscription. Configure the account service and sign in using the top-right account menu; session credentials stay in VS Code SecretStorage.",
             "The local Microsoft 365 Copilot tray bridge",
             "The local ChatGPT tray bridge",
             "CodeGPT economy models (unlimited on a paid CodeGPT plan) through the local tray bridge",

@@ -59,3 +59,7 @@ wallet.previous-*.json
 .wallet-pending-*.json
 .backup-check.json
 RCH-Wallet-Backup/
+
+# Supabase CLI local project metadata; migrations remain tracked.
+supabase/.temp/
+supabase/.branches/

@@ -27,6 +27,16 @@ function browserUrl(value, base) {
 }
 const text = (value, limit = 250) => typeof value === 'string' ? value.slice(0, limit) : '';
 const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? String(value) : '0';
+function publicRchBalance(raw) {
+  if (!raw || typeof raw !== 'object') return { status: 'unconfigured' };
+  const valid = raw.status === 'available' && raw.decimals === 18 && Number.isSafeInteger(raw.chainId) && raw.chainId > 0
+    && /^0x[0-9a-f]{40}$/i.test(raw.tokenAddress) && Number.isSafeInteger(raw.blockNumber) && raw.blockNumber >= 0
+    && typeof raw.balanceBaseUnits === 'string' && /^(0|[1-9]\d{0,77})$/.test(raw.balanceBaseUnits)
+    && BigInt(raw.balanceBaseUnits) < (1n << 256n);
+  return valid ? { status: 'available', tokenAddress: raw.tokenAddress, chainId: raw.chainId,
+    decimals: 18, balanceBaseUnits: raw.balanceBaseUnits, blockNumber: raw.blockNumber }
+    : { status: raw.status === 'unconfigured' ? 'unconfigured' : 'unavailable' };
+}
 function publicAccount(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const allowance = raw.allowance || {}, plan = raw.plan || {};
@@ -37,6 +47,7 @@ function publicAccount(raw) {
       typeof model === 'string' ? { id: text(model), name: text(model), provider: '' }
         : { id: text(model?.id), name: text(model?.name), provider: text(model?.provider) }).filter(model => model.id),
     allowance: Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining', 'debt'].map(key => [key, count(allowance[key])])),
+    rchBalance: publicRchBalance(raw.rchBalance),
   };
 }
 function publicConfig(raw) {

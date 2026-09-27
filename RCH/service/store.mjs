@@ -39,6 +39,13 @@ export class AccountStore {
     `);
   }
   close() { this.db.close(); }
+  findAccountByWallet(wallet) { return this.db.prepare('SELECT * FROM accounts WHERE wallet=? COLLATE NOCASE').get(getAddress(wallet)) ?? null; }
+  unsettledReservations(accountId) {
+    const columns = 'id,account_id,request_id,model,amount,status,created,reason';
+    return accountId
+      ? this.db.prepare(`SELECT ${columns} FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain') ORDER BY created`).all(accountId)
+      : this.db.prepare(`SELECT ${columns} FROM reservations WHERE status IN ('reserved','uncertain') ORDER BY created`).all();
+  }
   pruneExpiredAuthentication() {
     return this.transaction(()=>{
       this.db.prepare('DELETE FROM challenges WHERE expires<=?').run(this.now());

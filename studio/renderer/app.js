@@ -119,10 +119,14 @@ const editorStatus = $('#editor-status');
 
 // ---------- tabs ----------
 async function showTab(name) {
+  if (name === 'settings' && window.ReachAccountMenu) {
+    return openSettingsPanel(document.querySelector('.settings-nav button.active')?.dataset.settingsPanel || 'connection');
+  }
   const page = $('#page-' + name);
   // A rail view (workspace, playground, about) has no header tab. Without this
   // guard the null lookup below throws a TypeError and the page never shows.
   if (!page) return;
+  window.ReachAccountMenu?.close({ returnFocus: false });
   const nextDir = drawerDir(name);
   if (hasUnsavedFilesOutside(nextDir) && !await confirmAction('There are unsaved editor changes. Discard them and switch project?')) return;
   for (const p of document.querySelectorAll('.page')) p.classList.remove('active');
@@ -3012,11 +3016,18 @@ $('#btn-save-settings').onclick = async () => {
  * at request time with a confusing error.
  */
 let modelPickerPick = null;
+let modelPickerReturnFocus = null;
+function closeModelPicker() {
+  $('#model-modal').classList.add('hidden');
+  if (modelPickerReturnFocus?.isConnected) modelPickerReturnFocus.focus();
+  modelPickerReturnFocus = null;
+}
 async function openModelPicker(arg) {
   const modal = $('#model-modal');
   const choices = $('#model-choices');
   const search = $('#model-search');
   const source = $('#model-source');
+  modelPickerReturnFocus = $('#account-menu')?.contains(document.activeElement) ? document.activeElement : null;
 
   let target;
   let label = '';
@@ -3080,7 +3091,7 @@ async function openModelPicker(arg) {
       btn.textContent = id;
       btn.onclick = () => {
         if (modelPickerPick) modelPickerPick(id);
-        modal.classList.add('hidden');
+        closeModelPicker();
       };
       choices.appendChild(btn);
     }
@@ -3089,7 +3100,7 @@ async function openModelPicker(arg) {
   search.oninput = () => render(search.value.trim());
 }
 $('#btn-agent-set-browse').onclick = () => openModelPicker($('#agent-set-model'));
-$('#btn-model-cancel').onclick = () => $('#model-modal').classList.add('hidden');
+$('#btn-model-cancel').onclick = closeModelPicker;
 
 // ---------- Create page: custom agents (personas) + teams ----------
 let personas = [];

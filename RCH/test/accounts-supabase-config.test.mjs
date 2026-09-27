@@ -1,0 +1,47 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { validateConfig } from '../service/config.mjs';
+import { createAccountStore } from '../service/account-store.mjs';
+import { SupabaseAccountStore } from '../service/supabase-store.mjs';
+
+const base = {
+  origin: 'https://reach.example', listenHost: '127.0.0.1', port: 20978, chainId: 1,
+  upstreamUrl: 'http://127.0.0.1:20777/v1', upstreamKeyEnv: 'REACH_TEST_UPSTREAM',
+  models: [], redemption: { enabled: false },
+  supabase: { url: 'https://accounts.example', secretKeyEnv: 'REACH_TEST_SUPABASE' },
+};
+const env = { REACH_TEST_UPSTREAM: 'private-upstream-test-key', REACH_TEST_SUPABASE: 'sb_secret_' + 'x'.repeat(40) };
+const jwt = role => 'header.' + Buffer.from(JSON.stringify({ role })).toString('base64url') + '.signature-for-tests';
+
+test('Supabase storage is explicit, server-only, and never falls back to SQLite', async () => {
+  const config = validateConfig(base, process.cwd(), env);
+  assert.equal(config.database, undefined);
+  const store = createAccountStore(config, { fetchImpl: async () => { throw new Error('offline'); } });
+  assert.ok(store instanceof SupabaseAccountStore);
+  await assert.rejects(store.account('missing'), { code: 'account_store_unavailable', status: 503 });
+  assert.equal(JSON.stringify(store).includes(env.REACH_TEST_SUPABASE), false);
+  await store.close();
+});
+
+test('configuration rejects public keys, inline secrets, unsafe URLs and ambiguous persistence', () => {
+  for (const change of [
+    { database: 'private/accounts.sqlite' },
+    { supabase: { ...base.supabase, secretKey: env.REACH_TEST_SUPABASE } },
+    { supabase: { ...base.supabase, url: 'http://remote.example' } },
+    { supabase: { ...base.supabase, url: 'https://user:password@accounts.example' } },
+    { supabase: { ...base.supabase, url: 'https://accounts.example/path' } },
+    { supabase: { ...base.supabase, url: 'https://accounts.example?key=secret' } },
+    { supabase: { ...base.supabase, secretKeyEnv: base.upstreamKeyEnv } },
+  ]) assert.throws(() => validateConfig({ ...base, ...change }, process.cwd(), env));
+  for (const secret of ['', 'sb_publishable_' + 'x'.repeat(40), jwt('anon'), jwt('authenticated'), env.REACH_TEST_SUPABASE + '\n']) {
+    assert.throws(() => validateConfig(base, process.cwd(), { ...env, REACH_TEST_SUPABASE: secret }));
+  }
+  assert.equal(validateConfig(base, process.cwd(), { ...env, REACH_TEST_SUPABASE: jwt('service_role') }).supabase.secretKey, jwt('service_role'));
+});
+
+test('existing durable SQLite configuration remains supported', () => {
+  const { supabase, ...sqlite } = base;
+  const config = validateConfig({ ...sqlite, database: 'private/accounts.sqlite' }, process.cwd(), env);
+  assert.ok(config.database.endsWith('accounts.sqlite'));
+  assert.equal(config.supabase, undefined);
+});

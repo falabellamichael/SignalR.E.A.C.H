@@ -1,4 +1,4 @@
-// Settings stay in normal page flow: menus navigate, forms never trap focus.
+// Settings reuse their original forms inside the account dropdown.
 let budgetSchema = null;
 document.getElementById('btn-engine-report').onclick = async () => {
   try { document.getElementById('engine-report').textContent = JSON.stringify(await reachApi.engines.report(), null, 2); }
@@ -6,6 +6,9 @@ document.getElementById('btn-engine-report').onclick = async () => {
 };
 let budgetGlobal = {};
 let settingsAgent = null;
+let conversationDraftAgent = undefined, budgetDraftAgent = undefined;
+let conversationDirty = false, budgetDirty = false;
+let settingsOpenSequence = 0;
 
 function closeSettingsMenus() {
   document.querySelectorAll('.settings-dropdown').forEach(el => el.classList.add('hidden'));
@@ -31,8 +34,10 @@ document.addEventListener('click', e => { if (!e.target.closest('.settings-menu'
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSettingsMenus(); });
 
 async function openSettingsPanel(panel) {
+  const sequence = ++settingsOpenSequence;
   closeSettingsMenus();
-  await showTab('settings');
+  if (window.ReachAccountMenu) window.ReachAccountMenu.open('settings');
+  else await showTab('settings');
   if (!$('#page-settings').classList.contains('active')) return;
   document.querySelectorAll('.settings-content').forEach(el => el.classList.toggle('hidden', el.id !== 'settings-' + panel));
   document.querySelectorAll('.settings-nav button').forEach(el => {
@@ -45,8 +50,14 @@ async function openSettingsPanel(panel) {
     // results persist per row until it is edited, so reopening does not re-ping).
     window.ReachConnPanel?.autoTest?.();
   }
-  settingsAgent = currentAgent ? await reachApi.agents.get(currentAgent.id) : null;
+  const agent = currentAgent ? await reachApi.agents.get(currentAgent.id) : null;
+  if (sequence !== settingsOpenSequence) return;
+  settingsAgent = agent;
+  const agentId = settingsAgent?.id || null;
   if (panel === 'conversation') {
+    if (conversationDirty && conversationDraftAgent === agentId) return;
+    conversationDraftAgent = agentId;
+    conversationDirty = false;
     $('#agent-settings-context').textContent = settingsAgent ? `${settingsAgent.name} · ${settingsAgent.dir}` : 'Select a conversation in Agents to change its settings.';
     $('#agent-set-name').value = settingsAgent?.name || '';
     $('#agent-set-model').value = settingsAgent?.model || '';
@@ -56,8 +67,11 @@ async function openSettingsPanel(panel) {
     $('#agent-settings-status').textContent = '';
   }
   if (panel === 'budgeting') {
+    if (budgetDirty && budgetDraftAgent === agentId) return;
     budgetSchema ||= await reachApi.getBudgetSchema();
     budgetGlobal = await reachApi.getSettings();
+    if (sequence !== settingsOpenSequence) return;
+    budgetDraftAgent = agentId;
     $('#budget-scope option[value="conversation"]').disabled = !settingsAgent;
     $('#budget-scope option[value="conversation"]').textContent = settingsAgent ? `${settingsAgent.name} and its teams` : 'Select a conversation first';
     if (!settingsAgent) $('#budget-scope').value = 'global';
@@ -90,6 +104,7 @@ function fillBudgetFields(values) {
   updateBudgetEnabled();
 }
 function renderBudgetScope() {
+  budgetDirty = false;
   const local = $('#budget-scope').value === 'conversation';
   const legacy = !budgetGlobal.budgets && local && settingsAgent ? { maxRounds: settingsAgent.settings.maxRounds ?? 40, maxTokens: settingsAgent.settings.maxTokens ?? 4096 } : {};
   $('#budget-inherit-label').classList.toggle('hidden', !local);
@@ -107,16 +122,19 @@ $('#budget-scope').onchange = renderBudgetScope;
 $('#budget-inherit').onchange = () => {
   if ($('#budget-inherit').checked) fillBudgetFields({ ...budgetSchema.defaults, ...budgetGlobal.budgets });
   updateBudgetEnabled();
+  budgetDirty = true;
+  $('#budget-status').textContent = 'Unsaved changes';
 };
 document.querySelectorAll('[data-budget-preset]').forEach(button => {
   button.onclick = () => {
     fillBudgetFields(budgetSchema.presets[button.dataset.budgetPreset]);
     $('#budget-preset-status').textContent = `${button.textContent} selected. Save budgets to apply.`;
     $('#budget-status').textContent = 'Unsaved changes';
+    budgetDirty = true;
   };
 });
 $('#budget-form').onsubmit = e => e.preventDefault();
-$('#budget-form').oninput = () => { $('#budget-status').textContent = 'Unsaved changes'; };
+$('#budget-form').oninput = () => { budgetDirty = true; $('#budget-status').textContent = 'Unsaved changes'; };
 $('#btn-save-budgets').onclick = async () => {
   if (!$('#budget-form').reportValidity()) return;
   const button = $('#btn-save-budgets'); button.disabled = true;
@@ -135,10 +153,13 @@ $('#btn-save-budgets').onclick = async () => {
       budgetGlobal = { ...budgetGlobal, budgets };
     }
     $('#budget-status').textContent = 'Saved. Applies to new runs; current runs keep their starting budgets.';
+    budgetDirty = false;
   } catch (e) { $('#budget-status').textContent = e.message; }
   finally { button.disabled = false; }
 };
-$('#btn-agent-set-cancel').onclick = () => showTab('agents');
+$('#settings-conversation').addEventListener('input', () => { conversationDirty = true; });
+$('#settings-conversation').addEventListener('change', () => { conversationDirty = true; });
+$('#btn-agent-set-cancel').onclick = () => window.ReachAccountMenu ? window.ReachAccountMenu.close() : showTab('agents');
 $('#btn-agent-set-save').onclick = async () => {
   if (!settingsAgent) return;
   try {
@@ -155,5 +176,6 @@ $('#btn-agent-set-save').onclick = async () => {
     }
     await loadAgentTree();
     $('#agent-settings-status').textContent = 'Saved. Model changes apply to the next run.';
+    conversationDirty = false;
   } catch (e) { $('#agent-settings-status').textContent = e.message; }
 };

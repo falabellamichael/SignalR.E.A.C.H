@@ -57,6 +57,10 @@
   let webEnabled = true;
   let pendingThought = '';
   let configCache = null;
+  let accountState = { status: 'unconfigured' };
+  let accountBusy = false, accountError = '';
+  let accountRequest = 0;
+  const accountDrafts = {};
   let agenticEnabled = true;
   let manualModelOverride = false;
   let pendingEdits = [];
@@ -1788,6 +1792,7 @@
 
   function updateProviderOptions(cfg) {
     providerSelect.replaceChildren(new Option('Free endpoints', 'endpoint'));
+    if (cfg.hostedConfigured || cfg.providerSelection === 'subscription') providerSelect.appendChild(new Option('REACH subscription', 'subscription'));
     const others = document.createElement('optgroup');
     others.label = 'Other providers';
     for (const endpoint of new Set(cfg.additionalEndpoints || [])) {
@@ -1936,25 +1941,52 @@
     appendFieldRows(settingsPanel, BUDGET_FIELDS, cfg);
   }
 
-  /* The gear opens a two-page sheet; the icon tabs switch pages. Connection
-   * keeps endpoints + behaviour controls, Budgets carries every cap the agent
-   * respects while it works. */
-  let settingsPage = 'connection';
+  /* Account, connection settings and budgets share one anchored dropdown. */
+  let settingsPage = 'account';
+  function closeAccountPanel(restoreFocus = false) {
+    settingsPanel.hidden = true;
+    settingsBtn.classList.remove('open');
+    settingsBtn.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) settingsBtn.focus();
+  }
+  function accountAction(action, value) {
+    if (action === 'use') {
+      if (!busy) post('setConfig', { key: 'provider', value: 'subscription' });
+      else { accountError = 'Wait for the current response to finish before switching providers.'; renderSettings(); }
+      return;
+    }
+    if (accountBusy) return;
+    accountBusy = true; accountError = '';
+    post('account', { action, value, requestId: ++accountRequest }); renderSettings();
+  }
   function renderSettings() {
+    const focused = settingsPanel.contains(document.activeElement) ? document.activeElement.id : '';
+    const selection = focused && document.activeElement.tagName === 'INPUT'
+      ? [document.activeElement.selectionStart, document.activeElement.selectionEnd] : null;
     const pageIcon = {
+      account: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="5" r="2.5"/><path d="M3 14v-1a5 5 0 0 1 10 0v1"/></svg>',
       connection: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M6 1.5v3.2M10 1.5v3.2M4.2 4.7h7.6v1.8a3.8 3.8 0 0 1-7.6 0V4.7z"/><path d="M8 10.3v4.2"/></svg>',
       budgets: '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12"/><circle cx="6" cy="4" r="1.5" fill="var(--reach-surface)"/><circle cx="10.5" cy="8" r="1.5" fill="var(--reach-surface)"/><circle cx="5" cy="12" r="1.5" fill="var(--reach-surface)"/></svg>',
     };
     settingsPanel.innerHTML = '';
+    const head = document.createElement('div'); head.className = 'account-panel-head';
+    const title = document.createElement('strong'); title.textContent = 'Account and settings';
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'account-panel-close';
+    close.id = 'account-close'; close.textContent = '×'; close.setAttribute('aria-label', 'Close account and settings');
+    close.addEventListener('click', () => closeAccountPanel(true)); head.append(title, close); settingsPanel.appendChild(head);
     const tabs = document.createElement('div');
     tabs.className = 'settings-tabs';
     tabs.setAttribute('role', 'tablist');
-    [['connection', 'Connection'], ['budgets', 'Budgets']].forEach(([page, label]) => {
+    tabs.setAttribute('aria-label', 'Account and settings pages');
+    const pages = [['account', 'Account'], ['connection', 'Settings'], ['budgets', 'Budgets']];
+    pages.forEach(([page, label], index) => {
       const button = document.createElement('button');
       button.type = 'button';
+      button.id = 'account-tab-' + page;
       button.className = 'settings-tab' + (settingsPage === page ? ' active' : '');
       button.setAttribute('role', 'tab');
       button.setAttribute('aria-selected', String(settingsPage === page));
+      button.tabIndex = settingsPage === page ? 0 : -1;
       button.innerHTML = pageIcon[page] + '<span>' + label + '</span>';
       button.addEventListener('click', (event) => {
         // Switching re-renders the sheet, which detaches this button before
@@ -1965,18 +1997,36 @@
         if (settingsPage === page) return;
         settingsPage = page;
         renderSettings();
+        document.getElementById('account-tab-' + page).focus();
+      });
+      button.addEventListener('keydown', event => {
+        let next;
+        if (event.key === 'ArrowRight') next = (index + 1) % pages.length;
+        if (event.key === 'ArrowLeft') next = (index + pages.length - 1) % pages.length;
+        if (event.key === 'Home') next = 0;
+        if (event.key === 'End') next = pages.length - 1;
+        if (next === undefined) return;
+        event.preventDefault(); settingsPage = pages[next][0]; renderSettings();
+        document.getElementById('account-tab-' + settingsPage).focus();
       });
       tabs.appendChild(button);
     });
     settingsPanel.appendChild(tabs);
-    if (settingsPage === 'budgets') renderBudgetsPage();
+    if (settingsPage === 'account') window.ReachAccountView.render(document, settingsPanel, accountState,
+      { onAction: accountAction, drafts: accountDrafts, busy: accountBusy, error: accountError });
+    else if (settingsPage === 'budgets') renderBudgetsPage();
     else renderConnectionPage();
 
-    const link = document.createElement('div');
+    const link = document.createElement('button');
+    link.type = 'button';
     link.className = 'settings-link';
     link.textContent = 'Edit in VS Code settings…';
     link.addEventListener('click', () => post('openSettings'));
     settingsPanel.appendChild(link);
+    if (focused) {
+      const restored = document.getElementById(focused);
+      if (restored && !restored.disabled) { restored.focus(); if (selection) restored.setSelectionRange(...selection); }
+    }
   }
 
   /* ---------- history / conversation management ---------- */
@@ -2325,6 +2375,19 @@
   window.addEventListener('message', (event) => {
     const msg = event.data || {};
     switch (msg.type) {
+      case 'accountState': {
+        const before = JSON.stringify(accountState);
+        if (msg.state) accountState = msg.state;
+        const completedAction = msg.completed && msg.requestId === accountRequest;
+        if (completedAction) accountBusy = false;
+        if (msg.error !== undefined) accountError = msg.error;
+        else if (completedAction) accountError = '';
+        settingsBtn.classList.toggle('connected', accountState.status === 'connected');
+        settingsBtn.title = accountState.status === 'connected' ? 'REACH account connected — account and settings' : 'Account and settings';
+        if (configCache && accountState.baseUrl) updateProviderOptions({ ...configCache, hostedConfigured: true });
+        if (!settingsPanel.hidden && settingsPage === 'account' && (msg.completed || msg.error || before !== JSON.stringify(accountState))) renderSettings();
+        break;
+      }
       case 'config':
         configCache = msg;
         applyAgentLimits(msg);
@@ -2797,18 +2860,23 @@
   });
   historyBtn.addEventListener('click', () => {
     historyPanel.hidden = !historyPanel.hidden;
-    settingsPanel.hidden = true;
+    closeAccountPanel();
     searchResults.hidden = true;
     if (!historyPanel.hidden) renderHistory();
   });
   settingsBtn.addEventListener('click', () => {
     const open = settingsPanel.hidden;
-    settingsPanel.hidden = !open;
-    settingsBtn.classList.toggle('open', open);
+    if (!open) { closeAccountPanel(true); return; }
+    settingsPanel.hidden = false;
+    settingsBtn.classList.add('open');
+    settingsBtn.setAttribute('aria-expanded', 'true');
     if (open) {
       historyPanel.hidden = true;
       searchResults.hidden = true;
       renderSettings();
+      document.getElementById('account-tab-' + settingsPage).focus();
+      post('account', { action: 'state' });
+      if (accountState.baseUrl && accountState.status !== 'connecting') post('account', { action: 'refresh' });
     }
   });
   trayBtn.addEventListener('click', () => post('trayStart'));
@@ -2821,8 +2889,7 @@
     const clickPath = typeof e.composedPath === 'function' ? e.composedPath() : [];
     const inside = (panel) => panel.contains(e.target) || clickPath.includes(panel);
     if (!settingsPanel.hidden && !inside(settingsPanel) && !settingsBtn.contains(e.target)) {
-      settingsPanel.hidden = true;
-      settingsBtn.classList.remove('open');
+      closeAccountPanel(settingsPanel.contains(document.activeElement));
     }
     if (!searchResults.hidden && !inside(searchResults) && !searchInput.contains(e.target)) {
       searchResults.hidden = true;
@@ -2834,9 +2901,15 @@
       attachMenu.hidden = true;
     }
   });
+  settingsBtn.addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown' && settingsPanel.hidden) { event.preventDefault(); settingsBtn.click(); }
+  });
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && !settingsPanel.hidden) { event.preventDefault(); event.stopPropagation(); closeAccountPanel(true); }
+  });
   searchInput.addEventListener('input', () => {
     historyPanel.hidden = true;
-    settingsPanel.hidden = true;
+    closeAccountPanel();
     renderSearch();
   });
   searchInput.addEventListener('keydown', (e) => {
@@ -3235,6 +3308,7 @@
   }
   updateModelChip();
   post('getConfig');
+  post('account', { action: 'state' });
   post('workspaceInfo');
   post('trayStatus');
 })();

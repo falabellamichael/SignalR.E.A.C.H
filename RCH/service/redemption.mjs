@@ -89,7 +89,7 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
 
   async function start(account, amountRch) {
     requireEnabled();
-    const current = store.account(account?.id);
+    const current = await store.account(account?.id);
     if (current.plan.status !== 'active') fail(403, 'plan_required', 'An active REACH plan is required to redeem usage credit.');
     if (typeof amountRch !== 'string' || !/^(0|[1-9][0-9]{0,12})(?:\.[0-9]{1,18})?$/.test(amountRch)) {
       fail(400, 'invalid_redemption_amount', 'Enter a positive RCH amount using decimal digits.');
@@ -100,21 +100,21 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
       fail(400, 'invalid_redemption_amount', 'Redeem a whole number of usage tokens, from 0.000001 RCH up to 1000000 RCH.');
     }
     await checkToken({ requireOpen: true, wallet: current.walletAddress });
-    const created = store.createRedemption(current.id, amount.toString(), Number(usageTokens));
+    const created = await store.createRedemption(current.id, amount.toString(), Number(usageTokens));
     const fragment = new URLSearchParams({ id: created.redemptionId, ticket: created.ticket });
     return { redemptionId: created.redemptionId, url: `${config.origin}/wallet/redeem#${fragment}`, expiresAt: created.expiresAt };
   }
 
   async function details(redemptionId, ticket) {
     requireEnabled();
-    const row = readIntent(redemptionId, ticket);
+    const row = await readIntent(redemptionId, ticket);
     const result = {
       ...statusFor(row), walletAddress: row.wallet, amountRch: formatUnits(row.amount, 18),
       chainId, expiresAt: new Date(row.expires).toISOString(), transaction: null,
     };
     if (row.tx_hash || row.status === 'credited') return { ...result, signingUnavailableReason: 'already_submitted' };
     if (row.expires <= store.now()) return { ...result, signingUnavailableReason: 'intent_expired' };
-    if (store.account(row.account_id).plan.status !== 'active') return { ...result, signingUnavailableReason: 'plan_required' };
+    if ((await store.account(row.account_id)).plan.status !== 'active') return { ...result, signingUnavailableReason: 'plan_required' };
     try { await checkToken({ requireOpen: true, wallet: row.wallet }); }
     catch (error) {
       if (error instanceof AccountError) return { ...result, signingUnavailableReason: error.code, message: error.message };
@@ -122,10 +122,10 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
     }
     // RPC checks may take long enough for expiry, logout-related plan changes, or a
     // concurrent submission. Never return another signing request after that point.
-    const refreshed = readIntent(redemptionId, ticket);
+    const refreshed = await readIntent(redemptionId, ticket);
     if (refreshed.tx_hash || refreshed.status === 'credited') return { ...result, ...statusFor(refreshed), signingUnavailableReason: 'already_submitted' };
     if (refreshed.expires <= store.now()) return { ...result, status: 'expired', signingUnavailableReason: 'intent_expired' };
-    if (store.account(refreshed.account_id).plan.status !== 'active') return { ...result, signingUnavailableReason: 'plan_required' };
+    if ((await store.account(refreshed.account_id)).plan.status !== 'active') return { ...result, signingUnavailableReason: 'plan_required' };
     return { ...result, transaction: transactionFor(refreshed, tokenAddress, chainId) };
   }
 
@@ -176,7 +176,7 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
     }
     if (matches.length !== 1) return 'redemption_event_mismatch';
     if (!await finalBlock(receipt)) return 'awaiting_finality';
-    store.creditRedemption(row.id, `${chainId}:${row.tx_hash.toLowerCase()}:${matches[0]}`);
+    await store.creditRedemption(row.id, `${chainId}:${row.tx_hash.toLowerCase()}:${matches[0]}`);
     return null;
   }
 
@@ -191,7 +191,7 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
   async function submit(redemptionId, ticket, txHash) {
     requireEnabled();
     if (!hashPattern.test(txHash || '')) fail(400, 'invalid_transaction', 'Enter a valid Ethereum transaction hash.');
-    const previous = readIntent(redemptionId, ticket);
+    const previous = await readIntent(redemptionId, ticket);
     if (previous.tx_hash && !same(previous.tx_hash, txHash)) {
       if (previous.status === 'credited') fail(409, 'transaction_conflict', 'This redemption has already been credited.');
       await safely(async () => {
@@ -214,19 +214,19 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
           || !definitivelyNotThisBurn || !await finalBlock(receipt)) {
           fail(409, 'transaction_conflict', 'The previous transaction must be finalized and confirmed not to contain this redemption before replacing its hash.');
         }
-        store.replaceFailedRedemption(redemptionId, ticket, previous.tx_hash, txHash);
+        await store.replaceFailedRedemption(redemptionId, ticket, previous.tx_hash, txHash);
       });
     }
     // An expired signing ticket still authorizes reconciliation of its original intent.
     // Expiry prevents presenting a new transaction; it must never discard an existing burn.
-    const row = store.submitRedemption(redemptionId, ticket, txHash);
+    const row = await store.submitRedemption(redemptionId, ticket, txHash);
     return reconcileRow(row);
   }
 
   async function reconcile(accountId) {
     if (!enabled) return [];
     const results = [];
-    for (const row of store.pendingRedemptions(accountId)) results.push(await reconcileRow(row));
+    for (const row of await store.pendingRedemptions(accountId)) results.push(await reconcileRow(row));
     return results;
   }
 

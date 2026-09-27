@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createHostedAccount, serviceUrl, browserUrl, publicAccount, MANAGED_ID } = require('../agent/hosted-account.cjs');
-const { derive } = require('../renderer/account-view.js');
+const { derive, formatRch } = require('../renderer/account-view.js');
 const TOKEN = 'fixture-session-token-never-expose-to-renderer';
 const ADDRESS = '0x0000000000000000000000000000000000000001';
 function fixture(t, options = {}) {
@@ -125,6 +125,39 @@ test('redemption opens a same-origin review page and does not sign or broadcast'
 test('public account projection drops unrecognized fields and malformed balances', () => {
   const account = publicAccount({ walletAddress: '<script>', accessToken: TOKEN, allowance: { includedRemaining: -1 }, allowedModels: [{ id: 'm', accessKey: TOKEN }] });
   assert.equal(account.walletAddress, ''); assert.equal(account.allowance.includedRemaining, '0'); assert(!JSON.stringify(account).includes(TOKEN));
+});
+
+test('wallet holdings retain exact decimals without changing allowance or subscription eligibility', async t => {
+  const f = fixture(t);
+  f.account.rchBalance = { status: 'available', chainId: 1, tokenAddress: ADDRESS, decimals: 18,
+    balanceBaseUnits: '269565909309000000000', blockNumber: 123, secret: TOKEN };
+  f.account.plan.status = 'none'; f.account.allowedModels = [];
+  f.account.allowance = { includedRemaining: 0, prepaidRemaining: 0, reserved: 0, totalRemaining: 0 };
+  await login(f); await f.manager.refresh();
+  const state = f.manager.state(), view = derive(state);
+  assert.equal(view.walletBalance, '269.565909309 RCH');
+  assert.equal(view.counts.prepaidRemaining, '0'); assert.equal(view.usable, false);
+  assert.match(view.walletBalanceDetail, /Ethereum Mainnet/);
+  assert(!JSON.stringify(state).includes(TOKEN));
+  f.account.rchBalance.status = 'unavailable'; await f.manager.refresh();
+  assert.equal(derive(f.manager.state()).walletBalance, '—');
+  assert.match(derive(f.manager.state()).walletBalanceDetail, /temporarily unavailable/);
+  await f.manager.disconnect();
+  assert.equal(derive(f.manager.state()).walletBalance, '—');
+});
+
+test('malformed holdings cannot become a balance and formatting preserves all 18 decimals', () => {
+  assert.equal(formatRch('0'), '0 RCH');
+  assert.equal(formatRch('1'), '0.000000000000000001 RCH');
+  assert.equal(formatRch('123456789012345678901234567890'), '123,456,789,012.34567890123456789 RCH');
+  const valid = { status: 'available', chainId: 1, tokenAddress: ADDRESS, decimals: 18,
+    balanceBaseUnits: '1', blockNumber: 123 };
+  for (const change of [{balanceBaseUnits:'-1'},{balanceBaseUnits:'1e18'},{balanceBaseUnits:'1.5'},
+    {balanceBaseUnits:1},{decimals:6},{chainId:0},{tokenAddress:'bad'},{balanceBaseUnits:(1n<<256n).toString()}]) {
+    const projected = publicAccount({rchBalance:{...valid,...change}});
+    assert.equal(projected.rchBalance.status, 'unavailable');
+    assert.equal(derive({status:'connected',account:projected}).walletBalance, '—');
+  }
 });
 
 test('Home shows disconnected, pending, locked, entitlement and redemption states honestly', () => {

@@ -1,0 +1,14 @@
+{
+  "origin": "https://your-reach-service.example",
+  "listenHost": "127.0.0.1",
+  "port": 20978,
+  "supabase": {
+    "url": "https://your-project-ref.supabase.co",
+    "secretKeyEnv": "REACH_ACCOUNTS_SUPABASE_SECRET_KEY"
+  },
+  "chainId": 1,
+  "upstreamUrl": "http://127.0.0.1:20777/v1",
+  "upstreamKeyEnv": "REACH_ACCOUNTS_UPSTREAM_KEY",
+  "models": [],
+  "redemption": { "enabled": false }
+}

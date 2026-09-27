@@ -142,7 +142,7 @@ function completionRequest(body, routes) {
 }
 
 /** The caller must resolve an authenticated account before invoking handle.
- * Store operations are synchronous, durable, atomic, and scoped by account ID.
+ * Store operations may be asynchronous, and must be durable, atomic, and scoped by account ID.
  * `metered:true` is an operator qualification, never a user-controlled flag.
  */
 export function createModelGateway({ store, models = [], upstreamUrl, upstreamKey,
@@ -180,7 +180,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       const requestId = req.headers['idempotency-key'] ?? randomUUID();
       if (typeof requestId !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId)) fail(400, 'invalid_request_id', 'Invalid Idempotency-Key.');
       res.setHeader('x-request-id', requestId);
-      reservation = store.reserve(account.id ?? account.accountId, requestId, route.id, fingerprint, amount);
+      reservation = await store.reserve(account.id ?? account.accountId, requestId, route.id, fingerprint, amount);
       if (!reservation.fresh) {
         if (reservation.status === 'settled' && reservation.replay) {
           res.writeHead(200, { 'content-type': reservation.replay.contentType, 'cache-control': 'no-store', 'x-reach-replayed': 'true' });
@@ -224,7 +224,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         const safe = completionOutput(parsed, route.id);
         record = payload.stream ? jsonAsStream(safe) : { contentType: 'application/json; charset=utf-8', body: JSON.stringify(safe) };
       }
-      store.settle(reservation.id, { ...usage, model: route.id, provider: route.provider }, record);
+      await store.settle(reservation.id, { ...usage, model: route.id, provider: route.provider }, record);
       finished = true;
       if (res.headersSent) { res.end('data: [DONE]\n\n'); }
       else {
@@ -233,8 +233,14 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       }
     } catch (error) {
       if (reservation?.fresh && !finished) {
-        if (dispatched) store.markUncertain(reservation.id, error instanceof GatewayError ? error.code : 'dispatch_outcome_unknown');
-        else store.release(reservation.id, 'not_dispatched');
+        try {
+          if (dispatched) await store.markUncertain(reservation.id, error instanceof GatewayError ? error.code : 'dispatch_outcome_unknown');
+          else await store.release(reservation.id, 'not_dispatched');
+        } catch {
+          // A database outage must not leave the HTTP request hanging or fabricate a
+          // refund. The durable reservation stays held for operator reconciliation.
+          error = new GatewayError(503, 'account_storage_unavailable', 'Account storage is unavailable. The request remains reserved for reconciliation.');
+        }
       }
       if (!res.destroyed && !res.writableEnded) {
         if (res.headersSent) res.end(`data: ${JSON.stringify(errorBody(error))}\n\ndata: [DONE]\n\n`);

@@ -6,11 +6,21 @@
   const format = value => {
     try { return BigInt(value).toLocaleString(); } catch { return '—'; }
   };
+  const formatRch = value => {
+    try {
+      if (typeof value !== 'string' || !/^(0|[1-9]\d{0,77})$/.test(value)) return '—';
+      const units = BigInt(value), scale = 10n ** 18n;
+      const fraction = (units % scale).toString().padStart(18, '0').replace(/0+$/, '');
+      return (units / scale).toLocaleString() + (fraction ? '.' + fraction : '') + ' RCH';
+    } catch { return '—'; }
+  };
   function derive(state = {}) {
     const connected = state.status === 'connected';
     const connecting = state.status === 'connecting';
     const account = state.account;
     const usable = connected && account?.plan?.status === 'active' && account.allowedModels?.length > 0;
+    const holdings = connected ? account?.rchBalance : null;
+    const balanceKnown = holdings?.status === 'available' && holdings.decimals === 18;
     const messages = {
       unconfigured: 'Configure the hosted service to connect your wallet.',
       disconnected: 'Ready to connect. Sign a login message in your browser wallet.',
@@ -25,10 +35,18 @@
         ? 'Unlock your system credential vault to connect. Studio requires secure account storage.'
         : messages[state.status] || messages.unconfigured),
       canConnect: !!state.baseUrl && !connected && !connecting && state.status !== 'locked' && state.secureStorageAvailable !== false,
-      canRedeem: connected && state.config?.redemptionEnabled === true,
+      canRedeem: connected && account?.plan?.status === 'active' && state.config?.redemptionEnabled === true,
+      redemptionMessage: !connected ? 'Connect your wallet to check whether redemption is enabled.'
+        : state.config?.redemptionEnabled !== true ? 'RCH redemption is not enabled on this service.'
+          : account?.plan?.status !== 'active' ? 'An active subscription is required to redeem RCH for AI usage.' : '',
       plan: account?.plan?.name || (connected ? 'No active subscription' : 'No account connected'),
+      walletBalance: balanceKnown ? formatRch(holdings.balanceBaseUnits) : '—',
+      walletBalanceDetail: !connected ? 'Connect your wallet to see your RCH balance.'
+        : balanceKnown ? 'Held in your wallet on ' + (holdings.chainId === 1 ? 'Ethereum Mainnet' : 'chain ' + holdings.chainId) + '. Redeem RCH separately to add AI usage credit.'
+          : holdings?.status === 'unavailable' ? 'RCH balance is temporarily unavailable. Refresh to try again.'
+            : 'RCH balance is not configured on this service.',
       counts: Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining'].map(key => [key, account ? format(account.allowance?.[key]) : '—'])),
     };
   }
-  return { derive, format };
+  return { derive, format, formatRch };
 });

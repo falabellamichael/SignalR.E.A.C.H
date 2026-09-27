@@ -328,8 +328,12 @@ body {
 
 /* ---- settings dropdown ---- */
 .settings-panel {
-  margin-top: 5px;
-  max-height: min(50vh, 320px);
+  position: absolute;
+  top: 43px;
+  right: 10px;
+  width: min(380px, calc(100vw - 20px));
+  max-height: calc(100vh - 60px);
+  z-index: 30;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -340,6 +344,29 @@ body {
   box-shadow: 0 4px 16px var(--reach-shadow);
   padding: 6px 8px;
 }
+.account-bubble { position: relative; border: 1px solid var(--reach-border); border-radius: 50%; width: 30px; height: 30px; flex: 0 0 30px; }
+.account-bubble.connected { color: var(--reach-accent-light); border-color: var(--reach-accent); }
+.account-status-dot { position: absolute; right: 0; bottom: 0; width: 7px; height: 7px; border: 1px solid var(--reach-panel); border-radius: 50%; background: var(--reach-muted); }
+.account-bubble.connected .account-status-dot { background: var(--reach-accent); }
+.account-panel-head { display: flex; justify-content: space-between; align-items: center; }
+.account-panel-head strong { font-size: 12px; }
+.account-panel-close { border: 0; background: transparent; color: var(--reach-text); font: inherit; cursor: pointer; padding: 3px 7px; }
+.account-body { display: flex; flex-direction: column; gap: 9px; padding: 5px 1px; }
+.account-body p { margin: 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.account-wallet { font-family: var(--vscode-editor-font-family, monospace); }
+.account-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 0; }
+.account-summary div { min-width: 0; padding: 8px; border: 1px solid var(--reach-border); border-radius: 6px; }
+.account-summary .account-holdings { grid-column: 1 / -1; }
+.account-summary dt { color: var(--reach-muted); font-size: 10px; }
+.account-summary dd { margin: 4px 0 0; font-size: 14px; overflow-wrap: anywhere; }
+.account-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.account-action { border: 1px solid var(--reach-border); border-radius: 5px; padding: 5px 9px; background: var(--reach-panel); color: var(--reach-text); font: inherit; font-size: 11px; cursor: pointer; }
+.account-action.primary { border-color: var(--reach-accent-border); background: var(--reach-accent-bg); color: var(--reach-accent-light); }
+.account-action:disabled { opacity: .55; cursor: default; }
+.account-field { display: flex; flex-direction: column; gap: 4px; font-size: 11px; }
+.account-field input { min-width: 0; width: 100%; padding: 6px; border: 1px solid var(--reach-border); border-radius: 4px; background: var(--reach-panel); color: var(--reach-text); font: inherit; }
+.account-error { color: var(--reach-error); }
+.account-body :focus-visible, .account-panel-close:focus-visible, .settings-tab:focus-visible, .account-bubble:focus-visible { outline: 2px solid var(--reach-accent); outline-offset: 2px; }
 .settings-tabs {
   display: flex;
   gap: 4px;
@@ -429,6 +456,9 @@ body {
 .secret-toggle:focus-visible { outline: 1px solid var(--reach-accent-border); }
 .secret-toggle[aria-pressed="false"] .eye-slash { display: none; }
 .settings-link {
+  background: transparent;
+  border: 0;
+  font-family: inherit;
   font-size: 11px;
   color: var(--reach-accent-light);
   cursor: pointer;

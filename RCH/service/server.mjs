@@ -2,9 +2,11 @@ import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, FetchRequest } from 'ethers';
-import { AccountStore, AccountError, fail } from './store.mjs';
+import { fail } from './store.mjs';
+import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
+import { createTokenBalanceReader } from './token-balance.mjs';
 
 export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
   return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nConnect to REACH Studio. This signature only signs you in.\n\nURI: ${origin}/wallet/connect\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expiresAt}`;
@@ -39,12 +41,13 @@ const staticAssets = new Map([
   ['/wallet/style.css',['text/css; charset=utf-8','wallet.css']],
 ]);
 
-export function createAccountService({config,store,provider,redemptionProvider,fetchImpl,now=Date.now}) {
+export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,now=Date.now}) {
   let ownsStore=false,ownsProvider=false;
-  if(!store) { store=new AccountStore(config.database,{models:config.models,now});ownsStore=true; }
+  if(!store) { store=createAccountStore(config,{now});ownsStore=true; }
   if(!provider&&config.authRpcUrl) { const request=new FetchRequest(config.authRpcUrl);request.timeout=15000;provider=new JsonRpcProvider(request);ownsProvider=true; }
   const gateway=createModelGateway({store,models:config.models,upstreamUrl:config.upstreamUrl,upstreamKey:config.upstreamKey,fetchImpl});
   const redemption=createRedemptionService({store,config,provider:redemptionProvider});
+  const balances=createTokenBalanceReader({config,provider:balanceProvider});
   const buckets=new Map();
   function rateLimit(req) {
     const peer=req.socket.remoteAddress;
@@ -59,7 +62,9 @@ export function createAccountService({config,store,provider,redemptionProvider,f
     if(++previous.count>180)fail(429,'rate_limit','Too many requests. Please wait one minute.');
   }
   const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,tokensPerRch:1000000,loginMethod:'ethereum-browser-wallet'});
-  const accountView=id=>({...store.account(id),redemption:{enabled:redemption.enabled,tokensPerRch:1000000,chainId:config.chainId}});
+  const accountView=async account=>{
+    return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,tokensPerRch:1000000,chainId:config.chainId}};
+  };
   const server=createServer(async(req,res)=>{
     res.setHeader('cache-control','no-store');res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','no-referrer');
     res.setHeader('content-security-policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
@@ -74,27 +79,29 @@ export function createAccountService({config,store,provider,redemptionProvider,f
       if(req.method==='GET'&&pathname==='/v1/account/config') {json(res,200,publicConfig());return;}
       const body=req.method==='POST'?await readBody(req):{};
       if(req.method==='POST'&&pathname==='/v1/auth/start') {
-        const f=store.startFlow(body.state,body.codeChallenge);json(res,200,{...f,loginUrl:`${config.origin}/wallet/connect#flow=${f.flowId}`});return;
+        const f=await store.startFlow(body.state,body.codeChallenge);json(res,200,{...f,loginUrl:`${config.origin}/wallet/connect#flow=${f.flowId}`});return;
       }
       if(req.method==='POST'&&pathname==='/v1/auth/challenge') {
         if(typeof body.address!=='string')fail(400,'wallet_required','Select an Ethereum wallet.');
         try{getAddress(body.address);}catch{fail(400,'wallet_invalid','Invalid wallet address.');}
-        json(res,200,store.challenge(body.flowId,body.address,(...args)=>signInMessage(config.origin,config.chainId,...args)));return;
+        json(res,200,await store.challenge(body.flowId,body.address,(...args)=>signInMessage(config.origin,config.chainId,...args)));return;
       }
       if(req.method==='POST'&&pathname==='/v1/auth/verify') {
-        const c=store.getChallenge(body.flowId,body.challengeId);
+        const c=await store.getChallenge(body.flowId,body.challengeId);
         if(!await verifyWallet(c,body.signature,provider,config.chainId))fail(401,'signature_invalid','The wallet signature does not match this sign-in.');
-        store.authorize(body.flowId,body.challengeId);json(res,200,{status:'verified'});return;
+        await store.authorize(body.flowId,body.challengeId);json(res,200,{status:'verified'});return;
       }
       if(req.method==='POST'&&pathname==='/v1/auth/exchange') {
-        const session=store.exchange(body.flowId,body.state,body.codeVerifier);json(res,session?200:202,session?{...session,account:accountView(session.account.id)}:{status:'pending'});return;
+        // Exchange commits the one-use proof and returns its account snapshot.
+        // A second ledger read could fail after commit and strand the session.
+        const session=await store.exchange(body.flowId,body.state,body.codeVerifier);json(res,session?200:202,session?{...session,account:await accountView(session.account)}:{status:'pending'});return;
       }
       if(req.method==='POST'&&pathname==='/v1/redemptions/details') {json(res,200,await redemption.details(body.redemptionId,body.ticket));return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/submit') {json(res,200,await redemption.submit(body.redemptionId,body.ticket,body.txHash));return;}
       const token=/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1];
-      const account=store.authenticate(token);
-      if(req.method==='GET'&&pathname==='/v1/account') {json(res,200,accountView(account.id));return;}
-      if(req.method==='POST'&&pathname==='/v1/auth/logout') {store.logout(token);json(res,200,{status:'disconnected'});return;}
+      const account=await store.authenticate(token);
+      if(req.method==='GET'&&pathname==='/v1/account') {json(res,200,await accountView(await store.account(account.id)));return;}
+      if(req.method==='POST'&&pathname==='/v1/auth/logout') {await store.logout(token);json(res,200,{status:'disconnected'});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
       if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {await gateway.handle(req,res,account,body);return;}
       fail(404,'not_found','Route not found.');
@@ -106,9 +113,9 @@ export function createAccountService({config,store,provider,redemptionProvider,f
   });
   server.requestTimeout=30000;server.headersTimeout=15000;
   let reconciling=false;
-  const tick=async()=>{if(reconciling)return;reconciling=true;try{store.pruneExpiredAuthentication();await redemption.reconcile();}catch{/* Retain durable pending intents for the next pass. */}finally{reconciling=false;}};
+  const tick=async()=>{if(reconciling)return;reconciling=true;try{await store.pruneExpiredAuthentication();await redemption.reconcile();}catch{/* Retain durable pending intents for the next pass. */}finally{reconciling=false;}};
   const timer=setInterval(tick,30000);timer.unref();
   server.once('listening',tick);
-  server.once('close',()=>{clearInterval(timer);redemption.close();if(ownsProvider)provider.destroy();if(ownsStore)store.close();});
+  server.once('close',()=>{clearInterval(timer);redemption.close();balances.close();if(ownsProvider)provider.destroy();if(ownsStore)Promise.resolve().then(()=>store.close()).catch(()=>{});});
   return {server,store,redemption,config:publicConfig};
 }

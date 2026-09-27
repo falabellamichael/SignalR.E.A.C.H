@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="studio-prd.css" />
   <link rel="stylesheet" href="team-deck.css" />
   <link rel="stylesheet" href="home.css" />
+  <link rel="stylesheet" href="account-menu.css" />
 </head>
 <body>
   <header>
@@ -46,8 +47,26 @@
       </div>
       <span id="wsl-status" class="chip pending">checking reach&hellip;</span>
       <span id="reach-version" class="chip dim"></span>
+      <button id="account-menu-button" class="account-bubble" type="button" aria-label="Open account, usage and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-menu" title="Account, usage and settings">
+        <span id="account-menu-avatar" aria-hidden="true">R</span><i id="account-menu-dot" aria-hidden="true"></i>
+      </button>
     </div>
   </header>
+
+  <section id="account-menu" class="account-menu" role="dialog" aria-modal="false" aria-labelledby="account-menu-title" hidden>
+    <div class="account-menu-head">
+      <div><p class="account-menu-eyebrow">REACH ACCOUNT</p><h2 id="account-menu-title">Welcome to REACH</h2><p id="account-menu-summary">Sign in to see your shared usage.</p></div>
+      <button id="account-menu-close" class="ghost small" type="button" aria-label="Close account menu">×</button>
+    </div>
+    <div class="account-menu-tabs" role="tablist" aria-label="Account sections">
+      <button id="account-menu-tab-account" type="button" role="tab" aria-selected="true" aria-controls="account-menu-panel-account" data-account-panel="account">Account</button>
+      <button id="account-menu-tab-usage" type="button" role="tab" aria-selected="false" aria-controls="account-menu-panel-usage" data-account-panel="usage" tabindex="-1">Usage &amp; RCH</button>
+      <button id="account-menu-tab-settings" type="button" role="tab" aria-selected="false" aria-controls="account-menu-panel-settings" data-account-panel="settings" tabindex="-1">Settings</button>
+    </div>
+    <div id="account-menu-panel-account" class="account-menu-panel" role="tabpanel" aria-labelledby="account-menu-tab-account"></div>
+    <div id="account-menu-panel-usage" class="account-menu-panel" role="tabpanel" aria-labelledby="account-menu-tab-usage" hidden></div>
+    <div id="account-menu-panel-settings" class="account-menu-panel" role="tabpanel" aria-labelledby="account-menu-tab-settings" hidden></div>
+  </section>
 
   <div class="app-body">
   <!-- ========== PERSISTENT NAV RAIL (PRD: Sidebar Quick-Navigation Menu) ==========
@@ -1063,6 +1082,7 @@
   <script src="connections-ui.js"></script>
   <script src="home.js"></script>
   <script src="account-view.js"></script>
+  <script src="account-menu.js"></script>
   <script src="account.js"></script>
   <script src="playground.js"></script>
   <script src="about.js"></script>

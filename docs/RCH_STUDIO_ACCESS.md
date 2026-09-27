@@ -2,9 +2,11 @@
 
 ## Implementation status
 
-Wallet sign-in, the hosted account gateway, durable shared usage accounting, the Studio Home account controls, and RCH burn-to-credit settlement are implemented. The chosen public origin is `https://unbent-semicolon-hermit.ngrok-free.dev` on the existing SignalREACH host.
+Wallet sign-in, the hosted account gateway, durable shared usage accounting, account dropdowns in Studio and the VS Code extension, and RCH burn-to-credit settlement are implemented. The chosen public origin is `https://unbent-semicolon-hermit.ngrok-free.dev` on the existing SignalREACH host.
 
-The supplied initial configuration enables account sign-in with **no paid models and no live redemption** once installed. The account service must run on the PC serving the public SignalREACH endpoint, with the relay configured to proxy account routes to it. Actual plan sizes/renewals have not been chosen, the current CodeGPT bridge does not supply reliable usage records, and RCH has not been deployed to Ethereum mainnet. These conditions are represented as unavailable UI states, not simulated purchases or invented balances. Card checkout, automated subscription payments, wallet recovery/linking, mobile WalletConnect, and a token exchange are separate future work.
+The supplied initial configuration enables account sign-in with **no paid models and no live redemption** once installed. The account service must run on the PC serving the public SignalREACH endpoint, with the relay configured to proxy account routes to it. Actual plan sizes/renewals have not been chosen and the current CodeGPT bridge does not supply reliable usage records. RCH is deployed on Ethereum mainnet at the address in `RCH/terminal/mainnet.json`; deployment alone does not enable redemption. The service and the contract each have a separate redemption switch. These conditions are represented as unavailable UI states, not simulated purchases or invented balances. Card checkout, automated subscription payments, wallet recovery/linking, and mobile WalletConnect are separate future work.
+
+Account persistence supports local SQLite and a server-only Supabase backend. The API, wallet identity, plan, and token-allowance semantics remain compatible. This storage change does **not** activate market-value redemption. The proposed monetary-credit design and the existing contract constraints are documented in [RCH_VALUE_PRICING.md](RCH_VALUE_PRICING.md).
 
 ## Product rules
 
@@ -18,14 +20,23 @@ The supplied initial configuration enables account sign-in with **no paid models
 
 ## Customer flow in Studio
 
-1. Open **Home → Wallet sign-in**, save the service origin, and choose **Connect wallet**.
+1. Open the **account bubble at the top right → Account**, save the service origin, and choose **Connect wallet**. Account, **Usage & RCH**, and **Settings** remain inside this dropdown; closing it preserves unsaved form values.
 2. The system browser opens the service's wallet page. A browser wallet selects the account and Ethereum chain. Review and sign the login message.
 3. Studio receives an expiring session through a proof-key-protected exchange. It displays the wallet, plan, permitted models, and included/prepaid/reserved balances.
 4. Choose **Use REACH models**. The managed `REACH subscription` connection uses the same main-process connection routing as Home chat, normal chat, agents, teams, Playground, and refactor. Personal endpoints remain separately managed connections.
-5. When live redemption is enabled and the account has an active plan, enter an RCH amount and review the burn. The browser wallet separately approves the transaction and network gas.
+5. Open **Usage & RCH**. When live redemption is enabled and the account has an active plan, enter an RCH amount and review the burn. The browser wallet separately approves the transaction and network gas.
 6. Refresh the account after finality to see credited usage. Disconnect revokes the current service session and removes its local ciphertext.
 
 Sign-in only signs a message. It does not authorize a payment, transfer, approval, or burn. Studio and the service never request a private key, seed phrase, keystore file, or wallet password. The existing local operator wallet and its private backup are separate from customer account storage.
+
+## Customer flow in the VS Code extension
+
+1. Open REACH Chat and select the **account bubble at the top right → Account**. Save the same account service URL used in Studio, then select **Sign in with wallet**.
+2. Sign the login message in the browser wallet. The extension completes the same proof-key exchange and stores the session in VS Code SecretStorage. Neither settings nor the chat webview receive the session credential.
+3. The dropdown shows the shared subscription, wallet holdings, available usage, and redemption controls. Select **Use subscription** when the account has an active plan and qualified models. Requests go through the account gateway and share Studio's ledger.
+4. Use **Settings** and **Budgets** in the same dropdown for the existing endpoint, provider, and usage settings. Escape closes the dropdown and returns focus to the bubble. Ordinary wallet approvals still take place in the browser wallet.
+
+RCH holdings are read from the configured chain at one block and are displayed separately from prepaid usage. An unavailable balance lookup is never shown as a zero balance. Signing in or holding RCH does not itself grant a plan or credit usage.
 
 ## Authentication and session handling
 
@@ -43,7 +54,7 @@ The Node gateway fronts the existing Python relay. The relay routes `/wallet/*`,
 
 Each model route is explicitly qualified with `metered: true`, its upstream model ID, an input size limit, its upstream-enforced input token ceiling, and an output cap. Unqualified models do not appear in customer catalogs. Plans restrict the qualified catalog further.
 
-Before dispatch, a SQLite `BEGIN IMMEDIATE` transaction reserves the input ceiling plus requested output limit from the account. This conservative hold prevents concurrent requests spending the same balance. It is not an estimated bill. On success, **provider-reported input plus output tokens** settle once and unused held tokens are refunded. Cached input and reasoning detail counts are subsets of the totals, not extra charges. Text and tool calls are supported; image/audio/video billing is not enabled.
+Before dispatch, an atomic database transaction reserves the input ceiling plus requested output limit from the account. SQLite uses `BEGIN IMMEDIATE`; Supabase uses PostgreSQL transactions with account-row locks and unique idempotency keys. This conservative hold prevents concurrent requests spending the same balance. It is not an estimated bill. On success, **provider-reported input plus output tokens** settle once and unused held tokens are refunded. Cached input and reasoning detail counts are subsets of the totals, not extra charges. Text and tool calls are supported; image/audio/video billing is not enabled.
 
 The gateway requires `X-Reach-Metering: provider-v1` and `usage_source: provider` from the relay. Metered relay requests disable automatic caching, retries, and fallback that would conceal separate generations. Estimated character-based counts remain explicitly estimated and cannot settle paid usage. Missing/conflicting usage, cancellation, dropped streams, and ambiguous upstream outcomes preserve an uncertain hold. A proven pre-dispatch rejection releases it. Matching `Idempotency-Key` retries replay a completed result or report the existing request; they do not start a second generation. Released, undispatched attempts can be retried with the same key.
 
@@ -117,10 +128,34 @@ For an uncertain model request, inspect the reservation ID and obtain actual pro
 
 Back up the SQLite database using SQLite's backup API or stop the service before copying it. Do not copy only the main database while WAL writes are active. Preserve grants, redemptions, usage holds, and event uniqueness together. A lost database cannot automatically reconstruct subscription allowances and unsent redemption intents from chain history.
 
+### Supabase storage
+
+1. Create a dedicated project in the intended Supabase organization after verifying its cost. Apply the SQL in `supabase/migrations` to that project and run the database security advisors.
+2. Copy `RCH/config/accounts.supabase.example.json` to the host's private configuration directory. Set the real project URL and existing public REACH origin. Choose either `supabase` or `database`; configuration rejects both together and never silently falls back to local storage when Supabase is unavailable.
+3. Put the project's server secret key (or legacy `service_role` key) in a separate private credential file. Never distribute it to Studio, the browser, customer devices, or source control. The service supports modern `sb_secret_` keys and rejects publishable/anon keys for accounting.
+4. Start the host with the existing private upstream credential and separate Supabase credential:
+
+   ```text
+   node RCH/scripts/accounts-host.mjs /private/accounts.json /private/upstream.key /private/supabase.key
+   ```
+
+   Environment-based CLI operations use the variable named by `supabase.secretKeyEnv` as well as `upstreamKeyEnv`. The host launcher reads files without putting their contents in command arguments, then removes its temporary credential environment variables.
+5. Verify wallet sign-in, account isolation, shared reservations, idempotency, and confirmed redemption with a test account before switching production storage. Stop the source account service and keep a database backup, then import its existing state into the empty Supabase target:
+
+   ```text
+   npm run accounts -- import-sqlite --config /private/supabase-accounts.json --source-sqlite /private/accounts.sqlite
+   ```
+
+   The importer reads a consistent SQLite snapshot without modifying it, preserves account IDs and all seven tables, and refuses to overwrite a nonempty target. The import commits as one transaction. The command reports counts only. Verify counts and an existing account before starting the new service. Switching configuration alone does not migrate records; do not keep two independently writable ledgers running after cutover.
+
+Tables live in the private `reach_accounts` schema. RLS is enabled, anonymous and authenticated client roles have no data privileges, and the fixed-operation RPC is executable only by the backend service role. The existing REACH wallet session identifies the account at the service boundary. The Supabase organization owner's login is not a customer account or a substitute for wallet authentication.
+
+All financial mutations execute inside one RPC transaction. Browser requests cannot set a balance, grant a plan, choose the credited amount, or assert that a burn succeeded. Database outages fail closed; a provider request is not dispatched before its reservation succeeds, and an uncertain dispatched request is not automatically refunded or retried. No new Storage buckets or object access policies are needed.
+
 ### Enable real redemption later
 
 Use the existing reviewed RCH deployment workflow and a separate deployment authorization. Configure the correct deployed token and a trusted chain RPC under `redemption`, verify the runtime/build and conversion, test recovery/finality, provision actual plans/models, and then enable the service and unpause contract redemption. This implementation did not deploy a contract, move ETH, sign with the operator wallet, or enable real purchases.
 
 ## Verification
 
-The RCH suite exercises wallet challenge replay/PKCE/origin/session rejection, shared durable reservations, debt, renewal boundaries, grant/event idempotency, provider metering and SSE failure paths, contract burn permissions and dust/ID handling, wrong-chain/event/reorganization/finality failures, and an actual local Ganache burn settling once into SQLite. Relay tests exercise customer routing before local bypass, header handling, unavailable upstreams, credential isolation, and metered provenance. Studio tests exercise encrypted persistence, cancellation races, expiry, routing, and credential redaction; native Electron fixtures verify the Home states at wide and narrow sizes.
+The RCH suite exercises wallet challenge replay/PKCE/origin/session rejection, shared durable reservations, debt, renewal boundaries, grant/event idempotency, provider metering and SSE failure paths, contract burn permissions and dust/ID handling, wrong-chain/event/reorganization/finality failures, and an actual local Ganache burn settling once into SQLite. The Supabase tests execute the migration in local PostgreSQL through PGlite and cover role/RLS denial, transactional mutations, snapshot import, transport failures, and asynchronous gateway boundaries. They do not replace hosted Supabase concurrency and cutover checks. Relay tests exercise customer routing before local bypass, header handling, unavailable upstreams, credential isolation, and metered provenance. Studio and extension tests exercise protected persistence, cancellation races, expiry, routing, and credential redaction; native Electron fixtures cover dropdown layout and interaction at wide and narrow sizes.
