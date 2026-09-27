@@ -27,7 +27,7 @@ const CATALOG_URLS = [
 // `codegpt-eco` id stays valid and means "whatever the open agent page serves".
 const ECONOMY_PREFIX = 'codegpt-eco';
 
-// Last known good economy menu (CodeGPT catalog, 2026-09-10).
+// Known economy models, including Space Bunny Alpha (catalog, 2026-09-26).
 const FALLBACK = [
     { id: 'deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash', badge: 'New!', provider: 'openrouter', wire: 'deepseek/deepseek-v4.1-flash' },
     { id: 'ox-alpha', label: 'GLM 5.3 Flash', badge: 'Economy', provider: 'openrouter', wire: 'z-ai/glm-5.3-flash' },
@@ -35,6 +35,7 @@ const FALLBACK = [
     { id: 'gpt-5.6-luna', label: 'GPT 5.6 Luna', badge: 'Economy', provider: 'openrouter', wire: 'gpt-5.6-luna' },
     { id: 'glm-5.2', label: 'GLM 5.2', badge: 'Economy', provider: 'fireworksai', wire: 'accounts/fireworks/models/glm-5p2' },
     { id: 'MiniMax-M3', label: 'MiniMax M3', badge: 'Economy', provider: 'fireworksai', wire: 'accounts/fireworks/models/minimax-m3' },
+    { id: 'space-bunny-alpha', label: 'Space Bunny Alpha', badge: 'Economy', provider: 'openrouter', wire: '' },
 ];
 
 const CACHE_MS = 5 * 60 * 1000;

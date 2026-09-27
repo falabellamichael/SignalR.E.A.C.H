@@ -1,12 +1,13 @@
 'use strict';
 
-// Experimental Gemini Apps driver. Sign-in happens in a dedicated tray-owned
-// Electron window. Its persistent session is separate from every other provider.
+// Gemini DOM adapter for the same tray browser used by ChatGPT and Copilot.
+// Its persistent session is separate from every other provider.
 // REACH reads only the Gemini page DOM, never account cookies or OAuth tokens.
-const { app, BrowserWindow, session, shell } = require('electron');
+const { app, session, shell } = require('electron');
 
 const GEMINI_URL = 'https://gemini.google.com/app';
 const GEMINI_PARTITION = 'persist:gemini';
+const GEMINI_COMPOSER_SELECTOR = 'rich-textarea [contenteditable="true"], .ql-editor[contenteditable="true"], [role="textbox"][contenteditable="true"], textarea[aria-label*="prompt" i]';
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function safePageUrl(value) {
@@ -57,29 +58,39 @@ function geminiReplyText(root) {
     return (copy.innerText || copy.textContent || '').trim();
 }
 
-function createGeminiBrowser(_userDataDir, log = () => {}) {
+function createGeminiBrowser(_userDataDir, log, {
+    createProviderWindow, installControlTile, waitForProviderWindow,
+    replaceComposerText, sendProviderEnter, refreshNativeMenus
+}) {
     let win = null;
     let quitting = false;
     let lastError = '';
     let lastUrl = '';
     let lastVisible = false;
     let lastReady = false;
-    app.on('before-quit', () => { quitting = true; });
+    let autoHideTimer = null;
+    const controls = { homeUrl: GEMINI_URL, accent: '#4285f4', homeTitle: 'Back to Gemini' };
+    app.on('before-quit', () => { quitting = true; clearTimeout(autoHideTimer); });
+
+    function maybeAutoHideAfterSignIn() {
+        if (!win || win.isDestroyed() || !win.isVisible()) return;
+        clearTimeout(autoHideTimer);
+        autoHideTimer = setTimeout(async () => {
+            try {
+                if ((await snapshot()).ready) {
+                    log('gemini sign-in complete — hiding window');
+                    await hide();
+                }
+            } catch (_) { /* page still loading */ }
+        }, 6000);
+    }
 
     async function ensure({ launch = true } = {}) {
         if (win && !win.isDestroyed()) return win;
         if (!launch) throw new Error('Open Gemini from the SignalREACH tray to sign in.');
         await app.whenReady();
         if (win && !win.isDestroyed()) return win;
-        const browser = new BrowserWindow({
-            width: 1180, height: 860, show: false,
-            title: 'Gemini (SignalREACH)', autoHideMenuBar: true,
-            webPreferences: {
-                partition: GEMINI_PARTITION,
-                contextIsolation: true, nodeIntegration: false,
-                sandbox: true, backgroundThrottling: false
-            }
-        });
+        const browser = createProviderWindow('Gemini (SignalR.E.A.C.H)', GEMINI_PARTITION);
         win = browser;
         browser.webContents.setWindowOpenHandler(({ url }) => {
             let host = '';
@@ -94,6 +105,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
         browser.webContents.on('did-navigate', (_event, url) => {
             lastUrl = safePageUrl(url);
             lastReady = false;
+            if (lastUrl.startsWith('https://gemini.google.com/')) maybeAutoHideAfterSignIn();
         });
         browser.webContents.on('did-navigate-in-page', (_event, url) => {
             lastUrl = safePageUrl(url);
@@ -101,8 +113,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
         browser.on('close', event => {
             if (!quitting) {
                 event.preventDefault();
-                browser.hide();
-                lastVisible = false;
+                void hide();
             }
         });
         browser.on('show', () => { lastVisible = true; });
@@ -117,6 +128,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
             lastError = 'Gemini page failed to load.';
             log(lastError);
         });
+        void installControlTile(browser, controls);
         lastError = '';
         log('gemini in-tray browser created (partition ' + GEMINI_PARTITION + ')');
         return browser;
@@ -140,7 +152,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
     // attributes and named custom elements, and fail closed when they change.
     const snapshotScript = `(() => {
         const visible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-        const composer = [...document.querySelectorAll('rich-textarea [contenteditable="true"], .ql-editor[contenteditable="true"], [role="textbox"][contenteditable="true"], textarea[aria-label*="prompt" i]')].find(visible);
+        const composer = [...document.querySelectorAll(${JSON.stringify(GEMINI_COMPOSER_SELECTOR)})].find(visible);
         const replies = (['model-response', '[data-test-id="model-response"]', '.response-container']
             .map(selector => [...document.querySelectorAll(selector)].filter(visible))
             .find(items => items.length) || []);
@@ -162,7 +174,9 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
         const rejectedText = location.hostname === 'accounts.google.com'
             && /couldn.t sign you in/i.test((document.body && document.body.innerText) || '')
             && /browser or app may not be secure/i.test((document.body && document.body.innerText) || '');
-        return { ready: onGemini && !!composer && !signInRequired && signedInEvidence,
+        return { ready: onGemini && !!composer && !signInRequired && !rejectedPath && !rejectedText,
+            composer: onGemini && !!composer, signIn: signInRequired || location.hostname === 'accounts.google.com',
+            challenge: rejectedPath || rejectedText,
             signInRequired, signedInEvidence, count: replies.length, userCount: users.length,
             composerText: composer ? (composer.innerText || composer.value || composer.textContent || '').trim() : '',
             text, busy, insecureBrowser: rejectedPath || rejectedText,
@@ -178,8 +192,13 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
 
     async function show() {
         const browser = await ensure();
+        if (process.platform === 'darwin' && app.dock) {
+            try { app.dock.show(); } catch (_) { /* optional */ }
+        }
         browser.show();
         browser.focus();
+        await installControlTile(browser, controls);
+        refreshNativeMenus();
         lastVisible = true;
         lastError = '';
     }
@@ -187,6 +206,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
     async function hide() {
         if (win && !win.isDestroyed()) win.hide();
         lastVisible = false;
+        refreshNativeMenus();
     }
 
     async function isVisible() {
@@ -197,6 +217,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
     async function reload() { (await ensure()).webContents.reload(); }
     async function home() { await (await ensure()).loadURL(GEMINI_URL); }
     async function signOut() {
+        clearTimeout(autoHideTimer);
         if (win && !win.isDestroyed()) win.destroy();
         win = null;
         await session.fromPartition(GEMINI_PARTITION).clearStorageData();
@@ -204,6 +225,7 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
         lastVisible = false;
         lastUrl = '';
         lastError = '';
+        await ensure();
     }
 
     async function status() {
@@ -214,8 +236,6 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
                 : state.signInRequired ? 'Sign in to Gemini in the SignalREACH browser before sending requests.'
                 : state.ready ? '' : lastUrl.startsWith('https://accounts.google.com/')
                     ? 'Finish Google sign-in in the SignalREACH browser.'
-                    : lastUrl.startsWith('https://gemini.google.com/') && !state.signedInEvidence
-                        ? 'Gemini has not shown a signed-in account yet. Finish sign-in in the SignalREACH browser.'
                     : 'Gemini composer is unavailable. Open Gemini from the tray to sign in or check the web app.';
             if (state.ready) lastError = '';
             return { ok: !!state.ready && !state.insecureBrowser, why, visible: await isVisible(), url: lastUrl };
@@ -225,39 +245,39 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
         }
     }
 
-    async function sendRequest(text, { signal } = {}) {
+    async function sendRequest(text, { signal, onDelta } = {}) {
         const prompt = String(text || '').trim();
         if (!prompt) throw new Error('Gemini prompt is empty.');
         if (signal?.aborted) throw new Error('Gemini request cancelled.');
+        await waitForProviderWindow(ensure, snapshot, show, 'Gemini', signal);
         const browser = await ensure();
-        await show();
-        browser.webContents.focus();
-        const before = await snapshot();
-        if (!before.ready) {
-            if (before.insecureBrowser) {
-                throw new Error('Google blocked sign-in in the SignalREACH browser. Gemini requests cannot use this session.');
-            }
-            throw new Error('Gemini is not ready. Sign in or open the web app in the SignalREACH browser.');
+        let before = await snapshot();
+        let waiting = 0;
+        while (before.busy) {
+            signal?.throwIfAborted();
+            if (waiting === 30000) await stopGeneration();
+            if (waiting >= 90000) throw new Error('Gemini composer stayed busy for 90 seconds. Check its window and retry.');
+            await sleep(400);
+            waiting += 400;
+            before = await snapshot();
         }
-        if (before.composerText) throw new Error('Gemini has an unsent draft. Clear or send it in the SignalREACH browser before using the bridge.');
-        const focused = await evaluate(`(() => {
-            const el = [...document.querySelectorAll('rich-textarea [contenteditable="true"], .ql-editor[contenteditable="true"], [role="textbox"][contenteditable="true"], textarea[aria-label*="prompt" i]')].find(e => e.getClientRects().length);
-            if (!el) return false;
-            el.focus(); return document.activeElement === el || el.contains(document.activeElement);
-        })()`);
-        if (!focused) throw new Error('Gemini composer changed. Refresh the Gemini page.');
-        await browser.webContents.insertText(prompt);
-        let inserted;
-        for (let attempt = 0; attempt < 5; attempt++) {
-            await sleep(100);
-            inserted = await snapshot();
-            if (inserted.composerText.replace(/\r\n?/g, '\n') === prompt.replace(/\r\n?/g, '\n')) break;
-        }
-        if (inserted.composerText.replace(/\r\n?/g, '\n') !== prompt.replace(/\r\n?/g, '\n')) {
-            throw new Error('Gemini did not accept the prompt in its composer. Check the SignalREACH browser.');
-        }
-        const sendButton = await evaluate(`(() => {
-            const editor = [...document.querySelectorAll('rich-textarea [contenteditable="true"], .ql-editor[contenteditable="true"], [role="textbox"][contenteditable="true"], textarea[aria-label*="prompt" i]')]
+        await replaceComposerText(browser.webContents, GEMINI_COMPOSER_SELECTOR, prompt, 'Gemini');
+        // Match ChatGPT/Copilot: trust the editor insertion, then verify the
+        // submit. Rich-text innerText need not equal the original multiline text.
+        await sleep(400);
+        signal?.throwIfAborted();
+        sendProviderEnter(browser.webContents);
+        await sleep(1200);
+        const accepted = state => state.userCount > before.userCount || state.count > before.count
+            || (state.composer && !state.composerText);
+        let state = await snapshot();
+        // The same Enter-first, Send-button fallback as ChatGPT and Copilot.
+        // Do not click again after the page has already accepted this request.
+        if (!accepted(state) && !state.busy) {
+            signal?.throwIfAborted();
+            log('gemini: Enter did not submit — clicking send button');
+            const sendButton = await evaluate(`(() => {
+            const editor = [...document.querySelectorAll(${JSON.stringify(GEMINI_COMPOSER_SELECTOR)})]
                 .find(e => e.getClientRects().length);
             if (!editor) return null;
             const box = editor.getBoundingClientRect();
@@ -272,39 +292,46 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
             });
             if (!button) return null;
             const rect = button.getBoundingClientRect();
+            button.click();
             return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
         })()`);
-        if (sendButton) {
-            browser.webContents.sendInputEvent({ type: 'mouseDown', x: sendButton.x, y: sendButton.y, button: 'left', clickCount: 1 });
-            browser.webContents.sendInputEvent({ type: 'mouseUp', x: sendButton.x, y: sendButton.y, button: 'left', clickCount: 1 });
-        } else {
-            browser.webContents.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' });
-            browser.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
-            browser.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+            if (!sendButton) throw new Error('Gemini did not expose an enabled Send button. Check its window.');
+            await sleep(400);
+            state = await snapshot();
+            if (!accepted(state) && !state.busy) {
+                browser.webContents.sendInputEvent({ type: 'mouseDown', x: sendButton.x, y: sendButton.y, button: 'left', clickCount: 1 });
+                browser.webContents.sendInputEvent({ type: 'mouseUp', x: sendButton.x, y: sendButton.y, button: 'left', clickCount: 1 });
+            }
         }
         // Never resend blindly: a slow page can accept the first attempt even
         // when a reply has not appeared. Require a visible submission signal.
-        let submitted = false;
-        for (let attempt = 0; attempt < 10; attempt++) {
+        let submitted = accepted(state);
+        for (let attempt = 0; attempt < 10 && !submitted; attempt++) {
             if (signal?.aborted) throw new Error('Gemini request cancelled.');
             await sleep(400);
             const state = await snapshot();
-            submitted = state.userCount > before.userCount || state.count > before.count
-                || (inserted.composerText && !state.composerText);
+            submitted = accepted(state);
             if (submitted) break;
         }
         if (!submitted) throw new Error('Gemini did not visibly submit the prompt. Check the SignalREACH browser; the draft was left in place.');
+        log('gemini message submitted');
         const deadline = Date.now() + 180000;
         let lastText = '';
+        let streamed = '';
         let stableSince = 0;
         while (Date.now() < deadline) {
             if (signal?.aborted) throw new Error('Gemini request cancelled.');
             await sleep(650);
             const state = await snapshot();
-            const fresh = state.userCount > before.userCount || state.count > before.count
+            const fresh = state.count > before.count
                 || (state.text && state.text !== before.text);
             if (!fresh || !state.text || /^thinking\s*\.?\.?.?$/i.test(state.text)) continue;
             if (state.text !== lastText) { lastText = state.text; stableSince = Date.now(); }
+            if (typeof onDelta === 'function' && state.text.startsWith(streamed)) {
+                const delta = state.text.slice(streamed.length);
+                streamed = state.text;
+                if (delta) { try { onDelta(delta); } catch (_) { /* client gone */ } }
+            }
             if (state.busy) stableSince = Date.now();
             // Gemini has no documented completion event. If its Stop control
             // is absent, a longer quiet period avoids returning a paused draft.
@@ -316,14 +343,30 @@ function createGeminiBrowser(_userDataDir, log = () => {}) {
         throw new Error(lastText ? 'Gemini response did not finish within three minutes.' : 'Gemini did not return an answer within three minutes. Check the SignalREACH browser.');
     }
 
+    async function stopGeneration() {
+        if (!win || win.isDestroyed()) return;
+        await evaluate(`(() => {
+            const stop = [...document.querySelectorAll('button')].find(button =>
+                button.getClientRects().length && !button.disabled &&
+                /stop (response|generating)|cancel response/i.test(button.getAttribute('aria-label') || button.innerText || ''));
+            if (stop) stop.click();
+        })()`, { launch: false }).catch(() => {});
+    }
+
     async function send(text, options) {
+        const started = Date.now();
+        log('gemini request started');
         try {
             const answer = await sendRequest(text, options);
             lastError = '';
             return answer;
         } catch (error) {
             lastError = error.message;
+            await stopGeneration();
+            log('gemini request failed: ' + error.message);
             throw error;
+        } finally {
+            log('gemini request finished (' + Math.round((Date.now() - started) / 1000) + 's)');
         }
     }
 

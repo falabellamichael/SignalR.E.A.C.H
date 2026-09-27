@@ -32,6 +32,7 @@
 
 const crypto = require('node:crypto');
 const { normalizeCapabilities } = require('./provider-capabilities.cjs');
+const { MANAGED_ID } = require('./hosted-account.cjs');
 
 /** Hard cap: a connection list is a handful of providers, not a data store. */
 const MAX_CONNECTIONS = 20;
@@ -325,9 +326,9 @@ function updateConnections(settings, mutate, options = {}) {
 }
 
 /**
- * Add a connection. Rejects a duplicate endpoint: two entries for one URL with
- * different keys is a configuration mistake, and silently keeping both makes the
- * active selection ambiguous to the user.
+ * Add a personal connection. Keep personal endpoints unique, but allow the
+ * managed subscription to share a URL with a personal API-key connection.
+ * Their stable ids keep the two access methods and credentials separate.
  *
  * @returns {{settings: object, connection: object}|{error: string}}
  */
@@ -338,7 +339,7 @@ function addConnection(settings, fields = {}) {
   if (normalized.connections.length >= MAX_CONNECTIONS) {
     return { error: `At most ${MAX_CONNECTIONS} connections can be configured.` };
   }
-  if (normalized.connections.some(c => c.endpoint === endpoint)) {
+  if (normalized.connections.some(c => c.id !== MANAGED_ID && c.endpoint === endpoint)) {
     return { error: 'That endpoint is already configured. Select it instead of adding it again.' };
   }
   const connection = {
@@ -379,7 +380,8 @@ function updateConnection(settings, id, fields = {}) {
   const { settings: normalized } = normalizeSettings(settings);
   const endpoint = patch.endpoint || target.endpoint;
   if (patch.endpoint && patch.endpoint !== target.endpoint
-    && normalized.connections.some(c => c.id !== id && c.endpoint === patch.endpoint)) {
+    && id !== MANAGED_ID
+    && normalized.connections.some(c => c.id !== id && c.id !== MANAGED_ID && c.endpoint === patch.endpoint)) {
     return { error: 'Another connection already uses that endpoint.' };
   }
   const updated = updateConnections(settings, list => list.map(c => (c.id === id

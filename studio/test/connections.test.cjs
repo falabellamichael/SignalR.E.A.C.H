@@ -103,6 +103,38 @@ test('update changes only the fields given, and keeps the id across an endpoint 
   assert.match(C.updateConnection(base, 'conn_nope', { name: 'x' }).error, /Unknown connection/);
 });
 
+test('subscription and personal API key share an endpoint without sharing identity or credentials', () => {
+  const { MANAGED_ID } = require('../agent/hosted-account.cjs');
+  for (const accessKey of ['', 'subscription-session-fixture']) {
+    const hosted = { id: MANAGED_ID, name: 'REACH subscription', endpoint: LEGACY.endpoint, accessKey };
+    const base = { connections: [hosted], activeConnection: MANAGED_ID };
+    const added = C.addConnection(base, { ...LEGACY, endpoint: LEGACY.endpoint + '/', name: 'REACH API key' });
+    assert.equal(added.error, undefined);
+    assert.equal(added.settings.connections.length, 2);
+    assert.notEqual(added.connection.id, MANAGED_ID);
+    assert.equal(added.settings.accessKey, LEGACY.accessKey);
+    const switched = C.setActiveConnection(added.settings, MANAGED_ID);
+    assert.equal(switched.settings.accessKey, accessKey);
+    assert.equal(C.findConnection(switched.settings, added.connection.id).accessKey, LEGACY.accessKey);
+    assert.match(C.addConnection(added.settings, { endpoint: LEGACY.endpoint, accessKey: 'another-key' }).error, /already configured/);
+    assert.deepEqual(base.connections, [hosted], 'does not mutate the existing subscription');
+  }
+});
+
+test('editing a personal URL can match the subscription but not another personal endpoint', () => {
+  const { MANAGED_ID } = require('../agent/hosted-account.cjs');
+  const base = C.normalizeSettings({ connections: [
+    { id: MANAGED_ID, name: 'REACH subscription', endpoint: LEGACY.endpoint },
+    { id: 'personal', endpoint: 'https://other.test/v1', accessKey: LEGACY.accessKey },
+  ] }).settings;
+  const moved = C.updateConnection(base, 'personal', { endpoint: LEGACY.endpoint + '/' });
+  assert.equal(moved.error, undefined);
+  assert.equal(moved.connection.id, 'personal');
+  assert.equal(moved.connection.accessKey, LEGACY.accessKey);
+  const third = C.addConnection(moved.settings, { endpoint: 'https://third.test/v1' });
+  assert.match(C.updateConnection(third.settings, third.connection.id, { endpoint: LEGACY.endpoint }).error, /already uses/);
+});
+
 test('remove keeps at least one connection and re-activates a survivor', () => {
   const two = C.addConnection(LEGACY, { endpoint: 'https://b.example.com/v1', accessKey: 'B-FIXTURE-1' }).settings;
   const bId = two.connections.find(c => c.endpoint === 'https://b.example.com/v1').id;

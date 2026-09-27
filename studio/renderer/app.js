@@ -2959,7 +2959,10 @@ $('#btn-save-settings').onclick = async () => {
     status.textContent = `Enter a Base URL for ${blanks.length} connection(s), or remove the empty row(s).`;
     return;
   }
-  const endpoints = connDraft.map(c => String(c.endpoint).trim().replace(/\/+$/, ''));
+  // Subscription access and a personal API key may use the same service URL.
+  // Personal endpoints still cannot be added twice.
+  const endpoints = connDraft.filter(c => c.id !== 'reach_hosted')
+    .map(c => String(c.endpoint).trim().replace(/\/+$/, ''));
   const dupe = endpoints.find((e, i) => endpoints.indexOf(e) !== i);
   if (dupe) { status.textContent = `Two connections use the same endpoint: ${dupe}`; return; }
   if (!connDraft.some(c => c.id === connActiveId)) connActiveId = connDraft[0]?.id || '';

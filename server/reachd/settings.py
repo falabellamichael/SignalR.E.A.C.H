@@ -217,6 +217,7 @@ CODEGPT_ECONOMY_MODELS = [
     ("gpt-5.6-luna", "GPT 5.6 Luna"),
     ("glm-5.2", "GLM 5.2"),
     ("MiniMax-M3", "MiniMax M3"),
+    ("space-bunny-alpha", "Space Bunny Alpha"),
 ]
 
 DEFAULT_SETTINGS["models"].update({

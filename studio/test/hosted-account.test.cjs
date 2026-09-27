@@ -89,6 +89,27 @@ test('cancel during exchange discards and revokes a late session', async t => {
   assert(f.requests.some(r => r.url.endsWith('/logout')));
 });
 
+test('personal API key on the subscription URL survives sign-in, redaction, and disconnect', async t => {
+  const C = require('../agent/connections.cjs');
+  const f = fixture(t);
+  await f.manager.configure('https://reach.test');
+  const base = { connections: [f.manager.managedConnection()], activeConnection: MANAGED_ID };
+  const added = C.addConnection(base, { endpoint: 'https://reach.test/v1', accessKey: 'personal-fixture', name: 'REACH API key' });
+  assert.equal(added.error, undefined);
+  await login(f);
+  const hydrated = f.manager.hydrate(added.settings);
+  assert.equal(hydrated.accessKey, 'personal-fixture', 'sign-in does not switch the personal active connection');
+  assert.equal(C.findConnection(hydrated, MANAGED_ID).accessKey, TOKEN);
+  const safe = f.manager.sanitize(hydrated);
+  assert.equal(C.findConnection(safe, added.connection.id).accessKey, 'personal-fixture');
+  assert(!JSON.stringify(safe).includes(TOKEN));
+  assert.equal(C.setActiveConnection(hydrated, MANAGED_ID).settings.accessKey, TOKEN);
+  await f.manager.disconnect();
+  const disconnected = f.manager.hydrate(safe);
+  assert.equal(C.findConnection(disconnected, MANAGED_ID).accessKey, '');
+  assert.equal(C.activeConnection(disconnected).accessKey, 'personal-fixture');
+});
+
 test('expired sessions remove their main-process credentials', async t => {
   const f = fixture(t); await login(f); f.advance(3600001);
   assert.equal(f.manager.state().status, 'expired'); assert.equal(f.manager.managedConnection().accessKey, '');

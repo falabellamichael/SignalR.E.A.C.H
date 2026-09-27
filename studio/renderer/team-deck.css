@@ -9,7 +9,7 @@
   color: var(--deck-ink);
 }
 :root[data-theme="light"] .team-deck {
-  --deck-line: #c9c7c0; --deck-ink: #363b3c; --deck-muted: #626766;
+  --deck-line: #949187; --deck-ink: #363b3c; --deck-muted: #626766;
   --deck-surface: #fbf7ee; --deck-selected: #eeebe4;
 }
 .chat-log:has(> .team-deck) { padding-top: 0; }

@@ -56,3 +56,17 @@ test('row scans stay inside the menu for the local app', () => {
   assert.match(helpers, /localApp\(\) \? null : document/, 'document-wide fallback must be hosted-app only');
   assert.match(helpers, /if \(!scope\) return \[\];/, 'no menu means no rows');
 });
+
+test('catalog models with a new family name remain selectable inside the menu', () => {
+  const row = text => ({ innerText: text, offsetWidth: 100, offsetHeight: 20 });
+  const trigger = row('Gemini 3.8 Flash');
+  const candidates = [row('Space Bunny Alpha Economy'), row('GPT 5.6 Luna Economy'), row('Manage models')];
+  const menu = { offsetWidth: 300, offsetHeight: 400, querySelectorAll: () => candidates };
+  const document = {
+    querySelector: () => trigger,
+    querySelectorAll: selector => selector.startsWith('button[data-model-dropdown-trigger') ? [trigger] : [menu],
+  };
+  const rows = vm.runInNewContext(injectedHelpers(['space bunny alpha', 'space-bunny-alpha'])
+    + '\nrows().map(row => row.text)', { document });
+  assert.deepEqual(Array.from(rows), ['space bunny alpha economy', 'gpt 5.6 luna economy']);
+});

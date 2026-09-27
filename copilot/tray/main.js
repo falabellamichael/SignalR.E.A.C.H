@@ -120,7 +120,10 @@ let browserWin = null;
 let copilotNavigationAt = 0;
 let chatgptWin = null;
 let codegptWin = null;
-const geminiBrowser = createGeminiBrowser(app.getPath('userData'), log);
+const geminiBrowser = createGeminiBrowser(app.getPath('userData'), log, {
+    createProviderWindow, installControlTile, waitForProviderWindow,
+    replaceComposerText, sendProviderEnter, refreshNativeMenus
+});
 let bridgeServer = null;
 let lastReplyAt = 0;
 let lastError = '';
@@ -188,27 +191,27 @@ function configureSession(ses) {
     } catch (_) { /* if already attached */ }
 }
 
-function ensureBrowser() {
-    if (browserWin && !browserWin.isDestroyed()) return browserWin;
-    // Pin a normal desktop Chrome UA. The default Electron UA ("... Electron/x.y")
-    // makes Microsoft's sign-in treat the client as an unrecognized app and can
-    // force a re-auth redirect loop (the "keeps refreshing" the user hit).
-    const ses = session.fromPartition(PARTITION);
-    configureSession(ses);
-
-    browserWin = new BrowserWindow({
+// All three subscription chat providers use this exact browser/session setup.
+function createProviderWindow(title, partition) {
+    configureSession(session.fromPartition(partition));
+    return new BrowserWindow({
         width: 1180,
         height: 860,
         show: false,                 // THE invisible browser
-        title: 'Copilot (SignalR.E.A.C.H)',
+        title,
         autoHideMenuBar: true,
         webPreferences: {
-            partition: PARTITION,
+            partition,
             contextIsolation: true,
             nodeIntegration: false,
             backgroundThrottling: false   // keep timers/ws alive while hidden
         }
     });
+}
+
+function ensureBrowser() {
+    if (browserWin && !browserWin.isDestroyed()) return browserWin;
+    browserWin = createProviderWindow('Copilot (SignalR.E.A.C.H)', PARTITION);
 
     // IMPORTANT: do NOT hijack navigation. The M365 sign-in flow is a chain of
     // real redirects (login.microsoftonline -> login.live -> fido -> back to
@@ -279,7 +282,7 @@ function showBrowser() {
 
 /* ---------------- ONE shared control tile for every page ------------------- */
 // The same docked tile (⟳ reload · ⌂ home) is injected into ALL embedded chat
-// windows (M365 Copilot, ChatGPT, CodeGPT). It is anchored FLUSH to the
+// windows (M365 Copilot, ChatGPT, Gemini, CodeGPT). It is anchored FLUSH to the
 // top-right corner of the page's top ribbon and sized big enough to fully
 // block the account/user icon area — that icon must never peek out, on any
 // page, at any time. The tile is a true BLOCKER: every click and wheel event
@@ -391,20 +394,7 @@ async function signOutBrowser() {
 
 function ensureChatgpt() {
     if (chatgptWin && !chatgptWin.isDestroyed()) return chatgptWin;
-    const ses = session.fromPartition(CHATGPT_PARTITION);
-    configureSession(ses);
-
-    chatgptWin = new BrowserWindow({
-        width: 1180, height: 860, show: false,
-        title: 'ChatGPT (SignalR.E.A.C.H)',
-        autoHideMenuBar: true,
-        webPreferences: {
-            partition: CHATGPT_PARTITION,
-            contextIsolation: true,
-            nodeIntegration: false,
-            backgroundThrottling: false
-        }
-    });
+    chatgptWin = createProviderWindow('ChatGPT (SignalR.E.A.C.H)', CHATGPT_PARTITION);
 
     chatgptWin.webContents.setWindowOpenHandler(({ url }) => {
         if (isChatgptAuthHost(url) || isChatgptAppHost(url)) {
@@ -1215,7 +1205,7 @@ async function codegptSelectModel(engine) {
             return [...scope.querySelectorAll('[role="option"], [role="menuitem"], li, button, [class*="item" i]')]
                 .filter(e => vis(e) && e !== trigger()).map((e) => ({ el: e, text: label(e) }))
                 .filter((row) => row.text && !row.text.startsWith('ai model') && row.text.length < 200
-                    && modelish.test(row.text)
+                    && (modelish.test(row.text) || hit(row.text))
                     && !/show all|show fewer|manage models|\\+ add|approval|full access/.test(row.text));
         };
         // Some models sit behind the "Show all N models" expander.
@@ -1801,10 +1791,7 @@ async function checkChatgptSignedIn() {
 }
 
 async function chatgptSendEnter() {
-    const wc = chatgptWin.webContents;
-    wc.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' });
-    wc.sendInputEvent({ type: 'char', keyCode: '\r' });
-    wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    sendProviderEnter(chatgptWin.webContents);
 }
 
 async function chatgptClickSend() {
@@ -1918,28 +1905,7 @@ async function chatgptSendRequest(text, signal, onDelta) {
     const before = await chatgptSnapshot();
     const wc = chatgptWin.webContents;
 
-    // Focus composer and select any existing content in the composer only
-    const focused = await wc.executeJavaScript(`(() => {
-        const ta = document.querySelector(${JSON.stringify(CHATGPT_COMPOSER_SELECTOR)});
-        if (!ta) return false;
-        ta.focus();
-        if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') {
-            ta.select();
-        } else {
-            const range = document.createRange();
-            range.selectNodeContents(ta);
-            const sel = window.getSelection();
-            if (sel) {
-                sel.removeAllRanges();
-                sel.addRange(range);
-            }
-        }
-        return document.activeElement === ta || ta.contains(document.activeElement);
-    })()`).catch(() => false);
-    if (!focused) throw new Error('ChatGPT composer not found/focusable');
-
-    // Insert text once using trusted IME-style insertion
-    await wc.insertText(text);
+    await replaceComposerText(wc, CHATGPT_COMPOSER_SELECTOR, text, 'ChatGPT');
     await sleep(400);
 
     // Submit via Enter
@@ -2160,7 +2126,7 @@ function browserScriptDeadline(promise, label, timeoutMs = 10000) {
 }
 
 async function waitForProviderWindow(ensureWindow, takeSnapshot, showWindow, name, signal) {
-    ensureWindow();
+    await ensureWindow();
     const deadline = Date.now() + 20000;
     let lastState = null;
     while (Date.now() < deadline) {
@@ -2175,7 +2141,7 @@ async function waitForProviderWindow(ensureWindow, takeSnapshot, showWindow, nam
         if (snap) lastState = snap;
         await sleep(400);
     }
-    showWindow();
+    await showWindow();
     if (lastState?.signIn || lastState?.challenge) {
         throw new Error(name + ' is still on a sign-in or challenge page. Complete it in the browser window, then retry.');
     }
@@ -2233,12 +2199,38 @@ async function checkSignedIn() {
     }
 }
 
-async function sendEnter() {
-    const wc = browserWin.webContents;
+async function replaceComposerText(wc, selector, text, name) {
+    // Focus the renderer without showing its BrowserWindow. Replace only the
+    // composer selection so a previous failed send cannot block the next one.
+    wc.focus();
+    const focused = await browserScriptDeadline(wc.executeJavaScript(`(() => {
+        const ta = [...document.querySelectorAll(${JSON.stringify(selector)})]
+            .find(e => e.getClientRects().length);
+        if (!ta) return false;
+        ta.focus();
+        if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') ta.select();
+        else {
+            const range = document.createRange();
+            range.selectNodeContents(ta);
+            const selection = window.getSelection();
+            if (selection) { selection.removeAllRanges(); selection.addRange(range); }
+        }
+        return document.activeElement === ta || ta.contains(document.activeElement)
+            || !!ta.shadowRoot?.activeElement;
+    })()`), name + ' composer');
+    if (!focused) throw new Error(name + ' composer not found/focusable');
+    await browserScriptDeadline(wc.insertText(text), name + ' text insertion');
+}
+
+function sendProviderEnter(wc) {
     // trusted key events (the v3 CDP path that Copilot's send pipeline accepts)
     wc.sendInputEvent({ type: 'rawKeyDown', keyCode: 'Enter' });
     wc.sendInputEvent({ type: 'char', keyCode: '\r' });
     wc.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+}
+
+async function sendEnter() {
+    sendProviderEnter(browserWin.webContents);
 }
 
 async function clickSendButton() {
@@ -2293,26 +2285,7 @@ async function copilotSend(text, options = {}) {
     const before = await snapshot();
     const wc = browserWin.webContents;
 
-    const focused = await browserScriptDeadline(wc.executeJavaScript(`(() => {
-        const ta = document.querySelector(${JSON.stringify(COMPOSER_SELECTOR)});
-        if (!ta) return false;
-        ta.focus();
-        // A failed previous send can leave a draft behind. Replace that draft
-        // so this request cannot append to or accidentally resend it.
-        if (ta.tagName === 'TEXTAREA' || ta.tagName === 'INPUT') ta.select();
-        else {
-            const range = document.createRange();
-            range.selectNodeContents(ta);
-            const selection = window.getSelection();
-            if (selection) { selection.removeAllRanges(); selection.addRange(range); }
-        }
-        return document.activeElement === ta ||
-               ta.contains(document.activeElement) ||
-               (ta.shadowRoot && ta.shadowRoot.activeElement);
-    })()`), 'Copilot composer');
-    if (!focused) throw new Error('composer not found/focusable');
-
-    await browserScriptDeadline(wc.insertText(text), 'Copilot text insertion'); // trusted IME-style insertion
+    await replaceComposerText(wc, COMPOSER_SELECTOR, text, 'Copilot');
     await sleep(300);
     await sendEnter();
     await sleep(1200);
@@ -2612,6 +2585,7 @@ function saveTraySettings(value) {
     refreshNativeMenus();
     if (saved.provider === 'copilot') ensureBrowser();
     if (saved.provider === 'chatgpt') ensureChatgpt();
+    if (saved.provider === 'gemini') runGeminiBrowser(() => geminiBrowser.ensure());
     if (saved.provider === 'codegpt') ensureCodegpt();
     if (panel && !panel.isDestroyed()) panel.webContents.send('settings-changed');
     return saved;
@@ -2796,7 +2770,11 @@ async function webSearch(query, count) {
 
 let geminiQueue = Promise.resolve();
 function sendGeminiQueued(text, options) {
-    const result = geminiQueue.then(() => geminiBrowser.send(text, options));
+    const result = geminiQueue.then(async () => {
+        const answer = await geminiBrowser.send(text, options);
+        lastReplyAt = Date.now();
+        return answer;
+    });
     geminiQueue = result.catch(() => {});
     return result;
 }
@@ -3151,6 +3129,7 @@ if (hostBlock) {
         const startProvider = endpoints.getSettings().provider;
         if (startProvider === 'copilot') ensureBrowser();
         if (startProvider === 'chatgpt') ensureChatgpt();
+        if (startProvider === 'gemini') runGeminiBrowser(() => geminiBrowser.ensure());
         if (startProvider === 'codegpt') ensureCodegpt();
         // sign-in check: if the session is dead, surface the window once so the
         // user can sign in (only at startup, never while running invisibly)
@@ -3185,6 +3164,14 @@ if (hostBlock) {
                     } catch (_) { /* notifications optional */ }
                 } else {
                     log('startup: chatgpt signed in — staying invisible');
+                }
+            } else if (prov === 'gemini') {
+                const auth = await geminiBrowser.status();
+                if (!auth.ok) {
+                    log('startup: gemini ' + auth.why + ' — showing browser for sign-in');
+                    runGeminiBrowser(() => geminiBrowser.show());
+                } else {
+                    log('startup: gemini signed in — staying invisible');
                 }
             } else if (prov === 'codegpt') {
                 const auth = await checkCodegptSignedIn().catch(error => ({ ok: false, why: error.message }));

@@ -178,6 +178,7 @@ test('Copilot reports an empty reply shell before a client timeout', async () =>
       Date: { now: () => now },
       log: (message) => logs.push(message),
       waitForProviderWindow: async () => {},
+      replaceComposerText: async () => {},
       waitForCopilotHydration: async () => {},
       ensureBrowser: () => {}, showBrowser: () => {},
       checkSignedIn: async () => ({ ok: true }),

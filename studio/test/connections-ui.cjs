@@ -119,8 +119,51 @@ const timeout = setTimeout(() => { console.error('Connections UI timed out', pro
   }
   await run('document.documentElement.dataset.theme = "light"');
   await capture('connections-light');
+  // The subscription and a personal API key may share a URL, while another
+  // personal copy is still refused. Exercise the actual Save button and IPC.
+  assert.equal((await run(`reachApi.account.configure(${JSON.stringify(endpoint)})`)).ok, true);
+  await run('loadSettings()');
+  await run('document.querySelector("#btn-add-connection").click()');
+  await run(`(() => {
+    for (const [selector, value] of [
+      ['.conn-name', 'REACH API key'], ['.conn-url', ${JSON.stringify(endpoint + '/v1/')}],
+      ['input[type=password]', 'personal-key-fixture'],
+    ]) {
+      const input = document.querySelector('#conn-editor ' + selector);
+      input.value = value; input.dispatchEvent(new Event('input'));
+    }
+  })()`);
+  await run('document.querySelector("#btn-save-settings").onclick()');
+  assert.equal(await run('document.querySelector("#settings-status").textContent'), 'Saved.');
+  const shared = (await run('reachApi.getSettings()')).connections.filter(c => c.endpoint === endpoint + '/v1');
+  assert.equal(shared.length, 2);
+  const personal = shared.find(c => c.id !== 'reach_hosted');
+  assert.equal(personal.accessKey, 'personal-key-fixture');
+  assert.equal(shared.find(c => c.id === 'reach_hosted').accessKey, '', 'Managed credential stays redacted');
+  for (const id of ['reach_hosted', personal.id]) {
+    await run(`document.querySelector('.conn-card[data-conn-id="${id}"] .conn-radio').click()`);
+    await run('document.querySelector("#btn-save-settings").onclick()');
+    const active = await run('reachApi.getSettings()');
+    assert.equal(active.activeConnection, id);
+    assert.equal(active.accessKey, id === 'reach_hosted' ? '' : 'personal-key-fixture');
+  }
+  await run('loadSettings()');
+  assert.equal(await run('connDraft.filter(c => c.endpoint === ' + JSON.stringify(endpoint + '/v1') + ').length'), 2);
+  const rejected = await run(`reachApi.connections.save({ action: 'add', endpoint: ${JSON.stringify(endpoint + '/v1')}, accessKey: 'another-personal-key' })`);
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.err, /already configured/);
+  await run('document.querySelector("#btn-add-connection").click()');
+  await run(`(() => {
+    const input = document.querySelector('#conn-editor .conn-url');
+    input.value = ${JSON.stringify(endpoint + '/v1/')}; input.dispatchEvent(new Event('input'));
+  })()`);
+  await run('document.querySelector("#btn-save-settings").onclick()');
+  assert.match(await run('document.querySelector("#settings-status").textContent'), /Two connections use the same endpoint/);
+  assert.equal((await run('reachApi.getSettings()')).connections.length, 6, 'Rejected duplicate is not persisted');
+  await run('document.querySelector("#conn-editor .conn-remove").click()');
+  await capture('subscription-and-api-key');
   assert.deepEqual(errors, []);
-  console.log('CONNECTIONS UI PASS: draft/save, active vs editor, pool, Browse, key masking, add/remove, stale ping, responsive layouts, overflow, console.');
+  console.log('CONNECTIONS UI PASS: draft/save, active vs editor, pool, Browse, key masking, add/remove, stale ping, responsive layouts, subscription + API key, duplicate rejection, overflow, console.');
   console.log('Evidence:', profile);
   clearTimeout(timeout);
   server.close();

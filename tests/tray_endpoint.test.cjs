@@ -96,7 +96,7 @@ test('CodeGPT economy models are listed by id and routed to the CodeGPT sender',
  // Every economy model is addressable on its own, so a client can ask for one
  // without a second setting, and the legacy aliased id still resolves.
  for (const id of ['deepseek-v4.1-flash', 'ox-alpha', 'gemini-3.8-flash',
-   'gpt-5.6-luna', 'glm-5.2', 'MiniMax-M3']) {
+   'gpt-5.6-luna', 'glm-5.2', 'MiniMax-M3', 'space-bunny-alpha']) {
    assert.ok(ids.includes('codegpt-eco-' + id), id + ' missing from /v1/models');
  }
  assert.ok(ids.includes('codegpt-eco-gpt-4o-mini'), 'legacy id removed');
@@ -109,6 +109,10 @@ test('CodeGPT economy models are listed by id and routed to the CodeGPT sender',
  await send({ model: 'codegpt-eco', messages: [{ role: 'user', content: 'hi' }] });
  assert.equal(seen[1].model, 'codegpt-eco');
  assert.equal(seen[1].label, '');
+ const bunny = await (await send({ model: 'codegpt-eco-space-bunny-alpha', messages: [{ role: 'user', content: 'hi' }] })).json();
+ assert.equal(bunny.choices[0].message.content, 'ECO OK');
+ assert.equal(seen[2].model, 'codegpt-eco-space-bunny-alpha');
+ assert.equal(seen[2].label, 'Space Bunny Alpha');
  // A model that does not exist is still refused rather than quietly retargeted.
  assert.equal((await send({ model: 'codegpt-eco-nope', messages: [{ role: 'user', content: 'hi' }] })).status, 400);
 });

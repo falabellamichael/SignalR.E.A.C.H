@@ -264,7 +264,7 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 | Metric | Value |
 | --- | --- |
 | `studio/main.mjs lines` | 4,536 |
-| `studio/renderer/app.js lines` | 5,275 |
+| `studio/renderer/app.js lines` | 5,278 |
 | `studio/preload.cjs lines` | 223 |
 | `studio/agent modules` | 78 |
 | `studio/renderer scripts` | 25 |
