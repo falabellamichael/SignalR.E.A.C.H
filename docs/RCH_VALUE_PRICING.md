@@ -12,6 +12,8 @@ The backend needs an explicitly configured, verified RCH/USD source. An ETH/USD 
 
 A market-priced deployment should validate source identity, chain, data freshness, sufficient liquidity, and deviation limits. A time-weighted price is more resistant to brief trades than a single instantaneous pool quote, but low-liquidity markets still need limits. If those requirements cannot be met, market-price redemption is unavailable. A separately disclosed operator-funded redemption rate can be offered only as an explicit product policy; it must not be labelled an observed market price.
 
+The selected candidate venue is an Ethereum-mainnet Uniswap v3 RCH/USDC pool for the deployed RCH contract. No such pool was found at the standard fee tiers during the 2026-09-27 audit. Pool creation alone would not make the quote trustworthy: live redemption still requires sufficient real liquidity, observation history, manipulation limits, and a funded AI service. Until those checks pass, the accepted market price is unavailable and no RCH should be burned for AI credit.
+
 For every proposed exchange, persist an immutable quote with:
 
 - Quote ID, account/wallet, chain and contract, and exact RCH base-unit amount.
@@ -35,10 +37,10 @@ Burning RCH does not supply dollars or pay an AI provider. The service must fund
 
 Supabase should store wallet/account links, subscription entitlement, versioned model prices, quotes, an append-only monetary ledger, usage reservations/settlements and unique confirmed-redemption events. Server transactions enforce account isolation, one-time crediting and concurrent spending limits. Clients read through authenticated service endpoints and never write balances.
 
-An active subscription can gate access independently of prepaid credit. Whether redeeming RCH also starts/renews a subscription is a separate product decision; the existing implementation requires an already active plan. A USD balance can fund any included model according to that model's displayed rates. Remaining model tokens or minutes are estimates; the monetary balance and settled charge are authoritative.
+The first confirmed market-priced redemption starts access to eligible REACH AI models, even when the wallet has no active plan. The plan entitlement and monetary credit must be committed together after finality; a failed or unverified burn must grant neither. The existing fixed-token implementation still requires an already active plan and does not implement this rule. A USD balance can fund any included model according to that model's displayed rates. Remaining model tokens or minutes are estimates; the monetary balance and settled charge are authoritative.
 
 ## Delivery state
 
-The Supabase adapter in this change preserves the existing fixed-token API as infrastructure. Dynamic RCH valuation, monetary usage billing and an expiring on-chain monetary quote are a proposed next layer. They are not activated, and the current deployed redemption remains disabled. Do not enable the fixed-token redemption path as if it fulfills the market-value requirement.
+The Supabase adapter in this change preserves the existing fixed-token API as infrastructure. Dynamic RCH valuation, monetary usage billing, first-redemption access, and an expiring on-chain monetary quote are required before live redemption. They are not activated, and the current deployed redemption remains disabled. Only a verified RCH market price is acceptable; the fixed primary-sale price or an operator estimate cannot substitute for one. Do not enable the fixed-token redemption path as if it fulfills the market-value requirement.
 
 References: [Uniswap oracle design](https://developers.uniswap.org/docs/protocols/v2/concepts/oracles), [Chainlink feed selection and liquidity risks](https://docs.chain.link/data-feeds/selecting-data-feeds).

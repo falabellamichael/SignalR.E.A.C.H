@@ -40,9 +40,9 @@
     el('allowance-debt').textContent = state.account?.allowance?.debt && state.account.allowance.debt !== '0'
       ? view.format(state.account.allowance.debt) + ' tokens awaiting reconciliation' : 'Shared across supplied models';
     el('redemption-badge').textContent = model.canRedeem ? 'AVAILABLE' : 'UNAVAILABLE';
-    el('redemption-rate').textContent = state.config?.tokensPerRch && state.config.tokensPerRch !== '0'
-      ? '1 RCH = ' + view.format(state.config.tokensPerRch) + ' AI usage tokens. Network chain ID: ' + state.config.chainId + '.'
-      : 'The hosted service supplies the confirmed conversion rate and network.';
+    el('redemption-rate').textContent = state.config?.redemptionEnabled === true
+      ? 'Review the service conversion rate and network before approving in your wallet.'
+      : 'RCH redemption is unavailable until the service can provide a verified market quote.';
     el('redemption-amount').disabled = busy || !model.canRedeem;
     el('redemption-start').disabled = busy || !model.canRedeem || !el('redemption-amount').value.trim();
     if (!model.canRedeem || el('redemption-status').dataset.unavailable === 'true') el('redemption-status').textContent = model.redemptionMessage;

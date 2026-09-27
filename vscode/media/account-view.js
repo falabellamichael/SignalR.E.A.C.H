@@ -80,9 +80,8 @@
     if (connected || state.status === 'locked' || state.status === 'expired') button(actions, 'account-disconnect', 'Disconnect', 'disconnect');
     if (connected) {
       const amount = field('account-amount', 'RCH to redeem', 'amount', '', 'For example, 1.5'); amount.inputMode = 'decimal';
-      const rate = state.config?.tokensPerRch;
-      if (rate != null) paragraph('Current service conversion: 1 RCH = ' + format(rate) + ' AI tokens.');
-      if (!state.config?.redemptionEnabled) paragraph('Redemption is not enabled on this service.');
+      if (state.config?.redemptionEnabled) paragraph('Review the service conversion rate and network before approving in your wallet.');
+      else paragraph('RCH redemption is unavailable until the service can provide a verified market quote.');
       button(body, 'account-redeem', 'Review redemption in wallet', 'redeem', !active || !state.config?.redemptionEnabled, () => amount.value.trim());
     }
     const url = field('account-service', 'Account service URL', 'url', state.baseUrl, 'https://accounts.example.com');

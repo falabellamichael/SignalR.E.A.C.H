@@ -34,6 +34,7 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
   const redemption = raw.redemption ?? { enabled:false };
   keys(redemption,['enabled','tokenAddress','rpcUrl','confirmations'],'redemption');
   if (typeof redemption.enabled !== 'boolean') throw new Error('redemption.enabled must be explicit.');
+  if (redemption.enabled && raw.chainId === 1) throw new Error('Legacy fixed-rate RCH redemption cannot be enabled on Ethereum mainnet; it does not satisfy market-priced credit.');
   if (redemption.enabled && (!isAddress(redemption.tokenAddress) || !redemption.rpcUrl || !Number.isSafeInteger(redemption.confirmations) || redemption.confirmations < 1)) throw new Error('Redemption needs the reviewed token address, chain RPC, and confirmation policy.');
   if ((redemption.tokenAddress || redemption.rpcUrl) && (!isAddress(redemption.tokenAddress) || /^0x0{40}$/i.test(redemption.tokenAddress) || !redemption.rpcUrl)) throw new Error('Wallet balances need the reviewed RCH token address and chain RPC.');
   for (const address of [raw.authRpcUrl, redemption.rpcUrl].filter(Boolean)) {

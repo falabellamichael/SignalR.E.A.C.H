@@ -98,7 +98,11 @@ test('authenticated account returns wallet holdings without granting a plan, cre
   assert.equal(result.allowance.prepaidRemaining, 0);
   assert.equal(result.allowance.totalRemaining, 0);
   assert.equal(result.redemption.enabled, false);
-  assert.equal((await (await fetch(base + '/v1/account/config')).json()).tokenAddress, tokenAddress);
+  assert.equal(result.redemption.tokensPerRch, null);
+  const publicConfig = await (await fetch(base + '/v1/account/config')).json();
+  assert.equal(publicConfig.tokenAddress, tokenAddress);
+  assert.equal(publicConfig.redemptionEnabled, false);
+  assert.equal(publicConfig.tokensPerRch, null);
   state.fail = true;
   const failedRpc = await fetch(base + '/v1/account', { headers });
   assert.equal(failedRpc.status, 200);

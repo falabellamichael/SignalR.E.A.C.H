@@ -59,6 +59,11 @@ const timeout = setTimeout(() => { console.error('Account UI timed out'); app.ex
   await run("document.querySelector('#account-menu-tab-usage').click()");
   await run("document.querySelector('#home-redemption-amount').value='2'; document.querySelector('#home-redemption-amount').dispatchEvent(new Event('input'))");
   assert.equal(await run("document.querySelector('#home-redemption-start').disabled"), false);
+  win.webContents.send('account:state', { ...account, config: { ...account.config, redemptionEnabled: false } }); await delay(80);
+  assert.equal(await run("document.querySelector('#home-redemption-start').disabled"), true);
+  assert.match(await run("document.querySelector('#home-redemption-rate').textContent"), /verified market quote/);
+  assert.doesNotMatch(await run("document.querySelector('#home-redemption-rate').textContent"), /1,000,000/);
+  win.webContents.send('account:state', account); await delay(80);
   await run("document.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape',bubbles:true})); document.querySelector('#account-menu-button').click()");
   assert.equal(await run("document.querySelector('#home-redemption-amount').value"), '2');
   assert.equal(await run("document.querySelector('#account-menu-tab-usage').getAttribute('aria-selected')"), 'true');

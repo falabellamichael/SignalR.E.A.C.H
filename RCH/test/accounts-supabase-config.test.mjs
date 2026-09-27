@@ -45,3 +45,12 @@ test('existing durable SQLite configuration remains supported', () => {
   assert.ok(config.database.endsWith('accounts.sqlite'));
   assert.equal(config.supabase, undefined);
 });
+
+test('legacy fixed-rate redemption is blocked on mainnet for either account store', () => {
+  const redemption = { enabled: true, tokenAddress: '0x' + '22'.repeat(20), rpcUrl: 'http://127.0.0.1:8545', confirmations: 1 };
+  const { supabase, ...sqlite } = base;
+  for (const storage of [base, { ...sqlite, database: 'private/accounts.sqlite' }]) {
+    assert.throws(() => validateConfig({ ...storage, redemption }, process.cwd(), env), /Legacy fixed-rate RCH redemption cannot be enabled on Ethereum mainnet/);
+  }
+  assert.equal(validateConfig({ ...base, chainId: 31337, redemption }, process.cwd(), env).redemption.enabled, true);
+});

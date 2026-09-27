@@ -11,10 +11,10 @@ Account persistence supports local SQLite and a server-only Supabase backend. Th
 ## Product rules
 
 - CodeGPT and operator-qualified free endpoint models share one account allowance across chats, agents, teams, and devices. A free upstream route does not grant unlimited use of the hosted service.
-- Wallet ownership alone grants no subscription or model access. The host must provision an active plan with an explicit model list, allowance, and expiry.
-- **1 RCH = 1,000,000 AI usage tokens.** Redemption permanently burns the holder's RCH. Ordinary transfers do not burn it.
+- Wallet ownership alone grants no subscription or model access. The current host must provision an active plan with an explicit model list, allowance, and expiry; the requested market-priced redemption will activate eligible model access after a confirmed burn.
+- The existing, disabled contract hardcodes **1 RCH = 1,000,000 AI usage tokens**. This is not the requested market-value exchange rate. Live redemption must quote verified RCH/USD value before any irreversible burn. Ordinary transfers do not burn RCH.
 - Confirmed redemption credits a durable prepaid ledger once. Model calls subsequently consume this ledger; they do not submit blockchain transactions.
-- Included allowance is spent first, prepaid credit second. Prepaid credit persists across plan renewal/expiry, but an active plan is required to use it or begin a new redemption.
+- The current fixed-token ledger spends included allowance first and prepaid credit second. It requires an active plan to redeem or spend prepaid credit; the requested market-priced flow must instead start access with the wallet's first confirmed redemption.
 - An explicit renewal grant replaces the included allowance. Late refunds from an older plan period cannot inflate the new period. Existing prepaid refunds remain available.
 - If a provider reports usage above the reserved balance, the account pays from remaining allowance and records any shortfall as debt. Further requests stop until reconciliation; redemption pays debt before adding usable prepaid credit.
 
@@ -24,7 +24,7 @@ Account persistence supports local SQLite and a server-only Supabase backend. Th
 2. The system browser opens the service's wallet page. A browser wallet selects the account and Ethereum chain. Review and sign the login message.
 3. Studio receives an expiring session through a proof-key-protected exchange. It displays the wallet, plan, permitted models, and included/prepaid/reserved balances.
 4. Choose **Use REACH models**. The managed `REACH subscription` connection uses the same main-process connection routing as Home chat, normal chat, agents, teams, Playground, and refactor. Personal endpoints remain separately managed connections.
-5. Open **Usage & RCH**. When live redemption is enabled and the account has an active plan, enter an RCH amount and review the burn. The browser wallet separately approves the transaction and network gas.
+5. Open **Usage & RCH**. Redemption stays unavailable until a verified market quote, a priced model catalog, and the new settlement path are live. The intended flow shows the RCH amount and monetary AI credit before the browser wallet approves a burn and network gas; the first confirmed redemption starts model access.
 6. Refresh the account after finality to see credited usage. Disconnect revokes the current service session and removes its local ciphertext.
 
 Sign-in only signs a message. It does not authorize a payment, transfer, approval, or burn. Studio and the service never request a private key, seed phrase, keystore file, or wallet password. The existing local operator wallet and its private backup are separate from customer account storage.

@@ -70,6 +70,11 @@ const timeout = setTimeout(() => { console.error('VS Code account UI timed out')
   assert.match(await run("document.querySelector('.account-summary').textContent"), /4,200,000/);
   assert.match(await run("document.querySelector('.account-summary').textContent"), /269.565909309000000001 RCH/);
   assert.equal(await run("document.querySelector('#account-redeem').disabled"), false);
+  await run("fixtureAccount={...fixtureAccount,config:{...fixtureAccount.config,redemptionEnabled:false}};fixtureReceive({type:'accountState',state:fixtureAccount})");
+  assert.equal(await run("document.querySelector('#account-redeem').disabled"), true);
+  assert.match(await run("document.querySelector('.account-body').textContent"), /verified market quote/);
+  assert.doesNotMatch(await run("document.querySelector('.account-body').textContent"), /1 RCH =/);
+  await run(`fixtureAccount=${JSON.stringify(connected)};fixtureReceive({type:'accountState',state:fixtureAccount})`);
   await run("let a=document.querySelector('#account-amount');a.value='1.25';a.dispatchEvent(new Event('input'));let u=document.querySelector('#account-service');u.value='https://draft.invalid';u.dispatchEvent(new Event('input'))");
   await run("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
   assert.equal(await run('document.activeElement.id'), 'settings-btn');
