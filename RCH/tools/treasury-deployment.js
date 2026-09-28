@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 const same = (a, b) => a?.toLowerCase() === b?.toLowerCase();
 const pendingKey = 'rch-treasury-deployment-pending-v1';
-let current, address, busy = false, feeKind;
+let current, address, walletIssue, busy = false, feeKind;
 let pending;
 function readPending() {
   try { return JSON.parse(localStorage.getItem(pendingKey) || 'null'); }
@@ -25,10 +25,10 @@ async function api(path, body) {
 }
 function render() {
   if (!current) return;
-  $('wallet').textContent = `MetaMask: ${address || 'not connected'}`;
+  $('wallet').textContent = walletIssue || `MetaMask: ${address} on Ethereum mainnet`;
   $('configuration').textContent = `Network: Ethereum mainnet\nPayer and owner: ${current.owner}\nRCH token: ${current.token}\nReceiving treasury: ${current.treasury}\nQuote signer: ${current.quoteSigner}\nAccount 1 ETH: ${current.balanceEth}\nContract: ${current.deployment?.contractAddress || 'not yet verified'}\nPaused: ${current.deployment ? current.deployment.paused : 'starts paused'}`;
-  $('deploy').disabled = busy || !!pending || feeKind !== 'deploy' || !same(address, current.owner) || !!current.transactionHash;
-  $('unpause').disabled = busy || !!pending || feeKind !== 'unpause' || !same(address, current.owner) || !current.backendReady || current.deployment?.paused !== true;
+  $('deploy').disabled = busy || !!pending || !!walletIssue || feeKind !== 'deploy' || !same(address, current.owner) || !!current.transactionHash;
+  $('unpause').disabled = busy || !!pending || !!walletIssue || feeKind !== 'unpause' || !same(address, current.owner) || !current.backendReady || current.deployment?.paused !== true;
   $('unsignedReview').hidden = !unsigned();
   $('cancelledReview').disabled = busy;
   $('readiness').textContent = current.deployment?.paused === false ? 'Redemption is enabled on Ethereum mainnet.'
@@ -45,6 +45,7 @@ async function feePlan(type) {
 }
 async function load(quoteFees = true) {
   current = await api('state.json');
+  await restoreWallet();
   if (quoteFees && !pending) {
     const type = !current.transactionHash ? 'deploy' : current.backendReady && current.deployment?.paused ? 'unpause' : null;
     if (type) {
@@ -54,12 +55,27 @@ async function load(quoteFees = true) {
   }
   render(); return current;
 }
+async function restoreWallet() {
+  address = undefined;
+  walletIssue = undefined;
+  if (!window.ethereum) {
+    walletIssue = 'MetaMask is not available in this browser. Open this page in Edge with MetaMask installed and enabled.';
+    return;
+  }
+  try {
+    // Read existing authorization only; connection prompts require the Connect button.
+    const [accounts, chain] = await Promise.all([window.ethereum.request({ method: 'eth_accounts' }), window.ethereum.request({ method: 'eth_chainId' })]);
+    address = accounts[0];
+    if (chain !== '0x1') walletIssue = 'MetaMask is on another network. Select Ethereum mainnet, then check current status.';
+    else if (!address) walletIssue = 'MetaMask is available but no account is connected. Unlock MetaMask and click Connect MetaMask.';
+    else if (!same(address, current.owner)) walletIssue = `MetaMask has ${address} selected. Select Account 1 (${current.owner}), then check current status.`;
+  } catch (error) {
+    walletIssue = `Could not read MetaMask's current account: ${error?.message || String(error)}. Unlock MetaMask and check current status.`;
+  }
+}
 async function verifyWallet() {
-  if (!window.ethereum) throw new Error('Open this local page in Edge with MetaMask installed.');
-  const [accounts, chain] = await Promise.all([window.ethereum.request({ method: 'eth_accounts' }), window.ethereum.request({ method: 'eth_chainId' })]);
-  if (chain !== '0x1') throw new Error('Select Ethereum mainnet in MetaMask.');
-  address = accounts[0];
-  if (!same(address, current.owner)) throw new Error(`Select Account 1 (${current.owner}) in MetaMask.`);
+  await restoreWallet();
+  if (walletIssue) throw new Error(walletIssue);
 }
 async function check() {
   pending = readPending();
@@ -76,7 +92,7 @@ async function check() {
   }
   await load();
   status(unsigned() ? 'A MetaMask review was already opened. Finish or cancel that request in MetaMask before starting another. If it was submitted, recover its transaction hash below.'
-    : pending ? `Waiting for transaction ${pending.hash}. Check again after confirmation.` : current.deployment ? 'On-chain configuration verified.' : 'Ready to connect MetaMask and review deployment.');
+    : pending ? `Waiting for transaction ${pending.hash}. Check again after confirmation.` : walletIssue || (current.deployment ? 'On-chain configuration verified.' : 'Account 1 is connected. Ready to review deployment.'));
 }
 $('connect').onclick = async () => { try {
   if (!window.ethereum) throw new Error('MetaMask is unavailable in this browser.');
@@ -129,5 +145,8 @@ $('cancelledReview').onclick = async () => {
 window.addEventListener('storage', event => {
   if (event.key === pendingKey) { pending = readPending(); render(); }
 });
-for (const event of ['accountsChanged', 'chainChanged']) window.ethereum?.on?.(event, () => { address = undefined; render(); });
+for (const event of ['accountsChanged', 'chainChanged']) window.ethereum?.on?.(event, () => {
+  address = undefined; walletIssue = 'Checking the selected MetaMask account and network…'; render();
+  check().catch(failure);
+});
 check().catch(failure);

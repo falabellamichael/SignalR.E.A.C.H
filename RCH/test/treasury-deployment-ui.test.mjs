@@ -56,20 +56,21 @@ test('network fee plan pads gas upward and checks the exact EIP-1559 maximum cos
 const browserSource = await readFile(new URL('../tools/treasury-deployment.js', import.meta.url), 'utf8');
 const pendingKey = 'rch-treasury-deployment-pending-v1';
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function browserHarness(storage, send) {
+function browserHarness(storage, send, options = {}) {
   const elements = new Map();
   const node = id => { if (!elements.has(id)) elements.set(id, { textContent: '', disabled: false, hidden: false, value: '' }); return elements.get(id); };
-  const requests = [];
+  const requests = [], walletMethods = [], walletEvents = new Map();
   const state = { ...DEPLOYMENT, quoteSigner: '0x2222222222222222222222222222222222222222', balanceEth: '0.000854948',
-    transactionHash: null, deployment: null, backendReady: false };
+    transactionHash: null, deployment: null, backendReady: false, ...options.state };
   const plan = { transaction: { from: DEPLOYMENT.owner, chainId: '0x1', nonce: '0x20', data: '0x1234',
     type: '0x2', gas: '0x120311', maxFeePerGas: '0x1622c118', maxPriorityFeePerGas: '0x5f5e100' },
     networkFee: { maximumEth: '0.000438388', balanceEth: state.balanceEth, gasLimit: '1180433', maxFeePerGasWei: '371378904', quotedAt: '2026-09-28T00:00:00.000Z' } };
   const context = vm.createContext({ document: { getElementById: node },
     localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
-    window: { addEventListener() {}, ethereum: { on() {}, async request(request) {
-      if (request.method === 'eth_accounts' || request.method === 'eth_requestAccounts') return [DEPLOYMENT.owner];
-      if (request.method === 'eth_chainId') return '0x1';
+    window: { addEventListener() {}, ethereum: options.metamask === false ? undefined : { on: (event, callback) => walletEvents.set(event, callback), async request(request) {
+      walletMethods.push(request.method);
+      if (request.method === 'eth_accounts' || request.method === 'eth_requestAccounts') return options.accounts || [DEPLOYMENT.owner];
+      if (request.method === 'eth_chainId') return options.chain || '0x1';
       if (request.method === 'eth_sendTransaction') { requests.push(request); return send(request); }
       return null;
     } } }, async fetch(path, options) {
@@ -83,7 +84,7 @@ function browserHarness(storage, send) {
       return { ok: true, json: async () => path === './state.json' ? { ...state } : plan };
     } });
   vm.runInContext(browserSource, context);
-  return { node, requests };
+  return { node, requests, walletMethods, walletEvents };
 }
 
 test('unsigned wallet review survives reload and blocks another send while receipt recovery remains usable', async () => {
@@ -118,5 +119,40 @@ test('wallet rejection clears only unsigned review; unknown wallet failures reta
       assert.equal(storage.has(pendingKey), false);
       assert.equal(page.node('deploy').disabled, false);
     }
+  }
+});
+
+test('reload restores an authorized owner and enables ready activation without a connection prompt', async () => {
+  const options = { state: { transactionHash: `0x${'a'.repeat(64)}`, backendReady: true,
+    deployment: { contractAddress: '0x1111111111111111111111111111111111111111', paused: true } } };
+  const page = browserHarness(new Map(), () => { throw new Error('No transaction should be sent'); }, options);
+  await flush();
+  assert.equal(page.node('unpause').disabled, false);
+  assert.match(page.node('wallet').textContent, /on Ethereum mainnet/);
+  await page.node('refresh').onclick();
+  assert.equal(page.node('unpause').disabled, false);
+  assert.equal(page.walletMethods.includes('eth_requestAccounts'), false);
+  assert.equal(page.requests.length, 0);
+  options.chain = '0x89';
+  page.walletEvents.get('chainChanged')(); await flush();
+  assert.equal(page.node('unpause').disabled, true);
+  assert.match(page.node('status').textContent, /another network/);
+  options.chain = '0x1';
+  page.walletEvents.get('chainChanged')(); await flush();
+  assert.equal(page.node('unpause').disabled, false);
+  assert.equal(page.walletMethods.includes('eth_requestAccounts'), false);
+});
+
+test('reload explains missing MetaMask, missing authorization, and wrong wallet without prompting', async () => {
+  for (const [options, message] of [[{ metamask: false }, /not available in this browser/],
+    [{ accounts: [] }, /no account is connected/],
+    [{ accounts: ['0x1111111111111111111111111111111111111111'] }, /Select Account 1/]]) {
+    const page = browserHarness(new Map(), () => { throw new Error('No transaction should be sent'); }, options);
+    await flush();
+    assert.equal(page.node('deploy').disabled, true);
+    assert.match(page.node('wallet').textContent, message);
+    assert.match(page.node('status').textContent, message);
+    assert.equal(page.walletMethods.includes('eth_requestAccounts'), false);
+    assert.equal(page.requests.length, 0);
   }
 });
