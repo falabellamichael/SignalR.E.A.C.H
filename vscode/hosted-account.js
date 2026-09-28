@@ -195,7 +195,6 @@ function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetch
   async function redeem(amountRch) {
     await initialize(); const token = authorize(connection().endpoint), expected = generation;
     if (!config?.redemptionEnabled) throw new Error('RCH redemption is not enabled on this service.');
-    if (account?.plan?.status !== 'active') throw new Error('An active subscription is required to redeem RCH.');
     if (typeof amountRch !== 'string' || !/^(0|[1-9]\d{0,20})(\.\d{1,18})?$/.test(amountRch) || !/[1-9]/.test(amountRch)) throw new Error('Enter a positive RCH amount with at most 18 decimal places.');
     const { data } = await request('/v1/redemptions/start', { method: 'POST', token, body: { amountRch } });
     if (expected !== generation) throw new Error('Account changed. Start redemption again.');

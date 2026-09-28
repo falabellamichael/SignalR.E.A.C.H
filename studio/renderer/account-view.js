@@ -18,7 +18,7 @@
     const connected = state.status === 'connected';
     const connecting = state.status === 'connecting';
     const account = state.account;
-    const usable = connected && account?.plan?.status === 'active' && account.allowedModels?.length > 0;
+    const usable = connected && account?.allowedModels?.length > 0 && Number(account?.allowance?.totalRemaining) > 0;
     const holdings = connected ? account?.rchBalance : null;
     const balanceKnown = holdings?.status === 'available' && holdings.decimals === 18;
     const messages = {
@@ -35,11 +35,12 @@
         ? 'Unlock your system credential vault to connect. Studio requires secure account storage.'
         : messages[state.status] || messages.unconfigured),
       canConnect: !!state.baseUrl && !connected && !connecting && state.status !== 'locked' && state.secureStorageAvailable !== false,
-      canRedeem: connected && account?.plan?.status === 'active' && state.config?.redemptionEnabled === true,
+      canRedeem: connected && state.config?.redemptionEnabled === true,
       redemptionMessage: !connected ? 'Connect your wallet to check whether redemption is enabled.'
-        : state.config?.redemptionEnabled !== true ? 'RCH redemption is not enabled on this service.'
-          : account?.plan?.status !== 'active' ? 'An active subscription is required to redeem RCH for AI usage.' : '',
-      plan: account?.plan?.name || (connected ? 'No active subscription' : 'No account connected'),
+        : state.config?.redemptionEnabled !== true ? 'RCH redemption is not enabled on this service.' : '',
+      plan: account?.plan?.status === 'active' ? account.plan.name
+        : connected && Number(account?.allowance?.prepaidRemaining) > 0 ? 'RCH prepaid access'
+          : connected ? 'No active subscription' : 'No account connected',
       walletBalance: balanceKnown ? formatRch(holdings.balanceBaseUnits) : '—',
       walletBalanceDetail: !connected ? 'Connect your wallet to see your RCH balance.'
         : balanceKnown ? 'Held in your wallet on ' + (holdings.chainId === 1 ? 'Ethereum Mainnet' : 'chain ' + holdings.chainId) + '. Redeem RCH separately to add AI usage credit.'

@@ -14,7 +14,7 @@
   }
   function render(document, parent, state, { onAction, drafts, busy, error }) {
     const account = state.account, connected = state.status === 'connected', connecting = state.status === 'connecting';
-    const active = connected && account?.plan?.status === 'active';
+    const active = connected && account?.allowedModels?.length > 0 && Number(account?.allowance?.totalRemaining) > 0;
     const create = (tag, className, text) => {
       const node = document.createElement(tag); if (className) node.className = className;
       if (text !== undefined) node.textContent = text; return node;
@@ -45,7 +45,9 @@
     const status = paragraph(error || state.error || messages[state.status] || messages.unconfigured,
       error || state.error ? 'account-error' : '');
     status.id = 'account-status'; status.setAttribute('role', 'status');
-    paragraph(account?.plan?.name || (connected ? 'No active subscription' : 'REACH account'));
+    paragraph(account?.plan?.status === 'active' ? account.plan.name
+      : connected && Number(account?.allowance?.prepaidRemaining) > 0 ? 'RCH prepaid access'
+        : connected ? 'No active subscription' : 'REACH account');
     if (account?.walletAddress) paragraph(account.walletAddress, 'account-wallet');
     if (account?.plan?.expiresAt) {
       const expiry = new Date(account.plan.expiresAt);
@@ -66,8 +68,7 @@
       body.appendChild(summary);
       paragraph('AI tokens measure model usage. Wallet holdings become prepaid usage only after a confirmed redemption.');
       if (account?.allowance?.debt && account.allowance.debt !== '0') paragraph('Usage awaiting coverage: ' + format(account.allowance.debt) + ' AI tokens.', 'account-error');
-      if (!active) paragraph('An active subscription is required to use prepaid tokens or redeem RCH.');
-      else if (!account?.allowedModels?.length) paragraph('No subscription models are available on this service yet.');
+      if (!active && !account?.allowedModels?.length) paragraph('No metered models are available on this service yet.');
     }
     const actions = create('div', 'account-actions'); body.appendChild(actions);
     if (connecting) button(actions, 'account-cancel', 'Cancel sign-in', 'cancel');
@@ -75,14 +76,14 @@
       const signIn = button(actions, 'account-connect', 'Sign in with wallet', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
       signIn.classList.add('primary');
     }
-    if (connected) button(actions, 'account-use', 'Use subscription', 'use', !active || !account?.allowedModels?.length);
+    if (connected) button(actions, 'account-use', 'Use REACH models', 'use', !active);
     button(actions, 'account-refresh', 'Refresh', 'refresh', !state.baseUrl || connecting);
     if (connected || state.status === 'locked' || state.status === 'expired') button(actions, 'account-disconnect', 'Disconnect', 'disconnect');
     if (connected) {
       const amount = field('account-amount', 'RCH to redeem', 'amount', '', 'For example, 1.5'); amount.inputMode = 'decimal';
       if (state.config?.redemptionEnabled) paragraph('Review the service conversion rate and network before approving in your wallet.');
       else paragraph('RCH redemption is unavailable until the service can provide a verified market quote.');
-      button(body, 'account-redeem', 'Review redemption in wallet', 'redeem', !active || !state.config?.redemptionEnabled, () => amount.value.trim());
+      button(body, 'account-redeem', 'Review redemption in wallet', 'redeem', !state.config?.redemptionEnabled, () => amount.value.trim());
     }
     const url = field('account-service', 'Account service URL', 'url', state.baseUrl, 'https://accounts.example.com');
     button(body, 'account-save', 'Save account service', 'configure', connecting, () => url.value.trim());

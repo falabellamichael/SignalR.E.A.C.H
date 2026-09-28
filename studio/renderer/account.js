@@ -24,11 +24,11 @@
     el('wallet-balance-detail').textContent = model.walletBalanceDetail;
     window.ReachAccountMenu?.update(state, model);
     el('account-plan').textContent = model.plan;
-    el('account-plan-status').textContent = String(state.account?.plan?.status || '—').toUpperCase();
+    el('account-plan-status').textContent = model.plan === 'RCH prepaid access' ? 'PREPAID' : String(state.account?.plan?.status || '—').toUpperCase();
     const expiry = Date.parse(state.account?.plan?.expiresAt);
     el('account-plan-detail').textContent = model.connected
       ? (Number.isFinite(expiry) ? 'Current period ends ' + new Date(expiry).toLocaleString() + '. ' : '') +
-        (model.usable ? 'All models below use the same account allowance.' : 'A service administrator must enable a plan and model access for this account.')
+        (model.usable ? 'All models below use the same account allowance.' : 'Add a plan or redeem RCH credit when redemption is available and metered models are configured.')
       : 'Connect your wallet to load your plan and permitted models.';
     el('account-models').replaceChildren();
     for (const entry of state.account?.allowedModels || []) {

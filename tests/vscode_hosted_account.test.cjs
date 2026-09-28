@@ -41,7 +41,7 @@ function fixture({ exchange, stored, write, request } = {}) {
       throw new Error('Unexpected fixture route ' + route);
     },
   });
-  return { host, calls, opened, states, saved: () => saved, advance: amount => { now += amount; },
+  return { host, account, calls, opened, states, saved: () => saved, advance: amount => { now += amount; },
     async login() { await host.configure(origin); await host.connect(); await host.poll(); } };
 }
 
@@ -84,6 +84,17 @@ test('wallet login uses PKCE and secure storage while public state omits session
   assert.equal(restored.host.state().status, 'expired');
   assert.equal(restored.host.connection().accessKey, '');
   assert.throws(() => restored.host.authorize(origin + '/v1'), /Sign in/);
+});
+
+test('wallet redemption can start before a subscription exists', async () => {
+  const f = fixture({ request: url => url.endsWith('/v1/redemptions/start')
+    ? response({ url: origin + '/wallet/redeem#id=fixture', expiresAt: new Date(1_800_000_900_000).toISOString() }) : null });
+  await f.login();
+  f.account.plan = { status: 'none' };
+  f.account.allowance = { includedRemaining: 0, prepaidRemaining: 0, totalRemaining: 0, reserved: 0, debt: 0 };
+  await f.host.refresh();
+  await f.host.redeem('1');
+  assert.equal(f.opened.at(-1), origin + '/wallet/redeem#id=fixture');
 });
 
 test('cancelled exchange revokes a late token without restoring local or persisted access', async () => {

@@ -97,8 +97,9 @@ const timeout = setTimeout(() => { console.error('Account UI timed out'); app.ex
   assert.equal(await run("document.querySelector('#account-menu').hidden"), false);
   assert.equal(await run("document.activeElement.id"), 'account-menu-tab-account');
   win.webContents.send('account:state', { ...account, account: { ...account.account, plan: { status: 'none' } } }); await delay(80);
-  assert.equal(await run("document.querySelector('#home-redemption-start').disabled"), true);
-  assert.match(await run("document.querySelector('#home-redemption-status').textContent"), /active subscription/);
+  assert.equal(await run("document.querySelector('#home-redemption-start').disabled"), false);
+  assert.equal(await run("document.querySelector('#home-account-use').disabled"), false);
+  assert.equal(await run("document.querySelector('#home-account-plan').textContent"), 'RCH prepaid access');
   win.webContents.send('account:state', account); await delay(80);
   assert.equal(await run("document.querySelector('#home-redemption-status').textContent"), '');
   win.webContents.send('account:state', { ...account, status: 'connecting', account: null }); await delay(80);

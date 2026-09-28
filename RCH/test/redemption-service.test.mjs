@@ -69,7 +69,7 @@ async function mined(f, i, txHash = hash) {
   return { row, receipt, transaction };
 }
 
-test('redemption start enforces active plan, exact decimal conversion, bounds and verified contract availability', async (t) => {
+test('redemption start accepts a wallet without a plan, exact decimal conversion, bounds and verified contract availability', async (t) => {
   const f = fixture(t);
   for (const amount of [0, '0', '-1', '1e-6', '0.0000001', '1.000000000000000001', '1000000.000001', ' 1', '01']) {
     await assert.rejects(f.service.start(f.account, amount), rejection('invalid_redemption_amount'));
@@ -91,7 +91,8 @@ test('redemption start enforces active plan, exact decimal conversion, bounds an
   f.provider.chainId = 1337n; f.provider.walletCode = '0x6000';
   await assert.rejects(f.service.start(f.account, '1'), rejection('unsupported_redemption_wallet'));
   f.provider.walletCode = '0x'; f.advance(3_600_001);
-  await assert.rejects(f.service.start(f.account, '1'), rejection('plan_required'));
+  assert.equal(f.store.account(f.account.id).plan.status, 'expired');
+  assert.match((await f.service.start(f.account, '1')).redemptionId, /^0x[a-f0-9]{64}$/);
 });
 
 test('details require the secret ticket and offer transaction data only while signing is available', async (t) => {

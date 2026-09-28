@@ -176,7 +176,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     res.once('close', cancel);
     try {
       const { payload, route, amount, fingerprint } = completionRequest(body ?? await readJson(req), routes);
-      if (!eligible(account).has(route.id)) fail(403, 'model_not_allowed', 'This model is not included in your plan.');
+      if (!eligible(account).has(route.id)) fail(403, 'model_not_allowed', 'This model is not available for your account.');
       const requestId = req.headers['idempotency-key'] ?? randomUUID();
       if (typeof requestId !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId)) fail(400, 'invalid_request_id', 'Invalid Idempotency-Key.');
       res.setHeader('x-request-id', requestId);

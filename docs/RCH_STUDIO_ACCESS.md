@@ -11,10 +11,10 @@ Account persistence supports local SQLite and a server-only Supabase backend. Th
 ## Product rules
 
 - CodeGPT and operator-qualified free endpoint models share one account allowance across chats, agents, teams, and devices. A free upstream route does not grant unlimited use of the hosted service.
-- Wallet ownership alone grants no subscription or model access. The current host must provision an active plan with an explicit model list, allowance, and expiry; the requested market-priced redemption will activate eligible model access after a confirmed burn.
+- Wallet ownership alone grants no subscription or model access. An operator plan or confirmed prepaid credit grants access to qualified models. Mainnet prepaid redemption remains unavailable until the market-pricing path is implemented and funded.
 - The existing, disabled contract hardcodes **1 RCH = 1,000,000 AI usage tokens**. This is not the requested market-value exchange rate. Live redemption must quote verified RCH/USD value before any irreversible burn. Ordinary transfers do not burn RCH.
 - Confirmed redemption credits a durable prepaid ledger once. Model calls subsequently consume this ledger; they do not submit blockchain transactions.
-- The current fixed-token ledger spends included allowance first and prepaid credit second. It requires an active plan to redeem or spend prepaid credit; the requested market-priced flow must instead start access with the wallet's first confirmed redemption.
+- The fixed-token ledger spends eligible included allowance first and prepaid credit second. Confirmed prepaid credit now starts access without a plan on supported test deployments; it does not make the legacy mainnet rate acceptable.
 - An explicit renewal grant replaces the included allowance. Late refunds from an older plan period cannot inflate the new period. Existing prepaid refunds remain available.
 - If a provider reports usage above the reserved balance, the account pays from remaining allowance and records any shortfall as debt. Further requests stop until reconciliation; redemption pays debt before adding usable prepaid credit.
 
@@ -33,7 +33,7 @@ Sign-in only signs a message. It does not authorize a payment, transfer, approva
 
 1. Open REACH Chat and select the **account bubble at the top right → Account**. Save the same account service URL used in Studio, then select **Sign in with wallet**.
 2. Sign the login message in the browser wallet. The extension completes the same proof-key exchange and stores the session in VS Code SecretStorage. Neither settings nor the chat webview receive the session credential.
-3. The dropdown shows the shared subscription, wallet holdings, available usage, and redemption controls. Select **Use subscription** when the account has an active plan and qualified models. Requests go through the account gateway and share Studio's ledger.
+3. The dropdown shows the shared subscription, wallet holdings, available usage, and redemption controls. Select **Use REACH models** when the account has an active plan or prepaid credit and qualified models. Requests go through the account gateway and share Studio's ledger.
 4. Use **Settings** and **Budgets** in the same dropdown for the existing endpoint, provider, and usage settings. Escape closes the dropdown and returns focus to the bubble. Ordinary wallet approvals still take place in the browser wallet.
 
 RCH holdings are read from the configured chain at one block and are displayed separately from prepaid usage. An unavailable balance lookup is never shown as a zero balance. Signing in or holding RCH does not itself grant a plan or credit usage.

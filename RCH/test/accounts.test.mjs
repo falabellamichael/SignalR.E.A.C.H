@@ -53,6 +53,31 @@ test('shared reservations settle once; duplicates conflict and overspending reco
  assert.equal(store.account(a.id).allowance.debt,30);assert.equal(store.account(a.id).allowance.totalRemaining,0);
  assert.throws(()=>store.reserve(a.id,'req4',model.id,'jkl',1),{code:'usage_debt'});
 });
+test('redeemed prepaid credit starts metered access without a subscription',t=>{
+ const{store}=setup(t),a=store.ensureAccount(wallet.address);
+ const intent=store.createRedemption(a.id,(50n*10n**12n).toString(),50);
+ store.submitRedemption(intent.redemptionId,intent.ticket,'0x'+'44'.repeat(32));
+ store.creditRedemption(intent.redemptionId,'31337:prepaid-only:0');
+ const account=store.account(a.id);
+ assert.equal(account.plan.status,'none');
+ assert.equal(account.allowance.totalRemaining,50);
+ assert.deepEqual(account.allowedModels.map(m=>m.id),[model.id]);
+ const hold=store.reserve(a.id,'prepaid-only',model.id,'request',40);
+ store.settle(hold.id,{promptTokens:5,completionTokens:5,totalTokens:10});
+ assert.equal(store.account(a.id).allowance.totalRemaining,40);
+});
+test('prepaid-only model overage cannot spend a restricted plan allowance',t=>{
+ const other={...model,id:'free/other'};
+ const store=new AccountStore(':memory:',{models:[model,other]});t.after(()=>store.close());
+ const a=store.grantPlan({wallet:wallet.address,grantId:'restricted-plan',planId:'pro',name:'Pro',models:[model.id],tokens:100,expiresAt:Date.now()+3600000});
+ const intent=store.createRedemption(a.id,(100n*10n**12n).toString(),100);
+ store.submitRedemption(intent.redemptionId,intent.ticket,'0x'+'55'.repeat(32));
+ store.creditRedemption(intent.redemptionId,'31337:other-model-credit:0');
+ const hold=store.reserve(a.id,'other-model',other.id,'request',20);
+ store.settle(hold.id,{promptTokens:20,completionTokens:10,totalTokens:30});
+ assert.equal(store.account(a.id).allowance.includedRemaining,100);
+ assert.equal(store.account(a.id).allowance.prepaidRemaining,70);
+});
 test('late refunds do not inflate a renewed plan; uncertain dispatch stays held',t=>{
  const{store,grant}=setup(t),a=grant(100),r=store.reserve(a.id,'old',model.id,'x',80);
  grant(200,'grant-renewal');store.settle(r.id,{promptTokens:5,completionTokens:5,totalTokens:10});

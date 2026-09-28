@@ -15,7 +15,8 @@ import { readAccountSnapshot } from '../service/account-import.mjs';
 // provider prices or prove multi-session lock scheduling in hosted Postgres.
 const wallet = getAddress(`0x${'11'.repeat(20)}`);
 const otherWallet = getAddress(`0x${'22'.repeat(20)}`);
-const models = [{ id: 'measured/model', name: 'Measured', provider: 'fixture', metered: true }];
+const models = [{ id: 'measured/model', name: 'Measured', provider: 'fixture', metered: true },
+  { id: 'measured/other', name: 'Other', provider: 'fixture', metered: true }];
 const txHash = `0x${'33'.repeat(32)}`;
 let db, privateSchema, tables, now, store;
 const identifier = value => { assert.match(value, /^[a-z_][a-z0-9_]*$/); return `"${value}"`; };
@@ -30,6 +31,8 @@ before(async () => {
   const migration = await readFile(new URL(migrationFiles[0], rootDirectory), 'utf8');
   assert.ok(migration.trim(), 'the account migration must contain executable SQL');
   await db.exec(migration);
+  await db.exec(await readFile(new URL('20260928041723_rch_prepaid_access.sql', rootDirectory), 'utf8'));
+  await db.exec(await readFile(new URL('20260928042248_rch_prepaid_overage.sql', rootDirectory), 'utf8'));
   const schemas = await db.query("SELECT schemaname FROM pg_tables WHERE tablename = 'accounts' AND schemaname NOT IN ('public','pg_catalog','information_schema')");
   assert.equal(schemas.rows.length, 1, 'financial account tables belong in one private schema');
   privateSchema = schemas.rows[0].schemaname;
@@ -184,7 +187,31 @@ test('actual SQL redemption pays usage debt before prepaid credit and prevents e
   now += 3_600_001;
   await store.creditRedemption(second.redemptionId, '31337:fixture-transaction:1');
   assert.equal((await store.account(account.id)).allowance.prepaidRemaining, 70, 'already submitted redemption survives plan expiry');
-  assert.equal((await store.account(account.id)).allowance.totalRemaining, 0, 'an expired plan cannot use stored prepaid credit');
+  assert.equal((await store.account(account.id)).allowance.totalRemaining, 70, 'redeemed credit remains usable after plan expiry');
+});
+
+test('actual SQL starts metered access from a verified redemption without a plan', async () => {
+  const account = await store.ensureAccount(wallet);
+  assert.equal((await store.account(account.id)).plan.status, 'none');
+  const intent = await pendingCredit(account.id, 50);
+  await store.creditRedemption(intent.redemptionId, '31337:no-plan-redemption:0');
+  const credited = await store.account(account.id);
+  assert.equal(credited.allowance.totalRemaining, 50);
+  assert.deepEqual(credited.allowedModels.map(model => model.id), models.map(model => model.id));
+  const held = await store.reserve(account.id, 'prepaid-only', models[0].id, 'request', 40);
+  await store.settle(held.id, usage(10));
+  assert.equal((await store.account(account.id)).allowance.totalRemaining, 40);
+});
+
+test('actual SQL charges prepaid rather than restricted plan allowance for another model', async () => {
+  const account = await grant();
+  const intent = await pendingCredit(account.id, 100);
+  await store.creditRedemption(intent.redemptionId, '31337:other-model-credit:0');
+  const held = await store.reserve(account.id, 'other-model-overage', models[1].id, 'request', 20);
+  await store.settle(held.id, { ...usage(30), model: models[1].id });
+  const balance = (await store.account(account.id)).allowance;
+  assert.equal(balance.includedRemaining, 100);
+  assert.equal(balance.prepaidRemaining, 70);
 });
 
 async function prepaidRefundBeyondCreditCap(ledger) {

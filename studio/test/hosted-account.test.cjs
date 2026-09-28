@@ -168,6 +168,8 @@ test('Home shows disconnected, pending, locked, entitlement and redemption state
   assert.match(derive({ status: 'disconnected', baseUrl: 'https://reach.test', secureStorageAvailable: false }).message, /credential vault/);
   const connected = derive({ status: 'connected', account: { plan: { name: 'Builder', status: 'active' }, allowedModels: [{ id: 'm' }], allowance: { totalRemaining: '9007199254740993' } }, config: { redemptionEnabled: true } });
   assert(connected.usable); assert(connected.canRedeem); assert.equal(connected.counts.totalRemaining.replaceAll(',', ''), '9007199254740993');
+  const prepaid = derive({ status: 'connected', account: { plan: { status: 'none' }, allowedModels: [{ id: 'm' }], allowance: { prepaidRemaining: 50, totalRemaining: 50 } }, config: { redemptionEnabled: true } });
+  assert.equal(prepaid.usable, true); assert.equal(prepaid.canRedeem, true); assert.equal(prepaid.plan, 'RCH prepaid access');
   assert.equal(derive({ status: 'connected', account: { plan: { status: 'inactive' } } }).usable, false);
 });
 

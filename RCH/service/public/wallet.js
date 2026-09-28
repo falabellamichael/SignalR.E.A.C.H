@@ -34,7 +34,7 @@ function renderRedemption(value) {
   $('primary').textContent='Burn RCH for usage credit';
   $('primary').disabled=busy||!value.transaction;
   if(value.txHash)$('txHash').value=value.txHash;
-  const reasons={already_submitted:'Transaction submitted. REACH is checking finality.',intent_expired:'This signing request expired. You can still recover a transaction that was already sent.',plan_required:'An active subscription is required to begin a new redemption.'};
+  const reasons={already_submitted:'Transaction submitted. REACH is checking finality.',intent_expired:'This signing request expired. You can still recover a transaction that was already sent.'};
   status(value.status==='credited'?'Usage credit confirmed. Return to Studio and refresh your account.':value.message||reasons[value.signingUnavailableReason]||'Review the amount. Your wallet will request approval for a permanent token burn.');
 }
 async function checkTransaction() {
@@ -78,7 +78,7 @@ $('primary').addEventListener('click',async()=>{
   try {
     config=await api('/v1/account/config');
     if(redeemMode) {
-      $('title').textContent='Redeem REACH Credits';$('intro').textContent='Convert RCH into usage credit for the models included in your active subscription.';
+      $('title').textContent='Redeem REACH Credits';$('intro').textContent='Convert RCH into usage credit for eligible REACH models.';
       $('notice').textContent='This transaction permanently burns RCH and requires network gas. Credit appears after the service verifies the final transaction. Model requests then spend your usage allowance.';
       if(!redemptionId||!ticket)throw new Error('Start redemption from your connected account in Studio.');
       renderRedemption(await api('/v1/redemptions/details',{redemptionId,ticket}));

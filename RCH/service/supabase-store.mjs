@@ -82,9 +82,9 @@ export class SupabaseAccountStore {
     const a = snapshot.account, active = a.plan_expires > this.now(), allowed = JSON.parse(a.models);
     return { id: a.id, walletAddress: a.wallet,
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
-      allowedModels: active ? this.models.filter(m => m.metered === true && allowed.includes(m.id)).map(({ id, name, provider }) => ({ id, name: name || id, provider })) : [],
+      allowedModels: active || a.prepaid > 0 ? this.models.filter(m => m.metered === true && (a.prepaid > 0 || allowed.includes(m.id))).map(({ id, name, provider }) => ({ id, name: name || id, provider })) : [],
       allowance: { includedRemaining: active ? a.included : 0, prepaidRemaining: a.prepaid, reserved: snapshot.reserved,
-        totalRemaining: active && a.debt === 0 ? a.included + a.prepaid : 0, debt: a.debt } };
+        totalRemaining: a.debt === 0 ? (active ? a.included : 0) + a.prepaid : 0, debt: a.debt } };
   }
   async pruneExpiredAuthentication() { await this._rpc('prune_auth'); }
   async importSnapshot(snapshot) {

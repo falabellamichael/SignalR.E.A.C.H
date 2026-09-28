@@ -64,7 +64,7 @@ export class AccountStore {
     const a = this.accountById(accountId), active = a.plan_expires > this.now();
     const reserved = this.db.prepare("SELECT COALESCE(SUM(amount),0) AS n FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId).n;
     const allowed = JSON.parse(a.models);
-    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:active?this.models.filter(m=>m.metered===true && allowed.includes(m.id)).map(({id,name,provider})=>({id,name:name||id,provider})):[], allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved, totalRemaining:active&&a.debt===0?a.included+a.prepaid:0, debt:a.debt } };
+    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:active||a.prepaid>0?this.models.filter(m=>m.metered===true && (a.prepaid>0||allowed.includes(m.id))).map(({id,name,provider})=>({id,name:name||id,provider})):[], allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt } };
   }
   grantPlan({wallet,grantId,planId,name,models,tokens,expiresAt}) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId||'') || !planId || typeof name!=='string' || !safeCount(tokens) || !Array.isArray(models) || !models.length || !models.every(m=>this.models.some(x=>x.id===m&&x.metered===true)) || !Number.isSafeInteger(expiresAt) || expiresAt<=this.now()) fail(400,'invalid_grant','Invalid plan grant, qualified model list, allowance, or expiry.');
@@ -130,10 +130,11 @@ export class AccountStore {
         if(previous.status!=='released')return {id:previous.id,status:previous.status,replay:previous.replay?JSON.parse(previous.replay):null,fresh:false};
       }
       const a=this.accountById(accountId);
-      if(a.plan_expires<=this.now()||!JSON.parse(a.models).includes(model)||!this.models.some(m=>m.id===model&&m.metered===true)) fail(403,'model_not_entitled','This model requires an active REACH plan.');
+      const planEntitled=a.plan_expires>this.now()&&JSON.parse(a.models).includes(model);
+      if((!planEntitled&&a.prepaid===0)||!this.models.some(m=>m.id===model&&m.metered===true)) fail(403,'model_not_entitled','This model requires an active plan or redeemed RCH credit.');
       if(a.debt>0) fail(402,'usage_debt','An earlier request exceeded its allowance; account reconciliation is required.');
-      if(a.included+a.prepaid<amount) fail(402,'allowance_exhausted','Not enough shared allowance for this request.');
-      const ri=previous?.id||id(),inc=Math.min(a.included,amount),pre=amount-inc;
+      if((planEntitled?a.included:0)+a.prepaid<amount) fail(402,'allowance_exhausted','Not enough shared allowance for this request.');
+      const ri=previous?.id||id(),inc=planEntitled?Math.min(a.included,amount):0,pre=amount-inc;
       this.db.prepare('UPDATE accounts SET included=included-?,prepaid=prepaid-? WHERE id=?').run(inc,pre,accountId);
       this.db.prepare("INSERT INTO reservations(id,account_id,request_id,model,fingerprint,amount,held_included,held_prepaid,plan_version,status,created) VALUES(?,?,?,?,?,?,?,?,?,'reserved',?) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,held_included=excluded.held_included,held_prepaid=excluded.held_prepaid,plan_version=excluded.plan_version,status='reserved',created=excluded.created,reason=NULL").run(ri,accountId,requestId,model,fingerprint,amount,inc,pre,a.plan_version,this.now());
       return {id:ri,status:'reserved',replay:null,fresh:true};
@@ -151,7 +152,8 @@ export class AccountStore {
         if(a.plan_version===r.plan_version&&a.plan_expires>this.now()) included+=r.held_included-usedInc;
         prepaid+=r.held_prepaid-usedPre;
       } else {
-        let over=actual-r.amount;const inc=a.plan_expires>this.now()?Math.min(over,included):0;included-=inc;over-=inc;const pre=Math.min(over,prepaid);prepaid-=pre;over-=pre;debt+=over;
+        let over=actual-r.amount;const planEntitled=a.plan_expires>this.now()&&a.plan_version===r.plan_version&&JSON.parse(a.models).includes(r.model);
+        const inc=planEntitled?Math.min(over,included):0;included-=inc;over-=inc;const pre=Math.min(over,prepaid);prepaid-=pre;over-=pre;debt+=over;
       }
       this.db.prepare('UPDATE accounts SET included=?,prepaid=?,debt=? WHERE id=?').run(included,prepaid,debt,a.id);
       const replay=responseRecord?JSON.stringify(responseRecord):null;
@@ -164,7 +166,7 @@ export class AccountStore {
   }
   createRedemption(accountId,amount,usageTokens) {
     if(!safeCount(usageTokens)||usageTokens===0)fail(400,'invalid_redemption','Invalid usage conversion.');
-    const a=this.accountById(accountId);if(a.plan_expires<=this.now())fail(403,'plan_required','An active plan is required to redeem usage credit.');
+    const a=this.accountById(accountId);
     const redemptionId='0x'+id(),ticket=id(),expires=this.now()+900_000;
     this.db.prepare('INSERT INTO redemptions(id,account_id,wallet,amount,usage_tokens,ticket_hash,expires,created) VALUES(?,?,?,?,?,?,?,?)').run(redemptionId,accountId,a.wallet,amount,usageTokens,digest(ticket),expires,this.now());
     return {redemptionId,ticket,expiresAt:new Date(expires).toISOString()};

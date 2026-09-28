@@ -90,7 +90,6 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
   async function start(account, amountRch) {
     requireEnabled();
     const current = await store.account(account?.id);
-    if (current.plan.status !== 'active') fail(403, 'plan_required', 'An active REACH plan is required to redeem usage credit.');
     if (typeof amountRch !== 'string' || !/^(0|[1-9][0-9]{0,12})(?:\.[0-9]{1,18})?$/.test(amountRch)) {
       fail(400, 'invalid_redemption_amount', 'Enter a positive RCH amount using decimal digits.');
     }
@@ -114,18 +113,16 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
     };
     if (row.tx_hash || row.status === 'credited') return { ...result, signingUnavailableReason: 'already_submitted' };
     if (row.expires <= store.now()) return { ...result, signingUnavailableReason: 'intent_expired' };
-    if ((await store.account(row.account_id)).plan.status !== 'active') return { ...result, signingUnavailableReason: 'plan_required' };
     try { await checkToken({ requireOpen: true, wallet: row.wallet }); }
     catch (error) {
       if (error instanceof AccountError) return { ...result, signingUnavailableReason: error.code, message: error.message };
       throw error;
     }
-    // RPC checks may take long enough for expiry, logout-related plan changes, or a
+    // RPC checks may take long enough for expiry or a
     // concurrent submission. Never return another signing request after that point.
     const refreshed = await readIntent(redemptionId, ticket);
     if (refreshed.tx_hash || refreshed.status === 'credited') return { ...result, ...statusFor(refreshed), signingUnavailableReason: 'already_submitted' };
     if (refreshed.expires <= store.now()) return { ...result, status: 'expired', signingUnavailableReason: 'intent_expired' };
-    if ((await store.account(refreshed.account_id)).plan.status !== 'active') return { ...result, signingUnavailableReason: 'plan_required' };
     return { ...result, transaction: transactionFor(refreshed, tokenAddress, chainId) };
   }
 
