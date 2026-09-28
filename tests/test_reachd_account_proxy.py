@@ -58,7 +58,9 @@ class AccountProxyTests(RelayFixture):
         self.assertEqual(self.status("GET", "/v1/models", {}), 200)
 
     def test_wallet_assets_and_account_routes_do_not_need_legacy_keys(self):
-        for path in ("/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/style.css", "/v1/account/config"):
+        for path in ("/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/style.css",
+                     "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json",
+                     "/wallet/rch-add-token.js", "/v1/account/config"):
             with self.subTest(path=path):
                 status, data, reply = self.call("GET", path, TUNNEL)
                 self.assertEqual(status, 200)

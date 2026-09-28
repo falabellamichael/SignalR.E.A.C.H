@@ -15,6 +15,7 @@ from reachd.const import CLIENT_DISCONNECT_ERRORS
 
 ACCOUNT_PATHS = frozenset((
     "/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/style.css",
+    "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json", "/wallet/rch-add-token.js",
     "/v1/auth/start", "/v1/auth/challenge", "/v1/auth/verify", "/v1/auth/exchange", "/v1/auth/logout",
     "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
 ))
