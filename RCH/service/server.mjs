@@ -42,10 +42,10 @@ async function readBody(req) {
   if(!body||typeof body!=='object'||Array.isArray(body)) fail(400,'invalid_body','Supply a JSON object.');return body;
 }
 const staticAssets = new Map([
-  ['/rch',['text/html; charset=utf-8','../../branding/index.html']],
-  ['/rch/logo.png',['image/png','../../branding/rch-logo.png']],
-  ['/rch/tokenlist.json',['application/json; charset=utf-8','../../branding/tokenlist.json']],
-  ['/rch/add-token.js',['text/javascript; charset=utf-8','../../branding/add-token.js']],
+  ['/wallet/rch',['text/html; charset=utf-8','../../branding/index.html']],
+  ['/wallet/rch-logo.png',['image/png','../../branding/rch-logo.png']],
+  ['/wallet/rch-tokenlist.json',['application/json; charset=utf-8','../../branding/tokenlist.json']],
+  ['/wallet/rch-add-token.js',['text/javascript; charset=utf-8','../../branding/add-token.js']],
   ['/wallet/connect',['text/html; charset=utf-8','wallet.html']],
   ['/wallet/redeem',['text/html; charset=utf-8','wallet.html']],
   ['/wallet/app.js',['text/javascript; charset=utf-8','wallet.js']],

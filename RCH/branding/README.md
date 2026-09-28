@@ -4,7 +4,7 @@ The token uses the existing orange-background SignalRAG/SimpleRAG artwork, copie
 
 - `rch-logo.png`: original 1024 × 1024 PNG; SHA-256 is recorded by Git content history.
 - `tokenlist.json`: Ethereum-mainnet RCH metadata in the Uniswap Token Lists format.
-- `index.html` and `add-token.js`: public `/rch` page with an explicitly requested MetaMask token-display import. It never requests a spending approval or sends a transaction.
+- `index.html` and `add-token.js`: public `/wallet/rch` page with an explicitly requested MetaMask token-display import. It never requests a spending approval or sends a transaction.
 
 Public logo: https://raw.githubusercontent.com/falabellamichael/SignalR.E.A.C.H/main/RCH/branding/rch-logo.png
 
