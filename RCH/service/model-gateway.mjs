@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { modelUsdPricing } from './store.mjs';
 
 const MAX_BODY = 512 * 1024;
 const MAX_RESPONSE = 1024 * 1024;
@@ -82,6 +83,7 @@ function configureModels(models) {
   if (!Array.isArray(models)) throw new Error('Gateway models must be an array.');
   const routes = new Map();
   for (const model of models) {
+    if (model.pricing !== undefined && !modelUsdPricing(model)) throw new Error('Invalid USD model pricing.');
     if (!plain(model) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model.id)
       || routes.has(model.id) || typeof model.provider !== 'string' || model.provider.length > 100
       || !integer(model.maxInputTokens, 1, 10_000_000)
@@ -137,7 +139,7 @@ function completionRequest(body, routes) {
   else delete payload.stream_options;
   // Reserve the provider's operator-configured hard input ceiling. We do not
   // manufacture an input token count from characters; final billing uses usage.
-  return { payload, route, amount: route.maxInputTokens + output,
+  return { payload, route, amount: route.maxInputTokens + output, reserveUsage:{promptTokens:route.maxInputTokens,completionTokens:output},
     fingerprint: createHash('sha256').update(canonical({ ...payload, model: route.id })).digest('hex') };
 }
 
@@ -160,7 +162,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
   const eligible = account => new Set((account.allowedModels || []).map(m => typeof m === 'string' ? m : m.id));
   const catalog = account => ({ object: 'list', data: [...routes.values()]
     .filter(m => m.metered === true && eligible(account).has(m.id))
-    .map(m => ({ id: m.id, object: 'model', created: 0, owned_by: 'reach', name: m.name || m.id, provider: m.provider })) });
+    .map(m => ({ id: m.id, object: 'model', created: 0, owned_by: 'reach', name: m.name || m.id, provider: m.provider,...(m.pricing?{pricing:m.pricing}:{}) })) });
 
   async function handle(req, res, account, body) {
     const pathname = new URL(req.url, 'http://gateway.invalid').pathname;
@@ -175,12 +177,13 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     const cancel = () => { if (!res.writableEnded) controller.abort(); };
     res.once('close', cancel);
     try {
-      const { payload, route, amount, fingerprint } = completionRequest(body ?? await readJson(req), routes);
-      if (!eligible(account).has(route.id)) fail(403, 'model_not_allowed', 'This model is not available for your account.');
+      const { payload, route, amount, reserveUsage, fingerprint } = completionRequest(body ?? await readJson(req), routes);
       const requestId = req.headers['idempotency-key'] ?? randomUUID();
       if (typeof requestId !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId)) fail(400, 'invalid_request_id', 'Invalid Idempotency-Key.');
       res.setHeader('x-request-id', requestId);
-      reservation = await store.reserve(account.id ?? account.accountId, requestId, route.id, fingerprint, amount);
+      reservation = route.pricing
+        ? await store.reserveUsd(account.id ?? account.accountId,requestId,route.id,fingerprint,reserveUsage)
+        : await store.reserve(account.id ?? account.accountId, requestId, route.id, fingerprint, amount);
       if (!reservation.fresh) {
         if (reservation.status === 'settled' && reservation.replay) {
           res.writeHead(200, { 'content-type': reservation.replay.contentType, 'cache-control': 'no-store', 'x-reach-replayed': 'true' });
@@ -190,6 +193,10 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         const code = reservation.status === 'settled' ? 'request_already_completed' : reservation.status === 'uncertain' ? 'usage_pending' : 'request_in_progress';
         fail(409, code, 'This request already exists. Reusing its key will not run another generation.');
       }
+      // Stored paid responses and pending holds remain recoverable when the
+      // last credit was spent. The store authorizes every fresh reservation;
+      // this additional catalog gate still runs before any provider dispatch.
+      if (!eligible(account).has(route.id)) fail(403, 'model_not_allowed', 'This model is not available for your account.');
       if (active >= maxConcurrency) fail(429, 'gateway_capacity', 'The model service is at capacity. Retry shortly.');
       if (controller.signal.aborted) fail(408, 'request_cancelled', 'The request was cancelled before dispatch.');
       active += 1;

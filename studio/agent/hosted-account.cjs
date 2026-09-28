@@ -37,23 +37,35 @@ function publicRchBalance(raw) {
     decimals: 18, balanceBaseUnits: raw.balanceBaseUnits, blockNumber: raw.blockNumber }
     : { status: raw.status === 'unconfigured' ? 'unconfigured' : 'unavailable' };
 }
+function publicModels(models) {
+  return (Array.isArray(models) ? models : []).slice(0, 500).map(model =>
+      typeof model === 'string' ? { id: text(model), name: text(model), provider: '' }
+        : { id: text(model?.id), name: text(model?.name), provider: text(model?.provider),
+          ...(model?.pricing && ['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion'].every(key => /^(0|[1-9]\d{0,29})$/.test(String(model.pricing[key])))
+            ? { pricing: Object.fromEntries(['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion', 'cachedInputUsdMicrosPerMillion']
+              .filter(key => model.pricing[key] != null).map(key => [key, count(model.pricing[key])])) } : {}) }).filter(model => model.id);
+}
 function publicAccount(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const allowance = raw.allowance || {}, plan = raw.plan || {};
   return {
     id: text(raw.id), walletAddress: /^0x[0-9a-f]{40}$/i.test(raw.walletAddress) ? raw.walletAddress : '',
     plan: { id: text(plan.id), name: text(plan.name), status: text(plan.status), expiresAt: text(plan.expiresAt) },
-    allowedModels: (Array.isArray(raw.allowedModels) ? raw.allowedModels : []).slice(0, 500).map(model =>
-      typeof model === 'string' ? { id: text(model), name: text(model), provider: '' }
-        : { id: text(model?.id), name: text(model?.name), provider: text(model?.provider) }).filter(model => model.id),
+    allowedModels: publicModels(raw.allowedModels),
     allowance: Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining', 'debt'].map(key => [key, count(allowance[key])])),
+    credit: raw.credit?.currency === 'USD' ? { currency: 'USD', ...Object.fromEntries(
+      ['balanceMicros', 'reservedMicros', 'debtMicros'].map(key => [key, count(raw.credit[key])])) } : null,
     rchBalance: publicRchBalance(raw.rchBalance),
   };
 }
 function publicConfig(raw) {
   return { enabled: raw?.enabled === true, chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null,
     tokenAddress: /^0x[0-9a-f]{40}$/i.test(raw?.tokenAddress) ? raw.tokenAddress : '',
-    redemptionEnabled: raw?.redemptionEnabled === true, tokensPerRch: count(raw?.tokensPerRch),
+    redemptionEnabled: raw?.redemptionEnabled === true, tokensPerRch: raw?.tokensPerRch == null ? null : count(raw.tokensPerRch),
+    redemptionMode: raw?.redemptionMode === 'treasury' ? 'treasury' : 'legacy',
+    treasuryAddress: /^0x[0-9a-f]{40}$/i.test(raw?.treasuryAddress) ? raw.treasuryAddress : '',
+    pricingStatus: text(raw?.pricingStatus, 80), pricingMessage: text(raw?.pricingMessage, 400),
+    redemptionModels: publicModels(raw?.redemptionModels),
     loginMethod: text(raw?.loginMethod) };
 }
 function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, openExternal, onChange = () => {}, now = Date.now }) {
@@ -126,7 +138,29 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
       persist(); changed();
       throw new Error(error);
     }
-    if (!response.ok) throw new Error(response.status === 429 ? 'The service is busy. Please try again shortly.' : `The REACH service rejected the request (${response.status}).`);
+    if (!response.ok) {
+      // Only known public redemption errors may cross the main-process boundary.
+      const messages = {
+        redemption_paused: 'RCH redemption is paused. Refresh your account to try again.',
+        redemption_disabled: 'RCH redemption is not enabled on this service.',
+        invalid_redemption_amount: 'Enter a positive RCH amount using decimal digits.',
+        insufficient_rch_balance: 'Your connected wallet does not hold enough RCH for this amount.',
+        insufficient_rch: 'Your connected wallet does not hold enough RCH for this amount.',
+        redemption_pilot_wallet: 'Connect the wallet enabled for the initial redemption rollout.',
+        redemption_models_unavailable: 'No priced REACH model is currently available for redemption credit.',
+        redemption_budget_exhausted: 'The initial redemption credit budget has been reached. Contact the service operator.',
+        market_quote_stale: 'A fresh verified market quote is unavailable. Your RCH has not moved. Retry shortly.',
+        market_liquidity_unavailable: 'The RCH market cannot quote this amount right now. Try a smaller amount.',
+        market_reference_unavailable: 'The USDC dollar reference is temporarily unavailable. Your RCH has not moved.',
+        redemption_value_too_small: 'This amount is worth less than US$0.000001. Enter a larger RCH amount.',
+        redemption_value_limit: 'This amount exceeds the initial redemption limit. Enter a smaller RCH amount.',
+        market_price_unavailable: 'A verified market quote is unavailable. Your RCH has not moved.',
+        market_liquidity_insufficient: 'This amount exceeds the available market quote. Try a smaller RCH amount.',
+        redemption_rpc_unavailable: 'The Ethereum connection is temporarily unavailable. Your RCH has not moved.',
+      };
+      let code; try { code = (await response.json()).error?.code; } catch { /* Keep the generic response. */ }
+      throw new Error(messages[code] || (response.status === 429 ? 'The service is busy. Please try again shortly.' : `The REACH service rejected the request (${response.status}).`));
+    }
     let data;
     try { data = await response.json(); } catch { throw new Error('The REACH service returned an invalid response.'); }
     return { status: response.status, data };

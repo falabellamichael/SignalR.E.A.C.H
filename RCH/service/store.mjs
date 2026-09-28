@@ -13,6 +13,42 @@ const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
+export function modelUsdPricing(model) {
+  const p = model?.pricing;
+  return p && safeCount(p.inputUsdMicrosPerMillion) && safeCount(p.outputUsdMicrosPerMillion)
+    && (p.cachedInputUsdMicrosPerMillion === undefined || safeCount(p.cachedInputUsdMicrosPerMillion) && p.cachedInputUsdMicrosPerMillion <= p.inputUsdMicrosPerMillion)
+    && p.inputUsdMicrosPerMillion + p.outputUsdMicrosPerMillion > 0 ? p : null;
+}
+export function usdUsageCost(pricing, usage) {
+  if (!modelUsdPricing({ pricing }) || !safeCount(usage?.promptTokens) || !safeCount(usage?.completionTokens)) fail(400,'invalid_usage','Measured usage or model price is invalid.');
+  const cached = usage.details?.prompt?.cached_tokens ?? 0;
+  if (!safeCount(cached) || cached > usage.promptTokens) fail(400,'invalid_usage','Measured cached usage is invalid.');
+  const cost = (BigInt(usage.promptTokens - cached) * BigInt(pricing.inputUsdMicrosPerMillion)
+    + BigInt(cached) * BigInt(pricing.cachedInputUsdMicrosPerMillion ?? pricing.inputUsdMicrosPerMillion)
+    + BigInt(usage.completionTokens) * BigInt(pricing.outputUsdMicrosPerMillion) + 999999n) / 1000000n;
+  if (cost > 1000000000000n) fail(400,'invalid_usage','Measured usage exceeds the credit limit.');
+  return Number(cost);
+}
+export function marketQuotePayload(amount, quote, now, wallet) {
+  if (typeof amount !== 'string' || !/^[1-9][0-9]{0,77}$/.test(amount) || !quote || Array.isArray(quote)
+    || !safeCount(quote.creditUsdMicros) || quote.creditUsdMicros === 0
+    || !safeCount(quote.creditBudgetUsdMicros) || quote.creditBudgetUsdMicros === 0
+    || !Number.isSafeInteger(quote.expiresAtMs) || quote.expiresAtMs <= now || quote.expiresAtMs > now + 900000
+    || !Number.isSafeInteger(quote.issuedAt) || quote.issuedAt > Math.floor(now / 1000) + 5
+    || quote.issuedAt < Math.floor(now / 1000) - 300
+    || !Number.isSafeInteger(quote.deadline) || quote.deadline * 1000 !== quote.expiresAtMs
+    || quote.deadline <= quote.issuedAt || quote.amount !== amount
+    || !Number.isSafeInteger(quote.chainId) || quote.chainId <= 0
+    || typeof quote.source !== 'string' || !quote.source.length || quote.source.length > 200) fail(400,'invalid_redemption','Invalid market quote.');
+  try {
+    for (const key of ['tokenAddress','treasuryAddress','redemptionContract']) getAddress(quote[key]);
+    if (quote.wallet && getAddress(quote.wallet) !== getAddress(wallet)) throw new Error('Wallet mismatch');
+  } catch { fail(400,'invalid_redemption','Invalid market quote address.'); }
+  const payload = JSON.stringify({ ...quote, wallet: getAddress(wallet), amount });
+  if (Buffer.byteLength(payload) > 32768) fail(400,'invalid_redemption','Market quote is too large.');
+  return payload;
+}
+
 export class AccountStore {
   constructor(path, { now = () => Date.now(), models = [] } = {}) {
     this.now = now; this.models = models;
@@ -37,11 +73,18 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS flow_expiry ON flows(expires);
       CREATE INDEX IF NOT EXISTS session_expiry ON sessions(expires);
     `);
+    // Additive migration preserves every existing account and token reservation.
+    for (const [table, columns] of Object.entries({ accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
+      reservations: { currency: "TEXT NOT NULL DEFAULT 'tokens'", pricing_json: 'TEXT' },
+      redemptions: { usd_micros: 'INTEGER NOT NULL DEFAULT 0', quote_json: 'TEXT' } })) {
+      const existing = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
+      for (const [column, definition] of Object.entries(columns)) if (!existing.has(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+    }
   }
   close() { this.db.close(); }
   findAccountByWallet(wallet) { return this.db.prepare('SELECT * FROM accounts WHERE wallet=? COLLATE NOCASE').get(getAddress(wallet)) ?? null; }
   unsettledReservations(accountId) {
-    const columns = 'id,account_id,request_id,model,amount,status,created,reason';
+    const columns = 'id,account_id,request_id,model,amount,status,created,reason,currency';
     return accountId
       ? this.db.prepare(`SELECT ${columns} FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain') ORDER BY created`).all(accountId)
       : this.db.prepare(`SELECT ${columns} FROM reservations WHERE status IN ('reserved','uncertain') ORDER BY created`).all();
@@ -62,9 +105,9 @@ export class AccountStore {
   }
   account(accountId) {
     const a = this.accountById(accountId), active = a.plan_expires > this.now();
-    const reserved = this.db.prepare("SELECT COALESCE(SUM(amount),0) AS n FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId).n;
+    const held = this.db.prepare("SELECT COALESCE(SUM(CASE WHEN currency='tokens' THEN amount ELSE 0 END),0) AS tokens,COALESCE(SUM(CASE WHEN currency='USD' THEN amount ELSE 0 END),0) AS usd FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId);
     const allowed = JSON.parse(a.models);
-    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:active||a.prepaid>0?this.models.filter(m=>m.metered===true && (a.prepaid>0||allowed.includes(m.id))).map(({id,name,provider})=>({id,name:name||id,provider})):[], allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt } };
+    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m)||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(modelUsdPricing(m)?{pricing:{...m.pricing}}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd,debtMicros:a.usd_debt} };
   }
   grantPlan({wallet,grantId,planId,name,models,tokens,expiresAt}) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId||'') || !planId || typeof name!=='string' || !safeCount(tokens) || !Array.isArray(models) || !models.length || !models.every(m=>this.models.some(x=>x.id===m&&x.metered===true)) || !Number.isSafeInteger(expiresAt) || expiresAt<=this.now()) fail(400,'invalid_grant','Invalid plan grant, qualified model list, allowance, or expiry.');
@@ -126,7 +169,7 @@ export class AccountStore {
     return this.transaction(()=>{
       const previous=this.db.prepare('SELECT * FROM reservations WHERE account_id=? AND request_id=?').get(accountId,requestId);
       if(previous) {
-        if(previous.fingerprint!==fingerprint||previous.model!==model) fail(409,'idempotency_conflict','Request ID has already been used for different input.');
+        if(previous.fingerprint!==fingerprint||previous.model!==model||previous.currency!=='tokens') fail(409,'idempotency_conflict','Request ID has already been used for different input.');
         if(previous.status!=='released')return {id:previous.id,status:previous.status,replay:previous.replay?JSON.parse(previous.replay):null,fresh:false};
       }
       const a=this.accountById(accountId);
@@ -140,11 +183,40 @@ export class AccountStore {
       return {id:ri,status:'reserved',replay:null,fresh:true};
     });
   }
+  reserveUsd(accountId,requestId,model,fingerprint,limits) {
+    const route=this.models.find(m=>m.id===model&&m.metered===true),pricing=modelUsdPricing(route);
+    if(!pricing)fail(403,'model_not_entitled','This model has no verified usage price.');
+    const amount=usdUsageCost(pricing,limits);
+    if(amount===0||typeof requestId!=='string'||!requestId.length||requestId.length>128)fail(400,'invalid_reservation','Invalid request reservation.');
+    return this.transaction(()=>{
+      const previous=this.db.prepare('SELECT * FROM reservations WHERE account_id=? AND request_id=?').get(accountId,requestId);
+      if(previous){
+        if(previous.fingerprint!==fingerprint||previous.model!==model||previous.currency!=='USD')fail(409,'idempotency_conflict','Request ID has already been used for different input.');
+        if(previous.status!=='released')return{id:previous.id,status:previous.status,replay:previous.replay?JSON.parse(previous.replay):null,fresh:false};
+      }
+      const a=this.accountById(accountId);
+      if(a.usd_debt>0)fail(402,'usage_debt','An earlier request exceeded its credit; account reconciliation is required.');
+      if(a.usd_prepaid<amount)fail(402,'allowance_exhausted','Not enough USD credit for this request.');
+      const ri=previous?.id||id();
+      this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid-? WHERE id=?').run(amount,accountId);
+      this.db.prepare("INSERT INTO reservations(id,account_id,request_id,model,fingerprint,amount,held_included,held_prepaid,plan_version,status,created,currency,pricing_json) VALUES(?,?,?,?,?,?,0,0,NULL,'reserved',?,'USD',?) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,status='reserved',created=excluded.created,pricing_json=excluded.pricing_json,reason=NULL,usage=NULL,replay=NULL").run(ri,accountId,requestId,model,fingerprint,amount,this.now(),JSON.stringify(pricing));
+      return{id:ri,status:'reserved',replay:null,fresh:true};
+    });
+  }
   settle(reservationId,usage,responseRecord=null) {
     if(!safeCount(usage?.totalTokens)||!safeCount(usage?.promptTokens)||!safeCount(usage?.completionTokens)||usage.totalTokens!==usage.promptTokens+usage.completionTokens) fail(400,'invalid_usage','Measured usage is invalid.');
     return this.transaction(()=>{
       const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(reservationId);if(!r) fail(404,'reservation_missing','Reservation not found.');
       if(r.status==='settled') return; if(!['reserved','uncertain'].includes(r.status)) fail(409,'reservation_closed','Reservation is closed.');
+      if(r.currency==='USD'){
+        const a=this.accountById(r.account_id),actual=usdUsageCost(JSON.parse(r.pricing_json),usage),delta=r.amount-actual;
+        const available=a.usd_prepaid+delta,debt=a.usd_debt+Math.max(0,-available);
+        if(!safeCount(Math.max(0,available))||!safeCount(debt))fail(409,'credit_limit','Account credit limit requires reconciliation.');
+        this.db.prepare('UPDATE accounts SET usd_prepaid=?,usd_debt=? WHERE id=?').run(Math.max(0,available),debt,a.id);
+        const replay=responseRecord?JSON.stringify(responseRecord):null;
+        this.db.prepare("UPDATE reservations SET status='settled',usage=?,replay=?,reason=NULL WHERE id=?").run(JSON.stringify({...usage,chargedUsdMicros:actual}),replay&&Buffer.byteLength(replay)<=1048576?replay:null,r.id);
+        return;
+      }
       const a=this.accountById(r.account_id),actual=usage.totalTokens;
       let included=a.included,prepaid=a.prepaid,debt=a.debt;
       if(actual<=r.amount) {
@@ -162,7 +234,20 @@ export class AccountStore {
   }
   markUncertain(reservationId,reason='usage_unavailable') { this.db.prepare("UPDATE reservations SET status='uncertain',reason=? WHERE id=? AND status='reserved'").run(String(reason).slice(0,200),reservationId); }
   release(reservationId,reason='not_dispatched') {
-    return this.transaction(()=>{const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(reservationId);if(!r||r.status==='released')return;if(r.status!=='reserved')fail(409,'reservation_closed','Cannot release a dispatched or settled reservation.');const a=this.accountById(r.account_id);this.db.prepare('UPDATE accounts SET included=included+?,prepaid=prepaid+? WHERE id=?').run(a.plan_version===r.plan_version&&a.plan_expires>this.now()?r.held_included:0,r.held_prepaid,a.id);this.db.prepare("UPDATE reservations SET status='released',reason=? WHERE id=?").run(reason,r.id);});
+    return this.transaction(()=>{const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(reservationId);if(!r||r.status==='released')return;if(r.status!=='reserved')fail(409,'reservation_closed','Cannot release a dispatched or settled reservation.');const a=this.accountById(r.account_id);
+      if(r.currency==='USD'){if(!safeCount(a.usd_prepaid+r.amount))fail(409,'credit_limit','Account credit limit requires reconciliation.');this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+? WHERE id=?').run(r.amount,a.id);}
+      else this.db.prepare('UPDATE accounts SET included=included+?,prepaid=prepaid+? WHERE id=?').run(a.plan_version===r.plan_version&&a.plan_expires>this.now()?r.held_included:0,r.held_prepaid,a.id);
+      this.db.prepare("UPDATE reservations SET status='released',reason=? WHERE id=?").run(reason,r.id);});
+  }
+  createMarketRedemption(accountId,amount,quote) {
+    return this.transaction(()=>{
+      const a=this.accountById(accountId),payload=marketQuotePayload(amount,quote,this.now(),a.wallet);
+      const promised=this.db.prepare('SELECT COALESCE(SUM(usd_micros),0) AS amount FROM redemptions WHERE account_id=?').get(accountId).amount;
+      if(promised+quote.creditUsdMicros>quote.creditBudgetUsdMicros)fail(402,'redemption_budget_exhausted','The market redemption credit budget has been reached.');
+      const redemptionId='0x'+id(),ticket=id(),expires=quote.expiresAtMs;
+      this.db.prepare('INSERT INTO redemptions(id,account_id,wallet,amount,usage_tokens,ticket_hash,expires,created,usd_micros,quote_json) VALUES(?,?,?,?,0,?,?,?,?,?)').run(redemptionId,accountId,a.wallet,amount,digest(ticket),expires,this.now(),quote.creditUsdMicros,payload);
+      return{redemptionId,ticket,expiresAt:new Date(expires).toISOString()};
+    });
   }
   createRedemption(accountId,amount,usageTokens) {
     if(!safeCount(usageTokens)||usageTokens===0)fail(400,'invalid_redemption','Invalid usage conversion.');
@@ -191,6 +276,13 @@ export class AccountStore {
     return this.transaction(()=>{
       const r=this.db.prepare('SELECT * FROM redemptions WHERE id=?').get(redemptionId);if(!r)fail(404,'redemption_missing','Unknown redemption.');if(r.status==='credited'){if(r.event_key!==eventKey)fail(409,'event_conflict','Redemption already credited from a different event.');return;}
       if(r.status!=='pending'||!r.tx_hash||typeof eventKey!=='string'||!eventKey)fail(409,'redemption_not_pending','A verified pending transaction is required.');
+      if(this.db.prepare('SELECT id FROM redemptions WHERE event_key=?').get(eventKey))fail(409,'event_conflict','This event has already credited a different redemption.');
+      if(r.usd_micros>0){
+        const a=this.accountById(r.account_id),debtPaid=Math.min(a.usd_debt,r.usd_micros),credit=r.usd_micros-debtPaid;
+        if(!safeCount(a.usd_prepaid+credit))fail(409,'credit_limit','Account credit limit requires reconciliation.');
+        this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,usd_debt=usd_debt-? WHERE id=?').run(credit,debtPaid,a.id);
+        this.db.prepare("UPDATE redemptions SET status='credited',event_key=? WHERE id=?").run(eventKey,r.id);return;
+      }
       const a=this.accountById(r.account_id),debtPaid=Math.min(a.debt,r.usage_tokens),credit=r.usage_tokens-debtPaid;
       if(!safeCount(a.prepaid+credit))fail(409,'credit_limit','Account credit limit requires reconciliation.');
       this.db.prepare('UPDATE accounts SET prepaid=prepaid+?,debt=debt-? WHERE id=?').run(credit,debtPaid,a.id);

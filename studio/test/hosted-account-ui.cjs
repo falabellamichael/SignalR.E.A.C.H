@@ -49,6 +49,17 @@ const timeout = setTimeout(() => { console.error('Account UI timed out'); app.ex
   assert.equal(await run("document.querySelectorAll('#home-account-models span').length"), 2);
   assert.equal(await run("document.querySelector('#home-account-use').disabled"), false);
   assert.equal(await run("document.querySelector('#home-wallet-balance').textContent"), '269.565909309000000001 RCH');
+  const treasury = { ...account, config: { ...account.config, chainId: 1, redemptionMode: 'treasury', tokensPerRch: null },
+    account: { ...account.account, credit: { currency: 'USD', balanceMicros: 300, reservedMicros: 50, debtMicros: 0 } } };
+  win.webContents.send('account:state', treasury); await delay(80);
+  assert.equal(await run("document.querySelector('#home-usd-credit').hidden"), false);
+  assert.equal(await run("document.querySelector('#home-usd-credit-available').textContent"), 'US$0.0003');
+  assert.equal(await run("document.querySelector('#home-allowance-included').textContent"), '1,200,000');
+  assert.match(await run("document.querySelector('#account-menu-summary').textContent"), /US\$0\.0003 AI credit available/);
+  assert.match(await run("document.querySelector('#home-redemption-rate').textContent"), /verified market quote.*treasury/);
+  assert.match(await run("document.querySelector('#home-redemption-description').textContent"), /RCH goes to the REACH treasury/);
+  win.webContents.send('account:state', account); await delay(80);
+  assert.equal(await run("document.querySelector('#home-usd-credit').hidden"), true);
   await run("document.querySelector('#home-account-service').value='https://draft.invalid'; document.querySelector('#home-account-service').dispatchEvent(new Event('input')); document.querySelector('#account-menu-close').click()");
   assert.equal(await run("document.activeElement.id"), 'account-menu-button');
   win.webContents.send('account:state', account); await delay(60);

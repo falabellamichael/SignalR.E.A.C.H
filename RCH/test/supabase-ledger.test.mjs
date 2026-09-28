@@ -33,6 +33,7 @@ before(async () => {
   await db.exec(migration);
   await db.exec(await readFile(new URL('20260928041723_rch_prepaid_access.sql', rootDirectory), 'utf8'));
   await db.exec(await readFile(new URL('20260928042248_rch_prepaid_overage.sql', rootDirectory), 'utf8'));
+  await db.exec(await readFile(new URL('20260928050119_rch_market_usd_ledger.sql', rootDirectory), 'utf8'));
   const schemas = await db.query("SELECT schemaname FROM pg_tables WHERE tablename = 'accounts' AND schemaname NOT IN ('public','pg_catalog','information_schema')");
   assert.equal(schemas.rows.length, 1, 'financial account tables belong in one private schema');
   privateSchema = schemas.rows[0].schemaname;
@@ -359,7 +360,7 @@ test('SQLite snapshot import preserves wallet identity, sessions, holds and rede
   assert.equal(holds.length, 1);
   assert.equal(holds[0].id, original.reservation.id);
   assert.equal(holds[0].status, 'uncertain');
-  assert.deepEqual(Object.keys(holds[0]).sort(), ['account_id', 'amount', 'created', 'id', 'model', 'reason', 'request_id', 'status'],
+  assert.deepEqual(Object.keys(holds[0]).sort(), ['account_id', 'amount', 'created', 'currency', 'id', 'model', 'reason', 'request_id', 'status'],
     'reconciliation exposes metadata only, without saved request fingerprints, provider usage or replay bodies');
   assert.equal((await store.pendingRedemptions(original.account.id))[0].id, original.pending.redemptionId);
   await store.creditRedemption(original.credited.redemptionId, '31337:original-event:0');

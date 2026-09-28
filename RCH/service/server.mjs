@@ -61,10 +61,10 @@ export function createAccountService({config,store,provider,redemptionProvider,b
     }
     if(++previous.count>180)fail(429,'rate_limit','Too many requests. Please wait one minute.');
   }
-  const tokensPerRch=redemption.enabled?1000000:null;
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,tokensPerRch,loginMethod:'ethereum-browser-wallet'});
+  const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&m.pricing).map(({id,name,provider,pricing})=>({id,name,provider,pricing})),loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
-    return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,tokensPerRch,chainId:config.chainId}};
+    return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };
   const server=createServer(async(req,res)=>{
     res.setHeader('cache-control','no-store');res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','no-referrer');

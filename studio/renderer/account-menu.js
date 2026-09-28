@@ -60,7 +60,7 @@
     const wallet = model.connected ? state.account?.walletAddress : '';
     el('account-menu-title').textContent = wallet ? wallet.slice(0, 6) + '…' + wallet.slice(-4) : 'Welcome to REACH';
     el('account-menu-summary').textContent = model.connected
-      ? model.plan + ' · ' + model.counts.totalRemaining + ' usage tokens available'
+      ? model.plan + ' · ' + (model.usdCredit ? model.usdCredit.available + ' AI credit available' : model.counts.totalRemaining + ' usage tokens available')
       : model.connecting ? 'Waiting for wallet sign-in' : 'Sign in to see your shared usage.';
     el('account-menu-dot').dataset.state = model.connected ? 'connected' : model.connecting ? 'connecting' : 'disconnected';
     el('account-menu-avatar').textContent = wallet ? wallet.slice(2, 4).toUpperCase() : 'R';

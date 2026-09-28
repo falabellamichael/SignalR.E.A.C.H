@@ -1,12 +1,14 @@
 # REACH Credits (RCH)
 
-RCH is an Ethereum ERC-20 currency with an ETH purchase contract that originally targeted **$0.01 per RCH**, using an ETH/USD oracle. That sale is now permanently closed, so its `buy` operation is unavailable. The implemented redemption conversion is **1 RCH to 1,000,000 AI usage tokens**. The token and sale are deployed. RCH can now be bought with USDC through the Ethereum-mainnet Uniswap v3 0.05% pool `0x2621d7b87776f9B4e72797D4E41E326916649124`. At block 26072950, it held about 142 RCH and 1.42 USDC with active liquidity. This is a very thin market: trade size changes the price sharply. Live market-priced redemption, actual subscription limits, and automated subscription checkout remain unfinished. See [market value and AI credit](../docs/RCH_VALUE_PRICING.md).
+RCH is an Ethereum ERC-20 currency with an ETH purchase contract that originally targeted **$0.01 per RCH**, using an ETH/USD oracle. That sale is now permanently closed, so its `buy` operation is unavailable. The token's legacy **1 RCH to 1,000,000 AI usage tokens** burn path remains paused and is rejected by the mainnet account configuration. The replacement treasury redemption implementation quotes USD AI credit for the exact RCH amount and transfers those RCH to the receiving treasury. It requires its own verified deployment, backend configuration, and activation. See [market value and AI credit](../docs/RCH_VALUE_PRICING.md).
+
+RCH can be bought with USDC through the Ethereum-mainnet Uniswap v3 0.05% pool `0x2621d7b87776f9B4e72797D4E41E326916649124`. At block 26072950, it held about 142 RCH and 1.42 USDC with active liquidity. This is a very thin market: trade size changes the price sharply. The initial redemption policy therefore uses exact-size market quotations, an owner-wallet allowlist, at most USD 1 per quote, and at most USD 5 of cumulative pilot credit exposure. Actual subscription plan limits and automated subscription checkout remain separate work.
 
 To buy, open [Uniswap's swap page](https://app.uniswap.org/swap?chain=mainnet&inputCurrency=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48&outputCurrency=0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792) on Ethereum mainnet, check that the input is USDC and the output contract is `0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792`, and review the live quote, price impact, slippage, and network fee before signing. The pool transaction is [`0x9a3c1fc2…cca7029672`](https://etherscan.io/tx/0x9a3c1fc22c4fda8c3628b21ec48e79f2d33225bfbca4e7ba1becb4cca7029672). A buyer needs their own USDC and ETH for network gas.
 
-Studio wallet sign-in links a verified customer wallet to an account and an operator-provisioned subscription. **CodeGPT and qualified free endpoint models share one plan allowance.** Redemption burns RCH and credits the account once after verified finality; model calls then consume that ledger. CodeGPT currently lacks reliable usage records and remains unavailable for paid metering. Live redemption is disabled until deployment. See [Studio access, accounting, and host setup](../docs/RCH_STUDIO_ACCESS.md).
+Studio wallet sign-in links a verified customer wallet to an account. A confirmed treasury redemption grants USD prepaid credit and starts access to qualified priced models without requiring a separate subscription. Model calls reserve and settle that credit using provider-reported usage. The existing relay now has a qualified `rch-gpt-4o-mini` route to the configured OpenAI provider; CodeGPT still lacks reliable usage records and remains unavailable for paid metering. Building these components does not activate redemption: service configuration and the new contract's pause state are checked separately. See [Studio access, accounting, and host setup](../docs/RCH_STUDIO_ACCESS.md).
 
-The contracts are implemented, tested locally, and deployed to Ethereum Mainnet. They have not been independently audited. This directory uses Solidity and Node.js through REACH Studio's **Project command** runner.
+The original token and sale contracts are deployed to Ethereum Mainnet. The treasury adapter has a separate deployment review workflow; its implementation is not evidence of a completed deployment or credited redemption. These contracts have not been independently audited. This directory uses Solidity and Node.js through REACH Studio's **Project command** runner.
 
 The deployed RCH token is `0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792`; its sale is `0x0aE51b14eBa99C472a40F798296B3EAa2be2947B`. Deployment transaction: `0xad758e98c78c1ccdeb33e1d23118bd30a9fa1560e685cfd93ad3c89e770028ad` (block 26051181). The simple terminal commands pin the runtime hashes in `terminal/mainnet.json` and check live state before preparing operations. Use `rch status` for current pause and ownership state.
 
@@ -35,7 +37,7 @@ Node.js 22.13 or newer is required. `demo` creates an ephemeral Ethereum chain i
 - Every reward has a unique, nonzero `bytes32` reference. Reusing it fails, even across different reward operators. Use an opaque ID, never customer information. A failed mint consumes neither its ID nor its allowance.
 - Revoking or renouncing a reward role clears its allowance. Regranting the role starts with zero allowance.
 - The token administrator may pause new issuance while existing transfers and approvals continue.
-- `totalPurchased` and `totalRewarded` provide separate issuance totals. No transfer tax or automatic rebasing is implemented. `redeem(amount, redemptionId)` burns the caller's RCH for usage; redemption starts paused and is independent of issuance pause. `totalRedeemed` and `totalUsageTokensRedeemed` track confirmed contract redemptions. Subscription accounting lives in the hosted service.
+- `totalPurchased` and `totalRewarded` provide separate issuance totals. No transfer tax or automatic rebasing is implemented. The legacy `redeem(amount, redemptionId)` burns the caller's RCH at a fixed usage-token rate; it remains paused on mainnet. Its `totalRedeemed` and `totalUsageTokensRedeemed` counters do not count the replacement treasury transfers. `ReachTreasuryRedemption` preserves RCH supply and emits `RedeemedToTreasury` for backend settlement. Account credit lives in the hosted service.
 
 RCH is minted under these rules. Ethereum mining does not create it. The administrator controls roles and budgets and can authorize other sale contracts; the system therefore trusts that administrator. Reward allowances constrain reward operators, not a malicious administrator. The two-day administrator transfer delay applies to changing the default administrator; role grants and budget changes are immediate. The administrator receives no minter role automatically.
 
@@ -142,9 +144,10 @@ sends a mainnet transaction. `npm run market-recovery:ui` starts a loopback
 MetaMask review page for the existing position NFT and a proposed two-sided
 RCH/USDC pool. The page verifies live state and caps each estimated network fee
 at 0.001 ETH, but every transaction still requires wallet review and signing.
-Its 142 RCH / 1.42 USDC position would be too thin for market-priced AI
-redemption. Do not advertise the proposed pool as live until its on-chain mint
-and active liquidity are independently verified.
+The pool's original 142 RCH / 1.42 USDC position is too thin to support unrestricted
+credit issuance from a displayed spot price. The treasury pilot instead quotes
+the exact RCH sell amount and imposes wallet and USD exposure limits. Historical
+pool balances must be refreshed before any action.
 
 The executable uses the current Node installation and this checkout's files. Run
 the installer again after moving the repository or replacing that Node installation.
@@ -191,7 +194,13 @@ Without installation, use `npm run rch -- help` at the repository root, or
 
    This verifies deployed code and active sale state, then returns the ETH value, RCH quote, 0.5% minimum-output tolerance, and ten-minute deadline. It does not sign or send a purchase. Payments below 0.001 ETH are rejected; gas is additional. Prices and the configured oracle bounds may change what the next quote permits.
 
-Mainnet uses chain ID 1. The existing deployment above was checked against the compiled runtime and constructor settings; this is not an independent security audit. New deployments should be rehearsed on testnet and reviewed independently. Do not promise funded AI usage solely because an RCH transfer succeeded: the hosted redemption system must be configured for the reviewed deployment and verify a matching burn before crediting usage exactly once. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
+Mainnet uses chain ID 1. The existing deployment above was checked against the compiled runtime and constructor settings; this is not an independent security audit. New deployments should be rehearsed and reviewed independently. The hosted treasury redemption system must verify its signed quote, exact transaction and `RedeemedToTreasury` event, and canonical finality before crediting USD exactly once. An ordinary wallet transfer cannot credit an account. The $0.01 sale target is not evidence that serving a million model tokens costs $0.01.
+
+### Treasury redemption adapter
+
+`ReachTreasuryRedemption` binds the wallet, exact RCH amount, USD microcredit amount, redemption ID, and signing window in an EIP-712 quote. It transfers the RCH to `0x5b7a910cDF232543aCB7653D71d6B92f01d342C7`; it does not burn them. The backend issues five-minute quotes, and the contract accepts windows no longer than fifteen minutes. Quote signatures grant no token allowance: the wallet separately approves the exact amount before redeeming.
+
+Run `node scripts/treasury-deployment-ui.mjs --quote-signer PUBLIC_SIGNER_ADDRESS --readiness-file ABSOLUTE_PRIVATE_READINESS_PATH` after `npm run compile`. The loopback page requests deployment through MetaMask, verifies the resulting runtime and immutable addresses, and records its receipt in ignored `deployments/mainnet-treasury-redemption.json`. It starts paused. A separate activation button becomes available only after a fresh operator readiness file confirms the backend is configured for that exact deployment. See [the helper instructions](tools/treasury-deployment.md). Neither the helper nor the browser receives the host's quote-signing private key.
 
 ### Local MetaMask launch review on Windows
 

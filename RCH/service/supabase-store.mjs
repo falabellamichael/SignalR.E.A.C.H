@@ -1,6 +1,6 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { getAddress } from 'ethers';
-import { AccountError, digest, fail } from './store.mjs';
+import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost } from './store.mjs';
 
 const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
@@ -21,6 +21,7 @@ const ERRORS = {
   transaction_conflict: [409, 'This redemption already has a different transaction.'],
   redemption_not_pending: [409, 'A verified pending transaction is required.'], event_conflict: [409, 'This event has already credited a different redemption.'],
   credit_limit: [409, 'Account credit limit requires reconciliation.'],
+  redemption_budget_exhausted: [402, 'The market redemption credit budget has been reached.'],
   import_target_not_empty: [409, 'The shared account store must be empty before importing a snapshot.'],
   invalid_import: [400, 'The account snapshot is invalid. No records were imported.'],
 };
@@ -82,9 +83,10 @@ export class SupabaseAccountStore {
     const a = snapshot.account, active = a.plan_expires > this.now(), allowed = JSON.parse(a.models);
     return { id: a.id, walletAddress: a.wallet,
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
-      allowedModels: active || a.prepaid > 0 ? this.models.filter(m => m.metered === true && (a.prepaid > 0 || allowed.includes(m.id))).map(({ id, name, provider }) => ({ id, name: name || id, provider })) : [],
+      allowedModels: this.models.filter(m => m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
       allowance: { includedRemaining: active ? a.included : 0, prepaidRemaining: a.prepaid, reserved: snapshot.reserved,
-        totalRemaining: a.debt === 0 ? (active ? a.included : 0) + a.prepaid : 0, debt: a.debt } };
+        totalRemaining: a.debt === 0 ? (active ? a.included : 0) + a.prepaid : 0, debt: a.debt },
+      credit: { currency: 'USD', balanceMicros: a.usd_prepaid ?? 0, reservedMicros: snapshot.reservedUsdMicros ?? 0, debtMicros: a.usd_debt ?? 0 } };
   }
   async pruneExpiredAuthentication() { await this._rpc('prune_auth'); }
   async importSnapshot(snapshot) {
@@ -152,6 +154,13 @@ export class SupabaseAccountStore {
     const replay = responseRecord ? JSON.stringify(responseRecord) : null;
     await this._rpc('settle', { reservationId, usage, replay: replay && Buffer.byteLength(replay) <= 1048576 ? replay : null });
   }
+  async reserveUsd(accountId, requestId, model, fingerprint, limits) {
+    const route = this.models.find(m => m.id === model && m.metered === true), pricing = modelUsdPricing(route);
+    if (!pricing) fail(403, 'model_not_entitled', 'This model has no verified usage price.');
+    const amount = usdUsageCost(pricing, limits);
+    if (amount === 0 || typeof requestId !== 'string' || !requestId.length || requestId.length > 128) fail(400, 'invalid_reservation', 'Invalid request reservation.');
+    return this._rpc('reserve_usd', { accountId, requestId, model, fingerprint, amount, pricing, limits, reservationId: id(), modelQualified: true });
+  }
   async markUncertain(reservationId, reason = 'usage_unavailable') { await this._rpc('mark_uncertain', { reservationId, reason: String(reason).slice(0, 200) }); }
   async release(reservationId, reason = 'not_dispatched') { await this._rpc('release', { reservationId, reason }); }
   async unsettledReservations(accountId) { return this._rpc('unsettled_reservations', { accountId: accountId || null }); }
@@ -159,6 +168,13 @@ export class SupabaseAccountStore {
     if (!safeCount(usageTokens) || usageTokens === 0) fail(400, 'invalid_redemption', 'Invalid usage conversion.');
     const redemptionId = '0x' + id(), ticket = id();
     const result = await this._rpc('create_redemption', { accountId, amount, usageTokens, redemptionId, ticketHash: digest(ticket) });
+    return { ...result, ticket };
+  }
+  async createMarketRedemption(accountId, amount, quote) {
+    const account = await this.accountById(accountId);
+    const quoteJson = marketQuotePayload(amount, quote, this.now(), account.wallet);
+    const redemptionId = '0x' + id(), ticket = id();
+    const result = await this._rpc('create_market_redemption', { accountId, amount, quote: JSON.parse(quoteJson), redemptionId, ticketHash: digest(ticket) });
     return { ...result, ticket };
   }
   async getRedemption(redemptionId, ticket) { return this._rpc('get_redemption', { redemptionId, ticketHash: digest(ticket || '') }); }

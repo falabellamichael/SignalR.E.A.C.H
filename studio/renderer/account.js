@@ -31,18 +31,37 @@
         (model.usable ? 'All models below use the same account allowance.' : 'Add a plan or redeem RCH credit when redemption is available and metered models are configured.')
       : 'Connect your wallet to load your plan and permitted models.';
     el('account-models').replaceChildren();
-    for (const entry of state.account?.allowedModels || []) {
-      const chip = document.createElement('span'); chip.textContent = entry.name || entry.id; chip.title = [entry.id, entry.provider].filter(Boolean).join(' · ');
+    const availableModels = state.account?.allowedModels?.length ? state.account.allowedModels : state.config?.redemptionModels || [];
+    el('account-models').setAttribute('aria-label', model.usable ? 'Models included with this account' : 'Models available after funding your account');
+    for (const entry of availableModels) {
+      const chip = document.createElement('span');
+      const pricing = entry.pricing ? 'Input ' + view.formatUsd(entry.pricing.inputUsdMicrosPerMillion)
+        + ' / output ' + view.formatUsd(entry.pricing.outputUsdMicrosPerMillion) + ' per 1M tokens'
+        + (entry.pricing.cachedInputUsdMicrosPerMillion != null ? ' / cached input ' + view.formatUsd(entry.pricing.cachedInputUsdMicrosPerMillion) : '') : '';
+      chip.textContent = [entry.name || entry.id, pricing].filter(Boolean).join(' · ');
+      chip.title = [entry.id, entry.provider, pricing].filter(Boolean).join(' · ');
       el('account-models').appendChild(chip);
     }
     el('account-use').disabled = busy || !model.usable;
     for (const [id, key] of [['included', 'includedRemaining'], ['prepaid', 'prepaidRemaining'], ['reserved', 'reserved'], ['total', 'totalRemaining']]) el('allowance-' + id).textContent = model.counts[key];
+    el('usd-credit').hidden = !model.usdCredit;
+    if (model.usdCredit) {
+      el('usd-credit-available').textContent = model.usdCredit.available;
+      el('usd-credit-reserved').textContent = model.usdCredit.reserved;
+      el('usd-credit-detail').textContent = model.usdCredit.debt !== 'US$0.00'
+        ? model.usdCredit.debt + ' awaiting settlement' : 'Spent at the selected model’s published usage price.';
+    }
     el('allowance-debt').textContent = state.account?.allowance?.debt && state.account.allowance.debt !== '0'
       ? view.format(state.account.allowance.debt) + ' tokens awaiting reconciliation' : 'Shared across supplied models';
     el('redemption-badge').textContent = model.canRedeem ? 'AVAILABLE' : 'UNAVAILABLE';
+    const treasuryMode = state.config?.redemptionMode === 'treasury';
+    el('redemption-description').textContent = treasuryMode
+      ? 'Redeemed RCH goes to the REACH treasury. Your account receives the quoted US dollar credit after confirmation.'
+      : 'After confirmation, the service adds prepaid AI usage credit to your account. Review the redemption terms before signing.';
     el('redemption-rate').textContent = state.config?.redemptionEnabled === true
-      ? 'Review the service conversion rate and network before approving in your wallet.'
-      : 'RCH redemption is unavailable until the service can provide a verified market quote.';
+      ? treasuryMode ? 'Review your RCH amount, verified market quote, US dollar credit, and treasury destination in your browser.'
+        : 'Review the service conversion rate and network before approving in your wallet.'
+      : state.config?.pricingMessage || 'RCH redemption is unavailable until the service can provide a verified market quote.';
     el('redemption-amount').disabled = busy || !model.canRedeem;
     el('redemption-start').disabled = busy || !model.canRedeem || !el('redemption-amount').value.trim();
     if (!model.canRedeem || el('redemption-status').dataset.unavailable === 'true') el('redemption-status').textContent = model.redemptionMessage;

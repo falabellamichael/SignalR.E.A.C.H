@@ -1,5 +1,7 @@
 import { FetchRequest, Interface, JsonRpcProvider, ZeroAddress, formatUnits, getAddress, parseUnits } from 'ethers';
 import { AccountError, fail } from './store.mjs';
+import { createTreasuryRedemptionService } from './treasury-redemption.mjs';
+import { finalizedReceipt } from './chain-finality.mjs';
 
 export const redemptionInterface = new Interface([
   'function redeem(uint256 amount, bytes32 redemptionId) returns (uint256 usageTokens)',
@@ -21,6 +23,7 @@ const transactionFor = (row, tokenAddress, chainId) => ({
 
 /** Verifies configured-chain evidence; it never holds a wallet key or sends a transaction. */
 export function createRedemptionService({ store, config, provider: suppliedProvider }) {
+  if (config.redemption?.mode === 'treasury') return createTreasuryRedemptionService({store,config,provider:suppliedProvider});
   const enabled = config.redemption?.enabled === true;
   const chainId = config.chainId;
   const confirmations = config.redemption?.confirmations ?? 1;
@@ -129,20 +132,7 @@ export function createRedemptionService({ store, config, provider: suppliedProvi
   // Recheck the receipt's block by height. Fetching only by its own hash would accept
   // an orphaned block that some RPCs retain after a reorganization.
   async function finalBlock(receipt) {
-    if (!Number.isSafeInteger(receipt.blockNumber) || receipt.blockNumber < 0 || !hashPattern.test(receipt.blockHash || '')) return false;
-    const canonical = await provider.getBlock(receipt.blockNumber);
-    if (!canonical || !same(canonical.hash, receipt.blockHash)) return false;
-    if (chainId === 1) {
-      const finalized = await provider.getBlock('finalized');
-      if (!finalized || !Number.isSafeInteger(finalized.number) || finalized.number < receipt.blockNumber || !hashPattern.test(finalized.hash || '')) return false;
-      const finalizedCanonical = await provider.getBlock(finalized.number);
-      if (!finalizedCanonical || !same(finalizedCanonical.hash, finalized.hash)) return false;
-    } else {
-      const head = await provider.getBlockNumber();
-      if (!Number.isSafeInteger(head) || head - receipt.blockNumber + 1 < confirmations) return false;
-    }
-    const recheck = await provider.getBlock(receipt.blockNumber);
-    return !!recheck && same(recheck.hash, receipt.blockHash);
+    return finalizedReceipt(provider,chainId,confirmations,receipt);
   }
 
   async function verify(row) {

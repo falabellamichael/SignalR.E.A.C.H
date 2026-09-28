@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createHostedAccount, serviceUrl, browserUrl, publicAccount, MANAGED_ID } = require('../agent/hosted-account.cjs');
-const { derive, formatRch } = require('../renderer/account-view.js');
+const { derive, formatRch, formatUsd } = require('../renderer/account-view.js');
 const TOKEN = 'fixture-session-token-never-expose-to-renderer';
 const ADDRESS = '0x0000000000000000000000000000000000000001';
 function fixture(t, options = {}) {
@@ -171,6 +171,50 @@ test('Home shows disconnected, pending, locked, entitlement and redemption state
   const prepaid = derive({ status: 'connected', account: { plan: { status: 'none' }, allowedModels: [{ id: 'm' }], allowance: { prepaidRemaining: 50, totalRemaining: 50 } }, config: { redemptionEnabled: true } });
   assert.equal(prepaid.usable, true); assert.equal(prepaid.canRedeem, true); assert.equal(prepaid.plan, 'RCH prepaid access');
   assert.equal(derive({ status: 'connected', account: { plan: { status: 'inactive' } } }).usable, false);
+});
+
+test('USD credit preserves subcent value, holds and legacy allowance independently', () => {
+  const projected = publicAccount({ walletAddress: ADDRESS, plan: { status: 'none' }, allowedModels: [{ id: 'priced-model' }],
+    allowance: { totalRemaining: 10 }, credit: { currency: 'USD', balanceMicros: 300, reservedMicros: 50, debtMicros: 0, secret: TOKEN } });
+  assert.deepEqual(projected.credit, { currency: 'USD', balanceMicros: '300', reservedMicros: '50', debtMicros: '0' });
+  const model = derive({ status: 'connected', account: projected });
+  assert.equal(model.usdCredit.available, 'US$0.0003'); assert.equal(model.counts.totalRemaining, '10');
+  assert.equal(model.usable, true); assert.equal(model.plan, 'RCH prepaid access');
+  projected.allowance.totalRemaining = '0'; projected.credit.balanceMicros = '0';
+  assert.equal(derive({ status: 'connected', account: projected }).usable, false);
+  assert.equal(formatUsd('1'), 'US$0.000001'); assert.equal(formatUsd('123450000'), 'US$123.45');
+  assert.equal(formatUsd(-1), '—'); assert.equal(formatUsd('1e6'), '—');
+  assert.equal(publicAccount({ credit: { currency: 'USD', balanceMicros: -1 } }).credit.balanceMicros, '0');
+  const models = publicAccount({ allowedModels: [{ id: 'priced', pricing: { inputUsdMicrosPerMillion: 150000, outputUsdMicrosPerMillion: 600000,
+    cachedInputUsdMicrosPerMillion: 75000, secret: TOKEN } }] }).allowedModels;
+  assert.deepEqual(models[0].pricing, { inputUsdMicrosPerMillion: '150000', outputUsdMicrosPerMillion: '600000', cachedInputUsdMicrosPerMillion: '75000' });
+  assert(!JSON.stringify(models).includes(TOKEN));
+});
+
+test('treasury mode and USD credit reach the renderer without exposing credentials', async t => {
+  const f = fixture(t), original = f.args.fetchImpl;
+  const manager = createHostedAccount({ ...f.args, fetchImpl: async (url, init) => {
+    const response = await original(url, init);
+    if (url.endsWith('/config')) response.json = async () => ({ enabled: true, chainId: 1, redemptionEnabled: true,
+      redemptionMode: 'treasury', treasuryAddress: ADDRESS, tokensPerRch: null, quoteSignerKey: TOKEN,
+      redemptionModels: [{ id: 'priced', pricing: { inputUsdMicrosPerMillion: 150000, outputUsdMicrosPerMillion: 600000 }, accessKey: TOKEN }] });
+    return response;
+  } });
+  await manager.configure('https://reach.test');
+  assert.equal(manager.state().config.redemptionMode, 'treasury');
+  assert.equal(manager.state().config.tokensPerRch, null);
+  assert.equal(manager.state().config.treasuryAddress, ADDRESS);
+  assert.equal(manager.state().config.redemptionModels[0].pricing.inputUsdMicrosPerMillion, '150000');
+  assert(!JSON.stringify(manager.state()).includes(TOKEN));
+});
+
+test('known quote failures explain redemption recovery without reflecting server secrets', async t => {
+  const f = fixture(t), original = f.args.fetchImpl;
+  const manager = createHostedAccount({ ...f.args, fetchImpl: async (url, init) => url.endsWith('/redemptions/start')
+    ? { ok: false, status: 503, json: async () => ({ error: { code: 'market_price_unavailable', message: TOKEN } }) }
+    : original(url, init) });
+  await manager.configure('https://reach.test'); await manager.connect(); f.setReady(); await manager.poll();
+  await assert.rejects(manager.redeem('1'), error => /verified market quote/.test(error.message) && !error.message.includes(TOKEN));
 });
 
 test('revoked account response clears stored credentials and returns safe errors', async t => {
