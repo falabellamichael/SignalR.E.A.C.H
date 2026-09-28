@@ -1,6 +1,6 @@
 # REACH Credits (RCH)
 
-RCH is an Ethereum ERC-20 currency with an open ETH purchase contract. The initial sale targets **$0.01 per RCH**, using an ETH/USD oracle. **1,000 RCH costs approximately $10 plus gas.** The implemented redemption conversion is **1 RCH to 1,000,000 AI usage tokens**. Live deployment, actual subscription limits, automated subscription checkout, and public liquidity pools are later work.
+RCH is an Ethereum ERC-20 currency with an open ETH purchase contract. The initial sale targets **$0.01 per RCH**, using an ETH/USD oracle. **1,000 RCH costs approximately $10 plus gas.** The implemented redemption conversion is **1 RCH to 1,000,000 AI usage tokens**. The token and sale are deployed, and an RCH/USDC Uniswap v3 pool exists, but its initial RCH inventory sold out and it had no active liquidity at the last check. Live market-priced redemption, actual subscription limits, and automated subscription checkout remain unfinished. See [market value and AI credit](../docs/RCH_VALUE_PRICING.md).
 
 Studio wallet sign-in links a verified customer wallet to an account and an operator-provisioned subscription. **CodeGPT and qualified free endpoint models share one plan allowance.** Redemption burns RCH and credits the account once after verified finality; model calls then consume that ledger. CodeGPT currently lacks reliable usage records and remains unavailable for paid metering. Live redemption is disabled until deployment. See [Studio access, accounting, and host setup](../docs/RCH_STUDIO_ACCESS.md).
 

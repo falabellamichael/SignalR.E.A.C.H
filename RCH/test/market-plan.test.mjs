@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {parseUnits} from 'ethers';
+import {MARKET,buildMarketPlan,erc20Interface,managerInterface} from '../scripts/market-plan.mjs';
+
+test('RCH-only pool plan pins the payer, NFT owner and exact spending cap',()=>{
+  const now=1_790_000_000;
+  const plan=buildMarketPlan(now);
+  assert.equal(plan.transaction.from,MARKET.payer);
+  assert.equal(plan.transaction.to,MARKET.manager);
+  assert.equal(plan.transaction.value,'0x0');
+  assert.equal(plan.usdcRequired,'0');
+  assert.equal(plan.deadline,now+1200);
+  assert.ok(BigInt(plan.rchRequired)>0n);
+  assert.ok(BigInt(plan.rchRequired)<=parseUnits('100',18));
+  assert.ok(Number(plan.lowerPriceUsdcPerRch)>Number(plan.initialPriceUsdcPerRch));
+  const approval=erc20Interface.parseTransaction({data:plan.approveData});
+  assert.equal(approval.name,'approve');
+  assert.equal(approval.args[0],MARKET.manager);
+  assert.equal(approval.args[1],BigInt(plan.rchRequired));
+  const outer=managerInterface.parseTransaction({data:plan.transaction.data});
+  assert.equal(outer.name,'multicall');
+  assert.equal(outer.args[0].length,2);
+  const init=managerInterface.parseTransaction({data:outer.args[0][0]});
+  assert.equal(init.name,'createAndInitializePoolIfNecessary');
+  assert.equal(init.args[0],MARKET.rch);
+  assert.equal(init.args[1],MARKET.usdc);
+  assert.equal(init.args[2],BigInt(MARKET.fee));
+  const mint=managerInterface.parseTransaction({data:outer.args[0][1]});
+  assert.equal(mint.name,'mint');
+  assert.equal(mint.args[0].recipient,MARKET.owner);
+  assert.equal(mint.args[0].amount0Desired,BigInt(plan.rchRequired));
+  assert.equal(mint.args[0].amount1Desired,0n);
+  assert.equal(mint.args[0].deadline,BigInt(plan.deadline));
+});

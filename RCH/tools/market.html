@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RCH market review</title><style>
+body{font:16px/1.5 system-ui,sans-serif;background:#0b1020;color:#eef2ff;margin:0}main{max-width:760px;margin:3rem auto;padding:0 1.25rem}section{background:#18213a;border:1px solid #34436b;border-radius:12px;padding:1.25rem;margin:1rem 0}h1{line-height:1.2}code,pre{overflow-wrap:anywhere;white-space:pre-wrap}button{background:#a7f3d0;color:#052e24;border:0;border-radius:7px;padding:.8rem 1rem;font-weight:700;font-size:1rem;cursor:pointer;margin:.3rem .5rem .3rem 0}button:disabled{opacity:.45;cursor:not-allowed}.warn{color:#fcd34d}.ok{color:#a7f3d0}a{color:#93c5fd}dl{display:grid;grid-template-columns:max-content 1fr;gap:.4rem 1rem}dd{margin:0;overflow-wrap:anywhere}
+</style></head><body><main>
+<h1>RCH / USDC market position</h1><p>Ethereum mainnet · Uniswap v3 · 0.3% fee tier</p>
+<section><h2>Review</h2><dl id="details"></dl><p class="warn">This RCH-only position starts outside its trading range. It earns no fees until trades reach that range. The $0.01 starting price is a launch setting, not a verified market price for AI credit.</p><p>Exactly two wallet transactions may be needed: approve up to 100 RCH, then create the pool and position. Each costs ETH gas. No USDC is spent.</p></section>
+<section><h2>Live check</h2><pre id="state">Checking Ethereum mainnet…</pre><button id="connect">Connect paying wallet</button><button id="approve" disabled>Review RCH approval in MetaMask</button><button id="create" disabled>Review pool creation in MetaMask</button><p id="status" role="status" aria-live="polite">No transaction requested.</p></section>
+<section><h2>Transaction result</h2><pre id="result">No transaction sent.</pre></section>
+<script src="./ethers.js"></script><script type="module" src="./market.js"></script>
+</main></body></html>
