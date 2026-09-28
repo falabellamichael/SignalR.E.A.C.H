@@ -3,6 +3,8 @@
 The token uses the existing orange-background SignalRAG/SimpleRAG artwork, copied unchanged from `assets/branding/simple-rag/simplerag-icon-on-orange.png` in the RAG project with the owner's approval.
 
 - `rch-logo.png`: original 1024 × 1024 PNG; SHA-256 is recorded by Git content history.
+- `rch-banner.png`: matching 2230 × 705 PNG for the CoinGecko project-banner attachment; the original square logo remains unchanged.
+- `coingecko-submission.md`: prepared listing details and submission status; this is not proof of a submitted or approved listing.
 - `tokenlist.json`: Ethereum-mainnet RCH metadata in the Uniswap Token Lists format.
 - `index.html` and `add-token.js`: public `/wallet/rch` page with an explicitly requested MetaMask token-display import. It never requests a spending approval or sends a transaction.
 
