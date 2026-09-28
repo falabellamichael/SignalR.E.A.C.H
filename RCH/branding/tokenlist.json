@@ -1,0 +1,17 @@
+{
+  "name": "REACH Credits",
+  "timestamp": "2026-09-28T00:00:00Z",
+  "version": { "major": 1, "minor": 0, "patch": 0 },
+  "keywords": ["reach", "rch"],
+  "logoURI": "https://raw.githubusercontent.com/falabellamichael/SignalR.E.A.C.H/main/RCH/branding/rch-logo.png",
+  "tokens": [
+    {
+      "chainId": 1,
+      "address": "0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792",
+      "name": "REACH Credits",
+      "symbol": "RCH",
+      "decimals": 18,
+      "logoURI": "https://raw.githubusercontent.com/falabellamichael/SignalR.E.A.C.H/main/RCH/branding/rch-logo.png"
+    }
+  ]
+}
