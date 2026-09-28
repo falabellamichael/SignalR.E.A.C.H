@@ -27,4 +27,6 @@ After the account backend is configured for the actual deployed address and its 
 
 The file must match the exact deployment and be at most one hour old. Refresh the page to enable the separate **Review activation in MetaMask** button. Activation always requires another explicit wallet review. The HTTP server never broadcasts or signs transactions.
 
+For an EIP-7702 delegated owner, activation uses `wallet_sendCalls` only when the wallet reports existing atomic-call support. MetaMask estimates the complete wallet operation and displays its fee; the helper's direct-call estimate is not a fee cap for the wallet operation. The helper persists the call ID before requesting review and checks `wallet_getCallsStatus` afterward. A wallet call ID is not an Ethereum transaction hash. The helper records activation only after independently verifying the successful activation event and the adapter's current unpaused state. An uncertain wallet result never triggers an automatic second request.
+
 Run focused protection tests with `node --test test/treasury-deployment-ui.test.mjs`.

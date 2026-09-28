@@ -7,6 +7,7 @@ import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
+import { isDelegatedEoaCode } from './treasury-redemption.mjs';
 
 export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
   return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nConnect to REACH Studio. This signature only signs you in.\n\nURI: ${origin}/wallet/connect\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expiresAt}`;
@@ -17,6 +18,12 @@ export async function verifyWallet(challenge, signature, provider, chainId) {
     if (Number((await provider.getNetwork()).chainId) !== chainId) fail(503,'wrong_chain','The authentication RPC is on the wrong chain.');
     const code = await provider.getCode(challenge.wallet);
     if (code !== '0x') {
+      // EIP-7702 preserves the account's original signing key alongside its code.
+      if (isDelegatedEoaCode(code)) {
+        try {
+          if (getAddress(verifyMessage(challenge.message,signature)) === getAddress(challenge.wallet)) return true;
+        } catch { /* Contract signature validation remains available below. */ }
+      }
       try {
         const wallet = new Contract(challenge.wallet,['function isValidSignature(bytes32,bytes) view returns (bytes4)'],provider);
         return (await wallet.isValidSignature(hashMessage(challenge.message),signature)).toLowerCase() === '0x1626ba7e';

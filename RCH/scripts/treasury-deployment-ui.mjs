@@ -14,6 +14,32 @@ export const DEPLOYMENT = Object.freeze({ chainId: 1,
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 const json = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2);
 const txHash = value => typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(value);
+const batchId = value => typeof value === 'string' && value.length > 0 && value.length <= 8194;
+
+export function activationWalletMode(code) {
+  if (code === '0x') return 'eoa';
+  if (code.toLowerCase() === '0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b') return 'eip7702';
+  throw new Error('Account 1 has an unsupported contract or delegation code. No activation transaction was prepared.');
+}
+
+export function smartActivationPlan({ contractAddress, data, estimatedGas, maxFeePerGas, balance }) {
+  if (typeof estimatedGas !== 'bigint' || estimatedGas <= 0n || typeof maxFeePerGas !== 'bigint' || maxFeePerGas <= 0n
+      || typeof balance !== 'bigint' || balance < 0n) throw new Error('RPC did not return a usable activation estimate.');
+  return { mode: 'wallet_sendCalls', from: DEPLOYMENT.owner, chainId: '0x1',
+    calls: [{ to: contractAddress, data, value: '0x0' }], networkFee: { kind: 'smart-account-estimate',
+      directCallEstimateEth: formatEther(estimatedGas * maxFeePerGas), balanceEth: formatEther(balance), quotedAt: new Date().toISOString() } };
+}
+
+export function activationReceiptMatches(receipt, canonicalBlock, contractAddress, contractInterface) {
+  if (receipt?.status !== 1 || !same(receipt.blockHash, canonicalBlock?.hash)) return false;
+  return receipt.logs.some(log => {
+    if (!same(log.address, contractAddress)) return false;
+    try {
+      const event = contractInterface.parseLog(log);
+      return event?.name === 'Unpaused' && same(event.args.account, DEPLOYMENT.owner);
+    } catch { return false; }
+  });
+}
 
 export function networkFeePlan({ estimatedGas, maxFeePerGas, maxPriorityFeePerGas, baseFeePerGas, balance, value = 0n, maxCostWei }) {
   for (const [name, amount] of Object.entries({ estimatedGas, maxFeePerGas, maxPriorityFeePerGas, baseFeePerGas, balance, value })) {
@@ -138,6 +164,7 @@ export async function startTreasuryDeployment({ quoteSigner, rpcUrl, readinessFi
     }
     return { ...DEPLOYMENT, quoteSigner, sourceHash: build.sourceHash, compiler: build.compiler,
       deployment: deployed || null, transactionHash: record?.transactionHash || null,
+      activation: record?.activation || null, activationBatch: record?.activationBatch || null,
       deploymentPending: !!record && !deployed, backendReady: await ready(deployed?.contractAddress),
       balanceEth: formatEther(await provider.getBalance(DEPLOYMENT.owner)) };
   }
@@ -157,6 +184,43 @@ export async function startTreasuryDeployment({ quoteSigner, rpcUrl, readinessFi
       maxPriorityFeePerGas: feeData.maxPriorityFeePerGas, baseFeePerGas: block?.baseFeePerGas, balance, maxCostWei });
     return { networkFee: fees.networkFee, transaction: { ...transaction, value: '0x0', chainId: '0x1',
       nonce: `0x${nonce.toString(16)}`, ...fees.transaction } };
+  }
+  async function activationPlan(current) {
+    const transaction = { from: DEPLOYMENT.owner, to: current.deployment.contractAddress,
+      value: 0n, data: factory.interface.encodeFunctionData('unpause') };
+    if (activationWalletMode(await provider.getCode(DEPLOYMENT.owner)) === 'eoa') return transactionPlan(transaction);
+    const [estimatedGas, feeData, balance] = await Promise.all([provider.estimateGas(transaction),
+      provider.getFeeData(), provider.getBalance(DEPLOYMENT.owner, 'pending')]);
+    // A delegated wallet may wrap this call. Its wrapper gas and nonce belong to the wallet.
+    return smartActivationPlan({ contractAddress: transaction.to, data: transaction.data,
+      estimatedGas, maxFeePerGas: feeData.maxFeePerGas, balance });
+  }
+  async function verifyActivation(hash, callsId) {
+    if (!record || record.status !== 'verified') throw new Error('Verify the deployment before its activation.');
+    const receipt = await provider.getTransactionReceipt(hash);
+    if (!receipt) return { status: 'pending', transactionHash: hash };
+    const block = await provider.getBlock(receipt.blockNumber);
+    if (!same(receipt.blockHash, block?.hash)) throw new Error('Activation receipt is not in the current canonical chain.');
+    if (receipt.status === 0) {
+      const finalized = await provider.getBlock('finalized');
+      if (!finalized || receipt.blockNumber > finalized.number) return { status: 'pending', transactionHash: hash };
+      if (callsId && record.activationBatch?.batchId === callsId) {
+        const failedHashes = [...new Set([...(record.activationBatch.failedHashes || []), hash])];
+        const hashes = record.activationBatch.transactionHashes;
+        await save({ ...record, activationBatch: { ...record.activationBatch, failedHashes,
+          resolved: hashes.length > 0 && hashes.every(item => failedHashes.includes(item)) } });
+      }
+      return { status: 'failed', transactionHash: hash };
+    }
+    if (!activationReceiptMatches(receipt, block, record.contractAddress, factory.interface)) {
+      throw new Error('This canonical receipt does not contain a successful treasury Unpaused event for Account 1.');
+    }
+    const onChain = await inspect(record.contractAddress);
+    if (onChain.paused) throw new Error('The activation receipt exists, but the contract is currently paused.');
+    const activation = { status: 'verified', transactionHash: hash, batchId: callsId || null,
+      blockNumber: receipt.blockNumber, blockHash: receipt.blockHash, verifiedAt: new Date().toISOString() };
+    await save({ ...record, activation, state: onChain });
+    return activation;
   }
   const prefix = `/${randomBytes(24).toString('hex')}/`;
   let origin;
@@ -178,24 +242,38 @@ export async function startTreasuryDeployment({ quoteSigner, rpcUrl, readinessFi
         if (name === 'unpause.json') {
           const current = await state();
           if (!current.backendReady || !current.deployment?.paused) throw new Error('Backend readiness has not been confirmed for this paused deployment.');
-          send(200, await transactionPlan({ from: DEPLOYMENT.owner, to: current.deployment.contractAddress,
-            value: 0n, data: factory.interface.encodeFunctionData('unpause') })); return;
+          send(200, await activationPlan(current)); return;
         }
         const file = files.get(name);
         if (!file) { send(404, { error: 'Not found.' }); return; }
         send(200, await readFile(resolve(root, file[0])), file[1]); return;
       }
-      if (name !== 'record') { send(404, { error: 'Not found.' }); return; }
+      if (!['record', 'activation-record', 'activation-batch'].includes(name)) { send(404, { error: 'Not found.' }); return; }
       if (writing) { send(409, { error: 'Receipt verification is already in progress.' }); return; }
       writing = true;
       try {
         let body = '';
-        for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > 512) throw new Error('Receipt request is too large.'); }
+        for await (const chunk of req) { body += chunk; if (Buffer.byteLength(body) > (name === 'record' ? 512 : 16384)) throw new Error('Receipt request is too large.'); }
         const request = JSON.parse(body);
+        if (name === 'activation-batch') {
+          if (!record || record.status !== 'verified' || !batchId(request.batchId) || ![100, 200, 400, 500, 600].includes(request.status)
+              || !Array.isArray(request.transactionHashes) || request.transactionHashes.length > 8 || !request.transactionHashes.every(txHash)
+              || Object.keys(request).some(k => !['batchId', 'status', 'transactionHashes'].includes(k))) throw new Error('Supply a wallet batch identifier, status, and up to eight receipt hashes.');
+          // Wallet-reported status is recovery metadata, never evidence of activation.
+          const previous = record.activationBatch?.batchId === request.batchId ? record.activationBatch : {};
+          await save({ ...record, activationBatch: { ...previous, ...request,
+            resolved: previous.resolved === true || (request.status === 400 && request.transactionHashes.length === 0), updatedAt: new Date().toISOString() } });
+          send(200, { saved: true }); return;
+        }
+        if (name === 'activation-record') {
+          if (!txHash(request.transactionHash) || (request.batchId !== undefined && !batchId(request.batchId))
+              || Object.keys(request).some(k => !['transactionHash', 'batchId'].includes(k))) throw new Error('Supply an activation transaction hash and optional wallet batch identifier.');
+          send(200, await verifyActivation(request.transactionHash, request.batchId)); return;
+        }
         if (!txHash(request.transactionHash) || Object.keys(request).some(k => k !== 'transactionHash')) throw new Error('Supply only the deployment transaction hash.');
         if (record && record.transactionHash !== request.transactionHash) throw new Error('A different deployment transaction is already recorded.');
         const verified = await verifyDeployment(request.transactionHash);
-        await save(verified, !record);
+        await save({ ...record, ...verified }, !record);
         send(200, { saved: true, status: verified.status, contractAddress: verified.contractAddress });
       } finally { writing = false; }
     } catch (error) { send(409, { error: error.shortMessage || error.message || 'Verification failed.' }); }

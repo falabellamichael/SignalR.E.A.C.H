@@ -21,6 +21,10 @@ export const quoteTypes = { RedemptionQuote: [
 ] };
 const hash = value => /^0x[0-9a-f]{64}$/i.test(value || '');
 const same = (a,b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
+// EIP-7702 delegation code is exactly the three-byte marker plus one nonzero
+// address. Arbitrary contract code is not an externally owned wallet.
+export const isDelegatedEoaCode = code => typeof code === 'string'
+  && /^0xef0100[0-9a-f]{40}$/i.test(code) && !/^0xef01000{40}$/i.test(code);
 
 export function createTreasuryRedemptionService({ store, config, provider: suppliedProvider, quoteReader, quoteSigner }) {
   const settings = config.redemption, enabled = settings.enabled === true;
@@ -88,12 +92,12 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
     if(amount<=0n || amount>parseUnits('1000000',18)) fail(400,'invalid_redemption_amount','Enter an amount above zero and at most 1000000 RCH.');
     await checkContract(true);
     const [walletCode,balance]=await safely(()=>Promise.all([provider.getCode(current.walletAddress),token.balanceOf(current.walletAddress)]));
-    if (walletCode!=='0x') fail(400,'unsupported_redemption_wallet','This rollout supports direct Ethereum wallet transactions.');
+    if (walletCode!=='0x'&&!isDelegatedEoaCode(walletCode)) fail(400,'unsupported_redemption_wallet','This rollout supports Ethereum wallets and EIP-7702 delegated wallets.');
     if (balance<amount) fail(400,'insufficient_rch','Your wallet does not hold that much RCH.');
     const market=await safely(()=>marketQuote(amount));
     const issuedAt=Math.floor(store.now()/1000),deadline=issuedAt+300;
     const quote={...market,issuedAt,deadline,expiresAtMs:deadline*1000,amount:amount.toString(),
-      wallet:current.walletAddress,chainId:config.chainId,tokenAddress:settings.tokenAddress,
+      wallet:current.walletAddress,walletMode:isDelegatedEoaCode(walletCode)?'eip7702':'eoa',chainId:config.chainId,tokenAddress:settings.tokenAddress,
       treasuryAddress:settings.treasuryAddress,redemptionContract:settings.contractAddress,
       contractCodeHash:settings.contractCodeHash,creditBudgetUsdMicros:settings.creditBudgetUsdMicros};
     const created=await store.createMarketRedemption(current.id,amount.toString(),quote);
@@ -103,14 +107,16 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
   async function details(id,ticket) {
     requireEnabled();
     const {row,quote}=await readIntent(id,ticket);
-    const result={...status(row),walletAddress:row.wallet,amountRch:formatUnits(row.amount,18),
+    const result={...status(row),walletAddress:row.wallet,walletMode:quote.walletMode||null,amountRch:formatUnits(row.amount,18),
       treasuryAddress:quote.treasuryAddress,chainId:config.chainId,expiresAt:new Date(row.expires).toISOString(),
       quote:{source:quote.source,observedAt:quote.observedAt},approvalTransaction:null,transaction:null};
     if(row.tx_hash||row.status==='credited')return {...result,signingUnavailableReason:'already_submitted'};
     if(row.expires<=store.now())return {...result,signingUnavailableReason:'intent_expired'};
     try {
       await checkContract(true);
-      const [balance,allowance]=await Promise.all([token.balanceOf(row.wallet),token.allowance(row.wallet,settings.contractAddress)]);
+      const [balance,allowance,walletCode]=await Promise.all([token.balanceOf(row.wallet),token.allowance(row.wallet,settings.contractAddress),provider.getCode(row.wallet)]);
+      if(walletCode!=='0x'&&!isDelegatedEoaCode(walletCode))fail(400,'unsupported_redemption_wallet','This rollout supports Ethereum wallets and EIP-7702 delegated wallets.');
+      result.walletMode=isDelegatedEoaCode(walletCode)?'eip7702':'eoa';
       if(balance<BigInt(row.amount))fail(400,'insufficient_rch','Your wallet no longer holds the quoted RCH amount.');
       const refreshed=await readIntent(id,ticket);
       if(refreshed.row.tx_hash||refreshed.row.status==='credited')return {...result,...status(refreshed.row),signingUnavailableReason:'already_submitted'};
@@ -130,22 +136,46 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
       &&same(parsed.args.treasury,quote.treasuryAddress)&&parsed.args.amount===BigInt(row.amount)
       &&parsed.args.creditUsdMicros===BigInt(row.usd_micros);}catch{return false;}
   };
+  const matchingTransfer = (log,row,quote) => {
+    if(!same(log.address,settings.tokenAddress)||log.removed)return false;
+    try {const parsed=treasuryTokenInterface.parseLog(log);return parsed?.name==='Transfer'
+      &&same(parsed.args.from,row.wallet)&&same(parsed.args.to,quote.treasuryAddress)
+      &&parsed.args.value===BigInt(row.amount);}catch{return false;}
+  };
+  const receiptLogIndex = (log,row,receipt) => {
+    const index=log.index??log.logIndex;
+    return Number.isSafeInteger(index)&&index>=0&&same(log.transactionHash,row.tx_hash)
+      &&same(log.blockHash,receipt.blockHash)&&log.blockNumber===receipt.blockNumber?index:null;
+  };
   async function verify(row,quote) {
     await checkContract();
     const receipt=await provider.getTransactionReceipt(row.tx_hash);
     if(!receipt)return 'transaction_pending';
     if(!same(receipt.hash??receipt.transactionHash,row.tx_hash))return 'transaction_mismatch';
     if(receipt.status!==1)return 'transaction_failed';
-    const tx=await provider.getTransaction(row.tx_hash),expected=await signedTransaction(row,quote);
-    if(!tx||!same(tx.hash,row.tx_hash)||!same(tx.from,row.wallet)||!same(tx.to,settings.contractAddress)
-       ||!same(tx.data,expected.data)||tx.value!==0n||tx.chainId!==BigInt(config.chainId)
-       ||!same(receipt.from,row.wallet)||!same(receipt.to,settings.contractAddress)
-       ||tx.blockHash&&!same(tx.blockHash,receipt.blockHash))return 'transaction_mismatch';
+    const tx=await provider.getTransaction(row.tx_hash);
+    if(!tx||!same(tx.hash,row.tx_hash)||tx.chainId!==BigInt(config.chainId)
+       ||!same(tx.from,receipt.from)||!same(tx.to,receipt.to)
+       ||!same(tx.blockHash,receipt.blockHash)||tx.blockNumber!==receipt.blockNumber)return 'transaction_mismatch';
+    const walletCode=await provider.getCode(row.wallet,receipt.blockNumber),delegated=isDelegatedEoaCode(walletCode);
+    if(!delegated){
+      const expected=await signedTransaction(row,quote);
+      if(walletCode!=='0x'||!same(tx.from,row.wallet)||!same(tx.to,settings.contractAddress)
+        ||!same(tx.data,expected.data)||tx.value!==0n)return 'transaction_mismatch';
+    }
     const matches=(receipt.logs||[]).filter(log=>matchingEvent(log,row,quote));
     if(matches.length!==1)return 'redemption_event_mismatch';
-    const log=matches[0],index=log.index??log.logIndex;
-    if(!Number.isSafeInteger(index)||index<0||!same(log.transactionHash,row.tx_hash)
-       ||!same(log.blockHash,receipt.blockHash)||log.blockNumber!==receipt.blockNumber)return 'redemption_event_mismatch';
+    const log=matches[0],index=receiptLogIndex(log,row,receipt);
+    if(index===null)return 'redemption_event_mismatch';
+    if(delegated){
+      // A sponsored/batched wallet call has a different outer sender and target.
+      // The pinned immutable redemption runtime verifies the wallet-bound quote
+      // itself. Require its exact event plus the exact token transfer preceding
+      // it in this same canonical receipt, rather than trusting a relay wrapper.
+      const transferred=(receipt.logs||[]).some(entry=>matchingTransfer(entry,row,quote)
+        &&receiptLogIndex(entry,row,receipt)!==null&&receiptLogIndex(entry,row,receipt)<index);
+      if(!transferred)return 'redemption_transfer_mismatch';
+    }
     if(!await finalizedReceipt(provider,config.chainId,settings.confirmations,receipt))return 'awaiting_finality';
     await store.creditRedemption(row.id,`${config.chainId}:${row.tx_hash.toLowerCase()}:${index}`);
     return null;
