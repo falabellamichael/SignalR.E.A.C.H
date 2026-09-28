@@ -1,6 +1,8 @@
 # REACH Credits (RCH)
 
-RCH is an Ethereum ERC-20 currency with an open ETH purchase contract. The initial sale targets **$0.01 per RCH**, using an ETH/USD oracle. **1,000 RCH costs approximately $10 plus gas.** The implemented redemption conversion is **1 RCH to 1,000,000 AI usage tokens**. The token and sale are deployed, and an RCH/USDC Uniswap v3 pool exists, but its initial RCH inventory sold out and it had no active liquidity at the last check. Live market-priced redemption, actual subscription limits, and automated subscription checkout remain unfinished. See [market value and AI credit](../docs/RCH_VALUE_PRICING.md).
+RCH is an Ethereum ERC-20 currency with an ETH purchase contract that originally targeted **$0.01 per RCH**, using an ETH/USD oracle. That sale is now permanently closed, so its `buy` operation is unavailable. The implemented redemption conversion is **1 RCH to 1,000,000 AI usage tokens**. The token and sale are deployed. RCH can now be bought with USDC through the Ethereum-mainnet Uniswap v3 0.05% pool `0x2621d7b87776f9B4e72797D4E41E326916649124`. At block 26072950, it held about 142 RCH and 1.42 USDC with active liquidity. This is a very thin market: trade size changes the price sharply. Live market-priced redemption, actual subscription limits, and automated subscription checkout remain unfinished. See [market value and AI credit](../docs/RCH_VALUE_PRICING.md).
+
+To buy, open [Uniswap's swap page](https://app.uniswap.org/swap?chain=mainnet&inputCurrency=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48&outputCurrency=0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792) on Ethereum mainnet, check that the input is USDC and the output contract is `0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792`, and review the live quote, price impact, slippage, and network fee before signing. The pool transaction is [`0x9a3c1fc2…cca7029672`](https://etherscan.io/tx/0x9a3c1fc22c4fda8c3628b21ec48e79f2d33225bfbca4e7ba1becb4cca7029672). A buyer needs their own USDC and ETH for network gas.
 
 Studio wallet sign-in links a verified customer wallet to an account and an operator-provisioned subscription. **CodeGPT and qualified free endpoint models share one plan allowance.** Redemption burns RCH and credits the account once after verified finality; model calls then consume that ledger. CodeGPT currently lacks reliable usage records and remains unavailable for paid metering. Live redemption is disabled until deployment. See [Studio access, accounting, and host setup](../docs/RCH_STUDIO_ACCESS.md).
 
@@ -132,6 +134,17 @@ transaction. Pending attempts block repeats; public transaction records survive
 process restarts outside the repository. The wallet's password and private key
 are never requested or imported by these commands. AI redemption remains a
 separate service feature.
+
+The initial mainnet sale is permanently closed; `rch buy` and `rch open-sale`
+cannot reopen it. A separate, very small market-recovery rehearsal can be run
+with `npm run market-recovery:rehearse`. It uses a local mainnet fork and never
+sends a mainnet transaction. `npm run market-recovery:ui` starts a loopback
+MetaMask review page for the existing position NFT and a proposed two-sided
+RCH/USDC pool. The page verifies live state and caps each estimated network fee
+at 0.001 ETH, but every transaction still requires wallet review and signing.
+Its 142 RCH / 1.42 USDC position would be too thin for market-priced AI
+redemption. Do not advertise the proposed pool as live until its on-chain mint
+and active liquidity are independently verified.
 
 The executable uses the current Node installation and this checkout's files. Run
 the installer again after moving the repository or replacing that Node installation.

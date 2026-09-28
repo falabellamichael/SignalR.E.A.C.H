@@ -16,7 +16,9 @@
     "accounts": "node scripts/accounts.mjs",
     "terminal": "node scripts/credits.mjs",
     "install:cli": "node scripts/install-cli.mjs",
-    "market-ui": "node scripts/market-ui.mjs"
+    "market-ui": "node scripts/market-ui.mjs",
+    "market-recovery:rehearse": "node scripts/market-recovery-rehearsal.mjs",
+    "market-recovery:ui": "node scripts/market-recovery-ui.mjs"
   },
   "dependencies": {
     "@openzeppelin/contracts": "5.6.1",

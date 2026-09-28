@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {Interface,parseUnits} from 'ethers';
+import {MARKET} from '../scripts/market-plan.mjs';
+import {RECOVERY,recoveryManagerInterface,buildWithdrawalPlan,buildLiquidityPlan} from '../scripts/market-recovery-plan.mjs';
+
+test('recovery sends the old position assets to the payer under NFT-owner authority',()=>{
+  const plan=buildWithdrawalPlan(34373460014233n,1_790_000_000);
+  assert.equal(plan.transaction.from,MARKET.owner);
+  assert.equal(plan.transaction.to,MARKET.manager);
+  assert.equal(plan.transaction.value,'0x0');
+  assert.equal(plan.deadline,1_790_001_200);
+  const calls=recoveryManagerInterface.decodeFunctionData('multicall',plan.transaction.data)[0];
+  assert.equal(calls.length,2);
+  const decrease=recoveryManagerInterface.decodeFunctionData('decreaseLiquidity',calls[0])[0];
+  const collect=recoveryManagerInterface.decodeFunctionData('collect',calls[1])[0];
+  assert.equal(decrease.tokenId,BigInt(RECOVERY.oldPositionId));
+  assert.equal(decrease.liquidity,34373460014233n);
+  assert.equal(collect.recipient,MARKET.payer);
+  assert.equal(collect.amount0Max,(1n<<128n)-1n);
+  assert.equal(collect.amount1Max,(1n<<128n)-1n);
+});
+
+test('new pool plan pins two-sided amounts, broad ticks and receiving NFT owner',()=>{
+  const plan=buildLiquidityPlan(1_790_000_000);
+  assert.equal(plan.transaction.from,MARKET.payer);
+  assert.equal(plan.transaction.to,MARKET.manager);
+  assert.equal(plan.transaction.value,'0x0');
+  assert.equal(plan.rchDesired,parseUnits('142',18).toString());
+  assert.equal(plan.usdcDesired,parseUnits('1.42',6).toString());
+  const erc20=new Interface(['function approve(address,uint256) returns (bool)']);
+  assert.deepEqual(Array.from(erc20.decodeFunctionData('approve',plan.approveRchData)),[MARKET.manager,parseUnits('142',18)]);
+  assert.deepEqual(Array.from(erc20.decodeFunctionData('approve',plan.approveUsdcData)),[MARKET.manager,parseUnits('1.42',6)]);
+  const calls=recoveryManagerInterface.decodeFunctionData('multicall',plan.transaction.data)[0];
+  assert.equal(calls.length,2);
+  const init=recoveryManagerInterface.decodeFunctionData('createAndInitializePoolIfNecessary',calls[0]);
+  const mint=recoveryManagerInterface.decodeFunctionData('mint',calls[1])[0];
+  assert.equal(init[0],MARKET.rch);
+  assert.equal(init[1],MARKET.usdc);
+  assert.equal(init[2],500n);
+  assert.equal(mint.fee,500n);
+  assert.equal(mint.tickLower,-887270n);
+  assert.equal(mint.tickUpper,887270n);
+  assert.equal(mint.amount0Desired,parseUnits('142',18));
+  assert.equal(mint.amount1Desired,parseUnits('1.42',6));
+  assert.equal(mint.amount0Min,parseUnits('142',18)*995n/1000n);
+  assert.equal(mint.amount1Min,parseUnits('1.42',6)*995n/1000n);
+  assert.equal(mint.recipient,MARKET.owner);
+  assert.equal(mint.deadline,BigInt(plan.deadline));
+});
