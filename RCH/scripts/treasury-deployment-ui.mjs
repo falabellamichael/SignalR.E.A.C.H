@@ -10,7 +10,12 @@ import { validateRpcUrl } from './workflow.mjs';
 export const DEPLOYMENT = Object.freeze({ chainId: 1,
   token: '0x6Cfb2531696f99Cd4511F281aBECe4b6a67c3792',
   treasury: '0x5b7a910cDF232543aCB7653D71d6B92f01d342C7',
-  owner: '0xDa68602c9d65337C75BF0593972d9731895592e3' });
+  owner: '0xDa68602c9d65337C75BF0593972d9731895592e3',
+  // Credit bounds now live IN the contract, so every quote is bounded on-chain and not only by
+  // the service. These mirror the pilot's intended $0.01 floor and $1 ceiling in micro-dollars;
+  // raising them later is a deliberate, visible redeployment.
+  minCreditUsdMicros: 10_000n,
+  maxCreditUsdMicros: 1_000_000n });
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && a.toLowerCase() === b.toLowerCase();
 const json = value => JSON.stringify(value, (_, v) => typeof v === 'bigint' ? v.toString() : v, 2);
 const txHash = value => typeof value === 'string' && /^0x[0-9a-f]{64}$/i.test(value);
@@ -109,7 +114,8 @@ export async function startTreasuryDeployment({ quoteSigner, rpcUrl, readinessFi
   const tokenRecord = JSON.parse(await readFile(resolve(root, 'terminal/mainnet.json'), 'utf8'));
   if (keccak256(await provider.getCode(DEPLOYMENT.token)) !== tokenRecord.tokenCodeHash) throw new Error('RCH token code does not match the recorded deployment.');
   const factory = new ContractFactory(artifact.abi, artifact.bytecode);
-  const { data } = await factory.getDeployTransaction(DEPLOYMENT.owner, DEPLOYMENT.token, DEPLOYMENT.treasury, quoteSigner);
+  const { data } = await factory.getDeployTransaction(DEPLOYMENT.owner, DEPLOYMENT.token, DEPLOYMENT.treasury,
+    quoteSigner, DEPLOYMENT.minCreditUsdMicros, DEPLOYMENT.maxCreditUsdMicros);
   const recordPath = resolve(root, 'deployments/mainnet-treasury-redemption.json');
   let record;
   try { record = JSON.parse(await readFile(recordPath, 'utf8')); }
@@ -126,10 +132,20 @@ export async function startTreasuryDeployment({ quoteSigner, rpcUrl, readinessFi
     const code = await provider.getCode(address);
     if (!sameRuntime(code, artifact)) throw new Error('Deployment runtime differs from compiled treasury contract.');
     const c = new Contract(address, artifact.abi, provider);
-    const [token, treasury, signer, owner, paused] = await Promise.all([c.token(), c.treasury(), c.quoteSigner(), c.owner(), c.paused()]);
+    // Verify the bounds too, not just identity: a deployment with looser bounds than reviewed
+    // would still pass an identity-only check while granting more credit than intended.
+    const [token, treasury, signer, owner, paused, minCredit, maxCredit] = await Promise.all([
+      c.token(), c.treasury(), c.quoteSigner(), c.owner(), c.paused(),
+      c.minCreditUsdMicros(), c.maxCreditUsdMicros(),
+    ]);
     if (!same(token, DEPLOYMENT.token) || !same(treasury, DEPLOYMENT.treasury)
       || !same(signer, quoteSigner) || !same(owner, DEPLOYMENT.owner)) throw new Error('Deployment immutable values or owner differ from the reviewed configuration.');
-    return { contractAddress: address, token, treasury, quoteSigner: signer, owner, paused, runtimeCodeHash: keccak256(code) };
+    if (minCredit !== DEPLOYMENT.minCreditUsdMicros || maxCredit !== DEPLOYMENT.maxCreditUsdMicros) {
+      throw new Error('Deployment credit bounds differ from the reviewed configuration.');
+    }
+    return { contractAddress: address, token, treasury, quoteSigner: signer, owner, paused,
+      minCreditUsdMicros: minCredit.toString(), maxCreditUsdMicros: maxCredit.toString(),
+      runtimeCodeHash: keccak256(code) };
   }
   async function ready(address) {
     if (!readinessFile || !address) return false;

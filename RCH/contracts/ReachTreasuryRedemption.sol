@@ -24,9 +24,27 @@ contract ReachTreasuryRedemption is Ownable2Step, Pausable, ReentrancyGuard {
     bytes32 private constant VERSION_HASH = keccak256("1");
     uint64 public constant MAX_QUOTE_SECONDS = 900;
 
+    /// The RCH token whose redemptions this contract moves. Immutable by design: a token that
+    /// could be re-pointed would let the owner redirect every future redemption.
     IERC20 public immutable token;
+    /// The treasury that receives redeemed RCH. Immutable for the same reason.
     address public immutable treasury;
-    address public immutable quoteSigner;
+    /// Smallest credit a single quote may grant. Set once because shrinking it only tightens
+    /// policy, while a zero floor would make accidental zero-credit quotes valid.
+    uint256 public immutable minCreditUsdMicros;
+    /// Largest credit a single quote may grant. This is the on-chain ceiling Dave was missing;
+    /// keeping it immutable means loosening it requires a new deployment, in the open.
+    uint256 public immutable maxCreditUsdMicros;
+
+    /// The key allowed to sign redemption quotes. NOT immutable: a leaked or lost signing key
+    /// must be replaceable. The service holds only this key, never the owner key, so a rotated
+    /// signer cannot itself grant the role back or move funds.
+    address public quoteSigner;
+
+    /// Wallets permitted to redeem. Without this the signature binds msg.sender but says nothing
+    /// about who msg.sender is, so a compromised signer could quote any address. Enforcing the
+    /// allowlist on-chain is what actually contains the pilot.
+    mapping(address => bool) public allowedWallet;
     mapping(bytes32 => bool) public usedRedemptionIds;
 
     error InvalidConfiguration();
@@ -34,6 +52,8 @@ contract ReachTreasuryRedemption is Ownable2Step, Pausable, ReentrancyGuard {
     error QuoteExpired();
     error RedemptionAlreadyUsed(bytes32 redemptionId);
     error InexactTransfer();
+    error WalletNotAllowed();
+    error CreditOutOfBounds();
 
     event RedeemedToTreasury(
         address indexed wallet,
@@ -43,19 +63,53 @@ contract ReachTreasuryRedemption is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 creditUsdMicros
     );
 
-    constructor(address initialOwner, address token_, address treasury_, address quoteSigner_)
-        Ownable(initialOwner)
-    {
+    /// Emitted on every signer change so a rotation is visible without reading storage.
+    event QuoteSignerChanged(address indexed previousSigner, address indexed newSigner);
+    event WalletAllowanceChanged(address indexed wallet, bool allowed);
+
+    constructor(
+        address initialOwner,
+        address token_,
+        address treasury_,
+        address quoteSigner_,
+        uint256 minCreditUsdMicros_,
+        uint256 maxCreditUsdMicros_
+    ) Ownable(initialOwner) {
         if (token_ == address(0) || treasury_ == address(0) || quoteSigner_ == address(0)
             || token_ == treasury_ || token_.code.length == 0) revert InvalidConfiguration();
+        // Validate the bounds here rather than trusting the service: a zero ceiling would brick
+        // redemption, and an inverted range would reject every quote.
+        if (minCreditUsdMicros_ == 0 || minCreditUsdMicros_ > maxCreditUsdMicros_) {
+            revert InvalidConfiguration();
+        }
         token = IERC20(token_);
         treasury = treasury_;
         quoteSigner = quoteSigner_;
+        minCreditUsdMicros = minCreditUsdMicros_;
+        maxCreditUsdMicros = maxCreditUsdMicros_;
         _pause();
     }
 
     function pause() external onlyOwner { _pause(); }
     function unpause() external onlyOwner { _unpause(); }
+
+    /// @notice Replace the quote signing key. Exists so a leaked or lost key does not force a
+    /// redeploy and a migration of every holder's RCH.
+    /// @dev Owner-only. The service never holds this key, so a compromised signer cannot call it.
+    function setQuoteSigner(address newSigner) external onlyOwner {
+        if (newSigner == address(0) || newSigner == quoteSigner) revert InvalidConfiguration();
+        emit QuoteSignerChanged(quoteSigner, newSigner);
+        quoteSigner = newSigner;
+    }
+
+    /// @notice Grant or revoke one wallet's permission to redeem.
+    /// @dev Owner-only, and the redeemed wallet is still bound by the signed quote, so this only
+    /// narrows the set of callers a valid quote can serve.
+    function setAllowedWallet(address wallet, bool allowed) external onlyOwner {
+        if (wallet == address(0)) revert InvalidConfiguration();
+        allowedWallet[wallet] = allowed;
+        emit WalletAllowanceChanged(wallet, allowed);
+    }
 
     function redeem(
         uint256 amount,
@@ -69,6 +123,14 @@ contract ReachTreasuryRedemption is Ownable2Step, Pausable, ReentrancyGuard {
             || issuedAt == 0 || deadline < issuedAt || deadline - issuedAt > MAX_QUOTE_SECONDS) {
             revert InvalidQuote();
         }
+        // The on-chain ceiling. Without this, creditUsdMicros is bounded only by a Node process
+        // that the chain never consults, so a compromised signer could quote any amount.
+        if (creditUsdMicros < minCreditUsdMicros || creditUsdMicros > maxCreditUsdMicros) {
+            revert CreditOutOfBounds();
+        }
+        // Contain the pilot: a signed quote for an address outside the allowlist is refused here
+        // even though the signature itself only proves the signer authorised that address.
+        if (!allowedWallet[msg.sender]) revert WalletNotAllowed();
         if (block.timestamp < issuedAt || block.timestamp > deadline) revert QuoteExpired();
         if (usedRedemptionIds[redemptionId]) revert RedemptionAlreadyUsed(redemptionId);
         bytes32 structHash = keccak256(abi.encode(
