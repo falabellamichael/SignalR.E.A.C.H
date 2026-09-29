@@ -156,9 +156,9 @@ const allowedOrigins = new Set([
 /// "Transaction too old" once block.timestamp passes it, so a page left open past the window
 /// must be able to mint a current plan instead of forcing a restart.
 const rebuildPlan = () => (bandWidthPct === null
-  ? prepareDeepen(provider, { account, usdcInRaw, slippageBps, createNewPosition })
+  ? prepareDeepen(provider, { account, usdcInRaw, slippageBps, createNewPosition, positionId })
   : prepareBandReposition(
-    provider, { account, widthPct: bandWidthPct, slippageBps, createNewPosition },
+    provider, { account, widthPct: bandWidthPct, slippageBps, createNewPosition, positionId },
   ));
 
 const token = randomBytes(24).toString('hex');
@@ -226,7 +226,7 @@ const server = createServer(async (request, response) => {
       return;
     }
     if (request.method === 'GET' && resource === 'state.json') {
-      const state = await readPositionState(provider, { account });
+      const state = await readPositionState(provider, { account, positionId });
       const [r, u] = await Promise.all([
         poolContracts.rch.balanceOf(POOL), poolContracts.usdc.balanceOf(POOL),
       ]);
