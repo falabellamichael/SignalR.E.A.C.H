@@ -13,12 +13,13 @@ contract ReachCreditsLaunch is ReachCredits {
         address admin,
         address payable treasury,
         IEthUsdFeed feed,
+        uint256 usdPriceE8PerRch,
         uint256 maxOracleAge,
         uint256 minEthUsdPriceE8,
         uint256 maxEthUsdPriceE8
     ) ReachCredits(admin) {
         initialSale = new ReachCreditsSale(
-            this, feed, treasury, admin, maxOracleAge, minEthUsdPriceE8, maxEthUsdPriceE8
+            this, feed, treasury, admin, usdPriceE8PerRch, maxOracleAge, minEthUsdPriceE8, maxEthUsdPriceE8
         );
         _grantRole(SALE_MINTER_ROLE, address(initialSale));
     }

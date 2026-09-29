@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { id, parseEther, parseUnits, ZeroAddress, ZeroHash } from 'ethers';
-import { chain, send, price, floor, ceiling } from './helpers/chain.mjs';
+import { chain, send, price, floor, ceiling, saleUsdPriceE8 } from './helpers/chain.mjs';
 
 const units = (n) => parseUnits(String(n), 18);
 async function revert(contract, method, args, name, errorInterface = contract.interface) {
@@ -41,18 +41,21 @@ test('atomic launch grants authority directly to administrator and sale, with pu
 
 test('USD pricing moves with ETH; purchases mint exact integer output and preserve payment accounting', async (t) => {
   const f = await chain(t); await open(f);
-  assert.equal((await f.sale.quote(parseEther('1')))[0], units(264964));
+  // The sale price is the deploy-time usdPriceE8PerRch, not a hardcoded constant: every
+  // expectation here is derived from it, so changing the fixture price changes them together.
+  const quoteOf = (wei) => wei * price / saleUsdPriceE8;
+  assert.equal((await f.sale.quote(parseEther('1')))[0], quoteOf(parseEther('1')));
   const paid = parseEther('0.01');
   const treasuryBefore = await f.provider.getBalance(await f.treasury.getAddress());
   await buy(f, paid);
-  assert.equal(await f.token.balanceOf(await f.buyer.getAddress()), units('2649.64'));
-  assert.equal(await f.token.totalPurchased(), units('2649.64'));
+  assert.equal(await f.token.balanceOf(await f.buyer.getAddress()), quoteOf(paid));
+  assert.equal(await f.token.totalPurchased(), quoteOf(paid));
   assert.equal(await f.provider.getBalance(await f.sale.getAddress()), 0n);
   assert.equal(await f.provider.getBalance(await f.treasury.getAddress()), treasuryBefore + paid);
   await send(f.feed.setAnswer(price * 2n, await f.now()));
-  assert.equal((await f.sale.quote(parseEther('1')))[0], units(529928));
+  assert.equal((await f.sale.quote(parseEther('1')))[0], parseEther('1') * price * 2n / saleUsdPriceE8);
   for (const wei of [1n, 99n, 123456789n, parseEther('2.175')]) {
-    assert.equal((await f.sale.quote(wei))[0], wei * price * 2n / 1000000n);
+    assert.equal((await f.sale.quote(wei))[0], wei * price * 2n / saleUsdPriceE8);
   }
 });
 
@@ -172,8 +175,9 @@ test('token administrator transfer observes its two-day delay', async (t) => {
 
 test('deployment rejects wrong oracle identity, decimals, addresses, and bounds', async (t) => {
   const f = await chain(t);
-  const args = [await f.admin.getAddress(), await f.treasury.getAddress(), await f.feed.getAddress(), 3600, floor, ceiling];
-  for (const [index, value] of [[0, ZeroAddress], [1, ZeroAddress], [2, await f.buyer.getAddress()], [3, 0], [4, 0], [5, floor]]) {
+  const args = [await f.admin.getAddress(), await f.treasury.getAddress(), await f.feed.getAddress(), saleUsdPriceE8, 3600, floor, ceiling];
+  // Index 3 is the USD sale price: zero must be rejected as a misconfiguration.
+  for (const [index, value] of [[0, ZeroAddress], [1, ZeroAddress], [2, await f.buyer.getAddress()], [3, 0], [4, 0], [5, 0], [6, floor]]) {
     const bad = [...args]; bad[index] = value;
     await assert.rejects(f.deploy('ReachCreditsLaunch', bad));
   }
@@ -187,7 +191,7 @@ test('deployment rejects wrong oracle identity, decimals, addresses, and bounds'
 test('failed treasury delivery rolls back payment and mint; callback cannot reenter', async (t) => {
   const f = await chain(t);
   const treasury = await f.deploy('TreasuryHarness');
-  const launch = await f.deploy('ReachCreditsLaunch', [await f.admin.getAddress(), await treasury.getAddress(), await f.feed.getAddress(), 3600, floor, ceiling]);
+  const launch = await f.deploy('ReachCreditsLaunch', [await f.admin.getAddress(), await treasury.getAddress(), await f.feed.getAddress(), saleUsdPriceE8, 3600, floor, ceiling]);
   const sale = f.sale.attach(await launch.initialSale());
   await send(treasury.configure(await sale.getAddress(), true, false));
   await send(sale.unpause());

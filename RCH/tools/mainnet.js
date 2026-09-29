@@ -54,6 +54,7 @@ async function loadPlan() {
     'The deployment transaction data differs from the reviewed hash.');
   const factory = new eth.ContractFactory(launchArtifact.abi, launchArtifact.bytecode);
   const built = await factory.getDeployTransaction(config.admin, config.treasury, config.feed,
+    eth.parseUnits(config.usdPricePerRch, 8),
     config.maxOracleAgeSeconds, eth.parseUnits(config.minEthUsd, 8), eth.parseUnits(config.maxEthUsd, 8));
   requireCondition(built.data.toLowerCase() === plan.transaction.data.toLowerCase(),
     'The deployment data does not match the compiled RCH contract and configured wallet.');

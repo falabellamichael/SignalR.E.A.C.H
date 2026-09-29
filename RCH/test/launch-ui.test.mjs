@@ -12,10 +12,10 @@ const deployer = '0x1111111111111111111111111111111111111111';
 const treasury = '0x2222222222222222222222222222222222222222';
 const feed = '0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419';
 const config = { chainId: 1, deployer, admin: deployer, treasury, feed,
-  maxOracleAgeSeconds: 7200, minEthUsd: '100', maxEthUsd: '100000', maxDeploymentFeeEth: '0.02' };
+  usdPricePerRch: '1.38', maxOracleAgeSeconds: 7200, minEthUsd: '100', maxEthUsd: '100000', maxDeploymentFeeEth: '0.02' };
 const artifact = build.artifacts.ReachCreditsLaunch;
 const data = (await new ethers.ContractFactory(artifact.abi, artifact.bytecode).getDeployTransaction(
-  deployer, treasury, feed, 7200, ethers.parseUnits('100', 8), ethers.parseUnits('100000', 8))).data;
+  deployer, treasury, feed, ethers.parseUnits('1.38', 8), 7200, ethers.parseUnits('100', 8), ethers.parseUnits('100000', 8))).data;
 const gasLimit = 3300000n, maxFeePerGas = 2000000000n;
 const plan = { schema: 'rch-deployment-plan-v1', createdAt: new Date().toISOString(),
   config, sourceHash: build.sourceHash,
@@ -62,7 +62,7 @@ test('mainnet launch page accepts the separate payer and treasury only with matc
   assert.match(wrongAdmin('status').textContent, /reviewed accounts/);
 
   const backupAdminData = (await new ethers.ContractFactory(artifact.abi, artifact.bytecode).getDeployTransaction(
-    treasury, treasury, feed, 7200, ethers.parseUnits('100', 8), ethers.parseUnits('100000', 8))).data;
+    treasury, treasury, feed, ethers.parseUnits('1.38', 8), 7200, ethers.parseUnits('100', 8), ethers.parseUnits('100000', 8))).data;
   const backupAdmin = await render({ ...plan, config: { ...config, admin: treasury },
     dataHash: createHash('sha256').update(backupAdminData).digest('hex'),
     transaction: { ...plan.transaction, data: backupAdminData } });

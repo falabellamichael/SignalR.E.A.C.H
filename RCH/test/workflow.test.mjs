@@ -13,7 +13,7 @@ async function setup(t) {
   const f = await chain(t);
   const dir = await mkdtemp(join(tmpdir(), 'rch-workflow-test-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  const config = { chainId: 1337, deployer: await f.deployer.getAddress(), admin: await f.admin.getAddress(), treasury: await f.treasury.getAddress(), feed: await f.feed.getAddress(), maxOracleAgeSeconds: 3600, minEthUsd: '100', maxEthUsd: '100000', maxDeploymentFeeEth: '1' };
+  const config = { chainId: 1337, deployer: await f.deployer.getAddress(), admin: await f.admin.getAddress(), treasury: await f.treasury.getAddress(), feed: await f.feed.getAddress(), usdPricePerRch: '1.38', maxOracleAgeSeconds: 3600, minEthUsd: '100', maxEthUsd: '100000', maxDeploymentFeeEth: '1' };
   const wallet = new Wallet(f.rpc.getInitialAccounts()[config.deployer.toLowerCase()].secretKey);
   return { ...f, config, wallet, dir };
 }

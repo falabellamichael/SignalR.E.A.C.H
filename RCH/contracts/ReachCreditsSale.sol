@@ -9,11 +9,12 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {ReachCredits} from "./ReachCredits.sol";
 import {IEthUsdFeed} from "./interfaces/IEthUsdFeed.sol";
 
-/// @notice Open ETH-for-RCH sale targeting $0.01 USD per whole RCH.
+/// @notice ETH-for-RCH sale priced in USD per whole RCH, supplied at deploy time.
 /// @dev The ETH amount changes with the ETH/USD oracle; a secondary market can trade at another price.
+///      The USD price is NOT a hardcoded constant: the primary sale must be able to price RCH at its
+///      real market value rather than a fixed figure that drifts away from it.
 contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
     uint8 public constant FEED_DECIMALS = 8;
-    uint256 public constant USD_PRICE_E8_PER_RCH = 1_000_000; // $0.01
     uint256 public constant MIN_PURCHASE_WEI = 0.001 ether;
 
     ReachCredits public immutable rch;
@@ -22,6 +23,9 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 public immutable maxOracleAge;
     uint256 public immutable minEthUsdPriceE8;
     uint256 public immutable maxEthUsdPriceE8;
+    /// USD price per whole RCH, in 8 decimals. Immutable so a deployed sale price cannot be changed
+    /// under buyers mid-flight; repricing means deploying a new sale, which is a visible act.
+    uint256 public immutable usdPriceE8PerRch;
     bool public saleClosed;
 
     error InvalidConfiguration();
@@ -45,6 +49,7 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
         IEthUsdFeed feed_,
         address payable treasury_,
         address admin_,
+        uint256 usdPriceE8PerRch_,
         uint256 maxOracleAge_,
         uint256 minEthUsdPriceE8_,
         uint256 maxEthUsdPriceE8_
@@ -53,6 +58,7 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
             address(token_) == address(0) || address(feed_) == address(0)
                 || treasury_ == address(0) || treasury_ == address(this)
                 || admin_ == address(0) || maxOracleAge_ == 0
+                || usdPriceE8PerRch_ == 0
                 || minEthUsdPriceE8_ == 0 || minEthUsdPriceE8_ >= maxEthUsdPriceE8_
         ) revert InvalidConfiguration();
         // The launch token creates its sale while its own constructor is running.
@@ -64,6 +70,7 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
         rch = token_;
         ethUsdFeed = feed_;
         treasury = treasury_;
+        usdPriceE8PerRch = usdPriceE8PerRch_;
         maxOracleAge = maxOracleAge_;
         minEthUsdPriceE8 = minEthUsdPriceE8_;
         maxEthUsdPriceE8 = maxEthUsdPriceE8_;
@@ -79,7 +86,7 @@ contract ReachCreditsSale is Ownable2Step, Pausable, ReentrancyGuard {
         ethUsdPriceE8 = uint256(answer);
         if (ethUsdPriceE8 < minEthUsdPriceE8 || ethUsdPriceE8 > maxEthUsdPriceE8) revert PriceOutsideBounds();
         // Both ETH and RCH use 18 base-unit decimals; the USD scale cancels out.
-        rchBaseUnits = Math.mulDiv(ethWei, ethUsdPriceE8, USD_PRICE_E8_PER_RCH);
+        rchBaseUnits = Math.mulDiv(ethWei, ethUsdPriceE8, usdPriceE8PerRch);
     }
 
     /// @param minRchOut Minimum acceptable RCH base units; protects against quote changes.

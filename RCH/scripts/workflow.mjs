@@ -12,7 +12,7 @@ export const feedAbi = [
 ];
 
 export function configFrom(raw) {
-  const fields = ['chainId', 'deployer', 'admin', 'treasury', 'feed', 'maxOracleAgeSeconds', 'minEthUsd', 'maxEthUsd', 'maxDeploymentFeeEth'];
+  const fields = ['chainId', 'deployer', 'admin', 'treasury', 'feed', 'usdPricePerRch', 'maxOracleAgeSeconds', 'minEthUsd', 'maxEthUsd', 'maxDeploymentFeeEth'];
   if (!raw || fields.some((key) => raw[key] === undefined) || Object.keys(raw).some((key) => !fields.includes(key))) fail('Configuration has missing or unknown fields. See config/example.json.');
   if (![1, 11155111, 1337, 31337].includes(raw.chainId)) fail('Only Ethereum mainnet, Sepolia, or local Ethereum chains are supported.');
   const config = { ...raw };
@@ -21,11 +21,14 @@ export function configFrom(raw) {
     if (config[key] === ZeroAddress) fail(`${key} must not be the zero address.`);
   }
   if (!Number.isSafeInteger(raw.maxOracleAgeSeconds) || raw.maxOracleAgeSeconds <= 0) fail('maxOracleAgeSeconds must be a positive integer.');
-  for (const key of ['minEthUsd', 'maxEthUsd', 'maxDeploymentFeeEth']) {
+  for (const key of ['minEthUsd', 'maxEthUsd', 'maxDeploymentFeeEth', 'usdPricePerRch']) {
     if (typeof raw[key] !== 'string' || !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(raw[key])) fail(`${key} must be a decimal string.`);
   }
   try {
     if (parseUnits(config.minEthUsd, 8) <= 0n || parseUnits(config.maxEthUsd, 8) <= parseUnits(config.minEthUsd, 8) || parseEther(config.maxDeploymentFeeEth) <= 0n) fail('Invalid oracle bounds or deployment fee budget.');
+    // The sale price is no longer hardcoded, so a zero or missing value must be caught here rather
+    // than deploying a sale that mints RCH for nothing.
+    if (parseUnits(config.usdPricePerRch, 8) <= 0n) fail('The RCH sale price must be a positive USD amount.');
   } catch { fail('Invalid oracle bounds or deployment fee budget.'); }
   return config;
 }
@@ -53,7 +56,7 @@ export async function prepare(provider, rawConfig, build) {
   const tokenAddress = getCreateAddress({ from: config.deployer, nonce });
   const saleAddress = getCreateAddress({ from: tokenAddress, nonce: 1 });
   if ([config.admin, config.treasury].some((address) => [tokenAddress, saleAddress].includes(address))) fail('Administrator or treasury cannot be one of the new contracts.');
-  const constructorArgs = [config.admin, config.treasury, config.feed, config.maxOracleAgeSeconds, parseUnits(config.minEthUsd, 8), parseUnits(config.maxEthUsd, 8)];
+  const constructorArgs = [config.admin, config.treasury, config.feed, parseUnits(config.usdPricePerRch, 8), config.maxOracleAgeSeconds, parseUnits(config.minEthUsd, 8), parseUnits(config.maxEthUsd, 8)];
   const artifact = build.artifacts.ReachCreditsLaunch;
   const { data } = await new ContractFactory(artifact.abi, artifact.bytecode).getDeployTransaction(...constructorArgs);
   const gas = await provider.estimateGas({ from: config.deployer, data, value: 0n });
@@ -95,7 +98,7 @@ export async function inspectDeployment(provider, record, build, { initial = fal
   }
   const token = new Contract(plan.tokenAddress, build.artifacts.ReachCreditsLaunch.abi, provider);
   const sale = new Contract(plan.saleAddress, build.artifacts.ReachCreditsSale.abi, provider);
-  if (await token.initialSale() !== plan.saleAddress || await sale.rch() !== plan.tokenAddress || await sale.ethUsdFeed() !== config.feed || await sale.treasury() !== config.treasury || await sale.maxOracleAge() !== BigInt(config.maxOracleAgeSeconds) || await sale.minEthUsdPriceE8() !== parseUnits(config.minEthUsd, 8) || await sale.maxEthUsdPriceE8() !== parseUnits(config.maxEthUsd, 8)) fail('Deployed contract settings do not match the plan.');
+  if (await token.initialSale() !== plan.saleAddress || await sale.rch() !== plan.tokenAddress || await sale.ethUsdFeed() !== config.feed || await sale.treasury() !== config.treasury || await sale.usdPriceE8PerRch() !== parseUnits(config.usdPricePerRch, 8) || await sale.maxOracleAge() !== BigInt(config.maxOracleAgeSeconds) || await sale.minEthUsdPriceE8() !== parseUnits(config.minEthUsd, 8) || await sale.maxEthUsdPriceE8() !== parseUnits(config.maxEthUsd, 8)) fail('Deployed contract settings do not match the plan.');
   const state = {
     token: plan.tokenAddress, sale: plan.saleAddress,
     administrator: await token.defaultAdmin(), saleOwner: await sale.owner(),
