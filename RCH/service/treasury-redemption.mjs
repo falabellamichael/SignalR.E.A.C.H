@@ -6,6 +6,9 @@ import { createMarketQuoteReader, RCH_MARKET } from './market-quote.mjs';
 export const treasuryInterface = new Interface([
   'function token() view returns(address)', 'function treasury() view returns(address)',
   'function quoteSigner() view returns(address)', 'function paused() view returns(bool)',
+  // Credit bounds live in the contract. Reading them lets the service quote against the real
+  // ceiling instead of a config value that can drift away from the deployment.
+  'function minCreditUsdMicros() view returns(uint256)', 'function maxCreditUsdMicros() view returns(uint256)',
   'function redeem(uint256 amount,uint256 creditUsdMicros,bytes32 redemptionId,uint64 issuedAt,uint64 deadline,bytes signature)',
   'event RedeemedToTreasury(address indexed wallet,bytes32 indexed redemptionId,address indexed treasury,uint256 amount,uint256 creditUsdMicros)',
 ]);
@@ -37,6 +40,12 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
   const domain = { name:'REACH Treasury Redemption', version:'1', chainId:config.chainId, verifyingContract:settings.contractAddress };
   const adapter = enabled ? new Contract(settings.contractAddress, treasuryInterface, provider) : null;
   const token = enabled ? new Contract(settings.tokenAddress, treasuryTokenInterface, provider) : null;
+  // The deployed contract is the authority on credit bounds. Once read, its ceiling replaces the
+  // configured one for both quotation and settlement, so a service config that disagrees with the
+  // chain can never produce a quote the contract will reject.
+  let chainMaxCreditUsdMicros = null;
+  let chainMinCreditUsdMicros = null;
+  const effectiveMaxCredit = () => chainMaxCreditUsdMicros ?? BigInt(settings.maxCreditUsdMicros);
   const marketQuote = enabled ? quoteReader || createMarketQuoteReader({provider,maxCreditUsdMicros:settings.maxCreditUsdMicros,now:store.now}) : null;
   const requireEnabled = () => { if (!enabled) fail(503,'redemption_disabled','RCH redemption is not enabled on this service.'); };
   const safely = async fn => {
@@ -64,13 +73,23 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
     if ((await provider.getNetwork()).chainId !== BigInt(config.chainId)) fail(503,'redemption_wrong_chain','The redemption connection is on the wrong network.');
     const code = await provider.getCode(settings.contractAddress);
     if (code === '0x' || keccak256(code) !== settings.contractCodeHash) fail(503,'redemption_contract_mismatch','The redemption contract does not match the reviewed deployment.');
-    const [asset,treasury,authorizedSigner,paused,decimals] = await Promise.all([
+    const [asset,treasury,authorizedSigner,paused,decimals,onChainMin,onChainMax] = await Promise.all([
       adapter.token(),adapter.treasury(),adapter.quoteSigner(),adapter.paused(),token.decimals(),
+      adapter.minCreditUsdMicros(),adapter.maxCreditUsdMicros(),
     ]);
     if (!same(asset,settings.tokenAddress) || !same(treasury,settings.treasuryAddress)
         || !same(authorizedSigner,await signer.getAddress()) || decimals !== 18n) {
       fail(503,'redemption_contract_mismatch','The redemption contract settings do not match this service.');
     }
+    // Refuse a config ceiling LOOSER than the deployed contract: that combination is what makes the
+    // service issue quotes the chain then reverts, quoting credit it can never actually grant.
+    // A stricter configured ceiling is allowed, because it only narrows what the service offers.
+    if (BigInt(settings.maxCreditUsdMicros) > onChainMax) {
+      fail(503,'redemption_bound_mismatch',
+        `The configured credit ceiling of ${settings.maxCreditUsdMicros} micro-dollars exceeds the deployed contract ceiling of ${onChainMax}. Lower the configuration to match the deployment.`);
+    }
+    chainMinCreditUsdMicros = onChainMin;
+    chainMaxCreditUsdMicros = onChainMax;
     if (requireOpen && paused) fail(503,'redemption_paused','Treasury redemption is paused.');
   });
   const status = row => ({ redemptionId:row.id, mode:'treasury',
@@ -95,6 +114,12 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
     if (walletCode!=='0x'&&!isDelegatedEoaCode(walletCode)) fail(400,'unsupported_redemption_wallet','This rollout supports Ethereum wallets and EIP-7702 delegated wallets.');
     if (balance<amount) fail(400,'insufficient_rch','Your wallet does not hold that much RCH.');
     const market=await safely(()=>marketQuote(amount));
+    // Clamp to the deployed ceiling, which checkContract(true) above has just read from the chain.
+    const maxCredit = effectiveMaxCredit();
+    if (BigInt(market.creditUsdMicros) > maxCredit) {
+      fail(400,'redemption_credit_too_large',
+        `This redemption quotes $${(BigInt(market.creditUsdMicros)/1_000_000n)} in credit, above the contract ceiling of $${(maxCredit/1_000_000n)}.`);
+    }
     const issuedAt=Math.floor(store.now()/1000),deadline=issuedAt+300;
     const quote={...market,issuedAt,deadline,expiresAtMs:deadline*1000,amount:amount.toString(),
       wallet:current.walletAddress,walletMode:isDelegatedEoaCode(walletCode)?'eip7702':'eoa',chainId:config.chainId,tokenAddress:settings.tokenAddress,

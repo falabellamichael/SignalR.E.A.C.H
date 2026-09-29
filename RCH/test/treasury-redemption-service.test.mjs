@@ -59,7 +59,8 @@ async function fixture(t, options = {}) {
     assert.equal(details.approvalTransaction, null); assert(details.transaction);
     return send(f.buyer.sendTransaction(details.transaction));
   };
-  return { ...f, adapter, store, account, config, service, start, approve, redeem, walletCodeReads, advance: value => { now += value; } };
+  return { ...f, adapter, store, account, config, service, start, approve, redeem, walletCodeReads,
+    quoteSigner, advance: value => { now += value; } };
 }
 
 test('treasury service quotes, approves exact RCH and credits USD once after an actual transfer', async t => {
@@ -208,4 +209,28 @@ test('delegated credit requires an exact token transfer in the same receipt befo
     assert.equal(result.reason,'redemption_transfer_mismatch');
     assert.equal(f.store.account(f.account.id).credit.balanceMicros,0);
   });
+});
+
+test('a config ceiling looser than the deployed contract is refused rather than silently quoted against', async t => {
+  // This is the drift that matters: the service happy to quote $1000 while the contract only
+  // honours $1. Before this check, quotes were issued and then reverted on-chain.
+  const f = await fixture(t);
+  const reader = async () => ({ creditUsdMicros: 300, source: 'fixture', observedAt: new Date().toISOString() });
+  const build = max => createTreasuryRedemptionService({ store: f.store, provider: f.provider, quoteSigner: f.quoteSigner,
+    quoteReader: reader, config: { ...f.config, redemption: { ...f.config.redemption, maxCreditUsdMicros: max } } });
+
+  // Looser than the deployed ceiling: refused, and no intent is created.
+  const loose = build(1_000_000_000);
+  t.after(() => loose.close());
+  await assert.rejects(loose.start(f.account, '2'), /exceeds the deployed contract ceiling/);
+
+  // Equal to the deployed ceiling: allowed, since it narrows nothing.
+  const equal = build(f.config.redemption.maxCreditUsdMicros);
+  t.after(() => equal.close());
+  await equal.start(f.account, '2');
+
+  // Stricter than the deployed ceiling: also allowed.
+  const stricter = build(1_000);
+  t.after(() => stricter.close());
+  await stricter.start(f.account, '2');
 });
