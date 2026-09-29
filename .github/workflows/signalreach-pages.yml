@@ -2,10 +2,7 @@ name: Publish SignalREACH website
 
 on:
   push:
-    branches: [main]
-    paths:
-      - "SignalREACH-website/**"
-      - ".github/workflows/signalreach-pages.yml"
+    branches: [gh-pages]
   workflow_dispatch:
 
 concurrency:

@@ -70,7 +70,7 @@ npm run build
 
 Upload the **contents of `dist/`** to a static host. It includes all six HTML files and their shared assets; no server-side routing or single-page-app rewrite is required. Relative links also support hosting under a subdirectory. A ready-built `dist/` is included in this handoff.
 
-The repository workflow at `.github/workflows/signalreach-pages.yml` rebuilds and publishes this `dist/` folder when website files are pushed to `main`. The default GitHub Pages URL is <https://falabellamichael.github.io/SignalR.E.A.C.H/>. For the first deployment, open the repository's **Settings → Pages** and set **Source** to **GitHub Actions**. No custom domain is required.
+The repository workflow at `.github/workflows/signalreach-pages.yml` rebuilds and publishes this `dist/` folder from the approved `gh-pages` branch. To publish website changes from `main`, merge those changes into `gh-pages`. The default GitHub Pages URL is <https://falabellamichael.github.io/SignalR.E.A.C.H/>. For the first deployment, open the repository's **Settings → Pages** and set **Source** to **GitHub Actions**. No custom domain is required.
 
 Choose a custom domain before adding canonical URLs, a sitemap, or domain-specific social metadata.
 
