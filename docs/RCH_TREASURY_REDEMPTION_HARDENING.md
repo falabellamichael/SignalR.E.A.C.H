@@ -4,19 +4,25 @@ Follow-up to the review point that the treasury redemption signing key is locked
 permanently and that the $1/$5 limits live only in the backend. Both are correct, and
 a third gap was found while confirming them.
 
-**Change:** commit `563fa15` on branch `rch/redemption-key-rotation` (branched from
-`codex/rch-redemption` so it collides with no in-flight work).
+**Changes:** commits `d7f4733` and `7e07bbf` on `main`.
 **Contract:** `RCH/contracts/ReachTreasuryRedemption.sol`
 
-## One correction to the original framing
+## Losing or leaking the key led to the same dead end
 
-A **leaked** signer is not unrecoverable. The owner is a separate key from
-`quoteSigner`, and `pause()` is `onlyOwner`, so a leaked signing key can already be
-contained by pausing. Only a **lost** key forces a redeploy, because the service cannot
-resume without a matching signer.
+The contract had two `onlyOwner` functions, `pause()` and `unpause()`, and no setter for
+`quoteSigner`. So both failure modes converged on the same outcome:
 
-The conclusion still holds, for a narrower reason: the key was **unrotatable**. Pausing
-halts the feature, and there was no way to resume it with a new key. That is the defect.
+- **Lose the key:** the service cannot sign quotes. Redemption stops, with no attacker
+  involved.
+- **Leak the key:** an attacker can sign quotes. `pause()` stops the bleeding.
+
+Either way the feature is off and **cannot be resumed**, because there is no way to point
+the contract at a replacement signer. Pausing contains the theft but is not recovery; it
+turns a compromised feature into a permanently dead one. Restoring it required
+redeploying and migrating every holder's RCH.
+
+That is the defect this change fixes, and it is why the fix is the setter rather than
+better key custody.
 
 ## The third gap
 
