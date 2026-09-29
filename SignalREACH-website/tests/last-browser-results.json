@@ -1,0 +1,244 @@
+{
+  "passed": 55,
+  "checks": [
+    "Home initializes",
+    "Dark theme shows one icon",
+    "Light theme shows one icon",
+    "Agent preview tab",
+    "Keyboard tab navigation",
+    "Example file switching",
+    "Demo response and escaped prompt",
+    "Workflow panels",
+    "Three code languages",
+    "Clipboard action provides feedback",
+    "Tour progression and Escape",
+    "Theme retained across routes",
+    "All four platform panels",
+    "Nine integration cards",
+    "Bridge filter narrows results",
+    "Search empty state and clear",
+    "Integration search",
+    "Integration detail dialog",
+    "Six documentation articles",
+    "Documentation search and navigation",
+    "Three operating-system tabs",
+    "Mobile menu, Escape, and route selection",
+    "index: no overflow at 320px",
+    "index: no overflow at 390px",
+    "index: no overflow at 768px",
+    "index: no overflow at 1024px",
+    "index: no overflow at 1440px",
+    "platform: no overflow at 320px",
+    "platform: no overflow at 390px",
+    "platform: no overflow at 768px",
+    "platform: no overflow at 1024px",
+    "platform: no overflow at 1440px",
+    "integrations: no overflow at 320px",
+    "integrations: no overflow at 390px",
+    "integrations: no overflow at 768px",
+    "integrations: no overflow at 1024px",
+    "integrations: no overflow at 1440px",
+    "docs: no overflow at 320px",
+    "docs: no overflow at 390px",
+    "docs: no overflow at 768px",
+    "docs: no overflow at 1024px",
+    "docs: no overflow at 1440px",
+    "about: no overflow at 320px",
+    "about: no overflow at 390px",
+    "about: no overflow at 768px",
+    "about: no overflow at 1024px",
+    "about: no overflow at 1440px",
+    "download: no overflow at 320px",
+    "download: no overflow at 390px",
+    "download: no overflow at 768px",
+    "download: no overflow at 1024px",
+    "download: no overflow at 1440px",
+    "Reduced-motion preference honored",
+    "No browser JavaScript errors",
+    "No outgoing requests in offline demo"
+  ],
+  "layouts": [
+    {
+      "page": "index",
+      "width": 320,
+      "scrollWidth": 320,
+      "height": 7123
+    },
+    {
+      "page": "index",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 6779
+    },
+    {
+      "page": "index",
+      "width": 768,
+      "scrollWidth": 768,
+      "height": 5250
+    },
+    {
+      "page": "index",
+      "width": 1024,
+      "scrollWidth": 1024,
+      "height": 5315
+    },
+    {
+      "page": "index",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 5510
+    },
+    {
+      "page": "platform",
+      "width": 320,
+      "scrollWidth": 320,
+      "height": 2816
+    },
+    {
+      "page": "platform",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 2557
+    },
+    {
+      "page": "platform",
+      "width": 768,
+      "scrollWidth": 768,
+      "height": 1848
+    },
+    {
+      "page": "platform",
+      "width": 1024,
+      "scrollWidth": 1024,
+      "height": 1834
+    },
+    {
+      "page": "platform",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1850
+    },
+    {
+      "page": "integrations",
+      "width": 320,
+      "scrollWidth": 320,
+      "height": 3452
+    },
+    {
+      "page": "integrations",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 3353
+    },
+    {
+      "page": "integrations",
+      "width": 768,
+      "scrollWidth": 768,
+      "height": 2404
+    },
+    {
+      "page": "integrations",
+      "width": 1024,
+      "scrollWidth": 1024,
+      "height": 1949
+    },
+    {
+      "page": "integrations",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1951
+    },
+    {
+      "page": "docs",
+      "width": 320,
+      "scrollWidth": 320,
+      "height": 1971
+    },
+    {
+      "page": "docs",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 1853
+    },
+    {
+      "page": "docs",
+      "width": 768,
+      "scrollWidth": 768,
+      "height": 1612
+    },
+    {
+      "page": "docs",
+      "width": 1024,
+      "scrollWidth": 1024,
+      "height": 1558
+    },
+    {
+      "page": "docs",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1545
+    },
+    {
+      "page": "about",
+      "width": 320,
+      "scrollWidth": 320,
+      "height": 2973
+    },
+    {
+      "page": "about",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 2740
+    },
+    {
+      "page": "about",
+      "width": 768,
+      "scrollWidth": 768,
+      "height": 1949
+    },
+    {
+      "page": "about",
+      "width": 1024,
+      "scrollWidth": 1024,
+      "height": 1917
+    },
+    {
+      "page": "about",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1897
+    },
+    {
+      "page": "download",
+      "width": 320,
+      "scrollWidth": 320,
+      "height": 2736
+    },
+    {
+      "page": "download",
+      "width": 390,
+      "scrollWidth": 390,
+      "height": 2574
+    },
+    {
+      "page": "download",
+      "width": 768,
+      "scrollWidth": 768,
+      "height": 1761
+    },
+    {
+      "page": "download",
+      "width": 1024,
+      "scrollWidth": 1024,
+      "height": 1695
+    },
+    {
+      "page": "download",
+      "width": 1440,
+      "scrollWidth": 1440,
+      "height": 1681
+    }
+  ],
+  "pageErrors": [],
+  "requests": []
+}

@@ -1,0 +1,83 @@
+[
+  {
+    "id": "compatible",
+    "name": "OpenAI-compatible API",
+    "category": "Endpoints",
+    "mark": "<>",
+    "description": "Use a familiar API format with your configured REACH or compatible endpoint.",
+    "detail": "Configure the base URL, access key if required, and a model exposed by your host. The website does not test or connect to endpoints.",
+    "href": "docs.html#endpoint"
+  },
+  {
+    "id": "vscode",
+    "name": "VS Code",
+    "category": "Editors",
+    "mark": "⌘",
+    "description": "Keep chat and coding alongside your project files in the REACH extension.",
+    "detail": "The repository includes the VS Code extension source and setup guide. Use the documented installation path for your environment.",
+    "href": "docs.html#editor"
+  },
+  {
+    "id": "simplerag",
+    "name": "SimpleRAG",
+    "category": "Workspaces",
+    "mark": "S",
+    "description": "Host and manage the relay through the integrated REACH control panel.",
+    "detail": "The SimpleRAG plugin adds Dashboard, Browser, Endpoint, Models, Usage, Logs, Settings, and About pages. Follow the project README for setup.",
+    "href": "https://github.com/falabellamichael/SignalR.E.A.C.H#readme"
+  },
+  {
+    "id": "studio",
+    "name": "REACH Studio",
+    "category": "Workspaces",
+    "mark": "R",
+    "description": "A standalone home for files, conversations, personas, and agent teams.",
+    "detail": "Run Studio on macOS, Windows, or Linux. Configure a compatible endpoint inside Settings → Connection & default model.",
+    "href": "docs.html#studio"
+  },
+  {
+    "id": "chatgpt",
+    "name": "ChatGPT bridge",
+    "category": "Bridges",
+    "mark": "C",
+    "description": "A provider option in the existing REACH desktop tray and editor UI.",
+    "detail": "Requires the corresponding signed-in provider session and local bridge configuration. Provider terms, access requirements, and limits apply.",
+    "href": "https://github.com/falabellamichael/SignalR.E.A.C.H#desktop-tray-macos-windows-and-linux"
+  },
+  {
+    "id": "copilot",
+    "name": "Microsoft 365 Copilot",
+    "category": "Bridges",
+    "mark": "M",
+    "description": "Connect through the Copilot option in the local desktop bridge.",
+    "detail": "Requires the matching provider account and session. Follow the project’s tray setup guide; this is not a Microsoft endorsement.",
+    "href": "https://github.com/falabellamichael/SignalR.E.A.C.H#desktop-tray-macos-windows-and-linux"
+  },
+  {
+    "id": "gemini",
+    "name": "Gemini web",
+    "category": "Bridges",
+    "mark": "G",
+    "description": "A web-provider route available through the project’s local bridge UI.",
+    "detail": "Requires an eligible provider session and the local bridge. Availability and usage are governed by the provider.",
+    "href": "https://github.com/falabellamichael/SignalR.E.A.C.H#desktop-tray-macos-windows-and-linux"
+  },
+  {
+    "id": "codegpt",
+    "name": "CodeGPT",
+    "category": "Bridges",
+    "mark": "{ }",
+    "description": "The existing UI includes a CodeGPT economy-model provider option.",
+    "detail": "This route depends on the host’s CodeGPT setup and available model catalog. Provider subscriptions and model access rules still apply.",
+    "href": "https://github.com/falabellamichael/SignalR.E.A.C.H#codegpt-economy-models"
+  },
+  {
+    "id": "relay",
+    "name": "REACH relay",
+    "category": "Endpoints",
+    "mark": "↗",
+    "description": "Connect compatible clients to the endpoint managed by your host.",
+    "detail": "Host-managed API keys and the configured model catalog determine access. Use the local or hosted URL supplied by the operator.",
+    "href": "docs.html#endpoint"
+  }
+]

@@ -1,0 +1,14 @@
+{
+  "name": "signalreach-website",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Animated six-page SignalREACH website, based on the existing project HTML and signature gold palette.",
+  "type": "module",
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "dev": "node tools/serve.mjs",
+    "build": "node tools/build.mjs",
+    "test": "node --test tests/static.test.mjs"
+  },
+  "engines": { "node": ">=18" }
+}
