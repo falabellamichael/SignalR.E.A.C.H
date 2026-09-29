@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RCH / WETH pool review</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #14140f; color: #f3f0e8; }
+    body { max-width: 880px; margin: 2rem auto; padding: 0 1rem 4rem; }
+    h1, h2 { line-height: 1.2; }
+    section { border: 1px solid #6a6046; border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    dl { display: grid; grid-template-columns: 13rem minmax(0,1fr); gap: .4rem 1rem; }
+    dt { color: #e2c56f; } dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    button { background: #d5b75f; color: #201d15; border: 0; border-radius: 8px; padding: .7rem 1rem; margin: .35rem .35rem .35rem 0; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    #status { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    .note { color: #d8d0bd; } .warn { color: #f0b5a0; }
+    .mono { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    #transactions { padding-left: 1.25rem; } #transactions li { margin: .35rem 0; }
+    @media (max-width: 600px) { dl { display: block; } dt { margin-top: .7rem; } }
+  </style>
+</head>
+<body>
+  <h1>RCH / WETH pool review</h1>
+  <p class="note">
+    This local page creates the first <strong>RCH/WETH</strong> Uniswap V2 pair. Two transactions,
+    both signed by your own wallet — nothing is sent by the tool. A WETH pair is what makes RCH
+    appear with a live price in Uniswap search, because Uniswap's price and search data are
+    WETH-based.
+  </p>
+
+  <section>
+    <h2>Reviewed deposit</h2>
+    <dl>
+      <dt>Network</dt><dd id="network">Ethereum mainnet (chain 1)</dd>
+      <dt>Signing wallet</dt><dd id="account">Loading</dd>
+      <dt>RCH token</dt><dd id="rch">Loading</dd>
+      <dt>WETH</dt><dd id="weth">Loading</dd>
+      <dt>Router</dt><dd id="router">Loading</dd>
+      <dt>Pair address</dt><dd id="pair">Loading</dd>
+      <dt>Deposit</dt><dd id="deposit">Loading</dd>
+      <dt>Opening price</dt><dd id="price">Loading</dd>
+      <dt>Live RCH/USDC pool price</dt><dd id="live-price">Loading</dd>
+      <dt>Slippage guard</dt><dd id="slippage">Loading</dd>
+      <dt>Max gas</dt><dd id="gas">Loading</dd>
+    </dl>
+    <p id="warning" class="warn"></p>
+  </section>
+
+  <section>
+    <h2>Your wallet, live</h2>
+    <dl>
+      <dt>RCH balance</dt><dd id="s-rch">—</dd>
+      <dt>ETH balance</dt><dd id="s-eth">—</dd>
+      <dt>RCH allowance to router</dt><dd id="s-allowance">—</dd>
+      <dt>Pair exists</dt><dd id="s-exists">—</dd>
+      <dt>Pool RCH reserve</dt><dd id="s-res-rch">—</dd>
+      <dt>Pool WETH reserve</dt><dd id="s-res-weth">—</dd>
+      <dt>Pool LP supply</dt><dd id="s-lp">—</dd>
+    </dl>
+    <button id="connect" disabled>Connect wallet</button>
+    <button id="refresh" disabled>Refresh live state</button>
+    <button id="sign" disabled>Sign both transactions</button>
+  </section>
+
+  <section>
+    <h2>Transactions</h2>
+    <ol id="transactions"><li>Loading…</li></ol>
+    <p id="status" role="status" aria-live="polite">Load the reviewed plan to begin.</p>
+  </section>
+
+  <footer class="note">
+    The tool never sees your private key and cannot sign for you. Review each prompt in your
+    wallet before approving. Closing this page leaves the chain exactly as it was.
+  </footer>
+
+  <script src="./ethers.js"></script>
+  <script src="./weth-pool.js" defer></script>
+</body>
+</html>

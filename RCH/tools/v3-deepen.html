@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RCH / USDC pool deepening review</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #14140f; color: #f3f0e8; }
+    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem 4rem; }
+    h1, h2 { line-height: 1.2; }
+    section { border: 1px solid #6a6046; border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    dl { display: grid; grid-template-columns: 14rem minmax(0,1fr); gap: .4rem 1rem; }
+    dt { color: #e2c56f; } dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    button { background: #d5b75f; color: #201d15; border: 0; border-radius: 8px; padding: .7rem 1rem; margin: .35rem .35rem .35rem 0; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    #status { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    .note { color: #d8d0bd; } .warn { color: #f0b5a0; } .good { color: #b8e0a0; }
+    table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+    th, td { text-align: left; padding: .35rem .6rem; border-bottom: 1px solid #3a3428; font-family: ui-monospace, monospace; }
+    th { color: #e2c56f; font-weight: 600; }
+    .mono { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    @media (max-width: 620px) { dl { display: block; } dt { margin-top: .7rem; } }
+  </style>
+</head>
+<body>
+  <h1 id="title">RCH / USDC pool deepening review</h1>
+  <p class="note">
+    This local page adds liquidity to the existing Uniswap V3 <strong>RCH/USDC</strong> pool.
+    Nothing is sent by the tool — each step is signed by your own wallet. The deposit is sized
+    so the price does <em>not</em> move: it deepens the pool without changing what RCH is worth.
+  </p>
+
+  <section>
+    <h2>Reviewed deposit</h2>
+    <dl>
+      <dt>Network</dt><dd id="network">Ethereum mainnet (chain 1)</dd>
+      <dt>Signing wallet</dt><dd id="account">Loading</dd>
+      <dt>Target</dt><dd id="target">Loading</dd>
+      <dt>Pool</dt><dd id="pool">Loading</dd>
+      <dt>Position manager</dt><dd id="npm">Loading</dd>
+      <dt>Range</dt><dd id="range">Loading</dd>
+      <dt>Deposit</dt><dd id="deposit">Loading</dd>
+      <dt>Price (unchanged)</dt><dd id="price">Loading</dd>
+      <dt>Slippage guard</dt><dd id="slippage">Loading</dd>
+      <dt>Gas cost</dt><dd id="gas">Loading</dd>
+    </dl>
+    <p id="warning" class="warn"></p>
+  </section>
+
+  <section>
+    <h2>Effect on the pool</h2>
+    <table>
+      <tr><th></th><th>Before</th><th>After</th></tr>
+      <tr><td><span id="r-1">USDC depth</span></td><td id="d-before">—</td><td id="d-after">—</td></tr>
+      <tr><td><span id="r-2">Total pool value</span></td><td id="v-before">—</td><td id="v-after">—</td></tr>
+      <tr><td><span id="r-3">Position liquidity</span></td><td id="l-before">—</td><td id="l-after">—</td></tr>
+    </table>
+    <p id="depth-note" class="note"></p>
+  </section>
+
+  <section>
+    <h2>Your wallet, live</h2>
+    <dl>
+      <dt>RCH balance</dt><dd id="s-rch">—</dd>
+      <dt>USDC balance</dt><dd id="s-usdc">—</dd>
+      <dt>RCH allowance</dt><dd id="s-allow-rch">—</dd>
+      <dt>USDC allowance</dt><dd id="s-allow-usdc">—</dd>
+    </dl>
+    <button id="connect" disabled>Connect wallet</button>
+    <button id="refresh" disabled>Refresh live state</button>
+    <button id="sign" disabled>Sign all steps</button>
+  </section>
+
+  <section>
+    <h2>Transactions</h2>
+    <ol id="transactions"><li>Loading…</li></ol>
+    <p id="status" role="status" aria-live="polite">Load the reviewed plan to begin.</p>
+  </section>
+
+  <footer class="note">
+    The tool never sees your private key and cannot sign for you. Review each prompt in your
+    wallet before approving. Closing this page changes nothing on chain.
+  </footer>
+
+  <script src="./ethers.js"></script>
+  <script src="./v3-deepen.js" defer></script>
+</body>
+</html>
