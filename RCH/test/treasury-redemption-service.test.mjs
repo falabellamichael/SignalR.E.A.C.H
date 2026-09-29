@@ -12,8 +12,14 @@ async function fixture(t, options = {}) {
   await send(f.sale.connect(f.buyer).buy(minimum, await f.now() + 600, { value: payment }));
   const wallet = await f.buyer.getAddress();
   const quoteSigner = new Wallet(f.rpc.getInitialAccounts()[(await f.admin.getAddress()).toLowerCase()].secretKey);
-  const adapter = await f.deploy('ReachTreasuryRedemption', [await f.admin.getAddress(), await f.token.getAddress(), f.treasuryTarget, quoteSigner.address]);
+  // Bounds are enforced on-chain now, so the contract must be deployed with the same limits the
+  // service config uses below, or quotes would pass one check and fail the other.
+  const MIN_CREDIT = 1n;
+  const MAX_CREDIT = 1_000_000n;
+  const adapter = await f.deploy('ReachTreasuryRedemption', [await f.admin.getAddress(), await f.token.getAddress(), f.treasuryTarget, quoteSigner.address, MIN_CREDIT, MAX_CREDIT]);
   await send(adapter.connect(f.admin).unpause());
+  // The allowlist lives on-chain too, so the pilot wallet must be listed before any redeem works.
+  await send(adapter.connect(f.admin).setAllowedWallet(await f.buyer.getAddress(), true));
   let now = (await f.now()) * 1000;
   const models = [{ id: 'priced/test', provider: 'test', metered: true,
     pricing: { inputUsdMicrosPerMillion: 150000, outputUsdMicrosPerMillion: 600000 } }];
