@@ -8,12 +8,15 @@
 // Two funding paths, because they cost different amounts of gas:
 //   --new-position  (Path 2, default) mints an ADMIN-owned position. The RCH and USDC are
 //                   already in that wallet, so nothing needs moving: 2 approvals + 1 mint.
-//   (default off)   Path 1 grows the TREASURY-owned position 1374664, which requires the
-//                   tokens to be moved to the treasury first: 3 moves + 2 approvals + 1 call.
+//   (default off)   Path 1 grows the TREASURY-owned band position (see POSITION_ID in
+//                   v3-deepen.mjs), which requires the tokens to be in the treasury:
+//                   3 moves + 2 approvals + 1 call.
+//   --position <id> review a different treasury position than the pinned default, e.g. the
+//                   successor after the next band rotation.
 //
 // Usage:
 //   node scripts/v3-deepen-ui.mjs --account 0xDa68… --usdc 11.794184 --new-position
-//   node scripts/v3-deepen-ui.mjs --account 0x5b7a… --usdc 11.794184
+//   node scripts/v3-deepen-ui.mjs --account 0x5b7a… --usdc 10 [--position 1375302]
 
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
@@ -34,6 +37,7 @@ const { values: options } = parseArgs({
     account: { type: 'string' },
     usdc: { type: 'string' },
     band: { type: 'string' },
+    position: { type: 'string' },
     'new-position': { type: 'boolean' },
     slippage: { type: 'string' },
     'no-open': { type: 'boolean' },
@@ -66,20 +70,27 @@ const usdcInRaw = options.usdc ? parseUnits(options.usdc, 6) : 0n;
 const slippageBps = options.slippage ? Number(options.slippage) : 200;
 if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 5000) throw new Error('--slippage must be 0-5000 bps.');
 const createNewPosition = options['new-position'] === true;
+// Which treasury position to grow (or withdraw). Defaults to the pinned live band; the flag
+// exists so a future rotation does not silently review the wrong (or an emptied) position.
+let positionId = POSITION_ID;
+if (options.position !== undefined) {
+  if (!/^[1-9][0-9]*$/.test(options.position)) throw new Error('--position must be a positive integer position id.');
+  positionId = BigInt(options.position);
+}
 
 const port = Number(options.port ?? 8767);
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) throw new Error('Invalid --port.');
 
 // Live read-only context for the review.
-const before = await readPositionState(provider, { account });
+const before = await readPositionState(provider, { account, positionId });
 const gasReport = await readGasReport(provider, { ethBalanceWei: await provider.getBalance(account) });
 
 let reviewedPlan;
 try {
   reviewedPlan = bandWidthPct === null
-    ? await prepareDeepen(provider, { account, usdcInRaw, slippageBps, createNewPosition })
+    ? await prepareDeepen(provider, { account, usdcInRaw, slippageBps, createNewPosition, positionId })
     : await prepareBandReposition(provider, {
-      account, widthPct: bandWidthPct, slippageBps, createNewPosition,
+      account, widthPct: bandWidthPct, slippageBps, createNewPosition, positionId,
     });
 } catch (error) {
   process.stderr.write(`\nThe deposit cannot be prepared yet:\n  ${error.message}\n\n`);
@@ -245,8 +256,8 @@ await new Promise((done) => server.listen(port, '127.0.0.1', done));
 const url = `http://127.0.0.1:${port}${prefix}`;
 
 const targetLabel = isBand
-  ? `new position; source ${POSITION_ID} is emptied`
-  : (createNewPosition ? 'NEW admin-owned position' : `existing position ${POSITION_ID} (treasury-owned)`);
+  ? `new position; source ${positionId} is emptied`
+  : (createNewPosition ? 'NEW admin-owned position' : `existing position ${positionId} (treasury-owned)`);
 process.stdout.write('RCH/USDC pool deepening review\n');
 process.stdout.write(`  ${url}\n\n`);
 process.stdout.write(`  account      ${account}\n`);

@@ -20,8 +20,11 @@ export const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 export const NPM = '0xC36442b4a4522E871399CD717aBDD847Ab11FE88';
 /// The live RCH/USDC 0.05% pool.
 export const POOL = '0x2621d7b87776f9b4e72797d4e41e326916649124';
-/// The existing full-range position owned by the treasury.
-export const POSITION_ID = 1374664n;
+/// The treasury's live position: the +/-20% band minted by the 2026-09-28 reposition
+/// (ticks -275340..-271280). It replaced the original full-range position 1374664, whose
+/// liquidity was withdrawn to fund this one and now sits at zero. Every prepare function
+/// accepts a `positionId` override so the next rotation does not strand this default.
+export const POSITION_ID = 1375302n;
 /// 0.05% fee tier, in hundredths of a bip.
 export const FEE = 500;
 /// The 0.05% fee tier's tick spacing. Band edges must be multiples of this.
@@ -183,13 +186,14 @@ export function planBandFunding({
   return { liquidity, need, alreadyWithdrawn };
 }
 
-export async function readPositionState(provider, { account } = {}) {
+export async function readPositionState(provider, { account, positionId = POSITION_ID } = {}) {
   const owner = account ? getAddress(account) : null;
+  const tokenId = BigInt(positionId);
   const npm = new Contract(NPM, npmAbi, provider);
   const pool = new Contract(POOL, poolAbi, provider);
 
   const [position, ownerOf, slot0] = await Promise.all([
-    npm.positions(POSITION_ID), npm.ownerOf(POSITION_ID), pool.slot0(),
+    npm.positions(tokenId), npm.ownerOf(tokenId), pool.slot0(),
   ]);
   const sqrtP = slot0[0];
   const tick = Number(slot0[1]);
@@ -206,7 +210,7 @@ export async function readPositionState(provider, { account } = {}) {
 
   const state = {
     chainId: Number((await provider.getNetwork()).chainId),
-    positionId: POSITION_ID.toString(),
+    positionId: tokenId.toString(),
     positionOwner: getAddress(ownerOf),
     token0, token1, rchIsToken0,
     fee: Number(position.fee),
@@ -242,17 +246,18 @@ export function priceUsdcPerRch(sqrtPriceX96, rchIsToken0) {
 /// The operator's decision is how much USDC to commit; the RCH side is derived from the
 /// position's tick range so the deposit is exactly balanced and the price does not move.
 export async function prepareDeepen(provider, {
-  account, usdcInRaw, slippageBps = 200, createNewPosition = false,
+  account, usdcInRaw, slippageBps = 200, createNewPosition = false, positionId = POSITION_ID,
 } = {}) {
   const owner = getAddress(account);
+  const tokenId = BigInt(positionId);
   if (typeof usdcInRaw !== 'bigint' || usdcInRaw <= 0n) fail('Choose how much USDC to add.');
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 5000) fail('Slippage must be 0-5000 bps.');
 
-  const state = await readPositionState(provider, { account: owner });
+  const state = await readPositionState(provider, { account: owner, positionId: tokenId });
   if (state.chainId !== 1) fail('This tool only prepares Ethereum mainnet transactions.');
   if (BigInt(state.usdcBalance) < usdcInRaw) fail('The connected wallet does not hold enough USDC.');
   if (!createNewPosition && state.positionOwner !== owner) {
-    fail(`Position ${POSITION_ID} is owned by ${state.positionOwner}, not the connected wallet. Use --new-position to mint a separate position instead.`);
+    fail(`Position ${tokenId} is owned by ${state.positionOwner}, not the connected wallet. Use --new-position to mint a separate position instead.`);
   }
 
   const sqrtP = BigInt(state.sqrtPriceX96);
@@ -316,7 +321,7 @@ export async function prepareDeepen(provider, {
       recipient: owner, deadline,
     })
     : await npm.increaseLiquidity.populateTransaction({
-      tokenId: POSITION_ID, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline,
+      tokenId, amount0Desired, amount1Desired, amount0Min, amount1Min, deadline,
     });
 
   const transactions = [];
@@ -338,7 +343,7 @@ export async function prepareDeepen(provider, {
     account: owner,
     pool: POOL,
     npm: NPM,
-    positionId: POSITION_ID.toString(),
+    positionId: tokenId.toString(),
     createNewPosition,
     rch: RCH,
     usdc: USDC,
@@ -379,16 +384,17 @@ export async function prepareDeepen(provider, {
 /// this one withdraws first, so the reviewed steps and their risks are genuinely different.
 /// Nothing here is signed; the operator signs every step in their own wallet.
 export async function prepareBandReposition(provider, {
-  account, widthPct, slippageBps = 200, createNewPosition = false,
+  account, widthPct, slippageBps = 200, createNewPosition = false, positionId = POSITION_ID,
 } = {}) {
   const owner = getAddress(account);
+  const tokenId = BigInt(positionId);
   if (typeof widthPct !== 'number' || !Number.isFinite(widthPct)) fail('Choose a band width in percent.');
   if (!Number.isInteger(slippageBps) || slippageBps < 0 || slippageBps > 5000) fail('Slippage must be 0-5000 bps.');
 
-  const state = await readPositionState(provider, { account: owner });
+  const state = await readPositionState(provider, { account: owner, positionId: tokenId });
   if (state.chainId !== 1) fail('This tool only prepares Ethereum mainnet transactions.');
   if (!createNewPosition && state.positionOwner !== owner) {
-    fail(`Position ${POSITION_ID} is owned by ${state.positionOwner}, not the connected wallet.`);
+    fail(`Position ${tokenId} is owned by ${state.positionOwner}, not the connected wallet.`);
   }
   const oldLiquidity = BigInt(state.liquidity);
 
@@ -496,10 +502,10 @@ export async function prepareBandReposition(provider, {
     // Withdrawing is bounded by nothing (you are removing your own liquidity), so both minimums
     // are zero; the slippage guard that matters is on the re-mint below.
     const decreaseTx = await npm.decreaseLiquidity.populateTransaction({
-      tokenId: POSITION_ID, liquidity: oldLiquidity, amount0Min: 0n, amount1Min: 0n, deadline,
+      tokenId, liquidity: oldLiquidity, amount0Min: 0n, amount1Min: 0n, deadline,
     });
     const collectTx = await npm.collect.populateTransaction({
-      tokenId: POSITION_ID, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128,
+      tokenId, recipient: owner, amount0Max: MAX_UINT128, amount1Max: MAX_UINT128,
     });
     transactions.push({ to: NPM, from: owner, data: decreaseTx.data, value: '0x0', purpose: 'decrease-liquidity' });
     transactions.push({ to: NPM, from: owner, data: collectTx.data, value: '0x0', purpose: 'collect-principal' });
@@ -516,8 +522,8 @@ export async function prepareBandReposition(provider, {
     account: owner,
     pool: POOL,
     npm: NPM,
-    positionId: POSITION_ID.toString(),
-    sourcePositionId: POSITION_ID.toString(),
+    positionId: tokenId.toString(),
+    sourcePositionId: tokenId.toString(),
     // A band reposition always mints a NEW position; the old one is emptied.
     createNewPosition: true,
     rch: RCH,

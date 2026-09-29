@@ -32,7 +32,7 @@ test('config pins the live pool, position, and fee tier', () => {
   assert.equal(USDC, '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48');
   assert.equal(NPM, '0xC36442b4a4522E871399CD717aBDD847Ab11FE88');
   assert.equal(POOL, '0x2621d7b87776f9b4e72797d4e41e326916649124');
-  assert.equal(POSITION_ID, 1374664n);
+  assert.equal(POSITION_ID, 1375302n, 'the treasury position is the live +/-20% band, not the withdrawn full-range one');
   assert.equal(FEE, 500, 'the reviewed pool is the 0.05% tier');
 });
 
