@@ -173,11 +173,18 @@ class EditionPackageTests(unittest.TestCase):
         self.assertFalse(self.out.exists())
 
     def test_default_build_is_public_and_does_not_import_runtime_state(self):
-        with patch.object(editions, "ROOT", self.source):
-            editions.main(["build", "--out", str(self.out)])
+        # Discovery imports the legacy runtime installer in other test modules.
+        # Verify this command's imports in a fresh process, as a user runs it.
+        code = ("import sys; from pathlib import Path; "
+                "sys.path.insert(0,sys.argv[1]); import extension_editions as editions; "
+                "editions.ROOT=Path(sys.argv[2]); editions.main(['build','--out',sys.argv[3]]); "
+                "assert 'reach.config' not in sys.modules; assert 'reach.cli' not in sys.modules")
+        result = subprocess.run([sys.executable, "-c", code, str(ROOT / "tools"),
+                                 str(self.source), str(self.out)], cwd=str(ROOT),
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.out / "signal-reach-public-26.9.9").exists())
         self.assertFalse((self.out / "signal-reach-admin-26.9.9").exists())
-        self.assertNotIn("reach.config", sys.modules)
 
     def test_public_launcher_install_does_not_import_or_migrate_operator_runtime(self):
         home = self.base / "launcher-extensions"

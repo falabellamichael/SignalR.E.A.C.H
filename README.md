@@ -41,6 +41,10 @@ already-configured local relay. Model editors open as compact dropdowns, with
 their existing tuning and save behavior preserved. New repos use reviewed source
 snapshots without the existing repository's Git history or local credentials.
 
+After installing Admin, open **Advanced → REACH Admin → Settings**. Each model
+starts collapsed; expand one, change a tuning value, save, and reload the page to
+check that the value persists and the default-model selection is unchanged.
+
 See [edition build, installation, exports, and trust boundaries](docs/EXTENSION_EDITIONS.md).
 The remaining endpoint/hosting instructions describe the operator runtime.
 The full runtime installer now requires `python tools/reach.py install-runtime`.
