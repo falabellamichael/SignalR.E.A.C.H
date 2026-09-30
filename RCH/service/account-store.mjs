@@ -8,9 +8,10 @@ export function createAccountStore(config, { now = Date.now, fetchImpl } = {}) {
       url: config.supabase.url,
       secretKey: config.supabase.secretKey,
       models: config.models,
+      subscription: config.subscription,
       now,
       ...(fetchImpl ? { fetchImpl } : {}),
     });
   }
-  return new AccountStore(config.database, { models: config.models, now });
+  return new AccountStore(config.database, { models: config.models, subscription: config.subscription, now });
 }

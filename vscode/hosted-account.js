@@ -5,6 +5,27 @@ const crypto = require('node:crypto');
 const SECRET = 'simplereach.hostedAccount';
 const text = (value, limit = 250) => typeof value === 'string' ? value.slice(0, limit) : '';
 const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? String(value) : null;
+function publicRequestAllowance(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return { basicActive: raw.basicActive === true, periodEndsAt: text(raw.periodEndsAt),
+    ...Object.fromEntries(['includedLimit','completed','reserved','remaining','overageUsdMicrosPerRequest'].map(key => [key, count(raw[key])])) };
+}
+function publicSubscription(raw) {
+  if (!raw || typeof raw !== 'object' || !raw.basic) return null;
+  return { basic: { id: text(raw.basic.id), includedRequests: count(raw.basic.includedRequests), priceUsdMicros: count(raw.basic.priceUsdMicros) },
+    overageUsdMicrosPerRequest: count(raw.overageUsdMicrosPerRequest), proEnabled: false };
+}
+function publicModels(models) {
+  return (Array.isArray(models) ? models : []).slice(0, 500).map(model =>
+    typeof model === 'string' ? { id: text(model), name: text(model) }
+      : { id: text(model?.id), name: text(model?.name),
+        ...(model?.access === 'requests' && model.pricing?.unit === 'request'
+          ? { access: 'requests', provider: text(model.provider), pricing: { unit: 'request', includedRequests: count(model.pricing.includedRequests), usdMicrosPerRequest: count(model.pricing.usdMicrosPerRequest) },
+            ...(model.capabilities?.outputTokenLimit === false ? { capabilities: { outputTokenLimit: false } } : {}) } : {}),
+        ...(model?.access !== 'requests' && model?.pricing && ['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion'].every(key => count(model.pricing[key]) !== null)
+          ? { provider: text(model.provider), pricing: Object.fromEntries(['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion', 'cachedInputUsdMicrosPerMillion']
+            .filter(key => model.pricing[key] != null && count(model.pricing[key]) !== null).map(key => [key, count(model.pricing[key])])) } : {}) }).filter(model => model.id);
+}
 function serviceUrl(value) {
   let url;
   try { url = new URL(String(value || '').trim()); } catch { throw new Error('Enter the hosted REACH service URL.'); }
@@ -26,10 +47,10 @@ function publicAccount(raw) {
   return {
     walletAddress: /^0x[0-9a-f]{40}$/i.test(raw.walletAddress) ? raw.walletAddress : '',
     plan: { name: text(plan.name), status: text(plan.status), expiresAt: text(plan.expiresAt) },
-    allowedModels: (Array.isArray(raw.allowedModels) ? raw.allowedModels : []).slice(0, 500).map(model =>
-      typeof model === 'string' ? { id: text(model), name: text(model) }
-        : { id: text(model?.id), name: text(model?.name) }).filter(model => model.id),
+    allowedModels: publicModels(raw.allowedModels),
+    ...(raw.requestAllowance ? { requestAllowance: publicRequestAllowance(raw.requestAllowance) } : {}),
     allowance: Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining', 'debt'].map(key => [key, count(allowance[key])])),
+    ...(raw.credit?.currency === 'USD' ? { credit: { currency: 'USD', ...Object.fromEntries(['balanceMicros','reservedMicros','debtMicros'].map(key => [key,count(raw.credit[key])])) } } : {}),
     rchBalance: { status: ['available', 'unavailable', 'unconfigured'].includes(balance.status) ? balance.status : 'unconfigured',
       decimals: balance.decimals === 18 ? 18 : null,
       balanceBaseUnits: balance.status === 'available' && balance.decimals === 18 ? count(balance.balanceBaseUnits) : null },
@@ -37,7 +58,9 @@ function publicAccount(raw) {
 }
 function publicConfig(raw) {
   return { enabled: raw?.enabled === true, redemptionEnabled: raw?.redemptionEnabled === true,
-    tokensPerRch: count(raw?.tokensPerRch), chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null };
+    tokensPerRch: count(raw?.tokensPerRch), chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null,
+    redemptionModels: publicModels(raw?.redemptionModels),
+    ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}) };
 }
 function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {
   let baseUrl = '', session = null, account = null, config = null, flow = null;

@@ -1,0 +1,229 @@
+{
+  "subscription": {
+    "basic": {
+      "id": "basic-wallet",
+      "includedRequests": 1500,
+      "priceUsdMicros": 15000000
+    },
+    "overageUsdMicrosPerRequest": 10000,
+    "proEnabled": false
+  },
+  "models": [
+    {
+      "id": "deepseek-v4.1-flash",
+      "name": "deepseek-v4.1-flash",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-deepseek-v4.1-flash"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "ox-alpha",
+      "name": "GLM 5.3 Flash",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-ox-alpha"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "name": "gemini-3.8-flash",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-gemini-3.8-flash"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "name": "gpt-5.6-luna",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-gpt-5.6-luna"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "glm-5.2",
+      "name": "glm-5.2",
+      "provider": "Code GPT",
+      "metered": false,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-glm-5.2"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "MiniMax-M3",
+      "name": "MiniMax-M3",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-MiniMax-M3"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gpt-4o",
+      "name": "gpt-4o",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-gpt-4o"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gpt-5",
+      "name": "gpt-5",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-gpt-5"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "claude-sonnet-4.6",
+      "name": "claude-sonnet-4.6",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-claude-sonnet-4.6"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "claude-opus-4.6",
+      "name": "claude-opus-4.6",
+      "provider": "Code GPT",
+      "metered": false,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-claude-opus-4.6"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "claude-opus-4.6-fast",
+      "name": "claude-opus-4.6-fast",
+      "provider": "Code GPT",
+      "metered": false,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-claude-opus-4.6-fast"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "name": "gemini-3.7-flash",
+      "provider": "Code GPT",
+      "metered": false,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-gemini-3.7-flash"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "copilot-chat",
+      "name": "copilot-chat",
+      "provider": "Copilot bridge",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "copilot-chat"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "chatgpt-chat",
+      "name": "chatgpt-chat",
+      "provider": "ChatGPT bridge",
+      "metered": false,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "chatgpt-chat"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "name": "gemini-2.5-flash",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-gemini-2.5-flash"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "gemini-chat",
+      "name": "gemini-chat",
+      "provider": "Gemini bridge",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "gemini-chat"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "space-bunny-alpha",
+      "name": "space-bunny-alpha",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "tray",
+        "model": "codegpt-eco-space-bunny-alpha"
+      },
+      "maxInputBytes": 32000
+    },
+    {
+      "id": "rch-gpt-4o-mini",
+      "name": "GPT-4o mini",
+      "provider": "Code GPT",
+      "metered": true,
+      "access": "requests",
+      "bridge": {
+        "kind": "codegpt",
+        "model": "codegpt-gpt-4o-mini"
+      },
+      "maxInputBytes": 32000
+    }
+  ]
+}

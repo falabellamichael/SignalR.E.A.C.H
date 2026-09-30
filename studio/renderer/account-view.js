@@ -21,6 +21,16 @@
       return 'US$' + (micros / 1_000_000n).toLocaleString() + '.' + fraction;
     } catch { return '—'; }
   };
+  const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? BigInt(value) : 0n;
+  const requestModel = model => model?.access === 'requests' || model?.pricing?.unit === 'request';
+  function modelPrice(model, basicActive = false) {
+    const pricing = model?.pricing;
+    if (requestModel(model)) return formatUsd(pricing?.usdMicrosPerRequest ?? 10000) + ' per completed request'
+      + (basicActive ? ' after ' + format(pricing?.includedRequests ?? 1500) + ' included Basic requests' : '');
+    return pricing ? 'Input ' + formatUsd(pricing.inputUsdMicrosPerMillion)
+      + ' / output ' + formatUsd(pricing.outputUsdMicrosPerMillion) + ' per 1M tokens'
+      + (pricing.cachedInputUsdMicrosPerMillion != null ? ' / cached input ' + formatUsd(pricing.cachedInputUsdMicrosPerMillion) : '') : '';
+  }
   function derive(state = {}) {
     const connected = state.status === 'connected';
     const connecting = state.status === 'connecting';
@@ -29,7 +39,15 @@
     // The service deducts reservations before publishing balanceMicros.
     const availableMicros = credit && Number(credit.debtMicros || 0) === 0
       ? BigInt(/^(0|[1-9]\d*)$/.test(String(credit.balanceMicros)) ? credit.balanceMicros : 0) : 0n;
-    const usable = connected && account?.allowedModels?.length > 0 && (Number(account?.allowance?.totalRemaining) > 0 || availableMicros > 0n);
+    const allowed = account?.allowedModels || [];
+    const requests = account?.requestAllowance;
+    const requestMode = !!requests || (allowed.length ? allowed : state.config?.redemptionModels || []).some(requestModel);
+    const basicActive = connected && requests?.basicActive === true;
+    const remainingRequests = basicActive ? count(requests.remaining) : 0n;
+    const overageMicros = count(requests?.overageUsdMicrosPerRequest) || 10000n;
+    const usable = connected && state.secureStorageAvailable !== false && allowed.some(entry => requestModel(entry)
+      ? remainingRequests > 0n || availableMicros >= overageMicros
+      : Number(account?.allowance?.totalRemaining) > 0 || availableMicros > 0n);
     const holdings = connected ? account?.rchBalance : null;
     const balanceKnown = holdings?.status === 'available' && holdings.decimals === 18;
     const messages = {
@@ -49,7 +67,8 @@
       canRedeem: connected && state.config?.redemptionEnabled === true,
       redemptionMessage: !connected ? 'Connect your wallet to check whether redemption is enabled.'
         : state.config?.redemptionEnabled !== true ? 'RCH redemption is not enabled on this service.' : '',
-      plan: account?.plan?.status === 'active' ? account.plan.name
+      plan: requestMode ? connected ? basicActive ? 'Basic' : 'Wallet pay as you go' : 'No account connected'
+        : account?.plan?.status === 'active' ? account.plan.name
         : connected && (Number(account?.allowance?.prepaidRemaining) > 0 || availableMicros > 0n) ? 'RCH prepaid access'
           : connected ? 'No active subscription' : 'No account connected',
       walletBalance: balanceKnown ? formatRch(holdings.balanceBaseUnits) : '—',
@@ -57,10 +76,20 @@
         : balanceKnown ? 'Held in your wallet on ' + (holdings.chainId === 1 ? 'Ethereum Mainnet' : 'chain ' + holdings.chainId) + '. Redeem RCH separately to add AI usage credit.'
           : holdings?.status === 'unavailable' ? 'RCH balance is temporarily unavailable. Refresh to try again.'
             : 'RCH balance is not configured on this service.',
-      counts: Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining'].map(key => [key, account ? format(account.allowance?.[key]) : '—'])),
+      requestMode,
+      requestAllowance: requestMode ? { basicActive, includedLimit: basicActive ? format(requests?.includedLimit) : '0',
+        remaining: connected ? format(remainingRequests) : '—', completed: connected ? format(requests?.completed ?? 0) : '—',
+        reserved: connected ? format(requests?.reserved ?? 0) : '—', periodEndsAt: basicActive ? requests?.periodEndsAt : null,
+        overagePrice: formatUsd(overageMicros) } : null,
+      usageSummary: requestMode ? (basicActive ? format(remainingRequests) + ' included completed requests remaining · '
+        : '') + formatUsd(overageMicros) + (basicActive ? ' overage' : '') + ' per completed request' : '',
+      counts: requestMode ? { includedRemaining: connected ? format(remainingRequests) : '—',
+        prepaidRemaining: connected ? format(requests?.completed ?? 0) : '—', reserved: connected ? format(requests?.reserved ?? 0) : '—',
+        totalRemaining: formatUsd(overageMicros) + ' / request' }
+        : Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining'].map(key => [key, account ? format(account.allowance?.[key]) : '—'])),
       usdCredit: credit ? { available: formatUsd(availableMicros < 0n ? 0 : availableMicros), balance: formatUsd(credit.balanceMicros),
         reserved: formatUsd(credit.reservedMicros), debt: formatUsd(credit.debtMicros) } : null,
     };
   }
-  return { derive, format, formatRch, formatUsd };
+  return { derive, format, formatRch, formatUsd, modelPrice };
 });

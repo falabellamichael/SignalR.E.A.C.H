@@ -1,6 +1,6 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { getAddress } from 'ethers';
-import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost } from './store.mjs';
+import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay } from './store.mjs';
 
 const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
@@ -24,6 +24,7 @@ const ERRORS = {
   redemption_budget_exhausted: [402, 'The market redemption credit budget has been reached.'],
   import_target_not_empty: [409, 'The shared account store must be empty before importing a snapshot.'],
   invalid_import: [400, 'The account snapshot is invalid. No records were imported.'],
+  invalid_replay: [400, 'A completed request requires a valid bounded replay record.'],
 };
 const SNAPSHOT_TABLES = ['accounts', 'flows', 'challenges', 'sessions', 'grants', 'reservations', 'redemptions'];
 const unavailable = () => new AccountError(503, 'account_store_unavailable', 'The shared account store is temporarily unavailable.');
@@ -32,7 +33,7 @@ const unavailable = () => new AccountError(503, 'account_store_unavailable', 'Th
 // account service; they never receive a Supabase credential or mutate balances.
 export class SupabaseAccountStore {
   #secretKey;
-  constructor({ url, secretKey, models = [], now = () => Date.now(), fetchImpl = fetch, timeoutMs = 15000 } = {}) {
+  constructor({ url, secretKey, models = [], subscription, now = () => Date.now(), fetchImpl = fetch, timeoutMs = 15000 } = {}) {
     let endpoint;
     try { endpoint = new URL(url); } catch { throw new Error('Configure a valid Supabase project URL.'); }
     if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/'
@@ -48,12 +49,13 @@ export class SupabaseAccountStore {
     this.#secretKey = secretKey;
     this.legacyKey = legacy;
     this.models = models;
+    this.subscription = requestBillingPolicy(subscription);
     this.now = now;
     this.fetchImpl = fetchImpl;
     this.timeoutMs = timeoutMs;
   }
   async close() {}
-  async _rpc(operation, payload = {}) {
+  async _rpc(operation, payload = {}, endpoint = this.endpoint) {
     const now = this.now();
     if (!Number.isSafeInteger(now) || now < 0) throw unavailable();
     try {
@@ -61,7 +63,7 @@ export class SupabaseAccountStore {
       if (this.legacyKey) headers.authorization = `Bearer ${this.#secretKey}`;
       // Never retry an ambiguous mutation automatically: the server may have
       // committed before the connection failed. Stable IDs allow reconciliation.
-      const response = await this.fetchImpl(this.endpoint, { method: 'POST', headers, redirect: 'error',
+      const response = await this.fetchImpl(endpoint, { method: 'POST', headers, redirect: 'error',
         signal: AbortSignal.timeout(this.timeoutMs), body: JSON.stringify({ p_operation: operation, p_payload: { ...payload, now } }) });
       let data;
       try { data = await response.json(); } catch { throw unavailable(); }
@@ -79,14 +81,28 @@ export class SupabaseAccountStore {
       throw unavailable();
     }
   }
-  _view(snapshot) {
+  _requestRpc(operation, payload = {}) {
+    return this._rpc(operation, { ...payload, subscription: this.subscription }, this.endpoint.replace(/reach_account_store$/, 'reach_request_store'));
+  }
+  async _view(snapshot) {
     const a = snapshot.account, active = a.plan_expires > this.now(), allowed = JSON.parse(a.models);
+    let request = null;
+    if (this.subscription) try { request = await this._requestRpc('request_allowance', { accountId: a.id }); }
+    catch {
+      // Authentication exchange already committed its single-use proof. Deliver
+      // the session, but disable model access until the quota read recovers.
+      request = { unavailable: true, reservedUsdMicros: 0, allowance: { status: 'unavailable',
+        includedLimit: 0, completed: 0, reserved: 0, remaining: 0, periodEndsAt: null,
+        overageUsdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest, basicActive: false } };
+    }
     return { id: a.id, walletAddress: a.wallet,
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
-      allowedModels: this.models.filter(m => m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
+      allowedModels: this.models.filter(m => request?.unavailable ? false : m.access === 'requests' ? requestModel(m) && !!this.subscription && (request.allowance.basicActive || a.usd_prepaid > 0)
+        : m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(requestModel(m) ? { access: 'requests', pricing: { unit: 'request', includedRequests: this.subscription.basic.includedRequests, usdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest }, capabilities: { outputTokenLimit: false } } : modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
       allowance: { includedRemaining: active ? a.included : 0, prepaidRemaining: a.prepaid, reserved: snapshot.reserved,
         totalRemaining: a.debt === 0 ? (active ? a.included : 0) + a.prepaid : 0, debt: a.debt },
-      credit: { currency: 'USD', balanceMicros: a.usd_prepaid ?? 0, reservedMicros: snapshot.reservedUsdMicros ?? 0, debtMicros: a.usd_debt ?? 0 } };
+      credit: { currency: 'USD', balanceMicros: a.usd_prepaid ?? 0, reservedMicros: (snapshot.reservedUsdMicros ?? 0) + (request?.reservedUsdMicros ?? 0), debtMicros: a.usd_debt ?? 0 },
+      ...(request ? { requestAllowance: request.allowance } : {}) };
   }
   async pruneExpiredAuthentication() { await this._rpc('prune_auth'); }
   async importSnapshot(snapshot) {
@@ -104,7 +120,7 @@ export class SupabaseAccountStore {
   async account(accountId) { return this._view(await this._rpc('account', { accountId })); }
   async grantPlan({ wallet, grantId, planId, name, models, tokens, expiresAt }) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId || '') || !planId || typeof name !== 'string' || !safeCount(tokens)
-      || !Array.isArray(models) || !models.length || !models.every(m => this.models.some(x => x.id === m && x.metered === true))
+      || !Array.isArray(models) || !models.length || !models.every(m => this.models.some(x => x.id === m && (x.metered === true || this.subscription && requestModel(x))))
       || !Number.isSafeInteger(expiresAt) || expiresAt <= this.now()) fail(400, 'invalid_grant', ERRORS.invalid_grant[1]);
     wallet = getAddress(wallet);
     const payload = JSON.stringify({ wallet, planId, name, models: [...models].sort(), tokens, expiresAt });
@@ -137,7 +153,7 @@ export class SupabaseAccountStore {
       || !equal(f.state_hash, digest(state)) || !equal(f.challenge, createHash('sha256').update(verifier).digest('base64url'))) fail(401, 'invalid_proof', 'The sign-in proof does not match.');
     const token = 'rch_session_' + id();
     const result = await this._rpc('exchange', { flowId, stateHash: digest(state), challenge: createHash('sha256').update(verifier).digest('base64url'), sessionHash: digest(token) });
-    return result ? { accessToken: token, expiresAt: result.expiresAt, account: this._view(result.snapshot) } : null;
+    return result ? { accessToken: token, expiresAt: result.expiresAt, account: await this._view(result.snapshot) } : null;
   }
   async authenticate(token) {
     if (typeof token !== 'string' || !/^rch_session_[a-f0-9]{64}$/.test(token)) fail(401, 'session_required', 'Connect your wallet to REACH.');
@@ -161,9 +177,22 @@ export class SupabaseAccountStore {
     if (amount === 0 || typeof requestId !== 'string' || !requestId.length || requestId.length > 128) fail(400, 'invalid_reservation', 'Invalid request reservation.');
     return this._rpc('reserve_usd', { accountId, requestId, model, fingerprint, amount, pricing, limits, reservationId: id(), modelQualified: true });
   }
+  async requestAllowance(accountId) { return (await this._requestRpc('request_allowance', { accountId })).allowance; }
+  async reserveRequest(accountId, requestId, model, fingerprint) {
+    if (!this.subscription || !this.models.some(m => m.id === model && requestModel(m))) fail(403, 'model_not_entitled', 'This model is not available for request access.');
+    if (typeof requestId !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId) || typeof fingerprint !== 'string' || !fingerprint.length || fingerprint.length > 128) fail(400, 'invalid_reservation', 'Invalid request reservation.');
+    return this._requestRpc('reserve_request', { accountId, requestId, model, fingerprint, reservationId: id(), modelQualified: true });
+  }
+  async settleRequest(reservationId, responseRecord) { await this._requestRpc('settle_request', { reservationId, replay: requestReplay(responseRecord) }); }
+  async releaseRequest(reservationId) { await this._requestRpc('release_request', { reservationId }); }
+  async markRequestUncertain(reservationId, reason = 'completion_unknown') { await this._requestRpc('mark_request_uncertain', { reservationId, reason: String(reason).slice(0, 200) }); }
   async markUncertain(reservationId, reason = 'usage_unavailable') { await this._rpc('mark_uncertain', { reservationId, reason: String(reason).slice(0, 200) }); }
   async release(reservationId, reason = 'not_dispatched') { await this._rpc('release', { reservationId, reason }); }
-  async unsettledReservations(accountId) { return this._rpc('unsettled_reservations', { accountId: accountId || null }); }
+  async unsettledReservations(accountId) {
+    const legacy = await this._rpc('unsettled_reservations', { accountId: accountId || null });
+    const requests = this.subscription ? await this._requestRpc('unsettled_requests', { accountId: accountId || null }) : [];
+    return [...legacy, ...requests].sort((a, b) => a.created - b.created);
+  }
   async createRedemption(accountId, amount, usageTokens) {
     if (!safeCount(usageTokens) || usageTokens === 0) fail(400, 'invalid_redemption', 'Invalid usage conversion.');
     const redemptionId = '0x' + id(), ticket = id();

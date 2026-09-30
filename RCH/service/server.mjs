@@ -56,7 +56,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   let ownsStore=false,ownsProvider=false;
   if(!store) { store=createAccountStore(config,{now});ownsStore=true; }
   if(!provider&&config.authRpcUrl) { const request=new FetchRequest(config.authRpcUrl);request.timeout=15000;provider=new JsonRpcProvider(request);ownsProvider=true; }
-  const gateway=createModelGateway({store,models:config.models,upstreamUrl:config.upstreamUrl,upstreamKey:config.upstreamKey,fetchImpl});
+  const gateway=createModelGateway({store,models:config.models,subscription:config.subscription,upstreamUrl:config.upstreamUrl,upstreamKey:config.upstreamKey,fetchImpl});
   const redemption=createRedemptionService({store,config,provider:redemptionProvider});
   const balances=createTokenBalanceReader({config,provider:balanceProvider});
   const buckets=new Map();
@@ -73,7 +73,8 @@ export function createAccountService({config,store,provider,redemptionProvider,b
     if(++previous.count>180)fail(429,'rate_limit','Too many requests. Please wait one minute.');
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&m.pricing).map(({id,name,provider,pricing})=>({id,name,provider,pricing})),loginMethod:'ethereum-browser-wallet'});
+  const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:{outputTokenLimit:false},pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false}}:{}),loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
     return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };
