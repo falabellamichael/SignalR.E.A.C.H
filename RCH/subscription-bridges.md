@@ -47,6 +47,17 @@ tools configured inside a Code GPT agent are controlled by that agent, not by
 this text interface. The existing shim can retry a provider request internally.
 Provider account limits and availability remain external constraints.
 
+The Code GPT agent shim authenticates to Code GPT's API using the existing
+private host credential. The agent list confirms the mapped records, but does
+not expose authoritative tool attachments or provider credential settings.
+Those properties remain unverified. Code GPT documents API agent usage
+separately from interactive Economy usage and supports both BYOK and its own
+credits. The customer request price and allowance do not cap that host-side
+billing or establish permission to share an interactive subscription.
+See [API plans](https://developers.codegpt.co/what-does-the-api-plan-include),
+[provider keys](https://www.codegpt.co/docs/api-keys), and
+[Economy usage](https://www.codegpt.co/pricing).
+
 ## Accounting and recovery
 
 Apply `supabase/migrations/20260930144634_rch_request_subscription_ledger.sql`
@@ -81,7 +92,7 @@ settlement for review; legacy token-usage settlement is not request settlement.
 Run the request billing, gateway, configuration, and account UI regressions:
 
 ```text
-node --test RCH/test/request-billing.test.mjs RCH/test/model-gateway-requests.test.mjs RCH/test/model-gateway.test.mjs RCH/test/subscription-bridge-config.test.mjs tests/account_request_ui.test.cjs studio/test/hosted-account.test.cjs tests/vscode_hosted_account.test.cjs
+node --test RCH/test/request-billing.test.mjs RCH/test/model-gateway-requests.test.mjs RCH/test/model-gateway.test.mjs RCH/test/subscription-bridge-config.test.mjs RCH/test/subscription-account-ui.test.mjs RCH/test/supabase-ledger.test.mjs tests/account_request_ui.test.cjs studio/test/hosted-account.test.cjs tests/vscode_hosted_account.test.cjs
 ```
 
 These tests use SQLite, local PostgreSQL via PGlite, and controlled bridge

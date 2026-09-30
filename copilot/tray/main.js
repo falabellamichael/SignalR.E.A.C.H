@@ -109,7 +109,7 @@ const REPLY_STOP_MARKERS = [
 
 // ChatGPT DOM selectors
 const CHATGPT_COMPOSER_SELECTOR =
-    '#prompt-textarea, div[contenteditable="true"][id="prompt-textarea"], textarea[placeholder*="Message"]';
+    '#prompt-textarea, div[contenteditable="true"][id="prompt-textarea"], textarea[placeholder*="Message"], [contenteditable="true"][role="textbox"][aria-label="Ask ChatGPT"]';
 const CHATGPT_SEND_SELECTOR =
     'button[data-testid="send-button"], button[aria-label="Send prompt"], form button[type="submit"]';
 
@@ -1681,7 +1681,7 @@ async function codegptSendRequest(text, signal, engine, label, onDelta, onReason
 // Extract authored text blocks, preserving code fences and language labels.
 function chatgptReplyText(root) {
     try {
-        const selector = 'p, h1, h2, h3, h4, h5, h6, pre, ul, ol, blockquote, table';
+        const selector = 'p, h1, h2, h3, h4, h5, h6, pre, code, ul, ol, blockquote, table';
         const controls = 'button, input, select, textarea, svg, iframe, [role="button"], [role="toolbar"], [aria-hidden="true"]';
         const widget = '[data-testid*="weather"], [data-testid*="widget"], [role="application"]';
         const blocks = [...root.querySelectorAll(selector)].filter(el => {
@@ -1698,8 +1698,8 @@ function chatgptReplyText(root) {
                 if (/^https?:\/\//i.test(href) && label)
                     link.replaceWith('[' + label.replace(/^\[|\]$/g, '') + '](' + href + ')');
             });
-            if (el.tagName === 'PRE') {
-                const code = copy.querySelector('code');
+            if (el.tagName === 'PRE' || el.tagName === 'CODE') {
+                const code = el.tagName === 'CODE' ? copy : copy.querySelector('code');
                 const languageClass = code && (code.className || '').match(/(?:^|\s)language-([\w+-]+)/);
                 let language = languageClass ? languageClass[1] :
                     ((code && code.getAttribute('data-language')) || copy.getAttribute('data-language') || '');
@@ -1716,8 +1716,12 @@ function chatgptReplyText(root) {
             return (copy.innerText || copy.textContent || '').trim();
         }).filter(Boolean);
         if (parts.length) return parts.join('\n\n');
+        if (root.closest(widget)) return '';
         if (!root.querySelector(controls + ', ' + widget)) return (root.innerText || root.textContent || '').trim();
-        return 'ChatGPT returned an interactive card without a text answer. Ask for a text-only summary.';
+        const copy = root.cloneNode(true);
+        copy.querySelectorAll(controls + ', ' + widget).forEach(node => node.remove());
+        copy.querySelectorAll('br').forEach(node => node.replaceWith('\n'));
+        return (copy.innerText || copy.textContent || '').trim();
     } catch (_) {
         return (root.innerText || root.textContent || '').trim();
     }
@@ -1739,13 +1743,13 @@ const CHATGPT_SNAPSHOT_JS = `(() => {
             // by the actual answer. The first markdown block is often that
             // summary; take the last visible answer block outside thinking UI.
             const thinking = '[data-testid*="thought"], [data-testid*="reasoning"], [data-testid*="thinking"], details';
-            const blocks = [...last.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"], .whitespace-pre-wrap')]
+            const blocks = [...last.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"], [class*="MarkdownRoot-"], .whitespace-pre-wrap')]
                 .filter(el => vis(el) && !el.closest(thinking));
             const answer = blocks[blocks.length - 1];
             text = answer ? (${chatgptReplyText.toString()})(answer)
                 : (last.querySelector(thinking) ? '' : (${chatgptReplyText.toString()})(last));
         } else {
-            const mds = [...document.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"]')]
+            const mds = [...document.querySelectorAll('.markdown, [class*="markdown"], .prose, [class*="prose"], [class*="MarkdownRoot-"]')]
                 .filter(el => vis(el) && !el.closest('[data-testid*="thought"], [data-testid*="reasoning"], [data-testid*="thinking"], details'));
             count = mds.length;
             if (mds.length) text = (${chatgptReplyText.toString()})(mds[mds.length - 1]);

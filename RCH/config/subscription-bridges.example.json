@@ -169,7 +169,7 @@
       "id": "chatgpt-chat",
       "name": "chatgpt-chat",
       "provider": "ChatGPT bridge",
-      "metered": false,
+      "metered": true,
       "access": "requests",
       "bridge": {
         "kind": "tray",
