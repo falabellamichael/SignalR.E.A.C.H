@@ -69,10 +69,11 @@ router=r'''
 text=(ROOT/'index.html').read_text(encoding='utf-8')
 text=text.replace('<link rel="stylesheet" href="assets/styles.css">','<style>'+ (ROOT/'assets/styles.css').read_text(encoding='utf-8')+'</style>')
 text=text.replace('<script src="assets/theme.js"></script>','<script>'+ (ROOT/'assets/theme.js').read_text(encoding='utf-8')+'</script>')
-text=text.replace('<script src="assets/data.js" defer></script>','').replace('<script src="assets/app.js" defer></script>','')
+for name in ['data','chat-engine','chat-ui','app']:
+ text=text.replace(f'<script src="assets/{name}.js" defer></script>','')
 svg=(ROOT/'assets/favicon.svg').read_text(encoding='utf-8')
 text=text.replace('href="assets/favicon.svg"','href="data:image/svg+xml,'+quote(svg,safe='')+'"')
-script='\n'+(ROOT/'assets/data.js').read_text(encoding='utf-8')+'\n'+router+'\n'+(ROOT/'assets/app.js').read_text(encoding='utf-8')
+script='\n'+(ROOT/'assets/data.js').read_text(encoding='utf-8')+'\n'+(ROOT/'assets/chat-engine.js').read_text(encoding='utf-8')+'\n'+(ROOT/'assets/chat-ui.js').read_text(encoding='utf-8')+'\n'+router+'\n'+(ROOT/'assets/app.js').read_text(encoding='utf-8')
 text=text.replace('</body>','<script>'+script+'</script></body>')
 out.write_text(text,encoding='utf-8')
 print(f'Bundled six pages into {out} ({out.stat().st_size:,} bytes)')

@@ -1,0 +1,548 @@
+
+> signalreach-website@1.0.0 test
+> node --test tests/static.test.mjs tests/chat-engine.test.mjs
+
+TAP version 13
+# Subtest: catalog: What is REACH? routes and has valid links/follow-ups
+ok 1 - catalog: What is REACH? routes and has valid links/follow-ups
+  ---
+  duration_ms: 3.478919
+  type: 'test'
+  ...
+# Subtest: catalog: Get started routes and has valid links/follow-ups
+ok 2 - catalog: Get started routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.730938
+  type: 'test'
+  ...
+# Subtest: catalog: REACH Studio routes and has valid links/follow-ups
+ok 3 - catalog: REACH Studio routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.483162
+  type: 'test'
+  ...
+# Subtest: catalog: Relay and API routes and has valid links/follow-ups
+ok 4 - catalog: Relay and API routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.451927
+  type: 'test'
+  ...
+# Subtest: catalog: VS Code extension routes and has valid links/follow-ups
+ok 5 - catalog: VS Code extension routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.582309
+  type: 'test'
+  ...
+# Subtest: catalog: Tray bridge routes and has valid links/follow-ups
+ok 6 - catalog: Tray bridge routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.508299
+  type: 'test'
+  ...
+# Subtest: catalog: Connect a model routes and has valid links/follow-ups
+ok 7 - catalog: Connect a model routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.612743
+  type: 'test'
+  ...
+# Subtest: catalog: Local models routes and has valid links/follow-ups
+ok 8 - catalog: Local models routes and has valid links/follow-ups
+  ---
+  duration_ms: 1.209633
+  type: 'test'
+  ...
+# Subtest: catalog: Model selection routes and has valid links/follow-ups
+ok 9 - catalog: Model selection routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.638792
+  type: 'test'
+  ...
+# Subtest: catalog: API keys routes and has valid links/follow-ups
+ok 10 - catalog: API keys routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.592584
+  type: 'test'
+  ...
+# Subtest: catalog: Streaming responses routes and has valid links/follow-ups
+ok 11 - catalog: Streaming responses routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.650379
+  type: 'test'
+  ...
+# Subtest: catalog: Integrations routes and has valid links/follow-ups
+ok 12 - catalog: Integrations routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.469662
+  type: 'test'
+  ...
+# Subtest: catalog: Project context routes and has valid links/follow-ups
+ok 13 - catalog: Project context routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.544904
+  type: 'test'
+  ...
+# Subtest: catalog: Images and attachments routes and has valid links/follow-ups
+ok 14 - catalog: Images and attachments routes and has valid links/follow-ups
+  ---
+  duration_ms: 1.070108
+  type: 'test'
+  ...
+# Subtest: catalog: Agent teams routes and has valid links/follow-ups
+ok 15 - catalog: Agent teams routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.344929
+  type: 'test'
+  ...
+# Subtest: catalog: Custom personas routes and has valid links/follow-ups
+ok 16 - catalog: Custom personas routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.409824
+  type: 'test'
+  ...
+# Subtest: catalog: Plan → build → review routes and has valid links/follow-ups
+ok 17 - catalog: Plan → build → review routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.401101
+  type: 'test'
+  ...
+# Subtest: catalog: Build a website routes and has valid links/follow-ups
+ok 18 - catalog: Build a website routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.372119
+  type: 'test'
+  ...
+# Subtest: catalog: React starter routes and has valid links/follow-ups
+ok 19 - catalog: React starter routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.288916
+  type: 'test'
+  ...
+# Subtest: catalog: CSS and layouts routes and has valid links/follow-ups
+ok 20 - catalog: CSS and layouts routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.211743
+  type: 'test'
+  ...
+# Subtest: catalog: Mobile and responsive routes and has valid links/follow-ups
+ok 21 - catalog: Mobile and responsive routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.587947
+  type: 'test'
+  ...
+# Subtest: catalog: Animation and motion routes and has valid links/follow-ups
+ok 22 - catalog: Animation and motion routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.31157
+  type: 'test'
+  ...
+# Subtest: catalog: Accessibility routes and has valid links/follow-ups
+ok 23 - catalog: Accessibility routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.801952
+  type: 'test'
+  ...
+# Subtest: catalog: JavaScript patterns routes and has valid links/follow-ups
+ok 24 - catalog: JavaScript patterns routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.297239
+  type: 'test'
+  ...
+# Subtest: catalog: Debug an error routes and has valid links/follow-ups
+ok 25 - catalog: Debug an error routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.497584
+  type: 'test'
+  ...
+# Subtest: catalog: Tests and QA routes and has valid links/follow-ups
+ok 26 - catalog: Tests and QA routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.234205
+  type: 'test'
+  ...
+# Subtest: catalog: Refactor safely routes and has valid links/follow-ups
+ok 27 - catalog: Refactor safely routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.508149
+  type: 'test'
+  ...
+# Subtest: catalog: Performance routes and has valid links/follow-ups
+ok 28 - catalog: Performance routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.832618
+  type: 'test'
+  ...
+# Subtest: catalog: Documentation routes and has valid links/follow-ups
+ok 29 - catalog: Documentation routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.226685
+  type: 'test'
+  ...
+# Subtest: catalog: Writing and copy routes and has valid links/follow-ups
+ok 30 - catalog: Writing and copy routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.322947
+  type: 'test'
+  ...
+# Subtest: catalog: Git and GitHub routes and has valid links/follow-ups
+ok 31 - catalog: Git and GitHub routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.223449
+  type: 'test'
+  ...
+# Subtest: catalog: Publish the website routes and has valid links/follow-ups
+ok 32 - catalog: Publish the website routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.385429
+  type: 'test'
+  ...
+# Subtest: catalog: 401 / 403 access errors routes and has valid links/follow-ups
+ok 33 - catalog: 401 / 403 access errors routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.290318
+  type: 'test'
+  ...
+# Subtest: catalog: 404 / missing model routes and has valid links/follow-ups
+ok 34 - catalog: 404 / missing model routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.244661
+  type: 'test'
+  ...
+# Subtest: catalog: 429 / usage limits routes and has valid links/follow-ups
+ok 35 - catalog: 429 / usage limits routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.532195
+  type: 'test'
+  ...
+# Subtest: catalog: Connection troubleshooting routes and has valid links/follow-ups
+ok 36 - catalog: Connection troubleshooting routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.929991
+  type: 'test'
+  ...
+# Subtest: catalog: Browser / CORS errors routes and has valid links/follow-ups
+ok 37 - catalog: Browser / CORS errors routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.330076
+  type: 'test'
+  ...
+# Subtest: catalog: Missing project context routes and has valid links/follow-ups
+ok 38 - catalog: Missing project context routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.504393
+  type: 'test'
+  ...
+# Subtest: catalog: Privacy and security routes and has valid links/follow-ups
+ok 39 - catalog: Privacy and security routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.467519
+  type: 'test'
+  ...
+# Subtest: catalog: Pricing and availability routes and has valid links/follow-ups
+ok 40 - catalog: Pricing and availability routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.31142
+  type: 'test'
+  ...
+# Subtest: catalog: Light and dark themes routes and has valid links/follow-ups
+ok 41 - catalog: Light and dark themes routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.586104
+  type: 'test'
+  ...
+# Subtest: catalog: Chat commands routes and has valid links/follow-ups
+ok 42 - catalog: Chat commands routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.606384
+  type: 'test'
+  ...
+# Subtest: catalog: What this demo can do routes and has valid links/follow-ups
+ok 43 - catalog: What this demo can do routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.279082
+  type: 'test'
+  ...
+# Subtest: catalog: Help with the project routes and has valid links/follow-ups
+ok 44 - catalog: Help with the project routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.376836
+  type: 'test'
+  ...
+# Subtest: catalog: Hello, REACH routes and has valid links/follow-ups
+ok 45 - catalog: Hello, REACH routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.48145
+  type: 'test'
+  ...
+# Subtest: catalog: Thanks routes and has valid links/follow-ups
+ok 46 - catalog: Thanks routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.40661
+  type: 'test'
+  ...
+# Subtest: catalog: Goodbye routes and has valid links/follow-ups
+ok 47 - catalog: Goodbye routes and has valid links/follow-ups
+  ---
+  duration_ms: 0.254175
+  type: 'test'
+  ...
+# Subtest: intent: What can REACH do?
+ok 48 - intent: What can REACH do?
+  ---
+  duration_ms: 0.805759
+  type: 'test'
+  ...
+# Subtest: intent: PLEASE HELP ME BUILD A RESPONSIVE WEBSITE!
+ok 49 - intent: PLEASE HELP ME BUILD A RESPONSIVE WEBSITE!
+  ---
+  duration_ms: 0.905536
+  type: 'test'
+  ...
+# Subtest: intent: I want to debug my React component
+ok 50 - intent: I want to debug my React component
+  ---
+  duration_ms: 0.748494
+  type: 'test'
+  ...
+# Subtest: intent: conect a modle
+ok 51 - intent: conect a modle
+  ---
+  duration_ms: 0.545764
+  type: 'test'
+  ...
+# Subtest: intent: accesibility
+ok 52 - intent: accesibility
+  ---
+  duration_ms: 0.334363
+  type: 'test'
+  ...
+# Subtest: intent: instalation
+ok 53 - intent: instalation
+  ---
+  duration_ms: 0.280825
+  type: 'test'
+  ...
+# Subtest: intent: streamng
+ok 54 - intent: streamng
+  ---
+  duration_ms: 0.451005
+  type: 'test'
+  ...
+# Subtest: intent: set up Ollama
+ok 55 - intent: set up Ollama
+  ---
+  duration_ms: 0.353972
+  type: 'test'
+  ...
+# Subtest: intent: can I use LM Studio?
+ok 56 - intent: can I use LM Studio?
+  ---
+  duration_ms: 0.666773
+  type: 'test'
+  ...
+# Subtest: intent: My API returns 401
+ok 57 - intent: My API returns 401
+  ---
+  duration_ms: 0.421952
+  type: 'test'
+  ...
+# Subtest: intent: My endpoint won’t connect
+ok 58 - intent: My endpoint won’t connect
+  ---
+  duration_ms: 0.589149
+  type: 'test'
+  ...
+# Subtest: intent: unknown model ID returns 404
+ok 59 - intent: unknown model ID returns 404
+  ---
+  duration_ms: 0.445347
+  type: 'test'
+  ...
+# Subtest: intent: What does a 429 error mean?
+ok 60 - intent: What does a 429 error mean?
+  ---
+  duration_ms: 0.631611
+  type: 'test'
+  ...
+# Subtest: intent: CORS error on localhost
+ok 61 - intent: CORS error on localhost
+  ---
+  duration_ms: 0.380401
+  type: 'test'
+  ...
+# Subtest: intent: fix the 401 error
+ok 62 - intent: fix the 401 error
+  ---
+  duration_ms: 0.464275
+  type: 'test'
+  ...
+# Subtest: intent: offline model
+ok 63 - intent: offline model
+  ---
+  duration_ms: 0.347772
+  type: 'test'
+  ...
+# Subtest: intent: offline demo
+ok 64 - intent: offline demo
+  ---
+  duration_ms: 0.308235
+  type: 'test'
+  ...
+# Subtest: intent: How do I run tests?
+ok 65 - intent: How do I run tests?
+  ---
+  duration_ms: 0.819168
+  type: 'test'
+  ...
+# Subtest: intent: Change the colour palette
+ok 66 - intent: Change the colour palette
+  ---
+  duration_ms: 0.642838
+  type: 'test'
+  ...
+# Subtest: intent: thèmes
+ok 67 - intent: thèmes
+  ---
+  duration_ms: 0.293693
+  type: 'test'
+  ...
+# Subtest: intent: hello there
+ok 68 - intent: hello there
+  ---
+  duration_ms: 0.379289
+  type: 'test'
+  ...
+# Subtest: intent: <img src=x onerror=alert(1)> Tell me about themes
+ok 69 - intent: <img src=x onerror=alert(1)> Tell me about themes
+  ---
+  duration_ms: 0.789344
+  type: 'test'
+  ...
+# Subtest: intent: this is unrelated
+ok 70 - intent: this is unrelated
+  ---
+  duration_ms: 0.419308
+  type: 'test'
+  ...
+# Subtest: intent: What is the capital of France?
+ok 71 - intent: What is the capital of France?
+  ---
+  duration_ms: 0.768683
+  type: 'test'
+  ...
+# Subtest: intent: tell me a joke
+ok 72 - intent: tell me a joke
+  ---
+  duration_ms: 0.48169
+  type: 'test'
+  ...
+# Subtest: intent: what is the weather today
+ok 73 - intent: what is the weather today
+  ---
+  duration_ms: 0.5086
+  type: 'test'
+  ...
+# Subtest: intent: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ok 74 - intent: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  ---
+  duration_ms: 0.472156
+  type: 'test'
+  ...
+# Subtest: examples and detailed phrasing select response style
+ok 75 - examples and detailed phrasing select response style
+  ---
+  duration_ms: 1.30209
+  type: 'test'
+  ...
+# Subtest: context follows the selected topic without changing it accidentally
+ok 76 - context follows the selected topic without changing it accidentally
+  ---
+  duration_ms: 0.431807
+  type: 'test'
+  ...
+# Subtest: unmatched questions are honest and do not overwrite the previous topic
+ok 77 - unmatched questions are honest and do not overwrite the previous topic
+  ---
+  duration_ms: 0.743205
+  type: 'test'
+  ...
+# Subtest: repeat answers add detail rather than giving only the same summary
+ok 78 - repeat answers add detail rather than giving only the same summary
+  ---
+  duration_ms: 0.738208
+  type: 'test'
+  ...
+# Subtest: each session is isolated and reset clears follow-up state
+ok 79 - each session is isolated and reset clears follow-up state
+  ---
+  duration_ms: 0.61733
+  type: 'test'
+  ...
+# Subtest: commands have explicit behavior
+ok 80 - commands have explicit behavior
+  ---
+  duration_ms: 0.228637
+  type: 'test'
+  ...
+# Subtest: empty, invalid settings, and oversized input remain safe
+ok 81 - empty, invalid settings, and oversized input remain safe
+  ---
+  duration_ms: 0.633153
+  type: 'test'
+  ...
+# Subtest: catalog identifiers are unique and the keyword count is accurate
+ok 82 - catalog identifiers are unique and the keyword count is accurate
+  ---
+  duration_ms: 0.100938
+  type: 'test'
+  ...
+# Subtest: index: structure, unique IDs, and local links
+ok 83 - index: structure, unique IDs, and local links
+  ---
+  duration_ms: 21.546381
+  type: 'test'
+  ...
+# Subtest: platform: structure, unique IDs, and local links
+ok 84 - platform: structure, unique IDs, and local links
+  ---
+  duration_ms: 11.455032
+  type: 'test'
+  ...
+# Subtest: integrations: structure, unique IDs, and local links
+ok 85 - integrations: structure, unique IDs, and local links
+  ---
+  duration_ms: 2.176549
+  type: 'test'
+  ...
+# Subtest: docs: structure, unique IDs, and local links
+ok 86 - docs: structure, unique IDs, and local links
+  ---
+  duration_ms: 5.580638
+  type: 'test'
+  ...
+# Subtest: about: structure, unique IDs, and local links
+ok 87 - about: structure, unique IDs, and local links
+  ---
+  duration_ms: 4.873436
+  type: 'test'
+  ...
+# Subtest: download: structure, unique IDs, and local links
+ok 88 - download: structure, unique IDs, and local links
+  ---
+  duration_ms: 1.598417
+  type: 'test'
+  ...
+# Subtest: Brand, motion, and offline assets
+ok 89 - Brand, motion, and offline assets
+  ---
+  duration_ms: 3.728538
+  type: 'test'
+  ...
+1..89
+# tests 89
+# suites 0
+# pass 89
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 129.507643
