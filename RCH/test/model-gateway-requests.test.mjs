@@ -161,6 +161,17 @@ test('complete SSE requires an answer, finish, and DONE; token metadata is omitt
   assert.equal(f.store.settlements.length, 1);
 });
 
+test('bridge reasoning metadata is not forwarded to the account client', async t => {
+  const reasoning = delta({ choices: [{ index: 0,
+    delta: { content: 'Hello', reasoning_content: 'private reasoning text' }, finish_reason: null }] });
+  const f = await fixture(t, async () => stream([reasoning, finish(), '[DONE]']));
+  const reply = await f.call(request({ stream: true }));
+  assert.equal(reply.status, 200);
+  const text = await reply.text();
+  assert.match(text, /Hello/);
+  assert.doesNotMatch(text, /private reasoning text|reasoning_content/);
+});
+
 test('request mode rejects ignored generation controls, tools, images, and oversized text before reserving', async t => {
   let calls = 0;
   const f = await fixture(t, async () => { calls++; return response(completion()); });

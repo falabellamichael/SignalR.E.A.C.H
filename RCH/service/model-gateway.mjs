@@ -438,10 +438,13 @@ function bridgeStream(text, route) {
       || finished || (choice.finish_reason != null && !bridgeFinish(choice.finish_reason))) {
       fail(502, 'invalid_bridge_stream', 'The bridge returned an unsupported or incomplete text stream.');
     }
+    const safeDelta = {};
+    if (delta.role !== undefined) safeDelta.role = delta.role;
+    if (delta.content !== undefined) safeDelta.content = delta.content;
     answer += delta.content || '';
     if (bridgeFinish(choice.finish_reason)) finished = true;
     body += `data: ${JSON.stringify({ ...envelope, object: 'chat.completion.chunk',
-      choices: [{ index: 0, delta, finish_reason: choice.finish_reason ?? null }] })}\n\n`;
+      choices: [{ index: 0, delta: safeDelta, finish_reason: choice.finish_reason ?? null }] })}\n\n`;
     if (Buffer.byteLength(body) > MAX_RESPONSE - 64) fail(502, 'response_too_large', 'The bridge response exceeded the service size limit.');
   }
   if (!done || !finished || !answer.trim()) fail(502, 'incomplete_bridge_response', 'The bridge stream ended without a completed text answer.');
