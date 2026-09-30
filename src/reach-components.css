@@ -426,10 +426,43 @@
 .reach-model-card {
     border-left: 3px solid var(--reach-accent-border, rgba(255, 176, 32, 0.45));
     padding: 8px 11px;
+    display: block;
+}
+
+.reach-model-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.reach-model-summary::-webkit-details-marker {
+    display: none;
+}
+
+.reach-model-summary::after {
+    content: "\203A";
+    flex: 0 0 auto;
+    font-size: 20px;
+    line-height: 1;
+    color: var(--reach-accent-light, #ffd37a);
+}
+
+.reach-model-card[open] > .reach-model-summary::after {
+    transform: rotate(90deg);
+}
+
+.reach-model-summary:focus-visible {
+    outline: 2px solid var(--reach-accent, #ffb020);
+    outline-offset: 3px;
+    border-radius: 3px;
 }
 
 .reach-model-head {
     display: flex;
+    flex: 1;
     flex-direction: column;
     gap: 2px;
     min-width: 0;
@@ -438,6 +471,7 @@
 .reach-model-head strong {
     font-size: 12.5px;
     color: var(--reach-accent-light, #ffd37a);
+    overflow-wrap: anywhere;
 }
 
 .reach-model-desc {
@@ -453,6 +487,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
+    margin: 8px 0;
 }
 
 .reach-model-rl {

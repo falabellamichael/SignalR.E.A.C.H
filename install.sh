@@ -20,9 +20,7 @@ VER=$("$PY" -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 echo "[SimpleREACH] using $PY ($VER)"
 
 # 2. Clone or refresh
-# The repo is PRIVATE, so this needs git credentials for an account that has
-# been granted access. If the clone fails with 403/404, ask the maintainer to
-# hand out access (or send you a source bundle instead).
+# The public edition is available without private operator repository access.
 if [ -d "$DIR/.git" ]; then
     echo "[SimpleREACH] existing checkout at $DIR - pulling latest"
     git -C "$DIR" pull --ff-only
@@ -31,11 +29,10 @@ else
     git clone --depth 1 "$REPO" "$DIR"
 fi
 
-# 3. Install panel + relay + tunnel (+ VS Code extension)
+# 3. Install the public SimpleRAG frontend only.
 echo "[SimpleREACH] installing..."
 (cd "$DIR" && "$PY" tools/reach.py install)
 
 echo ''
-echo '[SimpleREACH] done. Open SimpleRAG -> Advanced -> REACH for the control panel.'
-echo '[SimpleREACH] VS Code: reload the window, then click the REACH icon in the Activity Bar.'
-echo '[SimpleREACH] pointer URL: https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt'
+echo '[SignalREACH] done. Reload SimpleRAG -> Advanced -> SignalREACH.'
+echo '[SignalREACH] add your own provider URL and API key in Settings.'

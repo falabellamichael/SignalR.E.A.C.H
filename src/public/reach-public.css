@@ -1,0 +1,24 @@
+.sr-public-page { max-width: 1040px; margin: 0 auto; padding: 24px; color: var(--text-primary, #e4e9f2); font: inherit; }
+.sr-public-page * { box-sizing: border-box; }
+.sr-public-page h1 { margin: 0; font-size: 26px; }
+.sr-public-intro, .sr-public-hint, .sr-public-field small { color: var(--text-secondary, #9aa8bc); line-height: 1.55; }
+.sr-public-intro { margin-top: 6px; }
+.sr-public-tabs { display: flex; gap: 8px; margin: 22px 0 12px; }
+.sr-public-card { padding: 20px; margin: 16px 0; border: 1px solid var(--border-color, #334155); border-radius: 12px; background: var(--bg-secondary, #172131); }
+.sr-public-card h2 { margin: 0 0 8px; font-size: 18px; }
+.sr-public-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); gap: 14px; margin: 16px 0; }
+.sr-public-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 13px; }
+.sr-public-field span { font-weight: 600; }
+.sr-public-page input, .sr-public-page select, .sr-public-page textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-color, #475569); border-radius: 7px; background: var(--bg-primary, #0f1725); color: inherit; font: inherit; }
+.sr-public-page textarea { resize: vertical; }
+.sr-public-button { padding: 9px 14px; margin: 4px 6px 4px 0; border: 1px solid var(--border-color, #475569); border-radius: 7px; background: var(--bg-primary, #0f1725); color: inherit; font: inherit; cursor: pointer; }
+.sr-public-primary, .sr-public-tabs [aria-current="page"] { background: var(--accent-color, #2864c8); border-color: var(--accent-color, #2864c8); color: #fff; }
+.sr-public-button:disabled { opacity: .5; cursor: default; }
+.sr-public-page :focus-visible { outline: 2px solid var(--accent-color, #72a7ff); outline-offset: 3px; }
+.sr-public-details { padding: 12px 14px; margin: 12px 0; border: 1px solid var(--border-color, #334155); border-radius: 8px; }
+.sr-public-details summary { cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
+.sr-public-details[open] summary { margin-bottom: 12px; }
+.sr-public-status { min-height: 20px; font-size: 13px; color: var(--text-secondary, #a6b4c9); }
+.sr-public-error { color: #ff9d9d; }
+.sr-public-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 65vh; overflow: auto; font: inherit; line-height: 1.6; }
+@media (max-width: 520px) { .sr-public-page { padding: 12px; } .sr-public-card { padding: 14px; } }

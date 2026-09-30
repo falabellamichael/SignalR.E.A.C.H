@@ -250,12 +250,16 @@ class RelayHandler(BaseHTTPRequestHandler):
         return _secret_equal(token, presented)
 
     def _require_admin(self):
-        """Gate on /_reach/*: a genuine local client, OR a valid admin token.
-        The token is the only way a non-local (remote-admin) request passes —
-        peer address alone is never sufficient, because the tunnel makes every
-        forwarded request look like loopback."""
+        """Gate on /_reach/*: a genuine local client, OR opted-in remote admin.
+        A non-local request needs both the remote-admin setting and a valid
+        token. Peer address alone is never sufficient, because the tunnel
+        makes every forwarded request look like loopback."""
         if self._admin_local():
             return True
+        if (core.STATE.cfg.get("system") or {}).get("allow_remote_admin") is not True:
+            self._json(403, {"error": {"message": "Remote admin access is disabled.",
+                                      "type": "forbidden", "code": "remote_admin_disabled"}})
+            return False
         ip = self._guard_id()
         guard = core.STATE.auth_guard
         if self._deny_if_locked_out(ip):

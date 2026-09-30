@@ -38,7 +38,7 @@ if ($Dir -ne (Get-Location).Path) {
     }
 }
 
-# 3. Install panel + relay + tunnel
+# 3. Install the public SimpleRAG frontend only.
 Push-Location $Dir
 try {
     & $py tools\reach.py install
@@ -49,6 +49,5 @@ try {
 if ($code -ne 0) { throw "install failed (exit $code). See output above; re-run with 'python tools\reach.py install --help' for options." }
 
 Write-Host ''
-Write-Host '[SimpleREACH] done. Open SimpleRAG -> Advanced -> REACH for the control panel.'
-Write-Host '[SimpleREACH] VS Code: reload the window, then click the REACH icon in the Activity Bar.'
-Write-Host '[SimpleREACH] pointer URL: https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt'
+Write-Host '[SignalREACH] done. Reload SimpleRAG -> Advanced -> SignalREACH.'
+Write-Host '[SignalREACH] add your own provider URL and API key in Settings.'
