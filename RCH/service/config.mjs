@@ -6,6 +6,21 @@ const object = v => v && typeof v === 'object' && !Array.isArray(v);
 function keys(value, allowed, name) {
   if (!object(value) || Object.keys(value).some(k => !allowed.includes(k))) throw new Error(`Invalid ${name} configuration fields.`);
 }
+function modelPricing(value, schedule) {
+  keys(value, ['inputUsdMicrosPerMillion','outputUsdMicrosPerMillion','cachedInputUsdMicrosPerMillion',
+    ...(schedule === 'after' ? ['effectiveAt'] : schedule === 'daily' ? ['utcStartHour','utcEndHour'] : [])], 'model pricing');
+  if (![value.inputUsdMicrosPerMillion,value.outputUsdMicrosPerMillion].every(v=>Number.isSafeInteger(v)&&v>0&&v<=1_000_000_000)
+      || value.cachedInputUsdMicrosPerMillion!==undefined&&(!Number.isSafeInteger(value.cachedInputUsdMicrosPerMillion)||value.cachedInputUsdMicrosPerMillion<0||value.cachedInputUsdMicrosPerMillion>value.inputUsdMicrosPerMillion)) throw new Error('Invalid USD model pricing.');
+  if (schedule === 'after') {
+    const stamp = typeof value.effectiveAt === 'string' ? Date.parse(value.effectiveAt) : NaN;
+    if (!Number.isSafeInteger(stamp) || stamp < 0 || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value.effectiveAt)
+        || new Date(stamp).toISOString() !== value.effectiveAt) throw new Error('Invalid scheduled model pricing date; use canonical ISO UTC.');
+  }
+  if (schedule === 'daily' && (!Number.isInteger(value.utcStartHour) || value.utcStartHour < 0 || value.utcStartHour > 23
+      || !Number.isInteger(value.utcEndHour) || value.utcEndHour <= value.utcStartHour || value.utcEndHour > 24)) {
+    throw new Error('Invalid daily model pricing hours; use an increasing UTC interval within 0 through 24.');
+  }
+}
 export function validateConfig(raw, directory = process.cwd(), env = process.env) {
   keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption'], 'service');
   const url = new URL(raw.origin);
@@ -27,14 +42,28 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
     supabase = { ...raw.supabase, url: projectUrl.origin, secretKey };
   } else if (typeof raw.database !== 'string' || !raw.database || raw.database === ':memory:') throw new Error('Configure a durable account database path.');
   if (!Array.isArray(raw.models)) throw new Error('Configure the hosted model catalog.');
-  for (const model of raw.models) {
-    keys(model, ['id','name','provider','upstreamModel','metered','maxInputTokens','maxInputBytes','maxOutputTokens','pricing'], 'model');
-    if (model.pricing !== undefined) {
-      keys(model.pricing,['inputUsdMicrosPerMillion','outputUsdMicrosPerMillion','cachedInputUsdMicrosPerMillion'],'model pricing');
-      if (![model.pricing.inputUsdMicrosPerMillion,model.pricing.outputUsdMicrosPerMillion].every(v=>Number.isSafeInteger(v)&&v>0&&v<=1_000_000_000)
-          || model.pricing.cachedInputUsdMicrosPerMillion!==undefined&&(!Number.isSafeInteger(model.pricing.cachedInputUsdMicrosPerMillion)||model.pricing.cachedInputUsdMicrosPerMillion<0||model.pricing.cachedInputUsdMicrosPerMillion>model.pricing.inputUsdMicrosPerMillion)) throw new Error('Invalid USD model pricing.');
+  const providerVariables = new Map();
+  const models = raw.models.map(model => {
+    keys(model, ['id','name','provider','upstreamModel','metered','maxInputTokens','maxInputBytes','maxOutputTokens','pricing','pricingAfter','pricingDaily','providerApi'], 'model');
+    if (model.pricing !== undefined) modelPricing(model.pricing);
+    if ((model.pricingAfter !== undefined || model.pricingDaily !== undefined) && model.pricing === undefined) throw new Error('Model pricing schedules require baseline pricing.');
+    if (model.pricingAfter !== undefined && model.pricingDaily !== undefined) throw new Error('Choose one model pricing schedule.');
+    if (model.pricingAfter !== undefined) modelPricing(model.pricingAfter, 'after');
+    if (model.pricingDaily !== undefined) modelPricing(model.pricingDaily, 'daily');
+    let providerApi;
+    if (model.providerApi !== undefined) {
+      keys(model.providerApi, ['provider','keyEnv'], 'model provider API');
+      const { provider, keyEnv } = model.providerApi;
+      if (!['openai','gemini','opencode','alibaba'].includes(provider) || typeof keyEnv !== 'string' || !/^[A-Z][A-Z0-9_]{2,80}$/.test(keyEnv)) throw new Error('Configure a supported provider and host-only provider credential variable.');
+      if ([raw.upstreamKeyEnv,raw.supabase?.secretKeyEnv,raw.redemption?.quoteSignerKeyEnv].includes(keyEnv)
+          || providerVariables.has(keyEnv) && providerVariables.get(keyEnv) !== provider) throw new Error('Use separate credential variables for provider APIs and other host authorities.');
+      providerVariables.set(keyEnv, provider);
+      const apiKey = env[keyEnv];
+      if (typeof apiKey !== 'string' || apiKey.length < 16 || /[\r\n]/.test(apiKey)) throw new Error('Set the host-only model provider API credential.');
+      providerApi = { provider, apiKey };
     }
-  }
+    return { ...model, ...(providerApi ? { providerApi } : {}) };
+  });
   if (typeof raw.upstreamKeyEnv !== 'string' || !/^[A-Z][A-Z0-9_]{2,80}$/.test(raw.upstreamKeyEnv)) throw new Error('Configure the upstream key environment variable name.');
   const upstreamKey = env[raw.upstreamKeyEnv];
   if (typeof upstreamKey !== 'string' || upstreamKey.length < 16 || /[\r\n]/.test(upstreamKey)) throw new Error(`Set ${raw.upstreamKeyEnv} to a host-only relay credential.`);
@@ -62,6 +91,11 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
     const rpc = new URL(address);
     if (rpc.username || rpc.password || rpc.hash || !(rpc.protocol === 'https:' || rpc.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(rpc.hostname))) throw new Error('RPC URLs require HTTPS or loopback HTTP.');
   }
-  return { ...raw, origin:url.origin, listenHost:raw.listenHost ?? '127.0.0.1', ...(supabase ? { supabase } : { database:resolve(directory,raw.database) }), upstreamKey, redemption:{...redemption,...(quoteSignerKey?{quoteSignerKey}:{})} };
+  return { ...raw, models, origin:url.origin, listenHost:raw.listenHost ?? '127.0.0.1', ...(supabase ? { supabase } : { database:resolve(directory,raw.database) }), upstreamKey, redemption:{...redemption,...(quoteSignerKey?{quoteSignerKey}:{})} };
 }
-export const loadConfig = file => validateConfig(JSON.parse(readFileSync(file,'utf8')),dirname(resolve(file)));
+export const loadConfig = file => {
+  let raw;
+  try { raw = JSON.parse(readFileSync(file,'utf8')); }
+  catch { throw new Error('Could not read the private service configuration JSON.'); }
+  return validateConfig(raw,dirname(resolve(file)));
+};

@@ -83,7 +83,7 @@ export class SupabaseAccountStore {
     const a = snapshot.account, active = a.plan_expires > this.now(), allowed = JSON.parse(a.models);
     return { id: a.id, walletAddress: a.wallet,
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
-      allowedModels: this.models.filter(m => m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
+      allowedModels: this.models.filter(m => m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m, this.now()) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(modelUsdPricing(m, this.now()) ? { pricing: modelUsdPricing(m, this.now()) } : {}) })),
       allowance: { includedRemaining: active ? a.included : 0, prepaidRemaining: a.prepaid, reserved: snapshot.reserved,
         totalRemaining: a.debt === 0 ? (active ? a.included : 0) + a.prepaid : 0, debt: a.debt },
       credit: { currency: 'USD', balanceMicros: a.usd_prepaid ?? 0, reservedMicros: snapshot.reservedUsdMicros ?? 0, debtMicros: a.usd_debt ?? 0 } };
@@ -155,7 +155,7 @@ export class SupabaseAccountStore {
     await this._rpc('settle', { reservationId, usage, replay: replay && Buffer.byteLength(replay) <= 1048576 ? replay : null });
   }
   async reserveUsd(accountId, requestId, model, fingerprint, limits) {
-    const route = this.models.find(m => m.id === model && m.metered === true), pricing = modelUsdPricing(route);
+    const route = this.models.find(m => m.id === model && m.metered === true), pricing = modelUsdPricing(route, this.now());
     if (!pricing) fail(403, 'model_not_entitled', 'This model has no verified usage price.');
     const amount = usdUsageCost(pricing, limits);
     if (amount === 0 || typeof requestId !== 'string' || !requestId.length || requestId.length > 128) fail(400, 'invalid_reservation', 'Invalid request reservation.');

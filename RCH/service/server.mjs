@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, FetchRequest } from 'ethers';
-import { fail } from './store.mjs';
+import { fail, modelUsdPricing } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
@@ -73,7 +73,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
     if(++previous.count>180)fail(429,'rate_limit','Too many requests. Please wait one minute.');
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&m.pricing).map(({id,name,provider,pricing})=>({id,name,provider,pricing})),loginMethod:'ethereum-browser-wallet'});
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&modelUsdPricing(m,now())).map(m=>({id:m.id,name:m.name,provider:m.provider,pricing:modelUsdPricing(m,now())})),loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
     return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };

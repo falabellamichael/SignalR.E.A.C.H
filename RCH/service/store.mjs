@@ -13,11 +13,19 @@ const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 
-export function modelUsdPricing(model) {
-  const p = model?.pricing;
+export function modelUsdPricing(model, now = Date.now()) {
+  const after = model?.pricingAfter;
+  const daily = model?.pricingDaily;
+  const utcHour = new Date(now).getUTCHours();
+  const p = daily && utcHour >= daily.utcStartHour && utcHour < daily.utcEndHour ? daily
+    : after && Date.parse(after.effectiveAt) <= now ? after : model?.pricing;
   return p && safeCount(p.inputUsdMicrosPerMillion) && safeCount(p.outputUsdMicrosPerMillion)
     && (p.cachedInputUsdMicrosPerMillion === undefined || safeCount(p.cachedInputUsdMicrosPerMillion) && p.cachedInputUsdMicrosPerMillion <= p.inputUsdMicrosPerMillion)
-    && p.inputUsdMicrosPerMillion + p.outputUsdMicrosPerMillion > 0 ? p : null;
+    && p.inputUsdMicrosPerMillion + p.outputUsdMicrosPerMillion > 0 ? {
+      inputUsdMicrosPerMillion: p.inputUsdMicrosPerMillion,
+      outputUsdMicrosPerMillion: p.outputUsdMicrosPerMillion,
+      ...(p.cachedInputUsdMicrosPerMillion !== undefined ? { cachedInputUsdMicrosPerMillion: p.cachedInputUsdMicrosPerMillion } : {}),
+    } : null;
 }
 export function usdUsageCost(pricing, usage) {
   if (!modelUsdPricing({ pricing }) || !safeCount(usage?.promptTokens) || !safeCount(usage?.completionTokens)) fail(400,'invalid_usage','Measured usage or model price is invalid.');
@@ -107,7 +115,7 @@ export class AccountStore {
     const a = this.accountById(accountId), active = a.plan_expires > this.now();
     const held = this.db.prepare("SELECT COALESCE(SUM(CASE WHEN currency='tokens' THEN amount ELSE 0 END),0) AS tokens,COALESCE(SUM(CASE WHEN currency='USD' THEN amount ELSE 0 END),0) AS usd FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId);
     const allowed = JSON.parse(a.models);
-    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m)||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(modelUsdPricing(m)?{pricing:{...m.pricing}}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd,debtMicros:a.usd_debt} };
+    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m,this.now())||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(modelUsdPricing(m,this.now())?{pricing:modelUsdPricing(m,this.now())}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd,debtMicros:a.usd_debt} };
   }
   grantPlan({wallet,grantId,planId,name,models,tokens,expiresAt}) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId||'') || !planId || typeof name!=='string' || !safeCount(tokens) || !Array.isArray(models) || !models.length || !models.every(m=>this.models.some(x=>x.id===m&&x.metered===true)) || !Number.isSafeInteger(expiresAt) || expiresAt<=this.now()) fail(400,'invalid_grant','Invalid plan grant, qualified model list, allowance, or expiry.');
@@ -184,7 +192,7 @@ export class AccountStore {
     });
   }
   reserveUsd(accountId,requestId,model,fingerprint,limits) {
-    const route=this.models.find(m=>m.id===model&&m.metered===true),pricing=modelUsdPricing(route);
+    const route=this.models.find(m=>m.id===model&&m.metered===true),pricing=modelUsdPricing(route,this.now());
     if(!pricing)fail(403,'model_not_entitled','This model has no verified usage price.');
     const amount=usdUsageCost(pricing,limits);
     if(amount===0||typeof requestId!=='string'||!requestId.length||requestId.length>128)fail(400,'invalid_reservation','Invalid request reservation.');

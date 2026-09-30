@@ -5,6 +5,12 @@ import { modelUsdPricing } from './store.mjs';
 const MAX_BODY = 512 * 1024;
 const MAX_RESPONSE = 1024 * 1024;
 const MAX_EVENT = 256 * 1024;
+const PROVIDER_APIS = Object.freeze({
+  openai: 'https://api.openai.com/v1/chat/completions',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+  opencode: 'https://opencode.ai/zen/v1/chat/completions',
+  alibaba: 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions',
+});
 const FIELDS = new Set(['model', 'messages', 'stream', 'stream_options', 'max_tokens',
   'max_completion_tokens', 'temperature', 'top_p', 'stop', 'presence_penalty',
   'frequency_penalty', 'seed', 'n', 'tools', 'tool_choice', 'parallel_tool_calls',
@@ -22,9 +28,23 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 
-export function providerUsage(value) {
-  if (!plain(value) || value.usage_source !== 'provider' || !plain(value.usage)) return null;
-  const u = value.usage;
+export function providerUsage(value, directApi = false, provider) {
+  if (!plain(value) || !plain(value.usage)
+    || (directApi ? value.usage_source !== undefined && value.usage_source !== 'provider' : value.usage_source !== 'provider')
+    || value.usage.estimated !== undefined && value.usage.estimated !== false) return null;
+  let u = value.usage;
+  // Google's compatible API excludes thinking from completion_tokens while
+  // reporting it in total_tokens. Use those provider counters, never a local
+  // estimate, to include thinking in billable output and its reasoning subset.
+  if (directApi && provider === 'gemini'
+    && [u.prompt_tokens, u.completion_tokens, u.total_tokens].every(n => integer(n, 0, 1_000_000_000))
+    && u.total_tokens > u.prompt_tokens + u.completion_tokens) {
+    const thinking = u.total_tokens - u.prompt_tokens - u.completion_tokens;
+    if (u.completion_tokens_details !== undefined && !plain(u.completion_tokens_details)
+      || u.completion_tokens_details?.reasoning_tokens !== undefined && u.completion_tokens_details.reasoning_tokens !== thinking) return null;
+    u = { ...u, completion_tokens: u.total_tokens - u.prompt_tokens,
+      completion_tokens_details: { ...u.completion_tokens_details, reasoning_tokens: thinking } };
+  }
   if (![u.prompt_tokens, u.completion_tokens, u.total_tokens].every(n => integer(n, 0, 1_000_000_000))
     || u.total_tokens !== u.prompt_tokens + u.completion_tokens) return null;
   // Cached input and reasoning are subsets, not extra charges on top of totals.
@@ -84,6 +104,13 @@ function configureModels(models) {
   const routes = new Map();
   for (const model of models) {
     if (model.pricing !== undefined && !modelUsdPricing(model)) throw new Error('Invalid USD model pricing.');
+    if (model.providerApi !== undefined && (!plain(model.providerApi)
+      || !Object.hasOwn(PROVIDER_APIS, model.providerApi.provider)
+      || typeof model.providerApi.apiKey !== 'string' || model.providerApi.apiKey.length < 16
+      || /[\r\n]/.test(model.providerApi.apiKey)
+      || Object.keys(model.providerApi).some(key => !['provider', 'apiKey'].includes(key)))) {
+      throw new Error('Invalid host-only provider API configuration.');
+    }
     if (!plain(model) || !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model.id)
       || routes.has(model.id) || typeof model.provider !== 'string' || model.provider.length > 100
       || !integer(model.maxInputTokens, 1, 10_000_000)
@@ -129,11 +156,24 @@ function completionRequest(body, routes) {
   if (body.seed !== undefined && !Number.isSafeInteger(body.seed)) fail(400, 'invalid_parameter', 'Invalid seed.');
   if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') fail(400, 'invalid_parameter', 'Invalid parallel_tool_calls.');
   if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.length > 32)) fail(400, 'invalid_tools', 'Supply at most 32 tools.');
+  if (route.providerApi && body.tools?.some(tool => !plain(tool) || tool.type !== 'function' || !plain(tool.function))) {
+    fail(400, 'invalid_tools', 'This model service supports function tools only.');
+  }
   if (body.stream_options !== undefined && (!plain(body.stream_options) || Object.keys(body.stream_options).some(k => k !== 'include_usage'))) {
     fail(400, 'invalid_stream_options', 'Only include_usage is supported.');
   }
   const payload = { ...body, model: route.upstreamModel || route.id, n: 1, stream: body.stream === true };
-  const outputField = body.max_completion_tokens !== undefined ? 'max_completion_tokens' : 'max_tokens';
+  const openAiReasoning = route.providerApi?.provider === 'openai' && /^gpt-5(?:[.-]|$)/.test(payload.model);
+  if (openAiReasoning) {
+    // These APIs only accept their default sampling controls. Reject before
+    // reserving customer credit instead of creating a failing provider call.
+    for (const [key, expected] of [['temperature', 1], ['top_p', 1], ['presence_penalty', 0], ['frequency_penalty', 0]]) {
+      if (body[key] !== undefined && body[key] !== expected) fail(400, 'unsupported_parameter', `${key} is not configurable for this model.`);
+      delete payload[key];
+    }
+    delete payload.max_tokens;
+  }
+  const outputField = openAiReasoning || body.max_completion_tokens !== undefined ? 'max_completion_tokens' : 'max_tokens';
   payload[outputField] = output;
   if (payload.stream) payload.stream_options = { include_usage: true };
   else delete payload.stream_options;
@@ -162,7 +202,8 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
   const eligible = account => new Set((account.allowedModels || []).map(m => typeof m === 'string' ? m : m.id));
   const catalog = account => ({ object: 'list', data: [...routes.values()]
     .filter(m => m.metered === true && eligible(account).has(m.id))
-    .map(m => ({ id: m.id, object: 'model', created: 0, owned_by: 'reach', name: m.name || m.id, provider: m.provider,...(m.pricing?{pricing:m.pricing}:{}) })) });
+    .map(m => ({ id: m.id, object: 'model', created: 0, owned_by: 'reach', name: m.name || m.id, provider: m.provider,
+      ...(modelUsdPricing(m) ? { pricing: modelUsdPricing(m) } : {}) })) });
 
   async function handle(req, res, account, body) {
     const pathname = new URL(req.url, 'http://gateway.invalid').pathname;
@@ -202,16 +243,17 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       active += 1;
       counted = true;
       dispatched = true;
-      const upstream = await fetchImpl(completionUrl, {
+      const directApi = route.providerApi !== undefined;
+      const upstream = await fetchImpl(directApi ? PROVIDER_APIS[route.providerApi.provider] : completionUrl, {
         method: 'POST', redirect: 'error', signal: controller.signal,
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${upstreamKey}`,
-          'x-reach-metered': 'provider-v1', 'cache-control': 'no-store' }, body: JSON.stringify(payload),
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${directApi ? route.providerApi.apiKey : upstreamKey}`,
+          ...(!directApi ? { 'x-reach-metered': 'provider-v1' } : {}), 'cache-control': 'no-store' }, body: JSON.stringify(payload),
       });
       if (!upstream.ok) {
         await upstream.body?.cancel();
         fail(502, 'provider_rejected', 'The provider did not complete the request. Usage is pending reconciliation.');
       }
-      if (upstream.headers.get('x-reach-metering') !== 'provider-v1'
+      if ((!directApi && upstream.headers.get('x-reach-metering') !== 'provider-v1')
         || upstream.headers.get('x-reach-cache') === 'HIT' || upstream.headers.has('x-reach-fallback')) {
         await upstream.body?.cancel();
         fail(502, 'unmetered_route', 'This provider route is not qualified for usage billing.');
@@ -220,13 +262,18 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       let record;
       let usage;
       if (payload.stream && contentType.toLowerCase().includes('text/event-stream')) {
-        ({ record, usage } = await forwardStream(upstream, res, route.id, controller.signal));
+        ({ record, usage } = await forwardStream(upstream, res, route.id, controller.signal, directApi, route.providerApi?.provider));
       } else {
         const text = await boundedText(upstream);
         let parsed;
         try { parsed = JSON.parse(text); } catch { fail(502, 'invalid_provider_response', 'The provider returned an invalid response.'); }
-        usage = providerUsage(parsed);
+        usage = providerUsage(parsed, directApi, route.providerApi?.provider);
         if (!usage) fail(502, 'usage_unavailable', 'The provider did not report verified usage. Your reservation is pending reconciliation.');
+        if (directApi) {
+          parsed.usage_source = 'provider';
+          parsed.usage = { ...parsed.usage, completion_tokens: usage.completionTokens,
+            completion_tokens_details: usage.details.completion };
+        }
         if (!plain(parsed) || parsed.error || !Array.isArray(parsed.choices) || !parsed.choices.length) fail(502, 'invalid_provider_response', 'The provider returned an invalid completion.');
         const safe = completionOutput(parsed, route.id);
         record = payload.stream ? jsonAsStream(safe) : { contentType: 'application/json; charset=utf-8', body: JSON.stringify(safe) };
@@ -279,7 +326,7 @@ function jsonAsStream(parsed) {
   return { contentType: 'text/event-stream', body: `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n` };
 }
 
-async function forwardStream(upstream, res, model, signal) {
+async function forwardStream(upstream, res, model, signal, directApi = false, provider) {
   if (!upstream.body) fail(502, 'empty_response', 'The provider returned no stream.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -304,10 +351,16 @@ async function forwardStream(upstream, res, model, signal) {
     let parsed;
     try { parsed = JSON.parse(data); } catch { fail(502, 'invalid_provider_stream', 'The provider returned an invalid stream.'); }
     if (!plain(parsed) || parsed.error) fail(502, 'provider_stream_error', 'The provider could not complete the stream. Usage is pending reconciliation.');
-    const reported = providerUsage(parsed);
+    const reported = providerUsage(parsed, directApi, provider);
+    if (parsed.usage != null && !reported) fail(502, 'invalid_provider_usage', 'The provider returned an invalid usage record. Your reservation is pending reconciliation.');
     if (reported) {
       if (usage && canonical(usage) !== canonical(reported)) fail(502, 'ambiguous_usage', 'The provider reported conflicting usage records.');
       usage = reported;
+      if (directApi) {
+        parsed.usage_source = 'provider';
+        parsed.usage = { ...parsed.usage, completion_tokens: reported.completionTokens,
+          completion_tokens_details: reported.details.completion };
+      }
     }
     if (Array.isArray(parsed.choices) && parsed.choices.some(c => c.finish_reason !== null && c.finish_reason !== undefined)) seenFinish = true;
     if (!Array.isArray(parsed.choices)) fail(502, 'invalid_provider_stream', 'The provider returned an invalid stream event.');
