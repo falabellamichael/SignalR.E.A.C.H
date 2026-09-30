@@ -1,0 +1,12 @@
+{
+  "passed": 7,
+  "checks": [
+    "Node server serves index.html correctly",
+    "Node server serves assets/chat-engine.js correctly",
+    "Node server serves assets/chat-ui.js correctly",
+    "Node server serves dist/index.html correctly",
+    "Node server serves dist/assets/chat-engine.js correctly",
+    "Node server serves dist/assets/chat-ui.js correctly",
+    "All dist files match source bytes"
+  ]
+}

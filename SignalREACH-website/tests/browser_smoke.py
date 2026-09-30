@@ -41,7 +41,7 @@ with sync_playwright() as p:
     click('[data-file="README.md"]');expect(page.locator('#editor-file-name')).to_have_text('README.md')
     check('Example file switching')
     page.locator('#demo-input').fill('<img src=x onerror="window.xss=true"> Tell me about themes')
-    click('#demo-form button');expect(page.locator('#demo-log')).to_have_attribute('aria-busy','false')
+    click('[data-chat-send]');expect(page.locator('#demo-log')).to_have_attribute('aria-busy','false')
     expect(page.locator('#demo-log .chat-message').last).to_contain_text('scripted website demo')
     check('Demo response and escaped prompt',page.evaluate('window.xss !== true') and page.locator('#demo-log img').count()==0)
     for step,expected in [('context','The right files.'),('build','Keep the work moving.')]:

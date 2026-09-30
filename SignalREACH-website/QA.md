@@ -1,33 +1,30 @@
-# Website QA — 29 September 2026
+# SignalREACH chat-upgrade verification
 
-## Completed
+Executed against the final generated website package.
 
-**7 automated static checks passed** with Node.js 22.16.0: page structure, one H1 per page, descriptions, unique IDs, local page/asset targets, safe external-link attributes, brand tokens, reduced-motion CSS, script syntax, and prompt-as-text handling.
+| Suite | Result | Evidence |
+| --- | --- | --- |
+| Node source, link, and intent tests | 89 passed; 0 failed | `tests/last-source-results.txt` |
+| Existing six-page browser regressions | 55 passed | `tests/last-browser-results.json` |
+| Homepage chat browser regressions | 141 passed | `tests/last-chat-browser-results.json` |
+| Node-server asset delivery and source/dist parity | 7 passed | `tests/last-packaging-results.json` |
 
-**55 browser checks passed** in headless Chromium through Python Playwright. The exact result list and layout measurements are in `tests/last-browser-results.json`.
+The chat suite checks all 47 topic buttons, keyword search, category filters, error-specific matches, typo tolerance, contextual follow-ups, response styles, escaped HTML-like input, copying, transcript export, slash commands, empty states, cancellation, reset while typing, rapid submissions, IME input, history limits, route teardown, and guide navigation.
 
-Covered:
+The layout matrix includes light and dark themes at 320, 390, 768, 1024, and 1440 pixels, with conversation, topics, and example views open. There was no horizontal page overflow in these checks. The offline preview recorded no outgoing requests and no browser JavaScript errors. The included Node server also returned the expected source and dist HTML/JavaScript bytes in HTTP checks. Browser navigation to the local HTTP server was blocked by the managed environment (ERR_BLOCKED_BY_ADMINISTRATOR), so live HTTP browsing, file-URL browsing, and preference persistence after an HTTP reload were not verified here. Browser interaction tests used the self-contained preview loaded directly into the test page.
 
-- Light/dark switching, one correct theme icon, and theme retained across preview routes.
-- Workspace sample files, agent preview, keyboard tab navigation, and scripted chat output.
-- Untrusted prompt markup rendered literally rather than interpreted as HTML.
-- Workflow panels, three code-language views, clipboard feedback, guided tour, dialogs, and Escape behavior.
-- All four platform views, all nine integration cards, filters, search, empty state, reset, and detail dialog.
-- Six documentation sections and documentation search.
-- Three operating-system setup tabs.
-- Mobile menu open/close, Escape, and route navigation.
-- Every page checked at **320, 390, 768, 1024, and 1440 CSS pixels**; no document-level horizontal overflow.
-- System reduced-motion behavior.
-- No JavaScript page errors and no outgoing network requests during the offline interaction suite.
+## Run again
 
-Separate motion-on testing confirmed that signal paths animate and that the footer motion control stops and resumes CSS animation. Full-page screenshots were rendered for all six pages; the homepage was also rendered in both themes and at mobile size. The theme icon and narrow-screen code-grid overflow found during QA were corrected before the final run.
+```sh
+npm test
+npm run build
+python tools/standalone.py
+python tests/browser_smoke.py ../SignalREACH-preview.html
+python tests/chat_browser.py ../SignalREACH-preview.html
+```
+
+Browser tests require Python Playwright and Chromium. Set `CHROMIUM_EXECUTABLE` to an existing Chromium binary as needed. No browser dependency is required to run the website or Node tests.
 
 ## Scope and limitations
 
-Browser interaction tests loaded the self-contained preview using Playwright `set_content`. Navigation to file and localhost URLs is restricted in this execution environment, so this was not a network-served, cross-browser end-to-end test. The normal multi-file site shares the same HTML, CSS, and core interaction script; its file paths were checked separately.
-
-Clipboard success depends on browser permissions and context; the site provides a selection/manual-copy fallback. The test verified the feedback path, not every platform's native clipboard permissions.
-
-Preference retention was verified across routes. Browser local-storage persistence code includes graceful failure handling, but long-term storage across separate browser sessions was not exercised in the restricted preview origin.
-
-No live AI endpoint, production deployment, external account, installer download, provider availability, or upstream release artifact was tested. The work does not constitute a full accessibility audit or broad cross-browser certification.
+These tests verify the website demo, not a live AI connection, the actual Studio application, or a production host. Screenshots were inspected for the chat layout. This is not a formal accessibility certification or a full audit of all upstream product claims. The PC was offline in Desktop Commander during preparation; the package has not been applied to that PC or pushed to GitHub by this task.

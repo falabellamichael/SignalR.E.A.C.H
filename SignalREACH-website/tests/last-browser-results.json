@@ -62,31 +62,31 @@
       "page": "index",
       "width": 320,
       "scrollWidth": 320,
-      "height": 7123
+      "height": 7248
     },
     {
       "page": "index",
       "width": 390,
       "scrollWidth": 390,
-      "height": 6779
+      "height": 6904
     },
     {
       "page": "index",
       "width": 768,
       "scrollWidth": 768,
-      "height": 5250
+      "height": 5350
     },
     {
       "page": "index",
       "width": 1024,
       "scrollWidth": 1024,
-      "height": 5315
+      "height": 5415
     },
     {
       "page": "index",
       "width": 1440,
       "scrollWidth": 1440,
-      "height": 5510
+      "height": 5610
     },
     {
       "page": "platform",
