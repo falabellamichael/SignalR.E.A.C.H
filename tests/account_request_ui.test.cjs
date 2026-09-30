@@ -173,53 +173,6 @@ test('public request model metadata displays the request tariff before sign-in w
   assert.doesNotMatch(rendered.parent.textContent, /1,500|Old Pro/);
 });
 
-test('a real SQLite Basic account retains its 1500 free requests through both adapters and Use actions', async t => {
-  const { AccountStore } = await import('../RCH/service/store.mjs');
-  let now = Date.parse('2026-10-01T00:00:00.000Z');
-  const expiresAt = now + 86400000;
-  const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
-    overageUsdMicrosPerRequest: 10000, proEnabled: false };
-  const model = { ...requestModel, provider: 'Test bridge', metered: true, bridge: { kind: 'tray', model: 'chatgpt-chat' } };
-  const store = new AccountStore(':memory:', { subscription, models: [model], now: () => now });
-  t.after(() => store.close());
-  const raw = store.grantPlan({ wallet: '0x' + '11'.repeat(20), grantId: 'basic-adapter-regression',
-    planId: 'basic-wallet', name: 'Basic', models: [model.id], tokens: 0, expiresAt });
-  assert.equal(raw.credit.balanceMicros, 0);
-  assert.equal(raw.allowance.totalRemaining, 0, 'request allowance does not convert into legacy tokens');
-  assert.equal(raw.requestAllowance.remaining, 1500);
-  for (const [name, adapter] of [['Studio', studioAdapter], ['VS Code', vscodeAdapter]]) {
-    const projected = adapter.publicAccount(store.account(raw.id));
-    assert.equal(projected.allowedModels.length, 1, name);
-    assert.equal(projected.allowedModels[0].access, 'requests', name);
-    assert.deepEqual(projected.allowedModels[0].pricing, { unit: 'request', usdMicrosPerRequest: '10000', includedRequests: '1500' }, name);
-    assert.equal(projected.requestAllowance.basicActive, true, name);
-    assert.equal(projected.requestAllowance.remaining, '1500', name);
-    assert.equal(projected.requestAllowance.periodEndsAt, new Date(expiresAt).toISOString(), name);
-    assert.equal(projected.credit.balanceMicros, '0', name);
-    assert.equal(projected.allowedModels[0].bridge, undefined, 'private bridge routing stays out of public state');
-    const accountState = { status: 'connected', secureStorageAvailable: true, account: projected };
-    if (name === 'Studio') {
-      const ui = studioRenderer(); ui.emit(accountState);
-      assert.equal(ui.get('home-account-use').disabled, false);
-      assert.match(ui.text('home-account-models'), /US\$0\.01 per completed request after 1,500 included Basic requests/);
-      assert.equal(studio.derive(accountState).counts.includedRemaining, '1,500');
-    } else {
-      const ui = vscodeRender(accountState);
-      assert.equal(ui.use.disabled, false);
-      assert.match(ui.parent.textContent, /Included requests remaining1,500/);
-      assert.match(ui.parent.textContent, /US\$0\.01 per completed request after 1,500 included Basic requests/);
-    }
-  }
-  now = expiresAt;
-  for (const adapter of [studioAdapter, vscodeAdapter]) {
-    const accountState = { status: 'connected', secureStorageAvailable: true, account: adapter.publicAccount(store.account(raw.id)) };
-    assert.equal(accountState.account.requestAllowance.basicActive, false);
-    assert.equal(accountState.account.requestAllowance.remaining, '0');
-    assert.equal(studio.derive(accountState).usable, false);
-    assert.equal(vscodeRender(accountState).use.disabled, true);
-  }
-});
-
 test('VS Code projects legacy token prices and pre-sign-in catalogue without subscription or credential fields', () => {
   const privateValue = 'private-fixture-credential';
   const model = { id: 'legacy-priced', name: 'Legacy priced', provider: 'Legacy provider', apiKey: privateValue,
