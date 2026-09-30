@@ -9,6 +9,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import re
 import runpy
 import shutil
@@ -200,11 +201,7 @@ def install(package, home):
         raise ValueError("Package exceeds host asset limits")
     home.mkdir(parents=True, exist_ok=True)
     lock = home / ".reach-editions-install.lock"
-    try:
-        descriptor = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        raise ValueError("Another edition install is active; retry after it finishes")
-    os.close(descriptor)
+    lock_handle = _acquire_install_lock(lock)
     stage = None
     backup = None
     target = None
@@ -214,9 +211,7 @@ def install(package, home):
         registry_path = home / "registry.json"
         if registry_path.is_symlink():
             raise ValueError("Refusing a linked extension registry")
-        registry = json.loads(registry_path.read_text(encoding="utf-8")) if registry_path.exists() else {"schema_version": 1, "extensions": []}
-        if not isinstance(registry, dict) or registry.get("schema_version") != 1 or not isinstance(registry.get("extensions"), list) or any(not isinstance(entry, dict) for entry in registry["extensions"]):
-            raise ValueError("Invalid extension registry; existing data was preserved")
+        _parse_registry(_read_registry_bytes(registry_path))
         parent = home / "packages" / plugin_id
         packages = home / "packages"
         if packages.is_symlink() or packages.resolve() != packages or parent.is_symlink() or parent.resolve() != parent:
@@ -233,13 +228,6 @@ def install(package, home):
                  "manifest_sha256": hashlib.sha256(raw_manifest).hexdigest(),
                  "schema_version": 1, "surfaces": ["advanced"],
                  "scripts": scripts, "styles": styles}
-        registry["extensions"] = [value for value in registry["extensions"] if value.get("id") != plugin_id] + [entry]
-        descriptor, temporary = tempfile.mkstemp(prefix=".registry-edition-", dir=str(home))
-        registry_temp = Path(temporary)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(registry, handle, separators=(",", ":"))
-            handle.flush()
-            os.fsync(handle.fileno())
         if target.exists():
             backup = Path(tempfile.mkdtemp(prefix=".edition-backup-", dir=str(parent)))
             backup.rmdir()
@@ -247,8 +235,7 @@ def install(package, home):
         stage.rename(target)
         stage = None
         installed = True
-        os.replace(str(registry_temp), str(registry_path))
-        registry_temp = None
+        _write_registry_entry(registry_path, plugin_id, entry, home)
     except Exception:
         if installed and target is not None:
             shutil.rmtree(target)
@@ -263,8 +250,86 @@ def install(package, home):
             shutil.rmtree(backup)
         if registry_temp is not None and registry_temp.exists():
             registry_temp.unlink()
-        lock.unlink()
+        _release_install_lock(lock_handle)
     return target
+
+
+def _acquire_install_lock(path):
+    """Use an OS lock so a killed installer cannot leave a stale lock behind."""
+    handle = path.open("a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\\0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        raise ValueError("Another edition install is active; retry after it finishes") from exc
+    return handle
+
+
+def _release_install_lock(handle):
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+def _read_registry_bytes(path):
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _parse_registry(raw):
+    try:
+        registry = json.loads(raw.decode("utf-8")) if raw is not None else {
+            "schema_version": 1, "extensions": []}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Invalid extension registry; existing data was preserved") from exc
+    if (not isinstance(registry, dict) or registry.get("schema_version") != 1
+            or not isinstance(registry.get("extensions"), list)
+            or any(not isinstance(entry, dict) for entry in registry["extensions"])):
+        raise ValueError("Invalid extension registry; existing data was preserved")
+    return registry
+
+
+def _write_registry_entry(path, plugin_id, entry, home):
+    """Merge our entry into the latest registry and retry if a peer rewrites it."""
+    for _attempt in range(5):
+        original = _read_registry_bytes(path)
+        registry = _parse_registry(original)
+        registry["extensions"] = [value for value in registry["extensions"]
+                                  if value.get("id") != plugin_id] + [entry]
+        descriptor, temporary = tempfile.mkstemp(prefix=".registry-edition-", dir=str(home))
+        registry_temp = Path(temporary)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(registry, handle, separators=(",", ":"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            if _read_registry_bytes(path) != original:
+                continue
+            os.replace(str(registry_temp), str(path))
+            return
+        finally:
+            if registry_temp.exists():
+                registry_temp.unlink()
+    raise ValueError("Extension registry changed repeatedly; retry the install")
 
 
 if __name__ == "__main__":

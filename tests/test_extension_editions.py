@@ -10,7 +10,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +110,62 @@ class EditionPackageTests(unittest.TestCase):
         self.assertEqual(sum(item["id"] == "signal-reach-public" for item in registry["extensions"]), 1)
         self.assertTrue((home / "packages/signal-reach-admin/26.9.9/reach.js").exists())
 
+    def test_installer_merges_a_peer_registry_rewrite_before_commit(self):
+        package, installer = self.package()
+        home = self.base / "extensions"
+        home.mkdir()
+        registry_path = home / "registry.json"
+        first_peer = {"id": "first-peer", "version": "1"}
+        second_peer = {"id": "second-peer", "version": "2"}
+        registry_path.write_text(json.dumps({"schema_version": 1, "extensions": [first_peer]}), encoding="utf-8")
+        read_registry_bytes = installer._read_registry_bytes
+        reads = 0
+
+        def concurrent_peer_write(path):
+            nonlocal reads
+            reads += 1
+            if reads == 3:
+                path.write_text(json.dumps({"schema_version": 1, "extensions": [first_peer, second_peer]}),
+                                encoding="utf-8")
+            return read_registry_bytes(path)
+
+        with patch.object(installer, "_read_registry_bytes", side_effect=concurrent_peer_write):
+            installer.install(package, home)
+        registry = json.loads(registry_path.read_bytes())
+        self.assertEqual({item["id"] for item in registry["extensions"]},
+                         {"first-peer", "second-peer", "signal-reach-public"})
+
+    def test_os_install_lock_is_released_after_failure(self):
+        package, installer = self.package()
+        home = self.base / "extensions"
+        home.mkdir()
+        raw = b'{"schema_version":1,"extensions":"broken"}'
+        (home / "registry.json").write_bytes(raw)
+        with self.assertRaisesRegex(ValueError, "Invalid extension registry"):
+            installer.install(package, home)
+        self.assertEqual((home / "registry.json").read_bytes(), raw)
+        with self.assertRaisesRegex(ValueError, "Invalid extension registry"):
+            installer.install(package, home)
+
+    def test_legacy_uninstall_removes_both_edition_frontends(self):
+        from reach import cli
+
+        home = self.base / "extensions"
+        plugin_ids = ("signal-reach", "signal-reach-public", "signal-reach-admin")
+        original = {"schema_version": 1, "extensions": [
+            {"id": "peer", "enabled": True}, *({"id": plugin_id, "version": "26.9.9"} for plugin_id in plugin_ids)]}
+        for plugin_id in plugin_ids:
+            (home / "packages" / plugin_id / "26.9.9").mkdir(parents=True)
+        saved = {}
+        with patch.object(cli, "extension_home", return_value=home), \
+                patch.object(cli, "read_registry", return_value=original), \
+                patch.object(cli, "write_registry", side_effect=lambda _home, value: saved.update(value)):
+            cli.cmd_uninstall(SimpleNamespace(all=False))
+
+        self.assertEqual([item["id"] for item in saved["extensions"]], ["peer"])
+        for plugin_id in plugin_ids:
+            self.assertFalse((home / "packages" / plugin_id).exists())
+
     def test_corrupt_registry_is_rejected_without_package_or_registry_mutation(self):
         package, installer = self.package()
         home = self.base / "extensions"
@@ -120,7 +176,8 @@ class EditionPackageTests(unittest.TestCase):
             installer.install(package, home)
         self.assertEqual((home / "registry.json").read_bytes(), raw)
         self.assertFalse((home / "packages").exists())
-        self.assertFalse((home / ".reach-editions-install.lock").exists())
+        with self.assertRaisesRegex(ValueError, "Invalid extension registry"):
+            installer.install(package, home)
 
     def test_tampered_asset_fails_before_any_install_write(self):
         package, installer = self.package()
@@ -141,7 +198,8 @@ class EditionPackageTests(unittest.TestCase):
                 installer.install(package, home)
         self.assertEqual((target / "reach-public.js").read_bytes(), b"old installed bytes")
         self.assertEqual((home / "registry.json").read_bytes(), raw_registry)
-        self.assertFalse((home / ".reach-editions-install.lock").exists())
+        self.assertEqual(installer.install(package, home), target)
+        self.assertNotEqual((target / "reach-public.js").read_bytes(), b"old installed bytes")
 
     def test_source_export_does_not_walk_history_wallet_env_or_runtime(self):
         for relative in (".git/private", ".env", "RCH/wallet.json", "server/reachd.py", "src/unreviewed.js"):
