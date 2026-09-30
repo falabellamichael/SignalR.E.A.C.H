@@ -24,6 +24,8 @@ The account service supports direct, host-authenticated API routes as well as th
 
 The sample's qualification state reflects checks on September 30, 2026; a model-list entry alone is insufficient. API credit purchases, automatic top-ups, new subscriptions, and customer plan grants are separate operator actions.
 
+Qualification calls used the actual provider APIs with a separate in-memory credit ledger. Successful requests verified measured settlement and replay without a second provider call or debit. Gemini 3.8 passed streaming qualification, while its JSON calls intermittently returned provider 503 errors; availability is not guaranteed by a successful model-list response. The installed catalogue and an existing funded account each exposed the same eight models, and anonymous model access remained HTTP 401.
+
 ## Credentials and deployment
 
 A model declares its private provider authority by environment variable name:
