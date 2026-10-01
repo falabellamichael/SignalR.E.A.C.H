@@ -346,6 +346,41 @@ test('operator snapshot reader preserves the SQLite source and rejects missing o
   assert.throws(() => readAccountSnapshot(directory), /regular SQLite account database/);
 });
 
+test('legacy snapshot export permits empty request tables but refuses either populated request table', async t => {
+  const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
+    overageUsdMicrosPerRequest: 10000, proEnabled: false };
+  const requestModels = [{ id: 'request-bridge', metered: true, access: 'requests', bridge: { kind: 'tray', model: 'chatgpt-chat' } }];
+  for (const populatedTable of ['request_periods', 'request_reservations']) await t.test(populatedTable, async child => {
+    const directory = await mkdtemp(join(tmpdir(), 'reach-request-snapshot-'));
+    const database = join(directory, 'accounts.sqlite');
+    child.after(() => rm(directory, { recursive: true, force: true }));
+    const source = new AccountStore(database, { subscription, models: requestModels });
+    try {
+      const account = source.ensureAccount(wallet);
+      const empty = readAccountSnapshot(database);
+      assert.equal(empty.accounts.length, 1);
+      assert.equal(Object.hasOwn(empty, 'request_periods'), false);
+      assert.equal(Object.hasOwn(empty, 'request_reservations'), false);
+      if (populatedTable === 'request_periods') {
+        source.grantPlan({ wallet, grantId: 'snapshot-basic-grant', planId: 'basic-wallet', name: 'Basic',
+          models: [requestModels[0].id], tokens: 0, expiresAt: Date.now() + 3600000 });
+        const reservation = source.reserveRequest(account.id, 'initialize', requestModels[0].id, 'fingerprint');
+        source.releaseRequest(reservation.id);
+        // Isolate the period check: there are no reservation rows to catch it.
+        source.db.prepare('DELETE FROM request_reservations').run();
+      } else {
+        source.db.prepare('UPDATE accounts SET usd_prepaid=10000 WHERE id=?').run(account.id);
+        const reservation = source.reserveRequest(account.id, 'paid-request', requestModels[0].id, 'fingerprint');
+        source.releaseRequest(reservation.id);
+        assert.equal(source.db.prepare('SELECT COUNT(*) AS n FROM request_periods').get().n, 0);
+      }
+    } finally { source.close(); }
+    const before = await readFile(database);
+    assert.throws(() => readAccountSnapshot(database), /snapshot cannot preserve request billing records/);
+    assert.deepEqual(await readFile(database), before, 'refusing the export must not alter the source ledger');
+  });
+});
+
 test('SQLite snapshot import preserves wallet identity, sessions, holds and redemption uniqueness', async () => {
   const original = sqliteSnapshot();
   await store.importSnapshot(original.snapshot);

@@ -27,6 +27,16 @@ function browserUrl(value, base) {
 }
 const text = (value, limit = 250) => typeof value === 'string' ? value.slice(0, limit) : '';
 const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? String(value) : '0';
+function publicRequestAllowance(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return { basicActive: raw.basicActive === true, periodEndsAt: text(raw.periodEndsAt),
+    ...Object.fromEntries(['includedLimit','completed','reserved','remaining','overageUsdMicrosPerRequest'].map(key => [key, count(raw[key])])) };
+}
+function publicSubscription(raw) {
+  if (!raw || typeof raw !== 'object' || !raw.basic) return null;
+  return { basic: { id: text(raw.basic.id), includedRequests: count(raw.basic.includedRequests), priceUsdMicros: count(raw.basic.priceUsdMicros) },
+    overageUsdMicrosPerRequest: count(raw.overageUsdMicrosPerRequest), proEnabled: false };
+}
 function publicRchBalance(raw) {
   if (!raw || typeof raw !== 'object') return { status: 'unconfigured' };
   const valid = raw.status === 'available' && raw.decimals === 18 && Number.isSafeInteger(raw.chainId) && raw.chainId > 0
@@ -41,6 +51,9 @@ function publicModels(models) {
   return (Array.isArray(models) ? models : []).slice(0, 500).map(model =>
       typeof model === 'string' ? { id: text(model), name: text(model), provider: '' }
         : { id: text(model?.id), name: text(model?.name), provider: text(model?.provider),
+          ...(model?.access === 'requests' && model.pricing?.unit === 'request'
+            ? { access: 'requests', pricing: { unit: 'request', includedRequests: count(model.pricing.includedRequests), usdMicrosPerRequest: count(model.pricing.usdMicrosPerRequest) },
+              ...(model.capabilities?.outputTokenLimit === false ? { capabilities: { outputTokenLimit: false } } : {}) } : {}),
           ...(model?.pricing && ['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion'].every(key => /^(0|[1-9]\d{0,29})$/.test(String(model.pricing[key])))
             ? { pricing: Object.fromEntries(['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion', 'cachedInputUsdMicrosPerMillion']
               .filter(key => model.pricing[key] != null).map(key => [key, count(model.pricing[key])])) } : {}) }).filter(model => model.id);
@@ -52,6 +65,7 @@ function publicAccount(raw) {
     id: text(raw.id), walletAddress: /^0x[0-9a-f]{40}$/i.test(raw.walletAddress) ? raw.walletAddress : '',
     plan: { id: text(plan.id), name: text(plan.name), status: text(plan.status), expiresAt: text(plan.expiresAt) },
     allowedModels: publicModels(raw.allowedModels),
+    ...(raw.requestAllowance ? { requestAllowance: publicRequestAllowance(raw.requestAllowance) } : {}),
     allowance: Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining', 'debt'].map(key => [key, count(allowance[key])])),
     credit: raw.credit?.currency === 'USD' ? { currency: 'USD', ...Object.fromEntries(
       ['balanceMicros', 'reservedMicros', 'debtMicros'].map(key => [key, count(raw.credit[key])])) } : null,
@@ -66,6 +80,7 @@ function publicConfig(raw) {
     treasuryAddress: /^0x[0-9a-f]{40}$/i.test(raw?.treasuryAddress) ? raw.treasuryAddress : '',
     pricingStatus: text(raw?.pricingStatus, 80), pricingMessage: text(raw?.pricingMessage, 400),
     redemptionModels: publicModels(raw?.redemptionModels),
+    ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}),
     loginMethod: text(raw?.loginMethod) };
 }
 function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, openExternal, onChange = () => {}, now = Date.now }) {
