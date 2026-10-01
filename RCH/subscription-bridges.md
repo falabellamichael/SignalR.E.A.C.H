@@ -81,7 +81,9 @@ an in-progress or uncertain request blocks another generation. A changed input
 with an existing key is rejected. Clients that omit this header receive a new
 request ID and each new submission can count as another request.
 
-Use the existing private plan-grant command only after confirming payment. For
+Prefer the `payment` command (see [payments.md](payments.md)) to record a confirmed
+payment: it is recorded once and enforces the Basic price. The plain grant command
+still works for non-paid grants. For
 request billing the grant uses `tokens: 0`, `planId: "basic-wallet"`, qualified
 model IDs, a unique paid-period `grantId`, and an explicit `expiresAt`. It does
 not debit the US$15 subscription price itself. Keep request holds with uncertain

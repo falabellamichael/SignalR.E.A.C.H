@@ -4,10 +4,10 @@ import { mkdirSync, chmodSync, lstatSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { getAddress } from 'ethers';
 
-export class AccountError extends Error {
-  constructor(status, code, message) { super(message); this.status = status; this.code = code; }
-}
-export const fail = (status, code, message) => { throw new AccountError(status, code, message); };
+import { AccountError, fail } from './errors.mjs';
+import { normalizePayment, paymentFingerprint, grantIdFor, decideSubscriptionPayment, decideTopUpPayment,
+  paymentResult, publicPayment, reviewPayment } from './payments/core.mjs';
+export { AccountError, fail };
 export const digest = value => createHash('sha256').update(value).digest('hex');
 const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
@@ -25,6 +25,7 @@ export const requestModel = model => model?.access === 'requests' && model.meter
   && (model.bridge.kind === 'tray'
     ? /^(?:copilot-chat|chatgpt-chat|gemini-chat|codegpt-eco-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100})$/.test(model.bridge.model)
     : model.bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(model.bridge.model));
+export const basicPlanModelIds = models => models.filter(requestModel).map(m => m.id).sort();
 export function basicRequestPeriod(account, subscription, now) {
   return subscription && ['basic', subscription.basic.id].includes(account.plan_id)
     && account.plan_expires > now && typeof account.plan_version === 'string' && account.plan_version.length
@@ -101,6 +102,9 @@ export class AccountStore {
       CREATE TABLE IF NOT EXISTS request_periods(account_id TEXT NOT NULL REFERENCES accounts(id),period_key TEXT NOT NULL,plan_version TEXT NOT NULL,period_ends INTEGER NOT NULL,included_limit INTEGER NOT NULL CHECK(included_limit=1500),completed INTEGER NOT NULL DEFAULT 0 CHECK(completed BETWEEN 0 AND included_limit),PRIMARY KEY(account_id,period_key));
       CREATE TABLE IF NOT EXISTS request_reservations(id TEXT PRIMARY KEY,account_id TEXT NOT NULL REFERENCES accounts(id),request_id TEXT NOT NULL,model TEXT NOT NULL,fingerprint TEXT NOT NULL,period_key TEXT,included INTEGER NOT NULL CHECK(included IN (0,1)),charge_usd_micros INTEGER NOT NULL CHECK(charge_usd_micros IN (0,10000)),status TEXT NOT NULL CHECK(status IN ('reserved','uncertain','released','settled')),created INTEGER NOT NULL,replay TEXT,reason TEXT,UNIQUE(account_id,request_id),FOREIGN KEY(account_id,period_key) REFERENCES request_periods(account_id,period_key),CHECK(included=1 AND charge_usd_micros=0 AND period_key IS NOT NULL OR included=0 AND charge_usd_micros=10000 AND period_key IS NULL));
       CREATE INDEX IF NOT EXISTS request_reservation_account_period ON request_reservations(account_id,period_key,status);
+      CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY,provider TEXT NOT NULL CHECK(provider IN ('stripe','paypal','manual')),event_id TEXT NOT NULL,object_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('subscription_period','top_up')),account_id TEXT NOT NULL,amount_usd_micros INTEGER NOT NULL CHECK(amount_usd_micros>0),currency TEXT NOT NULL CHECK(currency='usd'),period_end INTEGER,status TEXT NOT NULL CHECK(status IN ('applied','superseded','expired','rejected')),reason TEXT,grant_id TEXT,fingerprint TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(provider,object_id,kind),CHECK(kind='subscription_period' AND period_end IS NOT NULL OR kind='top_up' AND period_end IS NULL),CHECK((status='applied')=(reason IS NULL)));
+      CREATE INDEX IF NOT EXISTS payment_account ON payments(account_id,created);
+      CREATE INDEX IF NOT EXISTS payment_review ON payments(status) WHERE status IN ('rejected','expired');
     `);
     // Additive migration preserves every existing account and token reservation.
     for (const [table, columns] of Object.entries({ accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
@@ -207,17 +211,63 @@ export class AccountStore {
   markRequestUncertain(reservationId,reason='completion_unknown') {
     this.db.prepare("UPDATE request_reservations SET status='uncertain',reason=? WHERE id=? AND status='reserved'").run(String(reason).slice(0,200),reservationId);
   }
-  grantPlan({wallet,grantId,planId,name,models,tokens,expiresAt}) {
+  grantPlan({wallet,grantId,planId,name,models,tokens,expiresAt},nested=false) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId||'') || !planId || typeof name!=='string' || !safeCount(tokens) || !Array.isArray(models) || !models.length || !models.every(m=>this.models.some(x=>x.id===m&&(x.metered===true||this.subscription&&requestModel(x)))) || !Number.isSafeInteger(expiresAt) || expiresAt<=this.now()) fail(400,'invalid_grant','Invalid plan grant, qualified model list, allowance, or expiry.');
     const payload = JSON.stringify({wallet:getAddress(wallet),planId,name,models:[...models].sort(),tokens,expiresAt});
-    return this.transaction(()=>{
+    const run=()=>{
       const prev=this.db.prepare('SELECT * FROM grants WHERE id=?').get(grantId);
       if(prev) { if(prev.payload!==payload) fail(409,'grant_conflict','Grant ID was already used with different values.'); return this.account(prev.account_id); }
       const a=this.ensureAccount(wallet);
       this.db.prepare('UPDATE accounts SET plan_id=?,plan_name=?,plan_expires=?,plan_version=?,models=?,included=? WHERE id=?').run(planId,name,expiresAt,grantId,JSON.stringify(models),tokens,a.id);
       this.db.prepare('INSERT INTO grants VALUES(?,?,?)').run(grantId,a.id,payload);
       return this.account(a.id);
+    };
+    return nested?run():this.transaction(run);
+  }
+  // ---- payments: a provider-neutral ledger (rules live in payments/core.mjs) ----
+  basicPlanModels() { return basicPlanModelIds(this.models); }
+  // Records one payment and applies its effect in a SINGLE transaction. Business-rule
+  // failures (wrong amount, expired period, unknown account) are recorded as a
+  // `rejected`/`expired` row and returned, not thrown: a throw would make the provider
+  // retry for days. Only infrastructure failures and genuine conflicts throw, so a
+  // retry after a crash converges.
+  applyPayment(raw) {
+    const payment=normalizePayment(raw),fingerprint=paymentFingerprint(payment);
+    if(payment.kind==='subscription_period'){
+      if(!this.subscription)fail(409,'subscription_unconfigured','Request subscriptions are not configured on this service.');
+      if(!this.basicPlanModels().length)fail(409,'no_qualified_models','No qualified request models are configured for the plan grant.');
+    }
+    return this.transaction(()=>{
+      const existing=this.db.prepare('SELECT * FROM payments WHERE provider=? AND object_id=? AND kind=?').get(payment.provider,payment.objectId,payment.kind);
+      if(existing){
+        if(existing.fingerprint!==fingerprint)fail(409,'payment_conflict','This payment was already recorded with different values.');
+        return paymentResult(existing,true);
+      }
+      const now=this.now(),account=this.db.prepare('SELECT * FROM accounts WHERE id=?').get(payment.accountId)??null;
+      const decision=payment.kind==='subscription_period'
+        ?decideSubscriptionPayment({account,payment,policy:this.subscription,now})
+        :decideTopUpPayment({account,payment});
+      let grantId=null;
+      if(decision.action==='grant'){
+        grantId=grantIdFor(payment);
+        this.grantPlan({wallet:account.wallet,grantId,planId:this.subscription.basic.id,name:'Basic',models:this.basicPlanModels(),tokens:0,expiresAt:payment.periodEnd},true);
+      } else if(decision.action==='credit'){
+        this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,usd_debt=usd_debt-? WHERE id=?').run(decision.credit,decision.debtPaid,account.id);
+      }
+      const row={id:id(),provider:payment.provider,event_id:payment.eventId,object_id:payment.objectId,kind:payment.kind,account_id:payment.accountId,
+        amount_usd_micros:payment.amountUsdMicros,currency:payment.currency,period_end:payment.periodEnd,status:decision.status??'applied',
+        reason:decision.reason??null,grant_id:grantId,fingerprint,created:now};
+      this.db.prepare('INSERT INTO payments(id,provider,event_id,object_id,kind,account_id,amount_usd_micros,currency,period_end,status,reason,grant_id,fingerprint,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(row.id,row.provider,row.event_id,row.object_id,row.kind,row.account_id,row.amount_usd_micros,row.currency,row.period_end,row.status,row.reason,row.grant_id,row.fingerprint,row.created);
+      return paymentResult(row,false);
     });
+  }
+  listPayments(accountId,limit=50) {
+    const bounded=Number.isSafeInteger(limit)&&limit>=1&&limit<=200?limit:50;
+    return this.db.prepare('SELECT * FROM payments WHERE account_id=? ORDER BY created DESC,id LIMIT ?').all(accountId,bounded).map(publicPayment);
+  }
+  flaggedPayments() {
+    return this.db.prepare("SELECT * FROM payments WHERE status IN ('rejected','expired') ORDER BY created,id").all().map(reviewPayment);
   }
   startFlow(state,challenge) {
     if(typeof state!=='string'||typeof challenge!=='string'||!/^[A-Za-z0-9_-]{32,128}$/.test(state)||!/^[A-Za-z0-9_-]{43}$/.test(challenge)) fail(400,'invalid_flow','Invalid sign-in state or proof key.');
