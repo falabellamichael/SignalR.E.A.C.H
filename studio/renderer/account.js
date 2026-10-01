@@ -23,35 +23,55 @@
     el('wallet-balance').textContent = model.walletBalance;
     el('wallet-balance-detail').textContent = model.walletBalanceDetail;
     window.ReachAccountMenu?.update(state, model);
+    const menuSummary = document.getElementById('account-menu-summary');
+    if (menuSummary && model.connected && model.requestMode) menuSummary.textContent = model.plan + ' · ' + model.usageSummary;
     el('account-plan').textContent = model.plan;
-    el('account-plan-status').textContent = model.plan === 'RCH prepaid access' ? 'PREPAID' : String(state.account?.plan?.status || '—').toUpperCase();
-    const expiry = Date.parse(state.account?.plan?.expiresAt);
+    el('account-plan-status').textContent = model.requestMode ? model.connected ? model.requestAllowance.basicActive ? 'BASIC' : 'PAY AS YOU GO' : '—'
+      : model.plan === 'RCH prepaid access' ? 'PREPAID' : String(state.account?.plan?.status || '—').toUpperCase();
+    const expiry = new Date(model.requestMode ? model.requestAllowance.periodEndsAt ?? NaN : state.account?.plan?.expiresAt).getTime();
     el('account-plan-detail').textContent = model.connected
       ? (Number.isFinite(expiry) ? 'Current period ends ' + new Date(expiry).toLocaleString() + '. ' : '') +
-        (model.usable ? 'All models below use the same account allowance.' : 'Add a plan or redeem RCH credit when redemption is available and metered models are configured.')
+        (model.requestMode ? model.requestAllowance.basicActive
+          ? 'Basic includes ' + model.requestAllowance.includedLimit + ' completed requests this subscription period. ' + model.usageSummary + '.'
+          : 'Wallet pay as you go costs ' + model.requestAllowance.overagePrice + ' per completed request. Add credit to use the models below.'
+          : model.usable ? 'All models below use the same account allowance.' : 'Add a plan or redeem RCH credit when redemption is available and metered models are configured.')
       : 'Connect your wallet to load your plan and permitted models.';
     el('account-models').replaceChildren();
     const availableModels = state.account?.allowedModels?.length ? state.account.allowedModels : state.config?.redemptionModels || [];
     el('account-models').setAttribute('aria-label', model.usable ? 'Models included with this account' : 'Models available after funding your account');
     for (const entry of availableModels) {
       const chip = document.createElement('span');
-      const pricing = entry.pricing ? 'Input ' + view.formatUsd(entry.pricing.inputUsdMicrosPerMillion)
-        + ' / output ' + view.formatUsd(entry.pricing.outputUsdMicrosPerMillion) + ' per 1M tokens'
-        + (entry.pricing.cachedInputUsdMicrosPerMillion != null ? ' / cached input ' + view.formatUsd(entry.pricing.cachedInputUsdMicrosPerMillion) : '') : '';
+      const pricing = view.modelPrice(entry, model.requestAllowance?.basicActive);
       chip.textContent = [entry.name || entry.id, pricing].filter(Boolean).join(' · ');
       chip.title = [entry.id, entry.provider, pricing].filter(Boolean).join(' · ');
       el('account-models').appendChild(chip);
     }
     el('account-use').disabled = busy || !model.usable;
     for (const [id, key] of [['included', 'includedRemaining'], ['prepaid', 'prepaidRemaining'], ['reserved', 'reserved'], ['total', 'totalRemaining']]) el('allowance-' + id).textContent = model.counts[key];
+    for (const [id, label, hint] of model.requestMode ? [
+      ['included', 'Included requests remaining', model.requestAllowance.basicActive ? 'Completed requests included with Basic' : 'No active Basic allowance'],
+      ['prepaid', 'Completed included requests', 'Used in the current subscription period'],
+      ['reserved', 'Requests in progress', 'Reserved until each request completes'],
+      ['total', 'Overage per completed request', ''],
+    ] : [
+      ['included', 'Included remaining', 'AI usage tokens'], ['prepaid', 'Prepaid remaining', 'From confirmed RCH redemptions'],
+      ['reserved', 'Reserved by requests', 'Pending usage settlement'], ['total', 'Available to use', ''],
+    ]) {
+      const card = el('allowance-' + id).parentElement;
+      if (card?.querySelector('p')) card.querySelector('p').textContent = label;
+      if (id !== 'total' && card?.querySelector('span')) card.querySelector('span').textContent = hint;
+    }
     el('usd-credit').hidden = !model.usdCredit;
     if (model.usdCredit) {
       el('usd-credit-available').textContent = model.usdCredit.available;
       el('usd-credit-reserved').textContent = model.usdCredit.reserved;
       el('usd-credit-detail').textContent = model.usdCredit.debt !== 'US$0.00'
-        ? model.usdCredit.debt + ' awaiting settlement' : 'Spent at the selected model’s published usage price.';
+        ? model.usdCredit.debt + ' awaiting settlement' : model.requestMode
+          ? model.requestAllowance.overagePrice + ' per completed request after any included Basic allowance.' : 'Spent at the selected model’s published usage price.';
     }
-    el('allowance-debt').textContent = state.account?.allowance?.debt && state.account.allowance.debt !== '0'
+    el('allowance-debt').textContent = model.requestMode ? model.requestAllowance.basicActive
+      ? 'Charged after the included Basic requests are used.' : 'Funded from your available US dollar credit.'
+      : state.account?.allowance?.debt && state.account.allowance.debt !== '0'
       ? view.format(state.account.allowance.debt) + ' tokens awaiting reconciliation' : 'Shared across supplied models';
     el('redemption-badge').textContent = model.canRedeem ? 'AVAILABLE' : 'UNAVAILABLE';
     const treasuryMode = state.config?.redemptionMode === 'treasury';

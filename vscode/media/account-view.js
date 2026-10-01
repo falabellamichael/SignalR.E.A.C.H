@@ -4,6 +4,20 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
   const format = value => { try { return value == null ? '—' : BigInt(value).toLocaleString(); } catch { return '—'; } };
+  const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? BigInt(value) : 0n;
+  const formatUsd = value => {
+    if (!/^(0|[1-9]\d{0,29})$/.test(String(value))) return '—';
+    const micros = BigInt(value), fraction = (micros % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '').padEnd(2, '0');
+    return 'US$' + (micros / 1_000_000n).toLocaleString() + '.' + fraction;
+  };
+  const requestModel = model => model?.access === 'requests' || model?.pricing?.unit === 'request';
+  function modelPrice(model, basicActive = false) {
+    if (requestModel(model)) return formatUsd(model.pricing?.usdMicrosPerRequest ?? 10000) + ' per completed request'
+      + (basicActive ? ' after ' + format(model.pricing?.includedRequests ?? 1500) + ' included Basic requests' : '');
+    return model.pricing ? 'Input ' + formatUsd(model.pricing.inputUsdMicrosPerMillion)
+      + ' / output ' + formatUsd(model.pricing.outputUsdMicrosPerMillion) + ' per 1M tokens'
+      + (model.pricing.cachedInputUsdMicrosPerMillion != null ? ' / cached input ' + formatUsd(model.pricing.cachedInputUsdMicrosPerMillion) : '') : '';
+  }
   function holdings(balance) {
     if (balance?.status !== 'available' || balance.decimals !== 18 || balance.balanceBaseUnits == null) return 'Unavailable';
     try {
@@ -14,7 +28,15 @@
   }
   function render(document, parent, state, { onAction, drafts, busy, error }) {
     const account = state.account, connected = state.status === 'connected', connecting = state.status === 'connecting';
-    const active = connected && account?.allowedModels?.length > 0 && Number(account?.allowance?.totalRemaining) > 0;
+    const allowed = account?.allowedModels || [], requests = account?.requestAllowance;
+    const models = allowed.length ? allowed : state.config?.redemptionModels || [];
+    const requestMode = !!requests || models.some(requestModel), basicActive = connected && requests?.basicActive === true;
+    const remaining = basicActive ? count(requests.remaining) : 0n;
+    const overage = count(requests?.overageUsdMicrosPerRequest) || 10000n;
+    const credit = account?.credit?.currency === 'USD' ? account.credit : null;
+    const available = credit && Number(credit.debtMicros || 0) === 0 ? count(credit.balanceMicros) : 0n;
+    const active = connected && state.secureStorageAvailable !== false && allowed.some(entry => requestModel(entry)
+      ? remaining > 0n || available >= overage : Number(account?.allowance?.totalRemaining) > 0 || available > 0n);
     const create = (tag, className, text) => {
       const node = document.createElement(tag); if (className) node.className = className;
       if (text !== undefined) node.textContent = text; return node;
@@ -45,30 +67,47 @@
     const status = paragraph(error || state.error || messages[state.status] || messages.unconfigured,
       error || state.error ? 'account-error' : '');
     status.id = 'account-status'; status.setAttribute('role', 'status');
-    paragraph(account?.plan?.status === 'active' ? account.plan.name
-      : connected && Number(account?.allowance?.prepaidRemaining) > 0 ? 'RCH prepaid access'
+    paragraph(requestMode ? connected ? basicActive ? 'Basic' : 'Wallet pay as you go' : 'REACH account'
+      : account?.plan?.status === 'active' ? account.plan.name
+      : connected && (Number(account?.allowance?.prepaidRemaining) > 0 || available > 0n) ? 'RCH prepaid access'
         : connected ? 'No active subscription' : 'REACH account');
     if (account?.walletAddress) paragraph(account.walletAddress, 'account-wallet');
-    if (account?.plan?.expiresAt) {
-      const expiry = new Date(account.plan.expiresAt);
+    const periodEnd = requestMode ? basicActive ? requests.periodEndsAt : null : account?.plan?.expiresAt;
+    if (periodEnd) {
+      const expiry = new Date(periodEnd);
       if (Number.isFinite(expiry.getTime())) paragraph('Subscription expires ' + expiry.toLocaleDateString());
     }
     if (connected) {
       const summary = create('dl', 'account-summary');
+      const allowanceRows = requestMode ? [
+        ['Included requests remaining', format(remaining)],
+        ['Completed included requests', format(requests?.completed ?? 0)],
+        ['Requests in progress', format(requests?.reserved ?? 0)],
+        ['Overage per completed request', formatUsd(overage)],
+      ] : [
+        ['Available AI tokens', format(account?.allowance?.totalRemaining)], ['Reserved tokens', format(account?.allowance?.reserved)],
+        ['Subscription tokens', format(account?.allowance?.includedRemaining)], ['Prepaid tokens', format(account?.allowance?.prepaidRemaining)],
+      ];
       for (const [label, value] of [
         ['RCH in wallet', holdings(account?.rchBalance)],
-        ['Available AI tokens', format(account?.allowance?.totalRemaining)],
-        ['Reserved tokens', format(account?.allowance?.reserved)],
-        ['Subscription tokens', format(account?.allowance?.includedRemaining)],
-        ['Prepaid tokens', format(account?.allowance?.prepaidRemaining)],
+        ...allowanceRows,
+        ...(credit ? [['US dollar credit available', formatUsd(available)], ['Credit reserved', formatUsd(credit.reservedMicros)]] : []),
       ]) {
         const item = create('div', label === 'RCH in wallet' ? 'account-holdings' : '');
         item.append(create('dt', '', label), create('dd', '', value)); summary.appendChild(item);
       }
       body.appendChild(summary);
-      paragraph('AI tokens measure model usage. Wallet holdings become prepaid usage only after a confirmed redemption.');
-      if (account?.allowance?.debt && account.allowance.debt !== '0') paragraph('Usage awaiting coverage: ' + format(account.allowance.debt) + ' AI tokens.', 'account-error');
+      paragraph(requestMode ? basicActive ? 'Basic includes ' + format(requests.includedLimit) + ' completed requests per subscription period. '
+        + 'Additional completed requests cost ' + formatUsd(overage) + ' each.'
+        : 'Wallet pay as you go costs ' + formatUsd(overage) + ' per completed request. Wallet holdings become usage credit only after a confirmed redemption.'
+        : 'AI tokens measure model usage. Wallet holdings become prepaid usage only after a confirmed redemption.');
+      if (credit && count(credit.debtMicros) > 0n) paragraph('Usage awaiting coverage: ' + formatUsd(credit.debtMicros) + '.', 'account-error');
+      if (!requestMode && account?.allowance?.debt && account.allowance.debt !== '0') paragraph('Usage awaiting coverage: ' + format(account.allowance.debt) + ' AI tokens.', 'account-error');
       if (!active && !account?.allowedModels?.length) paragraph('No metered models are available on this service yet.');
+    }
+    for (const entry of models) {
+      const pricing = modelPrice(entry, basicActive);
+      if (pricing) paragraph((entry.name || entry.id) + ' · ' + pricing);
     }
     const actions = create('div', 'account-actions'); body.appendChild(actions);
     if (connecting) button(actions, 'account-cancel', 'Cancel sign-in', 'cancel');
@@ -89,5 +128,5 @@
     button(body, 'account-save', 'Save account service', 'configure', connecting, () => url.value.trim());
     if (state.secureStorageAvailable === false) paragraph('VS Code secure credential storage is unavailable.', 'account-error');
   }
-  return { render, format, holdings };
+  return { render, format, holdings, formatUsd, modelPrice };
 });

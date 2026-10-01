@@ -7,7 +7,7 @@ function keys(value, allowed, name) {
   if (!object(value) || Object.keys(value).some(k => !allowed.includes(k))) throw new Error(`Invalid ${name} configuration fields.`);
 }
 export function validateConfig(raw, directory = process.cwd(), env = process.env) {
-  keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption'], 'service');
+  keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption','subscription'], 'service');
   const url = new URL(raw.origin);
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw new Error('Service origin must be HTTPS, or loopback HTTP for development, without a path.');
   if (!['127.0.0.1','::1'].includes(raw.listenHost ?? '127.0.0.1')) throw new Error('Bind the service to loopback behind the existing HTTPS proxy.');
@@ -27,8 +27,26 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
     supabase = { ...raw.supabase, url: projectUrl.origin, secretKey };
   } else if (typeof raw.database !== 'string' || !raw.database || raw.database === ':memory:') throw new Error('Configure a durable account database path.');
   if (!Array.isArray(raw.models)) throw new Error('Configure the hosted model catalog.');
+  if (raw.subscription !== undefined) {
+    keys(raw.subscription, ['basic','overageUsdMicrosPerRequest','proEnabled'], 'subscription');
+    keys(raw.subscription.basic, ['id','includedRequests','priceUsdMicros'], 'Basic subscription');
+    if (raw.subscription.basic.id !== 'basic-wallet'
+      || raw.subscription.basic.includedRequests !== 1500
+      || raw.subscription.basic.priceUsdMicros !== 15000000
+      || raw.subscription.overageUsdMicrosPerRequest !== 10000
+      || raw.subscription.proEnabled !== false) throw new Error('Configure Basic included requests and overage price; Pro is unavailable.');
+  }
   for (const model of raw.models) {
-    keys(model, ['id','name','provider','upstreamModel','metered','maxInputTokens','maxInputBytes','maxOutputTokens','pricing'], 'model');
+    keys(model, ['id','name','provider','upstreamModel','metered','maxInputTokens','maxInputBytes','maxOutputTokens','pricing','access','bridge'], 'model');
+    if (model.access !== undefined && model.access !== 'requests') throw new Error('Invalid model access mode.');
+    if (model.access === 'requests') {
+      if (!raw.subscription || model.pricing !== undefined || model.upstreamModel !== undefined) throw new Error('Request access requires a subscription and a dedicated bridge, without token pricing or relay inference.');
+      keys(model.bridge, ['kind','model'], 'subscription bridge');
+      const valid = model.bridge.kind === 'tray'
+        ? /^(?:copilot-chat|chatgpt-chat|gemini-chat|codegpt-eco-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100})$/.test(model.bridge.model)
+        : model.bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(model.bridge.model);
+      if (!valid || model.bridge.model === 'codegpt-eco-gpt-4o-mini') throw new Error('Use a specific approved bridge model; the legacy default-agent mini is not an exact selector.');
+    } else if (model.bridge !== undefined) throw new Error('A bridge requires request access mode.');
     if (model.pricing !== undefined) {
       keys(model.pricing,['inputUsdMicrosPerMillion','outputUsdMicrosPerMillion','cachedInputUsdMicrosPerMillion'],'model pricing');
       if (![model.pricing.inputUsdMicrosPerMillion,model.pricing.outputUsdMicrosPerMillion].every(v=>Number.isSafeInteger(v)&&v>0&&v<=1_000_000_000)
@@ -54,7 +72,7 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
     if(!/^[A-Z][A-Z0-9_]{2,80}$/.test(redemption.quoteSignerKeyEnv||'')||[raw.upstreamKeyEnv,raw.supabase?.secretKeyEnv].includes(redemption.quoteSignerKeyEnv))throw new Error('Use a separate host-only quote signing credential.');
     quoteSignerKey=env[redemption.quoteSignerKeyEnv];
     try { new Wallet(quoteSignerKey); } catch { throw new Error('Set the private quote signing credential.'); }
-    if(!raw.models.some(m=>m.metered===true&&m.pricing))throw new Error('Treasury redemption needs at least one qualified priced model.');
+    if(!raw.models.some(m=>m.metered===true&&(m.pricing||m.access==='requests'&&raw.subscription)))throw new Error('Treasury redemption needs at least one qualified priced model.');
   }
   if (redemption.enabled && (!isAddress(redemption.tokenAddress) || !redemption.rpcUrl || !Number.isSafeInteger(redemption.confirmations) || redemption.confirmations < 1)) throw new Error('Redemption needs the reviewed token address, chain RPC, and confirmation policy.');
   if ((redemption.tokenAddress || redemption.rpcUrl) && (!isAddress(redemption.tokenAddress) || /^0x0{40}$/i.test(redemption.tokenAddress) || !redemption.rpcUrl)) throw new Error('Wallet balances need the reviewed RCH token address and chain RPC.');
