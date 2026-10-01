@@ -65,6 +65,8 @@ DEFAULT_SETTINGS = {
     "circuit_threshold": 5,         # consecutive failures before cool-down
     "circuit_cooldown_s": 30,
     "max_concurrency": 12,          # simultaneous upstream calls
+    "client_timeout_s": 30,         # idle/stalled client socket is dropped (restart to apply)
+    "max_connections": 64,          # open client connections / threads (restart to apply)
     "health_check_interval_s": 60,
     # ---- request handling ----
     "request": {
@@ -243,6 +245,8 @@ NUMERIC_FIELDS = {
     "circuit_threshold": (1, 100),
     "circuit_cooldown_s": (5, 3600),
     "max_concurrency": (1, 64),
+    "client_timeout_s": (5, 600),
+    "max_connections": (4, 1024),
     "health_check_interval_s": (10, 3600),
 }
 

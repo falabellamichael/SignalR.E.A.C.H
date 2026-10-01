@@ -10,10 +10,11 @@ import secrets
 import socket
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -123,9 +124,70 @@ def _secret_equal(known, presented):
     return hmac.compare_digest(known.encode("utf-8"), presented.encode("utf-8"))
 
 
+class RelayHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a ceiling on live connections.
+
+    Every connection is an OS thread, and the port is on a public tunnel, so
+    an unbounded server lets anyone exhaust the host by opening sockets. Past
+    `max_connections`, a new connection gets a short 503 and is closed instead
+    of a thread. Slots are freed when a handler thread ends, which the
+    handler's socket `timeout` guarantees for idle or stalled clients."""
+
+    daemon_threads = True
+
+    def __init__(self, server_address, handler_class, max_connections=64,
+                 client_timeout=None, bind_and_activate=True):
+        self.max_connections = max(1, int(max_connections))
+        self.client_timeout = client_timeout
+        self._slots = threading.BoundedSemaphore(self.max_connections)
+        super().__init__(server_address, handler_class, bind_and_activate)
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self._refuse(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._slots.release()  # the thread never started
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+    def _refuse(self, request):
+        """Best-effort 503 without blocking the accept loop, then close."""
+        body = json.dumps({"error": {"message": "Relay is at its connection limit. Retry shortly.",
+                                     "type": "server_error", "code": "too_many_connections"}}).encode("utf-8")
+        head = ("HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\n"
+                "Content-Length: %d\r\nRetry-After: 1\r\nConnection: close\r\n\r\n" % len(body))
+        try:
+            request.setblocking(False)
+            request.send(head.encode("ascii") + body)
+        except OSError:
+            pass
+        self.shutdown_request(request)
+
+
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SignalR.E.A.C.H/" + VERSION
     protocol_version = "HTTP/1.1"
+    # Seconds any single read or write on the CLIENT socket may block. Without
+    # it a client that never finishes its request (slowloris) or idles on a
+    # keep-alive connection pins a thread forever. Waiting on the upstream is
+    # not a client-socket operation, so slow generations are unaffected, and a
+    # stream only fails if the client stops reading for this long. The server
+    # passes the configured client_timeout_s (see RelayHTTPServer).
+    timeout = 30
+
+    def setup(self):
+        configured = getattr(self.server, "client_timeout", None)
+        if configured:
+            self.timeout = configured
+        super().setup()
 
     def log_message(self, fmt, *args):
         pass
@@ -167,6 +229,8 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except CLIENT_DISCONNECT_ERRORS:
             pass
+        except socket.timeout:
+            self.close_connection = True  # the client stopped reading
 
     def parse_request(self):
         # One handler serves every request on a keep-alive connection, so the
@@ -481,6 +545,12 @@ class RelayHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
         except CLIENT_DISCONNECT_ERRORS:
             raise
+        except socket.timeout:
+            # A client that stopped reading for `timeout` seconds is gone as
+            # far as the stream is concerned; end it like a disconnect rather
+            # than letting the route answer 500 into a half-sent stream.
+            self.close_connection = True
+            raise ConnectionAbortedError("client stopped reading the stream") from None
 
     # ------------------------------------------------------------------- routes
     def do_OPTIONS(self):
