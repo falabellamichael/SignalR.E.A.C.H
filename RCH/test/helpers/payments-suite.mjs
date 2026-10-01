@@ -157,6 +157,22 @@ export function definePaymentsSuite(label, { fresh }) {
     assert.equal((await s.view()).plan.status, 'none');
   });
 
+  t('a rejected period outside the Date range remains readable in both payment lists', async () => {
+    const s = await setup();
+    const result = await s.store.applyPayment(s.pay({ periodEnd: 9_000_000_000_000_000 }));
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.reason, 'period_too_long');
+    assert.equal((await s.view()).plan.status, 'none');
+    const [listed] = await s.store.listPayments(s.accountId);
+    const [flagged] = await s.store.flaggedPayments();
+    assert.equal(listed.id, result.paymentId);
+    assert.equal(listed.periodEnd, null);
+    assert.equal(flagged.id, result.paymentId);
+    assert.equal(flagged.periodEnd, null);
+    assert.equal(flagged.reason, 'period_too_long');
+    assert.equal(flagged.objectId, s.pay().objectId);
+  });
+
   t('a discounted or over-charged amount is not accepted as a full Basic payment', async () => {
     const s = await setup();
     for (const [n, amount] of [[1, 14_999_999], [2, 15_000_001], [3, 7_500_000]]) {

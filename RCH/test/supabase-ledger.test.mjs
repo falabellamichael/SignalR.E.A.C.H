@@ -381,6 +381,35 @@ test('legacy snapshot export permits empty request tables but refuses either pop
   });
 });
 
+test('legacy snapshot export refuses applied and rejected payments without losing replay protection', async t => {
+  for (const amount of [5_000_000, 999_999]) await t.test(`amount ${amount}`, async child => {
+    const directory = await mkdtemp(join(tmpdir(), 'reach-payment-snapshot-'));
+    const database = join(directory, 'accounts.sqlite');
+    child.after(() => rm(directory, { recursive: true, force: true }));
+    const source = new AccountStore(database);
+    let account, payment, result;
+    try {
+      account = source.ensureAccount(wallet);
+      assert.equal(readAccountSnapshot(database).accounts.length, 1, 'an empty payment ledger permits legacy exports');
+      payment = { provider: 'manual', eventId: 'evt_snapshot', objectId: 'bank-ref-snapshot', kind: 'top_up',
+        accountId: account.id, amountUsdMicros: amount };
+      result = source.applyPayment(payment);
+      assert.equal(result.status, amount === 5_000_000 ? 'applied' : 'rejected');
+    } finally { source.close(); }
+    const before = await readFile(database);
+    assert.throws(() => readAccountSnapshot(database), /snapshot cannot preserve payment records/);
+    assert.deepEqual(await readFile(database), before, 'refusing the export must preserve the source ledger');
+    const restored = new AccountStore(database);
+    try {
+      const replay = restored.applyPayment(payment);
+      assert.equal(replay.duplicate, true);
+      assert.equal(replay.paymentId, result.paymentId);
+      assert.equal(restored.account(account.id).credit.balanceMicros, amount === 5_000_000 ? amount : 0);
+      assert.equal(restored.listPayments(account.id).length, 1);
+    } finally { restored.close(); }
+  });
+});
+
 test('SQLite snapshot import preserves wallet identity, sessions, holds and redemption uniqueness', async () => {
   const original = sqliteSnapshot();
   await store.importSnapshot(original.snapshot);

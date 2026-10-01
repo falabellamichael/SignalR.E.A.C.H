@@ -99,11 +99,16 @@ export const paymentResult = (row, duplicate) => ({
 
 // What the account's own owner may see about a payment. No provider object IDs,
 // no event IDs, no fingerprint.
-export const publicPayment = row => ({
-  id: row.id, provider: row.provider, kind: row.kind, amountUsdMicros: row.amount_usd_micros,
-  currency: row.currency, status: row.status, reason: row.reason ?? null,
-  periodEnd: row.period_end == null ? null : new Date(row.period_end).toISOString(),
-  createdAt: new Date(row.created).toISOString() });
+export const publicPayment = row => {
+  // Keep malformed periods reviewable even outside JavaScript's Date range.
+  // The raw timestamp stays in the ledger; only its public ISO value is null.
+  const periodEnd = row.period_end == null ? null : new Date(row.period_end);
+  return {
+    id: row.id, provider: row.provider, kind: row.kind, amountUsdMicros: row.amount_usd_micros,
+    currency: row.currency, status: row.status, reason: row.reason ?? null,
+    periodEnd: periodEnd && Number.isFinite(periodEnd.getTime()) ? periodEnd.toISOString() : null,
+    createdAt: new Date(row.created).toISOString() };
+};
 
 // What an operator needs to chase a flagged payment.
 export const reviewPayment = row => ({ ...publicPayment(row), accountId: row.account_id,

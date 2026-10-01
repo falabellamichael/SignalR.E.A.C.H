@@ -25,6 +25,8 @@ no provider credentials, webhooks, or checkout, and it moves no money.
 - A Basic payment must equal the Basic price exactly.
 - A period that already ended is recorded as `expired`; one more than 400 days out
   is `rejected` (`period_too_long`). Both catch seconds-versus-milliseconds mistakes.
+  A rejected period outside JavaScript's Date range appears as `periodEnd: null`
+  in payment lists; the original timestamp remains in the ledger.
 - A late, older invoice never shortens a newer paid period: it is recorded as
   `superseded` and the plan is left alone.
 - A payment never replaces a different plan an operator granted by hand.
@@ -54,5 +56,11 @@ the payment is recorded and cannot be applied twice.
 
 Migration `20261001120000_rch_payments_ledger.sql` adds `reach_accounts.payments`
 and `public.reach_payment_store`. It changes no existing table or function and is
-service-role only. The same 22-case suite (`test/helpers/payments-suite.mjs`)
+service-role only. The same 23-case suite (`test/helpers/payments-suite.mjs`)
 runs against SQLite and Postgres (PGlite).
+
+The legacy `import-sqlite` snapshot cannot preserve payment history. It refuses
+any source with payment records, including rejected payments, so importing a
+balance cannot discard the identifiers that prevent double credit. Keep a full
+database backup until payment-ledger snapshot migration is supported. Databases
+with an empty payment ledger can still use the legacy export.
