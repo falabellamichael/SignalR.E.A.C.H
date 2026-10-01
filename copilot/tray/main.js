@@ -163,6 +163,17 @@ function isChatgptAppHost(url) {
     return CHATGPT_APP_HOSTS.some((a) => h === a || h.endsWith('.' + a));
 }
 
+// The one way a link leaves the tray for the user's real browser. Pages in the
+// provider windows choose these URLs (window.open), so only http(s) is handed
+// to the OS: file:, smb:, ms-*: and other protocol handlers are refused.
+function openExternalWeb(url) {
+    let u;
+    try { u = new URL(String(url)); } catch (_) { return false; }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    void shell.openExternal(u.toString()).catch(() => {});
+    return true;
+}
+
 function configureSession(ses) {
     const defaultUA = `Mozilla/5.0 (${process.platform === 'darwin' ? 'Macintosh; Intel Mac OS X 10_15_7' : process.platform === 'linux' ? 'X11; Linux x86_64' : 'Windows NT 10.0; Win64; x64'}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36`;
     ses.setUserAgent(defaultUA);
@@ -223,7 +234,7 @@ function ensureBrowser() {
             return { action: 'deny' };
         }
         // external link (docs, terms): open in the user's real browser
-        shell.openExternal(url);
+        openExternalWeb(url);
         return { action: 'deny' };
     });
 
@@ -411,7 +422,7 @@ function ensureChatgpt() {
             chatgptWin.loadURL(url);
             return { action: 'deny' };
         }
-        shell.openExternal(url);
+        openExternalWeb(url);
         return { action: 'deny' };
     });
 
@@ -526,7 +537,7 @@ function ensureCodegpt() {
             codegptWin.loadURL(url);
             return { action: 'deny' };
         }
-        shell.openExternal(url);
+        openExternalWeb(url);
         return { action: 'deny' };
     });
 
@@ -3019,12 +3030,7 @@ function installIpc() {
         else if (p === 'codegpt') { const win = ensureCodegpt(); win.webContents.reload(); }
         else { const win = ensureBrowser(); win.webContents.reload(); }
     });
-    listen('open-external', (_e, url) => {
-        try {
-            const u = new URL(String(url));
-            if (u.protocol === 'http:' || u.protocol === 'https:') shell.openExternal(u.toString());
-        } catch (_) { /* ignore bad url */ }
-    });
+    listen('open-external', (_e, url) => { openExternalWeb(url); });
     listen('sign-out', () => {
         const p = endpoints.getSettings().provider;
         if (p === 'chatgpt') void signOutChatgpt();

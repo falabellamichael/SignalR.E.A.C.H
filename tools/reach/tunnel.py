@@ -48,13 +48,20 @@ def start_tunnel(kind, port):
             print("  cloudflared binary not found under ~/.omniroute/cloudflared — "
                   "falling back to ngrok")
             return start_tunnel("ngrok", port)
+        # The log is appended to across launches, so remember where this
+        # launch begins: only the URL cloudflared prints NOW is live. An older
+        # quick-tunnel URL earlier in the file is dead and must not be posted.
+        try:
+            offset = TUNNEL_LOG.stat().st_size
+        except OSError:
+            offset = 0
         with open(TUNNEL_LOG, "ab") as log:
             proc = subprocess.Popen(
                 [binary, "tunnel", "--url", "http://127.0.0.1:%d" % port,
                  "--no-autoupdate"],
                 stdout=log, stderr=subprocess.STDOUT, **no_window_kwargs())
         TUNNEL_PID_PATH.write_text(str(proc.pid), encoding="utf-8")
-        url = wait_for_cloudflared_url(45)
+        url = wait_for_cloudflared_url(45, offset)
         if url:
             post_public_url_override(port, url)
         return url is not None
@@ -77,14 +84,19 @@ def start_tunnel(kind, port):
     return False
 
 
-def wait_for_cloudflared_url(timeout_s):
-    pattern = "https://"
+def wait_for_cloudflared_url(timeout_s, offset=0):
+    """First .trycloudflare.com URL written to the tunnel log after byte
+    `offset` (where the current launch started appending)."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         if TUNNEL_LOG.is_file():
             try:
-                for line in TUNNEL_LOG.read_text(encoding="utf-8",
-                                                 errors="replace").splitlines():
+                with open(TUNNEL_LOG, "rb") as log:
+                    if os.fstat(log.fileno()).st_size < offset:
+                        offset = 0  # the log was truncated or rotated
+                    log.seek(offset)
+                    text = log.read().decode("utf-8", errors="replace")
+                for line in text.splitlines():
                     if ".trycloudflare.com" in line:
                         start = line.find("https://")
                         if start >= 0:

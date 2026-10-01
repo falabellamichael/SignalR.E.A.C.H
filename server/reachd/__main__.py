@@ -4,12 +4,11 @@ import argparse
 import sys
 import threading
 import time
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import reachd.core as core  # owns the live STATE / PORT globals
 from reachd.const import DEFAULT_PORT, VERSION
-from reachd.handler import RelayHandler
+from reachd.handler import RelayHandler, RelayHTTPServer
 from reachd.publish import publish_url
 from reachd.settings import config_dir, load_config
 from reachd.state import RelayState
@@ -72,7 +71,10 @@ def main():
     host = cfg.get("host", "127.0.0.1")
 
     try:
-        httpd = ThreadingHTTPServer((host, core.PORT), RelayHandler)
+        httpd = RelayHTTPServer(
+            (host, core.PORT), RelayHandler,
+            max_connections=int(cfg.get("max_connections", 64)),
+            client_timeout=int(cfg.get("client_timeout_s", RelayHandler.timeout)))
     except OSError as exc:
         print("SignalR.E.A.C.H: cannot bind %s:%d — %s" % (host, core.PORT, exc),
               file=sys.stderr)
