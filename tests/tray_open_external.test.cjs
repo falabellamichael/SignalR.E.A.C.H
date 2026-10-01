@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const SRC = fs.readFileSync(path.resolve(__dirname, '../copilot/tray/main.js'), 'utf8');
+const SRC = fs.readFileSync(path.resolve(__dirname, '../copilot/tray/main.js'), 'utf8').replace(/\r\n/g, '\n');
 
 function functionSource(name) {
   const start = SRC.indexOf('function ' + name + '(');
