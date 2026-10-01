@@ -1,5 +1,24 @@
 # Changelog
 
+## [26.9.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.9...reach-studio-v26.9.10) (2026-10-01)
+
+
+### Features
+
+* add Basic wallet billing for subscription bridges ([#125](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/125)) ([12f38d8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/12f38d86c6fd296aab272a290668372180100dcf))
+* add Jev compliance checks to Studio and VS Code ([1a0ada5](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1a0ada541129e216d5ffa80c11cdfdee99278dea))
+* add Links Code agent communication contract ([6b3eb7c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6b3eb7c70361046c23dca4a599103d3495200cc1))
+* add subscription account menus and Supabase ledger ([419421a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/419421a5f58dced957f302f9f24adccd3e2d8f9f))
+* redeem RCH to treasury for metered USD credit ([a105d6d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a105d6d2e1a844ead0056024421082349d2715d3))
+* **studio:** reveal a team member's status when its tile is clicked ([1b3d94a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1b3d94a869022222c494086fcbbafd546e75cb80))
+
+
+### Bug Fixes
+
+* allow RCH prepaid credit to start model access ([bb44d8e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/bb44d8e0ba414503ac5dd5cc59dbd8a51ee5721d))
+* guard market-priced RCH redemption on mainnet ([9cf9e21](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9cf9e21849b449df322a074fae408c093cfdad5d))
+* recover stalled team agents and deliver peer messages ([b3795b8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b3795b8ef9ddacb93c958cb41c5bca7808a8f8fc))
+
 ## [26.9.9](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.8...reach-studio-v26.9.9) (2026-09-26)
 
 

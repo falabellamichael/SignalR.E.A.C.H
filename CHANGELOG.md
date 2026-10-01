@@ -1,5 +1,43 @@
 # Changelog
 
+## [26.9.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.9...v26.9.10) (2026-10-01)
+
+
+### Features
+
+* add Basic wallet billing for subscription bridges ([#125](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/125)) ([12f38d8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/12f38d86c6fd296aab272a290668372180100dcf))
+* add Jev compliance checks to Studio and VS Code ([1a0ada5](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1a0ada541129e216d5ffa80c11cdfdee99278dea))
+* add Links Code agent communication contract ([6b3eb7c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6b3eb7c70361046c23dca4a599103d3495200cc1))
+* add orange RAG branding for RCH tokens ([26dd957](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/26dd9576f0166cfcdbbdad7f1d6003452b6ab741))
+* add quoted RCH treasury redemption contract ([e0b1acd](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e0b1acdc588c233d3a7d3f605957beb29f8e1e69))
+* add subscription account menus and Supabase ledger ([419421a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/419421a5f58dced957f302f9f24adccd3e2d8f9f))
+* add verified treasury deployment with bounded fees ([eefd94a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/eefd94a2d924b74753946842fdadca1cbf7a7ab5))
+* **rch:** make the sale USD price a deployment parameter, not a constant ([bed4c23](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/bed4c23e6c0ad0593dd767d2b4cb3da9bc4cf67d))
+* record RCH mainnet market position ([f6a0b2d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f6a0b2d8bfed9e4ec3a75145b4994975d4280af1))
+* redeem RCH to treasury for metered USD credit ([a105d6d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a105d6d2e1a844ead0056024421082349d2715d3))
+* restore RCH buying with two-sided Uniswap pool ([7fbfbec](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/7fbfbec6ac13312b0daf9f93110852779cddec51))
+* split SimpleRAG into public and Admin editions ([#123](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/123)) ([e565108](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e565108b5367141ee4363012ff9509663c0fba64))
+* **studio:** reveal a team member's status when its tile is clicked ([1b3d94a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1b3d94a869022222c494086fcbbafd546e75cb80))
+* upgrade SignalREACH website chat ([7dce63a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/7dce63ae5f9122a82da9ef63c87b1a44a2e89950))
+* **website:** expand heuristic chat interactions ([b4b7451](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b4b745158528c9d10f613dac781142c025c65699))
+
+
+### Bug Fixes
+
+* allow RCH prepaid credit to start model access ([bb44d8e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/bb44d8e0ba414503ac5dd5cc59dbd8a51ee5721d))
+* forward RCH branding through account gateway ([ae4fab5](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ae4fab57c9278018c1b7b901d929c7401fa40cba))
+* guard market-priced RCH redemption on mainnet ([9cf9e21](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9cf9e21849b449df322a074fae408c093cfdad5d))
+* include Jev policy in Studio Docker image ([#126](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/126)) ([0d4f101](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0d4f10187eee5df799e91fbfc094855a754cd5a6))
+* **rch:** make the deployed contract the authority on credit bounds ([dce8050](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/dce805053eb5d5447c81a11a03ce4ee3e892d8c1))
+* **rch:** make the treasury redemption quote signer rotatable and bound credit on-chain ([d7f4733](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d7f4733443fa19454ee7e4ca0de82b27cf804583))
+* recover stalled team agents and deliver peer messages ([b3795b8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b3795b8ef9ddacb93c958cb41c5bca7808a8f8fc))
+* restore treasury setup wallet connection after reload ([adf6ee9](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/adf6ee97e3cf3ac07e3b0c02aa3b6a414fcdb5ff))
+* serve RCH branding through wallet proxy routes ([576dfe6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/576dfe6d27f56a0d69c60ca1b6673f1efafd8f75))
+* support delegated wallets in RCH treasury redemption ([60f7cb7](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/60f7cb7f8b04c2d090a6d15ab935408ab04326c4))
+* **website:** compact demo chat controls ([6c20996](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/6c20996fe92696fc310a2bc03f7b19c7109edea3))
+* **website:** preserve homepage design while expanding chat ([93e95d9](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/93e95d986cb3b04f4d234a7ed4c31f8f592cbd59))
+* **website:** sync improved chat scrolling ([1a58734](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1a5873481a665a4537bc2c72b1f9a2350483a191))
+
 ## [26.9.9](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.8...v26.9.9) (2026-09-26)
 
 
