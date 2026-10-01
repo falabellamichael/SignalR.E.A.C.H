@@ -181,7 +181,36 @@ class BrowserAttackTests(RelayFixture):
     def test_tunnel_cannot_use_admin_without_the_token(self):
         self.assertEqual(self.status("GET", "/_reach/settings", TUNNEL), 403)
 
-    def test_admin_token_works_remotely_but_never_hands_out_a_key(self):
+    def test_valid_admin_token_cannot_override_disabled_remote_admin(self):
+        token = self.state.cfg["system"]["admin_token"]
+        for source in (TUNNEL, {"X-Forwarded-For": "203.0.113.9"}, EVIL_PAGE,
+                       {"Host": "rebind.evil.example:20777"}):
+            with self.subTest(source=source):
+                status, body, _ = self.call("GET", "/_reach/settings",
+                                            {**source, "X-Reach-Admin": token})
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(body)["error"]["code"], "remote_admin_disabled")
+
+    def test_disabled_remote_admin_cannot_change_settings_with_valid_token(self):
+        before = json.loads(json.dumps(self.state.cfg))
+        headers = {**TUNNEL, "X-Reach-Admin": self.state.cfg["system"]["admin_token"],
+                   "Content-Type": "application/json"}
+        self.assertEqual(self.status("PUT", "/_reach/settings", headers,
+                                     body=b'{"access":{"key_required":false}}'), 403)
+        self.assertEqual(self.state.cfg, before)
+        self.assertFalse(self.state.cfg_path.exists())
+
+    def test_remote_admin_requires_an_explicit_boolean_opt_in(self):
+        headers = {**TUNNEL, "X-Reach-Admin": self.state.cfg["system"]["admin_token"]}
+        self.state.cfg["system"].pop("allow_remote_admin")
+        self.assertEqual(self.status("GET", "/_reach/settings", headers), 403)
+        for value in (None, "true", 1):
+            with self.subTest(value=value):
+                self.state.cfg["system"]["allow_remote_admin"] = value
+                self.assertEqual(self.status("GET", "/_reach/settings", headers), 403)
+
+    def test_opted_in_admin_token_works_remotely_but_cannot_ensure_a_key(self):
+        self.state.cfg["system"]["allow_remote_admin"] = True
         token = self.state.cfg["system"]["admin_token"]
         admin = {**TUNNEL, "X-Reach-Admin": token}
         self.assertEqual(self.status("GET", "/_reach/settings", admin), 200)
@@ -232,12 +261,22 @@ class LockoutTests(RelayFixture):
         self.assertEqual(self.status("GET", "/v1/models"), 200)
 
     def test_admin_token_guessing_trips_the_same_lockout(self):
+        self.state.cfg["system"]["allow_remote_admin"] = True
         attacker = _tunnel("198.51.100.50")
         codes = [self.status("GET", "/_reach/settings", {**attacker, "X-Reach-Admin": "rt-guess%d" % i})
                  for i in range(4)]
         self.assertEqual(codes, [403, 403, 429, 429])
         good = {**attacker, "X-Reach-Admin": self.state.cfg["system"]["admin_token"]}
         self.assertEqual(self.status("GET", "/_reach/settings", good), 429)
+
+    def test_disabled_remote_admin_denials_do_not_lock_out_owner_or_api_key(self):
+        for source in (EVIL_PAGE, TUNNEL):
+            for _ in range(10):
+                self.assertEqual(self.status("GET", "/_reach/settings",
+                                             {**source, "X-Reach-Admin": "wrong-token"}), 403)
+        self.assertEqual(self.status("GET", "/_reach/settings"), 200)
+        self.assertEqual(self.status("GET", "/v1/models"), 200)
+        self.assertEqual(self.status("GET", "/v1/models", self.bearer(**TUNNEL)), 200)
 
     def test_lockout_can_be_disabled(self):
         self.state.cfg["access"]["auth_fail_limit"] = 0

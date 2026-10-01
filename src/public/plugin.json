@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "signal-reach-public",
+  "name": "SignalREACH",
+  "version": "26.9.9",
+  "edition": "public",
+  "description": "Connect your own OpenAI-compatible provider to SimpleRAG, choose model defaults, and try prompts with your own account or local model.",
+  "publisher": { "name": "Michael Anthony Falabella" },
+  "license": "MIT",
+  "permissions": [
+    { "id": "ui.page", "reason": "Adds connection settings, compact model defaults, and a prompt playground using your own provider.", "required": true }
+  ],
+  "frontend": { "entrypoint": "reach-public.js", "capabilities": ["workspace.page-controller.v1"] },
+  "contributes": {
+    "pages": [
+      { "id": "signal-reach-public.reach-page", "location": "app-bar", "icon": "fa-satellite-dish", "title": "SignalREACH", "ariaLabel": "Open SignalREACH connections and model settings", "order": 39, "entrypoint": "reach-public.js", "offlineCapable": true, "controllerCapability": "workspace.page-controller.v1" }
+    ]
+  }
+}

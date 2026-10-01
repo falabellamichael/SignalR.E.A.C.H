@@ -4,17 +4,50 @@
 
 ## Choose your workspace
 
-This repository ships four user-facing products:
+This repository ships these user-facing products:
 
 | Product | Start here |
 | --- | --- |
 | REACH Studio — standalone macOS, Windows and Linux agent workspace | [Run and build Studio](studio/README.md), [contribute](studio/CONTRIBUTING.md) |
-| SimpleRAG panel + Python relay — host and manage endpoints | Continue with this README; implementation in `src/` and `server/reachd/` |
+| SignalREACH public SimpleRAG extension — use your own provider and model settings | [Extension editions](docs/EXTENSION_EDITIONS.md); `python tools/reach.py install` |
+| REACH Admin panel + Python relay — private operator controls | [Extension editions](docs/EXTENSION_EDITIONS.md); operator runtime reference below |
 | VS Code extension — chat and coding inside your editor | [Extension guide](#vs-code); `cd vscode && npm test` |
 | Desktop tray + Copilot bridge — local endpoint access | [Tray guide](#desktop-tray-macos-windows-and-linux); `cd copilot/tray && npm test` |
 
 See the [documentation index](docs/README.md) for the improvement backlog and
 [security policy](SECURITY.md) for credential storage and vulnerability reporting.
+
+## SimpleRAG extension: Public and Admin
+
+The public edition starts with an empty connection. Users enter their own
+OpenAI-compatible provider URL and API key, or connect a model running locally.
+Settings includes a default-model dropdown and collapsed per-model controls for
+playground temperature and output length. Sending a playground prompt uses that
+user's configured provider; no workspace documents are included.
+
+```powershell
+python tools/reach.py install
+```
+
+This command installs only the public frontend. It does not discover accounts,
+install a relay or VS Code extension, start a tray or tunnel, or publish a URL.
+Reload SimpleRAG's Advanced page and open **SignalREACH**. The separate public
+repository is [SignalREACH-Extension](https://github.com/falabellamichael/SignalREACH-Extension).
+
+The private [SignalREACH-Admin](https://github.com/falabellamichael/SignalREACH-Admin)
+repository contains the operator frontend and maintained runtime source. Install
+its frontend with `python tools/reach.py install --edition admin`; it uses an
+already-configured local relay. Model editors open as compact dropdowns, with
+their existing tuning and save behavior preserved. New repos use reviewed source
+snapshots without the existing repository's Git history or local credentials.
+
+After installing Admin, open **Advanced → REACH Admin → Settings**. Each model
+starts collapsed; expand one, change a tuning value, save, and reload the page to
+check that the value persists and the default-model selection is unchanged.
+
+See [edition build, installation, exports, and trust boundaries](docs/EXTENSION_EDITIONS.md).
+The remaining endpoint/hosting instructions describe the operator runtime.
+The full runtime installer now requires `python tools/reach.py install-runtime`.
 
 A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint with **unlimited gpt-4o**. Access is by **API key** (`sk-reach-…`): the host decides who gets one, and nobody else can use the relay — see [Security](#security). Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
 
@@ -196,26 +229,27 @@ print(reply.choices[0].message.content)
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/falabellamichael/SimpleREACH/main/install.ps1 | iex"
+powershell -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/falabellamichael/SignalR.E.A.C.H/main/install.ps1 | iex"
 ```
 
 ```bash
 # Linux / macOS
-curl -fsSL https://raw.githubusercontent.com/falabellamichael/SimpleREACH/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/falabellamichael/SignalR.E.A.C.H/main/install.sh | sh
 ```
 
-Or install manually:
+The one-click scripts install the public frontend. To install the operator
+runtime on a trusted host manually:
 
 ```bash
 git clone https://github.com/falabellamichael/SignalR.E.A.C.H.git
 cd SignalR.E.A.C.H
-python tools/reach.py install
+python tools/reach.py install-runtime
 ```
 
-`install` does everything:
+The explicit `install-runtime` command performs operator setup:
 
 1. **Plugin panel** — installs the REACH control panel into SimpleRAG's app bar via the *local-extension registry* (`%LOCALAPPDATA%\RAGWorkspace\extensions\`). **Zero SimpleRAG files are modified**; uninstall removes just the registry entry. Old plugin versions of SignalR.E.A.C.H are pruned on upgrade.
-2. **Relay server v2** — copies a dependency-free relay to `%LOCALAPPDATA%\SignalREACH\` and auto-detects the OmniRoute API key from `~/.omniroute/storage.sqlite` (stored only in local `config.json` — never committed, never exposed). `install` restarts the relay so new server versions load immediately.
+2. **Relay server v2** — copies a dependency-free relay to `%LOCALAPPDATA%\SignalREACH\` and auto-detects the OmniRoute API key from `~/.omniroute/storage.sqlite` (stored only in local `config.json` — never committed, never exposed). `install-runtime` restarts the relay so new server versions load immediately.
 3. **Hosting** — starts the relay on `127.0.0.1:20777` and opens an **ngrok** tunnel (`--tunnel cloudflared` uses the cloudflared binary OmniRoute ships, no account needed). The public URL is published to the endpoint-pointer gist.
 4. **VS Code extension** — side-loads the REACH chat extension into VS Code (`~/.vscode/extensions/`, no marketplace/vsce needed). Reload the window and click the **REACH icon** in the Activity Bar for a chat panel with model picker + streaming. Skip it with `--no-vscode`; manage it later with `python tools/reach.py vscode install|uninstall|status`.
 5. **Control panel** — open SimpleRAG → Advanced → **REACH** for the full menu panel.
@@ -502,7 +536,7 @@ Open **SimpleRAG → Advanced → REACH → Browser** to browse public HTTP/HTTP
 The engine is packaged under `%LOCALAPPDATA%\SignalREACH\server\browser-engine\` and reuses `%LOCALAPPDATA%\SignalREACH\copilot\tray\node_modules\electron\dist\electron.exe`; there is no additional browser download when that bundled runtime is installed. To update only the SimpleRAG extension and relay while preserving the existing tray, relay settings, VS Code extension, tunnel, and published endpoint, run:
 
 ```powershell
-python tools/reach.py install --extension-only
+python tools/reach.py install-runtime --extension-only
 ```
 
 This scoped upgrade checks that the existing relay configuration and bundled Electron runtime are present before changing the installation. A normal full installation deploys the runtime from `copilot/tray` when it is available in the checkout. If Electron is missing there, run `npm install` in `copilot/tray` before the full installation. All browser files belong to SignalREACH; SimpleRAG source files are not modified.
@@ -520,8 +554,9 @@ Every alias carries its own spec: upstream id, enabled/public visibility, descri
 ## CLI
 
 ```bash
-python tools/reach.py install [--no-start] [--no-restart] [--tunnel ngrok|cloudflared|none]
-python tools/reach.py install --extension-only # existing install: preserve other components/settings
+python tools/reach.py install [--edition public|admin] # frontend only; public default
+python tools/reach.py install-runtime [--no-start] [--no-restart] [--tunnel ngrok|cloudflared|none]
+python tools/reach.py install-runtime --extension-only # existing runtime: preserve other components/settings
 python tools/reach.py status                 # relay + tunnel + public URL
 python tools/reach.py start|stop|restart     # manage relay + tunnel
 python tools/reach.py publish                # push current URL to the pointer gist
@@ -647,7 +682,7 @@ and needs none.
 **Upgrading an existing install.** The first start after upgrading switches
 `key_required` on once, since older installs served anyone with the URL. Your
 existing key keeps working. If you want it open again, turn it off in Settings;
-it will stay off. Re-run `python tools/reach.py install` so the panel picks up
+it will stay off. Re-run `python tools/reach.py install-runtime` so the panel picks up
 the new Settings fields and the fixed *Add to SimpleRAG* button, then restart.
 
 **If you put your own reverse proxy in front** (nginx, Caddy, a Tailscale

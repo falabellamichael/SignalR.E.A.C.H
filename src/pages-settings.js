@@ -146,31 +146,36 @@
         // ---- per-model editor ----
         function modelEditor(alias) {
             const spec = draft.models[alias] || {};
-            const card = el('section', 'reach-card reach-model-card');
+            const card = el('details', 'reach-card reach-model-card');
             card.id = 'reach-model-' + alias;
-            const head = el('header', 'reach-card-head');
+            const head = el('summary', 'reach-model-summary');
             const titleWrap = el('div', 'reach-model-head');
             titleWrap.appendChild(el('strong', null, alias));
             if (spec.description) {
                 titleWrap.appendChild(el('span', 'reach-model-desc', spec.description));
             }
             head.appendChild(titleWrap);
+            card.appendChild(head);
             const controls = el('div', 'reach-model-controls');
+            controls.appendChild(el('span', 'reach-field-label', 'Public'));
             const pubToggle = el('label', 'reach-switch');
             const pubInput = document.createElement('input');
             pubInput.type = 'checkbox';
             pubInput.checked = !!spec.public;
             pubInput.title = 'Public (listed + callable externally)';
+            pubInput.setAttribute('aria-label', alias + ': public');
             pubInput.addEventListener('change', () => { spec.public = pubInput.checked; markDirty(true); });
             const pubSlider = el('span', 'reach-switch-slider');
             pubToggle.appendChild(pubInput);
             pubToggle.appendChild(pubSlider);
             controls.appendChild(pubToggle);
+            controls.appendChild(el('span', 'reach-field-label', 'Enabled'));
             const enToggle = el('label', 'reach-switch');
             const enInput = document.createElement('input');
             enInput.type = 'checkbox';
             enInput.checked = !!spec.enabled;
             enInput.title = 'Enabled';
+            enInput.setAttribute('aria-label', alias + ': enabled');
             enInput.addEventListener('change', () => { spec.enabled = enInput.checked; markDirty(true); });
             const enSlider = el('span', 'reach-switch-slider');
             enToggle.appendChild(enInput);
@@ -184,8 +189,7 @@
                 draw();
             });
             controls.appendChild(rm);
-            head.appendChild(controls);
-            card.appendChild(head);
+            card.appendChild(controls);
 
             const grid = el('div', 'reach-form-grid');
             const mf = (kind, key, label, help, opts) => {
@@ -530,7 +534,7 @@
 
             // 4. Models
             const mo = section('Models', 'fa-cubes',
-                'Per-alias tuning. The Models page links here for editing.');
+                'Expand a model to tune its defaults. The Models page links here for editing.');
             modelAliases.sort().forEach(modelEditor);
             const addCard = el('section', 'reach-card');
             addCard.appendChild(el('header', 'reach-card-head', 'Add alias'));
@@ -936,6 +940,7 @@
                 core.prefsSet('model-edit', '');
                 const target = document.getElementById('reach-model-' + editPref);
                 if (target) {
+                    target.open = true;
                     target.scrollIntoView({ behavior: 'smooth', block: 'start' });
                     target.classList.add('reach-model-flash');
                     setTimeout(() => target.classList.remove('reach-model-flash'), 1600);

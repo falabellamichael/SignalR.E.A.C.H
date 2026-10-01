@@ -290,17 +290,22 @@ def cmd_vscode(args):
 def cmd_uninstall(args):
     home = extension_home(None)
     registry = read_registry(home)
+    plugin_ids = {PLUGIN_ID, "signal-reach-public", "signal-reach-admin"}
     before = len(registry["extensions"])
     registry["extensions"] = [e for e in registry["extensions"]
-                              if e.get("id") != PLUGIN_ID]
-    if len(registry["extensions"]) == before:
-        print("  not registered (nothing to remove)")
-    else:
+                              if e.get("id") not in plugin_ids]
+    changed = len(registry["extensions"]) != before
+    if changed:
         write_registry(home, registry)
-        pkg_root = home / "packages" / PLUGIN_ID
+    removed_packages = False
+    for plugin_id in sorted(plugin_ids):
+        pkg_root = home / "packages" / plugin_id
         if pkg_root.is_dir():
             shutil.rmtree(pkg_root, ignore_errors=True)
+            removed_packages = True
             print("  removed " + str(pkg_root))
+    if not changed and not removed_packages:
+        print("  not registered (nothing to remove)")
     if args.all:
         stop_server()
         stop_tunnel()
@@ -795,5 +800,4 @@ def main():
     if getattr(args, "no_restart", False):
         args.restart = False
     args.func(args)
-
 
