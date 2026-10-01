@@ -1,6 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { getAddress } from 'ethers';
-import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay } from './store.mjs';
+import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay, basicPlanModelIds } from './store.mjs';
+import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment } from './payments/core.mjs';
 
 const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
@@ -25,6 +26,9 @@ const ERRORS = {
   import_target_not_empty: [409, 'The shared account store must be empty before importing a snapshot.'],
   invalid_import: [400, 'The account snapshot is invalid. No records were imported.'],
   invalid_replay: [400, 'A completed request requires a valid bounded replay record.'],
+  invalid_payment: [400, 'Invalid payment record.'],
+  payment_conflict: [409, 'This payment was already recorded with different values.'],
+  subscription_unconfigured: [409, 'Request subscriptions are not configured on this service.'],
 };
 const SNAPSHOT_TABLES = ['accounts', 'flows', 'challenges', 'sessions', 'grants', 'reservations', 'redemptions'];
 const unavailable = () => new AccountError(503, 'account_store_unavailable', 'The shared account store is temporarily unavailable.');
@@ -81,6 +85,9 @@ export class SupabaseAccountStore {
       throw unavailable();
     }
   }
+  _paymentRpc(operation, payload = {}) {
+    return this._rpc(operation, { ...payload, subscription: this.subscription }, this.endpoint.replace(/reach_account_store$/, 'reach_payment_store'));
+  }
   _requestRpc(operation, payload = {}) {
     return this._rpc(operation, { ...payload, subscription: this.subscription }, this.endpoint.replace(/reach_account_store$/, 'reach_request_store'));
   }
@@ -126,6 +133,22 @@ export class SupabaseAccountStore {
     const payload = JSON.stringify({ wallet, planId, name, models: [...models].sort(), tokens, expiresAt });
     return this._view(await this._rpc('grant_plan', { wallet, grantId, planId, name, models, tokens, expiresAt, payload, accountId: id() }));
   }
+  // ---- payments: the same provider-neutral ledger as the SQLite store ----
+  // The rules run in one Postgres function so the ledger row and its effect
+  // commit together. Business-rule failures come back as a recorded status.
+  async applyPayment(raw) {
+    const payment = normalizePayment(raw);
+    let models;
+    if (payment.kind === 'subscription_period') {
+      if (!this.subscription) fail(409, 'subscription_unconfigured', ERRORS.subscription_unconfigured[1]);
+      models = basicPlanModelIds(this.models);
+      if (!models.length) fail(409, 'no_qualified_models', 'No qualified request models are configured for the plan grant.');
+    }
+    return this._paymentRpc('apply_payment', { ...payment, paymentId: id(), fingerprint: paymentFingerprint(payment),
+      grantId: grantIdFor(payment), ...(models ? { models } : {}) });
+  }
+  async listPayments(accountId, limit = 50) { return (await this._paymentRpc('list_payments', { accountId, limit })).map(publicPayment); }
+  async flaggedPayments() { return (await this._paymentRpc('flagged_payments')).map(reviewPayment); }
   async startFlow(state, challenge) {
     if (typeof state !== 'string' || typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(state) || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) fail(400, 'invalid_flow', 'Invalid sign-in state or proof key.');
     return this._rpc('start_flow', { flowId: id(), stateHash: digest(state), challenge });
