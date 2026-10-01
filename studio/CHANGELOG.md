@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.9.11](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.10...reach-studio-v26.9.11) (2026-10-01)
+
+
+### Bug Fixes
+
+* **studio:** restore light theme border contrast ([#129](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/129)) ([136383d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/136383d0c39d425a509a9ddd36390f91e8077cd6))
+
 ## [26.9.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.9...reach-studio-v26.9.10) (2026-10-01)
 
 

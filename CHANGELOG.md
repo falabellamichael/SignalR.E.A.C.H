@@ -1,5 +1,18 @@
 # Changelog
 
+## [26.9.11](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.10...v26.9.11) (2026-10-01)
+
+
+### Features
+
+* **rch:** add provider-neutral payments ledger ([#127](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/127)) ([a0ca214](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a0ca2146a72ccadfc43b759835311d66e28e11a6))
+
+
+### Bug Fixes
+
+* relay socket timeout + connection cap, current-launch cloudflared URL, http(s)-only tray openExternal ([#130](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/130)) ([cd2315a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/cd2315a136a4a2daff22bdca5cd19fef91d9ceab))
+* **studio:** restore light theme border contrast ([#129](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/129)) ([136383d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/136383d0c39d425a509a9ddd36390f91e8077cd6))
+
 ## [26.9.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.9...v26.9.10) (2026-10-01)
 
 
