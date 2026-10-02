@@ -60,7 +60,7 @@ class AccountProxyTests(RelayFixture):
     def test_wallet_assets_and_account_routes_do_not_need_legacy_keys(self):
         for path in ("/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/style.css",
                      "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json",
-                     "/wallet/rch-add-token.js", "/v1/account/config"):
+                     "/wallet/rch-add-token.js", "/v1/account/config", "/billing/return"):
             with self.subTest(path=path):
                 status, data, reply = self.call("GET", path, TUNNEL)
                 self.assertEqual(status, 200)
@@ -83,6 +83,27 @@ class AccountProxyTests(RelayFixture):
         for name in ("Cookie", "X-Reach-Key", "X-Forwarded-For", "X-Forwarded-Host"):
             self.assertNotIn(name, sent["headers"])
         self.assertTrue(sent["headers"]["Host"].startswith("127.0.0.1:"))
+
+    def test_stripe_webhook_body_and_signature_reach_the_account_service_unchanged(self):
+        body = b'{"id": "evt_1",  "type":"invoice.paid"}'
+        headers = {**TUNNEL, "Content-Type": "application/json; charset=utf-8",
+                   "Stripe-Signature": "t=1,v1=abc", "X-Reach-Key": "owner-key"}
+        status, _, _ = self.call("POST", "/v1/billing/stripe/webhook", headers, body)
+        self.assertEqual(status, 200)
+        sent = self.requests[-1]
+        self.assertEqual(sent["path"], "/v1/billing/stripe/webhook")
+        self.assertEqual(sent["body"], body)
+        self.assertEqual(sent["headers"]["Stripe-Signature"], "t=1,v1=abc")
+        self.assertNotIn("X-Reach-Key", sent["headers"])
+
+    def test_billing_routes_are_forwarded_with_the_customer_session(self):
+        for method, path in (("POST", "/v1/billing/checkout"), ("GET", "/v1/billing/payments")):
+            with self.subTest(path=path):
+                status, _, _ = self.call(method, path, self.session_headers(**({"Content-Type": "application/json"} if method == "POST" else {})),
+                                         b'{"kind":"subscription"}' if method == "POST" else None)
+                self.assertEqual(status, 200)
+                self.assertEqual(self.requests[-1]["path"], path)
+                self.assertEqual(self.requests[-1]["headers"]["Authorization"], "Bearer rch_session_example")
 
     def test_customer_models_and_completions_never_reach_legacy_auth_or_generation(self):
         with patch("reachd.handler.RelayHandler._check_access", side_effect=AssertionError("legacy access")), \
@@ -139,7 +160,8 @@ class AccountProxyTests(RelayFixture):
         self.assertEqual(reply.getheader("Transfer-Encoding"), "chunked")
 
     def test_account_route_allowlist_cannot_proxy_other_paths(self):
-        for path in ("/wallet/../../healthz", "/v1/account/config/extra", "/healthz", "/v1/auth/admin"):
+        for path in ("/wallet/../../healthz", "/v1/account/config/extra", "/healthz", "/v1/auth/admin",
+                     "/v1/billing", "/v1/billing/stripe", "/billing/return/../admin"):
             with self.subTest(path=path):
                 self.assertEqual(self.status("GET", path, TUNNEL), 404)
         self.assertFalse(self.requests)

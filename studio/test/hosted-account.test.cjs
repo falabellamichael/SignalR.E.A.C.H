@@ -122,6 +122,35 @@ test('redemption opens a same-origin review page and does not sign or broadcast'
   for (const amount of ['-1', '0', '1e6', ' 1', '0.0000000000000000001']) await assert.rejects(f.manager.redeem(amount), /positive/);
 });
 
+test('card checkout sends the session, validates the amount and opens only Stripe Checkout', async t => {
+  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture';
+  const sent = [];
+  const fetchImpl = async (url, init) => {
+    const route = new URL(url).pathname;
+    const body = route === '/v1/account/config' ? { enabled: true, cardPayments }
+      : route === '/v1/auth/start' ? { flowId: 'flow1', loginUrl: 'https://reach.test/login?flow=flow1', expiresAt: new Date(Date.now() + 120000).toISOString() }
+      : route === '/v1/auth/exchange' ? { accessToken: TOKEN, expiresAt: new Date(Date.now() + 3600000).toISOString(), account: { id: 'a1', walletAddress: ADDRESS } }
+      : route === '/v1/billing/checkout' ? (sent.push({ body: JSON.parse(init.body), auth: init.headers.Authorization }), { url: checkoutUrl, expiresAt: null })
+      : { id: 'a1', walletAddress: ADDRESS };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  const f = fixture(t, { fetchImpl, now: Date.now });
+  await f.manager.configure('https://reach.test'); await f.manager.connect(); await f.manager.poll();
+  assert.equal(f.manager.state().config.cardPayments, true);
+  await f.manager.subscribe();
+  await f.manager.topUp('$25');
+  assert.deepEqual(sent.map(entry => entry.body), [{ kind: 'subscription' }, { kind: 'top_up', amountUsdMicros: 25_000_000 }]);
+  assert.ok(sent.every(entry => entry.auth === 'Bearer ' + TOKEN));
+  assert.deepEqual(f.opened.slice(-2), [checkoutUrl, checkoutUrl]);
+  for (const amount of ['0.5', '500.01', '1,000', ' ', '12.345']) await assert.rejects(f.manager.topUp(amount), /between 1 and 500/);
+  for (checkoutUrl of ['https://reach.test/pay', 'http://checkout.stripe.com/pay', 'https://user:pw@checkout.stripe.com/pay'])
+    await assert.rejects(f.manager.subscribe(), /outside Stripe Checkout/);
+  assert.equal(f.opened.length, 3, 'login page plus the two Stripe pages only');
+  assert.doesNotMatch(JSON.stringify(f.manager.state()), new RegExp(TOKEN));
+  cardPayments = false; await f.manager.refresh();
+  await assert.rejects(f.manager.subscribe(), /not enabled/);
+});
+
 test('public account projection drops unrecognized fields and malformed balances', () => {
   const account = publicAccount({ walletAddress: '<script>', accessToken: TOKEN, allowance: { includedRemaining: -1 }, allowedModels: [{ id: 'm', accessKey: TOKEN }] });
   assert.equal(account.walletAddress, ''); assert.equal(account.allowance.includedRemaining, '0'); assert(!JSON.stringify(account).includes(TOKEN));

@@ -123,6 +123,14 @@
       if (state.config?.redemptionEnabled) paragraph('Review the service conversion rate and network before approving in your wallet.');
       else paragraph('RCH redemption is unavailable until the service can provide a verified market quote.');
       button(body, 'account-redeem', 'Review redemption in wallet', 'redeem', !state.config?.redemptionEnabled, () => amount.value.trim());
+      if (state.config?.cardPayments) {
+        const planActive = basicActive || account?.plan?.status === 'active';
+        paragraph('Pay by card on the Stripe checkout page. Your card details never reach REACH.');
+        button(body, 'account-subscribe', planActive ? 'Basic is active' : 'Subscribe to Basic · '
+          + formatUsd(state.config.subscription?.basic?.priceUsdMicros ?? 15000000) + ' a month', 'subscribe', planActive);
+        const topUp = field('account-topup', 'US dollar credit to add', 'topup', '', 'Between 1 and 500, for example 20'); topUp.inputMode = 'decimal';
+        button(body, 'account-topup-card', 'Add credit by card', 'topup', false, () => topUp.value.trim());
+      }
     }
     const url = field('account-service', 'Account service URL', 'url', state.baseUrl, 'https://accounts.example.com');
     button(body, 'account-save', 'Save account service', 'configure', connecting, () => url.value.trim());

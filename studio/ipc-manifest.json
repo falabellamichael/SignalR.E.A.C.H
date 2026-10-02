@@ -34,6 +34,16 @@
     "args": ["amountRch"],
     "returns": "{ ok, err?, ...redemptionResult }"
   },
+  "account:subscribe": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, err?, expiresAt? } and opens Stripe Checkout"
+  },
+  "account:topUp": {
+    "module": "main.mjs",
+    "args": ["amountUsd"],
+    "returns": "{ ok, err?, expiresAt? } and opens Stripe Checkout"
+  },
   "account:refresh": {
     "module": "main.mjs",
     "args": [],

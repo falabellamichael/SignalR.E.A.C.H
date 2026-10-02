@@ -527,6 +527,14 @@ function registerIpc() {
     try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
+  ipcMain.handle('account:subscribe', async () => {
+    try { return { ok: true, ...await hostedAccount.subscribe() }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
+  ipcMain.handle('account:topUp', async (_event, amount) => {
+    try { return { ok: true, ...await hostedAccount.topUp(amount) }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};

@@ -97,6 +97,34 @@ test('wallet redemption can start before a subscription exists', async () => {
   assert.equal(f.opened.at(-1), origin + '/wallet/redeem#id=fixture');
 });
 
+test('card checkout opens only Stripe Checkout for the signed-in account', async () => {
+  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture';
+  const f = fixture({ request: (url, options) => {
+    const route = new URL(url).pathname;
+    if (route === '/v1/account/config') return response({ enabled: true, cardPayments });
+    if (route === '/v1/billing/checkout') return response({ url: checkoutUrl, expiresAt: null, received: JSON.parse(options.body) });
+    return null;
+  } });
+  await f.login();
+  assert.equal(f.host.state().config.cardPayments, true);
+  await f.host.subscribe();
+  const sent = f.calls.filter(call => call.url.endsWith('/v1/billing/checkout'));
+  assert.deepEqual(JSON.parse(sent[0].options.body), { kind: 'subscription' });
+  assert.equal(sent[0].options.headers.Authorization, 'Bearer ' + token);
+  assert.equal(f.opened.at(-1), checkoutUrl);
+  await f.host.topUp('12.50');
+  assert.deepEqual(JSON.parse(f.calls.at(-1).options.body), { kind: 'top_up', amountUsdMicros: 12_500_000 });
+  for (const bad of ['0.99', '501', '12.345', 'ten', '-5', '1e2', ''])
+    await assert.rejects(f.host.topUp(bad), /between 1 and 500/, bad);
+  checkoutUrl = 'https://checkout.stripe.com.evil.example/pay';
+  await assert.rejects(f.host.subscribe(), /outside Stripe Checkout/);
+  checkoutUrl = origin + '/billing/return';
+  await assert.rejects(f.host.subscribe(), /outside Stripe Checkout/);
+  assert.equal(f.opened.filter(url => !url.startsWith('https://checkout.stripe.com/')).length, 1); // only the wallet login page
+  cardPayments = false; await f.host.refresh();
+  await assert.rejects(f.host.subscribe(), /not enabled/);
+});
+
 test('cancelled exchange revokes a late token without restoring local or persisted access', async () => {
   const started = defer(), release = defer();
   const f = fixture({ exchange: async session => { started.resolve(); await release.promise; return response(session); } });
