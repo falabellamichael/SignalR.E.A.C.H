@@ -823,12 +823,14 @@ class ReachChatViewProvider {
           try {
             if (!this._account) throw new Error('REACH account access is unavailable. Reload the extension.');
             const action = String(msg.action || 'state');
-            if (!['state', 'configure', 'connect', 'cancel', 'refresh', 'disconnect', 'redeem', 'subscribe', 'topup', 'billing'].includes(action)) break;
+            if (!['state', 'configure', 'connect', 'cancel', 'refresh', 'disconnect', 'redeem', 'subscribe', 'topup', 'billing', 'paypalSubscribe', 'paypalTopup'].includes(action)) break;
             if (action === 'configure') await this._account.configure(msg.value);
             else if (action === 'redeem') await this._account.redeem(msg.value);
             else if (action === 'subscribe') await this._account.subscribe();
             else if (action === 'topup') await this._account.topUp(msg.value);
             else if (action === 'billing') await this._account.manageBilling();
+            else if (action === 'paypalSubscribe') await this._account.subscribe('paypal');
+            else if (action === 'paypalTopup') await this._account.topUp(msg.value, 'paypal');
             else if (action === 'state') await this._account.initialize();
             else await this._account[action]();
             this._post('accountState', { state: this._account.state(), completed: true, requestId: msg.requestId });

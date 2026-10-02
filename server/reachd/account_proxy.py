@@ -20,15 +20,18 @@ ACCOUNT_PATHS = frozenset((
     "/v1/auth/email/start", "/v1/auth/email/verify",
     "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
     "/v1/billing/checkout", "/v1/billing/portal", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
+    "/v1/billing/paypal/webhook", "/v1/billing/paypal/return",
 ))
 MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models",
                "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions"}
 MAX_REQUEST = 512 * 1024
 MAX_RESPONSE = 1024 * 1024
 MAX_STREAM = 2 * 1024 * 1024
-# Stripe-Signature authenticates the payment webhook; the account service checks
-# it against the exact body bytes, which this proxy forwards unchanged.
-FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key", "Stripe-Signature")
+# Stripe-Signature and the PayPal transmission headers authenticate the payment
+# webhooks; the account service verifies them against the unchanged body.
+FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key", "Stripe-Signature",
+                   "PayPal-Auth-Algo", "PayPal-Cert-Url", "PayPal-Transmission-Id",
+                   "PayPal-Transmission-Sig", "PayPal-Transmission-Time")
 RESPONSE_HEADERS = ("Content-Type", "Cache-Control", "Content-Security-Policy", "Referrer-Policy",
                     "X-Content-Type-Options", "X-Frame-Options", "X-Request-Id", "X-Reach-Replayed", "Retry-After")
 

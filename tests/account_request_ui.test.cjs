@@ -177,6 +177,39 @@ test('card payment controls appear only when the service enables them and respec
   assert.match(studioView.text('home-card-status'), /not enabled/);
 });
 
+test('PayPal controls appear next to card ones only when the service offers PayPal', () => {
+  const find = (parent, id) => descendants(parent).find(node => node.id === id);
+  const both = state({ basicActive: false, config: { cardPayments: true, paypalPayments: true, subscription: { basic: { priceUsdMicros: '15000000' } }, redemptionModels: [requestModel] } });
+  both.account.plan = { status: 'none' };
+  const view = vscodeRender(both);
+  assert.match(find(view.parent, 'account-subscribe-paypal').textContent, /Subscribe with PayPal · US\$15\.00 a month/);
+  find(view.parent, 'account-topup').value = '30';
+  find(view.parent, 'account-subscribe-paypal').handlers.click();
+  find(view.parent, 'account-topup-paypal').handlers.click();
+  assert.deepEqual(view.actions, [['paypalSubscribe', undefined], ['paypalTopup', '30']]);
+  const paypalOnly = vscodeRender({ ...both, config: { ...both.config, cardPayments: false } });
+  assert.equal(find(paypalOnly.parent, 'account-subscribe'), undefined);
+  assert.ok(find(paypalOnly.parent, 'account-topup-paypal'));
+  const active = vscodeRender({ ...both, account: { ...both.account, plan: { status: 'active' } } });
+  assert.equal(find(active.parent, 'account-subscribe-paypal').disabled, true);
+  assert.match(active.parent.textContent, /cancelled in your PayPal account/);
+  for (const adapter of [vscodeAdapter, studioAdapter]) {
+    assert.equal(adapter.publicConfig({ paypalPayments: true }).paypalPayments, true);
+    assert.equal(adapter.paypalUrl('https://www.sandbox.paypal.com/checkoutnow?token=1'), 'https://www.sandbox.paypal.com/checkoutnow?token=1');
+    for (const bad of ['https://www.paypal.com.evil.example/x', 'https://paypal.com/x', 'http://www.paypal.com/x', 'https://u:p@www.paypal.com/x'])
+      assert.throws(() => adapter.paypalUrl(bad), /outside PayPal/, bad);
+  }
+  const studioView = studioRenderer();
+  studioView.emit({ ...both, config: { ...both.config, cardPayments: false } });
+  assert.equal(studioView.text('home-card-badge'), 'AVAILABLE');
+  assert.equal(studioView.get('home-card-subscribe').hidden, true);
+  assert.equal(studioView.get('home-card-subscribe-paypal').hidden, false);
+  assert.equal(studioView.get('home-card-subscribe-paypal').disabled, false);
+  assert.equal(studioView.get('home-card-amount').disabled, false);
+  studioView.emit({ ...both, account: { ...both.account, plan: { status: 'active' } } });
+  assert.equal(studioView.get('home-card-paypal-note').hidden, false);
+});
+
 test('email accounts show their address and both apps offer email sign-in only when the service does', () => {
   const find = (parent, id) => descendants(parent).find(node => node.id === id);
   const emailOnly = state();

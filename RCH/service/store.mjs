@@ -123,7 +123,7 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS reversal_account ON payment_reversals(account_id,created);
     `);
     // Additive migration preserves every existing account and token reservation.
-    for (const [table, columns] of Object.entries({ accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
+    for (const [table, columns] of Object.entries({ subscription_checkouts: { provider_object_id: 'TEXT' }, accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
       reservations: { currency: "TEXT NOT NULL DEFAULT 'tokens'", pricing_json: 'TEXT' },
       redemptions: { usd_micros: 'INTEGER NOT NULL DEFAULT 0', quote_json: 'TEXT' } })) {
       const existing = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -281,11 +281,20 @@ export class AccountStore {
       const previous=this.db.prepare('SELECT * FROM subscription_checkouts WHERE account_id=?').get(accountId);
       if(previous&&(previous.expires>this.now()||previous.id!==replaceExpiredId)) {
         if(previous.fingerprint!==fingerprint)fail(409,'checkout_pending','An earlier subscription checkout is still pending. Wait for it to expire.');
-        return {id:previous.id,expiresAt:previous.expires};
+        return {id:previous.id,expiresAt:previous.expires,...(previous.provider_object_id?{providerObjectId:previous.provider_object_id}:{})};
       }
       const checkout={id:id(),expiresAt:(Math.floor(this.now()/1000)+3600)*1000};
-      this.db.prepare('INSERT INTO subscription_checkouts(account_id,id,fingerprint,expires) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET id=excluded.id,fingerprint=excluded.fingerprint,expires=excluded.expires').run(accountId,checkout.id,fingerprint,checkout.expiresAt);
+      this.db.prepare('INSERT INTO subscription_checkouts(account_id,id,fingerprint,expires) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET id=excluded.id,fingerprint=excluded.fingerprint,expires=excluded.expires,provider_object_id=NULL').run(accountId,checkout.id,fingerprint,checkout.expiresAt);
       return checkout;
+    });
+  }
+  attachSubscriptionCheckout(accountId,checkoutId,providerObjectId) {
+    if(!/^[a-f0-9]{64}$/.test(checkoutId||'')||!/^[A-Za-z0-9_-]{3,128}$/.test(providerObjectId||''))fail(400,'invalid_checkout','Invalid checkout reference.');
+    return this.transaction(()=>{
+      const previous=this.db.prepare('SELECT * FROM subscription_checkouts WHERE account_id=?').get(accountId);
+      if(!previous||previous.id!==checkoutId||previous.provider_object_id&&previous.provider_object_id!==providerObjectId)fail(409,'checkout_pending','The earlier checkout requires reconciliation.');
+      this.db.prepare('UPDATE subscription_checkouts SET provider_object_id=? WHERE account_id=? AND id=?').run(providerObjectId,accountId,checkoutId);
+      return {id:previous.id,expiresAt:previous.expires,providerObjectId};
     });
   }
   // ---- payments: a provider-neutral ledger (rules live in payments/core.mjs) ----
@@ -295,6 +304,10 @@ export class AccountStore {
   // `rejected`/`expired` row and returned, not thrown: a throw would make the provider
   // retry for days. Only infrastructure failures and genuine conflicts throw, so a
   // retry after a crash converges.
+  paymentPeriod(provider,objectId) {
+    const row=this.db.prepare("SELECT period_end FROM payments WHERE provider=? AND object_id=? AND kind='subscription_period'").get(provider,objectId);
+    return row?{periodEnd:row.period_end}:null;
+  }
   applyPayment(raw) {
     const payment=normalizePayment(raw),fingerprint=paymentFingerprint(payment);
     if(payment.kind==='subscription_period'){

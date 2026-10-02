@@ -123,11 +123,11 @@ test('redemption opens a same-origin review page and does not sign or broadcast'
 });
 
 test('card checkout sends the session, validates the amount and opens only Stripe Checkout', async t => {
-  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture', portal = 'https://billing.stripe.com/p/session/test_1';
+  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture', portal = 'https://billing.stripe.com/p/session/test_1', paypal = false;
   const sent = [];
   const fetchImpl = async (url, init) => {
     const route = new URL(url).pathname;
-    const body = route === '/v1/account/config' ? { enabled: true, cardPayments }
+    const body = route === '/v1/account/config' ? { enabled: true, cardPayments, paypalPayments: paypal }
       : route === '/v1/auth/start' ? { flowId: 'flow1', loginUrl: 'https://reach.test/login?flow=flow1', expiresAt: new Date(Date.now() + 120000).toISOString() }
       : route === '/v1/auth/exchange' ? { accessToken: TOKEN, expiresAt: new Date(Date.now() + 3600000).toISOString(), account: { id: 'a1', walletAddress: ADDRESS } }
       : route === '/v1/billing/checkout' ? (sent.push({ body: JSON.parse(init.body), auth: init.headers.Authorization }), { url: checkoutUrl, expiresAt: null })
@@ -154,6 +154,13 @@ test('card checkout sends the session, validates the amount and opens only Strip
   assert.doesNotMatch(JSON.stringify(f.manager.state()), new RegExp(TOKEN));
   cardPayments = false; await f.manager.refresh();
   await assert.rejects(f.manager.subscribe(), /not enabled/);
+  paypal = true; await f.manager.refresh();
+  checkoutUrl = 'https://www.paypal.com/webapps/billing/subscriptions?ba_token=BA-1';
+  await f.manager.subscribe('paypal');
+  assert.deepEqual(sent.at(-1).body, { kind: 'subscription', provider: 'paypal' });
+  assert.equal(f.opened.at(-1), checkoutUrl);
+  checkoutUrl = 'https://reach.test/paypal';
+  await assert.rejects(f.manager.subscribe('paypal'), /outside PayPal/);
 });
 
 test('public account projection drops unrecognized fields and malformed balances', () => {

@@ -257,6 +257,15 @@ export function definePaymentsSuite(label, { fresh }) {
     assert.equal(result.status, 'applied');
   });
 
+  t('a recorded provider sale exposes its immutable period for safe webhook replay', async () => {
+    const s = await setup();
+    assert.equal(await s.store.paymentPeriod('paypal', 'sale_period_1'), null);
+    const paid = s.pay({ provider: 'paypal', objectId: 'sale_period_1' });
+    await s.store.applyPayment(paid);
+    assert.deepEqual(await s.store.paymentPeriod('paypal', 'sale_period_1'), { periodEnd: paid.periodEnd });
+    assert.equal(await s.store.paymentPeriod('stripe', 'sale_period_1'), null);
+  });
+
   // ---------------------------------------------------------------- integrity
 
   t('a failed application leaves no ledger trace, so a retry can still succeed', async () => {

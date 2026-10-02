@@ -41,13 +41,13 @@
   },
   "account:subscribe": {
     "module": "main.mjs",
-    "args": [],
-    "returns": "{ ok, err?, expiresAt? } and opens Stripe Checkout"
+    "args": ["provider?: 'stripe' | 'paypal'"],
+    "returns": "{ ok, err?, expiresAt? } and opens Stripe Checkout or PayPal"
   },
   "account:topUp": {
     "module": "main.mjs",
-    "args": ["amountUsd"],
-    "returns": "{ ok, err?, expiresAt? } and opens Stripe Checkout"
+    "args": ["amountUsd", "provider?: 'stripe' | 'paypal'"],
+    "returns": "{ ok, err?, expiresAt? } and opens Stripe Checkout or PayPal"
   },
   "account:refresh": {
     "module": "main.mjs",

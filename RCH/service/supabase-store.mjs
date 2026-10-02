@@ -161,9 +161,16 @@ export class SupabaseAccountStore {
     if(!/^[a-f0-9]{64}$/.test(fingerprint||''))fail(400,'invalid_checkout','Invalid checkout.');
     return this._rpc('reserve_checkout', {accountId,fingerprint,replaceExpiredId,checkoutId:id()}, this.endpoint.replace(/reach_account_store$/, 'reach_checkout_store'));
   }
+  async attachSubscriptionCheckout(accountId, checkoutId, providerObjectId) {
+    if(!/^[a-f0-9]{64}$/.test(checkoutId||'')||!/^[A-Za-z0-9_-]{3,128}$/.test(providerObjectId||''))fail(400,'invalid_checkout','Invalid checkout reference.');
+    return this._rpc('attach_checkout', {accountId,checkoutId,providerObjectId}, this.endpoint.replace(/reach_account_store$/, 'reach_checkout_store'));
+  }
   // ---- payments: the same provider-neutral ledger as the SQLite store ----
   // The rules run in one Postgres function so the ledger row and its effect
   // commit together. Business-rule failures come back as a recorded status.
+  async paymentPeriod(provider, objectId) {
+    return this._rpc('payment_period', {provider,objectId}, this.endpoint.replace(/reach_account_store$/, 'reach_payment_period'));
+  }
   async applyPayment(raw) {
     const payment = normalizePayment(raw);
     let models;

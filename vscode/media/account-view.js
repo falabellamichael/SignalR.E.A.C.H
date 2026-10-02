@@ -123,14 +123,19 @@
       if (state.config?.redemptionEnabled) paragraph('Review the service conversion rate and network before approving in your wallet.');
       else paragraph('RCH redemption is unavailable until the service can provide a verified market quote.');
       button(body, 'account-redeem', 'Review redemption in wallet', 'redeem', !state.config?.redemptionEnabled, () => amount.value.trim());
-      if (state.config?.cardPayments) {
+      const card = state.config?.cardPayments === true, paypal = state.config?.paypalPayments === true;
+      if (card || paypal) {
         const planActive = basicActive || account?.plan?.status === 'active';
-        paragraph('Pay by card on the Stripe checkout page. Your card details never reach REACH.');
-        button(body, 'account-subscribe', planActive ? 'Basic is active' : 'Subscribe to Basic · '
-          + formatUsd(state.config.subscription?.basic?.priceUsdMicros ?? 15000000) + ' a month', 'subscribe', planActive);
-        if (planActive) button(body, 'account-billing', 'Manage or cancel subscription', 'billing');
+        const price = formatUsd(state.config.subscription?.basic?.priceUsdMicros ?? 15000000) + ' a month';
+        paragraph(card ? 'Pay by card on the Stripe checkout page' + (paypal ? ' or with PayPal' : '') + '. Your card details never reach REACH.'
+          : 'Pay with PayPal. Your PayPal details never reach REACH.');
+        if (card) button(body, 'account-subscribe', planActive ? 'Basic is active' : 'Subscribe to Basic · ' + price, 'subscribe', planActive);
+        if (paypal) button(body, 'account-subscribe-paypal', planActive ? 'Basic is active' : 'Subscribe with PayPal · ' + price, 'paypalSubscribe', planActive);
+        if (planActive && card) button(body, 'account-billing', 'Manage or cancel subscription', 'billing');
+        if (planActive && paypal) paragraph('A PayPal subscription is cancelled in your PayPal account, under Automatic payments.');
         const topUp = field('account-topup', 'US dollar credit to add', 'topup', '', 'Between 1 and 500, for example 20'); topUp.inputMode = 'decimal';
-        button(body, 'account-topup-card', 'Add credit by card', 'topup', false, () => topUp.value.trim());
+        if (card) button(body, 'account-topup-card', 'Add credit by card', 'topup', false, () => topUp.value.trim());
+        if (paypal) button(body, 'account-topup-paypal', 'Add credit with PayPal', 'paypalTopup', false, () => topUp.value.trim());
       }
     }
     const url = field('account-service', 'Account service URL', 'url', state.baseUrl, 'https://accounts.example.com');

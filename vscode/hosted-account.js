@@ -52,6 +52,14 @@ function stripePage(value, origin, name) {
 }
 const checkoutUrl = value => stripePage(value, CHECKOUT_ORIGIN, 'Stripe Checkout');
 const portalUrl = value => stripePage(value, PORTAL_ORIGIN, 'the Stripe billing portal');
+// PayPal's own sign-in pages, fixed here rather than taken from the service.
+const PAYPAL_ORIGINS = ['https://www.paypal.com', 'https://www.sandbox.paypal.com'];
+function paypalUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error('The service returned an invalid payment page.'); }
+  if (!PAYPAL_ORIGINS.includes(url.origin) || url.username || url.password) throw new Error('The service returned a payment page outside PayPal.');
+  return url.href;
+}
 // Whole dollars or cents only, converted without floating point.
 function topUpMicros(value) {
   const match = /^\$?([1-9]\d{0,2})(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
@@ -78,7 +86,7 @@ function publicAccount(raw) {
 function publicConfig(raw) {
   return { enabled: raw?.enabled === true, redemptionEnabled: raw?.redemptionEnabled === true,
     tokensPerRch: count(raw?.tokensPerRch), chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null,
-    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true, emailLogin: raw?.emailLogin === true,
+    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true, paypalPayments: raw?.paypalPayments === true, emailLogin: raw?.emailLogin === true,
     ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}) };
 }
 function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {
@@ -246,14 +254,17 @@ function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetch
   }
   async function checkout(body) {
     await initialize(); const token = authorize(connection().endpoint), expected = generation;
-    if (!config?.cardPayments) throw new Error('Card payments are not enabled on this service.');
+    const viaPayPal = body.provider === 'paypal';
+    if (viaPayPal ? !config?.paypalPayments : !config?.cardPayments) throw new Error(viaPayPal ? 'PayPal is not enabled on this service.' : 'Card payments are not enabled on this service.');
     const { data } = await request('/v1/billing/checkout', { method: 'POST', token, body });
     if (expected !== generation) throw new Error('Account changed. Start the payment again.');
-    if (await openExternal(checkoutUrl(data.url)) === false) throw new Error('The payment page could not be opened.');
+    if (await openExternal(viaPayPal ? paypalUrl(data.url) : checkoutUrl(data.url)) === false) throw new Error('The payment page could not be opened.');
     return state();
   }
-  const subscribe = () => checkout({ kind: 'subscription' });
-  const topUp = async amountUsd => checkout({ kind: 'top_up', amountUsdMicros: topUpMicros(amountUsd) });
+  // Card checkout sends no provider, as before; PayPal is named explicitly.
+  const via = provider => provider === 'paypal' ? { provider: 'paypal' } : {};
+  const subscribe = (provider = 'stripe') => checkout({ kind: 'subscription', ...via(provider) });
+  const topUp = async (amountUsd, provider = 'stripe') => checkout({ kind: 'top_up', amountUsdMicros: topUpMicros(amountUsd), ...via(provider) });
   // Cancel, change card, download invoices: all on Stripe's billing portal.
   async function manageBilling() {
     await initialize(); const token = authorize(connection().endpoint), expected = generation;
@@ -265,4 +276,4 @@ function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetch
   }
   return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, connection, authorize, models };
 }
-module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, portalUrl, topUpMicros, publicAccount, publicConfig, SECRET };
+module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, portalUrl, paypalUrl, topUpMicros, publicAccount, publicConfig, SECRET };

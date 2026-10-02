@@ -28,7 +28,7 @@ async function postgres(now){
       try{
         const value=await db.transaction(async tx=>{await tx.exec('SET LOCAL ROLE service_role');return (await tx.query('SELECT public.'+rpc+'($1::text,$2::jsonb) AS value',[p_operation,JSON.stringify(p_payload)])).rows[0].value;});
         return new Response(JSON.stringify(value),{status:200});
-      }catch(e){return new Response(JSON.stringify({code:e.code,message:e.message}),{status:400});}
+      }catch(e){if(e.code!=='P0001')console.error('Offline checkout RPC error:',e.code,e.message);return new Response(JSON.stringify({code:e.code,message:e.message}),{status:400});}
     }});
 }
 for(const label of ['sqlite','postgres'])test(label+': checkout intents survive retries, refuse active plans and rotate only after expiry',async t=>{
@@ -41,11 +41,15 @@ for(const label of ['sqlite','postgres'])test(label+': checkout intents survive 
   clock+=5000;
   assert.deepEqual(await store.reserveSubscriptionCheckout(account.id,fingerprint),first);
   await assert.rejects(async()=>store.reserveSubscriptionCheckout(account.id,'b'.repeat(64)),{code:'checkout_pending'});
+  assert.equal((await store.attachSubscriptionCheckout(account.id,first.id,'I-SUB1')).providerObjectId,'I-SUB1');
+  assert.equal((await store.reserveSubscriptionCheckout(account.id,fingerprint)).providerObjectId,'I-SUB1');
+  await assert.rejects(async()=>store.attachSubscriptionCheckout(account.id,first.id,'I-OTHER'),{code:'checkout_pending'});
   const other=await store.ensureAccount('0x'+'22'.repeat(20));
   assert.notEqual((await store.reserveSubscriptionCheckout(other.id,fingerprint)).id,first.id);
   clock=first.expiresAt;
-  assert.deepEqual(await store.reserveSubscriptionCheckout(account.id,fingerprint),first,'expiry alone cannot authorize a second subscription');
-  const next=await store.reserveSubscriptionCheckout(account.id,fingerprint,first.id);assert.notEqual(next.id,first.id);
+  assert.deepEqual(await store.reserveSubscriptionCheckout(account.id,fingerprint),{...first,providerObjectId:'I-SUB1'},'expiry alone cannot authorize a second subscription');
+  const next=await store.reserveSubscriptionCheckout(account.id,fingerprint,first.id);assert.notEqual(next.id,first.id);assert.equal(next.providerObjectId,undefined);
+  await assert.rejects(async()=>store.attachSubscriptionCheckout(account.id,first.id,'I-SUB1'),{code:'checkout_pending'});
   assert.deepEqual(await store.reserveSubscriptionCheckout(account.id,fingerprint,first.id),next,'a stale concurrent replacement cannot rotate the newer intent');
   await store.grantPlan({wallet:account.wallet,grantId:'checkout-grant-1',planId:'basic-wallet',name:'Basic',models:['bridge-chat'],tokens:0,expiresAt:clock+86400000});
   await assert.rejects(async()=>store.reserveSubscriptionCheckout(account.id,fingerprint),{code:'plan_active'});
