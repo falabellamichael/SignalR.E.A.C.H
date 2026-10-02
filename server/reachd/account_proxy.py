@@ -18,7 +18,7 @@ ACCOUNT_PATHS = frozenset((
     "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json", "/wallet/rch-add-token.js",
     "/v1/auth/start", "/v1/auth/challenge", "/v1/auth/verify", "/v1/auth/exchange", "/v1/auth/logout",
     "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
-    "/v1/billing/checkout", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
+    "/v1/billing/checkout", "/v1/billing/portal", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
 ))
 MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models",
                "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions"}

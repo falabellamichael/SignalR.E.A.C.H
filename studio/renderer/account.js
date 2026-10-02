@@ -92,6 +92,8 @@
     el('card-subscribe').textContent = planActive ? 'Basic is active'
       : 'Subscribe to Basic · ' + view.formatUsd(state.config?.subscription?.basic?.priceUsdMicros ?? '15000000') + ' a month';
     el('card-subscribe').disabled = busy || !cardReady || planActive;
+    el('card-manage').hidden = !(cardReady && planActive);
+    el('card-manage').disabled = busy || !cardReady || !planActive;
     el('card-amount').disabled = busy || !cardReady;
     el('card-topup').disabled = busy || !cardReady || !el('card-amount').value.trim();
     if (!cardReady) el('card-status').textContent = model.connected ? 'Card payments are not enabled on this service.' : 'Connect your wallet to pay by card.';
@@ -141,11 +143,13 @@
     return result;
   }));
   const cardStarted = 'Finish paying on the Stripe page in your browser, then refresh your account.';
+  const billingOpened = 'Manage your subscription on the Stripe page in your browser. A cancelled plan stays active until the end of its paid period.';
   el('card-amount').addEventListener('input', () => render(state));
-  for (const [id, start] of [['card-subscribe', () => api.subscribe()], ['card-topup', () => api.topUp(el('card-amount').value.trim())]]) {
+  for (const [id, start, opened] of [['card-subscribe', () => api.subscribe(), cardStarted],
+    ['card-topup', () => api.topUp(el('card-amount').value.trim()), cardStarted], ['card-manage', () => api.billing(), billingOpened]]) {
     el(id).addEventListener('click', () => action(async () => {
       const result = await start();
-      el('card-status').textContent = result.ok ? cardStarted : result.err;
+      el('card-status').textContent = result.ok ? opened : result.err;
       return result;
     }));
   }

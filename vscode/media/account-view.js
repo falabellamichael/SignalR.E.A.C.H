@@ -128,6 +128,7 @@
         paragraph('Pay by card on the Stripe checkout page. Your card details never reach REACH.');
         button(body, 'account-subscribe', planActive ? 'Basic is active' : 'Subscribe to Basic · '
           + formatUsd(state.config.subscription?.basic?.priceUsdMicros ?? 15000000) + ' a month', 'subscribe', planActive);
+        if (planActive) button(body, 'account-billing', 'Manage or cancel subscription', 'billing');
         const topUp = field('account-topup', 'US dollar credit to add', 'topup', '', 'Between 1 and 500, for example 20'); topUp.inputMode = 'decimal';
         button(body, 'account-topup-card', 'Add credit by card', 'topup', false, () => topUp.value.trim());
       }

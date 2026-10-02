@@ -14,6 +14,11 @@ import { TOP_UP_MIN_USD_MICROS, TOP_UP_MAX_USD_MICROS } from './core.mjs';
 
 export const STRIPE_API = 'https://api.stripe.com';
 export const CHECKOUT_ORIGIN = 'https://checkout.stripe.com';
+export const PORTAL_ORIGIN = 'https://billing.stripe.com';
+// Every API call is pinned, so a change to the account's default version in the
+// Dashboard cannot change the shapes read here. Invoice Payments (used to find
+// the invoice behind a refunded payment) exist from this version on.
+export const STRIPE_VERSION = '2025-03-31.basil';
 // Stripe's own recommendation; older signed payloads are treated as replays.
 export const SIGNATURE_TOLERANCE_SECONDS = 300;
 const CENT_MICROS = 10_000;
@@ -83,6 +88,28 @@ export function paymentFromStripeEvent(event, { basicPriceId, livemode }) {
   return { ignored: 'event_type' };
 }
 
+// Refunds and disputes. Stripe names only the PaymentIntent they came from, so
+// the original REACH payment is found with an API lookup (see findOriginal).
+// Returns { paymentIntent, reversal } with the original still to be filled in,
+// or { ignored: reason }.
+export function reversalFromStripeEvent(event, { livemode }) {
+  if (event.livemode !== livemode) return { ignored: 'wrong_mode' };
+  const object = event.data?.object;
+  if (!object || typeof object !== 'object') fail(400, 'invalid_event', 'Invalid Stripe event.');
+  let kind;
+  if (event.type === 'refund.created' || event.type === 'refund.updated') {
+    // A refund that failed or was cancelled never left the account.
+    if (!['succeeded', 'pending', 'requires_action'].includes(object.status)) return { ignored: 'refund_not_effective' };
+    kind = 'refund';
+  } else if (event.type === 'charge.dispute.created') kind = 'dispute';
+  else return null;
+  if (typeof object.payment_intent !== 'string') return { ignored: 'no_payment_intent' };
+  const amount = cents(object.amount);
+  if (amount === 0) return { ignored: 'zero_amount' };
+  return { paymentIntent: object.payment_intent, reversal: { provider: 'stripe', eventId: event.id, objectId: object.id, kind,
+    amountUsdMicros: amount * CENT_MICROS, currency: object.currency } };
+}
+
 // Flattens nested params into Stripe's form encoding: a[b][0][c]=v.
 export function formEncode(params, prefix = '', out = new URLSearchParams()) {
   for (const [key, value] of Object.entries(params)) {
@@ -116,26 +143,57 @@ export function validTopUpAmount(value) {
     && value >= TOP_UP_MIN_USD_MICROS && value <= TOP_UP_MAX_USD_MICROS;
 }
 
+const hostedUrl = (value, origin) => {
+  let url;
+  try { url = new URL(value); } catch { url = null; }
+  if (!url || url.origin !== origin || url.username || url.password) {
+    fail(502, 'payment_provider_error', 'The payment provider returned an unexpected page address.');
+  }
+  return url.href;
+};
+
 export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 15000 }) {
+  async function call(method, path, params) {
+    let response, data;
+    const query = method === 'GET' && params ? `?${formEncode(params)}` : '';
+    try {
+      response = await fetchImpl(`${STRIPE_API}${path}${query}`, {
+        method, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
+        headers: { Authorization: `Bearer ${secretKey}`, 'Stripe-Version': STRIPE_VERSION,
+          ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
+        ...(method === 'POST' ? { body: formEncode(params).toString() } : {}),
+      });
+      data = await response.json();
+    } catch { fail(502, 'payment_provider_unavailable', 'The payment provider could not be reached. Try again shortly.'); }
+    // Stripe's error text can name the key or price; it is never shown to a customer.
+    if (!response.ok) fail(502, 'payment_provider_error', 'The payment provider rejected the request. Try again later.');
+    return data;
+  }
+  const list = data => Array.isArray(data?.data) ? data.data : [];
   return {
     async createCheckoutSession(params) {
-      let response, data;
-      try {
-        response = await fetchImpl(`${STRIPE_API}/v1/checkout/sessions`, {
-          method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-          headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: formEncode(params).toString(),
-        });
-        data = await response.json();
-      } catch { fail(502, 'payment_provider_unavailable', 'The payment provider could not be reached. Try again shortly.'); }
-      // Stripe's error text can name the key or price; it is never shown to a customer.
-      if (!response.ok) fail(502, 'payment_provider_error', 'The payment provider rejected the checkout. Try again later.');
-      let url;
-      try { url = new URL(data.url); } catch { url = null; }
-      if (!url || url.origin !== CHECKOUT_ORIGIN || url.username || url.password) {
-        fail(502, 'payment_provider_error', 'The payment provider returned an unexpected checkout address.');
-      }
-      return { url: url.href, expiresAt: Number.isSafeInteger(data.expires_at) ? new Date(data.expires_at * 1000).toISOString() : null };
+      const data = await call('POST', '/v1/checkout/sessions', params);
+      return { url: hostedUrl(data.url, CHECKOUT_ORIGIN), expiresAt: Number.isSafeInteger(data.expires_at) ? new Date(data.expires_at * 1000).toISOString() : null };
+    },
+    // The REACH payment a PaymentIntent paid for: a top-up Checkout Session, or
+    // the subscription invoice it settled. null when it is neither.
+    async findOriginal(paymentIntent) {
+      const [session] = list(await call('GET', '/v1/checkout/sessions', { payment_intent: paymentIntent, limit: 1 }));
+      if (session?.mode === 'payment' && session.metadata?.[KIND_KEY] === 'top_up') return { originalObjectId: session.id, originalKind: 'top_up' };
+      const [paid] = list(await call('GET', '/v1/invoice_payments', { payment: { type: 'payment_intent', payment_intent: paymentIntent }, limit: 1 }));
+      return typeof paid?.invoice === 'string' ? { originalObjectId: paid.invoice, originalKind: 'subscription_period' } : null;
+    },
+    // Stripe's own page for cancelling, changing the card and downloading
+    // invoices. The customer is the one on this account's subscription.
+    async createPortalSession({ accountId, returnUrl }) {
+      // Account IDs are generated hex, but the query language has quotes; never interpolate anything else.
+      if (!/^[A-Za-z0-9_-]{8,128}$/.test(accountId)) fail(400, 'invalid_account', 'Invalid account.');
+      const query = `metadata["${ACCOUNT_KEY}"]:"${accountId}"`;
+      const [subscription] = list(await call('GET', '/v1/subscriptions/search', { query, limit: 1 }));
+      const customer = typeof subscription?.customer === 'string' ? subscription.customer : subscription?.customer?.id;
+      if (typeof customer !== 'string') fail(404, 'no_subscription', 'This account has no card subscription to manage.');
+      const data = await call('POST', '/v1/billing_portal/sessions', { customer, return_url: returnUrl });
+      return { url: hostedUrl(data.url, PORTAL_ORIGIN) };
     },
   };
 }

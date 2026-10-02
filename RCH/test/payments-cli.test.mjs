@@ -87,5 +87,7 @@ test('the help text documents both commands', t => {
   const help = spawnSync(process.execPath, [script, 'help'], { encoding: 'utf8' }).stdout;
   assert.match(help, /accounts -- payment --config/);
   assert.match(help, /accounts -- payments --config/);
+  assert.match(help, /accounts -- reversals --config/);
+  assert.deepEqual(w.run('reversals').json(), []);
   assert.match(help, /excludes tax and processor fees/);
 });

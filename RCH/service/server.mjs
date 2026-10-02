@@ -8,7 +8,7 @@ import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
-import { verifyStripeSignature, paymentFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
+import { verifyStripeSignature, paymentFromStripeEvent, reversalFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
 
 export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
   return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nConnect to REACH Studio. This signature only signs you in.\n\nURI: ${origin}/wallet/connect\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expiresAt}`;
@@ -104,7 +104,18 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         if(!stripe)fail(404,'not_found','Route not found.');
         const raw=await readRaw(req);
         if(!verifyStripeSignature(raw,req.headers['stripe-signature'],stripe.webhookSecret,now()))fail(400,'signature_invalid','The webhook signature is invalid.');
-        const mapped=paymentFromStripeEvent(parseObject(raw),{basicPriceId:stripe.basicPriceId,livemode:stripe.mode==='live'});
+        const event=parseObject(raw),livemode=stripe.mode==='live';
+        const reversal=reversalFromStripeEvent(event,{livemode});
+        if(reversal) {
+          if(reversal.ignored){json(res,200,{received:true,ignored:reversal.ignored});return;}
+          // Only a REACH Checkout or a REACH invoice can be reversed, and the store
+          // still checks the ledger: a refund of anything else is not ours.
+          const original=await stripeClient.findOriginal(reversal.paymentIntent);
+          const result=original&&await store.applyReversal({...reversal.reversal,...original});
+          if(!result){json(res,200,{received:true,ignored:'not_reach'});return;}
+          json(res,200,{received:true,status:result.status,duplicate:result.duplicate});return;
+        }
+        const mapped=paymentFromStripeEvent(event,{basicPriceId:stripe.basicPriceId,livemode});
         if(mapped.ignored){json(res,200,{received:true,ignored:mapped.ignored});return;}
         // Recorded outcomes (applied, rejected, expired, superseded) all answer 200
         // so Stripe stops retrying; only a store failure or a conflict asks it to retry.
@@ -146,7 +157,11 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         } else fail(400,'invalid_checkout','Choose a subscription or a top-up.');
         json(res,200,await stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:now()})));return;
       }
-      if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id)});return;}
+      if(req.method==='POST'&&pathname==='/v1/billing/portal') {
+        if(!stripeClient)fail(503,'payments_unconfigured','Card payments are not configured on this service.');
+        json(res,200,await stripeClient.createPortalSession({accountId:account.id,returnUrl:`${config.origin}/billing/return?portal=closed`}));return;
+      }
+      if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id),reversals:await store.listReversals(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
       if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {await gateway.handle(req,res,account,body);return;}
       fail(404,'not_found','Route not found.');

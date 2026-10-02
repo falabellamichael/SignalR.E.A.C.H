@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('reach', {
     redeem: amountRch => ipcRenderer.invoke('account:redeem', amountRch),
     subscribe: () => ipcRenderer.invoke('account:subscribe'),
     topUp: amountUsd => ipcRenderer.invoke('account:topUp', amountUsd),
+    billing: () => ipcRenderer.invoke('account:billing'),
     onState: callback => {
       const listener = (_event, state) => callback(state);
       ipcRenderer.on('account:state', listener);

@@ -531,6 +531,10 @@ function registerIpc() {
     try { return { ok: true, ...await hostedAccount.subscribe() }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
+  ipcMain.handle('account:billing', async () => {
+    try { return { ok: true, ...await hostedAccount.manageBilling() }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('account:topUp', async (_event, amount) => {
     try { return { ok: true, ...await hostedAccount.topUp(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }

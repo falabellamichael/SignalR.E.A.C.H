@@ -9,7 +9,7 @@ import { definePaymentsSuite } from './helpers/payments-suite.mjs';
 // in order to an embedded PostgreSQL and every call goes through the actual
 // adapter and the actual RPC functions. No SQL is reimplemented in the test.
 // It does not prove multi-session lock scheduling on a hosted database.
-const RPCS = new Set(['reach_account_store', 'reach_request_store', 'reach_payment_store']);
+const RPCS = new Set(['reach_account_store', 'reach_request_store', 'reach_payment_store', 'reach_payment_reversal_store']);
 let db;
 const quote = value => { assert.match(value, /^[a-z_][a-z0-9_]*$/); return `"${value}"`; };
 

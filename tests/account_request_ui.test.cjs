@@ -157,6 +157,9 @@ test('card payment controls appear only when the service enables them and respec
   const active = vscodeRender({ ...card, account: { ...card.account, plan: { status: 'active' } } });
   assert.equal(find(active.parent, 'account-subscribe').disabled, true);
   assert.equal(find(active.parent, 'account-subscribe').textContent, 'Basic is active');
+  assert.equal(find(offered.parent, 'account-billing'), undefined, 'nothing to manage without a plan');
+  find(active.parent, 'account-billing').handlers.click();
+  assert.deepEqual(active.actions, [['billing', undefined]]);
 
   const studioView = studioRenderer();
   studioView.emit({ ...card, status: 'disconnected', account: null });
@@ -166,6 +169,10 @@ test('card payment controls appear only when the service enables them and respec
   assert.equal(studioView.text('home-card-badge'), 'AVAILABLE');
   assert.equal(studioView.get('home-card-subscribe').disabled, false);
   assert.equal(studioView.get('home-card-topup').disabled, true, 'top-up waits for an amount');
+  assert.equal(studioView.get('home-card-manage').hidden, true);
+  studioView.emit({ ...card, account: { ...card.account, plan: { status: 'active' } } });
+  assert.equal(studioView.get('home-card-manage').hidden, false);
+  assert.equal(studioView.get('home-card-manage').disabled, false);
   studioView.emit({ ...card, config: { ...card.config, cardPayments: false } });
   assert.match(studioView.text('home-card-status'), /not enabled/);
 });
