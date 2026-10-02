@@ -177,6 +177,28 @@ test('card payment controls appear only when the service enables them and respec
   assert.match(studioView.text('home-card-status'), /not enabled/);
 });
 
+test('email accounts show their address and both apps offer email sign-in only when the service does', () => {
+  const find = (parent, id) => descendants(parent).find(node => node.id === id);
+  const emailOnly = state();
+  emailOnly.account = { ...emailOnly.account, walletAddress: '', email: 'ada@example.com' };
+  assert.match(vscodeRender(emailOnly).parent.textContent, /ada@example\.com/);
+  const signedOut = { ...state({ status: 'disconnected' }), account: null };
+  assert.equal(find(vscodeRender(signedOut).parent, 'account-connect').textContent, 'Sign in with wallet');
+  assert.equal(find(vscodeRender({ ...signedOut, config: { ...signedOut.config, emailLogin: true } }).parent, 'account-connect').textContent, 'Sign in with wallet or email');
+  for (const adapter of [vscodeAdapter, studioAdapter]) {
+    assert.equal(adapter.publicAccount({ email: 'ada@example.com' }).email, 'ada@example.com');
+    assert.equal(adapter.publicAccount({ email: 'not an email' }).email, '');
+    assert.equal(adapter.publicAccount({ email: 'x'.repeat(250) + '@example.com' }).email, '');
+    assert.equal(adapter.publicConfig({ emailLogin: true }).emailLogin, true);
+    assert.equal(adapter.publicConfig({ emailLogin: 'yes' }).emailLogin, false);
+  }
+  const studioView = studioRenderer();
+  studioView.emit(emailOnly);
+  assert.equal(studioView.text('home-account-wallet'), 'ada@example.com');
+  studioView.emit({ ...signedOut, config: { ...signedOut.config, emailLogin: true } });
+  assert.equal(studioView.text('home-account-connect'), 'Sign in with wallet or email');
+});
+
 test('legacy token models retain their rate labels, allowances and USD credit activation in both renderers', () => {
   const legacyModel = { id: 'legacy', pricing: { inputUsdMicrosPerMillion: 150000, outputUsdMicrosPerMillion: 600000,
     cachedInputUsdMicrosPerMillion: 75000 } };

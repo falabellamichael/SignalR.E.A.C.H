@@ -58,7 +58,7 @@ class AccountProxyTests(RelayFixture):
         self.assertEqual(self.status("GET", "/v1/models", {}), 200)
 
     def test_wallet_assets_and_account_routes_do_not_need_legacy_keys(self):
-        for path in ("/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/style.css",
+        for path in ("/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/email.js", "/wallet/style.css",
                      "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json",
                      "/wallet/rch-add-token.js", "/v1/account/config", "/billing/return"):
             with self.subTest(path=path):
@@ -97,7 +97,8 @@ class AccountProxyTests(RelayFixture):
         self.assertNotIn("X-Reach-Key", sent["headers"])
 
     def test_billing_routes_are_forwarded_with_the_customer_session(self):
-        for method, path in (("POST", "/v1/billing/checkout"), ("POST", "/v1/billing/portal"), ("GET", "/v1/billing/payments")):
+        for method, path in (("POST", "/v1/billing/checkout"), ("POST", "/v1/billing/portal"), ("GET", "/v1/billing/payments"),
+                             ("POST", "/v1/auth/email/start"), ("POST", "/v1/auth/email/verify")):
             with self.subTest(path=path):
                 status, _, _ = self.call(method, path, self.session_headers(**({"Content-Type": "application/json"} if method == "POST" else {})),
                                          b'{"kind":"subscription"}' if method == "POST" else None)

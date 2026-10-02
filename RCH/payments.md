@@ -190,5 +190,6 @@ Not automated, so handle these by hand with the `payment` command:
 ## Still to do before live mode
 
 - PayPal.
-- Sign-in by email. Payments are tied to the internal account ID, not the
-  wallet, so adding email sign-in needs no change here.
+
+Payments are tied to the internal account ID, so wallet and email accounts
+(see [email-sign-in.md](email-sign-in.md)) pay and are refunded the same way.

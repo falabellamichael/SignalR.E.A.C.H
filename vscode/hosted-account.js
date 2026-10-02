@@ -64,6 +64,7 @@ function publicAccount(raw) {
   const plan = raw.plan || {}, allowance = raw.allowance || {}, balance = raw.rchBalance || {};
   return {
     walletAddress: /^0x[0-9a-f]{40}$/i.test(raw.walletAddress) ? raw.walletAddress : '',
+    email: (typeof raw.email === 'string' && raw.email.length <= 254 && /^[^\s@]+@[^\s@]+$/.test(raw.email) ? raw.email : ''),
     plan: { name: text(plan.name), status: text(plan.status), expiresAt: text(plan.expiresAt) },
     allowedModels: publicModels(raw.allowedModels),
     ...(raw.requestAllowance ? { requestAllowance: publicRequestAllowance(raw.requestAllowance) } : {}),
@@ -77,7 +78,7 @@ function publicAccount(raw) {
 function publicConfig(raw) {
   return { enabled: raw?.enabled === true, redemptionEnabled: raw?.redemptionEnabled === true,
     tokensPerRch: count(raw?.tokensPerRch), chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null,
-    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true,
+    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true, emailLogin: raw?.emailLogin === true,
     ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}) };
 }
 function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {

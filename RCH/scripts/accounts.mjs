@@ -11,20 +11,21 @@ const help=`REACH account service
   npm run accounts -- serve --config /private/path/accounts.json
   npm run accounts -- grant --config /private/path/accounts.json --file /private/path/grant.json
   npm run accounts -- payment --config /private/path/accounts.json --file /private/path/payment.json
-  npm run accounts -- payments --config /private/path/accounts.json [--wallet 0x...]
-  npm run accounts -- reversals --config /private/path/accounts.json [--wallet 0x...]
-  npm run accounts -- status --config /private/path/accounts.json --wallet 0x...
+  npm run accounts -- payments --config /private/path/accounts.json [--wallet 0x... | --email you@example.com]
+  npm run accounts -- reversals --config /private/path/accounts.json [--wallet 0x... | --email you@example.com]
+  npm run accounts -- status --config /private/path/accounts.json --wallet 0x... | --email you@example.com
   npm run accounts -- reconcile --config /private/path/accounts.json
   npm run accounts -- unsettled --config /private/path/accounts.json
   npm run accounts -- settle --config /private/path/accounts.json --file /private/path/measured-usage.json
   npm run accounts -- import-sqlite --config /private/path/supabase-accounts.json --source-sqlite /private/path/accounts.sqlite
 
 Grant JSON: {wallet,grantId,planId,name,models:[qualified model IDs],tokens,expiresAt:ISO timestamp}.
-Payment JSON: {wallet,objectId,kind:"subscription_period"|"top_up",amountUsdMicros,periodEnd:ISO timestamp (subscription only)}.
+Payment JSON: {wallet or email,objectId,kind:"subscription_period"|"top_up",amountUsdMicros,periodEnd:ISO timestamp (subscription only)}.
 Records a payment you have already confirmed by hand, with the same rules as an automatic one: it is recorded once per
 objectId, a Basic payment must be exactly the Basic price, and an expired or out-of-order period is recorded for review
 instead of granted. amountUsdMicros excludes tax and processor fees. Prefer this to the grant command for anything that was paid for.
-The payments command lists one wallet's payments, or every payment that needs review when no wallet is given.
+The payments command lists one account's payments, or every payment that needs review when no account is given.
+An email account must already exist (its owner signs in once); a wallet account is created if needed.
 The reversals command does the same for refunds and disputes.
 Settlement JSON: {reservationId,usage:{promptTokens,completionTokens,totalTokens,provider,model}}.
 Only use a verified provider usage record for manual settlement. No wallet keys are requested.
@@ -33,7 +34,7 @@ For import-sqlite, stop the source service first and keep its database backup. T
 if(!command||['help','--help','-h'].includes(command)){console.log(help);process.exit(0);}
 const options={};
 try {
-  for(let i=0;i<args.length;i+=2) {if(!['--config','--file','--wallet','--source-sqlite'].includes(args[i])||!args[i+1]||options[args[i]])throw new Error(help);options[args[i]]=args[i+1];}
+  for(let i=0;i<args.length;i+=2) {if(!['--config','--file','--wallet','--email','--source-sqlite'].includes(args[i])||!args[i+1]||options[args[i]])throw new Error(help);options[args[i]]=args[i+1];}
   if(!options['--config'])throw new Error('Supply --config.');
   const config=loadConfig(resolve(options['--config']));
   if(command==='serve') {
@@ -43,6 +44,13 @@ try {
     for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>{server.close();server.closeIdleConnections();});
   } else {
     const store=createAccountStore(config);
+    // One account, named by exactly one of its identities.
+    const named=async()=>{
+      if(!!options['--wallet']===!!options['--email'])throw new Error('Name the account with --wallet or --email.');
+      const row=options['--wallet']?await store.findAccountByWallet(options['--wallet']):await store.findAccountByEmail(options['--email']);
+      if(!row)throw new Error('No account has that wallet or email.');return row;
+    };
+    const someone=()=>options['--wallet']||options['--email'];
     try {
       if(command==='import-sqlite') {
         if (!config.supabase || !options['--source-sqlite']) throw new Error('Import requires a Supabase destination and --source-sqlite.');
@@ -53,24 +61,21 @@ try {
         const grant=JSON.parse(readFileSync(options['--file'],'utf8'));grant.expiresAt=Date.parse(grant.expiresAt);
         console.log(JSON.stringify(await store.grantPlan(grant),null,2));
       } else if(command==='payment') {
-        const {wallet,periodEnd,...entry}=JSON.parse(readFileSync(options['--file'],'utf8'));
-        const account=await store.ensureAccount(wallet);
+        const {wallet,email,periodEnd,...entry}=JSON.parse(readFileSync(options['--file'],'utf8'));
+        if(!!wallet===!!email)throw new Error('Name the account with wallet or email in the payment file.');
+        const account=wallet?await store.ensureAccount(wallet):await store.findAccountByEmail(email);
+        if(!account)throw new Error('No account has that email. Its owner must sign in once first.');
         // A hand-entered payment is always provider "manual"; the file cannot claim another.
         const payment={eventId:`manual-${entry.objectId}`,...entry,provider:'manual',accountId:account.id,...(periodEnd===undefined?{}:{periodEnd:Date.parse(periodEnd)})};
         console.log(JSON.stringify(await store.applyPayment(payment),null,2));
       } else if(command==='payments') {
-        if(options['--wallet']) {
-          const row=await store.findAccountByWallet(options['--wallet']);
-          if(!row)throw new Error('Wallet has no account.');console.log(JSON.stringify(await store.listPayments(row.id),null,2));
-        } else console.log(JSON.stringify(await store.flaggedPayments(),null,2));
+        if(someone())console.log(JSON.stringify(await store.listPayments((await named()).id),null,2));
+        else console.log(JSON.stringify(await store.flaggedPayments(),null,2));
       } else if(command==='reversals') {
-        if(options['--wallet']) {
-          const row=await store.findAccountByWallet(options['--wallet']);
-          if(!row)throw new Error('Wallet has no account.');console.log(JSON.stringify(await store.listReversals(row.id),null,2));
-        } else console.log(JSON.stringify(await store.flaggedReversals(),null,2));
+        if(someone())console.log(JSON.stringify(await store.listReversals((await named()).id),null,2));
+        else console.log(JSON.stringify(await store.flaggedReversals(),null,2));
       } else if(command==='status') {
-        const row=await store.findAccountByWallet(options['--wallet']);
-        if(!row)throw new Error('Wallet has no account.');console.log(JSON.stringify(await store.account(row.id),null,2));
+        console.log(JSON.stringify(await store.account((await named()).id),null,2));
       } else if(command==='unsettled') {
         console.log(JSON.stringify(await store.unsettledReservations(),null,2));
       } else if(command==='settle') {

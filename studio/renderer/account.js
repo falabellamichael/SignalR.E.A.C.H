@@ -19,7 +19,8 @@
     el('account-disconnect').disabled = busy || !['connected', 'locked', 'expired'].includes(state.status);
     el('account-status').textContent = model.message;
     el('account-status').dataset.state = state.error || state.status === 'locked' ? 'error' : model.connected ? 'success' : '';
-    el('account-wallet').textContent = state.account?.walletAddress || 'Your wallet address will appear after sign-in.';
+    el('account-wallet').textContent = state.account?.walletAddress || state.account?.email || 'Your wallet address will appear after sign-in.';
+    el('account-connect').textContent = state.config?.emailLogin ? 'Sign in with wallet or email' : 'Connect wallet';
     el('wallet-balance').textContent = model.walletBalance;
     el('wallet-balance-detail').textContent = model.walletBalanceDetail;
     window.ReachAccountMenu?.update(state, model);

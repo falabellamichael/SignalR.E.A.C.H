@@ -7,7 +7,7 @@ function keys(value, allowed, name) {
   if (!object(value) || Object.keys(value).some(k => !allowed.includes(k))) throw new Error(`Invalid ${name} configuration fields.`);
 }
 export function validateConfig(raw, directory = process.cwd(), env = process.env) {
-  keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption','subscription','payments'], 'service');
+  keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption','subscription','payments','email'], 'service');
   const url = new URL(raw.origin);
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw new Error('Service origin must be HTTPS, or loopback HTTP for development, without a path.');
   if (!['127.0.0.1','::1'].includes(raw.listenHost ?? '127.0.0.1')) throw new Error('Bind the service to loopback behind the existing HTTPS proxy.');
@@ -81,7 +81,27 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
     if (rpc.username || rpc.password || rpc.hash || !(rpc.protocol === 'https:' || rpc.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(rpc.hostname))) throw new Error('RPC URLs require HTTPS or loopback HTTP.');
   }
   const payments = paymentsConfig(raw, url, env);
-  return { ...raw, origin:url.origin, listenHost:raw.listenHost ?? '127.0.0.1', ...(supabase ? { supabase } : { database:resolve(directory,raw.database) }), upstreamKey, redemption:{...redemption,...(quoteSignerKey?{quoteSignerKey}:{})}, ...(payments ? { payments } : {}) };
+  const email = emailConfig(raw, env);
+  return { ...raw, origin:url.origin, listenHost:raw.listenHost ?? '127.0.0.1', ...(supabase ? { supabase } : { database:resolve(directory,raw.database) }), upstreamKey, redemption:{...redemption,...(quoteSignerKey?{quoteSignerKey}:{})}, ...(payments ? { payments } : {}), ...(email ? { email } : {}) };
+}
+// Sign-in codes are sent through Resend. The key stays in the environment;
+// `from` must be an address on a domain verified in Resend.
+function emailConfig(raw, env) {
+  if (raw.email === undefined) return null;
+  keys(raw.email, ['resend'], 'email');
+  keys(raw.email.resend, ['apiKeyEnv', 'from'], 'Resend');
+  const { apiKeyEnv, from } = raw.email.resend;
+  if (typeof apiKeyEnv !== 'string' || !/^[A-Z][A-Z0-9_]{2,80}$/.test(apiKeyEnv)
+    || [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv, raw.payments?.stripe?.secretKeyEnv, raw.payments?.stripe?.webhookSecretEnv].includes(apiKeyEnv)) {
+    throw new Error('Use a separate host-only environment variable for the Resend API key.');
+  }
+  const apiKey = env[apiKeyEnv];
+  if (typeof apiKey !== 'string' || !/^re_[A-Za-z0-9_]{16,200}$/.test(apiKey)) throw new Error(`Set ${apiKeyEnv} to a Resend API key.`);
+  if (typeof from !== 'string' || from.length > 200 || /[\r\n]/.test(from)
+    || !/^(?:[^<>@"]{1,80} <[^\s@<>]+@[^\s@<>]+\.[a-z]{2,63}>|[^\s@<>]+@[^\s@<>]+\.[a-z]{2,63})$/i.test(from)) {
+    throw new Error('Set email.resend.from to an address on your verified domain, for example "REACH <login@example.com>".');
+  }
+  return { resend: { apiKey, from } };
 }
 // Card payments. Keys live only in the host environment, the mode must match the
 // key, and live money needs a public HTTPS origin for Stripe to call back.

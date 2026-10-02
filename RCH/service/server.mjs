@@ -8,6 +8,8 @@ import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
+import { randomBytes } from 'node:crypto';
+import { createResendMailer, emailCode, emailCodeHash, validEmailCode, normalizeEmail } from './email.mjs';
 import { verifyStripeSignature, paymentFromStripeEvent, reversalFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
 
 export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
@@ -54,24 +56,39 @@ const staticAssets = new Map([
   ['/wallet/connect',['text/html; charset=utf-8','wallet.html']],
   ['/wallet/redeem',['text/html; charset=utf-8','wallet.html']],
   ['/wallet/app.js',['text/javascript; charset=utf-8','wallet.js']],
+  ['/wallet/email.js',['text/javascript; charset=utf-8','email.js']],
   ['/wallet/style.css',['text/css; charset=utf-8','wallet.css']],
   ['/billing/return',['text/html; charset=utf-8','billing.html']],
 ]);
 
-export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,paymentFetch,now=Date.now}) {
+export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,paymentFetch,mailer,now=Date.now}) {
   let ownsStore=false,ownsProvider=false;
   if(!store) { store=createAccountStore(config,{now});ownsStore=true; }
   if(!provider&&config.authRpcUrl) { const request=new FetchRequest(config.authRpcUrl);request.timeout=15000;provider=new JsonRpcProvider(request);ownsProvider=true; }
   const gateway=createModelGateway({store,models:config.models,subscription:config.subscription,upstreamUrl:config.upstreamUrl,upstreamKey:config.upstreamKey,fetchImpl});
   const redemption=createRedemptionService({store,config,provider:redemptionProvider});
   const balances=createTokenBalanceReader({config,provider:balanceProvider});
+  if(!mailer&&config.email?.resend)mailer=createResendMailer(config.email.resend);
   const stripe=config.payments?.stripe;
   const stripeClient=stripe?createStripeClient({secretKey:stripe.secretKey,...(paymentFetch?{fetchImpl:paymentFetch}:{})}):null;
-  const buckets=new Map();
-  function rateLimit(req) {
+  const buckets=new Map(),emailSenders=new Map();
+  const clientKey=req=>{
     const peer=req.socket.remoteAddress;
     const proxyIp=req.headers['x-reach-client-ip'];
-    const key=['127.0.0.1','::1','::ffff:127.0.0.1'].includes(peer)&&typeof proxyIp==='string'&&isIP(proxyIp)?proxyIp:peer||'unknown';
+    return ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(peer)&&typeof proxyIp==='string'&&isIP(proxyIp)?proxyIp:peer||'unknown';
+  };
+  // Ten codes an hour per client, so one client cannot spend the service-wide
+  // hourly email allowance and lock everyone else out of email sign-in.
+  function emailLimit(req) {
+    const key=clientKey(req),time=now(),previous=emailSenders.get(key);
+    if(!previous||previous.expires<=time) {
+      if(emailSenders.size>10000) for(const [k,v]of emailSenders) if(v.expires<=time)emailSenders.delete(k);
+      emailSenders.set(key,{count:1,expires:time+3600000});return;
+    }
+    if(++previous.count>10)fail(429,'email_rate_limit','Too many codes were requested from this network. Try again in an hour.');
+  }
+  function rateLimit(req) {
+    const key=clientKey(req);
     const time=now(), previous=buckets.get(key);
     if(!previous||previous.expires<=time) {
       if(buckets.size>10000) for(const [k,v]of buckets) if(v.expires<=time)buckets.delete(k);
@@ -82,9 +99,10 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
   const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:{outputTokenLimit:false},pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false}}:{}),cardPayments:!!stripe,loginMethod:'ethereum-browser-wallet'});
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false}}:{}),cardPayments:!!stripe,emailLogin:!!mailer,loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
-    return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
+    // An email-only account has no wallet to read holdings from.
+    return {...account,rchBalance:account.walletAddress?await balances.read(account.walletAddress):{status:'unconfigured'},redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };
   const server=createServer(async(req,res)=>{
     res.setHeader('cache-control','no-store');res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','no-referrer');
@@ -136,6 +154,23 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         if(!await verifyWallet(c,body.signature,provider,config.chainId))fail(401,'signature_invalid','The wallet signature does not match this sign-in.');
         await store.authorize(body.flowId,body.challengeId);json(res,200,{status:'verified'});return;
       }
+      if(req.method==='POST'&&pathname==='/v1/auth/email/start') {
+        if(!mailer)fail(404,'not_found','Route not found.');
+        emailLimit(req);
+        // The code is generated here and only its hash is stored. The email is
+        // sent after the challenge commits, so a rate-limited request sends nothing.
+        const code=emailCode(),challengeId=randomBytes(32).toString('hex');
+        const created=await store.createEmailChallenge(body.flowId,body.email,challengeId,emailCodeHash(challengeId,code));
+        await mailer.sendSignInCode({to:normalizeEmail(body.email),code,challengeId,host:new URL(config.origin).host});
+        json(res,200,created);return;
+      }
+      if(req.method==='POST'&&pathname==='/v1/auth/email/verify') {
+        if(!mailer)fail(404,'not_found','Route not found.');
+        if(!validEmailCode(body.code))fail(400,'code_invalid','Enter the 6-digit code from the email.');
+        if(typeof body.challengeId!=='string'||!/^[a-f0-9]{64}$/.test(body.challengeId))fail(400,'invalid_challenge','Invalid challenge.');
+        await store.verifyEmailChallenge(body.flowId,body.challengeId,emailCodeHash(body.challengeId,body.code));
+        json(res,200,{status:'verified'});return;
+      }
       if(req.method==='POST'&&pathname==='/v1/auth/exchange') {
         // Exchange commits the one-use proof and returns its account snapshot.
         // A second ledger read could fail after commit and strand the session.
@@ -162,6 +197,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         json(res,200,await stripeClient.createPortalSession({accountId:account.id,returnUrl:`${config.origin}/billing/return?portal=closed`}));return;
       }
       if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id),reversals:await store.listReversals(account.id)});return;}
+      if(req.method==='POST'&&pathname==='/v1/redemptions/start'&&!account.walletAddress)fail(409,'wallet_required','RCH redemption needs an account signed in with a wallet.');
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
       if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {await gateway.handle(req,res,account,body);return;}
       fail(404,'not_found','Route not found.');

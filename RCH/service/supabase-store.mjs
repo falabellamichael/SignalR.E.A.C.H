@@ -1,6 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { getAddress } from 'ethers';
 import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay, basicPlanModelIds } from './store.mjs';
+import { normalizeEmail } from './email.mjs';
 import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment,
   normalizeReversal, reversalFingerprint, publicReversal, reviewReversal } from './payments/core.mjs';
 
@@ -30,6 +31,9 @@ const ERRORS = {
   invalid_payment: [400, 'Invalid payment record.'],
   payment_conflict: [409, 'This payment was already recorded with different values.'],
   subscription_unconfigured: [409, 'Request subscriptions are not configured on this service.'],
+  email_cooldown: [429, 'Wait a minute before requesting another code.'],
+  email_rate_limit: [429, 'Too many codes were requested for this address. Try again in an hour.'],
+  email_busy: [429, 'Email sign-in is busy. Try again later.'],
 };
 const SNAPSHOT_TABLES = ['accounts', 'flows', 'challenges', 'sessions', 'grants', 'reservations', 'redemptions'];
 const unavailable = () => new AccountError(503, 'account_store_unavailable', 'The shared account store is temporarily unavailable.');
@@ -103,7 +107,7 @@ export class SupabaseAccountStore {
         includedLimit: 0, completed: 0, reserved: 0, remaining: 0, periodEndsAt: null,
         overageUsdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest, basicActive: false } };
     }
-    return { id: a.id, walletAddress: a.wallet,
+    return { id: a.id, walletAddress: a.wallet, email: a.email ?? null,
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
       allowedModels: this.models.filter(m => request?.unavailable ? false : m.access === 'requests' ? requestModel(m) && !!this.subscription && (request.allowance.basicActive || a.usd_prepaid > 0)
         : m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(requestModel(m) ? { access: 'requests', pricing: { unit: 'request', includedRequests: this.subscription.basic.includedRequests, usdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest }, capabilities: { outputTokenLimit: false } } : modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
@@ -125,6 +129,20 @@ export class SupabaseAccountStore {
   async accountById(accountId) { return this._rpc('account_by_id', { accountId }); }
   async findAccountByWallet(wallet) { return this._rpc('find_account', { wallet: getAddress(wallet) }); }
   async ensureAccount(wallet) { return this._rpc('ensure_account', { wallet: getAddress(wallet), accountId: id() }); }
+  async findAccountByEmail(email) { return this._rpc('find_email_account', { email: normalizeEmail(email) }); }
+  async ensureEmailAccount(email) { return this._rpc('ensure_email_account', { email: normalizeEmail(email), accountId: id() }); }
+  async createEmailChallenge(flowId, email, challengeId, codeHash) {
+    return this._rpc('create_email_challenge', { flowId, email: normalizeEmail(email), challengeId, codeHash });
+  }
+  // Same contract as the SQLite store; the SQL returns a wrong code instead of
+  // raising it, so the attempt count it recorded is committed.
+  async verifyEmailChallenge(flowId, challengeId, codeHash) {
+    const outcome = await this._rpc('verify_email_challenge', { flowId, challengeId, codeHash, accountId: id() });
+    if (outcome?.expired) fail(410, 'code_expired', 'This code is no longer valid. Request a new one.');
+    if (!outcome?.accountId) fail(401, outcome?.remaining > 0 ? 'code_invalid' : 'code_retired',
+      outcome?.remaining > 0 ? 'That code is not right. Check the email and try again.' : 'Too many wrong codes. Request a new one.');
+    return outcome.accountId;
+  }
   async account(accountId) { return this._view(await this._rpc('account', { accountId })); }
   async grantPlan({ wallet, grantId, planId, name, models, tokens, expiresAt }) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId || '') || !planId || typeof name !== 'string' || !safeCount(tokens)

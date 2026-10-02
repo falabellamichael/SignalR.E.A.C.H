@@ -81,6 +81,7 @@ function publicAccount(raw) {
   const allowance = raw.allowance || {}, plan = raw.plan || {};
   return {
     id: text(raw.id), walletAddress: /^0x[0-9a-f]{40}$/i.test(raw.walletAddress) ? raw.walletAddress : '',
+    email: (typeof raw.email === 'string' && raw.email.length <= 254 && /^[^\s@]+@[^\s@]+$/.test(raw.email) ? raw.email : ''),
     plan: { id: text(plan.id), name: text(plan.name), status: text(plan.status), expiresAt: text(plan.expiresAt) },
     allowedModels: publicModels(raw.allowedModels),
     ...(raw.requestAllowance ? { requestAllowance: publicRequestAllowance(raw.requestAllowance) } : {}),
@@ -97,7 +98,7 @@ function publicConfig(raw) {
     redemptionMode: raw?.redemptionMode === 'treasury' ? 'treasury' : 'legacy',
     treasuryAddress: /^0x[0-9a-f]{40}$/i.test(raw?.treasuryAddress) ? raw.treasuryAddress : '',
     pricingStatus: text(raw?.pricingStatus, 80), pricingMessage: text(raw?.pricingMessage, 400),
-    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true,
+    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true, emailLogin: raw?.emailLogin === true,
     ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}),
     loginMethod: text(raw?.loginMethod) };
 }
