@@ -7,7 +7,7 @@ function keys(value, allowed, name) {
   if (!object(value) || Object.keys(value).some(k => !allowed.includes(k))) throw new Error(`Invalid ${name} configuration fields.`);
 }
 export function validateConfig(raw, directory = process.cwd(), env = process.env) {
-  keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption','subscription'], 'service');
+  keys(raw, ['origin','listenHost','port','database','supabase','chainId','authRpcUrl','upstreamUrl','upstreamKeyEnv','models','redemption','subscription','payments'], 'service');
   const url = new URL(raw.origin);
   if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(url.hostname))) throw new Error('Service origin must be HTTPS, or loopback HTTP for development, without a path.');
   if (!['127.0.0.1','::1'].includes(raw.listenHost ?? '127.0.0.1')) throw new Error('Bind the service to loopback behind the existing HTTPS proxy.');
@@ -80,6 +80,30 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
     const rpc = new URL(address);
     if (rpc.username || rpc.password || rpc.hash || !(rpc.protocol === 'https:' || rpc.protocol === 'http:' && ['localhost','127.0.0.1','[::1]'].includes(rpc.hostname))) throw new Error('RPC URLs require HTTPS or loopback HTTP.');
   }
-  return { ...raw, origin:url.origin, listenHost:raw.listenHost ?? '127.0.0.1', ...(supabase ? { supabase } : { database:resolve(directory,raw.database) }), upstreamKey, redemption:{...redemption,...(quoteSignerKey?{quoteSignerKey}:{})} };
+  const payments = paymentsConfig(raw, url, env);
+  return { ...raw, origin:url.origin, listenHost:raw.listenHost ?? '127.0.0.1', ...(supabase ? { supabase } : { database:resolve(directory,raw.database) }), upstreamKey, redemption:{...redemption,...(quoteSignerKey?{quoteSignerKey}:{})}, ...(payments ? { payments } : {}) };
+}
+// Card payments. Keys live only in the host environment, the mode must match the
+// key, and live money needs a public HTTPS origin for Stripe to call back.
+function paymentsConfig(raw, origin, env) {
+  if (raw.payments === undefined) return null;
+  keys(raw.payments, ['stripe'], 'payments');
+  const stripe = raw.payments.stripe;
+  keys(stripe, ['mode','secretKeyEnv','webhookSecretEnv','basicPriceId'], 'Stripe');
+  if (!['test','live'].includes(stripe.mode)) throw new Error('Stripe mode must be "test" or "live".');
+  const names = [stripe.secretKeyEnv, stripe.webhookSecretEnv];
+  if (!names.every(n => typeof n === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(n)) || new Set(names).size !== 2
+    || names.some(n => [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv].includes(n))) {
+    throw new Error('Use two separate host-only environment variables for the Stripe key and webhook secret.');
+  }
+  const secretKey = env[stripe.secretKeyEnv], webhookSecret = env[stripe.webhookSecretEnv];
+  if (typeof secretKey !== 'string' || !new RegExp(`^(?:sk|rk)_${stripe.mode}_[A-Za-z0-9]{16,247}$`).test(secretKey)) {
+    throw new Error(`Set ${stripe.secretKeyEnv} to a Stripe ${stripe.mode}-mode secret or restricted key.`);
+  }
+  if (typeof webhookSecret !== 'string' || !/^whsec_[A-Za-z0-9+/=]{16,256}$/.test(webhookSecret)) throw new Error(`Set ${stripe.webhookSecretEnv} to the Stripe webhook signing secret.`);
+  if (typeof stripe.basicPriceId !== 'string' || !/^price_[A-Za-z0-9]{8,64}$/.test(stripe.basicPriceId)) throw new Error('Configure the Stripe price ID for the Basic plan.');
+  if (!raw.subscription) throw new Error('Stripe checkout sells the Basic subscription; configure it first.');
+  if (stripe.mode === 'live' && origin.protocol !== 'https:') throw new Error('Live Stripe payments need a public HTTPS service origin.');
+  return { stripe: { mode: stripe.mode, basicPriceId: stripe.basicPriceId, secretKey, webhookSecret } };
 }
 export const loadConfig = file => validateConfig(JSON.parse(readFileSync(file,'utf8')),dirname(resolve(file)));

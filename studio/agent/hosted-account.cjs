@@ -25,6 +25,21 @@ function browserUrl(value, base) {
   }
   return url.href;
 }
+// Card checkout is the one page opened outside the service origin, and only Stripe's.
+const CHECKOUT_ORIGIN = 'https://checkout.stripe.com';
+function checkoutUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error('The service returned an invalid payment page.'); }
+  if (url.origin !== CHECKOUT_ORIGIN || url.username || url.password) throw new Error('The service returned a payment page outside Stripe Checkout.');
+  return url.href;
+}
+// Whole dollars or cents only, converted without floating point.
+function topUpMicros(value) {
+  const match = /^\$?([1-9]\d{0,2})(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
+  const micros = match ? Number(match[1]) * 1_000_000 + Number((match[2] || '').padEnd(2, '0')) * 10_000 : 0;
+  if (micros < 1_000_000 || micros > 500_000_000) throw new Error('Enter a dollar amount between 1 and 500, for example 20 or 12.50.');
+  return micros;
+}
 const text = (value, limit = 250) => typeof value === 'string' ? value.slice(0, limit) : '';
 const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? String(value) : '0';
 function publicRequestAllowance(raw) {
@@ -79,7 +94,7 @@ function publicConfig(raw) {
     redemptionMode: raw?.redemptionMode === 'treasury' ? 'treasury' : 'legacy',
     treasuryAddress: /^0x[0-9a-f]{40}$/i.test(raw?.treasuryAddress) ? raw.treasuryAddress : '',
     pricingStatus: text(raw?.pricingStatus, 80), pricingMessage: text(raw?.pricingMessage, 400),
-    redemptionModels: publicModels(raw?.redemptionModels),
+    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true,
     ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}),
     loginMethod: text(raw?.loginMethod) };
 }
@@ -279,6 +294,18 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
     await openExternal(url);
     return { redemptionId: text(data.redemptionId), expiresAt: text(data.expiresAt) };
   }
+  async function checkout(body) {
+    initialize(); expire();
+    if (!session) throw new Error('Connect your wallet before paying by card.');
+    if (!config?.cardPayments) throw new Error('Card payments are not enabled on this service.');
+    const expected = generation;
+    const { data } = await request('/v1/billing/checkout', { method: 'POST', token: session.accessToken, body });
+    if (generation !== expected) throw new Error('Wallet connection changed. Start the payment again.');
+    await openExternal(checkoutUrl(data.url));
+    return { expiresAt: text(data.expiresAt) };
+  }
+  const subscribe = () => checkout({ kind: 'subscription' });
+  const topUp = async amountUsd => checkout({ kind: 'top_up', amountUsdMicros: topUpMicros(amountUsd) });
   function managedConnection(existing = {}) {
     initialize(); expire();
     if (!baseUrl) return null;
@@ -308,6 +335,6 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
     }
     return out;
   }
-  return { state, configure, connect, cancel, poll, refresh, disconnect, redeem, hydrate, sanitize, managedConnection };
+  return { state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, hydrate, sanitize, managedConnection };
 }
-module.exports = { createHostedAccount, serviceUrl, browserUrl, publicAccount, publicConfig, MANAGED_ID };
+module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, topUpMicros, publicAccount, publicConfig, MANAGED_ID };

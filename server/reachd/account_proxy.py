@@ -18,13 +18,16 @@ ACCOUNT_PATHS = frozenset((
     "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json", "/wallet/rch-add-token.js",
     "/v1/auth/start", "/v1/auth/challenge", "/v1/auth/verify", "/v1/auth/exchange", "/v1/auth/logout",
     "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
+    "/v1/billing/checkout", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
 ))
 MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models",
                "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions"}
 MAX_REQUEST = 512 * 1024
 MAX_RESPONSE = 1024 * 1024
 MAX_STREAM = 2 * 1024 * 1024
-FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key")
+# Stripe-Signature authenticates the payment webhook; the account service checks
+# it against the exact body bytes, which this proxy forwards unchanged.
+FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key", "Stripe-Signature")
 RESPONSE_HEADERS = ("Content-Type", "Cache-Control", "Content-Security-Policy", "Referrer-Policy",
                     "X-Content-Type-Options", "X-Frame-Options", "X-Request-Id", "X-Reach-Replayed", "Retry-After")
 

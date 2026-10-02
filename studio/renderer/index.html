@@ -265,10 +265,13 @@
                 <p class="home-card-footnote">Review the amount, network, contract, and gas fee in your wallet before signing. Refresh your account after confirmation.</p>
               </article>
               <article class="home-card home-value-card">
-                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">+</span><div><p class="home-card-kicker">MORE FUNDING OPTIONS</p><h3>Card payments</h3></div></div><span class="home-preview-badge">PLANNED</span></div>
-                <p class="home-card-description">Credit and debit card funding will be available in a later release.</p>
-                <div class="home-token-points"><span>Wallet ownership verified</span><span>One shared allowance</span><span>Confirmed redemptions credited once</span></div>
-                <p class="home-card-footnote">Holding RCH alone does not activate a subscription. Transfers and trades keep RCH in circulation.</p>
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">+</span><div><p class="home-card-kicker">PAY BY CARD</p><h3>Basic plan and credit</h3></div></div><span id="home-card-badge" class="home-preview-badge">UNAVAILABLE</span></div>
+                <p class="home-card-description">Subscribe to Basic or add US dollar credit on the Stripe checkout page.</p>
+                <button id="home-card-subscribe" class="gold small home-disabled-action" type="button" disabled>Subscribe to Basic</button>
+                <div class="home-field"><label for="home-card-amount">US dollar credit to add</label><input id="home-card-amount" type="text" inputmode="decimal" placeholder="20" disabled /></div>
+                <button id="home-card-topup" class="gold small home-disabled-action" type="button" disabled>Add credit by card</button>
+                <p id="home-card-status" class="home-inline-status" role="status" aria-live="polite">Connect your wallet to pay by card.</p>
+                <p class="home-card-footnote">Your card details go to Stripe, never to REACH. Refresh your account after paying.</p>
               </article>
             </div>
           </section>

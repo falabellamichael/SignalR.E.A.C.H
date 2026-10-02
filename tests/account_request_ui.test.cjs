@@ -141,6 +141,35 @@ test('VS Code renders included completed requests and pay as you go without toke
   assert.deepEqual(inactive.actions, [['use', undefined]], 'the existing action transport is preserved');
 });
 
+test('card payment controls appear only when the service enables them and respect an active plan', () => {
+  const find = (parent, id) => descendants(parent).find(node => node.id === id);
+  const hidden = vscodeRender(state({ basicActive: false }));
+  assert.equal(find(hidden.parent, 'account-subscribe'), undefined);
+  const card = state({ basicActive: false, config: { cardPayments: true, subscription: { basic: { priceUsdMicros: '15000000' } }, redemptionModels: [requestModel] } });
+  card.account.plan = { status: 'none' };
+  const offered = vscodeRender(card);
+  assert.match(find(offered.parent, 'account-subscribe').textContent, /Subscribe to Basic · US\$15\.00 a month/);
+  assert.equal(find(offered.parent, 'account-subscribe').disabled, false);
+  find(offered.parent, 'account-subscribe').handlers.click();
+  find(offered.parent, 'account-topup').value = ' 20 ';
+  find(offered.parent, 'account-topup-card').handlers.click();
+  assert.deepEqual(offered.actions, [['subscribe', undefined], ['topup', '20']]);
+  const active = vscodeRender({ ...card, account: { ...card.account, plan: { status: 'active' } } });
+  assert.equal(find(active.parent, 'account-subscribe').disabled, true);
+  assert.equal(find(active.parent, 'account-subscribe').textContent, 'Basic is active');
+
+  const studioView = studioRenderer();
+  studioView.emit({ ...card, status: 'disconnected', account: null });
+  assert.equal(studioView.get('home-card-subscribe').disabled, true);
+  assert.match(studioView.text('home-card-status'), /Connect your wallet/);
+  studioView.emit(card);
+  assert.equal(studioView.text('home-card-badge'), 'AVAILABLE');
+  assert.equal(studioView.get('home-card-subscribe').disabled, false);
+  assert.equal(studioView.get('home-card-topup').disabled, true, 'top-up waits for an amount');
+  studioView.emit({ ...card, config: { ...card.config, cardPayments: false } });
+  assert.match(studioView.text('home-card-status'), /not enabled/);
+});
+
 test('legacy token models retain their rate labels, allowances and USD credit activation in both renderers', () => {
   const legacyModel = { id: 'legacy', pricing: { inputUsdMicrosPerMillion: 150000, outputUsdMicrosPerMillion: 600000,
     cachedInputUsdMicrosPerMillion: 75000 } };

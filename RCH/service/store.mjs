@@ -104,6 +104,7 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS request_reservation_account_period ON request_reservations(account_id,period_key,status);
       CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY,provider TEXT NOT NULL CHECK(provider IN ('stripe','paypal','manual')),event_id TEXT NOT NULL,object_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('subscription_period','top_up')),account_id TEXT NOT NULL,amount_usd_micros INTEGER NOT NULL CHECK(amount_usd_micros>0),currency TEXT NOT NULL CHECK(currency='usd'),period_end INTEGER,status TEXT NOT NULL CHECK(status IN ('applied','superseded','expired','rejected')),reason TEXT,grant_id TEXT,fingerprint TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(provider,object_id,kind),CHECK(kind='subscription_period' AND period_end IS NOT NULL OR kind='top_up' AND period_end IS NULL),CHECK((status='applied')=(reason IS NULL)));
       CREATE INDEX IF NOT EXISTS payment_account ON payments(account_id,created);
+      CREATE TABLE IF NOT EXISTS subscription_checkouts(account_id TEXT PRIMARY KEY REFERENCES accounts(id),id TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS payment_review ON payments(status) WHERE status IN ('rejected','expired');
     `);
     // Additive migration preserves every existing account and token reservation.
@@ -223,6 +224,25 @@ export class AccountStore {
       return this.account(a.id);
     };
     return nested?run():this.transaction(run);
+  }
+  // A durable intent survives restarts and gives concurrent retries one Stripe
+  // idempotency key. Its fixed expiry is also sent to Stripe; a replacement can
+  // only be created after the previous session can no longer charge the account.
+  reserveSubscriptionCheckout(accountId,fingerprint,replaceExpiredId=null) {
+    if(!/^[a-f0-9]{64}$/.test(fingerprint||''))fail(400,'invalid_checkout','Invalid checkout.');
+    return this.transaction(()=>{
+      const account=this.db.prepare('SELECT * FROM accounts WHERE id=?').get(accountId);
+      if(!account)fail(404,'account_missing','Account not found.');
+      if(account.plan_id&&account.plan_expires>this.now())fail(409,'plan_active','A plan is already active on this account.');
+      const previous=this.db.prepare('SELECT * FROM subscription_checkouts WHERE account_id=?').get(accountId);
+      if(previous&&(previous.expires>this.now()||previous.id!==replaceExpiredId)) {
+        if(previous.fingerprint!==fingerprint)fail(409,'checkout_pending','An earlier subscription checkout is still pending. Wait for it to expire.');
+        return {id:previous.id,expiresAt:previous.expires};
+      }
+      const checkout={id:id(),expiresAt:(Math.floor(this.now()/1000)+3600)*1000};
+      this.db.prepare('INSERT INTO subscription_checkouts(account_id,id,fingerprint,expires) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET id=excluded.id,fingerprint=excluded.fingerprint,expires=excluded.expires').run(accountId,checkout.id,fingerprint,checkout.expiresAt);
+      return checkout;
+    });
   }
   // ---- payments: a provider-neutral ledger (rules live in payments/core.mjs) ----
   basicPlanModels() { return basicPlanModelIds(this.models); }

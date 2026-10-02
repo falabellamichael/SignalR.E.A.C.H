@@ -2,12 +2,13 @@ import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, FetchRequest } from 'ethers';
-import { fail } from './store.mjs';
+import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
+import { verifyStripeSignature, paymentFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
 
 export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
   return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nConnect to REACH Studio. This signature only signs you in.\n\nURI: ${origin}/wallet/connect\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expiresAt}`;
@@ -34,13 +35,17 @@ export async function verifyWallet(challenge, signature, provider, chainId) {
   catch { return false; }
 }
 const json = (res,status,value) => { res.writeHead(status,{'content-type':'application/json; charset=utf-8'}); res.end(JSON.stringify(value)); };
-async function readBody(req) {
+async function readRaw(req) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')) fail(415,'content_type','Use application/json.');
   let size=0; const chunks=[];
   for await(const chunk of req) { size+=chunk.length; if(size>524288) fail(413,'body_limit','Request is too large.'); chunks.push(chunk); }
-  let body; try { body=JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { fail(400,'invalid_json','Invalid JSON body.'); }
-  if(!body||typeof body!=='object'||Array.isArray(body)) fail(400,'invalid_body','Supply a JSON object.');return body;
+  return Buffer.concat(chunks);
 }
+const parseObject=raw=>{
+  let body; try { body=JSON.parse(raw.toString('utf8')); } catch { fail(400,'invalid_json','Invalid JSON body.'); }
+  if(!body||typeof body!=='object'||Array.isArray(body)) fail(400,'invalid_body','Supply a JSON object.');return body;
+};
+const readBody=async req=>parseObject(await readRaw(req));
 const staticAssets = new Map([
   ['/wallet/rch',['text/html; charset=utf-8','../../branding/index.html']],
   ['/wallet/rch-logo.png',['image/png','../../branding/rch-logo.png']],
@@ -50,15 +55,18 @@ const staticAssets = new Map([
   ['/wallet/redeem',['text/html; charset=utf-8','wallet.html']],
   ['/wallet/app.js',['text/javascript; charset=utf-8','wallet.js']],
   ['/wallet/style.css',['text/css; charset=utf-8','wallet.css']],
+  ['/billing/return',['text/html; charset=utf-8','billing.html']],
 ]);
 
-export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,now=Date.now}) {
+export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,paymentFetch,now=Date.now}) {
   let ownsStore=false,ownsProvider=false;
   if(!store) { store=createAccountStore(config,{now});ownsStore=true; }
   if(!provider&&config.authRpcUrl) { const request=new FetchRequest(config.authRpcUrl);request.timeout=15000;provider=new JsonRpcProvider(request);ownsProvider=true; }
   const gateway=createModelGateway({store,models:config.models,subscription:config.subscription,upstreamUrl:config.upstreamUrl,upstreamKey:config.upstreamKey,fetchImpl});
   const redemption=createRedemptionService({store,config,provider:redemptionProvider});
   const balances=createTokenBalanceReader({config,provider:balanceProvider});
+  const stripe=config.payments?.stripe;
+  const stripeClient=stripe?createStripeClient({secretKey:stripe.secretKey,...(paymentFetch?{fetchImpl:paymentFetch}:{})}):null;
   const buckets=new Map();
   function rateLimit(req) {
     const peer=req.socket.remoteAddress;
@@ -74,7 +82,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
   const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:{outputTokenLimit:false},pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false}}:{}),loginMethod:'ethereum-browser-wallet'});
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false}}:{}),cardPayments:!!stripe,loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
     return {...account,rchBalance:await balances.read(account.walletAddress),redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };
@@ -90,6 +98,19 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       const asset=staticAssets.get(pathname);
       if(req.method==='GET'&&asset) {res.writeHead(200,{'content-type':asset[0]});res.end(readFileSync(new URL(`./public/${asset[1]}`,import.meta.url)));return;}
       if(req.method==='GET'&&pathname==='/v1/account/config') {json(res,200,publicConfig());return;}
+      if(req.method==='POST'&&pathname==='/v1/billing/stripe/webhook') {
+        // Authenticated by Stripe's signature over the exact bytes received, so
+        // the body is verified before it is parsed. No session or origin applies.
+        if(!stripe)fail(404,'not_found','Route not found.');
+        const raw=await readRaw(req);
+        if(!verifyStripeSignature(raw,req.headers['stripe-signature'],stripe.webhookSecret,now()))fail(400,'signature_invalid','The webhook signature is invalid.');
+        const mapped=paymentFromStripeEvent(parseObject(raw),{basicPriceId:stripe.basicPriceId,livemode:stripe.mode==='live'});
+        if(mapped.ignored){json(res,200,{received:true,ignored:mapped.ignored});return;}
+        // Recorded outcomes (applied, rejected, expired, superseded) all answer 200
+        // so Stripe stops retrying; only a store failure or a conflict asks it to retry.
+        const result=await store.applyPayment(mapped.payment);
+        json(res,200,{received:true,status:result.status,duplicate:result.duplicate});return;
+      }
       const body=req.method==='POST'?await readBody(req):{};
       if(req.method==='POST'&&pathname==='/v1/auth/start') {
         const f=await store.startFlow(body.state,body.codeChallenge);json(res,200,{...f,loginUrl:`${config.origin}/wallet/connect#flow=${f.flowId}`});return;
@@ -115,6 +136,26 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       const account=await store.authenticate(token);
       if(req.method==='GET'&&pathname==='/v1/account') {json(res,200,await accountView(await store.account(account.id)));return;}
       if(req.method==='POST'&&pathname==='/v1/auth/logout') {await store.logout(token);json(res,200,{status:'disconnected'});return;}
+      if(req.method==='POST'&&pathname==='/v1/billing/checkout') {
+        if(!stripeClient)fail(503,'payments_unconfigured','Card payments are not configured on this service.');
+        if(body.kind==='subscription') {
+          // Renewals bill automatically; a second checkout would charge twice.
+          if(account.plan?.status==='active')fail(409,'plan_active','A plan is already active on this account.');
+        } else if(body.kind==='top_up') {
+          if(!validTopUpAmount(body.amountUsdMicros))fail(400,'invalid_amount','Choose a whole-cent top-up between $1 and $500.');
+        } else fail(400,'invalid_checkout','Choose a subscription or a top-up.');
+        const fingerprint=digest(JSON.stringify([config.origin,stripe.basicPriceId]));
+        let checkout=body.kind==='subscription'?await store.reserveSubscriptionCheckout(account.id,fingerprint):null;
+        const create=()=>stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:checkout?checkout.expiresAt-3600000:now()}),checkout?{idempotencyKey:`reach-subscription-${checkout.id}`}:{ });
+        let page=await create();
+        if(checkout&&checkout.expiresAt<=now()) {
+          if(!await stripeClient.canReplaceCheckoutSession(page.sessionId,now()))fail(409,'checkout_pending','The earlier subscription checkout is still awaiting confirmation. Refresh your account or contact support.');
+          checkout=await store.reserveSubscriptionCheckout(account.id,fingerprint,checkout.id);
+          page=await create();
+        }
+        json(res,200,{url:page.url,expiresAt:page.expiresAt});return;
+      }
+      if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
       if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {await gateway.handle(req,res,account,body);return;}
       fail(404,'not_found','Route not found.');

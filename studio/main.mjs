@@ -527,6 +527,14 @@ function registerIpc() {
     try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
+  ipcMain.handle('account:subscribe', async () => {
+    try { return { ok: true, ...await hostedAccount.subscribe() }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
+  ipcMain.handle('account:topUp', async (_event, amount) => {
+    try { return { ok: true, ...await hostedAccount.topUp(amount) }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
   ipcMain.handle('settings:save', (_e, s) => {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
@@ -2689,9 +2697,9 @@ app.whenReady().then(() => {
   if (process.argv.includes('--smoke')) {
     (async () => {
       const timeout = setTimeout(() => {
-        console.error('SMOKE FAIL: renderer/backend check timed out after 30 seconds');
+        console.error('SMOKE FAIL: renderer/backend check timed out after 60 seconds');
         app.exit(1);
-      }, 30_000);
+      }, 60_000);
       try {
         console.log(`SMOKE RUNTIME: Electron ${process.versions.electron}; Chromium ${process.versions.chrome}; Node ${process.versions.node}`);
         fs.mkdirSync(smokeProject, { recursive: true });

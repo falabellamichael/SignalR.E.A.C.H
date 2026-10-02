@@ -41,6 +41,21 @@ function browserUrl(value, origin) {
   if (url.origin !== origin || url.username || url.password) throw new Error('The service returned a browser URL outside its configured origin.');
   return url.href;
 }
+// Card checkout is the one page opened outside the service origin, and only Stripe's.
+const CHECKOUT_ORIGIN = 'https://checkout.stripe.com';
+function checkoutUrl(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new Error('The service returned an invalid payment page.'); }
+  if (url.origin !== CHECKOUT_ORIGIN || url.username || url.password) throw new Error('The service returned a payment page outside Stripe Checkout.');
+  return url.href;
+}
+// Whole dollars or cents only, converted without floating point.
+function topUpMicros(value) {
+  const match = /^\$?([1-9]\d{0,2})(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
+  const micros = match ? Number(match[1]) * 1_000_000 + Number((match[2] || '').padEnd(2, '0')) * 10_000 : 0;
+  if (micros < 1_000_000 || micros > 500_000_000) throw new Error('Enter a dollar amount between 1 and 500, for example 20 or 12.50.');
+  return micros;
+}
 function publicAccount(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const plan = raw.plan || {}, allowance = raw.allowance || {}, balance = raw.rchBalance || {};
@@ -59,7 +74,7 @@ function publicAccount(raw) {
 function publicConfig(raw) {
   return { enabled: raw?.enabled === true, redemptionEnabled: raw?.redemptionEnabled === true,
     tokensPerRch: count(raw?.tokensPerRch), chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null,
-    redemptionModels: publicModels(raw?.redemptionModels),
+    redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true,
     ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}) };
 }
 function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {
@@ -225,6 +240,16 @@ function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetch
     if (await openExternal(browserUrl(data.url, baseUrl)) === false) throw new Error('The wallet browser could not be opened.');
     return state();
   }
-  return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, connection, authorize, models };
+  async function checkout(body) {
+    await initialize(); const token = authorize(connection().endpoint), expected = generation;
+    if (!config?.cardPayments) throw new Error('Card payments are not enabled on this service.');
+    const { data } = await request('/v1/billing/checkout', { method: 'POST', token, body });
+    if (expected !== generation) throw new Error('Account changed. Start the payment again.');
+    if (await openExternal(checkoutUrl(data.url)) === false) throw new Error('The payment page could not be opened.');
+    return state();
+  }
+  const subscribe = () => checkout({ kind: 'subscription' });
+  const topUp = async amountUsd => checkout({ kind: 'top_up', amountUsdMicros: topUpMicros(amountUsd) });
+  return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, connection, authorize, models };
 }
-module.exports = { createHostedAccount, serviceUrl, browserUrl, publicAccount, publicConfig, SECRET };
+module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, topUpMicros, publicAccount, publicConfig, SECRET };
