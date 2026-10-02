@@ -2,8 +2,8 @@
 
 Every payment, whether it comes from Stripe, PayPal, or an operator recording one
 by hand, is reduced to one normalized record and applied by the same rules in
-SQLite and Postgres. Stripe is the first automatic provider (see
-[Stripe](#stripe) below); PayPal will use the same ledger.
+SQLite and Postgres. Card payments go through [Stripe](#stripe) and PayPal
+payments through [PayPal](#paypal); both use the same ledger and rules.
 
 ## The record
 
@@ -92,11 +92,13 @@ acknowledged and ignored. Amounts exclude tax. A $0 invoice is ignored.
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `POST /v1/billing/checkout` | customer session | `{"kind":"subscription"}` or `{"kind":"top_up","amountUsdMicros":20000000}`; returns a `checkout.stripe.com` URL |
+| `POST /v1/billing/checkout` | customer session | `{"kind":"subscription"}` or `{"kind":"top_up","amountUsdMicros":20000000}`, plus `"provider":"paypal"` for PayPal; returns a `checkout.stripe.com` or `paypal.com` URL |
 | `POST /v1/billing/portal` | customer session | returns a `billing.stripe.com` URL where the customer cancels, changes card or downloads invoices |
 | `GET /v1/billing/payments` | customer session | the customer's own payments and reversals, without Stripe IDs |
 | `POST /v1/billing/stripe/webhook` | Stripe signature | verified against the raw body; 5-minute replay window |
 | `GET /billing/return` | none | the page Stripe sends the customer back to |
+| `POST /v1/billing/paypal/webhook` | PayPal verification API | see [PayPal](#paypal) |
+| `GET /v1/billing/paypal/return` | none | captures an approved REACH top-up, then shows the return page |
 
 A second subscription checkout is refused while a plan is active, so nobody is
 charged twice. Studio and the VS Code extension show **Subscribe to Basic**,
@@ -187,9 +189,63 @@ Not automated, so handle these by hand with the `payment` command:
 - A dispute you win. Stripe returns the money; re-grant or re-credit if fair.
 - A refund that fails after it was recorded (rare for cards).
 
-## Still to do before live mode
+## PayPal
 
-- PayPal.
+Customers approve on PayPal's own pages; REACH never sees their PayPal login.
+Each order and subscription this service creates carries
+`custom_id = reach:<kind>:<account ID>`, so anything else sold from the same
+PayPal account is ignored.
+
+A PayPal webhook is only a notification. The service first asks PayPal's
+verification API whether the event is genuine, then fetches the object it
+names from the PayPal API and uses only that copy. A forged event can cause at
+most a lookup.
+
+| What the customer does | How it reaches the ledger | Ledger entry |
+| --- | --- | --- |
+| Adds $1–$500 of credit | Captured when they return from PayPal (`/v1/billing/paypal/return`), or by `CHECKOUT.ORDER.APPROVED` if they never return; confirmed by `PAYMENT.CAPTURE.COMPLETED` | `top_up`, keyed on the capture |
+| Subscribes to Basic ($15/month) | `PAYMENT.SALE.COMPLETED` for the first and every renewal; the plan runs to the subscription's next billing time | `subscription_period`, keyed on the sale |
+| Gets a refund | `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.SALE.REFUNDED` | reversal of kind `refund` |
+| Wins a chargeback against you | `PAYMENT.CAPTURE.REVERSED`, `PAYMENT.SALE.REVERSED` | reversal of kind `dispute` |
+
+Refunds and chargebacks follow the same [rules](#refunds-and-disputes) as
+Stripe. An open PayPal dispute changes nothing until PayPal decides it.
+Customers cancel a PayPal subscription in their PayPal account (Automatic
+payments); the plan runs to the end of the period already paid for.
+
+### Setting it up (sandbox first)
+
+1. At [developer.paypal.com](https://developer.paypal.com), **Apps & Credentials
+   → Sandbox → Create App**. Copy the client ID and secret.
+2. Create a product and a billing plan for "REACH Basic": monthly, US$15.00, no
+   setup fee, no trial, no tax. Copy the plan ID (`P-...`).
+3. In the app, **Add Webhook**:
+   `https://<your public service origin>/v1/billing/paypal/webhook`, with the
+   events `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`,
+   `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.CAPTURE.REVERSED`,
+   `PAYMENT.SALE.COMPLETED`, `PAYMENT.SALE.REFUNDED` and
+   `PAYMENT.SALE.REVERSED`. Copy the webhook ID.
+4. Put the credentials in the host's environment:
+
+   ```text
+   PAYPAL_CLIENT_ID=...
+   PAYPAL_CLIENT_SECRET=...
+   ```
+
+5. Add to `accounts.json`, next to or instead of `stripe`:
+
+   ```json
+   "payments": { "paypal": { "mode": "sandbox", "clientIdEnv": "PAYPAL_CLIENT_ID",
+     "clientSecretEnv": "PAYPAL_CLIENT_SECRET", "webhookId": "...", "basicPlanId": "P-..." } }
+   ```
+
+6. Restart the account service and pay with a sandbox personal account. The
+   apps show **Subscribe with PayPal** and **Add credit with PayPal**.
+
+For live mode, repeat with the **Live** app, plan and webhook, set `"mode": "live"`,
+and use a public HTTPS origin.
+
+## Payments and identity
 
 Payments are tied to the internal account ID, so wallet and email accounts
 (see [email-sign-in.md](email-sign-in.md)) pay and are refunded the same way.

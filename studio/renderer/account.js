@@ -88,16 +88,25 @@
     if (!model.canRedeem || el('redemption-status').dataset.unavailable === 'true') el('redemption-status').textContent = model.redemptionMessage;
     el('redemption-status').dataset.unavailable = String(!model.canRedeem);
     const cardReady = model.connected && state.config?.cardPayments === true;
+    const paypalReady = model.connected && state.config?.paypalPayments === true, anyReady = cardReady || paypalReady;
     const planActive = model.requestAllowance?.basicActive === true || state.account?.plan?.status === 'active';
-    el('card-badge').textContent = cardReady ? 'AVAILABLE' : 'UNAVAILABLE';
+    el('card-badge').textContent = anyReady ? 'AVAILABLE' : 'UNAVAILABLE';
     el('card-subscribe').textContent = planActive ? 'Basic is active'
       : 'Subscribe to Basic · ' + view.formatUsd(state.config?.subscription?.basic?.priceUsdMicros ?? '15000000') + ' a month';
     el('card-subscribe').disabled = busy || !cardReady || planActive;
+    el('card-subscribe').hidden = paypalReady && !cardReady;
+    el('card-topup').hidden = paypalReady && !cardReady;
+    el('card-subscribe-paypal').hidden = !paypalReady;
+    el('card-subscribe-paypal').textContent = planActive ? 'Basic is active' : 'Subscribe with PayPal';
+    el('card-subscribe-paypal').disabled = busy || !paypalReady || planActive;
+    el('card-topup-paypal').hidden = !paypalReady;
+    el('card-topup-paypal').disabled = busy || !paypalReady || !el('card-amount').value.trim();
+    el('card-paypal-note').hidden = !(paypalReady && planActive);
     el('card-manage').hidden = !(cardReady && planActive);
     el('card-manage').disabled = busy || !cardReady || !planActive;
-    el('card-amount').disabled = busy || !cardReady;
+    el('card-amount').disabled = busy || !anyReady;
     el('card-topup').disabled = busy || !cardReady || !el('card-amount').value.trim();
-    if (!cardReady) el('card-status').textContent = model.connected ? 'Card payments are not enabled on this service.' : 'Connect your wallet to pay by card.';
+    if (!anyReady) el('card-status').textContent = model.connected ? 'Card payments are not enabled on this service.' : 'Connect your wallet to pay by card.';
   }
   async function action(fn) {
     if (busy) return;
@@ -144,10 +153,12 @@
     return result;
   }));
   const cardStarted = 'Finish paying on the Stripe page in your browser, then refresh your account.';
+  const paypalStarted = 'Finish in PayPal in your browser, then refresh your account.';
   const billingOpened = 'Manage your subscription on the Stripe page in your browser. A cancelled plan stays active until the end of its paid period.';
   el('card-amount').addEventListener('input', () => render(state));
   for (const [id, start, opened] of [['card-subscribe', () => api.subscribe(), cardStarted],
-    ['card-topup', () => api.topUp(el('card-amount').value.trim()), cardStarted], ['card-manage', () => api.billing(), billingOpened]]) {
+    ['card-topup', () => api.topUp(el('card-amount').value.trim()), cardStarted], ['card-manage', () => api.billing(), billingOpened],
+    ['card-subscribe-paypal', () => api.subscribe('paypal'), paypalStarted], ['card-topup-paypal', () => api.topUp(el('card-amount').value.trim(), 'paypal'), paypalStarted]]) {
     el(id).addEventListener('click', () => action(async () => {
       const result = await start();
       el('card-status').textContent = result.ok ? opened : result.err;

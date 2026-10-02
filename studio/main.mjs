@@ -527,16 +527,16 @@ function registerIpc() {
     try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
-  ipcMain.handle('account:subscribe', async () => {
-    try { return { ok: true, ...await hostedAccount.subscribe() }; }
+  ipcMain.handle('account:subscribe', async (_event, provider) => {
+    try { return { ok: true, ...await hostedAccount.subscribe(provider === 'paypal' ? 'paypal' : 'stripe') }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('account:billing', async () => {
     try { return { ok: true, ...await hostedAccount.manageBilling() }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
-  ipcMain.handle('account:topUp', async (_event, amount) => {
-    try { return { ok: true, ...await hostedAccount.topUp(amount) }; }
+  ipcMain.handle('account:topUp', async (_event, amount, provider) => {
+    try { return { ok: true, ...await hostedAccount.topUp(amount, provider === 'paypal' ? 'paypal' : 'stripe') }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));

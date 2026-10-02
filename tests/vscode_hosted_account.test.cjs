@@ -98,10 +98,10 @@ test('wallet redemption can start before a subscription exists', async () => {
 });
 
 test('card checkout opens only Stripe Checkout for the signed-in account', async () => {
-  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture', portal = 'https://billing.stripe.com/p/session/test_1';
+  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture', portal = 'https://billing.stripe.com/p/session/test_1', paypal = false;
   const f = fixture({ request: (url, options) => {
     const route = new URL(url).pathname;
-    if (route === '/v1/account/config') return response({ enabled: true, cardPayments });
+    if (route === '/v1/account/config') return response({ enabled: true, cardPayments, paypalPayments: paypal });
     if (route === '/v1/billing/checkout') return response({ url: checkoutUrl, expiresAt: null, received: JSON.parse(options.body) });
     if (route === '/v1/billing/portal') return response({ url: portal });
     return null;
@@ -129,6 +129,14 @@ test('card checkout opens only Stripe Checkout for the signed-in account', async
     await assert.rejects(f.host.manageBilling(), /outside the Stripe billing portal/);
   cardPayments = false; await f.host.refresh();
   await assert.rejects(f.host.subscribe(), /not enabled/);
+  await assert.rejects(f.host.subscribe('paypal'), /PayPal is not enabled/);
+  paypal = true; await f.host.refresh();
+  checkoutUrl = 'https://www.sandbox.paypal.com/checkoutnow?token=ORDER1';
+  await f.host.topUp('7', 'paypal');
+  assert.deepEqual(JSON.parse(f.calls.at(-1).options.body), { kind: 'top_up', amountUsdMicros: 7_000_000, provider: 'paypal' });
+  assert.equal(f.opened.at(-1), checkoutUrl);
+  checkoutUrl = 'https://checkout.stripe.com/c/pay/x';
+  await assert.rejects(f.host.subscribe('paypal'), /outside PayPal/);
 });
 
 test('cancelled exchange revokes a late token without restoring local or persisted access', async () => {

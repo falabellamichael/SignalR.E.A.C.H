@@ -96,6 +96,20 @@ class AccountProxyTests(RelayFixture):
         self.assertEqual(sent["headers"]["Stripe-Signature"], "t=1,v1=abc")
         self.assertNotIn("X-Reach-Key", sent["headers"])
 
+    def test_paypal_webhook_transmission_headers_reach_the_account_service(self):
+        body = b'{"id":"WH-1","event_type":"PAYMENT.CAPTURE.COMPLETED"}'
+        transmission = {"PayPal-Auth-Algo": "SHA256withRSA", "PayPal-Cert-Url": "https://api.paypal.com/cert",
+                        "PayPal-Transmission-Id": "t-1", "PayPal-Transmission-Sig": "sig", "PayPal-Transmission-Time": "2026-10-04T00:00:00Z"}
+        status, _, _ = self.call("POST", "/v1/billing/paypal/webhook", {**TUNNEL, "Content-Type": "application/json", **transmission}, body)
+        self.assertEqual(status, 200)
+        sent = self.requests[-1]
+        self.assertEqual(sent["body"], body)
+        for name, value in transmission.items():
+            self.assertEqual(sent["headers"][name], value)
+        status, _, _ = self.call("GET", "/v1/billing/paypal/return?token=ORDER123&PayerID=P1", TUNNEL)
+        self.assertEqual(status, 200)
+        self.assertEqual(self.requests[-1]["path"], "/v1/billing/paypal/return?token=ORDER123&PayerID=P1")
+
     def test_billing_routes_are_forwarded_with_the_customer_session(self):
         for method, path in (("POST", "/v1/billing/checkout"), ("POST", "/v1/billing/portal"), ("GET", "/v1/billing/payments"),
                              ("POST", "/v1/auth/email/start"), ("POST", "/v1/auth/email/verify")):

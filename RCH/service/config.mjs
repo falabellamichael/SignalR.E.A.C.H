@@ -92,7 +92,8 @@ function emailConfig(raw, env) {
   keys(raw.email.resend, ['apiKeyEnv', 'from'], 'Resend');
   const { apiKeyEnv, from } = raw.email.resend;
   if (typeof apiKeyEnv !== 'string' || !/^[A-Z][A-Z0-9_]{2,80}$/.test(apiKeyEnv)
-    || [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv, raw.payments?.stripe?.secretKeyEnv, raw.payments?.stripe?.webhookSecretEnv].includes(apiKeyEnv)) {
+    || [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv, raw.payments?.stripe?.secretKeyEnv, raw.payments?.stripe?.webhookSecretEnv,
+    raw.payments?.paypal?.clientIdEnv, raw.payments?.paypal?.clientSecretEnv].includes(apiKeyEnv)) {
     throw new Error('Use a separate host-only environment variable for the Resend API key.');
   }
   const apiKey = env[apiKeyEnv];
@@ -107,13 +108,19 @@ function emailConfig(raw, env) {
 // key, and live money needs a public HTTPS origin for Stripe to call back.
 function paymentsConfig(raw, origin, env) {
   if (raw.payments === undefined) return null;
-  keys(raw.payments, ['stripe'], 'payments');
-  const stripe = raw.payments.stripe;
+  keys(raw.payments, ['stripe','paypal'], 'payments');
+  if (!raw.payments.stripe && !raw.payments.paypal) throw new Error('Configure Stripe, PayPal, or both under payments.');
+  if (!raw.subscription) throw new Error('Card and PayPal checkout sell the Basic subscription; configure it first.');
+  const otherSecrets = [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv, raw.email?.resend?.apiKeyEnv];
+  return { ...(raw.payments.stripe ? { stripe: stripeConfig(raw.payments.stripe, origin, env, [...otherSecrets, raw.payments.paypal?.clientIdEnv, raw.payments.paypal?.clientSecretEnv]) } : {}),
+    ...(raw.payments.paypal ? { paypal: paypalConfig(raw.payments.paypal, origin, env, [...otherSecrets, raw.payments.stripe?.secretKeyEnv, raw.payments.stripe?.webhookSecretEnv]) } : {}) };
+}
+function stripeConfig(stripe, origin, env, otherSecrets) {
   keys(stripe, ['mode','secretKeyEnv','webhookSecretEnv','basicPriceId'], 'Stripe');
   if (!['test','live'].includes(stripe.mode)) throw new Error('Stripe mode must be "test" or "live".');
   const names = [stripe.secretKeyEnv, stripe.webhookSecretEnv];
   if (!names.every(n => typeof n === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(n)) || new Set(names).size !== 2
-    || names.some(n => [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv].includes(n))) {
+    || names.some(n => otherSecrets.includes(n))) {
     throw new Error('Use two separate host-only environment variables for the Stripe key and webhook secret.');
   }
   const secretKey = env[stripe.secretKeyEnv], webhookSecret = env[stripe.webhookSecretEnv];
@@ -122,8 +129,24 @@ function paymentsConfig(raw, origin, env) {
   }
   if (typeof webhookSecret !== 'string' || !/^whsec_[A-Za-z0-9+/=]{16,256}$/.test(webhookSecret)) throw new Error(`Set ${stripe.webhookSecretEnv} to the Stripe webhook signing secret.`);
   if (typeof stripe.basicPriceId !== 'string' || !/^price_[A-Za-z0-9]{8,64}$/.test(stripe.basicPriceId)) throw new Error('Configure the Stripe price ID for the Basic plan.');
-  if (!raw.subscription) throw new Error('Stripe checkout sells the Basic subscription; configure it first.');
   if (stripe.mode === 'live' && origin.protocol !== 'https:') throw new Error('Live Stripe payments need a public HTTPS service origin.');
-  return { stripe: { mode: stripe.mode, basicPriceId: stripe.basicPriceId, secretKey, webhookSecret } };
+  return { mode: stripe.mode, basicPriceId: stripe.basicPriceId, secretKey, webhookSecret };
+}
+// PayPal REST app credentials stay in the environment. The webhook ID and the
+// Basic plan ID are not secret and come from the PayPal developer dashboard.
+function paypalConfig(paypal, origin, env, otherSecrets) {
+  keys(paypal, ['mode','clientIdEnv','clientSecretEnv','webhookId','basicPlanId'], 'PayPal');
+  if (!['sandbox','live'].includes(paypal.mode)) throw new Error('PayPal mode must be "sandbox" or "live".');
+  const names = [paypal.clientIdEnv, paypal.clientSecretEnv];
+  if (!names.every(n => typeof n === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(n)) || new Set(names).size !== 2 || names.some(n => otherSecrets.includes(n))) {
+    throw new Error('Use two separate host-only environment variables for the PayPal client ID and secret.');
+  }
+  const clientId = env[paypal.clientIdEnv], clientSecret = env[paypal.clientSecretEnv];
+  if (typeof clientId !== 'string' || !/^[A-Za-z0-9_-]{20,128}$/.test(clientId)) throw new Error(`Set ${paypal.clientIdEnv} to the PayPal REST app client ID.`);
+  if (typeof clientSecret !== 'string' || !/^[A-Za-z0-9_-]{20,128}$/.test(clientSecret)) throw new Error(`Set ${paypal.clientSecretEnv} to the PayPal REST app secret.`);
+  if (typeof paypal.webhookId !== 'string' || !/^[A-Z0-9]{8,40}$/.test(paypal.webhookId)) throw new Error('Configure the PayPal webhook ID.');
+  if (typeof paypal.basicPlanId !== 'string' || !/^P-[A-Z0-9]{8,40}$/.test(paypal.basicPlanId)) throw new Error('Configure the PayPal plan ID for the Basic plan.');
+  if (paypal.mode === 'live' && origin.protocol !== 'https:') throw new Error('Live PayPal payments need a public HTTPS service origin.');
+  return { mode: paypal.mode, clientId, clientSecret, webhookId: paypal.webhookId, basicPlanId: paypal.basicPlanId };
 }
 export const loadConfig = file => validateConfig(JSON.parse(readFileSync(file,'utf8')),dirname(resolve(file)));
