@@ -108,13 +108,13 @@ function service(t, { payments = true, stripeReply, stripeRoute } = {}) {
   t.after(() => store.close());
   const ready = new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = async () => { await ready; return `http://127.0.0.1:${server.address().port}`; };
-  const signIn = () => {
-    const wallet = Wallet.createRandom(), verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+  const signIn = (wallet = Wallet.createRandom()) => {
+    const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
     const f = store.startFlow(state, createHash('sha256').update(verifier).digest('base64url'));
     const c = store.challenge(f.flowId, wallet.address, (...a) => signInMessage(config.origin, 1, ...a));
     store.authorize(f.flowId, c.challengeId);
     const s = store.exchange(f.flowId, state, verifier);
-    return { token: s.accessToken, accountId: s.account.id };
+    return { token: s.accessToken, accountId: s.account.id, wallet };
   };
   const call = async (method, path, { token, body, raw, headers = {} } = {}) => {
     const r = await fetch(await base() + path, { method, headers: { ...(body || raw ? { 'Content-Type': 'application/json' } : {}),
@@ -233,6 +233,7 @@ const stripeLedger = accountId => url => {
     return { status: 200, body: { data: url.searchParams.get('payment_intent') === 'pi_topup' ? [session(accountId)] : [] } };
   if (url.pathname === '/v1/invoice_payments')
     return { status: 200, body: { data: url.searchParams.get('payment[payment_intent]') === 'pi_invoice' ? [{ invoice: 'in_0001', payment: { type: 'payment_intent', payment_intent: 'pi_invoice' } }] : [] } };
+  if (url.pathname === '/v1/invoices/in_0001') return { status: 200, body: invoice(accountId) };
   if (url.pathname === '/v1/subscriptions/search')
     return { status: 200, body: { data: url.searchParams.get('query') === `metadata["reach_account_id"]:"${accountId}"` ? [{ id: 'sub_1', customer: 'cus_1' }] : [] } };
   if (url.pathname === '/v1/billing_portal/sessions') return { status: 200, body: { url: 'https://billing.stripe.com/p/session/test_1' } };
@@ -291,7 +292,7 @@ test('the customer portal opens only for this account and only on billing.stripe
 
 test('a Checkout that REACH did not create is never taken for a top-up', async () => {
   const sessions = { pi_foreign: { id: 'cs_foreign', mode: 'payment', metadata: {} }, pi_subscription: { id: 'cs_sub', mode: 'subscription', metadata: { reach_kind: 'subscription_period' } },
-    pi_topup: { id: 'cs_ours', mode: 'payment', metadata: { reach_kind: 'top_up' } } };
+    pi_topup: { id: 'cs_ours', mode: 'payment', metadata: { reach_kind: 'top_up', reach_account_id: 'acct_12345678' } } };
   const client = createStripeClient({ secretKey: KEY, fetchImpl: async url => {
     const u = new URL(url);
     const data = u.pathname === '/v1/checkout/sessions' ? [sessions[u.searchParams.get('payment_intent')]].filter(Boolean) : [];
@@ -300,4 +301,95 @@ test('a Checkout that REACH did not create is never taken for a top-up', async (
   assert.deepEqual(await client.findOriginal('pi_topup'), { originalObjectId: 'cs_ours', originalKind: 'top_up' });
   assert.equal(await client.findOriginal('pi_foreign'), null);
   assert.equal(await client.findOriginal('pi_subscription'), null);
+});
+
+// Repeated requests keep their key and complete form unchanged as time advances,
+// across concurrent callers and even an ambiguous provider timeout.
+test('subscription checkout retries share a durable idempotency key and fixed parameters', async t => {
+  const s=service(t), {token}=s.signIn();
+  await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}});
+  s.advance(10_000);
+  await Promise.all(Array.from({length:4},()=>s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})));
+  const keys=s.calls.map(c=>c.init.headers['Idempotency-Key']);
+  assert.match(keys[0],/^reach-subscription-[a-f0-9]{64}$/);
+  assert.equal(new Set(keys).size,1);
+  assert.equal(new Set(s.calls.map(c=>c.init.body)).size,1);
+});
+
+test('a provider response lost after creating a session is retried with the same intent', async t => {
+  const sessions=new Map();let first=true;
+  const s=service(t,{stripeRoute:(url,init)=>{
+    const key=init.headers['Idempotency-Key'];
+    if(!sessions.has(key))sessions.set(key,{status:200,body:{id:'cs_test_retry',url:'https://checkout.stripe.com/c/pay/cs_test_retry',expires_at:NOW/1000+3600}});
+    if(first){first=false;throw new Error('connection lost after creation');}
+    return sessions.get(key);
+  }}),{token}=s.signIn();
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,502);
+  s.advance(2000);
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
+  assert.equal(sessions.size,1);assert.equal(s.calls[0].init.body,s.calls[1].init.body);
+});
+test('expiry cannot open a second subscription when its payment webhook is delayed', async t => {
+  let status='complete',subscriptionStatus='active';
+  const s=service(t,{stripeRoute:(url,init)=>init.method==='GET'?{status:200,body:{id:'cs_test_new',mode:'subscription',status,subscription:{status:subscriptionStatus}}}:null});
+  let {token,wallet}=s.signIn();
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
+  const key=s.calls[0].init.headers['Idempotency-Key'];s.advance(3600_000);token=s.signIn(wallet).token;
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).body.error.code,'checkout_pending');
+  assert.ok(s.calls.filter(c=>c.init.method==='POST').every(c=>c.init.headers['Idempotency-Key']===key));
+  status='expired';
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
+  assert.notEqual(s.calls.at(-1).init.headers['Idempotency-Key'],key);
+
+});
+
+test('a refund arriving before its REACH payment requests redelivery and applies exactly once afterwards', async t => {
+  for (const kind of ['top_up', 'subscription_period']) {
+    let accountId;
+    const s = service(t, { stripeRoute: url => stripeLedger(accountId)(url) });
+    const signed = s.signIn(); accountId = signed.accountId;
+    const refunded = event('refund.created', refundObject(kind === 'top_up' ? {} : { payment_intent: 'pi_invoice', amount: 1500 }));
+    const early = await s.webhook(refunded);
+    assert.equal(early.status, 503);
+    assert.equal(early.body.error.code, 'payment_pending');
+    assert.equal((await s.call('GET', '/v1/billing/payments', { token: signed.token })).body.reversals.length, 0);
+    await s.webhook(kind === 'top_up' ? event('checkout.session.completed', session(accountId)) : event('invoice.paid', invoice(accountId)));
+    assert.equal((await s.webhook(refunded)).body.status, 'applied');
+    assert.equal((await s.webhook(refunded)).body.duplicate, true);
+    const account = (await s.call('GET', '/v1/account', { token: signed.token })).body;
+    assert.equal(kind === 'top_up' ? account.credit.balanceMicros : account.plan.status, kind === 'top_up' ? 0 : 'expired');
+    assert.equal((await s.call('GET', '/v1/billing/payments', { token: signed.token })).body.reversals.length, 1);
+  }
+});
+
+test('pending, action-required and failed refunds preserve credit and Basic until a final successful update', async t => {
+  for (const kind of ['top_up', 'subscription_period']) {
+    let accountId;
+    const s = service(t, { stripeRoute: url => stripeLedger(accountId)(url) });
+    const signed = s.signIn(); accountId = signed.accountId;
+    await s.webhook(event('checkout.session.completed', session(accountId)));
+    await s.webhook(event('invoice.paid', invoice(accountId)));
+    const refund = kind === 'top_up' ? {} : { payment_intent: 'pi_invoice', amount: 1500 };
+    for (const status of ['pending', 'requires_action', 'failed', 'canceled']) {
+      assert.equal((await s.webhook(event('refund.updated', refundObject({ ...refund, status })))).body.ignored, 'refund_not_effective');
+      const account = (await s.call('GET', '/v1/account', { token: signed.token })).body;
+      assert.equal(account.credit.balanceMicros, 20_000_000);
+      assert.equal(account.plan.status, 'active');
+      assert.equal((await s.call('GET', '/v1/billing/payments', { token: signed.token })).body.reversals.length, 0);
+    }
+    assert.equal((await s.webhook(event('refund.updated', refundObject(refund)))).body.status, 'applied');
+    assert.equal((await s.webhook(event('refund.updated', refundObject(refund)))).body.duplicate, true);
+  }
+});
+
+test('a foreign invoice refund is acknowledged, while a failed ownership lookup requests redelivery', async t => {
+  const foreign = service(t, { stripeRoute: url => {
+    if (url.pathname === '/v1/checkout/sessions') return { status: 200, body: { data: [] } };
+    if (url.pathname === '/v1/invoice_payments') return { status: 200, body: { data: [{ invoice: 'in_foreign' }] } };
+    if (url.pathname === '/v1/invoices/in_foreign') return { status: 200, body: { id: 'in_foreign', parent: null } };
+  } });
+  const ignored = await foreign.webhook(event('refund.created', refundObject()));
+  assert.deepEqual([ignored.status, ignored.body.ignored], [200, 'not_reach']);
+  const unavailable = service(t, { stripeRoute: () => { throw new Error('provider offline'); } });
+  assert.equal((await unavailable.webhook(event('refund.created', refundObject()))).status, 502);
 });

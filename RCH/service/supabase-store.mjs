@@ -9,6 +9,8 @@ const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_0
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string'
   && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const ERRORS = {
+  plan_active: [409, 'A plan is already active on this account.'],
+  checkout_pending: [409, 'An earlier subscription checkout is still pending. Wait for it to expire.'],
   account_missing: [401, 'Account is unavailable.'], invalid_grant: [400, 'Invalid plan grant, qualified model list, allowance, or expiry.'],
   grant_conflict: [409, 'Grant ID was already used with different values.'], invalid_flow: [400, 'Invalid sign-in flow.'],
   flow_expired: [410, 'Sign-in expired. Start again in Studio.'], flow_verified: [409, 'Sign-in has already been verified.'],
@@ -133,6 +135,10 @@ export class SupabaseAccountStore {
     wallet = getAddress(wallet);
     const payload = JSON.stringify({ wallet, planId, name, models: [...models].sort(), tokens, expiresAt });
     return this._view(await this._rpc('grant_plan', { wallet, grantId, planId, name, models, tokens, expiresAt, payload, accountId: id() }));
+  }
+  async reserveSubscriptionCheckout(accountId, fingerprint, replaceExpiredId = null) {
+    if(!/^[a-f0-9]{64}$/.test(fingerprint||''))fail(400,'invalid_checkout','Invalid checkout.');
+    return this._rpc('reserve_checkout', {accountId,fingerprint,replaceExpiredId,checkoutId:id()}, this.endpoint.replace(/reach_account_store$/, 'reach_checkout_store'));
   }
   // ---- payments: the same provider-neutral ledger as the SQLite store ----
   // The rules run in one Postgres function so the ledger row and its effect
