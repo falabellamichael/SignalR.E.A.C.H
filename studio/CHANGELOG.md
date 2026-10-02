@@ -1,5 +1,15 @@
 # Changelog
 
+## [26.9.12](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.11...reach-studio-v26.9.12) (2026-10-02)
+
+
+### Features
+
+* **accounts:** sign in with an email code ([#133](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/133)) ([1a6d755](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1a6d75585357609e377df45651c1747d4a444b59))
+* **payments:** PayPal checkout, subscriptions and refunds (Phase 4) ([#134](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/134)) ([b03b6bf](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b03b6bfd9422c6805abe834244f489203e717b85))
+* **payments:** refunds, disputes and the Stripe customer portal (Phase 3) ([#132](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/132)) ([e6f805b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e6f805b0c10a9584365f115a5837fba90a16d60b))
+* **payments:** Stripe Checkout and webhook (Phase 2) ([#131](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/131)) ([2c72783](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/2c72783743cd31856f09d5937d24311ba85474e0))
+
 ## [26.9.11](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.10...reach-studio-v26.9.11) (2026-10-01)
 
 
