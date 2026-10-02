@@ -6,7 +6,7 @@ import { Wallet } from 'ethers';
 import { AccountStore } from '../service/store.mjs';
 import { createAccountService, signInMessage } from '../service/server.mjs';
 import { validateConfig } from '../service/config.mjs';
-import { verifyStripeSignature, paymentFromStripeEvent, checkoutParams, formEncode, validTopUpAmount } from '../service/payments/stripe.mjs';
+import { verifyStripeSignature, paymentFromStripeEvent, reversalFromStripeEvent, checkoutParams, formEncode, validTopUpAmount, STRIPE_VERSION, createStripeClient } from '../service/payments/stripe.mjs';
 
 const example = JSON.parse(readFileSync(new URL('../config/subscription-bridges.example.json', import.meta.url), 'utf8'));
 const SECRET = 'whsec_' + 'a'.repeat(32), KEY = 'sk_test_' + 'b'.repeat(40), PRICE = 'price_basic000001';
@@ -222,6 +222,87 @@ test('Stripe configuration keeps keys in the environment and matches key to mode
   assert.equal(validateConfig(live, process.cwd(), liveKey).payments.stripe.mode, 'live');
 });
 
+// ---- refunds, disputes and the customer portal ---------------------------
+const refundObject = (over = {}) => ({ id: 're_0001', object: 'refund', amount: 2000, currency: 'usd', status: 'succeeded',
+  payment_intent: 'pi_topup', charge: 'ch_1', ...over });
+const disputeObject = (over = {}) => ({ id: 'du_0001', object: 'dispute', amount: 1500, currency: 'usd', status: 'needs_response',
+  payment_intent: 'pi_invoice', charge: 'ch_2', ...over });
+// Stripe as the lookups see it: one top-up Checkout and one subscription invoice.
+const stripeLedger = accountId => url => {
+  if (url.pathname === '/v1/checkout/sessions' && url.searchParams.get('payment_intent'))
+    return { status: 200, body: { data: url.searchParams.get('payment_intent') === 'pi_topup' ? [session(accountId)] : [] } };
+  if (url.pathname === '/v1/invoice_payments')
+    return { status: 200, body: { data: url.searchParams.get('payment[payment_intent]') === 'pi_invoice' ? [{ invoice: 'in_0001', payment: { type: 'payment_intent', payment_intent: 'pi_invoice' } }] : [] } };
+  if (url.pathname === '/v1/invoices/in_0001') return { status: 200, body: invoice(accountId) };
+  if (url.pathname === '/v1/subscriptions/search')
+    return { status: 200, body: { data: url.searchParams.get('query') === `metadata["reach_account_id"]:"${accountId}"` ? [{ id: 'sub_1', customer: 'cus_1' }] : [] } };
+  if (url.pathname === '/v1/billing_portal/sessions') return { status: 200, body: { url: 'https://billing.stripe.com/p/session/test_1' } };
+  return null;
+};
+
+test('refunds and disputes are read from Stripe without trusting anything but the PaymentIntent', () => {
+  const { paymentIntent, reversal } = reversalFromStripeEvent(event('refund.created', refundObject()), { livemode: false });
+  assert.equal(paymentIntent, 'pi_topup');
+  assert.deepEqual({ ...reversal, eventId: undefined }, { provider: 'stripe', eventId: undefined, objectId: 're_0001', kind: 'refund', amountUsdMicros: 20_000_000, currency: 'usd' });
+  assert.equal(reversalFromStripeEvent(event('charge.dispute.created', disputeObject()), { livemode: false }).reversal.kind, 'dispute');
+  assert.equal(reversalFromStripeEvent(event('refund.updated', refundObject({ status: 'failed' })), { livemode: false }).ignored, 'refund_not_effective');
+  assert.equal(reversalFromStripeEvent(event('refund.created', refundObject({ payment_intent: null })), { livemode: false }).ignored, 'no_payment_intent');
+  assert.equal(reversalFromStripeEvent(event('refund.created', refundObject()), { livemode: true }).ignored, 'wrong_mode');
+  assert.equal(reversalFromStripeEvent(event('invoice.paid', {}), { livemode: false }), null, 'not a reversal event');
+});
+
+test('a refunded top-up takes the credit back; a disputed subscription ends Basic; foreign refunds are ignored', async t => {
+  let accountId;
+  const s = service(t, { stripeRoute: url => stripeLedger(accountId)(url) });
+  const signed = s.signIn(); accountId = signed.accountId;
+  await s.webhook(event('checkout.session.completed', session(accountId)));
+  await s.webhook(event('invoice.paid', invoice(accountId)));
+  assert.equal((await s.call('GET', '/v1/account', { token: signed.token })).body.credit.balanceMicros, 20_000_000);
+
+  assert.deepEqual((await s.webhook(event('refund.created', refundObject()))).body, { received: true, status: 'applied', duplicate: false });
+  assert.equal((await s.webhook(event('refund.updated', refundObject()))).body.duplicate, true);
+  assert.equal((await s.call('GET', '/v1/account', { token: signed.token })).body.credit.balanceMicros, 0);
+  const lookups = s.calls.filter(call => call.init.method === 'GET');
+  assert.ok(lookups.every(call => call.init.headers['Stripe-Version'] === STRIPE_VERSION && call.init.headers.Authorization === `Bearer ${KEY}`));
+
+  assert.equal((await s.webhook(event('charge.dispute.created', disputeObject()))).body.status, 'applied');
+  assert.equal((await s.call('GET', '/v1/account', { token: signed.token })).body.plan.status, 'expired');
+
+  assert.equal((await s.webhook(event('refund.created', refundObject({ id: 're_other', payment_intent: 'pi_elsewhere' })))).body.ignored, 'not_reach');
+  const history = (await s.call('GET', '/v1/billing/payments', { token: signed.token })).body;
+  assert.deepEqual(history.reversals.map(entry => entry.kind).sort(), ['dispute', 'refund']);
+  assert.doesNotMatch(JSON.stringify(history), /re_0001|du_0001|pi_/);
+});
+
+test('the customer portal opens only for this account and only on billing.stripe.com', async t => {
+  let accountId, portalUrl = 'https://billing.stripe.com/p/session/test_1';
+  const s = service(t, { stripeRoute: url => url.pathname === '/v1/billing_portal/sessions' ? { status: 200, body: { url: portalUrl } } : stripeLedger(accountId)(url) });
+  const signed = s.signIn(); accountId = signed.accountId;
+  const opened = await s.call('POST', '/v1/billing/portal', { token: signed.token, body: {} });
+  assert.deepEqual([opened.status, opened.body.url], [200, portalUrl]);
+  const portal = s.calls.at(-1);
+  assert.equal(portal.form.get('customer'), 'cus_1');
+  assert.equal(portal.form.get('return_url'), 'http://127.0.0.1:20978/billing/return?portal=closed');
+  assert.equal((await s.call('POST', '/v1/billing/portal', { body: {} })).status, 401);
+  const other = s.signIn();
+  assert.equal((await s.call('POST', '/v1/billing/portal', { token: other.token, body: {} })).body.error.code, 'no_subscription');
+  portalUrl = 'https://billing.stripe.com.evil.example/p';
+  assert.equal((await s.call('POST', '/v1/billing/portal', { token: signed.token, body: {} })).status, 502);
+});
+
+test('a Checkout that REACH did not create is never taken for a top-up', async () => {
+  const sessions = { pi_foreign: { id: 'cs_foreign', mode: 'payment', metadata: {} }, pi_subscription: { id: 'cs_sub', mode: 'subscription', metadata: { reach_kind: 'subscription_period' } },
+    pi_topup: { id: 'cs_ours', mode: 'payment', metadata: { reach_kind: 'top_up', reach_account_id: 'acct_12345678' } } };
+  const client = createStripeClient({ secretKey: KEY, fetchImpl: async url => {
+    const u = new URL(url);
+    const data = u.pathname === '/v1/checkout/sessions' ? [sessions[u.searchParams.get('payment_intent')]].filter(Boolean) : [];
+    return new Response(JSON.stringify({ data }), { status: 200 });
+  } });
+  assert.deepEqual(await client.findOriginal('pi_topup'), { originalObjectId: 'cs_ours', originalKind: 'top_up' });
+  assert.equal(await client.findOriginal('pi_foreign'), null);
+  assert.equal(await client.findOriginal('pi_subscription'), null);
+});
+
 // Repeated requests keep their key and complete form unchanged as time advances,
 // across concurrent callers and even an ambiguous provider timeout.
 test('subscription checkout retries share a durable idempotency key and fixed parameters', async t => {
@@ -259,4 +340,56 @@ test('expiry cannot open a second subscription when its payment webhook is delay
   status='expired';
   assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
   assert.notEqual(s.calls.at(-1).init.headers['Idempotency-Key'],key);
+
+});
+
+test('a refund arriving before its REACH payment requests redelivery and applies exactly once afterwards', async t => {
+  for (const kind of ['top_up', 'subscription_period']) {
+    let accountId;
+    const s = service(t, { stripeRoute: url => stripeLedger(accountId)(url) });
+    const signed = s.signIn(); accountId = signed.accountId;
+    const refunded = event('refund.created', refundObject(kind === 'top_up' ? {} : { payment_intent: 'pi_invoice', amount: 1500 }));
+    const early = await s.webhook(refunded);
+    assert.equal(early.status, 503);
+    assert.equal(early.body.error.code, 'payment_pending');
+    assert.equal((await s.call('GET', '/v1/billing/payments', { token: signed.token })).body.reversals.length, 0);
+    await s.webhook(kind === 'top_up' ? event('checkout.session.completed', session(accountId)) : event('invoice.paid', invoice(accountId)));
+    assert.equal((await s.webhook(refunded)).body.status, 'applied');
+    assert.equal((await s.webhook(refunded)).body.duplicate, true);
+    const account = (await s.call('GET', '/v1/account', { token: signed.token })).body;
+    assert.equal(kind === 'top_up' ? account.credit.balanceMicros : account.plan.status, kind === 'top_up' ? 0 : 'expired');
+    assert.equal((await s.call('GET', '/v1/billing/payments', { token: signed.token })).body.reversals.length, 1);
+  }
+});
+
+test('pending, action-required and failed refunds preserve credit and Basic until a final successful update', async t => {
+  for (const kind of ['top_up', 'subscription_period']) {
+    let accountId;
+    const s = service(t, { stripeRoute: url => stripeLedger(accountId)(url) });
+    const signed = s.signIn(); accountId = signed.accountId;
+    await s.webhook(event('checkout.session.completed', session(accountId)));
+    await s.webhook(event('invoice.paid', invoice(accountId)));
+    const refund = kind === 'top_up' ? {} : { payment_intent: 'pi_invoice', amount: 1500 };
+    for (const status of ['pending', 'requires_action', 'failed', 'canceled']) {
+      assert.equal((await s.webhook(event('refund.updated', refundObject({ ...refund, status })))).body.ignored, 'refund_not_effective');
+      const account = (await s.call('GET', '/v1/account', { token: signed.token })).body;
+      assert.equal(account.credit.balanceMicros, 20_000_000);
+      assert.equal(account.plan.status, 'active');
+      assert.equal((await s.call('GET', '/v1/billing/payments', { token: signed.token })).body.reversals.length, 0);
+    }
+    assert.equal((await s.webhook(event('refund.updated', refundObject(refund)))).body.status, 'applied');
+    assert.equal((await s.webhook(event('refund.updated', refundObject(refund)))).body.duplicate, true);
+  }
+});
+
+test('a foreign invoice refund is acknowledged, while a failed ownership lookup requests redelivery', async t => {
+  const foreign = service(t, { stripeRoute: url => {
+    if (url.pathname === '/v1/checkout/sessions') return { status: 200, body: { data: [] } };
+    if (url.pathname === '/v1/invoice_payments') return { status: 200, body: { data: [{ invoice: 'in_foreign' }] } };
+    if (url.pathname === '/v1/invoices/in_foreign') return { status: 200, body: { id: 'in_foreign', parent: null } };
+  } });
+  const ignored = await foreign.webhook(event('refund.created', refundObject()));
+  assert.deepEqual([ignored.status, ignored.body.ignored], [200, 'not_reach']);
+  const unavailable = service(t, { stripeRoute: () => { throw new Error('provider offline'); } });
+  assert.equal((await unavailable.webhook(event('refund.created', refundObject()))).status, 502);
 });

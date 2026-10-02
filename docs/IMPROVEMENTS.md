@@ -263,15 +263,15 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 <!-- BASELINE:START -->
 | Metric | Value |
 | --- | --- |
-| `studio/main.mjs lines` | 4,549 |
+| `studio/main.mjs lines` | 4,553 |
 | `studio/renderer/app.js lines` | 5,286 |
-| `studio/preload.cjs lines` | 225 |
+| `studio/preload.cjs lines` | 226 |
 | `studio/agent modules` | 79 |
 | `studio/renderer scripts` | 26 |
 | `studio/test files` | 83 |
-| `static IPC handlers` | 102 |
-| `preload invoke channels` | 103 |
-| `IPC manifest entries` | 103 |
+| `static IPC handlers` | 103 |
+| `preload invoke channels` | 104 |
+| `IPC manifest entries` | 104 |
 | `SimpleRAG plugin files` | 21 |
 <!-- BASELINE:END -->
 

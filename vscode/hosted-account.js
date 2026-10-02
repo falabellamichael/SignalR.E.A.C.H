@@ -41,14 +41,17 @@ function browserUrl(value, origin) {
   if (url.origin !== origin || url.username || url.password) throw new Error('The service returned a browser URL outside its configured origin.');
   return url.href;
 }
-// Card checkout is the one page opened outside the service origin, and only Stripe's.
-const CHECKOUT_ORIGIN = 'https://checkout.stripe.com';
-function checkoutUrl(value) {
+// Stripe's Checkout and billing portal are the only pages opened outside the
+// service origin, each only on its own exact Stripe origin.
+const CHECKOUT_ORIGIN = 'https://checkout.stripe.com', PORTAL_ORIGIN = 'https://billing.stripe.com';
+function stripePage(value, origin, name) {
   let url;
   try { url = new URL(value); } catch { throw new Error('The service returned an invalid payment page.'); }
-  if (url.origin !== CHECKOUT_ORIGIN || url.username || url.password) throw new Error('The service returned a payment page outside Stripe Checkout.');
+  if (url.origin !== origin || url.username || url.password) throw new Error(`The service returned a payment page outside ${name}.`);
   return url.href;
 }
+const checkoutUrl = value => stripePage(value, CHECKOUT_ORIGIN, 'Stripe Checkout');
+const portalUrl = value => stripePage(value, PORTAL_ORIGIN, 'the Stripe billing portal');
 // Whole dollars or cents only, converted without floating point.
 function topUpMicros(value) {
   const match = /^\$?([1-9]\d{0,2})(?:\.(\d{1,2}))?$/.exec(String(value ?? '').trim());
@@ -250,6 +253,15 @@ function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetch
   }
   const subscribe = () => checkout({ kind: 'subscription' });
   const topUp = async amountUsd => checkout({ kind: 'top_up', amountUsdMicros: topUpMicros(amountUsd) });
-  return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, connection, authorize, models };
+  // Cancel, change card, download invoices: all on Stripe's billing portal.
+  async function manageBilling() {
+    await initialize(); const token = authorize(connection().endpoint), expected = generation;
+    if (!config?.cardPayments) throw new Error('Card payments are not enabled on this service.');
+    const { data } = await request('/v1/billing/portal', { method: 'POST', token, body: {} });
+    if (expected !== generation) throw new Error('Account changed. Open billing again.');
+    if (await openExternal(portalUrl(data.url)) === false) throw new Error('The billing page could not be opened.');
+    return state();
+  }
+  return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, connection, authorize, models };
 }
-module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, topUpMicros, publicAccount, publicConfig, SECRET };
+module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, portalUrl, topUpMicros, publicAccount, publicConfig, SECRET };

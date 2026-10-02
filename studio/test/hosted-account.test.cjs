@@ -123,7 +123,7 @@ test('redemption opens a same-origin review page and does not sign or broadcast'
 });
 
 test('card checkout sends the session, validates the amount and opens only Stripe Checkout', async t => {
-  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture';
+  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture', portal = 'https://billing.stripe.com/p/session/test_1';
   const sent = [];
   const fetchImpl = async (url, init) => {
     const route = new URL(url).pathname;
@@ -131,6 +131,7 @@ test('card checkout sends the session, validates the amount and opens only Strip
       : route === '/v1/auth/start' ? { flowId: 'flow1', loginUrl: 'https://reach.test/login?flow=flow1', expiresAt: new Date(Date.now() + 120000).toISOString() }
       : route === '/v1/auth/exchange' ? { accessToken: TOKEN, expiresAt: new Date(Date.now() + 3600000).toISOString(), account: { id: 'a1', walletAddress: ADDRESS } }
       : route === '/v1/billing/checkout' ? (sent.push({ body: JSON.parse(init.body), auth: init.headers.Authorization }), { url: checkoutUrl, expiresAt: null })
+      : route === '/v1/billing/portal' ? { url: portal }
       : { id: 'a1', walletAddress: ADDRESS };
     return { ok: true, status: 200, json: async () => body };
   };
@@ -146,6 +147,10 @@ test('card checkout sends the session, validates the amount and opens only Strip
   for (checkoutUrl of ['https://reach.test/pay', 'http://checkout.stripe.com/pay', 'https://user:pw@checkout.stripe.com/pay'])
     await assert.rejects(f.manager.subscribe(), /outside Stripe Checkout/);
   assert.equal(f.opened.length, 3, 'login page plus the two Stripe pages only');
+  await f.manager.manageBilling();
+  assert.equal(f.opened.at(-1), portal);
+  portal = 'https://reach.test/billing';
+  await assert.rejects(f.manager.manageBilling(), /outside the Stripe billing portal/);
   assert.doesNotMatch(JSON.stringify(f.manager.state()), new RegExp(TOKEN));
   cardPayments = false; await f.manager.refresh();
   await assert.rejects(f.manager.subscribe(), /not enabled/);

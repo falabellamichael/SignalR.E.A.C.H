@@ -531,6 +531,10 @@ function registerIpc() {
     try { return { ok: true, ...await hostedAccount.subscribe() }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
+  ipcMain.handle('account:billing', async () => {
+    try { return { ok: true, ...await hostedAccount.manageBilling() }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('account:topUp', async (_event, amount) => {
     try { return { ok: true, ...await hostedAccount.topUp(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }
@@ -3382,8 +3386,8 @@ app.whenReady().then(() => {
             await reachApi.saveProjects([{ name: 'SimpleREACH', dir: first }, { name: 'SingalREACH', dir: second }]);
             await showTab('projects');
             await loadProjectList();
-            const clickProject = dir => [...projectList.children].find(li => li.title === dir).click();
-            clickProject(first);
+            const clickProject = dir => [...projectList.children].find(li => li.title === dir).onclick();
+            await clickProject(first);
             await until(() => drawerContext.textContent === first && fileTreeEl.querySelector('[data-path="index.rsh"]'));
             const commandMode = document.querySelector('#cmd-mode');
             if (!commandMode || commandMode.value !== 'project') throw new Error('Project command mode is missing');
@@ -3407,7 +3411,7 @@ app.whenReady().then(() => {
             if (!logEl.textContent.includes('reach-project-command-does-not-exist could not start')) throw new Error('Fast command launch error was lost');
             await openFile('index.rsh');
             if (openFiles.get('index.rsh').editor.getText() !== '// FIRST PROJECT') throw new Error('First project source wrong');
-            clickProject(second);
+            await clickProject(second);
             await until(() => drawerContext.textContent === second && fileTreeEl.querySelector('[data-path="only-second.txt"]'));
             await until(() => document.querySelector('#agent-project-select').value === second);
             if (projectPath.textContent !== drawerContext.textContent) throw new Error('Project and Files paths disagree');

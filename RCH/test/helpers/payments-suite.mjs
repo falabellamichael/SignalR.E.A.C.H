@@ -317,4 +317,102 @@ export function definePaymentsSuite(label, { fresh }) {
     assert.equal((await s.store.listPayments(s.accountId, 2)).length, 2);
     assert.equal((await s.store.listPayments(s.accountId, 10_000)).length, 3, 'an absurd limit falls back to the default');
   });
+
+  // ---------------------------------------------------------------- reversals
+
+  const refund = (over = {}) => ({ provider: 'stripe', eventId: 'evt_r0001', objectId: 're_0001', kind: 'refund',
+    originalObjectId: 'pi_0001', originalKind: 'top_up', amountUsdMicros: 5_000_000, ...over });
+  const subRefund = (over = {}) => refund({ objectId: 're_s0001', originalObjectId: 'in_0001', originalKind: 'subscription_period',
+    amountUsdMicros: 15_000_000, ...over });
+
+  t('a refunded top-up takes its credit back once, however often Stripe repeats it', async () => {
+    const s = await setup();
+    await s.store.applyPayment(s.topUp());
+    const first = await s.store.applyReversal(refund());
+    assert.deepEqual({ ...first, reversalId: undefined }, { reversalId: undefined, status: 'applied', reason: null, kind: 'refund', appliedUsdMicros: 5_000_000, duplicate: false });
+    assert.equal((await s.view()).credit.balanceMicros, 0);
+    const again = await s.store.applyReversal(refund({ eventId: 'evt_r0002' }));
+    assert.equal(again.duplicate, true);
+    assert.equal(again.reversalId, first.reversalId);
+    assert.equal((await s.view()).credit.balanceMicros, 0);
+    await rejects(() => s.store.applyReversal(refund({ amountUsdMicros: 1_000_000 })), { code: 'payment_conflict' });
+  });
+
+  t('credit already spent becomes debt, which blocks paid requests', async () => {
+    const s = await setup();
+    await s.store.applyPayment(s.topUp());
+    await s.setCredit({ accountId: s.accountId, prepaid: 2_000_000, debt: 0 });
+    const result = await s.store.applyReversal(refund());
+    assert.equal(result.appliedUsdMicros, 5_000_000);
+    const credit = (await s.view()).credit;
+    assert.deepEqual([credit.balanceMicros, credit.debtMicros], [0, 3_000_000]);
+    await rejects(() => s.store.reserveRequest(s.accountId, 'req-after-refund', 'bridge-chat', 'fp'), { code: 'usage_debt' });
+  });
+
+  t('partial refunds add up but never take back more than the top-up gave', async () => {
+    const s = await setup();
+    await s.store.applyPayment(s.topUp());
+    await s.store.applyReversal(refund({ objectId: 're_p1', amountUsdMicros: 2_000_000 }));
+    assert.equal((await s.view()).credit.balanceMicros, 3_000_000);
+    // A refund that includes tax can exceed what was credited; it is capped.
+    const capped = await s.store.applyReversal(refund({ objectId: 're_p2', amountUsdMicros: 4_000_000 }));
+    assert.equal(capped.appliedUsdMicros, 3_000_000);
+    const extra = await s.store.applyReversal(refund({ objectId: 're_p3', kind: 'dispute', amountUsdMicros: 1_000_000 }));
+    assert.deepEqual([extra.status, extra.reason, extra.appliedUsdMicros], ['superseded', 'already_reversed', 0]);
+    assert.deepEqual([(await s.view()).credit.balanceMicros, (await s.view()).credit.debtMicros], [0, 0]);
+  });
+
+  t('a full refund or dispute of the current period ends Basic now', async () => {
+    for (const kind of ['refund', 'dispute']) {
+      const s = await setup();
+      await s.store.applyPayment(s.pay());
+      const result = await s.store.applyReversal(subRefund({ kind }));
+      assert.equal(result.status, 'applied', kind);
+      const account = await s.view();
+      assert.equal(account.plan.status, 'expired');
+      assert.equal(account.requestAllowance.basicActive, false);
+      // A replayed invoice.paid must not bring the plan back.
+      assert.equal((await s.store.applyPayment(s.pay({ eventId: 'evt_replay' }))).duplicate, true);
+      assert.equal((await s.view()).plan.status, 'expired');
+    }
+  });
+
+  t('partial, stale and pointless subscription reversals change nothing and wait for review where needed', async () => {
+    const s = await setup();
+    await s.store.applyPayment(s.pay());
+    const partial = await s.store.applyReversal(subRefund({ objectId: 're_half', amountUsdMicros: 7_500_000 }));
+    assert.deepEqual([partial.status, partial.reason], ['rejected', 'partial_reversal']);
+    assert.equal((await s.view()).plan.status, 'active');
+    // The second half completes a full refund.
+    assert.equal((await s.store.applyReversal(subRefund({ objectId: 're_half2', amountUsdMicros: 7_500_000 }))).status, 'applied');
+    assert.equal((await s.view()).plan.status, 'expired');
+    const twice = await s.store.applyReversal(subRefund({ objectId: 'du_late', kind: 'dispute' }));
+    assert.deepEqual([twice.status, twice.reason], ['superseded', 'plan_already_ended']);
+
+    const renewed = await setup();
+    await renewed.store.applyPayment(renewed.pay());
+    await renewed.store.applyPayment(renewed.pay({ eventId: 'evt_next', objectId: 'in_0002', periodEnd: renewed.clock.now + 60 * DAY }));
+    const old = await renewed.store.applyReversal(subRefund());
+    assert.deepEqual([old.status, old.reason], ['rejected', 'period_not_current']);
+    assert.equal((await renewed.view()).plan.status, 'active');
+    assert.deepEqual((await renewed.store.flaggedReversals()).map(entry => [entry.reason, entry.objectId]), [['period_not_current', 're_s0001']]);
+  });
+
+  t('refunding a payment that was never applied, or one REACH never recorded, changes nothing', async () => {
+    const s = await setup();
+    await s.store.applyPayment(s.pay({ amountUsdMicros: 1_000_000 }));   // rejected: amount_mismatch
+    const refundOfRejected = await s.store.applyReversal(subRefund({ amountUsdMicros: 1_000_000 }));
+    assert.deepEqual([refundOfRejected.status, refundOfRejected.reason], ['superseded', 'original_not_applied']);
+    assert.equal(await s.store.applyReversal(refund({ objectId: 're_other', originalObjectId: 'pi_someone_else' })), null);
+    assert.equal((await s.store.listReversals(s.accountId)).length, 1);
+  });
+
+  t('the owner sees their reversals without provider identifiers', async () => {
+    const s = await setup();
+    await s.store.applyPayment(s.topUp());
+    await s.store.applyReversal(refund());
+    const [entry] = await s.store.listReversals(s.accountId);
+    assert.deepEqual(Object.keys(entry).sort(), ['amountUsdMicros', 'appliedUsdMicros', 'createdAt', 'currency', 'id', 'kind', 'paymentId', 'provider', 'reason', 'status']);
+    assert.equal(entry.paymentId, (await s.store.listPayments(s.accountId))[0].id);
+  });
 }

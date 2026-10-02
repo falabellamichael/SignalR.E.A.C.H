@@ -97,7 +97,7 @@ class AccountProxyTests(RelayFixture):
         self.assertNotIn("X-Reach-Key", sent["headers"])
 
     def test_billing_routes_are_forwarded_with_the_customer_session(self):
-        for method, path in (("POST", "/v1/billing/checkout"), ("GET", "/v1/billing/payments")):
+        for method, path in (("POST", "/v1/billing/checkout"), ("POST", "/v1/billing/portal"), ("GET", "/v1/billing/payments")):
             with self.subTest(path=path):
                 status, _, _ = self.call(method, path, self.session_headers(**({"Content-Type": "application/json"} if method == "POST" else {})),
                                          b'{"kind":"subscription"}' if method == "POST" else None)

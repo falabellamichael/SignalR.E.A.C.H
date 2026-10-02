@@ -12,6 +12,7 @@ const help=`REACH account service
   npm run accounts -- grant --config /private/path/accounts.json --file /private/path/grant.json
   npm run accounts -- payment --config /private/path/accounts.json --file /private/path/payment.json
   npm run accounts -- payments --config /private/path/accounts.json [--wallet 0x...]
+  npm run accounts -- reversals --config /private/path/accounts.json [--wallet 0x...]
   npm run accounts -- status --config /private/path/accounts.json --wallet 0x...
   npm run accounts -- reconcile --config /private/path/accounts.json
   npm run accounts -- unsettled --config /private/path/accounts.json
@@ -24,6 +25,7 @@ Records a payment you have already confirmed by hand, with the same rules as an 
 objectId, a Basic payment must be exactly the Basic price, and an expired or out-of-order period is recorded for review
 instead of granted. amountUsdMicros excludes tax and processor fees. Prefer this to the grant command for anything that was paid for.
 The payments command lists one wallet's payments, or every payment that needs review when no wallet is given.
+The reversals command does the same for refunds and disputes.
 Settlement JSON: {reservationId,usage:{promptTokens,completionTokens,totalTokens,provider,model}}.
 Only use a verified provider usage record for manual settlement. No wallet keys are requested.
 Use a unique grantId per renewal. Granting a plan replaces its included allowance; prepaid credit persists.
@@ -61,6 +63,11 @@ try {
           const row=await store.findAccountByWallet(options['--wallet']);
           if(!row)throw new Error('Wallet has no account.');console.log(JSON.stringify(await store.listPayments(row.id),null,2));
         } else console.log(JSON.stringify(await store.flaggedPayments(),null,2));
+      } else if(command==='reversals') {
+        if(options['--wallet']) {
+          const row=await store.findAccountByWallet(options['--wallet']);
+          if(!row)throw new Error('Wallet has no account.');console.log(JSON.stringify(await store.listReversals(row.id),null,2));
+        } else console.log(JSON.stringify(await store.flaggedReversals(),null,2));
       } else if(command==='status') {
         const row=await store.findAccountByWallet(options['--wallet']);
         if(!row)throw new Error('Wallet has no account.');console.log(JSON.stringify(await store.account(row.id),null,2));

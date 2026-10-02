@@ -1,7 +1,8 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { getAddress } from 'ethers';
 import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay, basicPlanModelIds } from './store.mjs';
-import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment } from './payments/core.mjs';
+import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment,
+  normalizeReversal, reversalFingerprint, publicReversal, reviewReversal } from './payments/core.mjs';
 
 const id = () => randomBytes(32).toString('hex');
 const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_000;
@@ -155,6 +156,16 @@ export class SupabaseAccountStore {
   }
   async listPayments(accountId, limit = 50) { return (await this._paymentRpc('list_payments', { accountId, limit })).map(publicPayment); }
   async flaggedPayments() { return (await this._paymentRpc('flagged_payments')).map(reviewPayment); }
+  _reversalRpc(operation, payload = {}) {
+    return this._rpc(operation, payload, this.endpoint.replace(/reach_account_store$/, 'reach_payment_reversal_store'));
+  }
+  // Same contract as the SQLite store: null when the original is not ours.
+  async applyReversal(raw) {
+    const reversal = normalizeReversal(raw);
+    return this._reversalRpc('apply_reversal', { ...reversal, reversalId: id(), fingerprint: reversalFingerprint(reversal) });
+  }
+  async listReversals(accountId, limit = 50) { return (await this._reversalRpc('list_reversals', { accountId, limit })).map(publicReversal); }
+  async flaggedReversals() { return (await this._reversalRpc('flagged_reversals')).map(reviewReversal); }
   async startFlow(state, challenge) {
     if (typeof state !== 'string' || typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(state) || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) fail(400, 'invalid_flow', 'Invalid sign-in state or proof key.');
     return this._rpc('start_flow', { flowId: id(), stateHash: digest(state), challenge });

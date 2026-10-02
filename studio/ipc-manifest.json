@@ -34,6 +34,11 @@
     "args": ["amountRch"],
     "returns": "{ ok, err?, ...redemptionResult }"
   },
+  "account:billing": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, err? } and opens the Stripe billing portal"
+  },
   "account:subscribe": {
     "module": "main.mjs",
     "args": [],

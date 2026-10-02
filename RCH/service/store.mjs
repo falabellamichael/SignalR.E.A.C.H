@@ -6,7 +6,8 @@ import { getAddress } from 'ethers';
 
 import { AccountError, fail } from './errors.mjs';
 import { normalizePayment, paymentFingerprint, grantIdFor, decideSubscriptionPayment, decideTopUpPayment,
-  paymentResult, publicPayment, reviewPayment } from './payments/core.mjs';
+  paymentResult, publicPayment, reviewPayment, normalizeReversal, reversalFingerprint, decideReversal,
+  reversalResult, publicReversal, reviewReversal } from './payments/core.mjs';
 export { AccountError, fail };
 export const digest = value => createHash('sha256').update(value).digest('hex');
 const id = () => randomBytes(32).toString('hex');
@@ -106,6 +107,9 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS payment_account ON payments(account_id,created);
       CREATE TABLE IF NOT EXISTS subscription_checkouts(account_id TEXT PRIMARY KEY REFERENCES accounts(id),id TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS payment_review ON payments(status) WHERE status IN ('rejected','expired');
+      CREATE TABLE IF NOT EXISTS payment_reversals(id TEXT PRIMARY KEY,provider TEXT NOT NULL CHECK(provider IN ('stripe','paypal','manual')),event_id TEXT NOT NULL,object_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('refund','dispute')),payment_id TEXT NOT NULL REFERENCES payments(id),account_id TEXT NOT NULL,amount_usd_micros INTEGER NOT NULL CHECK(amount_usd_micros>0),applied_usd_micros INTEGER NOT NULL CHECK(applied_usd_micros>=0),currency TEXT NOT NULL CHECK(currency='usd'),status TEXT NOT NULL CHECK(status IN ('applied','superseded','rejected')),reason TEXT,fingerprint TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(provider,object_id,kind),CHECK((status='applied')=(reason IS NULL)),CHECK(status='applied' OR applied_usd_micros=0));
+      CREATE INDEX IF NOT EXISTS reversal_payment ON payment_reversals(payment_id);
+      CREATE INDEX IF NOT EXISTS reversal_account ON payment_reversals(account_id,created);
     `);
     // Additive migration preserves every existing account and token reservation.
     for (const [table, columns] of Object.entries({ accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
@@ -288,6 +292,39 @@ export class AccountStore {
   }
   flaggedPayments() {
     return this.db.prepare("SELECT * FROM payments WHERE status IN ('rejected','expired') ORDER BY created,id").all().map(reviewPayment);
+  }
+  // Records one refund or dispute and applies its effect in ONE transaction.
+  // Returns null when the original payment is not in this ledger: a refund of
+  // something REACH never sold is not ours to record.
+  applyReversal(raw) {
+    const reversal=normalizeReversal(raw),fingerprint=reversalFingerprint(reversal);
+    return this.transaction(()=>{
+      const existing=this.db.prepare('SELECT * FROM payment_reversals WHERE provider=? AND object_id=? AND kind=?').get(reversal.provider,reversal.objectId,reversal.kind);
+      if(existing){
+        if(existing.fingerprint!==fingerprint)fail(409,'payment_conflict','This payment was already recorded with different values.');
+        return reversalResult(existing,true);
+      }
+      const original=this.db.prepare('SELECT * FROM payments WHERE provider=? AND object_id=? AND kind=?').get(reversal.provider,reversal.originalObjectId,reversal.originalKind);
+      if(!original)return null;
+      const now=this.now(),account=this.db.prepare('SELECT * FROM accounts WHERE id=?').get(original.account_id)??null;
+      const prior=this.db.prepare('SELECT COALESCE(SUM(amount_usd_micros),0) AS requested,COALESCE(SUM(applied_usd_micros),0) AS applied FROM payment_reversals WHERE payment_id=?').get(original.id);
+      const decision=decideReversal({original,account,prior,reversal,now});
+      if(decision.action==='debit')this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid-?,usd_debt=usd_debt+? WHERE id=?').run(decision.fromCredit,decision.debt,account.id);
+      else if(decision.action==='end_plan')this.db.prepare('UPDATE accounts SET plan_expires=? WHERE id=?').run(now,account.id);
+      const row={id:id(),provider:reversal.provider,event_id:reversal.eventId,object_id:reversal.objectId,kind:reversal.kind,payment_id:original.id,
+        account_id:original.account_id,amount_usd_micros:reversal.amountUsdMicros,applied_usd_micros:decision.applied??0,currency:reversal.currency,
+        status:decision.status??'applied',reason:decision.reason??null,fingerprint,created:now};
+      this.db.prepare('INSERT INTO payment_reversals(id,provider,event_id,object_id,kind,payment_id,account_id,amount_usd_micros,applied_usd_micros,currency,status,reason,fingerprint,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(row.id,row.provider,row.event_id,row.object_id,row.kind,row.payment_id,row.account_id,row.amount_usd_micros,row.applied_usd_micros,row.currency,row.status,row.reason,row.fingerprint,row.created);
+      return reversalResult(row,false);
+    });
+  }
+  listReversals(accountId,limit=50) {
+    const bounded=Number.isSafeInteger(limit)&&limit>=1&&limit<=200?limit:50;
+    return this.db.prepare('SELECT * FROM payment_reversals WHERE account_id=? ORDER BY created DESC,id LIMIT ?').all(accountId,bounded).map(publicReversal);
+  }
+  flaggedReversals() {
+    return this.db.prepare("SELECT * FROM payment_reversals WHERE status='rejected' ORDER BY created,id").all().map(reviewReversal);
   }
   startFlow(state,challenge) {
     if(typeof state!=='string'||typeof challenge!=='string'||!/^[A-Za-z0-9_-]{32,128}$/.test(state)||!/^[A-Za-z0-9_-]{43}$/.test(challenge)) fail(400,'invalid_flow','Invalid sign-in state or proof key.');

@@ -113,3 +113,64 @@ export const publicPayment = row => {
 // What an operator needs to chase a flagged payment.
 export const reviewPayment = row => ({ ...publicPayment(row), accountId: row.account_id,
   objectId: row.object_id, eventId: row.event_id });
+
+// ---- reversals: refunds and disputes -----------------------------------------
+//
+// A reversal never edits the payment it reverses. It is its own append-only
+// row, keyed on the provider's refund or dispute object, pointing at the
+// original payment. What it is worth depends on what the original bought:
+//   top-up        the reversed dollars leave the balance; whatever was already
+//                 spent becomes debt, which blocks paid requests until repaid.
+//   subscription  a full reversal of the CURRENT period ends Basic now. Partial
+//                 refunds and refunds of an older period are left for a human.
+// The reversal is capped at what the original added, so a refund that includes
+// tax cannot take more credit than the payment gave.
+export const REVERSAL_KINDS = Object.freeze(['refund', 'dispute']);
+const REVERSAL_FIELDS = new Set(['provider', 'eventId', 'objectId', 'kind', 'originalObjectId', 'originalKind', 'amountUsdMicros', 'currency']);
+
+export function normalizeReversal(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) invalid();
+  for (const key of Object.keys(input)) if (!REVERSAL_FIELDS.has(key)) invalid();
+  const { provider, eventId, objectId, kind, originalObjectId, originalKind, amountUsdMicros } = input;
+  const currency = input.currency === undefined ? 'usd' : typeof input.currency === 'string' ? input.currency.toLowerCase() : null;
+  if (!PAYMENT_PROVIDERS.includes(provider) || !REVERSAL_KINDS.includes(kind) || !PAYMENT_KINDS.includes(originalKind) || currency !== 'usd') invalid();
+  if (!text(eventId, REFERENCE) || !text(objectId, REFERENCE) || !text(originalObjectId, REFERENCE)) invalid();
+  if (!Number.isSafeInteger(amountUsdMicros) || amountUsdMicros <= 0 || amountUsdMicros > CREDIT_CEILING_USD_MICROS) invalid();
+  return { provider, eventId, objectId, kind, originalObjectId, originalKind, amountUsdMicros, currency };
+}
+
+export const reversalFingerprint = r => createHash('sha256').update(JSON.stringify(
+  [r.provider, r.objectId, r.kind, r.originalObjectId, r.originalKind, r.amountUsdMicros, r.currency])).digest('hex');
+
+// `prior` sums earlier reversals of the same payment: `requested` is what the
+// provider returned, `applied` is what was actually taken back.
+// The order here is part of the contract, as for payments: the Postgres
+// function repeats it and the shared suite runs the same cases against both.
+export function decideReversal({ original, account, prior, reversal, now }) {
+  if (original.status !== 'applied') return { action: 'record', status: 'superseded', reason: 'original_not_applied' };
+  if (!account) return reject('account_missing');
+  const remaining = original.amount_usd_micros - prior.applied;
+  if (original.kind === 'top_up') {
+    if (remaining <= 0) return { action: 'record', status: 'superseded', reason: 'already_reversed' };
+    const applied = Math.min(reversal.amountUsdMicros, remaining);
+    const fromCredit = Math.min(account.usd_prepaid, applied), debt = applied - fromCredit;
+    if (account.usd_debt + debt > CREDIT_CEILING_USD_MICROS) return reject('credit_limit');
+    return { action: 'debit', applied, fromCredit, debt };
+  }
+  if (prior.requested + reversal.amountUsdMicros < original.amount_usd_micros) return reject('partial_reversal');
+  if (account.plan_version !== original.grant_id) return reject('period_not_current');
+  if (account.plan_expires <= now) return { action: 'record', status: 'superseded', reason: 'plan_already_ended' };
+  return { action: 'end_plan', applied: Math.max(0, Math.min(reversal.amountUsdMicros, remaining)) };
+}
+
+export const reversalResult = (row, duplicate) => ({
+  reversalId: row.id, status: row.status, reason: row.reason ?? null, kind: row.kind,
+  appliedUsdMicros: row.applied_usd_micros, duplicate });
+
+export const publicReversal = row => ({
+  id: row.id, provider: row.provider, kind: row.kind, paymentId: row.payment_id,
+  amountUsdMicros: row.amount_usd_micros, appliedUsdMicros: row.applied_usd_micros, currency: row.currency,
+  status: row.status, reason: row.reason ?? null, createdAt: new Date(row.created).toISOString() });
+
+export const reviewReversal = row => ({ ...publicReversal(row), accountId: row.account_id,
+  objectId: row.object_id, eventId: row.event_id });

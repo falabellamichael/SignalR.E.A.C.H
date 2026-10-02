@@ -98,11 +98,12 @@ test('wallet redemption can start before a subscription exists', async () => {
 });
 
 test('card checkout opens only Stripe Checkout for the signed-in account', async () => {
-  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture';
+  let cardPayments = true, checkoutUrl = 'https://checkout.stripe.com/c/pay/cs_test_fixture', portal = 'https://billing.stripe.com/p/session/test_1';
   const f = fixture({ request: (url, options) => {
     const route = new URL(url).pathname;
     if (route === '/v1/account/config') return response({ enabled: true, cardPayments });
     if (route === '/v1/billing/checkout') return response({ url: checkoutUrl, expiresAt: null, received: JSON.parse(options.body) });
+    if (route === '/v1/billing/portal') return response({ url: portal });
     return null;
   } });
   await f.login();
@@ -121,6 +122,11 @@ test('card checkout opens only Stripe Checkout for the signed-in account', async
   checkoutUrl = origin + '/billing/return';
   await assert.rejects(f.host.subscribe(), /outside Stripe Checkout/);
   assert.equal(f.opened.filter(url => !url.startsWith('https://checkout.stripe.com/')).length, 1); // only the wallet login page
+  await f.host.manageBilling();
+  assert.equal(f.opened.at(-1), portal);
+  assert.equal(f.calls.at(-1).options.headers.Authorization, 'Bearer ' + token);
+  for (portal of ['https://checkout.stripe.com/p/session/x', 'https://billing.stripe.com.evil.example/p'])
+    await assert.rejects(f.host.manageBilling(), /outside the Stripe billing portal/);
   cardPayments = false; await f.host.refresh();
   await assert.rejects(f.host.subscribe(), /not enabled/);
 });
