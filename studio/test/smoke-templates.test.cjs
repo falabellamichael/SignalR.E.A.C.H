@@ -102,3 +102,32 @@ test('no stray backslash escapes lurk in the smoke template literals', () => {
   }
   assert.deepEqual(suspicious, [], 'unexpected escapes in generated renderer code:\n  ' + suspicious.join('\n  '));
 });
+
+
+test('project-switch smoke waits for the click handler before opening files', async () => {
+  const source = fs.readFileSync(MAIN, 'utf8');
+  const selection = /const clickProject =[\s\S]*?(?=\s+await until\()/.exec(source)?.[0];
+  assert.ok(selection, 'find the project-switch action and its first caller');
+  let release;
+  const pendingSelection = new Promise(resolve => { release = resolve; });
+  let handlerFinished = false;
+  const row = {
+    title: '/slow-project',
+    async onclick() { await pendingSelection; handlerFinished = true; },
+    click() { void this.onclick(); },
+  };
+  // Run the actual smoke action with a deliberately slow selection. DOM state
+  // can appear before the click handler finishes its file-context refresh.
+  const run = new Function('projectList', 'first', `return (async () => { ${selection}; return true; })();`);
+  let actionFinished = false;
+  const action = run({ children: [row] }, row.title).then(() => { actionFinished = true; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(actionFinished, false, 'file assertions must not run before project selection settles');
+  } finally {
+    release();
+    await action;
+  }
+  assert.equal(handlerFinished, true);
+  assert.equal(actionFinished, true);
+});
