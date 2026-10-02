@@ -98,8 +98,8 @@ export function reversalFromStripeEvent(event, { livemode }) {
   if (!object || typeof object !== 'object') fail(400, 'invalid_event', 'Invalid Stripe event.');
   let kind;
   if (event.type === 'refund.created' || event.type === 'refund.updated') {
-    // A refund that failed or was cancelled never left the account.
-    if (!['succeeded', 'pending', 'requires_action'].includes(object.status)) return { ignored: 'refund_not_effective' };
+    // Pending refunds can still fail or be cancelled. Apply only the final success.
+    if (object.status !== 'succeeded') return { ignored: 'refund_not_effective' };
     kind = 'refund';
   } else if (event.type === 'charge.dispute.created') kind = 'dispute';
   else return null;
@@ -153,14 +153,14 @@ const hostedUrl = (value, origin) => {
 };
 
 export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 15000 }) {
-  async function call(method, path, params) {
+  async function call(method, path, params, extraHeaders = {}) {
     let response, data;
     const query = method === 'GET' && params ? `?${formEncode(params)}` : '';
     try {
       response = await fetchImpl(`${STRIPE_API}${path}${query}`, {
         method, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
         headers: { Authorization: `Bearer ${secretKey}`, 'Stripe-Version': STRIPE_VERSION,
-          ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}) },
+          ...(method === 'POST' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}), ...extraHeaders },
         ...(method === 'POST' ? { body: formEncode(params).toString() } : {}),
       });
       data = await response.json();
@@ -171,17 +171,31 @@ export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 1
   }
   const list = data => Array.isArray(data?.data) ? data.data : [];
   return {
-    async createCheckoutSession(params) {
-      const data = await call('POST', '/v1/checkout/sessions', params);
-      return { url: hostedUrl(data.url, CHECKOUT_ORIGIN), expiresAt: Number.isSafeInteger(data.expires_at) ? new Date(data.expires_at * 1000).toISOString() : null };
+    async canReplaceCheckoutSession(sessionId, nowMs = Date.now()) {
+      if (!/^cs_[A-Za-z0-9_]{3,256}$/.test(sessionId || '')) fail(502, 'payment_provider_error', 'The payment provider returned an invalid checkout.');
+      const data = await call('GET', `/v1/checkout/sessions/${sessionId}`, { expand: ['subscription'] });
+      if (data.id !== sessionId || data.mode !== 'subscription') fail(502, 'payment_provider_error', 'The earlier checkout could not be verified.');
+      // A delayed webhook must not open a second paying subscription.
+      const periods = data.subscription?.items?.data?.map(item => item.current_period_end);
+      const periodEnd = data.subscription?.current_period_end ?? (periods?.length && periods.every(Number.isSafeInteger) ? Math.max(...periods) : null);
+      return data.status === 'expired' || data.status === 'complete' && data.subscription?.status === 'canceled'
+        && Number.isSafeInteger(periodEnd) && periodEnd * 1000 <= nowMs;
+    },
+    async createCheckoutSession(params, { idempotencyKey } = {}) {
+      const data = await call('POST', '/v1/checkout/sessions', params, idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {});
+      return { sessionId: data.id, url: hostedUrl(data.url, CHECKOUT_ORIGIN), expiresAt: Number.isSafeInteger(data.expires_at) ? new Date(data.expires_at * 1000).toISOString() : null };
     },
     // The REACH payment a PaymentIntent paid for: a top-up Checkout Session, or
     // the subscription invoice it settled. null when it is neither.
     async findOriginal(paymentIntent) {
       const [session] = list(await call('GET', '/v1/checkout/sessions', { payment_intent: paymentIntent, limit: 1 }));
-      if (session?.mode === 'payment' && session.metadata?.[KIND_KEY] === 'top_up') return { originalObjectId: session.id, originalKind: 'top_up' };
+      if (session?.mode === 'payment' && session.metadata?.[KIND_KEY] === 'top_up' && typeof session.metadata?.[ACCOUNT_KEY] === 'string') return { originalObjectId: session.id, originalKind: 'top_up' };
       const [paid] = list(await call('GET', '/v1/invoice_payments', { payment: { type: 'payment_intent', payment_intent: paymentIntent }, limit: 1 }));
-      return typeof paid?.invoice === 'string' ? { originalObjectId: paid.invoice, originalKind: 'subscription_period' } : null;
+      if (typeof paid?.invoice !== 'string') return null;
+      const invoice = await call('GET', `/v1/invoices/${encodeURIComponent(paid.invoice)}`);
+      const metadata = invoiceMetadata(invoice);
+      return metadata[KIND_KEY] === 'subscription_period' && typeof metadata[ACCOUNT_KEY] === 'string'
+        ? { originalObjectId: paid.invoice, originalKind: 'subscription_period' } : null;
     },
     // Stripe's own page for cancelling, changing the card and downloading
     // invoices. The customer is the one on this account's subscription.
@@ -194,6 +208,7 @@ export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 1
       if (typeof customer !== 'string') fail(404, 'no_subscription', 'This account has no card subscription to manage.');
       const data = await call('POST', '/v1/billing_portal/sessions', { customer, return_url: returnUrl });
       return { url: hostedUrl(data.url, PORTAL_ORIGIN) };
+
     },
   };
 }

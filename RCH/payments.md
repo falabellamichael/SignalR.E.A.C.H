@@ -70,6 +70,12 @@ balance cannot discard the identifiers that prevent double credit. Keep a full
 database backup until payment-ledger snapshot migration is supported. Databases
 with an empty payment ledger can still use the legacy export.
 
+Subscription checkout retries share a durable intent and Stripe idempotency key,
+including after a service restart. Apply the additional generated
+`20261002072512_rch_subscription_checkout.sql` migration before deploying this
+version to Supabase. The legacy SQLite export also refuses pending checkout
+records, preserving their protection against a second subscription charge.
+
 ## Stripe
 
 Customers pay on Stripe's hosted Checkout page; REACH never sees a card.
@@ -178,6 +184,11 @@ original ledger entry. Anything REACH did not sell is acknowledged and ignored.
 | A payment that was never applied (for example a rejected one) | Recorded, nothing to undo. |
 
 Each refund or dispute is applied once, however often Stripe repeats it.
+Refunds change access or credit only when Stripe reports `succeeded`; pending,
+action-required, failed and cancelled refunds leave both unchanged. Subscribe to
+`refund.updated` so a successful completion is delivered. If a REACH reversal
+arrives before its payment, the webhook answers 503 to request redelivery rather
+than discarding it. Unrelated invoices remain acknowledged and ignored.
 
 ```text
 npm run accounts -- reversals --config /private/path/accounts.json            # needs review
@@ -187,7 +198,6 @@ npm run accounts -- reversals --config /private/path/accounts.json --wallet 0x..
 Not automated, so handle these by hand with the `payment` command:
 
 - A dispute you win. Stripe returns the money; re-grant or re-credit if fair.
-- A refund that fails after it was recorded (rare for cards).
 
 ## PayPal
 
@@ -249,3 +259,19 @@ and use a public HTTPS origin.
 
 Payments are tied to the internal account ID, so wallet and email accounts
 (see [email-sign-in.md](email-sign-in.md)) pay and are refunded the same way.
+
+PayPal subscription creation retries share a durable request ID. The returned
+subscription ID is saved and read on later attempts, including after PayPal's
+72-hour idempotency window. A still billable subscription or an unknown older
+creation result blocks another checkout and requires reconciliation. Card and
+PayPal subscription attempts share the account's pending-checkout guard.
+
+A PayPal refund delivered before its REACH payment answers 503 so PayPal
+redelivers it. Completion notices fetched after a refund still record the
+settled original payment, then the refund removes its credit or access. A sale
+replay retains its recorded paid period even when PayPal's next billing date
+has advanced. Foreign payments and refunds remain ignored.
+
+Supabase also requires `20261002081418_rch_checkout_provider_reference.sql`
+after the durable checkout migration. It adds a nullable provider reference and
+service-only RPCs; existing records are preserved. SQLite upgrades automatically.
