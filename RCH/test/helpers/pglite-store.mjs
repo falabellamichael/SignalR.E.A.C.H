@@ -8,7 +8,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { SupabaseAccountStore } from '../../service/supabase-store.mjs';
 
-const RPCS = new Set(['reach_account_store', 'reach_request_store', 'reach_payment_store', 'reach_payment_reversal_store']);
+const RPCS = new Set(['reach_account_store', 'reach_request_store', 'reach_payment_store', 'reach_payment_reversal_store', 'reach_checkout_store']);
 const quote = value => { assert.match(value, /^[a-z_][a-z0-9_]*$/); return `"${value}"`; };
 
 export function pgliteStores({ requiredMigration } = {}) {

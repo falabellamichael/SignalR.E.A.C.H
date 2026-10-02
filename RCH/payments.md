@@ -70,6 +70,12 @@ balance cannot discard the identifiers that prevent double credit. Keep a full
 database backup until payment-ledger snapshot migration is supported. Databases
 with an empty payment ledger can still use the legacy export.
 
+Subscription checkout retries share a durable intent and Stripe idempotency key,
+including after a service restart. Apply the additional generated
+`20261002072512_rch_subscription_checkout.sql` migration before deploying this
+version to Supabase. The legacy SQLite export also refuses pending checkout
+records, preserving their protection against a second subscription charge.
+
 ## Stripe
 
 Customers pay on Stripe's hosted Checkout page; REACH never sees a card.
@@ -176,6 +182,11 @@ original ledger entry. Anything REACH did not sell is acknowledged and ignored.
 | A payment that was never applied (for example a rejected one) | Recorded, nothing to undo. |
 
 Each refund or dispute is applied once, however often Stripe repeats it.
+Refunds change access or credit only when Stripe reports `succeeded`; pending,
+action-required, failed and cancelled refunds leave both unchanged. Subscribe to
+`refund.updated` so a successful completion is delivered. If a REACH reversal
+arrives before its payment, the webhook answers 503 to request redelivery rather
+than discarding it. Unrelated invoices remain acknowledged and ignored.
 
 ```text
 npm run accounts -- reversals --config /private/path/accounts.json            # needs review
@@ -185,7 +196,6 @@ npm run accounts -- reversals --config /private/path/accounts.json --wallet 0x..
 Not automated, so handle these by hand with the `payment` command:
 
 - A dispute you win. Stripe returns the money; re-grant or re-credit if fair.
-- A refund that fails after it was recorded (rare for cards).
 
 ## Still to do before live mode
 

@@ -58,3 +58,8 @@ npm run accounts -- payments --config /private/path/accounts.json --email custom
 
 A hand-recorded payment file can name `email` instead of `wallet`; the account
 must already exist (its owner signs in once).
+
+A manual plan grant can name the existing `accountId` instead of `wallet` in
+its grant JSON. Find the ID with `status --email`; a grant does not create an
+email account. Reusing a grant ID with different account or plan values is
+refused. Use the payment command for paid subscriptions.

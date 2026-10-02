@@ -19,7 +19,7 @@ const help=`REACH account service
   npm run accounts -- settle --config /private/path/accounts.json --file /private/path/measured-usage.json
   npm run accounts -- import-sqlite --config /private/path/supabase-accounts.json --source-sqlite /private/path/accounts.sqlite
 
-Grant JSON: {wallet,grantId,planId,name,models:[qualified model IDs],tokens,expiresAt:ISO timestamp}.
+Grant JSON: {wallet or accountId,grantId,planId,name,models:[qualified model IDs],tokens,expiresAt:ISO timestamp}.
 Payment JSON: {wallet or email,objectId,kind:"subscription_period"|"top_up",amountUsdMicros,periodEnd:ISO timestamp (subscription only)}.
 Records a payment you have already confirmed by hand, with the same rules as an automatic one: it is recorded once per
 objectId, a Basic payment must be exactly the Basic price, and an expired or out-of-order period is recorded for review
