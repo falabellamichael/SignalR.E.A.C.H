@@ -9,8 +9,16 @@ Details for each provider are in [payments.md](payments.md) and
 - [ ] Back up the account database (or Supabase project).
 - [ ] With Supabase, apply the migrations in order:
       `20261001120000_rch_payments_ledger.sql`,
+      `20261002072512_rch_subscription_checkout.sql`,
+      `20261002081418_rch_checkout_provider_reference.sql`,
       `20261003120000_rch_payment_reversals.sql`,
       `20261004120000_rch_email_sign_in.sql`.
+      Apply only migrations not already installed: reconcile the remote history
+      by name and SQL as well as timestamp. For example, an installed payments
+      ledger may have a different timestamp from the repository filename.
+      Verify backup and restore before applying these changes. Email sign-in
+      makes wallet identity optional; reverting it requires a data-aware restore,
+      not simply making wallet NOT NULL again.
       A SQLite database upgrades itself on the next start.
 - [ ] The service's public origin is HTTPS and reachable by Stripe and PayPal
       (their webhooks call it). Live mode refuses to start otherwise.
@@ -28,13 +36,23 @@ Details for each provider are in [payments.md](payments.md) and
       It confirms each key works, the Basic price or plan is exactly US$15.00 a
       month, each webhook points at this service with every needed event, the
       Stripe portal allows cancelling, and the sending domain is verified. It
-      never charges, creates or sends anything. `CHECK` lines mean the key was
-      not allowed to read that setting; confirm it in the dashboard.
+      never charges, creates or sends anything. Provider errors are `PROBLEM`
+      lines. `CHECK` lines mean a setting remains unverified because the key
+      could not read it. Both exit non-zero, and CHECK never produces Ready.
+      Confirm each CHECK in the dashboard and record that verification, or
+      repeat the check using authorized read access. A send-only Resend key can
+      remain the service key; do not broaden its access just to silence CHECK.
+      Ready verifies only these provider settings. It does not verify database
+      migrations, public reachability, webhook signatures, email delivery or
+      real payments; complete the remaining checklist separately.
 
 ## 3. Try every path once in test mode
 
-Use a test account in Studio or VS Code, then confirm with
+Use separate test accounts for Stripe and PayPal in Studio or VS Code, then confirm with
 `npm run accounts -- status --config ... --email you@example.com` (or `--wallet`).
+An active Basic plan or unresolved checkout blocks another subscription,
+including one through the other provider. Cancelled access lasts until the
+paid period ends, so do not reuse that account to test another subscription.
 
 - [ ] Sign in with an email code.
 - [ ] Subscribe to Basic by card (test card 4242 4242 4242 4242): plan active.

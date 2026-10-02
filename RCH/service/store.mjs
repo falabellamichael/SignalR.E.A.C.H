@@ -113,6 +113,7 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS request_reservation_account_period ON request_reservations(account_id,period_key,status);
       CREATE TABLE IF NOT EXISTS payments(id TEXT PRIMARY KEY,provider TEXT NOT NULL CHECK(provider IN ('stripe','paypal','manual')),event_id TEXT NOT NULL,object_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('subscription_period','top_up')),account_id TEXT NOT NULL,amount_usd_micros INTEGER NOT NULL CHECK(amount_usd_micros>0),currency TEXT NOT NULL CHECK(currency='usd'),period_end INTEGER,status TEXT NOT NULL CHECK(status IN ('applied','superseded','expired','rejected')),reason TEXT,grant_id TEXT,fingerprint TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(provider,object_id,kind),CHECK(kind='subscription_period' AND period_end IS NOT NULL OR kind='top_up' AND period_end IS NULL),CHECK((status='applied')=(reason IS NULL)));
       CREATE INDEX IF NOT EXISTS payment_account ON payments(account_id,created);
+      CREATE TABLE IF NOT EXISTS subscription_checkouts(account_id TEXT PRIMARY KEY REFERENCES accounts(id),id TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS payment_review ON payments(status) WHERE status IN ('rejected','expired');
       CREATE TABLE IF NOT EXISTS email_challenges(id TEXT PRIMARY KEY,flow_id TEXT NOT NULL,email TEXT NOT NULL,code_hash TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 5),expires INTEGER NOT NULL,consumed INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS email_challenge_email ON email_challenges(email,created);
@@ -122,7 +123,7 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS reversal_account ON payment_reversals(account_id,created);
     `);
     // Additive migration preserves every existing account and token reservation.
-    for (const [table, columns] of Object.entries({ accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
+    for (const [table, columns] of Object.entries({ subscription_checkouts: { provider_object_id: 'TEXT' }, accounts: { usd_prepaid: 'INTEGER NOT NULL DEFAULT 0', usd_debt: 'INTEGER NOT NULL DEFAULT 0' },
       reservations: { currency: "TEXT NOT NULL DEFAULT 'tokens'", pricing_json: 'TEXT' },
       redemptions: { usd_micros: 'INTEGER NOT NULL DEFAULT 0', quote_json: 'TEXT' } })) {
       const existing = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
@@ -255,6 +256,7 @@ export class AccountStore {
   }
   grantPlan({wallet,accountId,grantId,planId,name,models,tokens,expiresAt},nested=false) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId||'') || !planId || typeof name!=='string' || !safeCount(tokens) || !Array.isArray(models) || !models.length || !models.every(m=>this.models.some(x=>x.id===m&&(x.metered===true||this.subscription&&requestModel(x)))) || !Number.isSafeInteger(expiresAt) || expiresAt<=this.now()) fail(400,'invalid_grant','Invalid plan grant, qualified model list, allowance, or expiry.');
+    if(!wallet&&!/^[A-Za-z0-9_-]{8,128}$/.test(accountId||''))fail(400,'invalid_grant','Invalid grant account.');
     // Wallet grants keep their original payload, so earlier grant IDs replay unchanged.
     const payload = JSON.stringify(wallet?{wallet:getAddress(wallet),planId,name,models:[...models].sort(),tokens,expiresAt}:{accountId,planId,name,models:[...models].sort(),tokens,expiresAt});
     const run=()=>{
@@ -267,6 +269,34 @@ export class AccountStore {
     };
     return nested?run():this.transaction(run);
   }
+  // A durable intent survives restarts and gives concurrent retries one Stripe
+  // idempotency key. Its fixed expiry is also sent to Stripe; a replacement can
+  // only be created after the previous session can no longer charge the account.
+  reserveSubscriptionCheckout(accountId,fingerprint,replaceExpiredId=null) {
+    if(!/^[a-f0-9]{64}$/.test(fingerprint||''))fail(400,'invalid_checkout','Invalid checkout.');
+    return this.transaction(()=>{
+      const account=this.db.prepare('SELECT * FROM accounts WHERE id=?').get(accountId);
+      if(!account)fail(404,'account_missing','Account not found.');
+      if(account.plan_id&&account.plan_expires>this.now())fail(409,'plan_active','A plan is already active on this account.');
+      const previous=this.db.prepare('SELECT * FROM subscription_checkouts WHERE account_id=?').get(accountId);
+      if(previous&&(previous.expires>this.now()||previous.id!==replaceExpiredId)) {
+        if(previous.fingerprint!==fingerprint)fail(409,'checkout_pending','An earlier subscription checkout is still pending. Wait for it to expire.');
+        return {id:previous.id,expiresAt:previous.expires,...(previous.provider_object_id?{providerObjectId:previous.provider_object_id}:{})};
+      }
+      const checkout={id:id(),expiresAt:(Math.floor(this.now()/1000)+3600)*1000};
+      this.db.prepare('INSERT INTO subscription_checkouts(account_id,id,fingerprint,expires) VALUES(?,?,?,?) ON CONFLICT(account_id) DO UPDATE SET id=excluded.id,fingerprint=excluded.fingerprint,expires=excluded.expires,provider_object_id=NULL').run(accountId,checkout.id,fingerprint,checkout.expiresAt);
+      return checkout;
+    });
+  }
+  attachSubscriptionCheckout(accountId,checkoutId,providerObjectId) {
+    if(!/^[a-f0-9]{64}$/.test(checkoutId||'')||!/^[A-Za-z0-9_-]{3,128}$/.test(providerObjectId||''))fail(400,'invalid_checkout','Invalid checkout reference.');
+    return this.transaction(()=>{
+      const previous=this.db.prepare('SELECT * FROM subscription_checkouts WHERE account_id=?').get(accountId);
+      if(!previous||previous.id!==checkoutId||previous.provider_object_id&&previous.provider_object_id!==providerObjectId)fail(409,'checkout_pending','The earlier checkout requires reconciliation.');
+      this.db.prepare('UPDATE subscription_checkouts SET provider_object_id=? WHERE account_id=? AND id=?').run(providerObjectId,accountId,checkoutId);
+      return {id:previous.id,expiresAt:previous.expires,providerObjectId};
+    });
+  }
   // ---- payments: a provider-neutral ledger (rules live in payments/core.mjs) ----
   basicPlanModels() { return basicPlanModelIds(this.models); }
   // Records one payment and applies its effect in a SINGLE transaction. Business-rule
@@ -274,6 +304,10 @@ export class AccountStore {
   // `rejected`/`expired` row and returned, not thrown: a throw would make the provider
   // retry for days. Only infrastructure failures and genuine conflicts throw, so a
   // retry after a crash converges.
+  paymentPeriod(provider,objectId) {
+    const row=this.db.prepare("SELECT period_end FROM payments WHERE provider=? AND object_id=? AND kind='subscription_period'").get(provider,objectId);
+    return row?{periodEnd:row.period_end}:null;
+  }
   applyPayment(raw) {
     const payment=normalizePayment(raw),fingerprint=paymentFingerprint(payment);
     if(payment.kind==='subscription_period'){

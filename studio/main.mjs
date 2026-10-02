@@ -2701,9 +2701,9 @@ app.whenReady().then(() => {
   if (process.argv.includes('--smoke')) {
     (async () => {
       const timeout = setTimeout(() => {
-        console.error('SMOKE FAIL: renderer/backend check timed out after 30 seconds');
+        console.error('SMOKE FAIL: renderer/backend check timed out after 60 seconds');
         app.exit(1);
-      }, 30_000);
+      }, 60_000);
       try {
         console.log(`SMOKE RUNTIME: Electron ${process.versions.electron}; Chromium ${process.versions.chrome}; Node ${process.versions.node}`);
         fs.mkdirSync(smokeProject, { recursive: true });

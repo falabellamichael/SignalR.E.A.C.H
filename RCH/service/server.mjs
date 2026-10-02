@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, FetchRequest } from 'ethers';
-import { fail } from './store.mjs';
+import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
@@ -76,7 +76,14 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   // Applies what a provider reported; both providers answer their webhook the same way.
   const record=async mapped=>{
     if(!mapped)return{received:true,ignored:'not_reach'};
+    // A PayPal subscription's next billing date changes on renewal. A sale
+    // already recorded keeps the immutable paid period from its ledger row.
+    if(mapped.payment?.provider==='paypal'&&mapped.payment.kind==='subscription_period'){
+      const existing=await store.paymentPeriod('paypal',mapped.payment.objectId);
+      if(existing)mapped.payment={...mapped.payment,periodEnd:existing.periodEnd};
+    }
     const result=mapped.payment?await store.applyPayment(mapped.payment):await store.applyReversal(mapped.reversal);
+    if(!result&&mapped.reversal)fail(503,'payment_pending','The original payment is not recorded yet. Retry this notification.');
     return result?{received:true,status:result.status,duplicate:result.duplicate}:{received:true,ignored:'not_reach'};
   };
   const buckets=new Map(),emailSenders=new Map();
@@ -137,8 +144,11 @@ export function createAccountService({config,store,provider,redemptionProvider,b
           // Only a REACH Checkout or a REACH invoice can be reversed, and the store
           // still checks the ledger: a refund of anything else is not ours.
           const original=await stripeClient.findOriginal(reversal.paymentIntent);
-          const result=original&&await store.applyReversal({...reversal.reversal,...original});
-          if(!result){json(res,200,{received:true,ignored:'not_reach'});return;}
+          if(!original){json(res,200,{received:true,ignored:'not_reach'});return;}
+          const result=await store.applyReversal({...reversal.reversal,...original});
+          // Stripe does not guarantee delivery order. Keep an early REACH refund
+          // retryable until its original payment is durably recorded.
+          if(!result)fail(503,'payment_pending','The original payment is not recorded yet. Retry this notification.');
           json(res,200,{received:true,status:result.status,duplicate:result.duplicate});return;
         }
         const mapped=paymentFromStripeEvent(event,{basicPriceId:stripe.basicPriceId,livemode});
@@ -216,8 +226,36 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         } else if(body.kind==='top_up') {
           if(!(viaPayPal?validPayPalTopUp:validTopUpAmount)(body.amountUsdMicros))fail(400,'invalid_amount','Choose a whole-cent top-up between $1 and $500.');
         } else fail(400,'invalid_checkout','Choose a subscription or a top-up.');
-        if(viaPayPal){json(res,200,await paypal.createCheckout({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,origin:config.origin}));return;}
-        json(res,200,await stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:now()})));return;
+        if(viaPayPal){
+          let intent=body.kind==='subscription'?await store.reserveSubscriptionCheckout(account.id,digest(JSON.stringify(['paypal',config.payments.paypal.mode,config.payments.paypal.basicPlanId,config.origin]))):null;
+          let page;
+          if(intent?.providerObjectId){
+            const previous=await paypal.readCheckout(intent.providerObjectId,account.id);
+            if(previous.replaceable){
+              intent=await store.reserveSubscriptionCheckout(account.id,digest(JSON.stringify(['paypal',config.payments.paypal.mode,config.payments.paypal.basicPlanId,config.origin])),intent.id);
+            } else page=previous;
+          }
+          if(!page){
+            // PayPal retains create-subscription keys for 72 hours. An unknown
+            // earlier result cannot be retried after that window without risking
+            // another subscription. Known IDs are always read, never recreated.
+            if(intent&&!intent.providerObjectId&&now()>=intent.expiresAt+71*3600000)fail(409,'checkout_pending','The earlier PayPal checkout requires reconciliation. Contact support.');
+            page=await paypal.createCheckout({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,origin:config.origin},intent?{idempotencyKey:`rch-${intent.id.slice(0,32)}`}:{ });
+            if(intent)await store.attachSubscriptionCheckout(account.id,intent.id,page.subscriptionId);
+          }
+          json(res,200,{url:page.url,expiresAt:page.expiresAt});return;
+        }
+        const fingerprint=digest(JSON.stringify([config.origin,stripe.basicPriceId]));
+        let checkout=body.kind==='subscription'?await store.reserveSubscriptionCheckout(account.id,fingerprint):null;
+        const create=()=>stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:checkout?checkout.expiresAt-3600000:now()}),checkout?{idempotencyKey:`reach-subscription-${checkout.id}`}:{ });
+        let page=await create();
+        if(checkout&&checkout.expiresAt<=now()) {
+          if(!await stripeClient.canReplaceCheckoutSession(page.sessionId,now()))fail(409,'checkout_pending','The earlier subscription checkout is still awaiting confirmation. Refresh your account or contact support.');
+          checkout=await store.reserveSubscriptionCheckout(account.id,fingerprint,checkout.id);
+          page=await create();
+        }
+        json(res,200,{url:page.url,expiresAt:page.expiresAt});return;
+
       }
       if(req.method==='POST'&&pathname==='/v1/billing/portal') {
         if(!stripeClient)fail(503,'payments_unconfigured','Card payments are not configured on this service.');

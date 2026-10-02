@@ -135,14 +135,43 @@ export function defineEmailSuite(label, { fresh }) {
     assert.equal((await s.store.account(account.id)).plan.status, 'expired');
   });
 
+
+  t('email grants use the account ID, replay unchanged, and refuse another account or missing identity', async () => {
+    const s = await setup();
+    const { account } = await s.signIn('ada@example.com');
+    const { account: other } = await s.signIn('grace@example.com');
+    const grant = { accountId: account.id, grantId: 'grant-email-1', planId: 'basic-wallet', name: 'Basic',
+      models: MODELS.map(m => m.id), tokens: 0, expiresAt: s.clock.now + DAY };
+    const granted = await s.store.grantPlan(grant);
+    assert.deepEqual([granted.id, granted.email, granted.walletAddress, granted.plan.status], [account.id, 'ada@example.com', null, 'active']);
+    assert.equal((await s.store.grantPlan({ ...grant, models: [...grant.models].reverse() })).id, account.id);
+    await rejects(() => s.store.grantPlan({ ...grant, accountId: other.id }), { code: 'grant_conflict' });
+    await rejects(() => s.store.grantPlan({ ...grant, grantId: 'grant-missing-1', accountId: 'c'.repeat(64) }), { code: 'account_missing' });
+    for (const accountId of [undefined, null, '', 'bad id'])
+      await rejects(() => s.store.grantPlan({ ...grant, grantId: 'grant-invalid-1', accountId }), { code: 'invalid_grant' });
+    assert.equal((await s.store.account(other.id)).plan.status, 'none');
+  });
+
+  t('email checkout intents reuse the durable key and block after a successful subscription payment', async () => {
+    const s = await setup();
+    const { account } = await s.signIn('ada@example.com');
+    const first = await s.store.reserveSubscriptionCheckout(account.id, 'a'.repeat(64));
+    assert.deepEqual(await s.store.reserveSubscriptionCheckout(account.id, 'a'.repeat(64)), first);
+    await s.store.applyPayment({ provider: 'stripe', eventId: 'evt_email_checkout', objectId: 'in_email_checkout', kind: 'subscription_period',
+      accountId: account.id, amountUsdMicros: 15_000_000, periodEnd: s.clock.now + 30 * DAY });
+    await rejects(() => s.store.reserveSubscriptionCheckout(account.id, 'a'.repeat(64)), { code: 'plan_active' });
+  });
+
   t('wallet and email accounts stay separate, and wallet grants are unchanged', async () => {
     const s = await setup();
     const wallet = getAddress(`0x${'22'.repeat(20)}`);
     const walletAccount = await s.store.ensureAccount(wallet);
     const { account } = await s.signIn('ada@example.com');
     assert.notEqual(account.id, walletAccount.id);
-    const granted = await s.store.grantPlan({ wallet, grantId: 'grant-wallet-1', planId: 'basic-wallet', name: 'Basic',
-      models: MODELS.map(m => m.id), tokens: 0, expiresAt: s.clock.now + DAY });
+    const grant = { wallet, grantId: 'grant-wallet-1', planId: 'basic-wallet', name: 'Basic',
+      models: MODELS.map(m => m.id), tokens: 0, expiresAt: s.clock.now + DAY };
+    const granted = await s.store.grantPlan(grant);
+    assert.equal((await s.store.grantPlan({ ...grant, accountId: account.id })).id, walletAccount.id, 'wallet grants retain their original replay identity');
     assert.equal(granted.walletAddress, wallet);
     assert.equal(granted.email, null);
     assert.equal((await s.store.account(account.id)).plan.status, 'none');
