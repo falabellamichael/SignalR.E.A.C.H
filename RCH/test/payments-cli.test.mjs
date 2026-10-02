@@ -98,12 +98,21 @@ test('an email account is named with --email, and only once it exists', t => {
   assert.match(w.run('payment', ...w.file('p.json', { ...entry, wallet })).err, /wallet or email/);
 });
 
+test('check-billing reports an unconfigured service as not ready and exits non-zero', t => {
+  const w = workspace(); t.after(w.cleanup);
+  const result = w.run('check-billing');
+  assert.equal(result.code, 1);
+  assert.match(result.out, /PROBLEM Providers: No payment provider or email sender is configured/);
+  assert.match(result.out, /Not ready/);
+});
+
 test('the help text documents both commands', t => {
   const w = workspace(); t.after(w.cleanup);
   const help = spawnSync(process.execPath, [script, 'help'], { encoding: 'utf8' }).stdout;
   assert.match(help, /accounts -- payment --config/);
   assert.match(help, /accounts -- payments --config/);
   assert.match(help, /accounts -- reversals --config/);
+  assert.match(help, /accounts -- check-billing --config/);
   assert.deepEqual(w.run('reversals').json(), []);
   assert.match(help, /excludes tax and processor fees/);
 });
