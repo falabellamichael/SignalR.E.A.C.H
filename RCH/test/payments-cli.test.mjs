@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getAddress } from 'ethers';
+import { AccountStore } from '../service/store.mjs';
 
 // The operator's hand-run path. Everything here goes through the real command
 // line, a real config file and a real SQLite database, so it proves the
@@ -80,6 +81,21 @@ test('an invalid record fails clearly and writes nothing', t => {
   assert.notEqual(bad.code, 0);
   assert.match(bad.err, /Invalid payment record/);
   assert.equal(w.run('payments').json().length, 0);
+});
+
+test('an email account is named with --email, and only once it exists', t => {
+  const w = workspace(); t.after(w.cleanup);
+  const entry = { email: 'Ada@Example.com', objectId: 'bank-ref-0006', kind: 'top_up', amountUsdMicros: 3_000_000 };
+  const missing = w.run('payment', ...w.file('p.json', entry));
+  assert.notEqual(missing.code, 0);
+  assert.match(missing.err, /must sign in once/);
+  const direct = new AccountStore(join(w.dir, 'accounts.sqlite'));
+  direct.ensureEmailAccount('ada@example.com'); direct.close();
+  assert.equal(w.run('payment', ...w.file('p.json', entry)).json().status, 'applied');
+  assert.equal(w.run('status', '--email', 'ADA@example.com').json().credit.balanceMicros, 3_000_000);
+  assert.equal(w.run('payments', '--email', 'ada@example.com').json().length, 1);
+  assert.match(w.run('status', '--wallet', wallet, '--email', 'ada@example.com').err, /--wallet or --email/);
+  assert.match(w.run('payment', ...w.file('p.json', { ...entry, wallet })).err, /wallet or email/);
 });
 
 test('the help text documents both commands', t => {

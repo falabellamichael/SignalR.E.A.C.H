@@ -71,7 +71,7 @@
       : account?.plan?.status === 'active' ? account.plan.name
       : connected && (Number(account?.allowance?.prepaidRemaining) > 0 || available > 0n) ? 'RCH prepaid access'
         : connected ? 'No active subscription' : 'REACH account');
-    if (account?.walletAddress) paragraph(account.walletAddress, 'account-wallet');
+    if (account?.walletAddress || account?.email) paragraph(account.walletAddress || account.email, 'account-wallet');
     const periodEnd = requestMode ? basicActive ? requests.periodEndsAt : null : account?.plan?.expiresAt;
     if (periodEnd) {
       const expiry = new Date(periodEnd);
@@ -112,7 +112,7 @@
     const actions = create('div', 'account-actions'); body.appendChild(actions);
     if (connecting) button(actions, 'account-cancel', 'Cancel sign-in', 'cancel');
     else if (!connected) {
-      const signIn = button(actions, 'account-connect', 'Sign in with wallet', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
+      const signIn = button(actions, 'account-connect', state.config?.emailLogin ? 'Sign in with wallet or email' : 'Sign in with wallet', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
       signIn.classList.add('primary');
     }
     if (connected) button(actions, 'account-use', 'Use REACH models', 'use', !active);

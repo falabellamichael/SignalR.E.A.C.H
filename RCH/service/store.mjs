@@ -5,6 +5,8 @@ import { dirname } from 'node:path';
 import { getAddress } from 'ethers';
 
 import { AccountError, fail } from './errors.mjs';
+import { normalizeEmail, EMAIL_CODE_TTL_MS, EMAIL_CODE_ATTEMPTS, EMAIL_COOLDOWN_MS, EMAIL_PER_ADDRESS_PER_HOUR,
+  EMAIL_PER_SERVICE_PER_HOUR, EMAIL_WINDOW_MS } from './email.mjs';
 import { normalizePayment, paymentFingerprint, grantIdFor, decideSubscriptionPayment, decideTopUpPayment,
   paymentResult, publicPayment, reviewPayment, normalizeReversal, reversalFingerprint, decideReversal,
   reversalResult, publicReversal, reviewReversal } from './payments/core.mjs';
@@ -77,6 +79,12 @@ export function marketQuotePayload(amount, quote, now, wallet) {
   return payload;
 }
 
+// An account is reached by a wallet, an email address, or both. Every other
+// table refers to the internal ID, so neither identity is required by billing.
+const ACCOUNT_COLUMNS = "id TEXT PRIMARY KEY,wallet TEXT UNIQUE,plan_id TEXT,plan_name TEXT,plan_expires INTEGER NOT NULL DEFAULT 0,plan_version TEXT,models TEXT NOT NULL DEFAULT '[]',included INTEGER NOT NULL DEFAULT 0,prepaid INTEGER NOT NULL DEFAULT 0,debt INTEGER NOT NULL DEFAULT 0";
+const ACCOUNT_IDENTITY = "email TEXT UNIQUE,CHECK(wallet IS NOT NULL OR email IS NOT NULL)";
+const hex64 = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+
 export class AccountStore {
   constructor(path, { now = () => Date.now(), models = [], subscription } = {}) {
     this.now = now; this.models = models; this.subscription = requestBillingPolicy(subscription);
@@ -88,7 +96,7 @@ export class AccountStore {
     try { this.db = new DatabaseSync(path); } finally { process.umask(previousMask); }
     if (path !== ':memory:') chmodSync(path, 0o600);
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;
-      CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,wallet TEXT UNIQUE NOT NULL,plan_id TEXT,plan_name TEXT,plan_expires INTEGER NOT NULL DEFAULT 0,plan_version TEXT,models TEXT NOT NULL DEFAULT '[]',included INTEGER NOT NULL DEFAULT 0,prepaid INTEGER NOT NULL DEFAULT 0,debt INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS accounts(${ACCOUNT_COLUMNS},${ACCOUNT_IDENTITY});
       CREATE TABLE IF NOT EXISTS flows(id TEXT PRIMARY KEY,state_hash TEXT NOT NULL,challenge TEXT NOT NULL,expires INTEGER NOT NULL,account_id TEXT,consumed INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY,flow_id TEXT NOT NULL,wallet TEXT NOT NULL,message TEXT NOT NULL,expires INTEGER NOT NULL,consumed INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY,account_id TEXT NOT NULL,expires INTEGER NOT NULL);
@@ -107,6 +115,9 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS payment_account ON payments(account_id,created);
       CREATE TABLE IF NOT EXISTS subscription_checkouts(account_id TEXT PRIMARY KEY REFERENCES accounts(id),id TEXT NOT NULL UNIQUE,fingerprint TEXT NOT NULL,expires INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS payment_review ON payments(status) WHERE status IN ('rejected','expired');
+      CREATE TABLE IF NOT EXISTS email_challenges(id TEXT PRIMARY KEY,flow_id TEXT NOT NULL,email TEXT NOT NULL,code_hash TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 5),expires INTEGER NOT NULL,consumed INTEGER NOT NULL DEFAULT 0,created INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS email_challenge_email ON email_challenges(email,created);
+      CREATE INDEX IF NOT EXISTS email_challenge_created ON email_challenges(created);
       CREATE TABLE IF NOT EXISTS payment_reversals(id TEXT PRIMARY KEY,provider TEXT NOT NULL CHECK(provider IN ('stripe','paypal','manual')),event_id TEXT NOT NULL,object_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('refund','dispute')),payment_id TEXT NOT NULL REFERENCES payments(id),account_id TEXT NOT NULL,amount_usd_micros INTEGER NOT NULL CHECK(amount_usd_micros>0),applied_usd_micros INTEGER NOT NULL CHECK(applied_usd_micros>=0),currency TEXT NOT NULL CHECK(currency='usd'),status TEXT NOT NULL CHECK(status IN ('applied','superseded','rejected')),reason TEXT,fingerprint TEXT NOT NULL,created INTEGER NOT NULL,UNIQUE(provider,object_id,kind),CHECK((status='applied')=(reason IS NULL)),CHECK(status='applied' OR applied_usd_micros=0));
       CREATE INDEX IF NOT EXISTS reversal_payment ON payment_reversals(payment_id);
       CREATE INDEX IF NOT EXISTS reversal_account ON payment_reversals(account_id,created);
@@ -118,9 +129,34 @@ export class AccountStore {
       const existing = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(column => column.name));
       for (const [column, definition] of Object.entries(columns)) if (!existing.has(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
+    this.allowEmailOnlyAccounts();
+  }
+  // Databases created before email sign-in require a wallet on every account.
+  // SQLite cannot relax NOT NULL in place, so the accounts table is rebuilt
+  // once, copying every row and column; other tables keep their references.
+  allowEmailOnlyAccounts() {
+    const columns = this.db.prepare('PRAGMA table_info(accounts)').all();
+    if (!columns.find(column => column.name === 'wallet')?.notnull) return;
+    const copied = columns.map(column => column.name).join(',');
+    this.db.exec('PRAGMA foreign_keys=OFF');
+    try {
+      this.transaction(() => {
+        this.db.exec(`CREATE TABLE accounts_rebuild(${ACCOUNT_COLUMNS},usd_prepaid INTEGER NOT NULL DEFAULT 0,usd_debt INTEGER NOT NULL DEFAULT 0,${ACCOUNT_IDENTITY});
+          INSERT INTO accounts_rebuild(${copied}) SELECT ${copied} FROM accounts;
+          DROP TABLE accounts;
+          ALTER TABLE accounts_rebuild RENAME TO accounts;`);
+        if (this.db.prepare('PRAGMA foreign_key_check').all().some(row => row.parent === 'accounts')) throw new Error('Account migration would break a reference.');
+      });
+    } finally { this.db.exec('PRAGMA foreign_keys=ON'); }
   }
   close() { this.db.close(); }
   findAccountByWallet(wallet) { return this.db.prepare('SELECT * FROM accounts WHERE wallet=? COLLATE NOCASE').get(getAddress(wallet)) ?? null; }
+  findAccountByEmail(email) { return this.db.prepare('SELECT * FROM accounts WHERE email=?').get(normalizeEmail(email)) ?? null; }
+  ensureEmailAccount(email) {
+    email = normalizeEmail(email);
+    this.db.prepare('INSERT OR IGNORE INTO accounts(id,email) VALUES(?,?)').run(id(), email);
+    return this.db.prepare('SELECT * FROM accounts WHERE email=?').get(email);
+  }
   unsettledReservations(accountId) {
     const columns = 'id,account_id,request_id,model,amount,status,created,reason,currency';
     const legacy = accountId
@@ -137,6 +173,8 @@ export class AccountStore {
       this.db.prepare('DELETE FROM challenges WHERE expires<=?').run(this.now());
       this.db.prepare('DELETE FROM flows WHERE expires<=?').run(this.now());
       this.db.prepare('DELETE FROM sessions WHERE expires<=?').run(this.now());
+      // Kept for an hour after creation: the per-address limits count them.
+      this.db.prepare('DELETE FROM email_challenges WHERE created<=?').run(this.now()-EMAIL_WINDOW_MS);
     });
   }
   transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try { const r = fn(); this.db.exec('COMMIT'); return r; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
@@ -152,7 +190,7 @@ export class AccountStore {
     const allowed = JSON.parse(a.models);
     const requestAllowance = this.subscription ? this.requestAllowance(accountId) : null;
     const requestHeld = this.db.prepare("SELECT COALESCE(SUM(charge_usd_micros),0) AS usd FROM request_reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId).usd;
-    return { id:a.id, walletAddress:a.wallet, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.access==='requests'
+    return { id:a.id, walletAddress:a.wallet, email:a.email ?? null, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.access==='requests'
       ? requestModel(m) && !!this.subscription && (requestAllowance.basicActive || a.usd_prepaid>0)
       : m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m)||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(requestModel(m)?{access:'requests',pricing:{unit:'request',includedRequests:this.subscription.basic.includedRequests,usdMicrosPerRequest:this.subscription.overageUsdMicrosPerRequest},capabilities:{outputTokenLimit:false}}:modelUsdPricing(m)?{pricing:{...m.pricing}}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd+requestHeld,debtMicros:a.usd_debt}, ...(requestAllowance?{requestAllowance}:{}) };
   }
@@ -216,13 +254,15 @@ export class AccountStore {
   markRequestUncertain(reservationId,reason='completion_unknown') {
     this.db.prepare("UPDATE request_reservations SET status='uncertain',reason=? WHERE id=? AND status='reserved'").run(String(reason).slice(0,200),reservationId);
   }
-  grantPlan({wallet,grantId,planId,name,models,tokens,expiresAt},nested=false) {
+  grantPlan({wallet,accountId,grantId,planId,name,models,tokens,expiresAt},nested=false) {
     if (!/^[a-zA-Z0-9_-]{8,128}$/.test(grantId||'') || !planId || typeof name!=='string' || !safeCount(tokens) || !Array.isArray(models) || !models.length || !models.every(m=>this.models.some(x=>x.id===m&&(x.metered===true||this.subscription&&requestModel(x)))) || !Number.isSafeInteger(expiresAt) || expiresAt<=this.now()) fail(400,'invalid_grant','Invalid plan grant, qualified model list, allowance, or expiry.');
-    const payload = JSON.stringify({wallet:getAddress(wallet),planId,name,models:[...models].sort(),tokens,expiresAt});
+    if(!wallet&&!/^[A-Za-z0-9_-]{8,128}$/.test(accountId||''))fail(400,'invalid_grant','Invalid grant account.');
+    // Wallet grants keep their original payload, so earlier grant IDs replay unchanged.
+    const payload = JSON.stringify(wallet?{wallet:getAddress(wallet),planId,name,models:[...models].sort(),tokens,expiresAt}:{accountId,planId,name,models:[...models].sort(),tokens,expiresAt});
     const run=()=>{
       const prev=this.db.prepare('SELECT * FROM grants WHERE id=?').get(grantId);
       if(prev) { if(prev.payload!==payload) fail(409,'grant_conflict','Grant ID was already used with different values.'); return this.account(prev.account_id); }
-      const a=this.ensureAccount(wallet);
+      const a=wallet?this.ensureAccount(wallet):this.accountById(accountId);
       this.db.prepare('UPDATE accounts SET plan_id=?,plan_name=?,plan_expires=?,plan_version=?,models=?,included=? WHERE id=?').run(planId,name,expiresAt,grantId,JSON.stringify(models),tokens,a.id);
       this.db.prepare('INSERT INTO grants VALUES(?,?,?)').run(grantId,a.id,payload);
       return this.account(a.id);
@@ -274,7 +314,7 @@ export class AccountStore {
       let grantId=null;
       if(decision.action==='grant'){
         grantId=grantIdFor(payment);
-        this.grantPlan({wallet:account.wallet,grantId,planId:this.subscription.basic.id,name:'Basic',models:this.basicPlanModels(),tokens:0,expiresAt:payment.periodEnd},true);
+        this.grantPlan({...(account.wallet?{wallet:account.wallet}:{accountId:account.id}),grantId,planId:this.subscription.basic.id,name:'Basic',models:this.basicPlanModels(),tokens:0,expiresAt:payment.periodEnd},true);
       } else if(decision.action==='credit'){
         this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,usd_debt=usd_debt-? WHERE id=?').run(decision.credit,decision.debtPaid,account.id);
       }
@@ -342,6 +382,46 @@ export class AccountStore {
       this.db.prepare('INSERT INTO challenges VALUES(?,?,?,?,?,0)').run(challengeId,flowId,wallet,message,expires);
       return {challengeId,message,address:wallet,expiresAt:new Date(expires).toISOString()};
     });
+  }
+  // Rate limits are counted from stored challenges, inside the same transaction
+  // that adds one, so concurrent requests cannot both slip under a limit.
+  createEmailChallenge(flowId,email,challengeId,codeHash) {
+    email=normalizeEmail(email);
+    if(!hex64(challengeId)||!hex64(codeHash))fail(400,'invalid_challenge','Invalid challenge.');
+    return this.transaction(()=>{
+      const f=this.getFlow(flowId); if(f.account_id) fail(409,'flow_verified','Sign-in has already been verified.');
+      const now=this.now(),since=now-EMAIL_WINDOW_MS;
+      const recent=this.db.prepare('SELECT COUNT(*) AS n,MAX(created) AS last FROM email_challenges WHERE email=? AND created>?').get(email,since);
+      if(recent.last!==null&&now-recent.last<EMAIL_COOLDOWN_MS)fail(429,'email_cooldown','Wait a minute before requesting another code.');
+      if(recent.n>=EMAIL_PER_ADDRESS_PER_HOUR)fail(429,'email_rate_limit','Too many codes were requested for this address. Try again in an hour.');
+      if(this.db.prepare('SELECT COUNT(*) AS n FROM email_challenges WHERE created>?').get(since).n>=EMAIL_PER_SERVICE_PER_HOUR)fail(429,'email_busy','Email sign-in is busy. Try again later.');
+      const expires=Math.min(f.expires,now+EMAIL_CODE_TTL_MS);
+      this.db.prepare('UPDATE email_challenges SET consumed=1 WHERE flow_id=?').run(flowId);
+      this.db.prepare('INSERT INTO email_challenges(id,flow_id,email,code_hash,expires,created) VALUES(?,?,?,?,?,?)').run(challengeId,flowId,email,codeHash,expires,now);
+      return {challengeId,expiresAt:new Date(expires).toISOString()};
+    });
+  }
+  // A wrong code is counted and committed before the error is raised, so the
+  // attempt limit holds; the fifth wrong code retires the challenge.
+  verifyEmailChallenge(flowId,challengeId,codeHash) {
+    if(!hex64(challengeId)||!hex64(codeHash))fail(400,'invalid_challenge','Invalid challenge.');
+    const outcome=this.transaction(()=>{
+      const f=this.getFlow(flowId); if(f.account_id) fail(409,'flow_verified','Sign-in has already been verified.');
+      const c=this.db.prepare('SELECT * FROM email_challenges WHERE id=? AND flow_id=?').get(challengeId,flowId);
+      if(!c||c.consumed||c.expires<=this.now())return{expired:true};
+      if(!equal(c.code_hash,codeHash)){
+        const attempts=c.attempts+1;
+        this.db.prepare('UPDATE email_challenges SET attempts=?,consumed=? WHERE id=?').run(attempts,attempts>=EMAIL_CODE_ATTEMPTS?1:0,c.id);
+        return{remaining:EMAIL_CODE_ATTEMPTS-attempts};
+      }
+      const a=this.ensureEmailAccount(c.email);
+      this.db.prepare('UPDATE email_challenges SET consumed=1 WHERE id=?').run(c.id);
+      this.db.prepare('UPDATE flows SET account_id=? WHERE id=?').run(a.id,flowId);
+      return{accountId:a.id};
+    });
+    if(outcome.expired)fail(410,'code_expired','This code is no longer valid. Request a new one.');
+    if(!outcome.accountId)fail(401,outcome.remaining>0?'code_invalid':'code_retired',outcome.remaining>0?'That code is not right. Check the email and try again.':'Too many wrong codes. Request a new one.');
+    return outcome.accountId;
   }
   getChallenge(flowId,challengeId) {
     this.getFlow(flowId);if(typeof challengeId!=='string'||!/^[a-f0-9]{64}$/.test(challengeId))fail(400,'invalid_challenge','Invalid challenge.');const c=this.db.prepare('SELECT * FROM challenges WHERE id=? AND flow_id=?').get(challengeId,flowId);

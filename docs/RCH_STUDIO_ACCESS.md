@@ -22,7 +22,7 @@ Account persistence supports local SQLite and a server-only Supabase backend. US
 ## Customer flow in Studio
 
 1. Open the **account bubble at the top right → Account**, save the service origin, and choose **Connect wallet**. Account, **Usage & RCH**, and **Settings** remain inside this dropdown; closing it preserves unsaved form values.
-2. The system browser opens the service's wallet page. A browser wallet selects the account and Ethereum chain. Review and sign the login message.
+2. The system browser opens the service's wallet page. A browser wallet selects the account and Ethereum chain. Review and sign the login message. Without a wallet, choose **Email me a code** on the same page and enter the 6-digit code from the email instead (see [RCH/email-sign-in.md](../RCH/email-sign-in.md)).
 3. Studio receives an expiring session through a proof-key-protected exchange. It displays the wallet, plan, permitted models, legacy token allowances, and separate available/reserved USD credit.
 4. Choose **Use REACH models**. The managed `REACH subscription` connection uses the same main-process connection routing as Home chat, normal chat, agents, teams, Playground, and refactor. Personal endpoints remain separately managed connections.
 5. Open **Usage & RCH** and enter the RCH amount. Once treasury mode is configured and activated for this wallet, the system browser shows the exact RCH amount, receiving treasury, USD AI credit, quotation source, and expiry. MetaMask first approves the exact RCH allowance when needed, then reviews the redemption transaction. Each transaction costs Ethereum gas. The first finalized redemption starts model access.
