@@ -90,13 +90,14 @@ test('checkout parameters carry the account on the session and on every renewal'
 });
 
 // ---- the running service, with Stripe's API replaced by a recorder ----------
-function service(t, { payments = true, stripeReply } = {}) {
+function service(t, { payments = true, stripeReply, stripeRoute } = {}) {
   let time = NOW;
   const store = new AccountStore(':memory:', { models: example.models, subscription: example.subscription, now: () => time });
   const calls = [];
   const paymentFetch = async (url, init) => {
     calls.push({ url, init, form: new URLSearchParams(init.body) });
-    const reply = stripeReply ?? { status: 200, body: { id: 'cs_test_new', url: 'https://checkout.stripe.com/c/pay/cs_test_new', expires_at: NOW / 1000 + 3600 } };
+    const routed = stripeRoute?.(new URL(url), init);
+    const reply = routed ?? stripeReply ?? { status: 200, body: { id: 'cs_test_new', url: 'https://checkout.stripe.com/c/pay/cs_test_new', expires_at: NOW / 1000 + 3600 } };
     return new Response(JSON.stringify(reply.body), { status: reply.status, headers: { 'content-type': 'application/json' } });
   };
   const config = { origin: 'http://127.0.0.1:20978', chainId: 1, models: example.models, subscription: example.subscription,
@@ -107,13 +108,13 @@ function service(t, { payments = true, stripeReply } = {}) {
   t.after(() => store.close());
   const ready = new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const base = async () => { await ready; return `http://127.0.0.1:${server.address().port}`; };
-  const signIn = () => {
-    const wallet = Wallet.createRandom(), verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
+  const signIn = (wallet = Wallet.createRandom()) => {
+    const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
     const f = store.startFlow(state, createHash('sha256').update(verifier).digest('base64url'));
     const c = store.challenge(f.flowId, wallet.address, (...a) => signInMessage(config.origin, 1, ...a));
     store.authorize(f.flowId, c.challengeId);
     const s = store.exchange(f.flowId, state, verifier);
-    return { token: s.accessToken, accountId: s.account.id };
+    return { token: s.accessToken, accountId: s.account.id, wallet };
   };
   const call = async (method, path, { token, body, raw, headers = {} } = {}) => {
     const r = await fetch(await base() + path, { method, headers: { ...(body || raw ? { 'Content-Type': 'application/json' } : {}),
@@ -219,4 +220,43 @@ test('Stripe configuration keeps keys in the environment and matches key to mode
   ]) assert.throws(() => validateConfig(config, process.cwd(), environment), message);
   const live = { ...stripe({ mode: 'live' }), origin: 'https://reach.example' };
   assert.equal(validateConfig(live, process.cwd(), liveKey).payments.stripe.mode, 'live');
+});
+
+// Repeated requests keep their key and complete form unchanged as time advances,
+// across concurrent callers and even an ambiguous provider timeout.
+test('subscription checkout retries share a durable idempotency key and fixed parameters', async t => {
+  const s=service(t), {token}=s.signIn();
+  await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}});
+  s.advance(10_000);
+  await Promise.all(Array.from({length:4},()=>s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})));
+  const keys=s.calls.map(c=>c.init.headers['Idempotency-Key']);
+  assert.match(keys[0],/^reach-subscription-[a-f0-9]{64}$/);
+  assert.equal(new Set(keys).size,1);
+  assert.equal(new Set(s.calls.map(c=>c.init.body)).size,1);
+});
+
+test('a provider response lost after creating a session is retried with the same intent', async t => {
+  const sessions=new Map();let first=true;
+  const s=service(t,{stripeRoute:(url,init)=>{
+    const key=init.headers['Idempotency-Key'];
+    if(!sessions.has(key))sessions.set(key,{status:200,body:{id:'cs_test_retry',url:'https://checkout.stripe.com/c/pay/cs_test_retry',expires_at:NOW/1000+3600}});
+    if(first){first=false;throw new Error('connection lost after creation');}
+    return sessions.get(key);
+  }}),{token}=s.signIn();
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,502);
+  s.advance(2000);
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
+  assert.equal(sessions.size,1);assert.equal(s.calls[0].init.body,s.calls[1].init.body);
+});
+test('expiry cannot open a second subscription when its payment webhook is delayed', async t => {
+  let status='complete',subscriptionStatus='active';
+  const s=service(t,{stripeRoute:(url,init)=>init.method==='GET'?{status:200,body:{id:'cs_test_new',mode:'subscription',status,subscription:{status:subscriptionStatus}}}:null});
+  let {token,wallet}=s.signIn();
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
+  const key=s.calls[0].init.headers['Idempotency-Key'];s.advance(3600_000);token=s.signIn(wallet).token;
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).body.error.code,'checkout_pending');
+  assert.ok(s.calls.filter(c=>c.init.method==='POST').every(c=>c.init.headers['Idempotency-Key']===key));
+  status='expired';
+  assert.equal((await s.call('POST','/v1/billing/checkout',{token,body:{kind:'subscription'}})).status,200);
+  assert.notEqual(s.calls.at(-1).init.headers['Idempotency-Key'],key);
 });

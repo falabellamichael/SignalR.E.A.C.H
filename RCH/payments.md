@@ -65,6 +65,12 @@ balance cannot discard the identifiers that prevent double credit. Keep a full
 database backup until payment-ledger snapshot migration is supported. Databases
 with an empty payment ledger can still use the legacy export.
 
+Subscription checkout retries share a durable intent and Stripe idempotency key,
+including after a service restart. Apply the additional generated
+`20261002072512_rch_subscription_checkout.sql` migration before deploying this
+version to Supabase. The legacy SQLite export also refuses pending checkout
+records, preserving their protection against a second subscription charge.
+
 ## Stripe
 
 Customers pay on Stripe's hosted Checkout page; REACH never sees a card.

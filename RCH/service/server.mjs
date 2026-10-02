@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { isIP } from 'node:net';
 import { readFileSync } from 'node:fs';
 import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, FetchRequest } from 'ethers';
-import { fail } from './store.mjs';
+import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { createRedemptionService } from './redemption.mjs';
@@ -144,7 +144,16 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         } else if(body.kind==='top_up') {
           if(!validTopUpAmount(body.amountUsdMicros))fail(400,'invalid_amount','Choose a whole-cent top-up between $1 and $500.');
         } else fail(400,'invalid_checkout','Choose a subscription or a top-up.');
-        json(res,200,await stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:now()})));return;
+        const fingerprint=digest(JSON.stringify([config.origin,stripe.basicPriceId]));
+        let checkout=body.kind==='subscription'?await store.reserveSubscriptionCheckout(account.id,fingerprint):null;
+        const create=()=>stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:checkout?checkout.expiresAt-3600000:now()}),checkout?{idempotencyKey:`reach-subscription-${checkout.id}`}:{ });
+        let page=await create();
+        if(checkout&&checkout.expiresAt<=now()) {
+          if(!await stripeClient.canReplaceCheckoutSession(page.sessionId,now()))fail(409,'checkout_pending','The earlier subscription checkout is still awaiting confirmation. Refresh your account or contact support.');
+          checkout=await store.reserveSubscriptionCheckout(account.id,fingerprint,checkout.id);
+          page=await create();
+        }
+        json(res,200,{url:page.url,expiresAt:page.expiresAt});return;
       }
       if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}

@@ -12,7 +12,7 @@ export function readAccountSnapshot(path) {
     db.exec('BEGIN');
     // This legacy format has no request or payment ledger. Refuse an incomplete
     // export rather than losing quotas, holds, or payment replay protection.
-    for (const table of ['request_periods', 'request_reservations', 'payments']) {
+    for (const table of ['request_periods', 'request_reservations', 'payments', 'subscription_checkouts']) {
       const exists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(table);
       if (exists && db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()) {
         const ledger = table === 'payments' ? 'payment' : 'request';

@@ -118,12 +118,28 @@ export function validTopUpAmount(value) {
 
 export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 15000 }) {
   return {
-    async createCheckoutSession(params) {
+    async canReplaceCheckoutSession(sessionId, nowMs = Date.now()) {
+      if(!/^cs_[A-Za-z0-9_]{3,256}$/.test(sessionId||''))fail(502,'payment_provider_error','The payment provider returned an invalid checkout.');
+      let response,data;
+      try {
+        response=await fetchImpl(`${STRIPE_API}/v1/checkout/sessions/${sessionId}?expand[]=subscription`,{method:'GET',redirect:'error',signal:AbortSignal.timeout(timeoutMs),headers:{Authorization:`Bearer ${secretKey}`}});
+        data=await response.json();
+      } catch {fail(502,'payment_provider_unavailable','The payment provider could not be reached. Try again shortly.');}
+      if(!response.ok||data.id!==sessionId||data.mode!=='subscription')fail(502,'payment_provider_error','The earlier checkout could not be verified.');
+      // A delayed webhook must never make an already paying subscription look
+      // unfunded. Only a genuinely expired session or cancelled subscription
+      // permits a new intent. Unknown statuses remain blocked for reconciliation.
+      const periods=data.subscription?.items?.data?.map(item=>item.current_period_end);
+      const periodEnd=data.subscription?.current_period_end??(periods?.length&&periods.every(Number.isSafeInteger)?Math.max(...periods):null);
+      return data.status==='expired'||data.status==='complete'&&data.subscription?.status==='canceled'&&Number.isSafeInteger(periodEnd)&&periodEnd*1000<=nowMs;
+    },
+    async createCheckoutSession(params, { idempotencyKey } = {}) {
       let response, data;
       try {
         response = await fetchImpl(`${STRIPE_API}/v1/checkout/sessions`, {
           method: 'POST', redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
-          headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+          headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/x-www-form-urlencoded',
+            ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) },
           body: formEncode(params).toString(),
         });
         data = await response.json();
@@ -135,7 +151,7 @@ export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 1
       if (!url || url.origin !== CHECKOUT_ORIGIN || url.username || url.password) {
         fail(502, 'payment_provider_error', 'The payment provider returned an unexpected checkout address.');
       }
-      return { url: url.href, expiresAt: Number.isSafeInteger(data.expires_at) ? new Date(data.expires_at * 1000).toISOString() : null };
+      return { sessionId: data.id, url: url.href, expiresAt: Number.isSafeInteger(data.expires_at) ? new Date(data.expires_at * 1000).toISOString() : null };
     },
   };
 }
