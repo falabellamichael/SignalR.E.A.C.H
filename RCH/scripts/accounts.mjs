@@ -5,10 +5,12 @@ import { loadConfig } from '../service/config.mjs';
 import { createAccountStore } from '../service/account-store.mjs';
 import { readAccountSnapshot, accountTables } from '../service/account-import.mjs';
 import { createAccountService } from '../service/server.mjs';
+import { checkBilling, formatReport } from '../service/payments/preflight.mjs';
 
 const [command, ...args]=process.argv.slice(2);
 const help=`REACH account service
   npm run accounts -- serve --config /private/path/accounts.json
+  npm run accounts -- check-billing --config /private/path/accounts.json
   npm run accounts -- grant --config /private/path/accounts.json --file /private/path/grant.json
   npm run accounts -- payment --config /private/path/accounts.json --file /private/path/payment.json
   npm run accounts -- payments --config /private/path/accounts.json [--wallet 0x... | --email you@example.com]
@@ -19,6 +21,8 @@ const help=`REACH account service
   npm run accounts -- settle --config /private/path/accounts.json --file /private/path/measured-usage.json
   npm run accounts -- import-sqlite --config /private/path/supabase-accounts.json --source-sqlite /private/path/accounts.sqlite
 
+check-billing reads (never changes) the Stripe, PayPal and Resend settings this config uses and reports anything that
+would stop payments or sign-in emails from working. It exits non-zero while a problem or unverified CHECK remains.
 Grant JSON: {wallet or accountId,grantId,planId,name,models:[qualified model IDs],tokens,expiresAt:ISO timestamp}.
 Payment JSON: {wallet or email,objectId,kind:"subscription_period"|"top_up",amountUsdMicros,periodEnd:ISO timestamp (subscription only)}.
 Records a payment you have already confirmed by hand, with the same rules as an automatic one: it is recorded once per
@@ -37,7 +41,11 @@ try {
   for(let i=0;i<args.length;i+=2) {if(!['--config','--file','--wallet','--email','--source-sqlite'].includes(args[i])||!args[i+1]||options[args[i]])throw new Error(help);options[args[i]]=args[i+1];}
   if(!options['--config'])throw new Error('Supply --config.');
   const config=loadConfig(resolve(options['--config']));
-  if(command==='serve') {
+  if(command==='check-billing') {
+    const report=await checkBilling(config);
+    console.log(formatReport(report));
+    if(!report.ready)process.exitCode=1;
+  } else if(command==='serve') {
     const {server}=createAccountService({config});
     server.on('error',()=>{console.error('Account service could not listen. Check its address and port.');process.exitCode=1;});
     server.listen(config.port,config.listenHost,()=>console.log(`REACH account service: ${config.origin} (loopback port ${config.port})`));

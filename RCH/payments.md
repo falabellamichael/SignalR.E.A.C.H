@@ -4,6 +4,8 @@ Every payment, whether it comes from Stripe, PayPal, or an operator recording on
 by hand, is reduced to one normalized record and applied by the same rules in
 SQLite and Postgres. Card payments go through [Stripe](#stripe) and PayPal
 payments through [PayPal](#paypal); both use the same ledger and rules.
+Before taking real money, follow [go-live.md](go-live.md) and run
+`npm run accounts -- check-billing --config ...`.
 
 ## The record
 

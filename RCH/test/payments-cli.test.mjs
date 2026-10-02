@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getAddress } from 'ethers';
 import { AccountStore } from '../service/store.mjs';
 
@@ -98,12 +98,50 @@ test('an email account is named with --email, and only once it exists', t => {
   assert.match(w.run('payment', ...w.file('p.json', { ...entry, wallet })).err, /wallet or email/);
 });
 
+test('check-billing reports an unconfigured service as not ready and exits non-zero', t => {
+  const w = workspace(); t.after(w.cleanup);
+  const result = w.run('check-billing');
+  assert.equal(result.code, 1);
+  assert.match(result.out, /PROBLEM Providers: No payment provider is configured/);
+  assert.match(result.out, /Not ready/);
+  assert.equal(existsSync(join(w.dir, 'accounts.sqlite')), false, 'read-only checks do not open or create the ledger');
+});
+
 test('the help text documents both commands', t => {
   const w = workspace(); t.after(w.cleanup);
   const help = spawnSync(process.execPath, [script, 'help'], { encoding: 'utf8' }).stdout;
   assert.match(help, /accounts -- payment --config/);
   assert.match(help, /accounts -- payments --config/);
   assert.match(help, /accounts -- reversals --config/);
+  assert.match(help, /accounts -- check-billing --config/);
   assert.deepEqual(w.run('reversals').json(), []);
   assert.match(help, /excludes tax and processor fees/);
+});
+
+
+test('the real billing CLI exits non-zero for CHECK and provider errors without opening the database', t => {
+  const w = workspace(); t.after(w.cleanup);
+  const path = join(w.dir, 'accounts.json');
+  const config = JSON.parse(readFileSync(path, 'utf8'));
+  config.payments = { stripe: { mode: 'test', basicPriceId: 'price_basic000001',
+    secretKeyEnv: 'REACH_TEST_STRIPE_KEY', webhookSecretEnv: 'REACH_TEST_WEBHOOK_KEY' } };
+  writeFileSync(path, JSON.stringify(config));
+  for (const status of [403, 500, 200]) {
+    const mock = join(w.dir, `mock-fetch-${status}.mjs`);
+    writeFileSync(mock, `globalThis.fetch = async (url, init) => {
+      if (init.method !== 'GET') throw new Error('The check must only read Stripe');
+      const path = new URL(url).pathname;
+      const body = path.startsWith('/v1/prices/') ? { id: 'price_basic000001', active: true, livemode: false,
+        currency: 'usd', unit_amount: 1500, billing_scheme: 'per_unit', recurring: { interval: 'month', interval_count: 1, usage_type: 'licensed' } }
+        : path === '/v1/webhook_endpoints' ? { data: [{ url: '${config.origin}/v1/billing/stripe/webhook', status: 'enabled', enabled_events: ['*'] }] }
+          : { data: [{ active: true, is_default: true, livemode: false, features: { subscription_cancel: { enabled: true } } }] };
+      return new Response(JSON.stringify(body), { status: path === '/v1/webhook_endpoints' ? ${status} : 200 });
+    };`);
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(mock).href, script, 'check-billing', '--config', path],
+      { encoding: 'utf8', env: { ...process.env, REACH_TEST_UPSTREAM_KEY: 'host-only-test-credential-0000',
+        REACH_TEST_STRIPE_KEY: 'sk_test_' + 's'.repeat(40), REACH_TEST_WEBHOOK_KEY: 'whsec_' + 'w'.repeat(32) } });
+    assert.equal(result.status, status === 200 ? 0 : 1, result.stderr);
+    assert.match(result.stdout, status === 200 ? /Ready: provider configuration verified/ : status === 403 ? /Not verified:.*CHECK/ : /PROBLEM Webhook/);
+    assert.equal(existsSync(join(w.dir, 'accounts.sqlite')), false);
+  }
 });
