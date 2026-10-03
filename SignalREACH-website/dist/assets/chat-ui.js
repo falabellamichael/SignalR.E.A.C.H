@@ -18,6 +18,7 @@
     let activeFinish = null, turn = 0, selectedGroup = 'All', topicOpen = false;
     const on = (node, event, handler) => node?.addEventListener(event, handler, {signal});
     const horizontalWheel = event => {
+      if (event.ctrlKey || event.metaKey) return;
       const target = event.target instanceof Element ? event.target : null;
       const rail = target?.closest('.chat-suggestions, .chat-reply-actions, .chat-topic-groups');
       if (!rail || rail.scrollWidth <= rail.clientWidth + 1) return;
@@ -26,8 +27,8 @@
       const max = rail.scrollWidth - rail.clientWidth;
       const atStart = rail.scrollLeft <= 0;
       const atEnd = rail.scrollLeft >= max - 1;
-      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return;
       event.preventDefault();
+      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return;
       rail.scrollLeft = Math.max(0, Math.min(max, rail.scrollLeft + delta));
     };
     panel.addEventListener('wheel', horizontalWheel, {signal, passive:false});

@@ -18,6 +18,7 @@
     let activeFinish = null, turn = 0, selectedGroup = 'All', topicOpen = false;
     const on = (node, event, handler) => node?.addEventListener(event, handler, {signal});
     const horizontalWheel = event => {
+      if (event.ctrlKey || event.metaKey) return;
       const target = event.target instanceof Element ? event.target : null;
       const rail = target?.closest('.chat-suggestions, .chat-reply-actions, .chat-topic-groups');
       if (!rail || rail.scrollWidth <= rail.clientWidth + 1) return;
