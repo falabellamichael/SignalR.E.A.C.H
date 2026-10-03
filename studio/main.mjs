@@ -425,6 +425,7 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
   // An intentionally keyless selected endpoint must not inherit another
   // connection's credential when Auto routes away from the active default.
   const accessKey = selectedConnection ? selectedConnection.accessKey || '' : settings.accessKey || '';
+  await capabilityStore.discover(selectedConnection?.id || '', endpoint, accessKey);
 
   const budgets = resolveBudgets(settings, agent.settings);
   const loop = new AgentLoop({
@@ -1134,6 +1135,7 @@ function registerIpc() {
           });
           if (!response.ok) return;
           const data = await response.json();
+          capabilityStore.recordCatalog(mc.connectionId || '', memberEndpoint, data);
           const ids = new Set((Array.isArray(data?.data) ? data.data : []).map(model => model?.id).filter(id => typeof id === 'string' && id));
           if (ids.size) catalogs.set(memberEndpoint, ids);
         } catch { /* No usable catalog: let the normal chat request decide. */ }
@@ -1535,6 +1537,7 @@ function registerIpc() {
       const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
       if (!res.ok) return { ok: false, err: `HTTP ${res.status}` };
       const data = await res.json();
+      capabilityStore.recordCatalog(connectionId, base, data);
       const ids = (data.data || []).map(m => m.id).filter(Boolean).sort();
       // Tell the caller which connection these models came from, so the UI can
       // say so instead of implying they came from the active one.

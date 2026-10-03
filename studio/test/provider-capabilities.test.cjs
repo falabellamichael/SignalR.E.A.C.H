@@ -5,7 +5,58 @@ const assert = require('node:assert/strict');
 const { AgentLoop } = require('../agent/agent-loop.cjs');
 const { resolveBudgets } = require('../agent/budgets.cjs');
 const connections = require('../agent/connections.cjs');
-const { createCapabilityStore } = require('../agent/provider-capabilities.cjs');
+const { createCapabilityStore, normalizeCapabilities } = require('../agent/provider-capabilities.cjs');
+
+test('output-token capabilities preserve explicit booleans without interpreting other values', () => {
+  const facts = normalizeCapabilities([
+    { endpoint: 'http://subscription.invalid/v1', model: 'm', outputTokenLimit: false },
+    { endpoint: 'http://native.invalid/v1', model: 'm', outputTokenLimit: true },
+    { endpoint: 'http://unknown.invalid/v1', model: 'm', outputTokenLimit: 'false' },
+  ]);
+  assert.equal(facts[0].outputTokenLimit, false);
+  assert.equal(facts[1].outputTokenLimit, true);
+  assert.equal(Object.hasOwn(facts[2], 'outputTokenLimit'), false);
+});
+
+test('model discovery persists subscription output capability through normalized settings', async () => {
+  const endpoint = 'http://subscription.invalid/v1';
+  let settings = connections.normalizeSettings({ connections: [
+    { id: 'subscription', name: 'Subscription', endpoint, model: 'deepseek-v4.1-flash' },
+  ], activeConnection: 'subscription' }).settings;
+  const capabilityStore = createCapabilityStore({ load: () => settings, save: value => { settings = connections.normalizeSettings(value).settings; } });
+  await capabilityStore.discover('subscription', endpoint, '', async url => {
+    assert.equal(url, endpoint + '/models');
+    return { ok: true, json: async () => ({ data: [
+      { id: 'deepseek-v4.1-flash', max_input_bytes: 32000, input_limit_scope: 'messages', capabilities: { outputTokenLimit: false } },
+      { id: 'unknown-model', access: 'requests' },
+    ] }) };
+  });
+  const reloaded = createCapabilityStore({ load: () => settings, save: () => {} });
+  assert.deepEqual(reloaded.get('subscription', endpoint, 'deepseek-v4.1-flash'), {
+    endpoint, model: 'deepseek-v4.1-flash', outputTokenLimit: false,
+    maxInputBytes: 32000, inputLimitScope: 'messages',
+  });
+  assert.equal(reloaded.get('subscription', endpoint, 'unknown-model'), null, 'access mode alone is not an output capability');
+  assert.equal(reloaded.get('subscription', 'http://other.invalid/v1', 'deepseek-v4.1-flash'), null, 'facts belong to the resolved endpoint');
+});
+
+test('catalog refresh replaces and clears output capability while preserving response observations', () => {
+  const endpoint = 'http://refresh.invalid/v1';
+  let settings = connections.normalizeSettings({ connections: [
+    { id: 'refresh', name: 'Refresh', endpoint, model: 'm' },
+  ], activeConnection: 'refresh' }).settings;
+  const capabilityStore = createCapabilityStore({ load: () => settings, save: value => { settings = connections.normalizeSettings(value).settings; } });
+  capabilityStore.record('refresh', endpoint, 'm', { streaming: true, maxTokensCeiling: 2048 });
+  capabilityStore.recordCatalog('refresh', endpoint, { data: [{ id: 'm', capabilities: { outputTokenLimit: false } }] });
+  assert.equal(capabilityStore.get('refresh', endpoint, 'm').outputTokenLimit, false);
+  capabilityStore.recordCatalog('refresh', endpoint, { data: [{ id: 'm', capabilities: { outputTokenLimit: true } }] });
+  assert.equal(capabilityStore.get('refresh', endpoint, 'm').outputTokenLimit, true);
+  capabilityStore.recordCatalog('refresh', endpoint, { data: [{ id: 'm' }] });
+  assert.deepEqual(capabilityStore.get('refresh', endpoint, 'm'), { endpoint, model: 'm', streaming: true, maxTokensCeiling: 2048 });
+  capabilityStore.recordCatalog('refresh', endpoint, { data: [{ id: 'm', capabilities: { outputTokenLimit: false } }] });
+  capabilityStore.recordCatalog('refresh', endpoint, { data: [{ id: 'm', capabilities: { outputTokenLimit: 'false' } }] });
+  assert.equal(Object.hasOwn(capabilityStore.get('refresh', endpoint, 'm'), 'outputTokenLimit'), false);
+});
 
 test('a second loop on one connection skips a reasoning parameter already rejected by its provider', async t => {
   const endpoint = 'http://provider.invalid/v1';

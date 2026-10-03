@@ -11,6 +11,7 @@
 
 const { compactMessages, normalizeChatMessages, contextChars } = require('./context.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
+const { measureRequest, inputLimitFromError, budgetExceeded, budgetRatio, fitError } = require('./request-budget.cjs');
 const { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
 // E1: Retry-After parsing, backoff and the retry-vs-give-up decision live in a leaf
 // module so the timing policy is testable without a fake clock.
@@ -162,6 +163,9 @@ class AgentLoop {
       diagnosticLog(this.logger, { event: type, agentId: this.agentId, at: event.at,
         round: payload.round, purpose: payload.purpose, tool: payload.tool,
         ok: payload.ok, before: payload.before, after: payload.after,
+        ...(type === 'request-start' ? { model: this.model, messagesBytes: payload.messagesBytes,
+          requestFieldsBytes: payload.requestFieldsBytes, requestBytes: payload.requestBytes,
+          estimatedInputTokens: payload.inputTokens, outputTokens: payload.outputTokens } : {}),
         ...(type === 'jev-policy' ? { stage: payload.stage, reason: payload.reason, severity: payload.severity, usage: payload.usage } : {}) });
     }
     // E9: the reducer is engine-owned (agent/activity.cjs). The renderer keeps a
@@ -231,7 +235,66 @@ class AgentLoop {
         after: this._agent().context.after, at: this._agent().context.at } : null };
   }
 
-  _budgets() { return this.budgets || resolveBudgets({}, this._agent()?.settings); }
+  _budgets() {
+    const budgets = this.budgets || resolveBudgets({}, this._agent()?.settings);
+    // Subscription browser routes advertise that output token hints cannot be
+    // enforced. Keep their prompts, stream guards and requests consistent.
+    return this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.outputTokenLimit === false
+      ? { ...budgets, maxTokens: 0, summaryTokens: 0 } : budgets;
+  }
+
+  _inputRouteKey() { return fingerprint([this.endpoint, this.model, this.connectionId, this.accessKey]); }
+
+  _inputLimits() {
+    const known = this.capabilityStore?.get(this.connectionId, this.endpoint, this.model) || {};
+    const saved = this._agent()?.contextBudget;
+    const learned = saved?.routeKey === this._inputRouteKey() ? saved : {};
+    const limits = {};
+    for (const key of ['maxInputBytes', 'maxInputTokens', 'contextTokens']) {
+      const values = [known[key], learned[key]].filter(n => Number.isSafeInteger(n) && n > 0);
+      if (values.length) limits[key] = Math.min(...values);
+    }
+    limits.inputLimitScope = learned.maxInputBytes && (!known.maxInputBytes || learned.maxInputBytes <= known.maxInputBytes)
+      ? learned.inputLimitScope : known.inputLimitScope;
+    // Different scopes are different constraints: a smaller messages cap does
+    // not replace a larger request_fields cap that also includes tool schemas.
+    const byteLimits = [...(learned.byteLimits || [{ limit: learned.maxInputBytes, scope: learned.inputLimitScope }]),
+      { limit: known.maxInputBytes, scope: known.inputLimitScope }];
+    limits.inputByteLimits = byteLimits.filter(entry => Number.isSafeInteger(entry.limit) && entry.limit > 0
+      && ['messages', 'request_fields', 'request'].includes(entry.scope));
+    return limits;
+  }
+
+  _learnInputLimit(error, body) {
+    const limits = this._inputLimits();
+    const observed = error.inputLimits || {};
+    const previous = this._agent()?.contextBudget;
+    const learned = previous?.routeKey === this._inputRouteKey() ? previous : {};
+    if (!Object.keys(observed).length) {
+      // Unknown provider context errors get a conservative local ceiling, not
+      // an invented provider token window. Further rejections refine it.
+      observed.maxInputBytes = Math.max(1, Math.floor(measureRequest(body).messagesBytes * 0.65));
+      observed.inputLimitScope = 'messages';
+    }
+    for (const key of ['maxInputTokens', 'contextTokens']) {
+      if (limits[key] && observed[key]) observed[key] = Math.min(limits[key], observed[key]);
+    }
+    const byteLimits = [...(learned.byteLimits || (learned.maxInputBytes ? [{ limit: learned.maxInputBytes, scope: learned.inputLimitScope }] : []))];
+    if (observed.maxInputBytes) {
+      const previousScope = byteLimits.find(entry => entry.scope === observed.inputLimitScope);
+      if (previousScope) previousScope.limit = Math.min(previousScope.limit, observed.maxInputBytes);
+      else byteLimits.push({ limit: observed.maxInputBytes, scope: observed.inputLimitScope });
+    }
+    this._agent().contextBudget = { ...limits, ...observed, byteLimits, endpoint: this.endpoint, model: this.model, routeKey: this._inputRouteKey() };
+  }
+
+  async _prepareRequestContext(messages) {
+    const limits = this._inputLimits();
+    if (!budgetExceeded(this._requestBody(messages), limits)) return messages;
+    const result = await this._maybeCompact(messages, { force: true, inputLimits: limits });
+    if (budgetExceeded(this._requestBody(result), limits)) throw fitError();
+    return result;
+  }
 
   /* The endpoint is resolved after construction in some Studio paths, so look
    * up and configure the shared provider gate for each outbound request. */
@@ -265,10 +328,8 @@ class AgentLoop {
     return error.ngrokTunnelUnavailable && configured > 0 ? Math.max(configured, 6) : configured;
   }
 
-  async _fetchChat(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
-    const url = this.endpoint.replace(/\/+$/, '') + '/chat/completions';
-    const headers = { 'Content-Type': 'application/json' };
-    if (this.accessKey) headers.Authorization = 'Bearer ' + this.accessKey;
+  _requestBody(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
+    if (this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.outputTokenLimit === false) maxTokens = 0;
     const settings = this._settings();
     const body = {
       model: this.model,
@@ -286,6 +347,16 @@ class AgentLoop {
     if (settings.temperature !== null && settings.temperature !== undefined) {
       body.temperature = settings.temperature;
     }
+    return body;
+  }
+
+  async _fetchChat(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
+    const url = this.endpoint.replace(/\/+$/, '') + '/chat/completions';
+    const headers = { 'Content-Type': 'application/json' };
+    if (this.accessKey) headers.Authorization = 'Bearer ' + this.accessKey;
+    const body = this._requestBody(messages, { stream, maxTokens, purpose, concise });
+    const exceeded = budgetExceeded(body, this._inputLimits());
+    if (exceeded) throw fitError(`The request uses ${exceeded.used} ${exceeded.unit}; the endpoint allows ${exceeded.limit}.`);
     this.abortController.signal.throwIfAborted();
     // The deadline covers connection, headers AND the streamed body. A model
     // that never finishes must not keep a team member working indefinitely.
@@ -298,7 +369,7 @@ class AgentLoop {
     if (purpose === 'answer' && this.answerController) signals.push(this.answerController.signal);
     if (this.requestTimeoutMs > 0) signals.push(AbortSignal.timeout(this.requestTimeoutMs));
     this.requestSignal = AbortSignal.any(signals);
-    this._emit('request-start', { purpose });
+    this._emit('request-start', { purpose, ...measureRequest(body) });
     const response = await fetch(url, {
       method: 'POST',
       headers,
@@ -376,7 +447,9 @@ class AgentLoop {
       // with Retry-After was handled by the shared provider gate above.
       error.retryable = isRetryableStatus(response.status)
         && !(response.status === 503 && error.retryAfter === null && !ngrokTunnelUnavailable);
-      error.contextOverflow = [400, 413, 422].includes(response.status) && /context[_ ](length[_ ]exceeded|window|limit)|maximum context|too many (input )?tokens|input.*(too long|token limit)/i.test(text);
+      error.inputLimits = inputLimitFromError(text, response.status);
+      error.contextOverflow = !!error.inputLimits;
+      if (error.contextOverflow) this._learnInputLimit(error, body);
       throw error;
     }
     const observed = {};
@@ -507,7 +580,14 @@ class AgentLoop {
   }
 
   async _budgetedAnswer(messages) {
-    const requestMessages = await this._withSelectedCodeContext(messages);
+    const prepared = await this._prepareRequestContext(messages);
+    let requestMessages = await this._withSelectedCodeContext(prepared);
+    // Retrieved code is optional and can be reread with a tool. Pinning it
+    // into compression would consume the user's request allowance every turn.
+    if (budgetExceeded(this._requestBody(requestMessages), this._inputLimits())) {
+      requestMessages = prepared;
+      this._emit('code-context', { injected: false, reason: 'Endpoint input allowance is reserved for conversation instructions and results.' });
+    }
     let reply;
     try { reply = await this._readAnswer(requestMessages); }
     catch (error) {
@@ -561,11 +641,13 @@ class AgentLoop {
     throw error;
   }
 
-  async _summarizeForCompaction(archived, { maxChars }) {
+  async _summarizeForCompaction(archived, { maxChars, fitsMemory }) {
     const budgets = this._budgets();
-    return summarizeSegments(archived, { maxChars,
+    return summarizeSegments(archived, { maxChars, fitsMemory,
+      outputTokenLimit: this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.outputTokenLimit !== false,
       chunkSize: Math.max(1000, Math.min(28000, (budgets.contextTrigger || 60000) - maxChars - 5000)),
       signal: this.abortController.signal,
+      fits: messages => !budgetExceeded(this._requestBody(messages, { stream: true, purpose: 'summary', concise: true, maxTokens: budgets.summaryTokens }), this._inputLimits()),
       progress: (type, payload) => this._emit(type, payload),
       request: async messages => {
         for (let retry = 0; ; retry++) {
@@ -585,23 +667,31 @@ class AgentLoop {
       } });
   }
 
-  async _maybeCompact(messages, { force = false, target } = {}) {
+  async _maybeCompact(messages, { force = false, target, inputLimits, wireTarget = 98000 } = {}) {
     const budgets = this._budgets();
     if (!budgets.autoCompact && !force) return messages;
     const history = this._agent().messages.slice();
     const historyFingerprint = fingerprint(history);
+    const limits = inputLimits || this._inputLimits();
+    const wireLimited = budgetExceeded(this._requestBody(messages), limits);
+    const wireOptions = inputLimits || wireLimited ? {
+      measure: candidate => budgetRatio(this._requestBody(candidate), limits) * 100000,
+      trigger: 100000, target: Math.min(98000, wireTarget),
+    } : {};
     const compacted = await compactMessages(messages, (archived, options) => this._summarizeForCompaction(archived, options), {
       trigger: budgets.contextTrigger, target: target ? Math.min(target, budgets.contextTarget) : budgets.contextTarget,
       messageLimit: budgets.contextMessages, force,
+      ...wireOptions,
     });
     this.abortController.signal.throwIfAborted();
     if (compacted.changed) {
       if (fingerprint(this._agent().messages.slice(0, history.length)) !== historyFingerprint) throw new Error('Conversation changed during compression; original history is intact. Retry compression.');
+      const before = contextChars(messages), after = contextChars(compacted.messages);
       const context = { messages: compacted.messages.slice(1), through: history.length,
-        fingerprint: historyFingerprint, before: compacted.before, after: compacted.after, at: Date.now() };
+        fingerprint: historyFingerprint, before, after, at: Date.now() };
       if (this.store.setContext) this.store.setContext(this.agentId, context);
       else this._agent().context = context;
-      this._emit('compacted', { before: compacted.before, after: compacted.after });
+      this._emit('compacted', { before, after });
     }
     this._emit('context-status', this.contextStatus());
     return compacted.messages;
@@ -711,6 +801,9 @@ class AgentLoop {
     const agent = this._agent();
     if (appendUser) {
       const user = normalizeUserInput(input);
+      if (typeof user.content === 'string' && /^\s*(?:continue|resume)\s*[.!]?\s*$/i.test(user.content) && agent.runState?.status === 'paused') {
+        user.meta = { ...(user.meta || {}), source: 'recovery' };
+      }
       this.store.appendMessage(this.agentId, { role: 'user', content: user.content,
         ...(user.meta || user.display !== user.content ? { _reachMeta: { ...(user.meta || {}), display: user.display } } : {}) });
       this._emit('message', { role: 'user', content: user.display });
@@ -730,11 +823,11 @@ class AgentLoop {
     this._emit('run-state', { status: 'running', reason: '' });
 
     try {
-      let transportRetries = 0, overflowRetries = 0;
+      let transportRetries = 0;
       for (let round = 0; round < cap(this._budgets().maxRounds) || this.steering.some(item => item.nurse); round++) {
         this.abortController.signal.throwIfAborted();
         const restartForNurse = () => {
-          round = 0; transportRetries = 0; overflowRetries = 0;
+          round = 0; transportRetries = 0;
           runState = start(runState); runState.structuredActions = !this.nativeTools;
           this._saveRunState(runState);
           this._emit('nurse-restarted', { reason: 'New user guidance', round: 1 });
@@ -767,9 +860,13 @@ class AgentLoop {
           this._emit('message-end', { role: 'assistant', error: error.message });
           if (this.abortController.signal.aborted) throw error;
           if (this.requestSignal?.aborted) throw new Error(`${this.model}: model request exceeded ${Math.round(this.requestTimeoutMs / 1000)} seconds. Try again or choose a different model.`);
-          if (error.contextOverflow && this._budgets().autoCompact && overflowRetries++ < 1) {
+          if (error.contextOverflow) {
             this._emit('retry', { error: 'Provider context limit reached · compressing before retry' });
-            await this._maybeCompact(requestMessages, { force: true, target: Math.max(8000, Math.floor(contextChars(requestMessages) * 0.45)) });
+            const before = measureRequest(this._requestBody(requestMessages)).requestBytes;
+            const limits = this._inputLimits();
+            const reduced = await this._maybeCompact(requestMessages, { force: true, inputLimits: limits,
+              wireTarget: budgetRatio(this._requestBody(requestMessages), limits) * 65000 });
+            if (measureRequest(this._requestBody(reduced)).requestBytes >= before) throw fitError('The provider rejected a request that cannot be reduced further without dropping the task instructions.');
             round--; // A rejected request did not execute a model round or any tool.
             continue;
           }
