@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.9.13](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.12...v26.9.13) (2026-10-03)
+
+
+### Bug Fixes
+
+* **website:** prevent page scroll at horizontal rail edges ([#137](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/137)) ([888e953](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/888e953e2ff538e296b1b1f510a8de3128e02a6a))
+
 ## [26.9.12](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.11...v26.9.12) (2026-10-02)
 
 
