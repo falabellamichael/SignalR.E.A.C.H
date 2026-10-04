@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="studio-prd.css" />
   <link rel="stylesheet" href="team-deck.css" />
   <link rel="stylesheet" href="home.css" />
+  <link rel="stylesheet" href="create-page.css" />
   <link rel="stylesheet" href="account-menu.css" />
 </head>
 <body>
@@ -472,23 +473,35 @@
 
     <!-- ========== CREATE PAGE ========== -->
     <section id="page-create" class="page">
-      <div class="create-layout">
-        <div class="create-col">
-          <div class="create-head">
-            <h2>Custom Agents</h2>
-            <button id="btn-new-persona" class="gold small">+ New</button>
+      <div class="create-workbench">
+        <div class="create-heading">
+          <div><h1>Create</h1><p>Individual minds. A shared purpose.</p></div>
+          <div class="create-heading-actions">
+            <button id="btn-new-team" class="gold" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New team</button>
+            <button id="btn-new-persona" class="ghost" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New agent</button>
           </div>
-          <p class="create-sub">Reusable personas: a name, an optional model override, and custom instructions that replace the generic assistant identity.</p>
-          <div id="persona-list" class="persona-list"></div>
         </div>
-        <div class="create-col">
-          <div class="create-head">
-            <h2>Teams</h2>
-            <button id="btn-new-team" class="gold small">+ New</button>
+        <div class="create-workbench-body">
+          <aside class="create-library" aria-label="Saved teams and custom agents">
+            <div class="create-library-tabs" role="tablist" aria-label="Create library">
+              <button id="create-tab-teams" type="button" role="tab" aria-selected="true" aria-controls="create-teams-panel" tabindex="0">Teams</button>
+              <button id="create-tab-agents" type="button" role="tab" aria-selected="false" aria-controls="create-agents-panel" tabindex="-1">Custom agents</button>
+            </div>
+            <div class="create-library-scroll">
+              <div id="create-teams-panel" role="tabpanel" aria-labelledby="create-tab-teams">
+                <div id="team-list" class="team-list"></div>
+              </div>
+              <div id="create-agents-panel" class="hidden" role="tabpanel" aria-labelledby="create-tab-agents">
+                <div id="persona-list" class="persona-list"></div>
+              </div>
+            </div>
+          </aside>
+          <div class="create-detail-scroll">
+            <section id="create-detail" aria-label="Selected library item"></section>
+            <section id="create-recovery" aria-label="Recoverable team runs">
+              <div id="team-recovery-list" class="team-list"></div>
+            </section>
           </div>
-          <p class="create-sub">A crew of custom agents. <strong>Parallel</strong>: every member gets the same task and they run simultaneously. <strong>Chain</strong>: members run in order, each one's answer is handed to the next.</p>
-          <div id="team-recovery-list" class="team-list"></div>
-          <div id="team-list" class="team-list"></div>
         </div>
       </div>
     </section>
@@ -1082,6 +1095,7 @@
   <script src="team-deck.js"></script>
   <script src="composer-intents.js"></script>
   <script src="command-line.js"></script>
+  <script src="create-page.js"></script>
   <script src="app.js"></script>
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>
