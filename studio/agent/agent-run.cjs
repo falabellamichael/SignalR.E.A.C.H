@@ -15,6 +15,12 @@ const protocol = 'AGENT RUN CONTROL (required; ordinary prose never ends the tas
   + 'For an external blocker use:\n```agent_status\n{"status":"blocked","reason":"What prevents progress and what is needed."}\n```\n'
   + 'Do not emit completion together with tools, edits, or a question. Do not use these blocks as examples in your answer.';
 
+const actionResponseReminder = 'Return exactly one JSON object with status, message, actions and options; no prose outside the object. '
+  + 'If work remains, use status "actions" with actual tool calls. If the requested answer is ready and no work, plan items or reviews remain, '
+  + 'use {"status":"complete","message":"The full delivered answer","actions":[],"options":[]}. '
+  + 'Use status "question" only for necessary user input, or "blocked" for a concrete external blocker. '
+  + 'Do not invent completion, tool results or project facts.';
+
 function start(previous) {
   return { status: 'running', noActionRounds: 0, reason: '',
     structuredActions: !!(previous && previous.status !== 'completed' && (previous.structuredActions || previous.noActionRounds > 0)),
@@ -78,7 +84,9 @@ function decide(run, input) {
     // mid-run (that mix produced the dialect failures of 2026-09-19).
     const count = (state.noActionRounds || 0) + 1;
     state.noActionRounds = count;
-    const limit = Math.min(3, Number.isFinite(input.retryLimit) ? input.retryLimit + 1 : 3);
+    // Format correction is independent of retryLimit, which controls transport
+    // failures. Permit two corrective replies while keeping Stop/round caps.
+    const limit = 3;
     if (count >= limit || input.rounds >= input.roundLimit) {
       return end('paused', input.rounds >= input.roundLimit
         ? 'Agent round limit reached. Send continue to resume.'
@@ -94,7 +102,7 @@ function decide(run, input) {
   const count = (state.noActionRounds || 0) + 1;
   state.noActionRounds = count;
   state.structuredActions = true;
-  const limit = Math.min(3, Number.isFinite(input.retryLimit) ? input.retryLimit + 1 : 3);
+  const limit = 3;
   if (count >= limit || input.rounds >= input.roundLimit) {
     return end('paused', input.rounds >= input.roundLimit
       ? 'Agent round limit reached. Send continue to resume.'
@@ -103,10 +111,9 @@ function decide(run, input) {
   let reason = input.invalid ? 'The run-control block was invalid.'
     : input.control?.status === 'complete' && open.length ? 'Completion was rejected: ' + open.length + ' plan item(s) remain open.'
     : 'The response ended without an action or an explicit task completion.';
-  const instruction = reason + '\nUse the executable action response format now. Request the next actual tools or edits. '
-    + 'Complete only when the task is finished; ask a question only when user input is necessary.\n'
+  const instruction = reason + '\n' + actionResponseReminder + '\n'
     + (open.length ? 'Open plan items: ' + JSON.stringify(open) + '\n' : '');
   return { state: { ...state, status: 'running', reason }, action: 'continue', reason, instruction };
 }
 
-module.exports = { protocol, start, parse, decide };
+module.exports = { protocol, actionResponseReminder, start, parse, decide };

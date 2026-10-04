@@ -18,7 +18,7 @@ const { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, isTransien
 const { retryAfterMs, retryDelayMs, isRetryableStatus, isNgrokTunnelUnavailable } = require('./retry.cjs');
 // One adaptive provider-origin gate, shared by every loop on the same provider.
 const { gateFor, gateKeyFor, rateLimitInfoFrom, rateLimitDiagnostic } = require('./rate-limit.cjs');
-const { protocol, start, decide } = require('./agent-run.cjs');
+const { protocol, actionResponseReminder, start, decide } = require('./agent-run.cjs');
 const { actionInstruction, nativeInstruction, toolDefs } = require('./agent-action.cjs');
 const { parseAgentResponse, extractToolBlocks } = require('./agent-response.cjs');
 const { runToolCall } = require('./agent-tool-runner.cjs');
@@ -199,6 +199,7 @@ class AgentLoop {
     return persona
       + (soul ? soul + '\n\n' : '')
       + 'You are REACH Studio, a coding assistant for the user\'s selected project. '
+      + 'REACH Studio is the application hosting this conversation. Identify the selected project from its files; do not assume it is REACH Studio. '
       + 'Inspect the project to identify its language and tools; it may be Python, JavaScript, or another stack. '
       + 'Reach DApp commands are optional and only appropriate for an actual Reach project. '
       + projectLine + '\n\n'
@@ -331,9 +332,16 @@ class AgentLoop {
   _requestBody(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
     if (this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.outputTokenLimit === false) maxTokens = 0;
     const settings = this._settings();
+    // Browser chat pages receive a flattened transcript rather than enforced
+    // API roles. Keep the active contract next to the latest task/results.
+    // This request-only reminder never enters saved history or compaction.
+    const reminder = purpose === 'answer' && features(settings).agent && !this.nativeTools
+      && ['chatgpt-chat', 'copilot-chat'].includes(this.model)
+      ? [{ role: 'user', content: 'Response format for the current saved task above (the task and permissions are unchanged):\n' + actionResponseReminder }]
+      : [];
     const body = {
       model: this.model,
-      messages: normalizeChatMessages([...messages, { role: 'system', content: budgetPolicy({ maxTokens, purpose, budgets: this._budgets(), round: this.requestRound || 1, contextChars: contextChars(messages), concise }) }]),
+      messages: normalizeChatMessages([...messages, { role: 'system', content: budgetPolicy({ maxTokens, purpose, budgets: this._budgets(), round: this.requestRound || 1, contextChars: contextChars(messages), concise }) }, ...reminder]),
       stream: stream && !this.noStreaming,
     };
     if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
