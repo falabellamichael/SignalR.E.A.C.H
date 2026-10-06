@@ -61,3 +61,10 @@ are **not encrypted by this change** and may contain sensitive material. The
 Copilot shim's token file is permission-restricted but not OS-vault-encrypted.
 Review backups and exports before sharing. Prefer full-disk encryption and a
 locked OS account for local protection.
+
+
+## Public endpoint defaults
+
+- Cross-origin access is denied unless `access.cors_origins` is `*` or an explicit origin list. A reflected origin sends `Vary: Origin`.
+- `key_required: false` skips the key for a proven local client only. Tunnel and other non-local clients still need a key. Publishing a public URL is refused while keys are not required.
+- Authentication failures return `Invalid API key.` The key prefix is not part of the error.

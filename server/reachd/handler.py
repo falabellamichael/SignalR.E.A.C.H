@@ -194,12 +194,19 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ helpers
     def _cors(self):
-        origins = (core.STATE.cfg.get("access", {}).get("cors_origins") or "*").strip()
-        origin = self.headers.get("Origin", "")
+        """Cross-origin access is opt-in. An empty list sends no
+        Access-Control-Allow-Origin. "*" remains an explicit operator choice.
+        A reflected origin always varies the cache key."""
+        raw = (core.STATE.cfg.get("access", {}) or {}).get("cors_origins")
+        origins = "" if raw is None else str(raw).strip()
+        origin = (self.headers.get("Origin") or "").strip()
+        allowed = [o.strip() for o in origins.split(",") if o.strip()]
         if origins == "*":
             self.send_header("Access-Control-Allow-Origin", "*")
-        elif origin and origin in [o.strip() for o in origins.split(",")]:
+        elif origin and origin in allowed:
             self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        else:
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods",
                          "GET, POST, PUT, DELETE, OPTIONS")
@@ -443,11 +450,24 @@ class RelayHandler(BaseHTTPRequestHandler):
             core.STATE.auth_guard.record_success(gid)
             return True
 
-        # Hosted account access must not be bypassed by omitting a session.
+        # key_required false is a local-tools opt-out, not a public anonymous
+        # endpoint. Hosted account access must not be bypassed by omitting a
+        # session either. Fall through to the local-client bypass below.
         if not access.get("key_required", False) and not cfg.get("account_service_url"):
-            self._auth_key_name = "anonymous"
-            self._auth_key_id = ""
-            return True
+            if access.get("local_bypass", True) and self._admin_local():
+                self._auth_key_name = "local"
+                self._auth_key_id = ""
+                return True
+            self._note_auth_failure(gid, "key")
+            self._log_auth_refusal(ip, "auth_missing" if not presented else "auth_failed")
+            if self._deny_if_locked_out(gid):
+                return False
+            self._json(401, {"error": {
+                "message": "Invalid API key.",
+                "type": "authentication_error",
+                "code": "invalid_api_key"}},
+                       {"WWW-Authenticate": "Bearer"})
+            return False
 
         # The owner's own tools on this machine skip the key; see _admin_local
         # for what "on this machine" has to prove.
@@ -460,7 +480,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self._log_auth_refusal(ip, "auth_failed" if presented else "auth_missing")
         if self._deny_if_locked_out(gid):
             return False
-        self._json(401, {"error": {"message": "Invalid SignalR.E.A.C.H API Key. Send 'Authorization: Bearer sk-reach-...' or 'X-Reach-Key'.",
+        self._json(401, {"error": {"message": "Invalid API key.",
                                     "type": "authentication_error",
                                     "code": "invalid_api_key"}},
                    {"WWW-Authenticate": "Bearer"})
@@ -1180,6 +1200,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._json(502, {"ok": False, "error": str(exc)[:300]})
 
     def handle_publish(self):
+        access = core.STATE.cfg.get("access") or {}
+        if not access.get("key_required", False):
+            return self._json(409, {"ok": False, "error":
+                "Refusing to publish while access keys are not required."})
         ok, detail = publish_url(core.STATE)
         if ok:
             self._audit("pointer.publish", detail)
@@ -1288,6 +1312,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             return self._json(400, {"error": {"message": "invalid JSON",
                                               "type": "invalid_request"}})
         url = (data.get("public_url") or "").strip()
+        access = core.STATE.cfg.get("access") or {}
+        if url and not access.get("key_required", False):
+            return self._json(409, {"ok": False, "error":
+                "Refusing a public URL while access keys are not required."})
         # Validate a candidate copy BEFORE mutating live config, and never
         # swallow a rejected value (finding: an invalid override slipped through
         # the bare `except: pass` and was published to the discovery gist).

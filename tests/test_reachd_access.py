@@ -118,9 +118,13 @@ class KeyRequiredTests(RelayFixture):
         self.assertEqual(self.status("GET", "/v1/models", {**TUNNEL, "X-Reach-Key": ""}), 401)
         self.assertEqual(self.status("GET", "/v1/models", {**TUNNEL, "X-Reach-Key": "None"}), 401)
 
-    def test_key_not_required_lets_everyone_in(self):
+    def test_key_not_required_is_local_only(self):
         self.state.cfg["access"]["key_required"] = False
-        self.assertEqual(self.status("GET", "/v1/models", TUNNEL), 200)
+        self.assertEqual(self.status("GET", "/v1/models"), 200)
+        self.assertEqual(self.status("GET", "/v1/models", TUNNEL), 401)
+        body = json.loads(self.call("GET", "/v1/models", TUNNEL)[1])
+        self.assertEqual(body["error"]["message"], "Invalid API key.")
+        self.assertNotIn("sk-reach", body["error"]["message"])
 
     def test_refused_requests_are_logged(self):
         self.status("GET", "/v1/models", self.bearer(**TUNNEL))            # allowed

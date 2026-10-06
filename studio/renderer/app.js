@@ -2823,8 +2823,25 @@ const connTestsRunning = new Set(); // Survives opening/closing an editor during
 
 async function loadSettings() {
   const s = await reachApi.getSettings();
-  $('#credential-storage-warning').textContent = s.credentialStorage?.warning || '';
-  $('#credential-storage-warning').classList.toggle('hidden', !s.credentialStorage?.warning);
+  const credentialWarning = $('#credential-storage-warning');
+  credentialWarning.textContent = s.credentialStorage?.warning || '';
+  credentialWarning.classList.toggle('hidden', !s.credentialStorage?.warning);
+  let credentialAck = $('#credential-storage-ack');
+  if (!credentialAck && credentialWarning.parentElement) {
+    credentialAck = document.createElement('button');
+    credentialAck.id = 'credential-storage-ack';
+    credentialAck.type = 'button';
+    credentialAck.className = 'btn';
+    credentialAck.textContent = 'I understand keys are stored without a system vault';
+    credentialAck.addEventListener('click', () => {
+      sessionStorage.setItem('reach-plaintext-ack', '1');
+      credentialAck.hidden = true;
+    });
+    credentialWarning.insertAdjacentElement('afterend', credentialAck);
+  }
+  if (credentialAck) {
+    credentialAck.hidden = !s.credentialStorage?.warning || sessionStorage.getItem('reach-plaintext-ack') === '1';
+  }
   $('#set-reach-cli').value = s.reachCli || '';
   $('#set-jev-enabled').checked = s.jevEnabled === true;
   jevAutoDefault = s.jevAutoMode === true;

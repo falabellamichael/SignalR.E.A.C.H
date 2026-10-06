@@ -183,10 +183,64 @@
       {tag:'03 · KEEP MOVING',title:'Give the idea a direction.',text:'Work with an assistant, create custom personas, or collaborate with agent teams in Studio. Review the work and keep usage visible.',rows:[['Plan','Break down the work'],['Build','Keep context connected'],['Review','Choose your next step']]}
     ];
     let tourStep = 0;
+    const textNode = (tag, className, text) => {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      node.textContent = text;
+      return node;
+    };
     const renderTour = () => {
       const step = TOUR[tourStep];
-      $('#tour-body').innerHTML = `<span class="pill gold">${step.tag}</span><h2 id="tour-title">${step.title}</h2><p>${step.text}</p><div class="tour-visual">${step.rows.map(([a,b],i)=>`<div class="graphic-row ${i===0?'highlight':''}">${a}<span>${b}</span></div>`).join('')}</div><p class="preview-caption">Guided product overview · No live application or AI connection</p><div class="tour-navigation"><button type="button" class="btn btn-secondary btn-sm" data-tour-prev ${tourStep===0?'disabled':''}>Back</button><span class="tour-progress" aria-label="Step ${tourStep+1} of 3">${TOUR.map((_,i)=>`<span class="${i===tourStep?'active':''}" aria-hidden="true"></span>`).join('')}</span>${tourStep<2?`<button type="button" class="btn btn-primary btn-sm" data-tour-next>Next ${icon('arrow')}</button>`:`<a class="btn btn-primary btn-sm" href="download.html">Get started ${icon('arrow')}</a>`}</div>`;
-      animateContent($('#tour-body'));
+      const body = $('#tour-body');
+      body.replaceChildren();
+      body.append(
+        textNode('span', 'pill gold', step.tag),
+        textNode('h2', '', step.title),
+        textNode('p', '', step.text)
+      );
+      body.querySelector('h2').id = 'tour-title';
+      const visual = document.createElement('div');
+      visual.className = 'tour-visual';
+      step.rows.forEach(([label, value], i) => {
+        const row = document.createElement('div');
+        row.className = 'graphic-row' + (i === 0 ? ' highlight' : '');
+        row.append(textNode('span', '', label), textNode('span', '', value));
+        visual.append(row);
+      });
+      const nav = document.createElement('div');
+      nav.className = 'tour-navigation';
+      const back = document.createElement('button');
+      back.type = 'button';
+      back.className = 'btn btn-secondary btn-sm';
+      back.dataset.tourPrev = '';
+      back.textContent = 'Back';
+      back.disabled = tourStep === 0;
+      const progress = document.createElement('span');
+      progress.className = 'tour-progress';
+      progress.setAttribute('aria-label', `Step ${tourStep + 1} of 3`);
+      TOUR.forEach((_, i) => {
+        const dot = document.createElement('span');
+        if (i === tourStep) dot.className = 'active';
+        dot.setAttribute('aria-hidden', 'true');
+        progress.append(dot);
+      });
+      nav.append(back, progress);
+      if (tourStep < 2) {
+        const next = document.createElement('button');
+        next.type = 'button';
+        next.className = 'btn btn-primary btn-sm';
+        next.dataset.tourNext = '';
+        next.textContent = 'Next';
+        nav.append(next);
+      } else {
+        const done = document.createElement('a');
+        done.className = 'btn btn-primary btn-sm';
+        done.href = 'download.html';
+        done.textContent = 'Get started';
+        nav.append(done);
+      }
+      body.append(visual, textNode('p', 'preview-caption', 'Guided product overview · No live application or AI connection'), nav);
+      animateContent(body);
     };
 
     /* Static examples: placeholders are intentional; no credentials are collected. */
@@ -216,7 +270,30 @@
       const product = productMap[key]; const stage = $('#platform-stage');
       if (!stage) return;
       const button = $(`[data-platform="${key}"]`); selectTab(button);
-      stage.innerHTML = `<div><span class="pill gold">${product.tag}</span><h2>${product.title}</h2><p>${product.text}</p>${list(product.checks)}${product.href.startsWith('http')?external(product.href,product.cta):`<a class="text-link" href="${product.href}">${product.cta}${icon('arrow')}</a>`}</div><div class="platform-graphic"><div class="graphic-title">${icon('mark')}${product.graphic}</div>${product.rows.map(([a,b],i)=>`<div class="graphic-row ${i===0?'highlight':''}">${a}<span>${b}</span></div>`).join('')}<div class="visual-bottom">${icon('info')}Feature map · not a live application</div></div>`;
+      stage.replaceChildren();
+      const copy = document.createElement('div');
+      copy.append(textNode('span', 'pill gold', product.tag), textNode('h2', '', product.title), textNode('p', '', product.text));
+      const checks = document.createElement('ul');
+      checks.className = 'context-list';
+      product.checks.forEach(item => checks.append(textNode('li', '', item)));
+      copy.append(checks);
+      const link = document.createElement('a');
+      link.className = product.href.startsWith('http') ? 'text-link' : 'text-link';
+      link.href = product.href;
+      link.textContent = product.cta;
+      if (product.href.startsWith('http')) { link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+      copy.append(link);
+      const graphic = document.createElement('div');
+      graphic.className = 'platform-graphic';
+      graphic.append(textNode('div', 'graphic-title', product.graphic));
+      product.rows.forEach(([label, value], i) => {
+        const row = document.createElement('div');
+        row.className = 'graphic-row' + (i === 0 ? ' highlight' : '');
+        row.append(textNode('span', '', label), textNode('span', '', value));
+        graphic.append(row);
+      });
+      graphic.append(textNode('div', 'visual-bottom', 'Feature map · not a live application'));
+      stage.append(copy, graphic);
       animateContent(stage);
       if (updateURL && !window.SignalREACHPreview) {
         const url = new URL(location.href); url.searchParams.set('view',key);

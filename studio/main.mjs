@@ -329,8 +329,30 @@ function loadProjects() {
   try { return JSON.parse(fs.readFileSync(projectsFile(), 'utf8')); }
   catch { return []; }
 }
+function normalizeProjects(ps) {
+  if (!Array.isArray(ps) || ps.length > 200) {
+    throw new Error('Projects must be a list of at most 200 entries.');
+  }
+  return ps.map(project => {
+    if (!project || typeof project !== 'object' || Array.isArray(project)) {
+      throw new Error('Invalid project entry.');
+    }
+    const dir = String(project.dir || '').slice(0, 1024);
+    const name = String(project.name || '').slice(0, 200);
+    if (!dir.trim()) throw new Error('Invalid project path.');
+    return { ...project, dir, name };
+  });
+}
+function projectContains(dir) {
+  if (typeof dir !== 'string' || !dir.trim()) return false;
+  const resolved = path.resolve(dir);
+  return loadProjects().some(project => {
+    const root = path.resolve(String(project.dir || ''));
+    return resolved === root || resolved.startsWith(root + path.sep);
+  });
+}
 function saveProjects(ps) {
-  atomicWriteJson(projectsFile(), ps);
+  atomicWriteJson(projectsFile(), normalizeProjects(ps));
 }
 
 // ---------- agent helpers ----------
@@ -612,7 +634,10 @@ function registerIpc() {
     saveProjects(loadProjects().filter(project => project.dir !== dir));
     return { ok: true };
   });
-  ipcMain.handle('projects:save', (_e, ps) => saveProjects(ps));
+  ipcMain.handle('projects:save', (_e, ps) => {
+    try { saveProjects(ps); return { ok: true }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
 
   ipcMain.handle('settings:get', () => {
     const settings = loadSettings();
@@ -739,11 +764,29 @@ function registerIpc() {
 
   ipcMain.handle('project:list', (_e, dir) => {
     try {
-      return fs.readdirSync(dir).filter((f) => !fs.statSync(path.join(dir, f)).isDirectory());
+      if (!projectContains(dir)) return [];
+      const resolved = path.resolve(dir);
+      return fs.readdirSync(resolved).filter((f) => !fs.statSync(path.join(resolved, f)).isDirectory()).slice(0, 500);
     } catch (e) { return []; }
   });
 
-  ipcMain.handle('shell:openDir', (_e, dir) => shell.openPath(dir));
+  ipcMain.handle('shell:openDir', async (_e, dir) => {
+    if (typeof dir !== 'string' || !dir.trim()) return { ok: false, err: 'Choose a folder.' };
+    const resolved = path.resolve(dir);
+    if (!projectContains(resolved)) {
+      const choice = await dialog.showMessageBox({
+        type: 'warning',
+        buttons: ['Cancel', 'Open folder'],
+        defaultId: 0,
+        cancelId: 0,
+        message: 'This folder is outside your saved projects.',
+        detail: resolved,
+      });
+      if (choice.response !== 1) return { ok: false, err: 'Cancelled.' };
+    }
+    const err = await shell.openPath(resolved);
+    return err ? { ok: false, err } : { ok: true };
+  });
 
   // ---------- agent ipc ----------
   ipcMain.handle('agents:list', () => getAgentStore().list());
@@ -944,8 +987,17 @@ function registerIpc() {
     for (const runner of teamRuns.values()) runner.pause();
     return { ok: true };
   });
-  ipcMain.handle('agents:setTodos', (_e, { id, todos }) => {
-    const agent = getAgentStore().setTodos(id, todos);
+  ipcMain.handle('agents:setTodos', (_e, payload) => {
+    const id = payload && payload.id;
+    const todos = payload && payload.todos;
+    if (!Array.isArray(todos) || todos.length > 100) {
+      return { ok: false, err: 'Todos must be a list of at most 100 items.' };
+    }
+    const clean = todos.map(item => ({
+      text: String(item && item.text || '').slice(0, 500),
+      status: ['pending', 'in_progress', 'completed', 'cancelled'].includes(item && item.status) ? item.status : 'pending',
+    }));
+    const agent = getAgentStore().setTodos(id, clean);
     return agent ? { ok: true } : { ok: false, err: 'Agent not found' };
   });
   ipcMain.handle('agents:appendNote', (_e, { id, content }) => {
@@ -1583,8 +1635,10 @@ function registerIpc() {
     if (!root) return { ok: false, err: 'No project bound.' };
     try {
       const abs = resolveInProject(root, rel);
+      const text = String(content === undefined ? '' : content);
+      if (text.length > 2000000) return { ok: false, err: 'File is larger than 2 MB.' };
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      writeTextFile(abs, String(content === undefined ? '' : content), { root, scope: agentId || 'editor' });
+      writeTextFile(abs, text, { root, scope: agentId || 'editor' });
       return { ok: true };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -2764,7 +2818,7 @@ function createWindow({ show = true } = {}) {
   win = new BrowserWindow({
     width: 1440,
     height: 860,
-    minWidth: 1000,
+    minWidth: 1000, // supported shell minimum; narrower widths clip the chat column
     minHeight: 640,
     backgroundColor: loadSettings().theme === 'light' ? '#fdf6e3' : '#0a0a0a',
     icon: path.join(rootDir, 'assets', 'icon.png'),

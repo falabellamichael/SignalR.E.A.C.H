@@ -324,14 +324,14 @@
             const dialog = el('div', 'reach-modal-dialog');
             dialog.innerHTML = '<header class="reach-card-head">'
                 + '<h3 style="margin:0;font-size:15px;display:flex;align-items:center;gap:8px;">'
-                + '<i class="fa-solid fa-key" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+                + '<i class="fa-solid fa-key" style="color:var(--reach-accent-light, var(--reach-accent));"></i>'
                 + '<span>Client API Key Generated</span>'
                 + '</h3>'
                 + '</header>'
                 + '<div class="reach-card-body" style="padding:16px;">'
                 + '<p class="reach-copy" style="margin-top:0;">Key Name: <strong>' + esc(keyObj.name || 'Client') + '</strong> &nbsp;·&nbsp; ID: <code>' + esc(keyObj.id || '') + '</code></p>'
                 + '<div style="background:rgba(255, 176, 32, 0.12);border:1px solid rgba(255, 176, 32, 0.35);padding:10px 12px;border-radius:8px;margin-bottom:12px;">'
-                + '<p class="reach-copy" style="margin:0;font-size:12px;color:var(--reach-accent-light, #ffd37a);font-weight:600;">'
+                + '<p class="reach-copy" style="margin:0;font-size:12px;color:var(--reach-accent-light, var(--reach-accent));font-weight:600;">'
                 + '<i class="fa-solid fa-triangle-exclamation" style="margin-right:6px;"></i>Please copy and store this key now. You will not be able to view the full token again!'
                 + '</p>'
                 + '</div>'
@@ -370,14 +370,14 @@
                 + 'Model:     ' + info.model + '\n';
             dialog.innerHTML = '<header class="reach-card-head">'
                 + '<h3 style="margin:0;font-size:15px;display:flex;align-items:center;gap:8px;">'
-                + '<i class="fa-solid fa-laptop-code" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+                + '<i class="fa-solid fa-laptop-code" style="color:var(--reach-accent-light, var(--reach-accent));"></i>'
                 + '<span>Remote Client Ready</span>'
                 + '</h3>'
                 + '</header>'
                 + '<div class="reach-card-body" style="padding:16px;">'
                 + '<p class="reach-copy" style="margin-top:0;">Give these three lines to <strong>' + esc(info.name || 'the client') + '</strong>. They reach only the models you marked public — never your CodeGPT session, your Google sign-in, or your OmniRoute key.</p>'
                 + '<div style="background:rgba(255, 176, 32, 0.12);border:1px solid rgba(255, 176, 32, 0.35);padding:10px 12px;border-radius:8px;margin-bottom:12px;">'
-                + '<p class="reach-copy" style="margin:0;font-size:12px;color:var(--reach-accent-light, #ffd37a);font-weight:600;">'
+                + '<p class="reach-copy" style="margin:0;font-size:12px;color:var(--reach-accent-light, var(--reach-accent));font-weight:600;">'
                 + '<i class="fa-solid fa-triangle-exclamation" style="margin-right:6px;"></i>Save the key now — it is not shown again. Revoke it any time from the key list.'
                 + '</p>'
                 + '</div>'
@@ -451,9 +451,9 @@
                     // it, and GET masks existing tokens — re-patching would
                     // overwrite real keys with masked placeholders.
                     draft.access.key_required = true;
-                    draft.access.cors_origins = draft.access.cors_origins || '*';
+                    draft.access.cors_origins = draft.access.cors_origins || '';
                     if (rerender) rerender();
-                    const patch = { access: { key_required: true, cors_origins: draft.access.cors_origins || '*' } };
+                    const patch = { access: { key_required: true, cors_origins: draft.access.cors_origins || '' } };
                     return core.saveSettings(patch).then(({ ok: saved, data: sdata }) => {
                         if (!saved) {
                             throw new Error((sdata && sdata.error && sdata.error.message) || 'settings save failed');
@@ -582,7 +582,7 @@
             // 6. Access & security
             const ac = section('Access & security', 'fa-key', 'Who may call the endpoint and from where.');
             ac.appendChild(buildInput('checkbox', 'access', 'key_required', 'Require access key',
-                'Clients send X-Reach-Key (or Bearer). Turn this off only if you want anyone with the URL to use the relay.'));
+                'Clients send X-Reach-Key or a Bearer token. Turning this off only skips the key for proven local tools. Public and tunnel clients still need a key, and publishing is refused.'));
             ac.appendChild(buildInput('checkbox', 'access', 'local_bypass', 'Local tools skip the key',
                 'Tools on this machine (panel, VS Code, Studio) need no key. Turn off if a reverse proxy that adds no X-Forwarded-For sits in front of the relay.'));
             ac.appendChild(buildInput('password', 'access', 'access_key', 'Access key',
@@ -596,13 +596,13 @@
                 'Per client IP, for wrong keys and admin tokens. 0 disables the lockout.'));
             ac.appendChild(buildInput('number', 'access', 'auth_lockout_s', 'Lockout length (seconds)'));
             ac.appendChild(buildInput('text', 'access', 'cors_origins', 'CORS origins',
-                '"*" or comma-separated origins.'));
+                'Empty denies cross-origin. Use * or a comma-separated origin list to opt in.'));
 
             // 6b. Client API Keys (sk-reach)
             const keysCard = el('section', 'reach-card');
             const kHead = el('header', 'reach-card-head');
             kHead.innerHTML = '<div style="display:flex;align-items:center;gap:8px;">'
-                + '<i class="fa-solid fa-id-card-clip" style="color:var(--reach-accent-light, #ffd37a);"></i>'
+                + '<i class="fa-solid fa-id-card-clip" style="color:var(--reach-accent-light, var(--reach-accent));"></i>'
                 + '<span>Client API Keys (sk-reach)</span>'
                 + '</div>';
             keysCard.appendChild(kHead);

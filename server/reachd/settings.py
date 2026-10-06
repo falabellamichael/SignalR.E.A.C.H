@@ -151,7 +151,7 @@ DEFAULT_SETTINGS = {
         "keys": [],
         "ip_allowlist": [],            # empty = everyone (loopback always ok)
         "ip_blocklist": [],
-        "cors_origins": "*",           # "*" or comma-separated origins
+        "cors_origins": "",            # empty denies cross-origin; "*" or comma-separated origins opt in
         # A genuine same-machine client (loopback, no proxy headers, loopback
         # Host, no foreign Origin) may skip the key. Turn off to make even the
         # owner's local tools present one.
@@ -660,7 +660,7 @@ def validate_settings(cfg):
         for item in value:
             _expect(isinstance(item, str) and 1 <= len(item) <= 64,
                     "access.%s entries must be strings" % key)
-    _str(access.get("cors_origins", "*"), "access.cors_origins", 1, 2000)
+    _str(access.get("cors_origins", ""), "access.cors_origins", 0, 2000)
     _bool(access.get("local_bypass", True), "access.local_bypass")
     _int(access.get("auth_fail_limit", 8), 0, 1000, "access.auth_fail_limit")
     _int(access.get("auth_lockout_s", 300), 1, 86400, "access.auth_lockout_s")
