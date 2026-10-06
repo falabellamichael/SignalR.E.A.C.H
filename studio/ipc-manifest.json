@@ -157,6 +157,13 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "agents:resend": {
+    "module": "main.mjs",
+    "args": [
+      "{ id, messageIndex, messageKey }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
   "agents:send": {
     "module": "main.mjs",
     "args": [
@@ -227,6 +234,13 @@
   "dialog:pickDir": {
     "module": "main.mjs",
     "args": [],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
+  "files:openExternal": {
+    "module": "main.mjs",
+    "args": [
+      "{ agentId, projectDir, path: rel }"
+    ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
   "files:read": {
