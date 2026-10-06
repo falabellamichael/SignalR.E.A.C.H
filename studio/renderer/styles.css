@@ -419,11 +419,14 @@ footer {
 .msg-wing-left { right: calc(100% + 4px); }
 .msg-wing-right { left: calc(100% + 4px); }
 .chat-msg.tray-open .msg-wing:not(:empty) { opacity: 1; pointer-events: auto; }
-/* Translate options: a quiet inline popover under the pressed action. It is
+/* Translate options: a quiet inline popover beside the pressed action. It is
  * deliberately "subtle" — no scrim, no modal, the message stays readable —
- * because choosing a target language is a two-second decision, not a dialog. */
+ * because choosing a target language is a two-second decision, not a dialog.
+ * Positioned FIXED, not absolute: the transcript lives in a scrolling box, and
+ * anything absolute inside it is clipped at the scroller's edge (the popover was
+ * cut in half). app.js places it from the bubble's rect and keeps it on screen. */
 .msg-translate-pop {
-  position: absolute; bottom: calc(100% + 6px); z-index: 6;
+  position: fixed; z-index: 1000;
   display: flex; flex-direction: column; gap: 6px;
   width: 268px; padding: 9px 10px;
   background: var(--panel2); border: 1px solid var(--line); border-radius: 9px;
@@ -431,11 +434,6 @@ footer {
   font-size: 11px; text-align: left;
 }
 .msg-translate-pop[hidden] { display: none; }
-.chat-msg.user .msg-translate-pop { right: 0; }
-.chat-msg.assistant .msg-translate-pop { left: 0; }
-/* Near the top of the transcript there is no room above the message, so the
- * popover drops below it instead of being clipped off-screen. app.js decides. */
-.msg-translate-pop.is-below { bottom: auto; top: calc(100% + 6px); }
 .msg-translate-row { display: flex; align-items: center; gap: 6px; }
 .msg-translate-row > label { flex: 0 0 54px; color: var(--dim); }
 .msg-translate-value {

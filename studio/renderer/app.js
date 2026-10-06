@@ -1251,6 +1251,48 @@ function translateModules() {
   return { languages, translate };
 }
 
+/* Place the popover from the message's own rectangle, clamped to the viewport.
+ *
+ * It is fixed-positioned because the transcript is a scrolling box: an absolute
+ * popover is clipped by that scroller's edge regardless of which side it opens
+ * on. Fixed means the geometry is ours to get right, so this measures the real
+ * box (it changes height when the language list opens) and fits it. */
+function placeTranslatePopover(pop, bubble, anchor) {
+  if (!pop.isConnected) return;
+  const gap = 6;
+  const margin = 8;
+  const box = pop.getBoundingClientRect();
+  const row = (anchor || pop).getBoundingClientRect();
+  const outer = bubble.getBoundingClientRect();
+  const viewportW = window.innerWidth;
+  const viewportH = window.innerHeight;
+
+  // Horizontally: line up with the action row (where the user just clicked),
+  // kept inside the message and then inside the window.
+  const left = Math.min(
+    Math.max(row.left, outer.left, margin),
+    Math.max(margin, outer.right - box.width),
+    Math.max(margin, viewportW - box.width - margin),
+  );
+
+  // Vertically: above the message when it fits, otherwise below it, otherwise
+  // clamped to whichever edge leaves the most of the popover usable.
+  const roomAbove = outer.top - gap - margin;
+  let top;
+  if (box.height <= roomAbove) top = outer.top - gap - box.height;
+  else if (box.height <= viewportH - outer.bottom - gap - margin) top = outer.bottom + gap;
+  else top = Math.max(margin, Math.min(outer.top - gap - box.height, viewportH - box.height - margin));
+
+  pop.style.left = Math.round(left) + 'px';
+  pop.style.top = Math.round(top) + 'px';
+  // A short transcript cannot scroll out from under a very tall popover, so cap
+  // the list instead of letting it hang off the window.
+  const list = pop.querySelector('.msg-translate-list');
+  if (list && !list.hidden) {
+    list.style.maxHeight = Math.max(96, Math.min(216, viewportH - Math.max(0, top) - 140)) + 'px';
+  }
+}
+
 function openTranslatePopover(bubble, anchor, text, role) {
   const modules = translateModules();
   if (!modules) { showNotice('The language catalog is unavailable in this build.'); return; }
@@ -1375,7 +1417,7 @@ function openTranslatePopover(bubble, anchor, text, role) {
     e.stopPropagation();
     list.hidden = !list.hidden;
     pick.setAttribute('aria-expanded', String(!list.hidden));
-    fitPopover();
+    place();
     if (list.hidden) return;
     // Open on whatever is already chosen, and highlight it by typing ahead.
     for (const [index, option] of buttons.entries()) {
@@ -1423,17 +1465,8 @@ function openTranslatePopover(bubble, anchor, text, role) {
     if (exact) { target = exact; markSelected(); }
   };
 
-  /* The popover opens upward by default, but a message near the top of the
-   * transcript has no room above it — it would be clipped off-screen and look
-   * like the action did nothing. Called again whenever the content grows, since
-   * opening the language list changes the box. */
-  function fitPopover() {
-    if (!pop.isConnected) return;
-    pop.classList.remove('is-below');
-    requestAnimationFrame(() => {
-      if (!pop.isConnected) return;
-      if (pop.getBoundingClientRect().top < 8) pop.classList.add('is-below');
-    });
+  function place() {
+    placeTranslatePopover(pop, bubble, anchor);
   }
 
   const meta = document.createElement('div');
@@ -1557,7 +1590,21 @@ function openTranslatePopover(bubble, anchor, text, role) {
   pop.onclick = (e) => e.stopPropagation();
 
   bubble.appendChild(pop);
-  fitPopover();
+  // The fixed popover must be placed from the message's real box. Two frames:
+  // the first lets the popover lay out, the second measures that laid-out box.
+  place();
+  requestAnimationFrame(place);
+  // A fixed popover does not travel with the transcript, so it follows it. A
+  // scroll (any scroller, hence capture) would otherwise leave it behind or
+  // strand it over empty space.
+  const stopFollowing = () => {
+    window.removeEventListener('scroll', follow, true);
+    window.removeEventListener('resize', follow);
+  };
+  const follow = () => { if (pop.isConnected) place(); else stopFollowing(); };
+  window.addEventListener('scroll', follow, true);
+  window.addEventListener('resize', follow);
+  pop.addEventListener('DOMNodeRemoved', stopFollowing);
   input.focus();
   input.select();
   scheduleBrowserLayout?.();
