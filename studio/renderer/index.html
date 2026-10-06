@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="workspace.css" />
   <link rel="stylesheet" href="studio-prd.css" />
   <link rel="stylesheet" href="team-deck.css" />
+  <link rel="stylesheet" href="activity-bar.css" />
   <link rel="stylesheet" href="home.css" />
   <link rel="stylesheet" href="create-page.css" />
   <link rel="stylesheet" href="account-menu.css" />
@@ -78,6 +79,7 @@
        Settings. Each button carries its own hotkey in data-hotkey and shows it
        in a kbd hint. -->
   <nav class="rail" id="nav-rail" aria-label="Views">
+    <button id="rail-toggle" class="rail-toggle" type="button" aria-expanded="false" aria-label="Expand the navigation rail" title="Expand the navigation rail">&#8250;</button>
     <button class="rail-item" id="rail-workspace" data-view="workspace" data-hotkey="1" title="Workspace dashboard (Ctrl+1)">
       <span class="rail-icon" aria-hidden="true">&#9636;</span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
     </button>
@@ -89,10 +91,10 @@
       <span class="rail-icon" aria-hidden="true">&#8962;</span><span class="rail-label">Home</span>
     </button>
     <button class="rail-item" id="rail-projects" data-view="projects" data-hotkey="3" title="Projects (Ctrl+3)">
-      <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd>
+      <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd><i class="rail-badge" id="rail-projects-badge" hidden></i>
     </button>
     <button class="rail-item" id="rail-agents" data-view="agents" data-hotkey="4" title="Agents (Ctrl+4)">
-      <span class="rail-icon" aria-hidden="true">&#9673;</span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd>
+      <span class="rail-icon" aria-hidden="true">&#9673;</span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd><i class="rail-badge" id="rail-agents-badge" hidden></i>
     </button>
     <button class="rail-item" id="rail-create" data-view="create" data-hotkey="5" title="Create (Ctrl+5)">
       <span class="rail-icon" aria-hidden="true">&#10010;</span><span class="rail-label">Create</span><kbd class="rail-key">5</kbd>
@@ -353,7 +355,21 @@
         <div class="side-title">Conversations</div>
         <select id="agent-project-select" title="Conversations stem from a project"></select>
         <div id="background-agent-alerts" class="background-agent-alerts hidden" role="status" aria-live="polite"></div>
-        <div id="agent-tree" class="agent-tree"></div>
+        <!-- Explorer-style groups. app.js rebuilds the CONTENTS of #agent-tree
+             from scratch on every loadAgentTree() call (≈20 call sites), so
+             sectioning the rows themselves would be overwritten. Instead the
+             rows stay exactly where app.js puts them — .tree-node children of
+             #agent-tree — and activity-bar.js re-parents them into two stable
+             section bodies after each mutation. No row markup changes. -->
+        <div class="agent-tree-shell">
+          <section class="sidebar-section" id="agent-section-new" aria-expanded="true">
+            <button class="sidebar-section-head" type="button" aria-expanded="true" aria-controls="agent-body-new">
+              <span class="sidebar-section-caret" aria-hidden="true">&#9660;</span><span class="sidebar-section-title">Start</span>
+            </button>
+            <div class="sidebar-section-body" id="agent-body-new"></div>
+          </section>
+          <div id="agent-tree" class="agent-tree"></div>
+        </div>
         <div class="side-actions">
           <button id="btn-new-chat" class="gold">+ New Chat</button>
           <button id="btn-branch-chat" class="ghost">⑂ Branch This Chat</button>
@@ -1104,6 +1120,7 @@
   <script src="workspace.js"></script>
   <script src="team-composer.js"></script>
   <script src="telemetry.js"></script>
+  <script src="activity-bar.js"></script>
   <script src="workspace-shell.js"></script>
   <script src="connections-ui.js"></script>
   <script src="home.js"></script>

@@ -11,24 +11,33 @@
 /* ------------------------------------------------------------------ nav rail */
 
 .rail {
+  position: relative;
   flex: 0 0 auto;
-  width: 132px;
+  width: 48px;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding: 12px 8px;
+  gap: 2px;
+  padding: 8px 0;
   border-right: 1px solid var(--line);
   background: var(--panel);
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
+/* VS Code geometry: a 48px rail of 34px icon buttons. The label is available
+   to assistive tech and shown by the collapsed-rail toggle below; the icon is
+   what carries the meaning at rest. */
 .rail-item {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  padding: 8px 9px;
-  border: 1px solid transparent;
+  width: 34px;
+  margin: 0 auto;
+  padding: 0;
+  height: 34px;
+  justify-content: center;
+  border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--dim);
@@ -38,20 +47,50 @@
   cursor: pointer;
 }
 
-.rail-item:hover { color: var(--text); background: var(--panel2); border-color: var(--line); }
+.rail-item:hover { color: var(--text); background: var(--panel2); }
 
+/* Active = accent icon plus a leading indicator bar. The bar is an inset
+   box-shadow so switching views never reflows the row. */
 .rail-item.active {
   color: var(--gold);
-  border-color: var(--gold-dim);
   background: var(--hover);
+  box-shadow: inset 2px 0 0 var(--gold);
 }
 
-.rail-icon { flex: 0 0 auto; width: 16px; text-align: center; font-size: 13px; }
+.rail-icon { flex: 0 0 auto; width: 20px; text-align: center; font-size: 16px; line-height: 1; }
 
-.rail-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The label is hidden by DEFAULT rather than shrink-collapsed. A shrink-only
+   label collapses to zero width while its sibling `.rail-key` chip keeps its
+   intrinsic size, so the hotkey chips used to overflow the 48px rail as stray
+   digits. Hidden-by-default removes that failure mode; the expanded rail is the
+   only place labels and hotkeys are shown. */
+.rail-label { display: none; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The count chip is absolutely positioned out of the flow. A flex sibling here
+   would be clamped to 0 width whenever the sidebar is collapsed. */
+.rail-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  min-width: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--gold);
+  color: var(--button-text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  pointer-events: none;
+}
+
+.rail-badge[hidden] { display: none; }
 
 .rail-key {
   flex: 0 0 auto;
+  display: none;
   font-family: inherit;
   font-size: 10px;
   line-height: 1;
@@ -64,13 +103,60 @@
 
 .rail-item.active .rail-key { color: var(--gold); border-color: var(--gold-dim); }
 
-.rail-sep { height: 1px; margin: 6px 2px; background: var(--line); }
+.rail-sep { height: 1px; margin: 4px 6px; background: var(--line); }
 
-/* Collapse to icons only when the window is narrow, keeping the rail usable. */
+/* Auto-collapse on narrow windows. This suppresses the label only; it is not a
+   replacement for the toggle's aria-expanded, which is the authoritative
+   accessibility signal for whether the rail is really collapsed. */
 @media (max-width: 1100px) {
-  .rail { width: 52px; padding: 12px 6px; }
-  .rail-label, .rail-key { display: none; }
-  .rail-item { justify-content: center; padding: 9px 0; }
+  .rail-label,
+  .rail-key,
+  .rail-toggle { display: none; }
+}
+
+/* ------------------------------------------------- collapsed rail (VS Code dock)
+   The user can pin the rail open so labels and hotkey hints are listed. With
+   the pin on, the rail takes a sidebar width and rows go back to a left-aligned
+   label layout — still one row per view, same DOM. */
+:root[data-rail="expanded"] .rail {
+  width: 172px;
+  padding: 8px 6px;
+}
+
+:root[data-rail="expanded"] .rail-item {
+  width: 100%;
+  height: auto;
+  padding: 6px 8px;
+  justify-content: flex-start;
+}
+
+:root[data-rail="expanded"] .rail-item:hover,
+:root[data-rail="expanded"] .rail-item.active { box-shadow: inset 2px 0 0 var(--gold); }
+
+:root[data-rail="expanded"] .rail-item:not(.active) { box-shadow: none; }
+
+:root[data-rail="expanded"] .rail-toggle { margin: 0 0 4px; }
+
+:root[data-rail="expanded"] .rail-label { display: block; }
+
+:root[data-rail="expanded"] .rail-key { display: inline-block; }
+
+/* Rail collapse toggle, pinned to the top of the rail. */
+.rail-toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 26px;
+  margin: 0 auto 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
 }
 
 /* ------------------------------------------------------- bottom status bar */
