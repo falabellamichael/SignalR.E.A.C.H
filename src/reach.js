@@ -588,14 +588,13 @@
         restartBtn.addEventListener('click', () => {
             restartBtn.disabled = true;
             core.toast('Restarting relay…', 'info');
-            core.relayFetch('/_reach/restart', { method: 'POST' }, 8000)
+            // Served by the local control server, not the relay: the old
+            // POST /_reach/restart hit a route the relay never had (404), so
+            // this button silently did nothing.
+            core.restartEndpoint()
                 .then(() => {
-                    setTimeout(() => {
-                        core.refreshLocal().then(() => {
-                            updateStationaryValues(panel);
-                            core.toast('Relay restarted ✓', 'ok');
-                        });
-                    }, 1200);
+                    updateStationaryValues(panel);
+                    core.toast('Relay restarted ✓', 'ok');
                 })
                 .catch(err => core.toast('Restart: ' + err.message, 'error'))
                 .finally(() => { restartBtn.disabled = false; });

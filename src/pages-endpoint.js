@@ -31,22 +31,42 @@
         const startBtn = el('button', 'reach-btn reach-btn-primary reach-btn-sm', 'Start Endpoint');
         const startResult = el('div', 'reach-result');
         startResult.hidden = true;
+        // The button must never claim "Ready" while the control server behind it
+        // is missing — that is exactly how it silently did nothing before.
+        core.supervisorStatus().then(status => {
+            if (status === 'offline') {
+                startBtn.disabled = true;
+                startBtn.title = 'Start the local control once from a terminal: python tools/reach.py start';
+                startResult.hidden = false;
+                startResult.className = 'reach-result reach-result-error';
+                startResult.textContent = 'The local Start control is not running. Start it once from a terminal: python tools/reach.py start (then this button works).';
+            }
+        });
         startBtn.addEventListener('click', () => {
             startBtn.disabled = true;
             startResult.hidden = false;
+            startResult.className = 'reach-result';
             startResult.textContent = 'Starting relay and public tunnel…';
             core.startEndpoint()
                 .then(data => {
                     startResult.className = 'reach-result reach-result-ok';
-                    startResult.textContent = 'Ready: ' + data.public_url + '/v1';
+                    startResult.textContent = 'Ready: ' + data.public_url + '/v1'
+                        + (data.published === 'skipped' ? ' — public pointer not republished yet (rate-limited); clients reading the gist may still see an older URL.'
+                            : data.published === 'failed' ? ' — public pointer could not be updated; sharing may use a stale URL.'
+                            : '');
                     toast('Endpoint ready', 'ok');
+                    // A relay that starts creates the one-click control, so a
+                    // disabled button should recover without a page reload.
+                    core.supervisorStatus().then(status => { if (status === 'ok') startBtn.disabled = false; });
                 })
                 .catch(err => {
                     startResult.className = 'reach-result reach-result-error';
                     startResult.textContent = 'Start failed: ' + err.message;
                     toast('Endpoint could not start', 'error');
-                })
-                .finally(() => { startBtn.disabled = false; });
+                    // Keep the button disabled only when the control server is
+                    // genuinely absent; any other failure is retryable.
+                    if (err.message.indexOf('control is not running') === -1) startBtn.disabled = false;
+                });
         });
         startBody.appendChild(startBtn);
         startBody.appendChild(startResult);
