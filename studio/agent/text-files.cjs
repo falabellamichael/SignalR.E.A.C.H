@@ -4,7 +4,42 @@ const fs = require('fs');
 const path = require('path');
 const engines = require('./engines.cjs');
 
-const binaryExtensions = new Set(('.pyc .pyo .exe .dll .so .dylib .png .jpg .jpeg .gif .ico .webp .pdf .zip .gz .7z .rar .mp3 .mp4 .wav .woff .woff2 .ttf .db .sqlite .sqlite3 .asar').split(' '));
+const binaryExtensions = new Set(('.pyc .pyo .exe .dll .so .dylib .png .jpg .jpeg .gif .ico .webp .bmp .avif .tif .tiff .pdf .zip .gz .7z .rar .mp3 .mp4 .wav .woff .woff2 .ttf .db .sqlite .sqlite3 .asar').split(' '));
+
+/* Previewable (non-text) files the editor drawer can render without saving.
+ * Images render inline; audio/video render a player; PDFs render in an
+ * iframe. Everything else binary still reports "cannot open as text" with an
+ * "Open externally" affordance handled by the renderer. */
+const previewMimeByExt = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+  '.avif': 'image/avif', '.ico': 'image/x-icon', '.svg': 'image/svg+xml',
+  '.tif': 'image/tiff', '.tiff': 'image/tiff',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+  '.pdf': 'application/pdf',
+};
+const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
+
+function previewKindFor(file) {
+  const mime = previewMimeByExt[path.extname(file).toLowerCase()];
+  if (!mime) return null;
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime === 'application/pdf') return 'pdf';
+  return null;
+}
+
+function readPreviewFile(file) {
+  const kind = previewKindFor(file);
+  if (!kind) return null;
+  const stat = fs.statSync(file);
+  if (stat.size > PREVIEW_MAX_BYTES) throw new Error('File is too large to preview (25 MB limit).');
+  const mime = previewMimeByExt[path.extname(file).toLowerCase()];
+  const data = fs.readFileSync(file).toString('base64');
+  return { kind, mime, dataUrl: `data:${mime};base64,${data}`, size: stat.size };
+}
 
 function assertTextPath(file) {
   if (!binaryExtensions.has(path.extname(file).toLowerCase())) return;
@@ -73,4 +108,4 @@ function writeTextFile(file, content, options = {}) {
   }
 }
 
-module.exports = { readTextFile, writeTextFile, assertTextPath, onFileWrite };
+module.exports = { readTextFile, writeTextFile, assertTextPath, onFileWrite, readPreviewFile, previewKindFor };

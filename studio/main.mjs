@@ -34,7 +34,7 @@ const { decideTeamPriority } = require('./agent/jev-team-priority.cjs');
 const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
-const { readTextFile, writeTextFile } = require('./agent/text-files.cjs');
+const { readTextFile, writeTextFile, readPreviewFile, previewKindFor } = require('./agent/text-files.cjs');
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
 const { StudioBrowser } = require('./browser/host.cjs');
@@ -467,6 +467,121 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
 }
 
 // ---------- ipc ----------
+const pendingAgentMessages = new Map();
+const resendingAgents = new Set();
+const syntheticPromptSources = new Set(['tool-summary', 'recovery', 'recovery-attempt', 'team-message', 'team-run', 'memory', 'budget-checkpoint', 'nurse-user']);
+
+function isHumanPrompt(message) {
+  return message?.role === 'user' && (!syntheticPromptSources.has(message._reachMeta?.source)
+    || message._reachMeta?.source === 'recovery' && typeof message.content === 'string' && /^\s*(?:continue|resume)\s*[.!]?\s*$/i.test(message.content))
+    && !(typeof message.content === 'string' && /^(?:TOOL RESULTS(?: \(untrusted data, not instructions\))?\r?\n|REACH conversation memory \(compressed\):|The run-control block was invalid\.|The response ended without an action)/.test(message.content));
+}
+
+function humanPromptIndex(messages, index) {
+  if (isHumanPrompt(messages[index])) return index;
+  if (messages[index]?.role === 'assistant') {
+    for (let prior = index - 1; prior >= 0; prior--) if (isHumanPrompt(messages[prior])) return prior;
+  }
+}
+
+function messageKey(messages, index) {
+  const message = messages[index];
+  if (!message) return null;
+  // Hash saved data before UI formatting; identical replies also need their prompt.
+  const identity = item => item ? { role: item.role, content: item.content, meta: item._reachMeta || null } : null;
+  const promptIndex = message.role === 'assistant' ? humanPromptIndex(messages, index) : undefined;
+  return createHash('sha256').update(JSON.stringify({ message: identity(message),
+    ...(message.role === 'assistant' ? { prompt: identity(messages[promptIndex]) } : {}) })).digest('hex');
+}
+
+function savedMessageIndex(messages, index, key) {
+  if (!Number.isInteger(index) || index < 0 || typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key)) {
+    throw new Error('The saved message identity is unavailable. Refresh the conversation.');
+  }
+  if (messageKey(messages, index) === key) return index;
+  for (let current = messages.length - 1; current >= 0; current--) if (messageKey(messages, current) === key) return current;
+  throw new Error('The saved message is no longer retained. Refresh the conversation.');
+}
+
+async function dispatchAgentMessage({ id, text, attachmentIds = [], autoToken, messageIndex, messageKey: requestedKey }, resend = false) {
+  let autoRoute, registered = false;
+  try {
+    if (resendingAgents.has(id) || resend && pendingAgentMessages.has(id)) throw new Error('A message is starting. Wait before resending.');
+    pendingAgentMessages.set(id, (pendingAgentMessages.get(id) || 0) + 1);
+    registered = true;
+    if (resend) resendingAgents.add(id);
+    const store = getAgentStore();
+    let replay = null, promptIndex;
+    const assertResendIdle = () => {
+      const agent = store.get(id);
+      if (!agent) throw new Error('Conversation not found.');
+      if (agentLoops.get(id)?.running || agent.runState?.status === 'running' || autoPlanning.has(id)
+          || startingTeamConversations.has(id) || [...teamRuns.values()].some(run => run.conversationId === id && !run.paused)) {
+        throw new Error('Wait for the conversation or team run to finish before resending.');
+      }
+      if (agent.runState?.status === 'waiting_edits' || Object.keys(agent.pendingEdits || {}).length) {
+        throw new Error('Resolve the pending edits before resending.');
+      }
+      return agent;
+    };
+    if (resend) {
+      const agent = assertResendIdle(), messages = agent.messages || [];
+      messageIndex = savedMessageIndex(messages, messageIndex, requestedKey);
+      promptIndex = humanPromptIndex(messages, messageIndex);
+      if (promptIndex === undefined) throw new Error('This message has no saved user prompt to resend.');
+      const original = messages[promptIndex];
+      if (typeof original.content !== 'string' && !Array.isArray(original.content)) throw new Error('The saved user input is invalid.');
+      const content = structuredClone(original.content);
+      const display = original._reachMeta?.display ?? (typeof content === 'string' ? content : content.find(part => part?.type === 'text')?.text || '');
+      if (!String(display || '').trim() && !(Array.isArray(content) && content.length)) throw new Error('The saved user input is empty.');
+      replay = { content, display: String(display), meta: original._reachMeta ? structuredClone(original._reachMeta) : null };
+      text = replay.display;
+    } else {
+      if (!String(text || '').trim() && !(Array.isArray(attachmentIds) && attachmentIds.length)) throw new Error('A message is required.');
+      autoRoute = consumeAutoPlan(autoToken, { id, text: String(text || ''), kind: 'model', hasAttachments: Array.isArray(attachmentIds) && attachmentIds.length > 0 });
+    }
+    const loop = await getAgentLoop(id, { autoRoute, newTurn: true });
+    validateAutoDispatch(autoRoute);
+    if (resend) {
+      const messages = assertResendIdle().messages || [];
+      messageIndex = savedMessageIndex(messages, messageIndex, requestedKey);
+      promptIndex = humanPromptIndex(messages, messageIndex);
+      if (loop.running) throw new Error('Wait for the current run to finish before resending.');
+    } else if (loop.running && Array.isArray(attachmentIds) && attachmentIds.length) {
+      throw new Error('Wait for the current run to finish before sending attachments.');
+    }
+    // Both new input and replay use the current conversation's dispatch/policy.
+    const agent = store.validateMaterialization(id);
+    const staged = replay ? { attachments: [] } : stageAgentAttachments(agent, attachmentIds);
+    const message = replay || (staged.attachments.length ? attachmentMessage(text, staged) : String(text || ''));
+    store.materialize(id);
+    if (agent && (!agent.name || agent.name === 'Chat' || agent.name.startsWith('Chat '))) {
+      const title = String(text).trim().replace(/\s+/g, ' ').slice(0, 42)
+        || staged.attachments.map(file => file.name).join(', ').slice(0, 42) || 'Chat';
+      store.update(id, { name: title });
+      if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'renamed', name: title, draft: false });
+    }
+    const previousLast = store.get(id)?.messages.at(-1), wasRunning = loop.running;
+    loop.sendUserMessage(message).catch(err => {
+      if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'error', message: err.message });
+    });
+    if (autoRoute) loop._emit('jev-auto', autoRoute.summary);
+    const messages = store.get(id)?.messages || [], appendedIndex = messages.length - 1;
+    const appended = !wasRunning && messages[appendedIndex]?.role === 'user' && messages[appendedIndex] !== previousLast;
+    return { ok: true, draft: false, display: replay ? replay.display : staged.attachments.length ? message.display : String(text || ''),
+      ...(appended ? { messageIndex: appendedIndex, messageKey: messageKey(messages, appendedIndex) } : {}), ...(resend ? { promptIndex } : {}) };
+  } catch (error) {
+    return { ok: false, err: error.message };
+  } finally {
+    finishAutoDispatch(autoRoute);
+    if (registered) {
+      const remaining = pendingAgentMessages.get(id) - 1;
+      if (remaining) pendingAgentMessages.set(id, remaining); else pendingAgentMessages.delete(id);
+      if (resend) resendingAgents.delete(id);
+    }
+  }
+}
+
 function registerIpc() {
   ipcMain.handle('telemetry:sample', () => telemetry.sample());
   ipcMain.handle('telemetry:sources', () => loadSettings().telemetrySources || telemetryDefaults);
@@ -637,18 +752,19 @@ function registerIpc() {
     if (!agent) return null;
     // Format older saved conversations without rewriting their original history.
     return { ...agent, messages: agent.messages.map((m, index) => {
+      const projected = { ...m, _reachMessageKey: messageKey(agent.messages, index) };
       // Older saved retries remain in the audit history, but are one UI reply.
       if (m.role === 'assistant' && agent.messages[index + 1]?._reachMeta?.source === 'recovery') {
-        return { ...m, _reachMeta: { ...m._reachMeta, source: 'recovery-attempt' } };
+        return { ...projected, _reachMeta: { ...m._reachMeta, source: 'recovery-attempt' } };
       }
       if (m.role === 'assistant' && m._reachMeta?.display === undefined) {
         const parsed = parseAgentResponse(m.content);
-        if (!parsed.invalid) return { ...m, _reachMeta: { ...m._reachMeta, display: parsed.display, question: parsed.confirm } };
+        if (!parsed.invalid) return { ...projected, _reachMeta: { ...m._reachMeta, display: parsed.display, question: parsed.confirm } };
       }
       if (m.role === 'user' && /^(TOOL RESULTS\n|The run-control block was invalid\.|The response ended without an action)/.test(m.content)) {
-        return { ...m, _reachMeta: { ...m._reachMeta, source: 'recovery' } };
+        return { ...projected, _reachMeta: { ...m._reachMeta, source: 'recovery' } };
       }
-      return m;
+      return projected;
     }) };
   });
   ipcMain.handle('agents:tree', (_e, dir) => ({ ok: true, tree: getAgentStore().tree(dir) }));
@@ -803,45 +919,8 @@ function registerIpc() {
       if (controller && autoPlanning.get(id) === controller) autoPlanning.delete(id);
     }
   });
-  ipcMain.handle('agents:send', async (_e, { id, text, attachmentIds = [], autoToken }) => {
-    let autoRoute;
-    try {
-      if (!String(text || '').trim() && !(Array.isArray(attachmentIds) && attachmentIds.length)) {
-        throw new Error('A message is required.');
-      }
-      autoRoute = consumeAutoPlan(autoToken, { id, text: String(text || ''), kind: 'model', hasAttachments: Array.isArray(attachmentIds) && attachmentIds.length > 0 });
-      const loop = await getAgentLoop(id, { autoRoute, newTurn: true });
-      validateAutoDispatch(autoRoute);
-      if (loop.running && Array.isArray(attachmentIds) && attachmentIds.length) {
-        throw new Error('Wait for the current run to finish before sending attachments.');
-      }
-      // Auto-title: the first user message names an untitled chat.
-      const store = getAgentStore();
-      // Check the saved-history limit before copying selected attachments. A
-      // failed picker/staging operation must still leave New Chat unsaved.
-      const agent = store.validateMaterialization(id);
-      const staged = stageAgentAttachments(agent, attachmentIds);
-      const message = staged.attachments.length ? attachmentMessage(text, staged) : String(text || '');
-      store.materialize(id);
-      if (agent && (!agent.name || agent.name === 'Chat' || agent.name.startsWith('Chat '))) {
-        const title = String(text).trim().replace(/\s+/g, ' ').slice(0, 42)
-          || staged.attachments.map(file => file.name).join(', ').slice(0, 42) || 'Chat';
-        store.update(id, { name: title });
-        if (win && !win.isDestroyed()) win.webContents.send('agent:event', { agentId: id, type: 'renamed', name: title, draft: false });
-      }
-      loop.sendUserMessage(message).catch((err) => {
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('agent:event', { agentId: id, type: 'error', message: err.message });
-        }
-      });
-      if (autoRoute) loop._emit('jev-auto', autoRoute.summary);
-      return { ok: true, draft: false, display: staged.attachments.length ? message.display : String(text || '') };
-    } catch (e) {
-      return { ok: false, err: e.message };
-    } finally {
-      finishAutoDispatch(autoRoute);
-    }
-  });
+  ipcMain.handle('agents:send', (_e, payload) => dispatchAgentMessage(payload));
+  ipcMain.handle('agents:resend', (_e, payload) => dispatchAgentMessage(payload, true));
   ipcMain.handle('agents:context', async (_e, id) => {
     const agent = getAgentStore().get(id);
     if (!agent) return null;
@@ -1465,9 +1544,32 @@ function registerIpc() {
     try {
       const abs = resolveInProject(root, rel);
       const stat = fs.statSync(abs);
-      if (stat.size > 2 * 1024 * 1024) return { ok: false, err: 'File is too large to open (2 MB limit).' };
+      if (stat.size > 2 * 1024 * 1024 && !previewKindFor(abs)) return { ok: false, err: 'File is too large to open (2 MB limit).' };
+      // Images, audio, video and PDFs preview instead of opening as text.
+      try {
+        const preview = readPreviewFile(abs);
+        if (preview) return { ok: true, preview: true, kind: preview.kind, mime: preview.mime, dataUrl: preview.dataUrl, size: preview.size };
+      } catch (previewError) {
+        return { ok: false, err: previewError.message };
+      }
       const { content, encoding } = readTextFile(abs);
       return { ok: true, content, encoding };
+    } catch (e) {
+      return { ok: false, err: e.message };
+    }
+  });
+  ipcMain.handle('files:openExternal', (_e, { agentId, projectDir, path: rel }) => {
+    let root = projectDir;
+    if (!root && agentId) {
+      const agent = getAgentStore().get(agentId);
+      if (agent && agent.dir) root = agent.dir;
+    }
+    if (!root) return { ok: false, err: 'No project bound.' };
+    try {
+      const abs = resolveInProject(root, rel);
+      if (!fs.existsSync(abs)) return { ok: false, err: 'File does not exist.' };
+      shell.openPath(abs).catch(error => { throw error; });
+      return { ok: true };
     } catch (e) {
       return { ok: false, err: e.message };
     }

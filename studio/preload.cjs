@@ -90,6 +90,7 @@ contextBridge.exposeInMainWorld('reach', {
     pickAttachments: id => ipcRenderer.invoke('agents:pickAttachments', id),
     autoPlan: (id, text, options = {}) => ipcRenderer.invoke('agents:autoPlan', { id, text, hasAttachments: options.hasAttachments === true }),
     send: (id, text, attachmentIds = [], options = {}) => ipcRenderer.invoke('agents:send', { id, text, attachmentIds, autoToken: options.autoToken }),
+    resend: (id, messageIndex, messageKey) => ipcRenderer.invoke('agents:resend', { id, messageIndex, messageKey }),
     stop: (id) => ipcRenderer.invoke('agents:stop', id),
     setTodos: (id, todos) => ipcRenderer.invoke('agents:setTodos', { id, todos }),
     appendNote: (id, content) => ipcRenderer.invoke('agents:appendNote', { id, content }),
@@ -160,6 +161,7 @@ contextBridge.exposeInMainWorld('reach', {
     tree: (agentId, projectDir, directory = '', offset = 0) => ipcRenderer.invoke('files:tree', { agentId, projectDir, directory, offset }),
     read: (agentId, relPath, projectDir) => ipcRenderer.invoke('files:read', { agentId, path: relPath, projectDir }),
     write: (agentId, relPath, content, projectDir) => ipcRenderer.invoke('files:write', { agentId, path: relPath, content, projectDir }),
+    openExternal: (agentId, relPath, projectDir) => ipcRenderer.invoke('files:openExternal', { agentId, path: relPath, projectDir }),
   },
 
   // Models. Pass nothing to list the ACTIVE connection's models (playground,
