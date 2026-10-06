@@ -263,8 +263,8 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 <!-- BASELINE:START -->
 | Metric | Value |
 | --- | --- |
-| `studio/main.mjs lines` | 4,677 |
-| `studio/renderer/app.js lines` | 5,684 |
+| `studio/main.mjs lines` | 4,731 |
+| `studio/renderer/app.js lines` | 5,701 |
 | `studio/preload.cjs lines` | 228 |
 | `studio/agent modules` | 88 |
 | `studio/renderer scripts` | 29 |

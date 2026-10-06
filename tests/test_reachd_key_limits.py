@@ -287,7 +287,9 @@ class KeyRpmOverHttpTests(RelayFixture):
                 response = conn.getresponse()
                 codes.append(response.status)
                 response.read()
-            self.assertEqual(codes, [400, 400, 400])
+            # key_required off is local-only now: a tunnel client that sends
+            # no key is refused on every request of the kept-alive connection.
+            self.assertEqual(codes, [401, 401, 401])
         finally:
             conn.close()
 
