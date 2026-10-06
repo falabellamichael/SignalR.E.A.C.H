@@ -1,5 +1,25 @@
 # Changelog
 
+## [26.9.13](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.12...v26.9.13) (2026-10-06)
+
+
+### Features
+
+* **studio:** add message actions tray, file previews, and prompt resend ([#145](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/145)) ([687e4ef](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/687e4efffcb7ee36f0d6a130b0fb784163be6968))
+* **studio:** port the Create workbench (library + detail pane) ([54f1d30](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/54f1d30c4a8e223529522a758f39fbe6a43bb62e))
+* **studio:** restore the advanced agent-capability engines ([5c07099](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/5c07099bc1e1e8bdb150a4cbf4e01a0d55cca45c))
+
+
+### Bug Fixes
+
+* fit Studio compression to subscription request limits ([8452023](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/84520236475511477a1d80a67f2d776fa4db16d4))
+* **reach:** make the panel's endpoint buttons work and adopt the real account service ([3868c96](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3868c96b511a130e9e4dfea9432d7fe125102104))
+* **reach:** never hold back the first endpoint publish after boot ([#149](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/149)) ([52a0838](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/52a083893bb8d46118671255f25c42e3c4d20539))
+* **reach:** report a provisioned account service as running, not missing ([c6bc766](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c6bc766115a746b90d83bc2d0d34511ccd7378da))
+* recover browser chat action responses independently ([83d67a0](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/83d67a02f9272d940edd28ac2bf8aaaf24669e00))
+* **studio:** hide the native browser view under floating menus ([#146](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/146)) ([8bbc8f6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8bbc8f61135c88761139eeada24741c6b32584ea))
+* **website:** prevent page scroll at horizontal rail edges ([#137](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/137)) ([888e953](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/888e953e2ff538e296b1b1f510a8de3128e02a6a))
+
 ## [26.9.12](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.11...v26.9.12) (2026-10-02)
 
 
