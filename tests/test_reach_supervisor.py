@@ -195,7 +195,9 @@ class EndpointBringUpTests(unittest.TestCase):
 
     def test_ensure_leaves_a_healthy_relay_untouched(self):
         cli = unittest.mock.Mock()
-        with unittest.mock.patch.object(supervisor, "port_open", return_value=True), \
+        with unittest.mock.patch.object(supervisor, "_last_published_url", "https://x/v1"), \
+                unittest.mock.patch.object(supervisor, "publish") as publish, \
+                unittest.mock.patch.object(supervisor, "port_open", return_value=True), \
                 unittest.mock.patch.object(supervisor, "start_server") as start, \
                 unittest.mock.patch.object(supervisor, "public_url_from_server",
                                            return_value="https://x/v1"), \
@@ -204,18 +206,23 @@ class EndpointBringUpTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         start.assert_not_called()
         cli.stop_server.assert_not_called()
+        publish.assert_not_called()
 
     def test_restart_stops_the_healthy_relay_first(self):
         cli = unittest.mock.Mock()
         # Port is up before the stop, free after it — _bring_up must notice and
         # start the relay again.
-        with unittest.mock.patch.object(supervisor, "port_open",
+        with unittest.mock.patch.object(supervisor, "_last_published_url", None), \
+                unittest.mock.patch.object(supervisor, "_last_publish_attempt", None), \
+                unittest.mock.patch.object(supervisor, "publish", return_value=True), \
+                unittest.mock.patch.object(supervisor, "port_open",
                                         side_effect=[True, False]), \
                 unittest.mock.patch.object(supervisor, "time") as clock, \
                 unittest.mock.patch.object(supervisor, "start_server") as start, \
                 unittest.mock.patch.object(supervisor, "public_url_from_server",
                                            return_value="https://x/v1"), \
                 unittest.mock.patch.object(supervisor, "_load_cli", return_value=cli):
+            clock.monotonic.return_value = 1000.0
             result = supervisor.restart_endpoint()
         self.assertTrue(result["ok"])
         cli.stop_server.assert_called_once()
@@ -241,7 +248,7 @@ class EndpointBringUpTests(unittest.TestCase):
         # Reset the real module globals: sibling tests run ensure_endpoint for
         # real and would otherwise leave a published URL plus a live cooldown.
         with unittest.mock.patch.object(supervisor, "_last_published_url", None), \
-                unittest.mock.patch.object(supervisor, "_last_publish_attempt", 0.0), \
+                unittest.mock.patch.object(supervisor, "_last_publish_attempt", None), \
                 unittest.mock.patch.object(supervisor, "port_open", return_value=True), \
                 unittest.mock.patch.object(supervisor, "public_url_from_server",
                                            return_value="https://x/v1"), \
@@ -265,7 +272,7 @@ class EndpointBringUpTests(unittest.TestCase):
 
     def test_a_failed_publish_is_reported_rather_than_hidden(self):
         with unittest.mock.patch.object(supervisor, "_last_published_url", None), \
-                unittest.mock.patch.object(supervisor, "_last_publish_attempt", 0.0), \
+                unittest.mock.patch.object(supervisor, "_last_publish_attempt", None), \
                 unittest.mock.patch.object(supervisor, "port_open", return_value=True), \
                 unittest.mock.patch.object(supervisor, "public_url_from_server",
                                            return_value="https://x/v1"), \
