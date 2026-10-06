@@ -27,7 +27,7 @@
         const heroBody = el('div', 'reach-about-hero');
         heroBody.appendChild(el('div', 'reach-hero-badge reach-hero-badge-lg', 'REACH'));
         const copy = el('div', null);
-        copy.appendChild(el('p', 'reach-copy', 'SignalR.E.A.C.H adds a hosted OpenAI-compatible endpoint with unlimited gpt-4o to SimpleRAG — no key, no quotas, for everyone. Requests relay through OmniRoute\'s codegpt provider; the public tunnel only ever exposes the keyless relay surface.'));
+        copy.appendChild(el('p', 'reach-copy', 'SignalR.E.A.C.H adds a hosted OpenAI-compatible endpoint serving gpt-4o to SimpleRAG. Remote clients need an sk-reach API key and are rate-limited by default. Requests relay through OmniRoute\'s codegpt provider; the public tunnel only ever exposes the key-gated relay surface.'));
         copy.appendChild(el('p', 'reach-copy', 'REACH = RAG Endpoint & AI Chat Host'));
         heroBody.appendChild(copy);
         hero.appendChild(heroBody);
