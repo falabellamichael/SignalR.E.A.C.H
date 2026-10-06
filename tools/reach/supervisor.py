@@ -25,7 +25,12 @@ ACCOUNT_PORT = 20978
 ACCOUNT_LOG_PATH = CONFIG_DIR / "accounts" / "service.log"
 _lock = threading.Lock()
 _last_published_url = None
-_last_publish_attempt = 0.0
+# time.monotonic() of the last publish attempt; None until the first one.
+# Not 0.0: monotonic time can start near zero (it counts from boot on Linux
+# and Windows), which would wrongly hold back the first publish for up to
+# PUBLISH_COOLDOWN seconds after the machine starts.
+_last_publish_attempt = None
+PUBLISH_COOLDOWN = 300
 _server = None
 _cli_module = None
 
@@ -230,8 +235,10 @@ def _bring_up(restart_relay):
     # the panel can say the public pointer is stale instead of hiding it.
     publish_state = "skipped"
     if url != _last_published_url:
-        if time.monotonic() - _last_publish_attempt >= 300:
-            _last_publish_attempt = time.monotonic()
+        now = time.monotonic()
+        if (_last_publish_attempt is None
+                or now - _last_publish_attempt >= PUBLISH_COOLDOWN):
+            _last_publish_attempt = now
             if publish(quiet=True):
                 _last_published_url = url
                 publish_state = "published"
