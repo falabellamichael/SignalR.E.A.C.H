@@ -605,5 +605,59 @@ class ConfigSecurityTests(unittest.TestCase):
                 reachd.validate_settings(cfg)
 
 
+class CorsTests(RelayFixture):
+    """Who may READ relay responses cross-origin. The SimpleRAG panel calls
+    the relay from its own origin (an app port, file:// = "null", or a VS Code
+    webview), so local-tool origins are allowed by default; everything else is
+    opt-in through access.cors_origins."""
+
+    LOCAL_TOOL_ORIGINS = ["http://127.0.0.1:5173", "http://localhost:8000",
+                          "null", "vscode-webview://abc123", "http://[::1]:3000",
+                          "https://localhost:8443"]
+    FOREIGN_ORIGINS = ["https://evil.example", "http://127.0.0.1.evil.example",
+                       "http://user:pw@127.0.0.1:5173", "http://127.0.0.1:5173/x",
+                       "file://", "chrome-extension://abc"]
+
+    def acao(self, origin, method="GET", path="/status"):
+        _, _, resp = self.call(method, path, {"Origin": origin})
+        return resp.getheader("Access-Control-Allow-Origin"), resp.getheader("Vary")
+
+    def test_default_is_local_tools_only(self):
+        self.assertEqual(self.state.cfg["access"]["cors_origins"], "")
+        for origin in self.LOCAL_TOOL_ORIGINS:
+            for method, path in (("GET", "/status"), ("OPTIONS", "/_reach/settings"),
+                                 ("GET", "/v1/models")):
+                with self.subTest(origin=origin, method=method, path=path):
+                    allow, vary = self.acao(origin, method, path)
+                    self.assertEqual(allow, origin)
+                    self.assertIn("Origin", vary or "")
+
+    def test_default_refuses_other_origins(self):
+        for origin in self.FOREIGN_ORIGINS:
+            with self.subTest(origin=origin):
+                allow, vary = self.acao(origin)
+                self.assertIsNone(allow)
+                self.assertIn("Origin", vary or "")
+
+    def test_star_is_an_explicit_opt_in(self):
+        self.state.cfg["access"]["cors_origins"] = "*"
+        for origin in ("https://evil.example", "http://127.0.0.1:5173"):
+            with self.subTest(origin=origin):
+                self.assertEqual(self.acao(origin)[0], "*")
+
+    def test_explicit_list_adds_to_local_tools(self):
+        self.state.cfg["access"]["cors_origins"] = "https://app.example, https://b.example"
+        self.assertEqual(self.acao("https://app.example")[0], "https://app.example")
+        self.assertEqual(self.acao("https://b.example")[0], "https://b.example")
+        self.assertIsNone(self.acao("https://evil.example")[0])
+        self.assertEqual(self.acao("http://127.0.0.1:5173")[0], "http://127.0.0.1:5173")
+
+    def test_a_null_origin_is_readable_but_never_local(self):
+        # CORS lets the panel read; it must not let a sandboxed frame skip the key.
+        status, _, resp = self.call("GET", "/v1/models", {"Origin": "null"})
+        self.assertEqual(status, 401)
+        self.assertEqual(resp.getheader("Access-Control-Allow-Origin"), "null")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

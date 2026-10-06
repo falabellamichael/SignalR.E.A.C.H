@@ -451,9 +451,11 @@
                     // it, and GET masks existing tokens — re-patching would
                     // overwrite real keys with masked placeholders.
                     draft.access.key_required = true;
-                    draft.access.cors_origins = draft.access.cors_origins || '';
+                    // Remote client mode is the explicit opt-in for browser
+                    // clients on other machines; keep a list the user chose.
+                    draft.access.cors_origins = draft.access.cors_origins || '*';
                     if (rerender) rerender();
-                    const patch = { access: { key_required: true, cors_origins: draft.access.cors_origins || '' } };
+                    const patch = { access: { key_required: true, cors_origins: draft.access.cors_origins || '*' } };
                     return core.saveSettings(patch).then(({ ok: saved, data: sdata }) => {
                         if (!saved) {
                             throw new Error((sdata && sdata.error && sdata.error.message) || 'settings save failed');
@@ -596,7 +598,7 @@
                 'Per client IP, for wrong keys and admin tokens. 0 disables the lockout.'));
             ac.appendChild(buildInput('number', 'access', 'auth_lockout_s', 'Lockout length (seconds)'));
             ac.appendChild(buildInput('text', 'access', 'cors_origins', 'CORS origins',
-                'Empty denies cross-origin. Use * or a comma-separated origin list to opt in.'));
+                'Empty allows only local tools (loopback pages, file:// pages, VS Code webviews). Use * or a comma-separated origin list to also allow other sites.'));
 
             // 6b. Client API Keys (sk-reach)
             const keysCard = el('section', 'reach-card');

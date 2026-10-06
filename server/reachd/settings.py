@@ -151,7 +151,7 @@ DEFAULT_SETTINGS = {
         "keys": [],
         "ip_allowlist": [],            # empty = everyone (loopback always ok)
         "ip_blocklist": [],
-        "cors_origins": "",            # empty denies cross-origin; "*" or comma-separated origins opt in
+        "cors_origins": "",            # empty = local tools only (loopback pages, null, vscode-webview); "*" or a comma-separated list opts others in
         # A genuine same-machine client (loopback, no proxy headers, loopback
         # Host, no foreign Origin) may skip the key. Turn off to make even the
         # owner's local tools present one.

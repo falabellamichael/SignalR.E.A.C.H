@@ -79,6 +79,34 @@ def _is_loopback_ip(ip):
     return (mapped or addr).is_loopback
 
 
+def _local_tool_origin(origin):
+    """Origins the owner's own tools send, allowed for CORS by default. This
+    mirrors the supervisor's list: http(s) loopback pages on any port
+    (localhost, 127.0.0.0/8, [::1]), "null" (file:// pages and sandboxed
+    webviews) and vscode-webview:. CORS only lets such a page READ responses;
+    it grants no access by itself. "null" can be produced by any site from a
+    sandboxed frame, which is why _admin_local never treats it as local: those
+    requests still need a key."""
+    if origin == "null":
+        return True
+    try:
+        parts = urlsplit(origin)
+        if parts.scheme == "vscode-webview":
+            return bool(parts.netloc) and not parts.path.strip("/")
+        if parts.scheme not in ("http", "https"):
+            return False
+        if parts.username is not None or parts.password is not None:
+            return False
+        if parts.path or parts.query or parts.fragment or not parts.hostname:
+            return False
+        _ = parts.port  # raises ValueError for an out-of-range port
+        if parts.hostname == "localhost":
+            return True
+        return ipaddress.ip_address(parts.hostname).is_loopback
+    except (ValueError, TypeError):
+        return False
+
+
 def _host_is_loopback(host):
     """True when a Host header names this machine (any port). A missing header
     passes — a bare HTTP/1.0 client — because every browser sends one, and a
@@ -194,16 +222,20 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ helpers
     def _cors(self):
-        """Cross-origin access is opt-in. An empty list sends no
-        Access-Control-Allow-Origin. "*" remains an explicit operator choice.
-        A reflected origin always varies the cache key."""
+        """Cross-origin access beyond the owner's local tools is opt-in.
+
+        By default only local-tool origins are echoed back (see
+        _local_tool_origin): loopback pages such as the SimpleRAG panel, file://
+        pages ("null") and VS Code webviews. "*" or an explicit comma-separated
+        list in access.cors_origins opts other origins in; a list adds to the
+        local-tool origins. A reflected origin always varies the cache key."""
         raw = (core.STATE.cfg.get("access", {}) or {}).get("cors_origins")
         origins = "" if raw is None else str(raw).strip()
         origin = (self.headers.get("Origin") or "").strip()
         allowed = [o.strip() for o in origins.split(",") if o.strip()]
         if origins == "*":
             self.send_header("Access-Control-Allow-Origin", "*")
-        elif origin and origin in allowed:
+        elif origin and (origin in allowed or _local_tool_origin(origin)):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         else:

@@ -65,6 +65,6 @@ locked OS account for local protection.
 
 ## Public endpoint defaults
 
-- Cross-origin access is denied unless `access.cors_origins` is `*` or an explicit origin list. A reflected origin sends `Vary: Origin`.
-- `key_required: false` skips the key for a proven local client only. Tunnel and other non-local clients still need a key. Publishing a public URL is refused while keys are not required.
+- By default, cross-origin access is allowed only for local-tool origins: http(s) loopback pages on any port (`localhost`, `127.0.0.1`, `[::1]`), `null` (file:// pages), and `vscode-webview:`. The specific origin is echoed back with `Vary: Origin`, never `*`. Other sites need `access.cors_origins` set to `*` or an explicit comma-separated list (a list adds to the local-tool origins). Creating a remote client from the panel sets `*` when no list is configured. CORS only lets a page read responses; keys are still enforced, and a `null` origin is never treated as a local client.
+- `key_required: false` skips the key for a proven local client only. Tunnel and other non-local clients still need a key. While keys are not required, the relay's publish route, its timed publisher, `tools/reach.py publish`, and the supervisor's Start publish all refuse to publish the pointer, and setting a public URL override is refused.
 - Authentication failures return `Invalid API key.` The key prefix is not part of the error.

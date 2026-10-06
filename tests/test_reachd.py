@@ -1109,11 +1109,25 @@ class PublishTimestampTests(unittest.TestCase):
     """PRD 'Publish Public Pointer URL': UI displays publication timestamp;
     admin can revoke the pointer with a single click."""
 
-    def _state(self):
+    def _state(self, key_required=True):
         from reachd.state import RelayState
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["access"]["key_required"] = key_required
         with tempfile.NamedTemporaryFile() as tf:
-            return RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
-                              Path(tf.name))
+            return RelayState(cfg, Path(tf.name))
+
+    def test_publish_is_refused_while_keys_are_not_required(self):
+        # Covers every caller of publish_url, including the timed publisher.
+        from reachd import publish as pub
+        state = self._state(key_required=False)
+        state.public_url = "https://abc.ngrok-free.app"
+        with patch("shutil.which", return_value="gh"), \
+             patch("subprocess.run") as run:
+            ok, detail = pub.publish_url(state)
+        self.assertFalse(ok)
+        self.assertIn("not required", detail)
+        run.assert_not_called()
+        self.assertIsNone(state.last_published_at)
 
     def test_publish_records_timestamp_and_snapshot_exposes_it(self):
         from reachd import publish as pub

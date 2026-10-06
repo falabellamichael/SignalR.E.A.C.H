@@ -11,6 +11,10 @@ def publish_url(state):
     """Push the current public URL to the pointer gist. Returns (ok, detail)."""
     if not state.cfg.get("publish", {}).get("enabled"):
         return False, "publishing is disabled in settings"
+    # Keyless mode is local-only; advertising its URL would only hand out an
+    # endpoint every remote client is refused from. Covers the timed publisher.
+    if not (state.cfg.get("access") or {}).get("key_required", False):
+        return False, "refusing to publish while access keys are not required"
     url = state.public_url
     if not url:
         return False, "no public URL available"
