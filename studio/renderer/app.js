@@ -3643,57 +3643,14 @@ function connectionLabel(id) {
 }
 
 function renderPersonaList() {
-  const el = $('#persona-list');
-  el.innerHTML = '';
-  if (!personas.length) {
-    el.innerHTML = '<div class="dim tree-empty">No custom agents yet — create one to give a crew member its own model and instructions.</div>';
-    return;
-  }
-  for (const p of personas) {
-    const card = document.createElement('div');
-    card.className = 'persona-card';
-    /* Show the pin: without a chip, a persona locked to one provider looks
-     * identical to one that follows the team spread, and the difference only
-     * becomes visible mid-run. Name the connection rather than its id. */
-    const pin = p.connectionId
-      ? `<span class="chip pinned" title="Pinned to one connection">⇢ ${escapeHtml(connectionLabel(p.connectionId) || 'deleted connection')}</span>`
-      : '';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(p.name)}</strong><span class="chip dim">${escapeHtml(p.model || 'default model')}</span>${pin}</div>`
-      + `<div class="persona-card-prompt">${escapeHtml((p.prompt || 'No custom instructions.').slice(0, 140))}${(p.prompt || '').length > 140 ? '…' : ''}</div>`;
-    card.onclick = () => openPersonaModal(p);
-    el.appendChild(card);
-  }
+  /* The create workbench owns the markup; this keeps the data loading, the
+   * connection naming and the modals here, where the rest of the app state
+   * lives. See create-page.js. */
+  window.ReachCreatePage.renderAgents(personas, { connectionLabel, edit: openPersonaModal });
 }
 
 function renderTeamList() {
-  const el = $('#team-list');
-  el.innerHTML = '';
-  if (!teams.length) {
-    el.innerHTML = '<div class="dim tree-empty">No teams yet. Build one from your custom agents, then dispatch it from any conversation.</div>';
-    return;
-  }
-  for (const t of teams) {
-    const card = document.createElement('div');
-    card.className = 'team-card';
-    const roster = (t.members || []).map(m => escapeHtml(m.personaName) + (m.role ? ` <span class="dim">(${escapeHtml(m.role)})</span>` : '')).join(t.mode === 'chain' ? ' → ' : t.mode === 'links' ? ' ⇄ ' : ' · ');
-    /* A spread team runs on several providers, so say so on the card — otherwise
-     * two identical-looking crews behave differently at run time. */
-    const spreadChip = t.spreadConnections === true
-      ? '<span class="chip ok" title="Members spread across the enabled connections">⇶ multi-endpoint</span>'
-      : '';
-    /* Which contract the crew runs on is a behavior difference, so the card
-     * carries it too (absent on legacy teams = JSON contract). */
-    const protoChip = t.toolProtocol === 'native'
-      ? '<span class="chip" title="Native OpenAI tool calls: member tool calls execute directly">native tools</span>'
-      : '';
-    card.innerHTML = `<div class="persona-card-head"><strong>${escapeHtml(t.name)}</strong><span class="chip ${t.mode === 'chain' ? 'pending' : t.mode === 'links' ? 'links' : 'ok'}">${t.mode}</span>${protoChip}${spreadChip}</div>`
-      + `<div class="persona-card-prompt">${roster || '<span class="dim">no members</span>'}</div>`
-      + `<div class="team-card-actions"><button class="ghost small" data-act="run">Run…</button><button class="ghost small" data-act="edit">Edit</button></div>`;
-    card.querySelector('[data-act="edit"]').onclick = (e) => { e.stopPropagation(); openTeamModal(t); };
-    card.querySelector('[data-act="run"]').onclick = (e) => { e.stopPropagation(); openTeamRunModal(t); };
-    card.onclick = () => openTeamModal(t);
-    el.appendChild(card);
-  }
+  window.ReachCreatePage.renderTeams(teams, { edit: openTeamModal, run: openTeamRunModal });
 }
 
 // ----- persona modal -----
@@ -3930,6 +3887,7 @@ $('#btn-persona-save').onclick = async () => {
     if (!ok) return;
   }
   $('#persona-modal').classList.add('hidden');
+  window.ReachCreatePage.select('agents', personaId);
   await loadCreatePage();
 };
 $('#btn-persona-delete').onclick = async () => {
@@ -4125,6 +4083,7 @@ $('#btn-team-save').onclick = async () => {
     : await reachApi.teams.create(patch);
   if (!res.ok) { showNotice(res.err); return; }
   $('#team-modal').classList.add('hidden');
+  window.ReachCreatePage.select('teams', res.team?.id || editingTeamId);
   await loadCreatePage();
 };
 $('#btn-team-delete').onclick = async () => {
