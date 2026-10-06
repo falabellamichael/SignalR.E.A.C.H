@@ -85,6 +85,7 @@ from .supervisor import (
     ACCOUNTS_TASK,
     CONTROL_PORT,
     accounts_ready,
+    accounts_task_present,
     ensure_accounts_running,
     ensure_supervisor_running,
     run as run_supervisor,
@@ -353,13 +354,15 @@ def cmd_status(_args):
         "one-click control on 127.0.0.1:%d" % CONTROL_PORT if port_open(CONTROL_PORT)
         else "control server stopped — run `reach.py start`"))
     # Wallet sign-in is proxied to a separate account service; report it so a
-    # 503 in Studio is attributable instead of looking like a REACH bug.
-    if not accounts_ready():
-        print("  accounts:   not provisioned (wallet sign-in answers 503)")
+    # 503 in Studio is attributable instead of looking like a REACH bug. A host
+    # that provisioned it owns a task for it, which counts as configured.
+    if port_open(ACCOUNT_PORT):
+        print("  accounts:   running (loopback 127.0.0.1:%d)" % ACCOUNT_PORT)
+    elif accounts_ready() or accounts_task_present():
+        print("  accounts:   stopped — run `reach.py start` (wallet sign-in "
+              "answers 503)")
     else:
-        print("  accounts:   %s (loopback 127.0.0.1:%d)" % (
-            "running" if port_open(ACCOUNT_PORT) else "stopped — run `reach.py start`",
-            ACCOUNT_PORT))
+        print("  accounts:   not provisioned (wallet sign-in answers 503)")
     print("  pointer:    " + GIST_RAW)
     print("  config:     " + str(CONFIG_PATH))
     print("  key:        %s" % mask_key(cfg.get("omniroute_key")))

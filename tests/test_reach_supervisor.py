@@ -446,6 +446,19 @@ class SupervisorLifecycleTests(unittest.TestCase):
             printed = " ".join(str(call.args[0]) for call in output.call_args_list)
             self.assertIn(expected, printed)
 
+    def test_status_reports_a_running_account_service(self):
+        # A host that provisioned the service owns a task for it, so a running
+        # port must never be reported as "not provisioned".
+        import reach.cli as cli
+        with unittest.mock.patch.object(cli, "port_open", return_value=True), \
+                unittest.mock.patch.object(cli, "accounts_ready", return_value=False), \
+                unittest.mock.patch.object(cli, "accounts_task_present", return_value=True), \
+                unittest.mock.patch("builtins.print") as output:
+            cli.cmd_status(None)
+        printed = " ".join(str(call.args[0]) for call in output.call_args_list)
+        self.assertIn("running (loopback 127.0.0.1:20978)", printed)
+        self.assertNotIn("not provisioned", printed)
+
     def test_start_spawns_when_the_control_port_is_closed(self):
         with unittest.mock.patch.object(supervisor, "port_open", return_value=False), \
                 unittest.mock.patch.object(supervisor, "resolve_pythonw", return_value=sys.executable), \
