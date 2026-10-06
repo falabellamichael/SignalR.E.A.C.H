@@ -578,8 +578,13 @@ document.addEventListener('click', event => {
   if (!event.target.closest('.project-run-split')) closeProjectRunMenu();
   // Dismiss open message-action trays when clicking elsewhere (wings too, so
   // clicking a wing icon does not close it before its handler runs).
-  if (!event.target.closest('.msg-actions') && !event.target.closest('.msg-wing')) {
+  if (!event.target.closest('.msg-actions') && !event.target.closest('.msg-wing') && !event.target.closest('.msg-translate-pop')) {
     for (const other of document.querySelectorAll('.msg-actions.expanded')) collapseMessageTray(other);
+  }
+  // The translate popover closes on an outside click, but never when the click
+  // is on the action that toggles it (its own handler decides that).
+  if (!event.target.closest('.msg-translate-pop') && !event.target.closest('.msg-translate')) {
+    closeTranslatePopovers();
   }
 });
 document.addEventListener('keydown', event => {
@@ -1221,6 +1226,245 @@ function makeMessageActionButton({ cls, title, icon, onClick, dataset }) {
   return button;
 }
 
+/* The Translate popover. Deliberately quiet: no scrim and no modal, because
+ * picking a target language is a two-second decision and the message being
+ * translated should stay readable behind it. Never more than one is open, and
+ * the results panel is only created when there is something to show. */
+const TRANSLATE_TARGET_KEY = 'reach:translate-target';
+const TRANSLATE_RECENT = ['en', 'es', 'fr', 'de', 'pt', 'it', 'ja', 'zh', 'ko', 'ru', 'ar', 'hi'];
+
+function closeTranslatePopovers(except = null) {
+  for (const pop of chatLog.querySelectorAll('.msg-translate-pop')) {
+    if (pop !== except) pop.remove();
+  }
+}
+
+function translatePopoverOpen() {
+  return !!chatLog.querySelector('.msg-translate-pop');
+}
+
+/* The two modules load from sibling scripts; guard so a stripped build degrades
+ * to a notice instead of breaking every message action. */
+function translateModules() {
+  const languages = window.ReachLanguages;
+  const translate = window.ReachTranslate;
+  if (!languages?.get || !translate?.detect) return null;
+  return { languages, translate };
+}
+
+function openTranslatePopover(bubble, anchor, text, role) {
+  const modules = translateModules();
+  if (!modules) { showNotice('The language catalog is unavailable in this build.'); return; }
+  if (bubble.querySelector('.msg-translate-pop')) { closeTranslatePopovers(); return; }
+  closeTranslatePopovers();
+
+  const { languages, translate } = modules;
+  const pop = document.createElement('div');
+  pop.className = 'msg-translate-pop';
+  pop.setAttribute('role', 'dialog');
+  pop.setAttribute('aria-label', 'Translate message');
+
+  // --- source: what the detector believes, stated as an observation ---
+  const detected = translate.detect(text, languages.LANGUAGES);
+  const known = detected?.code ? languages.get(detected.code) : null;
+  const sourceName = known ? known.name : '';
+
+  const sourceRow = document.createElement('div');
+  sourceRow.className = 'msg-translate-row';
+  const sourceLabel = document.createElement('label');
+  sourceLabel.textContent = 'Detected';
+  const sourceValue = document.createElement('span');
+  sourceValue.className = 'msg-translate-value' + (known ? '' : ' is-unknown');
+  sourceValue.textContent = known ? known.name : 'unknown';
+  if (known && known.native && known.native !== known.name) {
+    const native = document.createElement('span');
+    native.className = 'msg-translate-native';
+    native.textContent = known.native;
+    sourceValue.appendChild(native);
+  }
+  sourceValue.title = known
+    ? `${known.name} (${detected.source === 'script' ? 'writing system' : 'word evidence'}, ${Math.round(detected.confidence * 100)}% confident)`
+    : 'Not enough text to tell — the model will work it out.';
+  const swap = document.createElement('button');
+  swap.type = 'button';
+  swap.className = 'msg-translate-swap';
+  swap.textContent = '⇅';
+  swap.title = 'Treat the message as the chosen language and translate it back';
+  swap.disabled = !known;
+  sourceRow.append(sourceLabel, sourceValue, swap);
+
+  // --- target: a searchable picker over the whole catalog ---
+  const targetRow = document.createElement('div');
+  targetRow.className = 'msg-translate-row';
+  const targetLabel = document.createElement('label');
+  targetLabel.textContent = 'Translate into';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'msg-translate-target';
+  input.setAttribute('list', 'reach-language-options');
+  input.setAttribute('autocomplete', 'off');
+  input.spellcheck = false;
+  input.setAttribute('aria-label', 'Language to translate into');
+  const savedTarget = (() => { try { return localStorage.getItem(TRANSLATE_TARGET_KEY) || ''; } catch { return ''; } })();
+  const initial = languages.get(savedTarget) || languages.get('en');
+  input.value = initial ? initial.name : 'English';
+  // The catalog is offered to the picker as options, so typing filters natively
+  // instead of us reimplementing a listbox.
+  const datalist = document.createElement('datalist');
+  datalist.id = 'reach-language-options';
+  for (const language of languages.LANGUAGES) {
+    const option = document.createElement('option');
+    option.value = language.native && language.native !== language.name
+      ? `${language.name} — ${language.native}`
+      : language.name;
+    option.label = language.code;
+    datalist.appendChild(option);
+  }
+  targetRow.append(targetLabel, input, datalist);
+
+  const chips = document.createElement('div');
+  chips.className = 'msg-translate-chips';
+  for (const code of TRANSLATE_RECENT) {
+    const language = languages.get(code);
+    if (!language || (known && language.code === known.code)) continue;
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'ghost small msg-translate-chip';
+    chip.textContent = language.name;
+    chip.title = language.native;
+    chip.onclick = (e) => { e.stopPropagation(); input.value = language.name; run(); };
+    chips.appendChild(chip);
+  }
+
+  const meta = document.createElement('div');
+  meta.className = 'msg-translate-meta';
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.className = 'gold small msg-translate-go';
+  go.textContent = 'Translate';
+  pop.append(sourceRow, targetRow, chips, meta, go);
+
+  /* Translation runs through the prompt-console channel: one non-streaming
+   * completion on the active connection, so the result lands in the popover
+   * without touching the conversation. */
+  let runId = 0;
+  function resolveTarget() {
+    const raw = input.value.trim();
+    if (!raw) return null;
+    const bare = raw.includes(' — ') ? raw.split(' — ')[0] : raw;
+    return languages.get(bare) || languages.search(bare, 1)[0] || null;
+  }
+
+  async function run() {
+    const target = resolveTarget();
+    if (!target) {
+      meta.textContent = 'Pick a language from the list.';
+      input.focus();
+      return;
+    }
+    if (!currentAgent) { meta.textContent = 'Open a conversation first.'; return; }
+    runId += 1;
+    const mine = `tr_${Date.now().toString(36)}_${runId}`;
+    go.disabled = true;
+    swap.disabled = true;
+    go.textContent = 'Translating…';
+    meta.textContent = `${sourceName || 'Auto-detect'} → ${target.name}`;
+    try { localStorage.setItem(TRANSLATE_TARGET_KEY, target.code); } catch { /* storage blocked */ }
+    const result = await reachApi.playground.run({
+      runId: mine,
+      prompt: translate.prompt({ text, targetName: target.name, sourceName: sourceName || 'Auto-detect' }),
+      stream: false,
+      temperature: 0,
+    });
+    if (!pop.isConnected) return;
+    go.disabled = false;
+    swap.disabled = !known;
+    go.textContent = 'Translate';
+    if (!result?.ok) { meta.textContent = result?.err || 'Translation failed.'; return; }
+    const out = translate.clean(result.text);
+    if (!out) { meta.textContent = 'The model returned nothing to show.'; return; }
+    meta.textContent = `${sourceName || 'Auto-detect'} → ${target.name} · ${lang(out)}`;
+    showTranslateResult(pop, out, target, role);
+    // Select the result so it can be forwarded like any other text.
+    const box = pop.querySelector('.msg-translate-result');
+    if (box) { const range = document.createRange(); range.selectNodeContents(box); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); }
+  }
+
+  function lang(out) {
+    const count = String(out).trim().split(/\s+/).length;
+    return count === 1 ? '1 word' : `${count} words`;
+  }
+
+  function showTranslateResult(pop, out, target, role) {
+    pop.querySelector('.msg-translate-result')?.closest('.msg-translate-row')?.remove();
+    const row = document.createElement('div');
+    row.className = 'msg-translate-row msg-translate-row-result';
+    const label = document.createElement('label');
+    label.textContent = 'Result';
+    const box = document.createElement('div');
+    box.className = 'msg-translate-result';
+    box.tabIndex = 0;
+    box.textContent = out;
+    row.append(label, box);
+    pop.insertBefore(row, pop.querySelector('.msg-translate-meta'));
+    const actions = document.createElement('div');
+    actions.className = 'msg-translate-chips';
+    const copyIt = document.createElement('button');
+    copyIt.type = 'button'; copyIt.className = 'ghost small msg-translate-chip';
+    copyIt.textContent = 'Copy';
+    copyIt.onclick = async (e) => {
+      e.stopPropagation();
+      try { await navigator.clipboard.writeText(out); copyIt.textContent = 'Copied'; setTimeout(() => { if (copyIt.isConnected) copyIt.textContent = 'Copy'; }, 1200); }
+      catch { showNotice('Could not copy the translation.'); }
+    };
+    const useIt = document.createElement('button');
+    useIt.type = 'button'; useIt.className = 'ghost small msg-translate-chip';
+    useIt.textContent = 'Replace message';
+    useIt.onclick = (e) => {
+      e.stopPropagation();
+      composerInput.value = out;
+      composerInput.dispatchEvent(new Event('input'));
+      composerInput.focus();
+      closeTranslatePopovers();
+    };
+    const askIt = document.createElement('button');
+    askIt.type = 'button'; askIt.className = 'ghost small msg-translate-chip';
+    askIt.textContent = 'Send to chat';
+    askIt.title = 'Send the translation to the conversation as a prompt';
+    askIt.onclick = async (e) => {
+      e.stopPropagation();
+      if (!currentAgent) { showNotice('Open a conversation first.'); return; }
+      closeTranslatePopovers();
+      composerInput.value = out;
+      composerInput.dispatchEvent(new Event('input'));
+      composerInput.focus();
+      sendComposer();
+    };
+    actions.append(copyIt, useIt, askIt);
+    pop.insertBefore(actions, pop.querySelector('.msg-translate-meta'));
+  }
+
+  swap.onclick = (e) => {
+    e.stopPropagation();
+    if (!known) return;
+    // Swap the direction: what was the source becomes the target.
+    input.value = known.name;
+    meta.textContent = `Translating back into ${known.name}.`;
+  };
+  go.onclick = (e) => { e.stopPropagation(); run(); };
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') { e.preventDefault(); run(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeTranslatePopovers(); anchor.focus(); }
+  };
+  pop.onclick = (e) => e.stopPropagation();
+
+  bubble.appendChild(pop);
+  input.focus();
+  input.select();
+  scheduleBrowserLayout?.();
+}
+
 function appendMessageActions(bubble, role, text, msgIndex = null, provisional = false, messageKey = '') {
   if (!['user', 'assistant'].includes(role) || !text || bubble.querySelector('.msg-actions')) return;
   const agentId = currentAgent?.id;
@@ -1305,15 +1549,12 @@ function appendMessageActions(bubble, role, text, msgIndex = null, provisional =
   // 7 — Read aloud via speech synthesis (toggles to stop).
   const speak = makeMessageActionButton({ cls: 'msg-speak', title: 'Read aloud', icon: 'speak',
     onClick: () => speakMessage(text, speak) });
-  // 9 — Translate: send through the current conversation for translation.
+  // 9 — Translate: open a quiet inline popover (source detected, target chosen),
+  // then translate for real and offer to drop the result into the composer.
   const translate = makeMessageActionButton({ cls: 'msg-translate', title: 'Translate message', icon: 'translate',
-    onClick: async () => {
-      if (!currentAgent || agentRunning) { showNotice('Wait for the current run to finish before translating.'); return; }
-      const target = prompt('Translate to which language?', 'Spanish');
-      if (!target) return;
-      composerInput.value = `Translate the following message to ${target}:\n\n${String(text).slice(0, 3000)}`;
-      composerInput.dispatchEvent(new Event('input'));
-      composerInput.focus();
+    onClick: (event) => {
+      event.stopPropagation();
+      openTranslatePopover(bubble, translate, String(text), role);
     } });
   // 10 — Remember: append to the agent's MEMORY.md via note.
   const remember = makeMessageActionButton({ cls: 'msg-remember', title: 'Save to memory', icon: 'memory',

@@ -419,6 +419,53 @@ footer {
 .msg-wing-left { right: calc(100% + 4px); }
 .msg-wing-right { left: calc(100% + 4px); }
 .chat-msg.tray-open .msg-wing:not(:empty) { opacity: 1; pointer-events: auto; }
+/* Translate options: a quiet inline popover under the pressed action. It is
+ * deliberately "subtle" — no scrim, no modal, the message stays readable —
+ * because choosing a target language is a two-second decision, not a dialog. */
+.msg-translate-pop {
+  position: absolute; bottom: calc(100% + 6px); z-index: 6;
+  display: flex; flex-direction: column; gap: 6px;
+  width: 268px; padding: 9px 10px;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 9px;
+  box-shadow: 0 10px 26px var(--shadow);
+  font-size: 11px; text-align: left;
+}
+.msg-translate-pop[hidden] { display: none; }
+.chat-msg.user .msg-translate-pop { right: 0; }
+.chat-msg.assistant .msg-translate-pop { left: 0; }
+.msg-translate-row { display: flex; align-items: center; gap: 6px; }
+.msg-translate-row > label { flex: 0 0 54px; color: var(--dim); }
+.msg-translate-value {
+  flex: 1; min-width: 0; padding: 3px 6px; border-radius: 5px;
+  border: 1px dashed var(--line); color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.msg-translate-value .msg-translate-native { color: var(--dim); margin-left: 5px; }
+.msg-translate-value.is-unknown { color: var(--dim); font-style: italic; }
+.msg-translate-swap { flex: 0 0 auto; padding: 2px 5px !important; font-size: 11px !important; }
+.msg-translate-swap:disabled { opacity: .3; }
+.msg-translate-target {
+  flex: 1; min-width: 0; padding: 4px 6px; font-size: 11px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--line); border-radius: 5px;
+}
+.msg-translate-target:focus-visible { outline: 2px solid var(--gold-dim); outline-offset: 1px; }
+.msg-translate-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.msg-translate-chip {
+  font-size: 10px !important; padding: 2px 6px !important;
+  border: 1px solid var(--line) !important; border-radius: 20px !important;
+}
+.msg-translate-meta { color: var(--dim); font-size: 10px; min-height: 12px; }
+.msg-translate-go { align-self: stretch; font-size: 11px !important; padding: 5px 8px !important; }
+/* The result is selectable text, not a control, so it reads like the message. */
+.msg-translate-result {
+  flex: 1; min-width: 0; max-height: 132px; overflow: auto; padding: 5px 7px;
+  border: 1px solid var(--gold-dim); border-radius: 6px; background: var(--surface);
+  color: var(--text); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+  user-select: text; cursor: text;
+}
+.msg-translate-result:focus-visible { outline: 2px solid var(--gold-dim); outline-offset: 1px; }
+.msg-translate-row-result > label { flex: 0 0 54px; color: var(--dim); }
 @media (hover: none) { .msg-action { padding: 6px 8px; } }
 @media (prefers-reduced-motion: reduce) { .msg-wing { transition: none; } }
 
