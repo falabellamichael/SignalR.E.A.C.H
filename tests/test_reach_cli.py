@@ -192,6 +192,35 @@ class KeyCommandTests(unittest.TestCase):
         self.assertIn("created", err.getvalue())
 
 
+class MaskKeyTests(unittest.TestCase):
+    """The CLI copy of mask_key must redact exactly like the relay (#26)."""
+
+    SAMPLES = (None, "", "short", 12345, "sk-reach-" + "a" * 32,
+               "sk-reach-0123456789abcdef", "legacy-secret-123")
+
+    def test_sk_reach_keys_show_no_secret_characters(self):
+        from reach.keys import mask_key
+        masked = mask_key("sk-reach-" + "0123456789abcdef" * 2)
+        self.assertEqual(masked, "sk-reach-…")
+        self.assertNotIn("cdef", masked)
+
+    def test_empty_short_and_non_string_keys(self):
+        from reach.keys import mask_key
+        self.assertEqual(mask_key(None), "(none)")
+        self.assertEqual(mask_key(""), "(none)")
+        self.assertEqual(mask_key(12345), "(none)")
+        self.assertEqual(mask_key("short"), "set (short)")
+
+    def test_matches_the_relay_implementation(self):
+        from reach.keys import mask_key as cli_mask
+        server_dir = os.path.join(os.path.dirname(TOOLS), "server")
+        if server_dir not in sys.path:
+            sys.path.insert(0, server_dir)
+        from reachd.settings import mask_key as server_mask
+        for sample in self.SAMPLES:
+            self.assertEqual(cli_mask(sample), server_mask(sample), repr(sample))
+
+
 class AgentEditTests(unittest.TestCase):
     """Agent mode: ```edit block parsing, path safety, and file application."""
 

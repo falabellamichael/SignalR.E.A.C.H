@@ -437,6 +437,7 @@ def find_omniroute_key():
     return rows[0][1] if rows else None
 
 
+# MIRROR of tools/reach/keys.py:mask_key: keep the two in sync.
 def mask_key(key):
     """Mask key for safe display in logs and UI (prefix only — no secret chars)."""
     if not key or not isinstance(key, str):
