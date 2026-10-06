@@ -7,6 +7,17 @@ let browserBookmarks = [];
 try { browserBookmarks = JSON.parse(localStorage.getItem('reach:browser-bookmarks') || '[]'); } catch {}
 if (!Array.isArray(browserBookmarks)) browserBookmarks = [];
 
+// Occlusion rules live in a pure, dual-loaded module so the renderer and its
+// Node tests share one predicate: a native WebContentsView composites above
+// the DOM, so a floating Studio surface must hide the view or it becomes
+// unclickable behind the page. See browser-overlay.js.
+// The inline fallback keeps the drawer usable and still shields the reported
+// account menu if the module ever fails to load.
+const browserOverlayRules = window.ReachBrowserOverlay || {};
+const isBrowserOverlayOpen = () => typeof browserOverlayRules.browserOverlayOpen === 'function'
+  ? browserOverlayRules.browserOverlayOpen(document)
+  : !!document.querySelector('dialog[open], .modal:not(.hidden), .account-menu:not(.hidden)');
+
 async function browserCommand(action, args = {}) {
   const result = await reachApi.browser.command(action, args);
   if (!result.ok) { $('#browser-status').textContent = result.err; return result; }
@@ -199,9 +210,13 @@ function scheduleBrowserLayout() {
   browserLayoutFrame = requestAnimationFrame(() => {
     browserLayoutFrame = null;
     const rect = $('#browser-viewport').getBoundingClientRect();
-    const overlay = document.querySelector('dialog[open], .modal:not(.hidden), .settings-dropdown:not(.hidden)');
     const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-    const visible = drawerPanel === 'browser' && !drawer.classList.contains('closed') && !overlay && !document.body.classList.contains('resizing-x');
+    // An open Studio surface always wins, wherever it sits: the native view
+    // composites above the DOM, so anything floating is unreachable while it
+    // shows. A plain `select` needs no case of its own - it paints below the
+    // view, and only its popup outranks it (which no DOM signal reports).
+    const visible = drawerPanel === 'browser' && !drawer.classList.contains('closed')
+      && !isBrowserOverlayOpen() && !document.body.classList.contains('resizing-x');
     // Zoom can change while a fixed-size slot keeps identical CSS bounds.
     // DPR is only a cache invalidator: the host converts using its own zoom.
     const value = JSON.stringify({ bounds, visible, scale: window.devicePixelRatio });
@@ -211,6 +226,6 @@ function scheduleBrowserLayout() {
   });
 }
 new ResizeObserver(scheduleBrowserLayout).observe($('#browser-viewport'));
-new MutationObserver(scheduleBrowserLayout).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'open', 'style'] });
+new MutationObserver(scheduleBrowserLayout).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ['class', 'open', 'style', 'hidden'] });
 window.addEventListener('resize', scheduleBrowserLayout);
 window.visualViewport?.addEventListener('resize', scheduleBrowserLayout);
