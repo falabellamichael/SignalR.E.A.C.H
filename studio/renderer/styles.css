@@ -433,6 +433,9 @@ footer {
 .msg-translate-pop[hidden] { display: none; }
 .chat-msg.user .msg-translate-pop { right: 0; }
 .chat-msg.assistant .msg-translate-pop { left: 0; }
+/* Near the top of the transcript there is no room above the message, so the
+ * popover drops below it instead of being clipped off-screen. app.js decides. */
+.msg-translate-pop.is-below { bottom: auto; top: calc(100% + 6px); }
 .msg-translate-row { display: flex; align-items: center; gap: 6px; }
 .msg-translate-row > label { flex: 0 0 54px; color: var(--dim); }
 .msg-translate-value {
@@ -450,6 +453,29 @@ footer {
   border: 1px solid var(--line); border-radius: 5px;
 }
 .msg-translate-target:focus-visible { outline: 2px solid var(--gold-dim); outline-offset: 1px; }
+.msg-translate-pick { flex: 0 0 auto; font-size: 10px !important; padding: 3px 7px !important; border-color: var(--line) !important; }
+/* One scrolling list of every language, grouped by where it is spoken. Sticky
+ * headings keep the region visible while the list moves under it. */
+.msg-translate-list {
+  max-height: 216px; overflow-y: auto; overscroll-behavior: contain;
+  margin: 1px 0; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--surface);
+}
+.msg-translate-list[hidden] { display: none; }
+.msg-translate-group {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  padding: 3px 8px; background: var(--panel2); border-bottom: 1px solid var(--line);
+  color: var(--dim); font-size: 9px; letter-spacing: .09em; text-transform: uppercase;
+}
+.msg-translate-group-count { opacity: .6; letter-spacing: 0; }
+.msg-translate-option {
+  display: flex; align-items: baseline; gap: 6px; width: 100%;
+  padding: 4px 8px; border: 0; border-radius: 0; background: transparent;
+  color: var(--text); font-size: 11px; text-align: left; cursor: pointer;
+}
+.msg-translate-option:hover, .msg-translate-option.is-cursor { background: var(--hover); }
+.msg-translate-option.is-selected { background: var(--reach-accent-bg); color: var(--gold); }
 .msg-translate-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .msg-translate-chip {
   font-size: 10px !important; padding: 2px 6px !important;

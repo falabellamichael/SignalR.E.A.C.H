@@ -311,6 +311,118 @@
   ];
   const LANGUAGES = ROWS.map(([code, name, native]) => Object.freeze({ code, name, native }));
 
+  /* Regions, in the order the catalog is grouped. A language's own tag carries
+   * no region, so the grouping comes from CLDR's likely-subtags for each primary
+   * language plus a small set of explicit spellings for the languages maxim(s)
+   * do not cover. Everything else falls through to "Other". */
+  const CATEGORIES = Object.freeze([
+    'Common', 'Western Europe', 'Eastern Europe', 'Middle East', 'South Asia',
+    'East Asia', 'Southeast Asia', 'Central Asia', 'Africa', 'Americas',
+    'Pacific', 'Constructed', 'Other',
+  ]);
+
+  const WESTERN_EUROPE = new Set(['en', 'fr', 'de', 'es', 'pt', 'it', 'nl', 'ca', 'gl', 'eu', 'ast', 'an', 'oc', 'co', 'sc', 'scn', 'nap', 'lij', 'vec', 'lmo', 'pms', 'fur', 'lad', 'rm', 'gsw', 'bar', 'ksh', 'nds', 'fy', 'li', 'wa', 'pcd', 'sv', 'da', 'nb', 'nn', 'is', 'fo', 'ga', 'gd', 'cy', 'br', 'gv', 'kw', 'el', 'fi', 'et', 'lb', 'mt', 'yi', 'ji', 'sco', 'frr', 'stq', 'vls', 'zea', 'ext', 'mwl', 'egl', 'roa']);
+  const EASTERN_EUROPE = new Set(['ru', 'uk', 'be', 'pl', 'cs', 'sk', 'sl', 'hr', 'sr', 'bs', 'mk', 'bg', 'ro', 'hu', 'lt', 'lv', 'sq', 'cu', 'rue', 'szl', 'csb', 'dsb', 'hsb', 'sgs', 'prg', 'sla', 'bat']);
+  // All Slavic etymology in the catalog file is covered by the list above.
+  const MIDDLE_EAST = new Set(['ar', 'he', 'fa', 'tr', 'ku', 'ckb', 'syr', 'arc', 'sab', 'mzn', 'lrc', 'glk', 'bal', 'ps', 'ur', 'sd', 'az', 'hy', 'ka', 'os', 'kab', 'tzm', 'shi', 'zgh', 'ug', 'dv']);
+  const SOUTH_ASIA = new Set(['hi', 'bn', 'pa', 'gu', 'mr', 'ta', 'te', 'kn', 'ml', 'or', 'as', 'mai', 'bho', 'awa', 'hne', 'mag', 'doi', 'sat', 'ks', 'ne', 'si', 'bo', 'dz', 'new', 'gom', 'kok', 'mni', 'raj', 'sa', 'pi']);
+  const EAST_ASIA = new Set(['zh', 'ja', 'ko', 'yue', 'wuu', 'hsn', 'nan', 'hak', 'gan', 'cjy', 'cdo', 'mnp', 'lzh', 'vi']);
+  const SOUTHEAST_ASIA = new Set(['th', 'lo', 'km', 'my', 'id', 'ms', 'fil', 'tl', 'jv', 'su', 'ceb', 'ilo', 'hil', 'war', 'pam', 'bik', 'bcl', 'krj', 'mad', 'min', 'bug', 'ban', 'ace', 'iba', 'tet', 'mi', 'fj', 'sm', 'to', 'haw']);
+  const CENTRAL_ASIA = new Set(['kk', 'ky', 'uz', 'tk', 'tg', 'mn', 'tt', 'ba', 'cv', 'sah', 'krc', 'kbd', 'ce', 'inh', 'av', 'dar', 'lez', 'tab', 'nog', 'xal', 'bua', 'tyv', 'alt', 'kjh']);
+  const AFRICA = new Set(['sw', 'am', 'ti', 'om', 'so', 'ha', 'ig', 'yo', 'zu', 'xh', 'af', 'st', 'tn', 'ts', 'ss', 've', 'nso', 'rw', 'rn', 'lg', 'ln', 'mg', 'ny', 'sn', 'wo', 'ff', 'bm', 'ee', 'tw', 'ak', 'lu', 'lua', 'kg', 'sg', 'mos', 'kr', 'knc', 'dyu', 'nd', 'nr', 'umb', 'her', 'naq', 'nyn', 'teo', 'luo', 'kam', 'mer', 'kln', 'saq', 'dav', 'ebu', 'guz', 'ki', 'jmc', 'rof', 'rwk', 'vun', 'asa', 'bez', 'ksb', 'lag', 'sbp', 'seh', 'xog', 'zgh', 'shi', 'kab', 'ber', 'cgg', 'ttj', 'nyo', 'xsm', 'agq', 'bas', 'dua', 'ewo', 'jgo', 'kkj', 'ksf', 'mgo', 'mua', 'nmg', 'nnh', 'yav', 'ybb', 'bax', 'bfd', 'fuv', 'gez', 'wal', 'aa', 'ab', 'ach', 'ada', 'adj', 'agr', 'any', 'bci', 'bem', 'bez', 'bkv', 'bss', 'bum', 'byv', 'cch', 'dje', 'dnn', 'dtp', 'efi', 'eka', 'ekp', 'fan', 'fmp', 'fuv', 'gba', 'gnd', 'guw', 'gya', 'ibo', 'jbu', 'kaj', 'kcg', 'kdv', 'kes', 'khq', 'kia', 'kpe', 'kqn', 'ksh', 'kwu', 'laj', 'lam', 'lek', 'lol', 'maf', 'mas', 'mbo', 'mcu', 'mgh', 'mgy', 'mhi', 'mkw', 'mlg', 'moz', 'mzn', 'nge', 'nnh', 'nso', 'pcm', 'pes', 'pfl', 'poi', 'saf', 'sba', 'sco', 'sid', 'sok', 'srr', 'tiv', 'tum', 'ug', 'umb', 'vai', 'wae', 'yav', 'zad', 'zul']);
+  const AMERICAS = new Set(['qu', 'ay', 'gn', 'nah', 'ht', 'jam', 'pap', 'srn', 'gsw', 'iu', 'kl', 'cr', 'oj', 'nav', 'chr', 'moh', 'dak', 'lkt', 'myn', 'quc', 'cak', 'kkj', 'arn', 'aym', 'bzd', 'cab', 'cak', 'crh', 'dav', 'guc', 'hus', 'kea', 'kek', 'kpj', 'mam', 'mfe', 'myn', 'nhn', 'nch', 'poi', 'qug', 'quz', 'sab', 'tzh', 'yua', 'zap']);
+  const PACIFIC = new Set(['mi', 'fj', 'sm', 'to', 'haw', 'ty', 'ch', 'gil', 'pau', 'yap', 'kos', 'pon', 'mh', 'na', 'nio', 'niu', 'tvl', 'tkl', 'wls', 'fud', 'mri', 'rap', 'rar', 'tah', 'ton', 'smo', 'mah', 'bik', 'pag', 'ivv', 'itv', 'aup', 'fij']);
+  const CONSTRUCTED = new Set(['eo', 'ia', 'ie', 'io', 'jbo', 'tlh', 'vo', 'afh', 'nov', 'lfn', 'qya', 'rmg', 'sjn', 'tok', 'tzl', 'zbl', 'avk', 'la']);
+
+  /* Legacy ISO 639-1 codes CLDR maximises to nothing, plus the region/script
+   * variants and a few languages whose maxim kept the main language's region.
+   * Without this they all fell into "Other". */
+  const EXTRA_REGION = Object.freeze({
+    rup: 'Eastern Europe', frp: 'Western Europe', rgn: 'Western Europe', sdc: 'Western Europe',
+    sli: 'Eastern Europe', mo: 'Eastern Europe', sh: 'Eastern Europe', 'sr-Latn': 'Eastern Europe',
+    kv: 'Eastern Europe', se: 'Western Europe', no: 'Western Europe',
+    bh: 'South Asia', brx: 'South Asia', mwr: 'South Asia', tcy: 'South Asia', ii: 'East Asia',
+    za: 'East Asia', 'zh-Hans': 'East Asia', 'zh-Hant': 'East Asia',
+    bi: 'Pacific', ho: 'Pacific', tpi: 'Pacific',
+    jw: 'Southeast Asia', in: 'Southeast Asia',
+    iw: 'Middle East', osa: 'Americas', nv: 'Americas', cho: 'Americas', mus: 'Americas',
+    ik: 'Americas', nqo: 'Africa', hz: 'Africa', kj: 'Africa', ng: 'Africa', kri: 'Africa',
+    arz: 'Middle East', ary: 'Middle East', aeb: 'Middle East', shu: 'Middle East',
+    rif: 'Africa', 'pt-BR': 'Americas', 'pt-PT': 'Western Europe', 'en-GB': 'Western Europe',
+    ae: 'Middle East', frs: 'Western Europe',
+  });
+  const CATEGORY_BY_CODE = new Map(Object.entries(EXTRA_REGION));
+
+  const REGIONS = [
+    ['Western Europe', WESTERN_EUROPE], ['Eastern Europe', EASTERN_EUROPE],
+    ['Middle East', MIDDLE_EAST], ['South Asia', SOUTH_ASIA], ['East Asia', EAST_ASIA],
+    ['Southeast Asia', SOUTHEAST_ASIA], ['Central Asia', CENTRAL_ASIA],
+    ['Africa', AFRICA], ['Americas', AMERICAS], ['Pacific', PACIFIC],
+    ['Constructed', CONSTRUCTED],
+  ];
+
+  /* The languages the popover offers first, in the order it offers them. */
+  const DEFAULT_TARGETS = Object.freeze(
+    ['en', 'es', 'fr', 'de', 'pt', 'it', 'ja', 'zh', 'ko', 'ru', 'ar', 'hi']
+      .map(code => LANGUAGES.find(l => l.code === code)).filter(Boolean));
+
+  let likelyCache = null;
+  /* Which region a language's speakers are most likely in, via CLDR. */
+  function likelyRegion(code) {
+    if (likelyCache === null) likelyCache = new Map();
+    if (likelyCache.has(code)) return likelyCache.get(code);
+    let region = '';
+    try {
+      const parts = new Intl.Locale(code).maximize().region;
+      region = parts || '';
+    } catch { region = ''; }
+    likelyCache.set(code, region);
+    return region;
+  }
+
+  /* One flat list, grouped by region, with the most-wanted languages repeated at
+   * the top under "Common". `filter` narrows the catalog first, so search and
+   * grouping share one code path. */
+  function grouped(list, categories = CATEGORIES) {
+    const buckets = new Map(categories.map(name => [name, []]));
+    const present = new Set(list.map(l => l.code));
+    // Common repeats the most-wanted languages in a deliberate order (they are
+    // the ones a user reaches for), so it is built from DEFAULT_TARGETS rather
+    // than from the catalog's alphabetical scan.
+    for (const language of DEFAULT_TARGETS) {
+      if (present.has(language.code)) buckets.get('Common').push(language);
+    }
+    for (const language of list) {
+      let region = CATEGORY_BY_CODE.get(language.code) || '';
+      for (const [name, codes] of REGIONS) {
+        if (codes.has(language.code)) { region = name; break; }
+      }
+      if (!region) {
+        const maximized = likelyRegion(language.code);
+        region = REGION_TO_CATEGORY[maximized] || 'Other';
+      }
+      buckets.get(region).push(language);
+    }
+    // Alphabetical inside a group keeps a 292-row list scannable. Common keeps
+    // the order above, so the most-wanted come first.
+    const out = [];
+    for (const name of categories) {
+      const items = buckets.get(name) || [];
+      if (!items.length) continue;
+      if (name !== 'Common') items.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+      out.push(Object.freeze({ name, items: Object.freeze(items) }));
+    }
+    return out;
+  }
+
+  const REGION_TO_CATEGORY = Object.freeze({
+    '021': 'Americas', '029': 'Americas', '013': 'Americas', '005': 'Americas', '419': 'Americas',
+    '030': 'East Asia', '034': 'South Asia', '035': 'Southeast Asia', '039': 'Western Europe',
+    '143': 'Central Asia', '145': 'Middle East', '151': 'Eastern Europe', '154': 'Western Europe',
+    '155': 'Western Europe', '202': 'Africa', '015': 'Africa', '002': 'Africa',
+    '053': 'Pacific', '054': 'Pacific', '057': 'Pacific', '009': 'Pacific',
+  });
+
   // Case-insensitive lookup by tag, English name, or native name, so a value
   // saved by an older build still resolves. A colliding name (several languages
   // share one) must resolve to the SAME row every time, or a search result and a
@@ -321,8 +433,6 @@
       INDEX.set(key.toLowerCase(), language);
     }
   }
-
-  const DEFAULT_TARGETS = Object.freeze(['en', 'es', 'fr', 'de', 'pt', 'it', 'zh-Hans', 'ja', 'ar', 'hi']);
 
   function get(code) {
     return (code && INDEX.get(String(code).toLowerCase())) || null;
@@ -362,5 +472,5 @@
     return [...exact, ...starts, ...contains].slice(0, limit);
   }
 
-  return Object.freeze({ LANGUAGES, DEFAULT_TARGETS, get, displayName, search });
+    return Object.freeze({ LANGUAGES, DEFAULT_TARGETS, CATEGORIES, get, displayName, search, grouped });
 });

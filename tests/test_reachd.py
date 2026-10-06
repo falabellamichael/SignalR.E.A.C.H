@@ -178,6 +178,52 @@ class GeminiBridgeAliasTests(unittest.TestCase):
             self.assertNotIn("gemini-chat", reachd.load_config(path)["models"])
 
 
+class BridgePayloadFieldTests(unittest.TestCase):
+    """A bridge model receives a text transcript and nothing else.
+
+    The account service rejects the WHOLE request when it carries a field the
+    bridge cannot honour ("Subscription bridges support text messages and
+    streaming"), so an ordinary OpenAI-compatible client sending temperature
+    failed with a 400 unrelated to what it asked for. That is what broke the
+    message Translate action on a hosted connection.
+    """
+
+    STRIPPED = ("temperature", "top_p", "frequency_penalty", "presence_penalty",
+                "stop", "seed", "logprobs", "top_logprobs", "response_format",
+                "tool_choice")
+
+    @classmethod
+    def setUpClass(cls):
+        source = Path(__file__).resolve().parents[1] / "server" / "reachd" / "chat.py"
+        cls.text = source.read_text(encoding="utf-8")
+
+    def test_chat_strips_controls_before_dispatching_a_bridge_request(self):
+        marker = "if use_bridge:"
+        self.assertIn(marker, self.text, "chat.py must strip bridge controls")
+        start = self.text.index(marker)
+        # The strip has to happen before the request leaves, not after.
+        dispatch = self.text.index("Publish what this request is doing", start)
+        block = self.text[start:dispatch]
+        for field in self.STRIPPED:
+            self.assertIn('"%s"' % field, block, "%s must be stripped" % field)
+
+    def test_sampling_controls_never_reach_a_bridge(self):
+        body = {"model": "chatgpt-chat", "messages": [{"role": "user", "content": "hi"}],
+                "stream": False, "temperature": 0, "top_p": 1, "frequency_penalty": 0,
+                "presence_penalty": 0, "seed": 7, "stop": ["x"], "logprobs": False,
+                "tool_choice": "auto", "response_format": {"type": "text"}}
+        payload = dict(body)
+        for field in self.STRIPPED:
+            payload.pop(field, None)
+        self.assertEqual(sorted(payload), ["messages", "model", "stream"],
+                         "only the transcript, model and stream flag may survive")
+
+    def test_a_non_bridge_model_keeps_its_controls(self):
+        # The strip lives inside `if use_bridge:`, so an ordinary endpoint still
+        # gets its temperature.
+        self.assertIn("if use_bridge:\n        for field in", self.text)
+
+
 class CodegptEconomyTests(unittest.TestCase):
     """The endpoint's CodeGPT economy aliases.
 

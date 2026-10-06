@@ -1944,8 +1944,12 @@ function registerIpc() {
 
       const stream = payload.stream !== false;
       const maxTokens = Number.isSafeInteger(payload.maxTokens) && payload.maxTokens > 0 ? payload.maxTokens : 0;
+      // Generation controls are optional: a text-only subscription bridge rejects
+      // any it does not honour, so a caller asks for them with `controls: false`
+      // (and the relay strips them for bridge models regardless).
       const temperature = Number.isFinite(payload.temperature) ? Math.max(0, Math.min(2, payload.temperature)) : 0.7;
-      const body = { model, messages, stream, temperature };
+      const body = { model, messages, stream };
+      if (payload.controls !== false) body.temperature = temperature;
       if (maxTokens > 0) body.max_tokens = maxTokens;
 
       const response = await fetch(base + '/chat/completions', {

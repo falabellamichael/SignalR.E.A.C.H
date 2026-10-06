@@ -1231,7 +1231,6 @@ function makeMessageActionButton({ cls, title, icon, onClick, dataset }) {
  * translated should stay readable behind it. Never more than one is open, and
  * the results panel is only created when there is something to show. */
 const TRANSLATE_TARGET_KEY = 'reach:translate-target';
-const TRANSLATE_RECENT = ['en', 'es', 'fr', 'de', 'pt', 'it', 'ja', 'zh', 'ko', 'ru', 'ar', 'hi'];
 
 function closeTranslatePopovers(except = null) {
   for (const pop of chatLog.querySelectorAll('.msg-translate-pop')) {
@@ -1297,7 +1296,7 @@ function openTranslatePopover(bubble, anchor, text, role) {
   const targetRow = document.createElement('div');
   targetRow.className = 'msg-translate-row';
   const targetLabel = document.createElement('label');
-  targetLabel.textContent = 'Translate into';
+  targetLabel.textContent = 'Into';
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'msg-translate-target';
@@ -1307,33 +1306,134 @@ function openTranslatePopover(bubble, anchor, text, role) {
   input.setAttribute('aria-label', 'Language to translate into');
   const savedTarget = (() => { try { return localStorage.getItem(TRANSLATE_TARGET_KEY) || ''; } catch { return ''; } })();
   const initial = languages.get(savedTarget) || languages.get('en');
-  input.value = initial ? initial.name : 'English';
-  // The catalog is offered to the picker as options, so typing filters natively
-  // instead of us reimplementing a listbox.
-  const datalist = document.createElement('datalist');
-  datalist.id = 'reach-language-options';
-  for (const language of languages.LANGUAGES) {
-    const option = document.createElement('option');
-    option.value = language.native && language.native !== language.name
-      ? `${language.name} — ${language.native}`
-      : language.name;
-    option.label = language.code;
-    datalist.appendChild(option);
-  }
-  targetRow.append(targetLabel, input, datalist);
+  let target = initial || languages.get('en');
+  input.value = target ? target.name : 'English';
+  const pick = document.createElement('button');
+  pick.type = 'button';
+  pick.className = 'msg-translate-pick';
+  pick.textContent = 'Browse';
+  pick.title = 'Browse every language by region';
+  targetRow.append(targetLabel, input, pick);
 
-  const chips = document.createElement('div');
-  chips.className = 'msg-translate-chips';
-  for (const code of TRANSLATE_RECENT) {
-    const language = languages.get(code);
-    if (!language || (known && language.code === known.code)) continue;
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = 'ghost small msg-translate-chip';
-    chip.textContent = language.name;
-    chip.title = language.native;
-    chip.onclick = (e) => { e.stopPropagation(); input.value = language.name; run(); };
-    chips.appendChild(chip);
+  /* One big list, grouped by where the language is spoken. No filter: the rows
+   * are short enough to scan, and a search box here would fight the popover for
+   * keystrokes. `languages.grouped` decides the groups, so the UI never invents
+   * a category the catalog does not have. */
+  const groups = languages.grouped(languages.LANGUAGES);
+  const list = document.createElement('div');
+  list.className = 'msg-translate-list';
+  list.setAttribute('role', 'listbox');
+  list.setAttribute('aria-label', 'All languages');
+  list.hidden = true;
+  const buttons = [];
+  for (const group of groups) {
+    const heading = document.createElement('div');
+    heading.className = 'msg-translate-group';
+    const label = document.createElement('span');
+    label.textContent = group.name;
+    const count = document.createElement('span');
+    count.className = 'msg-translate-group-count';
+    count.textContent = String(group.items.length);
+    heading.append(label, count);
+    list.appendChild(heading);
+    for (const language of group.items) {
+      const option = document.createElement('button');
+      option.type = 'button';
+      option.className = 'msg-translate-option';
+      option.setAttribute('role', 'option');
+      option.dataset.code = language.code;
+      option.append(document.createTextNode(language.name));
+      if (language.native && language.native !== language.name) {
+        const native = document.createElement('span');
+        native.className = 'msg-translate-native';
+        native.textContent = language.native;
+        option.appendChild(native);
+      }
+      option.onclick = (e) => { e.stopPropagation(); choose(language); };
+      buttons.push(option);
+      list.appendChild(option);
+    }
+  }
+  function choose(language) {
+    target = language;
+    input.value = language.name;
+    markSelected();
+    list.hidden = true;
+    pick.setAttribute('aria-expanded', 'false');
+    input.focus();
+  }
+  function markSelected() {
+    for (const option of buttons) {
+      const on = target && option.dataset.code === target.code;
+      option.classList.toggle('is-selected', on);
+      option.setAttribute('aria-selected', String(on));
+    }
+  }
+  markSelected();
+  pick.setAttribute('aria-expanded', 'false');
+  pick.onclick = (e) => {
+    e.stopPropagation();
+    list.hidden = !list.hidden;
+    pick.setAttribute('aria-expanded', String(!list.hidden));
+    fitPopover();
+    if (list.hidden) return;
+    // Open on whatever is already chosen, and highlight it by typing ahead.
+    for (const [index, option] of buttons.entries()) {
+      if (!option.classList.contains('is-selected')) continue;
+      option.scrollIntoView({ block: 'center' });
+      selectedIndex = index;
+      break;
+    }
+  };
+  // Keyboard: typing jumps to the next language starting with those letters.
+  let typed = '';
+  let typedAt = 0;
+  let selectedIndex = buttons.findIndex(o => o.classList.contains('is-selected'));
+  input.onkeydown = (e) => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); if (!list.hidden) { list.hidden = true; pick.setAttribute('aria-expanded', 'false'); } else { closeTranslatePopovers(); anchor.focus(); } return; }
+    if (!list.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      selectedIndex = Math.max(0, Math.min(buttons.length - 1, selectedIndex + (e.key === 'ArrowDown' ? 1 : -1)));
+      buttons[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+      buttons[selectedIndex]?.classList.add('is-cursor');
+      for (const [i, o] of buttons.entries()) if (i !== selectedIndex) o.classList.remove('is-cursor');
+      return;
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!list.hidden && buttons[selectedIndex]) { choose(languages.get(buttons[selectedIndex].dataset.code)); return; }
+      run();
+    }
+  };
+  input.oninput = () => {
+    const needle = input.value.trim().toLowerCase();
+    const now = Date.now();
+    typed = now - typedAt > 900 ? needle.slice(-1) : typed + needle.slice(-1);
+    typedAt = now;
+    const hit = buttons.findIndex(o => (languages.get(o.dataset.code)?.name || '').toLowerCase().startsWith(typed));
+    if (hit >= 0) {
+      selectedIndex = hit;
+      buttons[hit].scrollIntoView({ block: 'nearest' });
+      buttons[hit].classList.add('is-cursor');
+      for (const [i, o] of buttons.entries()) if (i !== hit) o.classList.remove('is-cursor');
+    }
+    // Typing a full name selects it outright.
+    const exact = languages.LANGUAGES.find(l => l.name.toLowerCase() === needle);
+    if (exact) { target = exact; markSelected(); }
+  };
+
+  /* The popover opens upward by default, but a message near the top of the
+   * transcript has no room above it — it would be clipped off-screen and look
+   * like the action did nothing. Called again whenever the content grows, since
+   * opening the language list changes the box. */
+  function fitPopover() {
+    if (!pop.isConnected) return;
+    pop.classList.remove('is-below');
+    requestAnimationFrame(() => {
+      if (!pop.isConnected) return;
+      if (pop.getBoundingClientRect().top < 8) pop.classList.add('is-below');
+    });
   }
 
   const meta = document.createElement('div');
@@ -1342,26 +1442,26 @@ function openTranslatePopover(bubble, anchor, text, role) {
   go.type = 'button';
   go.className = 'gold small msg-translate-go';
   go.textContent = 'Translate';
-  pop.append(sourceRow, targetRow, chips, meta, go);
+  pop.append(sourceRow, targetRow, list, meta, go);
 
   /* Translation runs through the prompt-console channel: one non-streaming
    * completion on the active connection, so the result lands in the popover
    * without touching the conversation. */
   let runId = 0;
-  function resolveTarget() {
-    const raw = input.value.trim();
-    if (!raw) return null;
-    const bare = raw.includes(' — ') ? raw.split(' — ')[0] : raw;
-    return languages.get(bare) || languages.search(bare, 1)[0] || null;
-  }
 
   async function run() {
-    const target = resolveTarget();
-    if (!target) {
+    // The input can hold a typed name the list never confirmed, so resolve it
+    // once more here rather than trusting `target` alone.
+    const typedName = input.value.trim().toLowerCase();
+    const picked = target && (target.name.toLowerCase() === typedName || target.code === typedName)
+      ? target
+      : languages.get(input.value.trim()) || languages.LANGUAGES.find(l => l.name.toLowerCase() === typedName);
+    if (!picked) {
       meta.textContent = 'Pick a language from the list.';
-      input.focus();
+      pick.focus();
       return;
     }
+    target = picked;
     if (!currentAgent) { meta.textContent = 'Open a conversation first.'; return; }
     runId += 1;
     const mine = `tr_${Date.now().toString(36)}_${runId}`;
@@ -1374,7 +1474,9 @@ function openTranslatePopover(bubble, anchor, text, role) {
       runId: mine,
       prompt: translate.prompt({ text, targetName: target.name, sourceName: sourceName || 'Auto-detect' }),
       stream: false,
-      temperature: 0,
+      // Translation is a deterministic rewrite, so sampling controls add nothing
+      // — and a text-only subscription bridge rejects them outright.
+      controls: false,
     });
     if (!pop.isConnected) return;
     go.disabled = false;
@@ -1448,18 +1550,14 @@ function openTranslatePopover(bubble, anchor, text, role) {
     e.stopPropagation();
     if (!known) return;
     // Swap the direction: what was the source becomes the target.
-    input.value = known.name;
+    choose(known);
     meta.textContent = `Translating back into ${known.name}.`;
   };
   go.onclick = (e) => { e.stopPropagation(); run(); };
-  input.onkeydown = (e) => {
-    e.stopPropagation();
-    if (e.key === 'Enter') { e.preventDefault(); run(); }
-    if (e.key === 'Escape') { e.preventDefault(); closeTranslatePopovers(); anchor.focus(); }
-  };
   pop.onclick = (e) => e.stopPropagation();
 
   bubble.appendChild(pop);
+  fitPopover();
   input.focus();
   input.select();
   scheduleBrowserLayout?.();

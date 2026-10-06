@@ -111,6 +111,47 @@ test('detection is deterministic and cheap to repeat', () => {
   for (let i = 0; i < 5; i += 1) assert.deepEqual(translate.detect(text, languages.LANGUAGES), first);
 });
 
+test('every language is grouped, with no leftovers', () => {
+  const groups = languages.grouped(languages.LANGUAGES);
+  assert.ok(groups.length > 8, 'the catalog should be split into several regions');
+  const names = groups.map(g => g.name);
+  assert.equal(new Set(names).size, names.length, 'group names are unique');
+  assert.equal(names.includes('Other'), false, 'nothing may fall outside a region');
+  assert.equal(names[0], 'Common', 'the most-wanted languages come first');
+  // Common repeats the defaults; every other language appears exactly once.
+  const seen = new Map();
+  for (const group of groups) {
+    for (const language of group.items) seen.set(language.code, (seen.get(language.code) || 0) + 1);
+  }
+  for (const language of languages.LANGUAGES) {
+    assert.ok(seen.has(language.code), `${language.code} is missing from the grouping`);
+  }
+  for (const target of languages.DEFAULT_TARGETS) {
+    assert.equal(seen.get(target.code), 2, `${target.code} belongs to Common and its region`);
+  }
+  // The regions a user would look in must be where they expect.
+  // A language appears once in Common and once in its region, so look for the
+  // region by skipping the Common group.
+  const regionOf = code => groups.filter(g => g.name !== 'Common')
+    .find(g => g.items.some(l => l.code === code))?.name;
+  assert.equal(regionOf('ja'), 'East Asia');
+  assert.equal(regionOf('sw'), 'Africa');
+  assert.equal(regionOf('ru'), 'Eastern Europe');
+  assert.equal(regionOf('es'), 'Western Europe');
+  assert.equal(regionOf('eo'), 'Constructed');
+});
+
+test('groups are alphabetical, except Common', () => {
+  const groups = languages.grouped(languages.LANGUAGES);
+  for (const group of groups) {
+    if (group.name === 'Common') continue;
+    const names = group.items.map(l => l.name);
+    const sorted = [...names].sort((a, b) => a.localeCompare(b, 'en'));
+    assert.deepEqual(names, sorted, `${group.name} must be sorted by name`);
+  }
+  assert.deepEqual(groups[0].items.map(l => l.code), languages.DEFAULT_TARGETS.map(l => l.code));
+});
+
 test('the prompt names the direction and protects formatting', () => {
   const out = translate.prompt({ text: 'Hola mundo', targetName: 'English', sourceName: 'Spanish' });
   assert.match(out, /Spanish/);
