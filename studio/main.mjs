@@ -3977,6 +3977,13 @@ app.whenReady().then(() => {
         const compressionStarted = new Promise(resolve => { compressionReady = resolve; });
         let compressionRequests = 0;
         const compressionServer = createServer(async (req, res) => {
+          // Settings saves probe the endpoint for a model catalog (capability
+          // discovery). Answer it without touching the scripted compression.
+          if (req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'list', data: [{ id: 'Qwen/fixture', object: 'model' }] }));
+            return;
+          }
           let raw = ''; for await (const chunk of req) raw += chunk;
           const body = JSON.parse(raw);
           if (!body.stream || !body.messages[0].content.includes('durable conversation memory')) { res.writeHead(400); res.end('Expected streamed summary'); return; }
@@ -4032,7 +4039,14 @@ app.whenReady().then(() => {
         let budgetRequestReady;
         const budgetRequestStarted = new Promise(resolve => { budgetRequestReady = resolve; });
         let budgetRequestCount = 0;
-        const budgetServer = createServer((_req, res) => {
+        const budgetServer = createServer((req, res) => {
+          // The catalog probe from saveSettings must not consume a scripted
+          // chat turn: answer GETs with a catalog and leave the counter alone.
+          if (req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'list', data: [{ id: 'fixture', object: 'model' }] }));
+            return;
+          }
           res.writeHead(200, { 'content-type': 'text/event-stream' });
           if (++budgetRequestCount > 1) {
             const content = JSON.stringify({ status: 'complete', message: 'Resumed regular chat.', actions: [], options: [] });
@@ -4106,6 +4120,11 @@ app.whenReady().then(() => {
         // explicitly app-authored checkpoint instead of an empty/error bubble.
         let exhaustedRequests = 0;
         const exhaustedServer = createServer(async (req, res) => {
+          if (req.method === 'GET') {
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'list', data: [{ id: 'Qwen/fixture', object: 'model' }] }));
+            return;
+          }
           let raw = ''; for await (const chunk of req) raw += chunk;
           const request = JSON.parse(raw);
           exhaustedRequests++;
