@@ -3078,16 +3078,16 @@ app.whenReady().then(() => {
             }
             const existingToolCalls = document.querySelectorAll('.tool-call-message').length;
             handleAgentEvent({ agentId: currentAgent.id, type: 'tool-call', tool: 'write', arguments: { path: 'large.txt', content: 'large payload '.repeat(240) } });
-            const longToolCall = [...document.querySelectorAll('.tool-call-message')].at(-1);
-            const dropdown = longToolCall.querySelector('.tool-call-dropdown');
-            if (!dropdown || dropdown.open) throw new Error('tool calls over three lines must start in a closed dropdown');
-            if (getComputedStyle(dropdown.querySelector('.tool-call-text')).webkitLineClamp !== '3') throw new Error('closed tool-call dropdown is not clamped to three lines');
-            dropdown.querySelector('summary').click();
-            if (!dropdown.open) throw new Error('long tool-call dropdown cannot be expanded');
             handleAgentEvent({ agentId: currentAgent.id, type: 'tool-call', tool: 'read', arguments: { path: 'short.txt' } });
-            const shortToolCall = [...document.querySelectorAll('.tool-call-message')].at(-1);
-            if (shortToolCall.querySelector('.tool-call-dropdown')) throw new Error('short tool calls should not become dropdowns');
             if (document.querySelectorAll('.tool-call-message').length !== existingToolCalls + 2) throw new Error('tool-call smoke messages were not rendered');
+            for (const row of document.querySelectorAll('.tool-call-message')) {
+              if (getComputedStyle(row).display !== 'none') throw new Error('live tool-call activity rows must stay hidden via CSS');
+            }
+            const existingToolCards = document.querySelectorAll('.tool-card').length;
+            handleAgentEvent({ agentId: currentAgent.id, type: 'tool-result', tool: 'read', ok: true, pending: false, error: null, result: { content: 'ok' } });
+            if (document.querySelectorAll('.tool-card').length !== existingToolCards + 1) throw new Error('tool-result cards must still render');
+            const lastCard = [...document.querySelectorAll('.tool-card')].at(-1);
+            if (getComputedStyle(lastCard).display === 'none') throw new Error('tool-result cards must remain visible');
 
             // Edit review regression: all files from one AI work batch live in
             // one outer dropdown, and each detailed file review is a nested
