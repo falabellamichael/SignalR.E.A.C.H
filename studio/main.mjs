@@ -3621,7 +3621,7 @@ app.whenReady().then(() => {
             const emptyDir = first + '/build';
             await selectProject({ name: 'No chats', dir: emptyDir });
             await showTab('agents');
-            if (!currentAgent?.draft || currentAgent.dir !== emptyDir || !document.querySelector('#agent-tree').textContent.includes('New Chat') || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
+            if (!currentAgent?.draft || currentAgent.dir !== emptyDir || document.querySelectorAll('#tree-new-chat').length !== 1 || document.querySelector('#agent-body-new #tree-new-chat')?.textContent.trim() !== 'New Chat' || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
             // Removing a project means forgetting its shortcut, never deleting
             // its folder/chat or interrupting the current editor session.
             await selectAgent(a.agent);
