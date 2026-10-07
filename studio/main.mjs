@@ -38,6 +38,7 @@ const { readTextFile, writeTextFile, readPreviewFile, previewKindFor } = require
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
 const { StudioBrowser } = require('./browser/host.cjs');
+const { paint: paintTheme } = require('./renderer/theme-data.js');
 const { Telemetry, defaults: telemetryDefaults, validateSources } = require('./agent/telemetry.cjs');
 const { validatePolicy } = require('./agent/tool-policy.cjs');
 const { TOOLS } = require('./agent/tool-registry.cjs');
@@ -231,6 +232,11 @@ const hostedAccount = createHostedAccount({
     if (win && !win.isDestroyed()) win.webContents.send('account:state', state);
   },
 });
+function themeChoice() {
+  const settings = loadSettings();
+  return paintTheme({ theme: settings.theme, accent: settings.accent, tint: settings.tint });
+}
+
 function loadSettings() {
   return hostedAccount.hydrate(settingsStore.load());
 }
@@ -613,14 +619,20 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle('agents:toolSchema', () => Object.entries(TOOLS).map(([name, tool]) => ({ name, class: tool.class, help: tool.help, tier: tool.tier })));
-  ipcMain.on('theme:get', event => { event.returnValue = loadSettings().theme === 'light' ? 'light' : 'dark'; });
-  ipcMain.handle('theme:set', (_event, theme) => {
-    if (!['light', 'dark'].includes(theme)) throw new Error('Invalid theme');
+  ipcMain.on('theme:get', event => {
+    const painted = themeChoice();
+    event.returnValue = { theme: painted.theme, accent: painted.accent, tint: painted.tint };
+  });
+  ipcMain.handle('theme:set', (_event, input) => {
+    const current = loadSettings();
+    const painted = paintTheme(input && typeof input === 'object' ? input : { theme: input }, {
+      theme: current.theme, accent: current.accent, tint: current.tint,
+    });
     // Appearance changes must not invalidate an active agent's settings.
-    saveSettings({ ...loadSettings(), theme });
-    nativeTheme.themeSource = theme;
-    if (win && !win.isDestroyed()) win.setBackgroundColor(theme === 'light' ? '#fdf6e3' : '#0a0a0a');
-    return theme;
+    saveSettings({ ...current, theme: painted.theme, accent: painted.accent, tint: painted.tint });
+    nativeTheme.themeSource = painted.scheme;
+    if (win && !win.isDestroyed()) win.setBackgroundColor(painted.bg);
+    return { theme: painted.theme, accent: painted.accent, tint: painted.tint, scheme: painted.scheme };
   });
   ipcMain.handle('reach:version', () => reachProcess.reachVersion());
   ipcMain.handle('reach:run', (_e, { cwd, args }) => reachProcess.runReach({ cwd, args }));
@@ -2820,7 +2832,7 @@ function createWindow({ show = true } = {}) {
     height: 860,
     minWidth: 1000, // supported shell minimum; narrower widths clip the chat column
     minHeight: 640,
-    backgroundColor: loadSettings().theme === 'light' ? '#fdf6e3' : '#0a0a0a',
+    backgroundColor: themeChoice().bg,
     icon: path.join(rootDir, 'assets', 'icon.png'),
     show: false,
     webPreferences: {
@@ -2851,7 +2863,7 @@ function createWindow({ show = true } = {}) {
 // ---------- lifecycle ----------
 app.whenReady().then(() => {
   engines.configure(path.join(app.getPath('userData'), 'engine-ledger.jsonl'));
-  nativeTheme.themeSource = loadSettings().theme === 'light' ? 'light' : 'dark';
+  nativeTheme.themeSource = themeChoice().scheme;
   reachProcess.configure(loadSettings);
   registerIpc();
   const accountTimer = setInterval(() => { void hostedAccount.poll().catch(() => {}); }, 2000);
@@ -4300,15 +4312,18 @@ app.whenReady().then(() => {
           editor.view.dispatch({ changes: { from: editor.getText().length, insert: '\\n# unsaved theme check' }, selection: { anchor: 3 } });
           const text = editor.getText();
           const selection = editor.view.state.selection.main.head;
-          const button = document.querySelector('#theme-toggle');
-          await button.onclick();
-          if (document.documentElement.dataset.theme !== 'light' || button.getAttribute('aria-checked') !== 'true') throw new Error('Light switch failed');
+          const select = document.querySelector('#theme-select');
+          select.value = 'light';
+          await select.onchange();
+          if (document.documentElement.dataset.theme !== 'light' || document.documentElement.dataset.scheme !== 'light') throw new Error('Light switch failed');
           if (getComputedStyle(document.body).backgroundColor !== 'rgb(253, 246, 227)') throw new Error('Light palette missing');
           if (editor.getText() !== text || editor.view.state.selection.main.head !== selection) throw new Error('Theme reset editor state');
           if (getComputedStyle(editor.view.dom).backgroundColor !== 'rgb(253, 246, 227)') throw new Error('Editor did not follow light theme');
-          await button.onclick();
+          select.value = 'dark';
+          await select.onchange();
           if (document.documentElement.dataset.theme !== 'dark' || getComputedStyle(document.body).backgroundColor !== 'rgb(10, 10, 10)') throw new Error('Dark palette did not restore');
-          await button.onclick();
+          select.value = 'light';
+          await select.onchange();
           editor.setText(editor.getText().replace('\\n# unsaved theme check', ''));
           openFiles.get('hello.py').dirty = false;
         })()`);
@@ -4326,7 +4341,8 @@ app.whenReady().then(() => {
         fs.writeFileSync(themeScreenshot, (await win.capturePage()).toPNG());
         console.log('LIGHT THEME SCREENSHOT: ' + themeScreenshot);
         await win.webContents.executeJavaScript(`(async () => {
-          await document.querySelector('#theme-toggle').onclick();
+          document.querySelector('#theme-select').value = 'dark';
+          await document.querySelector('#theme-select').onchange();
           appendChatMessage('user', 'Review this project and suggest the next steps.');
           appendChatMessage('assistant', 'The project is ready to explore. Start with the entry point, then check the tests and review any changes before saving.');
         })()`);
@@ -4339,7 +4355,7 @@ app.whenReady().then(() => {
         })()`);
         await new Promise(resolve => setTimeout(resolve, 500));
         fs.writeFileSync(path.join(smokeRoot, 'dark-settings.png'), (await win.capturePage()).toPNG());
-        await win.webContents.executeJavaScript(`document.querySelector('#theme-toggle').onclick()`);
+        await win.webContents.executeJavaScript(`document.querySelector('#theme-select').value = 'light'; document.querySelector('#theme-select').onchange()`);
         const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
         win.webContents.reload();
         await reloaded;

@@ -57,7 +57,8 @@
   box-shadow: inset 2px 0 0 var(--gold);
 }
 
-.rail-icon { flex: 0 0 auto; width: 20px; text-align: center; font-size: 16px; line-height: 1; }
+.rail-icon { flex: 0 0 auto; width: 16px; height: 16px; display: grid; place-items: center; }
+.rail-icon svg { width: 16px; height: 16px; display: block; fill: currentColor; }
 
 /* The label is hidden by DEFAULT rather than shrink-collapsed. A shrink-only
    label collapses to zero width while its sibling `.rail-key` chip keeps its
@@ -339,12 +340,13 @@
 .ws-metric strong { font-size: 22px; font-weight: 600; color: var(--text); }
 .ws-metric small { font-size: 11px; }
 
-.ws-grid {
+.ws-board {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 12px;
   align-items: start;
 }
+.ws-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
 .ws-card {
   display: flex;

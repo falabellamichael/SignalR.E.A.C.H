@@ -42,7 +42,7 @@ const goldHighlight = HighlightStyle.define([
 function create(parent, { doc = '', onChange = null, filename = '' } = {}) {
   const language = new Compartment();
   const theme = new Compartment();
-  const currentTheme = () => editorTheme(document.documentElement.dataset.theme !== 'light');
+  const currentTheme = () => editorTheme(document.documentElement.dataset.scheme ? document.documentElement.dataset.scheme !== 'light' : document.documentElement.dataset.theme !== 'light');
   const updateListener = EditorView.updateListener.of((u) => {
     if (u.docChanged && onChange) onChange(u.state.doc.toString());
   });

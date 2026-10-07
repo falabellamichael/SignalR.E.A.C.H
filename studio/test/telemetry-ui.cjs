@@ -108,7 +108,7 @@ const timeout = setTimeout(() => { console.error('Workspace UI timed out'); app.
   for (const [width, height] of [[1440, 1024], [1000, 640]]) {
     win.setContentSize(width, height);
     for (const theme of ['dark', 'light']) {
-      if (await run('document.documentElement.dataset.theme') !== theme) await run('document.querySelector("#theme-toggle").onclick()');
+      if (await run('document.documentElement.dataset.theme') !== theme) await run(`document.querySelector('#theme-select').value = ${JSON.stringify(theme)}; document.querySelector('#theme-select').onchange()`);
       for (const view of ['overview', 'activity', 'models']) {
         await run(`document.querySelector('#telemetry-view').value=${JSON.stringify(view)}; document.querySelector('#telemetry-view').dispatchEvent(new Event('change'))`);
         await delay(120);
