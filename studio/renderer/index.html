@@ -506,7 +506,7 @@
     <section id="page-create" class="page">
       <div class="create-workbench">
         <div class="create-heading">
-          <div><h1>Create</h1><p>Individual minds. A shared purpose.</p></div>
+          <div class="create-heading-title"><h1>Create</h1><p id="create-summary">Teams and agents</p></div>
           <div class="create-heading-actions">
             <button id="btn-new-team" class="gold" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New team</button>
             <button id="btn-new-persona" class="ghost" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New agent</button>
@@ -515,9 +515,10 @@
         <div class="create-workbench-body">
           <aside class="create-library" aria-label="Saved teams and custom agents">
             <div class="create-library-tabs" role="tablist" aria-label="Create library">
-              <button id="create-tab-teams" type="button" role="tab" aria-selected="true" aria-controls="create-teams-panel" tabindex="0">Teams</button>
-              <button id="create-tab-agents" type="button" role="tab" aria-selected="false" aria-controls="create-agents-panel" tabindex="-1">Custom Agents</button>
+              <button id="create-tab-teams" type="button" role="tab" aria-selected="true" aria-controls="create-teams-panel" tabindex="0">Teams <span id="create-teams-count" class="create-count">0</span></button>
+              <button id="create-tab-agents" type="button" role="tab" aria-selected="false" aria-controls="create-agents-panel" tabindex="-1">Agents <span id="create-agents-count" class="create-count">0</span></button>
             </div>
+            <input id="create-filter" type="search" placeholder="Filter name, role, or model" aria-label="Filter teams and agents" spellcheck="false" />
             <div class="create-library-scroll">
               <div id="create-teams-panel" role="tabpanel" aria-labelledby="create-tab-teams">
                 <div id="team-list" class="team-list"></div>

@@ -3756,11 +3756,11 @@ function renderPersonaList() {
   /* The create workbench owns the markup; this keeps the data loading, the
    * connection naming and the modals here, where the rest of the app state
    * lives. See create-page.js. */
-  window.ReachCreatePage.renderAgents(personas, { connectionLabel, edit: openPersonaModal });
+  window.ReachCreatePage.renderAgents(personas, { connectionLabel, edit: openPersonaModal, teams, roles, connections: connChoices || [] });
 }
 
 function renderTeamList() {
-  window.ReachCreatePage.renderTeams(teams, { edit: openTeamModal, run: openTeamRunModal });
+  window.ReachCreatePage.renderTeams(teams, { edit: openTeamModal, run: openTeamRunModal, roles, connections: connChoices || [] });
 }
 
 // ----- persona modal -----
