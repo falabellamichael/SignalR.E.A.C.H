@@ -1,5 +1,23 @@
 # Changelog
 
+## [26.9.14](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.13...reach-studio-v26.9.14) (2026-10-07)
+
+
+### Features
+
+* **studio:** add theme accents and tighten the workspace layout ([e270b9e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e270b9e90a2b29eb8e9f8624a7a05a65ac72a5a1))
+* **studio:** make the Create page a compact operational workbench ([cbaea04](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/cbaea04521878b3029bb5145d89fbdecc12c282f))
+* **studio:** show what each tool ran and when ([38bc70c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/38bc70cb0f878ae9cfe29fddf38277efe3b54b55))
+* **studio:** start theme tint at zero ([14cf8be](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/14cf8be8c2c3070295a838d8cea6e8b1929cb63d))
+* **studio:** VS Code-style activity bar and a denser agent explorer ([b9dfa03](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b9dfa03553539f3b823c65387720cf4553dccb39))
+
+
+### Bug Fixes
+
+* harden public access and operator UI ([#151](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/151)) ([3b6707a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3b6707a81cae6073bdcb8503f830ee976ac05a61))
+* **studio:** find the pinned New Chat row in the Start section in smoke ([#152](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/152)) ([c48af26](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c48af26a6743438683b0c8de61ec4dfa4aa21935))
+* **studio:** hide tool-call activity rows in Agents chat ([#153](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/153)) ([26f7435](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/26f7435b577851317b0196c65cd88d1048cb8bee))
+
 ## [26.9.13](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.12...reach-studio-v26.9.13) (2026-10-06)
 
 
