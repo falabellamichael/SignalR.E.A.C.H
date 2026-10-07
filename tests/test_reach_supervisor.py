@@ -498,5 +498,45 @@ class SupervisorLifecycleTests(unittest.TestCase):
             self.assertFalse(supervisor.stop_supervisor())
 
 
+class CliPublishGuardTests(unittest.TestCase):
+    """tools/reach publish (CLI and the supervisor's Start) matches the relay:
+    no pointer is published while access keys are not required."""
+
+    def setUp(self):
+        import importlib
+        self.mod = importlib.import_module("reach.publish")
+
+    def test_refuses_while_keys_are_off(self):
+        with unittest.mock.patch.object(self.mod, "load_config",
+                                        return_value={"access": {"key_required": False}}), \
+                unittest.mock.patch.object(self.mod, "public_url_from_server") as url, \
+                unittest.mock.patch.object(self.mod.subprocess, "run") as run:
+            self.assertFalse(self.mod.publish(quiet=True))
+        url.assert_not_called()
+        run.assert_not_called()
+
+    def test_refuses_without_a_readable_config(self):
+        with unittest.mock.patch.object(self.mod, "load_config", return_value={}), \
+                unittest.mock.patch.object(self.mod.subprocess, "run") as run:
+            self.assertFalse(self.mod.publish(quiet=True))
+        run.assert_not_called()
+
+    def test_publishes_when_keys_are_required(self):
+        class _Ok:
+            returncode = 0
+            stderr = ""
+        with tempfile.TemporaryDirectory() as td, \
+                unittest.mock.patch.object(self.mod, "load_config",
+                                           return_value={"access": {"key_required": True}}), \
+                unittest.mock.patch.object(self.mod, "CONFIG_DIR", pathlib.Path(td)), \
+                unittest.mock.patch.object(self.mod, "runtime_port", return_value=20777), \
+                unittest.mock.patch.object(self.mod, "public_url_from_server",
+                                           return_value="https://x.example/v1"), \
+                unittest.mock.patch.object(self.mod, "find_gh", return_value="gh"), \
+                unittest.mock.patch.object(self.mod.subprocess, "run", return_value=_Ok()) as run:
+            self.assertTrue(self.mod.publish(quiet=True))
+        run.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
