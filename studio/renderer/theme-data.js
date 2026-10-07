@@ -5,7 +5,7 @@
   root.ReachThemes = api;
   if (typeof module === 'object' && module && module.exports) module.exports = api;
 })(function () {
-  const DEFAULT_TINT = 24;
+  const DEFAULT_TINT = 0;
   const TINT_KEYS = ['panel', 'panel2', 'header', 'surface', 'card', 'hover', 'user-bg', 'selection', 'active-line', 'edit-bg', 'code-bg', 'subagent-bg', 'line'];
 
   function clamp(n, min, max) { return Math.min(max, Math.max(min, n)); }

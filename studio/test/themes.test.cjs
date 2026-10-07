@@ -19,6 +19,8 @@ test('ten themes keep Reach light and dark plus the Tokyo Night set', () => {
   assert.equal(paint('tokyo-day').scheme, 'light');
   assert.equal(paint('tokyo-day').vars.bg, '#e6e7ed');
   assert.equal(paint('nope').theme, 'dark');
+  assert.equal(paint('dark').tint, 0);
+  assert.equal(paint('dark').vars.panel, '#111111');
 });
 
 test('accent recolors gold and tint washes panels without replacing the page background', () => {
