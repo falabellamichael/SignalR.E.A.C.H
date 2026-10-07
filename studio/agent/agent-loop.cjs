@@ -21,7 +21,7 @@ const { gateFor, gateKeyFor, rateLimitInfoFrom, rateLimitDiagnostic } = require(
 const { protocol, actionResponseReminder, start, decide } = require('./agent-run.cjs');
 const { actionInstruction, nativeInstruction, toolDefs } = require('./agent-action.cjs');
 const { parseAgentResponse, extractToolBlocks } = require('./agent-response.cjs');
-const { runToolCall } = require('./agent-tool-runner.cjs');
+const { runToolCall, toolHeadline } = require('./agent-tool-runner.cjs');
 const { toolHelp, TOOLS, needsApproval } = require('./tool-registry.cjs');
 const { features, disabledTools } = require('./tool-policy.cjs');
 const { untrustedData } = require('./untrusted.cjs');
@@ -1050,7 +1050,9 @@ class AgentLoop {
             this._emit('tool-call', { tool: call.name, arguments: call.args });
             const result = await runToolCall(this.agentId, call.name, call.args, contextFor(call));
             this.turnResults.push({ tool: call.name, path: String(call.args?.path || call.args?.filePath || '').slice(0, 300), ok: result.ok, pending: !!result.pending });
-            this._emit('tool-result', { tool: call.name, ok: result.ok, pending: !!result.pending, error: result.error, result });
+            const elapsedMs = result.record?.timestamp ? Math.max(0, Date.now() - result.record.timestamp) : undefined;
+            this._emit('tool-result', { tool: call.name, ok: result.ok, pending: !!result.pending, error: result.error, result,
+              headline: toolHeadline(call.name, call.args, result), elapsedMs });
             return { tool: call.name, result };
           };
           const isReadOnly = (call) => TOOLS[call.name] && TOOLS[call.name].class === 'read' && !needsApproval(call.name);

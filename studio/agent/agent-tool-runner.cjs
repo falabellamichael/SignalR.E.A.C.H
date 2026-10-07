@@ -244,10 +244,12 @@ async function persistToolResult(agentId, name, args, result, context, record = 
   // storing the body twice bloats saved conversations and compaction input.
   const digest = createHash('sha256').update(JSON.stringify(result)).digest('hex');
   const argumentsSha256 = createHash('sha256').update(JSON.stringify(args || {})).digest('hex');
+  const elapsedMs = Math.max(0, Date.now() - (record?.timestamp || Date.now()));
+  const headline = toolHeadline(name, args, result);
   context.journal?.append('evidence', { agentId, tool: name, argumentsSha256,
     ok: !!result.ok, pending: !!result.pending, editId: result.editId || null,
     path: String(result.path || args?.path || args?.filePath || '').slice(0, 300),
-    elapsedMs: Math.max(0, Date.now() - (record?.timestamp || Date.now())), resultSha256: digest });
+    elapsedMs, resultSha256: digest });
   if (!context.agentStore || !agentId) return;
   const content = JSON.stringify({ tool: name, ok: !!result.ok, argumentsSha256, resultSha256: digest,
     error: result.error ? String(result.error).slice(0, 500) : undefined });
@@ -256,8 +258,47 @@ async function persistToolResult(agentId, name, args, result, context, record = 
     tool_call_id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     name,
     content,
-    _reachMeta: { source: 'tool', toolId: name, observationId: observation.id },
+    _reachMeta: { source: 'tool', toolId: name, observationId: observation.id,
+      headline, elapsedMs, at: record?.timestamp || Date.now() },
   });
 }
 
-module.exports = { runToolCall, resolveInProject };
+/** One-line label for a tool card: the file, pattern, or command that ran. */
+function toolHeadline(name, args, result) {
+  const a = args && typeof args === 'object' ? args : {};
+  const r = result && typeof result === 'object' && !Array.isArray(result) ? result : {};
+  const rawPath = String(r.path || a.path || a.filePath || '').replace(/\\/g, '/');
+  const file = rawPath.split('/').filter(Boolean).slice(-2).join('/');
+  const bits = [];
+  if (name === 'read') {
+    if (file) bits.push(file);
+    const start = Number.isInteger(r.startLine) ? r.startLine : a.startLine;
+    const end = Number.isInteger(r.endLine) ? r.endLine : a.endLine;
+    if (Number.isInteger(start) && Number.isInteger(end)) bits.push(`L${start}–${end}`);
+    if (Number.isInteger(r.totalLines)) bits.push(`${r.totalLines} lines`);
+  } else if (name === 'glob' || name === 'search') {
+    const pattern = String(a.pattern || r.pattern || '').trim().slice(0, 80);
+    if (pattern) bits.push(pattern);
+    if (Array.isArray(r.matches)) {
+      const noun = name === 'glob' ? 'file' : 'hit';
+      bits.push(`${r.matches.length} ${noun}${r.matches.length === 1 ? '' : 's'}`);
+    }
+    if (r.truncated) bits.push('truncated');
+  } else if (name === 'list') {
+    bits.push(file || String(a.path || '.').replace(/\\/g, '/').slice(0, 80));
+  } else if (name === 'shell') {
+    const command = String(a.command || '').replace(/\s+/g, ' ').trim().slice(0, 72);
+    if (command) bits.push(command);
+    if (r.exitCode != null) bits.push(`exit ${r.exitCode}`);
+  } else if (file) {
+    bits.push(file);
+  } else {
+    const hint = ['pattern', 'command', 'url', 'query', 'op']
+      .map(key => a[key])
+      .find(value => typeof value === 'string' && value.trim());
+    if (hint) bits.push(String(hint).replace(/\s+/g, ' ').trim().slice(0, 72));
+  }
+  return bits.join(' · ').slice(0, 160);
+}
+
+module.exports = { runToolCall, resolveInProject, toolHeadline };

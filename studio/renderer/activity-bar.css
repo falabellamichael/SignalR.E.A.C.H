@@ -9,43 +9,63 @@
  * Those are frozen. Do not add selectors here that escape the aside.
  *
  * Colour comes only from the theme custom properties in styles.css so the light
- * theme stays in parity. Accent (gold) is reserved for the ACTIVE row only,
- * matching the VS Code activity-bar rule that colour marks state, not decoration.
+ * theme stays in parity. Gold marks the prompt, a running session, and the
+ * active row — the same way a terminal prompt and a VS Code selection do.
  */
 
 /* --------------------------------------------------------------- aside shell */
 
 #page-agents aside {
-  width: 236px;
-  padding: 12px 10px;
-  gap: 8px;
+  width: 268px;
+  padding: 8px 8px 10px;
+  gap: 6px;
+  background: var(--panel);
+  font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
-/* Explorer-style section label: small, uppercase, muted, sans — not the serif
-   brand face used by page headings. */
+/* Prompt + explorer label. The dollar sign is the CLI cue; the rest stays a
+   quiet VS Code section title. */
 #page-agents aside .side-title {
-  font-family: 'Segoe UI', system-ui, sans-serif;
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: .08em;
-  padding: 0 2px 6px;
+  font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: none;
+  padding: 2px 4px 8px;
   color: var(--dim);
+  border-bottom: 1px solid var(--line);
+}
+
+#page-agents aside .side-title::before {
+  content: '$';
+  color: var(--gold);
+  margin-right: 8px;
 }
 
 #page-agents aside #agent-project-select {
-  padding: 5px 7px;
-  font-size: 12px;
+  padding: 4px 7px;
+  font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+  font-size: 11.5px;
   border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
 }
 
 /* Dense action row. Keeps the existing gold/ghost identities but stops the
    buttons from dominating the sidebar. */
-#page-agents aside .side-actions { gap: 6px; }
+#page-agents aside .side-actions {
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
 
 #page-agents aside .side-actions button {
-  padding: 6px 10px;
-  font-size: 12px;
+  width: 100%;
+  padding: 5px 8px;
+  font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+  font-size: 11.5px;
   border-radius: 4px;
+  text-align: left;
 }
 
 /* ------------------------------------------------------- collapsible sections */
@@ -147,20 +167,42 @@
 
 #page-agents aside .tree-label {
   gap: 6px;
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 12.5px;
-  line-height: 1.3;
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.35;
 }
+
+#page-agents aside .tree-meta {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--dim);
+  font-size: 10.5px;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+#page-agents aside .tree-meta.run { color: var(--gold); }
+#page-agents aside .tree-meta.attention { color: var(--err); }
+#page-agents aside .tree-meta.ok { color: var(--ok); }
+
+#page-agents aside .tree-delete { margin-left: 4px; opacity: 0; }
+#page-agents aside .tree-label:hover .tree-delete,
+#page-agents aside .tree-label:focus-within .tree-delete { opacity: 1; }
 
 /* Active row: a filled muted surface plus a 2px leading accent bar, drawn with
    an inset shadow so the row geometry never shifts between states. */
 #page-agents aside .tree-node.active > .tree-label {
   border-color: transparent;
-  background: var(--hover);
-  color: var(--gold);
+  background: color-mix(in srgb, var(--gold) 12%, var(--panel2));
+  color: var(--text);
   box-shadow: inset 2px 0 0 var(--gold);
 }
+
+#page-agents aside .tree-node.active > .tree-label .tree-name { color: var(--gold); }
+#page-agents aside .tree-node.active > .tree-label .tree-meta { color: var(--gold-dim); }
 
 #page-agents aside .tree-empty { padding: 8px 6px; font-size: 11.5px; }
 

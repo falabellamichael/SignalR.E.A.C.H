@@ -725,6 +725,40 @@ $('#agent-project-select').onchange = async (e) => {
   if (option) await selectProject({ name: option.textContent, dir: option.value });
 };
 
+function relativeTime(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const delta = Date.now() - n;
+  if (delta < 45000) return 'now';
+  const mins = Math.round(delta / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 36) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  if (days < 14) return `${days}d`;
+  const d = new Date(n);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+}
+
+function shortStatus(status) {
+  switch (status) {
+    case 'running': return 'run';
+    case 'waiting_input':
+    case 'waiting_edits':
+    case 'waiting_approval': return 'wait';
+    case 'paused': return 'pause';
+    case 'failed':
+    case 'error': return 'err';
+    case 'stopped': return 'stop';
+    case 'completed': return 'done';
+    default: return 'idle';
+  }
+}
+
+function agentRowMeta(node) {
+  return [shortStatus(node.status), relativeTime(node.updatedAt || node.createdAt)].filter(Boolean).join(' · ');
+}
+
 async function loadAgentTree() {
   const revision = ++agentTreeRevision;
   const treeEl = $('#agent-tree');
@@ -781,6 +815,12 @@ async function loadAgentTree() {
     name.textContent = node.depth > 0 ? '⑂ ' + node.name : node.name;
     name.title = `${node.messageCount} msgs · ${node.status}` + (node.forkIndex !== null ? ` · branched at message ${node.forkIndex}` : '');
     label.appendChild(name);
+    const meta = document.createElement('span');
+    const tone = node.status === 'running' ? 'run' : attention ? 'attention' : node.messageCount ? 'ok' : 'idle';
+    meta.className = 'tree-meta ' + tone;
+    meta.textContent = agentRowMeta(node);
+    meta.title = name.title;
+    label.appendChild(meta);
     const del = document.createElement('button');
     del.className = 'tree-delete';
     del.title = `Delete "${node.name}"`;
@@ -1462,17 +1502,64 @@ function appendQuestion(question) {
   followChatTail(follow);
 }
 
-function appendToolCard(tool, ok, pending, error, result) {
+function formatElapsed(ms) {
+  if (ms == null || !Number.isFinite(Number(ms))) return '';
+  const n = Math.max(0, Number(ms));
+  if (n < 1000) return `${Math.round(n)}ms`;
+  if (n < 10000) return `${(n / 1000).toFixed(1)}s`;
+  return `${Math.round(n / 1000)}s`;
+}
+
+function formatClock(at) {
+  const d = at ? new Date(at) : new Date();
+  if (Number.isNaN(d.getTime())) return timeStamp();
+  return d.toTimeString().slice(0, 8);
+}
+
+function toolBodyText(result) {
+  if (result == null || result === '') return '';
+  if (typeof result === 'string') return result.slice(0, 4000);
+  if (typeof result === 'object') {
+    const { record, ...rest } = result;
+    return JSON.stringify(rest, null, 2).slice(0, 4000);
+  }
+  return String(result).slice(0, 4000);
+}
+
+function appendToolCard(tool, ok, pending, error, result, meta = {}) {
   const follow = shouldFollowChat();
   const card = document.createElement('div');
   card.className = 'tool-card ' + (ok ? (pending ? 'pending' : 'ok') : 'err');
   const head = document.createElement('button');
   head.className = 'tool-head';
-  head.innerHTML = `<span class="tool-icon">${ok ? (pending ? '◔' : '✓') : '✗'}</span> ${escapeHtml(tool)}${pending ? ' (awaiting review)' : ''}${error ? ' — ' + escapeHtml(error) : ''}`;
+  head.type = 'button';
+
+  const icon = document.createElement('span');
+  icon.className = 'tool-icon';
+  icon.textContent = ok ? (pending ? '◔' : '✓') : '✗';
+  const name = document.createElement('span');
+  name.className = 'tool-name';
+  name.textContent = tool || 'tool';
+  const detail = document.createElement('span');
+  detail.className = 'tool-meta';
+  const bits = [];
+  if (meta.headline) bits.push(meta.headline);
+  if (pending) bits.push('awaiting review');
+  else if (error) bits.push(String(error).slice(0, 80));
+  detail.textContent = bits.join(' · ');
+  const time = document.createElement('span');
+  time.className = 'tool-time';
+  const elapsed = formatElapsed(meta.elapsedMs);
+  time.textContent = [elapsed, meta.at ? formatClock(meta.at) : ''].filter(Boolean).join(' · ');
+  head.append(icon, name, detail, time);
+  const summary = [tool || 'tool', detail.textContent, time.textContent].filter(Boolean).join(' · ');
+  head.title = summary;
+  head.setAttribute('aria-label', summary);
+
   card.appendChild(head);
   const body = document.createElement('div');
   body.className = 'tool-body hidden';
-  body.textContent = result ? JSON.stringify(result, null, 2).slice(0, 4000) : '';
+  body.textContent = toolBodyText(result);
   card.appendChild(body);
   head.onclick = () => body.classList.toggle('hidden');
   chatLog.appendChild(card);
@@ -1785,7 +1872,11 @@ function renderChatHistory() {
     if (['recovery', 'recovery-attempt', 'tool-summary'].includes(m._reachMeta?.source)) return;
     if (m.role === 'tool') {
       appendToolCard(m.name || 'tool', !String(m.content).includes('→ error'), false,
-        String(m.content).includes('→ error') ? 'error' : null, m.content);
+        String(m.content).includes('→ error') ? 'error' : null, m.content, {
+          headline: m._reachMeta?.headline,
+          elapsedMs: m._reachMeta?.elapsedMs,
+          at: m._reachMeta?.at,
+        });
     } else {
       const text = m._reachMeta?.display ?? m.content;
       if (text) appendChatMessage(m.role, text, idx, m._reachMeta?.thought, m._reachMessageKey);
@@ -2272,7 +2363,9 @@ function handleAgentEvent(ev) {
       appendToolCallMessage(ev.tool, ev.arguments);
       break;
     case 'tool-result':
-      appendToolCard(ev.tool, ev.ok, ev.pending, ev.error, ev.result);
+      appendToolCard(ev.tool, ev.ok, ev.pending, ev.error, ev.result, {
+        headline: ev.headline, elapsedMs: ev.elapsedMs, at: Date.now(),
+      });
       break;
     case 'run-state':
       if (ev.status !== 'running') recoveryBubble = null;
@@ -5225,6 +5318,13 @@ function teamErrorSummary(value) {
   return raw.slice(0, 320);
 }
 
+function memberToolLine(ev) {
+  const mark = ev.ok ? '✓' : '✗';
+  const elapsed = formatElapsed(ev.elapsedMs);
+  const error = ev.error ? teamErrorSummary(ev.error) : '';
+  return [mark, ev.tool || 'tool', ev.headline, elapsed, error && !ev.ok ? error : ''].filter(Boolean).join('  ');
+}
+
 function handleTeamEvent(ev) {
   if (ev.type === 'queue-run-started') {
     startTeamRunView(ev.teamRunId, ev.team, ev.task, ev.agentId);
@@ -5357,7 +5457,7 @@ function handleTeamEvent(ev) {
         state.textContent = ev.pending ? 'Waiting for edit review' : `${ev.tool} finished`;
         const line = document.createElement('div');
         line.className = 'member-tool ' + (ev.ok ? 'ok' : 'bad');
-        line.textContent = `${ev.ok ? '✓' : '✗'} ${ev.tool}${ev.error ? ': ' + teamErrorSummary(ev.error) : ''}`;
+        line.textContent = memberToolLine(ev);
         body.appendChild(line);
       }
       break;
@@ -5519,7 +5619,7 @@ function handleTeamEvent(ev) {
         case 'tool-result': {
           const line = document.createElement('div');
           line.className = 'member-tool ' + (ev.ok ? 'ok' : 'bad');
-          line.textContent = `${ev.ok ? '✓' : '✗'} ${ev.tool}${ev.error ? ': ' + teamErrorSummary(ev.error) : ''}`;
+          line.textContent = memberToolLine(ev);
           body.appendChild(line);
           break;
         }

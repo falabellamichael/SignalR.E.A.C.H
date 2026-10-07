@@ -783,19 +783,32 @@ body.resizing-y, body.resizing-y * {
 
 /* tool cards */
 .tool-card {
-  align-self: center; width: 92%; border: 1px solid var(--line); border-radius: 8px;
+  align-self: center; width: 92%; border: 1px solid var(--line); border-radius: 6px;
   background: var(--card); font-size: 12px; flex-shrink: 0;
+  font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
 }
 .tool-card.ok { border-left: 3px solid var(--ok); }
 .tool-card.err { border-left: 3px solid var(--err); }
 .tool-card.pending { border-left: 3px solid var(--gold); }
 .tool-head {
-  display: block; width: 100%; text-align: left; background: transparent; border: none;
-  color: var(--text); padding: 8px 12px; cursor: pointer; font-size: 12px;
-  font-family: Consolas, monospace;
+  display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+  background: transparent; border: none; color: var(--text); padding: 6px 12px;
+  cursor: pointer; font-size: 12px; font-family: inherit; min-width: 0;
 }
-.tool-head:hover { color: var(--gold); }
-.tool-icon { margin-right: 6px; }
+.tool-head:hover { background: var(--hover); }
+.tool-icon { flex: 0 0 auto; color: var(--ok); }
+.tool-card.err .tool-icon { color: var(--err); }
+.tool-card.pending .tool-icon { color: var(--gold); }
+.tool-name { flex: 0 0 auto; color: var(--gold); }
+.tool-meta {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; color: var(--dim);
+}
+.tool-time {
+  flex: 0 0 auto; margin-left: auto; color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.tool-head:hover .tool-name { color: var(--button-hover); }
 .tool-body {
   padding: 8px 12px; border-top: 1px solid var(--line); color: var(--dim);
   font-family: Consolas, monospace; white-space: pre-wrap; word-break: break-all;
