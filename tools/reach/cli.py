@@ -28,7 +28,11 @@ Commands:
   reach.py vscode install     install just the VS Code extension
   reach.py vscode uninstall|status
   reach.py status             relay/tunnel/public-URL status
-  reach.py start|stop|restart relay + tunnel
+  reach.py start|stop|restart relay + tunnel + local one-click control
+                              (`start` also brings up the panel's Start button;
+                               `stop` takes the control down too, or its watchdog
+                               would revive the relay 20s later)
+  reach.py supervise          run ONLY the local control + watchdog server
   reach.py publish            push the current public URL to the pointer gist
   reach.py register-autostart create a logon task that restarts relay+tunnel
 """
@@ -79,7 +83,17 @@ from .http_admin import (
 )
 from .keys import find_omniroute_key, mask_key
 from .publish import publish
-from .supervisor import run as run_supervisor
+from .supervisor import (
+    ACCOUNT_PORT,
+    ACCOUNTS_TASK,
+    CONTROL_PORT,
+    accounts_ready,
+    accounts_task_present,
+    ensure_accounts_running,
+    ensure_supervisor_running,
+    run as run_supervisor,
+    stop_supervisor,
+)
 from .registry import (
     STASH_DIR,
     extension_home,
@@ -260,6 +274,11 @@ def cmd_install(args):
             start_tunnel(args.tunnel, runtime_port())
         if not extension_only and not args.no_publish:
             publish()
+        # The panel's one-click Start Endpoint drives the local control server;
+        # an install must leave it running or the button is dead on arrival.
+        if ensure_supervisor_running():
+            print("  supervisor started (one-click Start endpoint on 127.0.0.1:%d)"
+                  % CONTROL_PORT)
     print()
     print("Done. Local endpoint: http://127.0.0.1:%d/v1" % runtime_port())
     print("Endpoint pointer:  " + GIST_RAW)
@@ -310,6 +329,7 @@ def cmd_uninstall(args):
     if not changed and not removed_packages:
         print("  not registered (nothing to remove)")
     if args.all:
+        stop_supervisor()
         stop_server()
         stop_tunnel()
         remove_autostart()
@@ -330,6 +350,22 @@ def cmd_status(_args):
         print("  models:     %s/v1/models" % url)
     else:
         print("  public URL: (no tunnel up — run `reach.py start`)")
+    # The panel's one-click "Start Endpoint" button calls this control server.
+    # If it is down the button cannot work, so report it plainly instead of
+    # leaving the failure to a generic network error in the browser.
+    print("  start:      %s" % (
+        "one-click control on 127.0.0.1:%d" % CONTROL_PORT if port_open(CONTROL_PORT)
+        else "control server stopped — run `reach.py start`"))
+    # Wallet sign-in is proxied to a separate account service; report it so a
+    # 503 in Studio is attributable instead of looking like a REACH bug. A host
+    # that provisioned it owns a task for it, which counts as configured.
+    if port_open(ACCOUNT_PORT):
+        print("  accounts:   running (loopback 127.0.0.1:%d)" % ACCOUNT_PORT)
+    elif accounts_ready() or accounts_task_present():
+        print("  accounts:   stopped — run `reach.py start` (wallet sign-in "
+              "answers 503)")
+    else:
+        print("  accounts:   not provisioned (wallet sign-in answers 503)")
     print("  pointer:    " + GIST_RAW)
     print("  config:     " + str(CONFIG_PATH))
     print("  key:        %s" % mask_key(cfg.get("omniroute_key")))
@@ -474,14 +510,43 @@ def cmd_host(args):
     return 1
 
 
+def _report_account_service():
+    """Say whether wallet sign-in can work, in the same place as the rest.
+
+    A relay whose account service is down answers 503 for every wallet route,
+    which reads as a REACH bug in the UI. Naming it here (and why) is the point.
+    """
+    state = ensure_accounts_running()
+    if state in ("running", "started"):
+        detail = "running" if state == "running" else "started"
+        print("  accounts:   %s (loopback 127.0.0.1:%d)" % (detail, ACCOUNT_PORT))
+    elif state == "task_failed":
+        print("  accounts:   could not start - run the %r scheduled task"
+              % ACCOUNTS_TASK)
+    else:
+        print("  accounts:   not provisioned - wallet sign-in will answer 503 "
+              "(see docs/RCH_STUDIO_ACCESS.md)")
+
+
 def cmd_start(args):
     start_server()
     start_tunnel(args.tunnel, runtime_port())
     if not args.no_publish:
         publish()
+    # Leave the panel's one-click Start control reachable. Without this the
+    # control port stays closed and the button fails with a generic network
+    # error even though the relay itself is healthy.
+    if ensure_supervisor_running():
+        print("  supervisor started (one-click Start endpoint on 127.0.0.1:%d)"
+              % CONTROL_PORT)
+    _report_account_service()
 
 
 def cmd_stop(_args):
+    # The supervisor revives the relay within 20s, so it must go down FIRST or
+    # `reach.py stop` silently does nothing.
+    if stop_supervisor():
+        print("  supervisor stopped")
     stop_server()
     stop_tunnel()
 
@@ -494,6 +559,10 @@ def cmd_restart(args):
     start_tunnel(args.tunnel, runtime_port())
     if not args.no_publish:
         publish()
+    if ensure_supervisor_running():
+        print("  supervisor started (one-click Start endpoint on 127.0.0.1:%d)"
+              % CONTROL_PORT)
+    _report_account_service()
 
 
 # ----------------------------------------------------------------------

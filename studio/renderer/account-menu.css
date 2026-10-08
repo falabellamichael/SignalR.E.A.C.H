@@ -1,4 +1,5 @@
-.account-bubble { position: relative; flex: 0 0 38px; width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--gold-dim); border-radius: 50%; color: var(--gold); background: var(--panel2); font: 700 15px/1 'Segoe UI', sans-serif; cursor: pointer; }
+.account-bubble { position: relative; flex: 0 0 38px; width: 38px; height: 38px; display: grid; place-items: center; padding: 0; border: 1px solid var(--gold-dim); border-radius: 50%; color: var(--gold); background: var(--panel2); font: 700 15px/1 'Segoe UI', sans-serif; cursor: pointer; }
+#account-menu-avatar { display: block; line-height: 1; text-align: center; transform: translateY(2px); }
 .account-bubble:hover, .account-bubble[aria-expanded="true"] { background: var(--hover); border-color: var(--gold); }
 .account-bubble:focus-visible, .account-menu button:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 #account-menu-dot { position: absolute; right: -1px; bottom: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); border: 2px solid var(--header); }

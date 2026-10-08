@@ -201,6 +201,7 @@
   new MutationObserver(sync).observe(chatLog, { childList: true });
   new MutationObserver(sync).observe($('#page-agents'), { attributes: true, attributeFilter: ['class'] });
   new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  document.addEventListener('reach-theme-change', draw);
   new ResizeObserver(draw).observe(content);
   document.addEventListener('visibilitychange', sync);
   window.ReachTelemetry = { sync, reset() { forced = false; enabled = true; localStorage.setItem('reach.telemetry.enabled', 'true'); }, details };

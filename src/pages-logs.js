@@ -39,7 +39,7 @@
             // Header
             const head = el('div', 'reach-modal-head');
             const titleWrap = el('h3', null);
-            titleWrap.innerHTML = '<i class="fa-solid fa-file-lines" style="color:var(--reach-accent-light, #ffd37a);"></i> Request Inspector'
+            titleWrap.innerHTML = '<i class="fa-solid fa-file-lines" style="color:var(--reach-accent-light, var(--reach-accent));"></i> Request Inspector'
                 + (entry.id != null ? ' <span class="reach-hint">#' + entry.id + '</span>' : '');
             const closeBtn = el('button', 'reach-btn reach-btn-sm', '✕');
             closeBtn.style.padding = '2px 8px';

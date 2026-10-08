@@ -38,6 +38,7 @@ const { readTextFile, writeTextFile, readPreviewFile, previewKindFor } = require
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
 const { StudioBrowser } = require('./browser/host.cjs');
+const { paint: paintTheme } = require('./renderer/theme-data.js');
 const { Telemetry, defaults: telemetryDefaults, validateSources } = require('./agent/telemetry.cjs');
 const { validatePolicy } = require('./agent/tool-policy.cjs');
 const { TOOLS } = require('./agent/tool-registry.cjs');
@@ -231,6 +232,11 @@ const hostedAccount = createHostedAccount({
     if (win && !win.isDestroyed()) win.webContents.send('account:state', state);
   },
 });
+function themeChoice() {
+  const settings = loadSettings();
+  return paintTheme({ theme: settings.theme, accent: settings.accent, tint: settings.tint });
+}
+
 function loadSettings() {
   return hostedAccount.hydrate(settingsStore.load());
 }
@@ -329,8 +335,30 @@ function loadProjects() {
   try { return JSON.parse(fs.readFileSync(projectsFile(), 'utf8')); }
   catch { return []; }
 }
+function normalizeProjects(ps) {
+  if (!Array.isArray(ps) || ps.length > 200) {
+    throw new Error('Projects must be a list of at most 200 entries.');
+  }
+  return ps.map(project => {
+    if (!project || typeof project !== 'object' || Array.isArray(project)) {
+      throw new Error('Invalid project entry.');
+    }
+    const dir = String(project.dir || '').slice(0, 1024);
+    const name = String(project.name || '').slice(0, 200);
+    if (!dir.trim()) throw new Error('Invalid project path.');
+    return { ...project, dir, name };
+  });
+}
+function projectContains(dir) {
+  if (typeof dir !== 'string' || !dir.trim()) return false;
+  const resolved = path.resolve(dir);
+  return loadProjects().some(project => {
+    const root = path.resolve(String(project.dir || ''));
+    return resolved === root || resolved.startsWith(root + path.sep);
+  });
+}
 function saveProjects(ps) {
-  atomicWriteJson(projectsFile(), ps);
+  atomicWriteJson(projectsFile(), normalizeProjects(ps));
 }
 
 // ---------- agent helpers ----------
@@ -591,14 +619,20 @@ function registerIpc() {
     return { ok: true };
   });
   ipcMain.handle('agents:toolSchema', () => Object.entries(TOOLS).map(([name, tool]) => ({ name, class: tool.class, help: tool.help, tier: tool.tier })));
-  ipcMain.on('theme:get', event => { event.returnValue = loadSettings().theme === 'light' ? 'light' : 'dark'; });
-  ipcMain.handle('theme:set', (_event, theme) => {
-    if (!['light', 'dark'].includes(theme)) throw new Error('Invalid theme');
+  ipcMain.on('theme:get', event => {
+    const painted = themeChoice();
+    event.returnValue = { theme: painted.theme, accent: painted.accent, tint: painted.tint };
+  });
+  ipcMain.handle('theme:set', (_event, input) => {
+    const current = loadSettings();
+    const painted = paintTheme(input && typeof input === 'object' ? input : { theme: input }, {
+      theme: current.theme, accent: current.accent, tint: current.tint,
+    });
     // Appearance changes must not invalidate an active agent's settings.
-    saveSettings({ ...loadSettings(), theme });
-    nativeTheme.themeSource = theme;
-    if (win && !win.isDestroyed()) win.setBackgroundColor(theme === 'light' ? '#fdf6e3' : '#0a0a0a');
-    return theme;
+    saveSettings({ ...current, theme: painted.theme, accent: painted.accent, tint: painted.tint });
+    nativeTheme.themeSource = painted.scheme;
+    if (win && !win.isDestroyed()) win.setBackgroundColor(painted.bg);
+    return { theme: painted.theme, accent: painted.accent, tint: painted.tint, scheme: painted.scheme };
   });
   ipcMain.handle('reach:version', () => reachProcess.reachVersion());
   ipcMain.handle('reach:run', (_e, { cwd, args }) => reachProcess.runReach({ cwd, args }));
@@ -612,7 +646,10 @@ function registerIpc() {
     saveProjects(loadProjects().filter(project => project.dir !== dir));
     return { ok: true };
   });
-  ipcMain.handle('projects:save', (_e, ps) => saveProjects(ps));
+  ipcMain.handle('projects:save', (_e, ps) => {
+    try { saveProjects(ps); return { ok: true }; }
+    catch (error) { return { ok: false, err: error.message }; }
+  });
 
   ipcMain.handle('settings:get', () => {
     const settings = loadSettings();
@@ -739,11 +776,29 @@ function registerIpc() {
 
   ipcMain.handle('project:list', (_e, dir) => {
     try {
-      return fs.readdirSync(dir).filter((f) => !fs.statSync(path.join(dir, f)).isDirectory());
+      if (!projectContains(dir)) return [];
+      const resolved = path.resolve(dir);
+      return fs.readdirSync(resolved).filter((f) => !fs.statSync(path.join(resolved, f)).isDirectory()).slice(0, 500);
     } catch (e) { return []; }
   });
 
-  ipcMain.handle('shell:openDir', (_e, dir) => shell.openPath(dir));
+  ipcMain.handle('shell:openDir', async (_e, dir) => {
+    if (typeof dir !== 'string' || !dir.trim()) return { ok: false, err: 'Choose a folder.' };
+    const resolved = path.resolve(dir);
+    if (!projectContains(resolved)) {
+      const choice = await dialog.showMessageBox({
+        type: 'warning',
+        buttons: ['Cancel', 'Open folder'],
+        defaultId: 0,
+        cancelId: 0,
+        message: 'This folder is outside your saved projects.',
+        detail: resolved,
+      });
+      if (choice.response !== 1) return { ok: false, err: 'Cancelled.' };
+    }
+    const err = await shell.openPath(resolved);
+    return err ? { ok: false, err } : { ok: true };
+  });
 
   // ---------- agent ipc ----------
   ipcMain.handle('agents:list', () => getAgentStore().list());
@@ -944,8 +999,17 @@ function registerIpc() {
     for (const runner of teamRuns.values()) runner.pause();
     return { ok: true };
   });
-  ipcMain.handle('agents:setTodos', (_e, { id, todos }) => {
-    const agent = getAgentStore().setTodos(id, todos);
+  ipcMain.handle('agents:setTodos', (_e, payload) => {
+    const id = payload && payload.id;
+    const todos = payload && payload.todos;
+    if (!Array.isArray(todos) || todos.length > 100) {
+      return { ok: false, err: 'Todos must be a list of at most 100 items.' };
+    }
+    const clean = todos.map(item => ({
+      text: String(item && item.text || '').slice(0, 500),
+      status: ['pending', 'in_progress', 'completed', 'cancelled'].includes(item && item.status) ? item.status : 'pending',
+    }));
+    const agent = getAgentStore().setTodos(id, clean);
     return agent ? { ok: true } : { ok: false, err: 'Agent not found' };
   });
   ipcMain.handle('agents:appendNote', (_e, { id, content }) => {
@@ -1583,8 +1647,10 @@ function registerIpc() {
     if (!root) return { ok: false, err: 'No project bound.' };
     try {
       const abs = resolveInProject(root, rel);
+      const text = String(content === undefined ? '' : content);
+      if (text.length > 2000000) return { ok: false, err: 'File is larger than 2 MB.' };
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      writeTextFile(abs, String(content === undefined ? '' : content), { root, scope: agentId || 'editor' });
+      writeTextFile(abs, text, { root, scope: agentId || 'editor' });
       return { ok: true };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -2764,9 +2830,9 @@ function createWindow({ show = true } = {}) {
   win = new BrowserWindow({
     width: 1440,
     height: 860,
-    minWidth: 1000,
+    minWidth: 1000, // supported shell minimum; narrower widths clip the chat column
     minHeight: 640,
-    backgroundColor: loadSettings().theme === 'light' ? '#fdf6e3' : '#0a0a0a',
+    backgroundColor: themeChoice().bg,
     icon: path.join(rootDir, 'assets', 'icon.png'),
     show: false,
     webPreferences: {
@@ -2797,7 +2863,7 @@ function createWindow({ show = true } = {}) {
 // ---------- lifecycle ----------
 app.whenReady().then(() => {
   engines.configure(path.join(app.getPath('userData'), 'engine-ledger.jsonl'));
-  nativeTheme.themeSource = loadSettings().theme === 'light' ? 'light' : 'dark';
+  nativeTheme.themeSource = themeChoice().scheme;
   reachProcess.configure(loadSettings);
   registerIpc();
   const accountTimer = setInterval(() => { void hostedAccount.poll().catch(() => {}); }, 2000);
@@ -3024,16 +3090,16 @@ app.whenReady().then(() => {
             }
             const existingToolCalls = document.querySelectorAll('.tool-call-message').length;
             handleAgentEvent({ agentId: currentAgent.id, type: 'tool-call', tool: 'write', arguments: { path: 'large.txt', content: 'large payload '.repeat(240) } });
-            const longToolCall = [...document.querySelectorAll('.tool-call-message')].at(-1);
-            const dropdown = longToolCall.querySelector('.tool-call-dropdown');
-            if (!dropdown || dropdown.open) throw new Error('tool calls over three lines must start in a closed dropdown');
-            if (getComputedStyle(dropdown.querySelector('.tool-call-text')).webkitLineClamp !== '3') throw new Error('closed tool-call dropdown is not clamped to three lines');
-            dropdown.querySelector('summary').click();
-            if (!dropdown.open) throw new Error('long tool-call dropdown cannot be expanded');
             handleAgentEvent({ agentId: currentAgent.id, type: 'tool-call', tool: 'read', arguments: { path: 'short.txt' } });
-            const shortToolCall = [...document.querySelectorAll('.tool-call-message')].at(-1);
-            if (shortToolCall.querySelector('.tool-call-dropdown')) throw new Error('short tool calls should not become dropdowns');
             if (document.querySelectorAll('.tool-call-message').length !== existingToolCalls + 2) throw new Error('tool-call smoke messages were not rendered');
+            for (const row of document.querySelectorAll('.tool-call-message')) {
+              if (getComputedStyle(row).display !== 'none') throw new Error('live tool-call activity rows must stay hidden via CSS');
+            }
+            const existingToolCards = document.querySelectorAll('.tool-card').length;
+            handleAgentEvent({ agentId: currentAgent.id, type: 'tool-result', tool: 'read', ok: true, pending: false, error: null, result: { content: 'ok' } });
+            if (document.querySelectorAll('.tool-card').length !== existingToolCards + 1) throw new Error('tool-result cards must still render');
+            const lastCard = [...document.querySelectorAll('.tool-card')].at(-1);
+            if (getComputedStyle(lastCard).display === 'none') throw new Error('tool-result cards must remain visible');
 
             // Edit review regression: all files from one AI work batch live in
             // one outer dropdown, and each detailed file review is a nested
@@ -3567,7 +3633,7 @@ app.whenReady().then(() => {
             const emptyDir = first + '/build';
             await selectProject({ name: 'No chats', dir: emptyDir });
             await showTab('agents');
-            if (!currentAgent?.draft || currentAgent.dir !== emptyDir || !document.querySelector('#agent-tree').textContent.includes('New Chat') || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
+            if (!currentAgent?.draft || currentAgent.dir !== emptyDir || document.querySelectorAll('#tree-new-chat').length !== 1 || document.querySelector('#agent-body-new #tree-new-chat')?.textContent.trim() !== 'New Chat' || drawerContext.textContent !== emptyDir || dropdown.value !== emptyDir || !fileTreeEl.querySelector('[data-path="artifact-000.txt"]')) throw new Error('Project without chats did not synchronize');
             // Removing a project means forgetting its shortcut, never deleting
             // its folder/chat or interrupting the current editor session.
             await selectAgent(a.agent);
@@ -4246,15 +4312,18 @@ app.whenReady().then(() => {
           editor.view.dispatch({ changes: { from: editor.getText().length, insert: '\\n# unsaved theme check' }, selection: { anchor: 3 } });
           const text = editor.getText();
           const selection = editor.view.state.selection.main.head;
-          const button = document.querySelector('#theme-toggle');
-          await button.onclick();
-          if (document.documentElement.dataset.theme !== 'light' || button.getAttribute('aria-checked') !== 'true') throw new Error('Light switch failed');
+          const select = document.querySelector('#theme-select');
+          select.value = 'light';
+          await select.onchange();
+          if (document.documentElement.dataset.theme !== 'light' || document.documentElement.dataset.scheme !== 'light') throw new Error('Light switch failed');
           if (getComputedStyle(document.body).backgroundColor !== 'rgb(253, 246, 227)') throw new Error('Light palette missing');
           if (editor.getText() !== text || editor.view.state.selection.main.head !== selection) throw new Error('Theme reset editor state');
           if (getComputedStyle(editor.view.dom).backgroundColor !== 'rgb(253, 246, 227)') throw new Error('Editor did not follow light theme');
-          await button.onclick();
+          select.value = 'dark';
+          await select.onchange();
           if (document.documentElement.dataset.theme !== 'dark' || getComputedStyle(document.body).backgroundColor !== 'rgb(10, 10, 10)') throw new Error('Dark palette did not restore');
-          await button.onclick();
+          select.value = 'light';
+          await select.onchange();
           editor.setText(editor.getText().replace('\\n# unsaved theme check', ''));
           openFiles.get('hello.py').dirty = false;
         })()`);
@@ -4272,7 +4341,8 @@ app.whenReady().then(() => {
         fs.writeFileSync(themeScreenshot, (await win.capturePage()).toPNG());
         console.log('LIGHT THEME SCREENSHOT: ' + themeScreenshot);
         await win.webContents.executeJavaScript(`(async () => {
-          await document.querySelector('#theme-toggle').onclick();
+          document.querySelector('#theme-select').value = 'dark';
+          await document.querySelector('#theme-select').onchange();
           appendChatMessage('user', 'Review this project and suggest the next steps.');
           appendChatMessage('assistant', 'The project is ready to explore. Start with the entry point, then check the tests and review any changes before saving.');
         })()`);
@@ -4285,7 +4355,7 @@ app.whenReady().then(() => {
         })()`);
         await new Promise(resolve => setTimeout(resolve, 500));
         fs.writeFileSync(path.join(smokeRoot, 'dark-settings.png'), (await win.capturePage()).toPNG());
-        await win.webContents.executeJavaScript(`document.querySelector('#theme-toggle').onclick()`);
+        await win.webContents.executeJavaScript(`document.querySelector('#theme-select').value = 'light'; document.querySelector('#theme-select').onchange()`);
         const reloaded = new Promise(resolve => win.webContents.once('did-finish-load', resolve));
         win.webContents.reload();
         await reloaded;

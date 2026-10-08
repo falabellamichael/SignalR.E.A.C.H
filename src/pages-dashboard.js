@@ -139,11 +139,11 @@
                         .then(r => r.json())
                         .then(d => {
                             if (d.ok) {
-                                pingTag.textContent = '✓ ' + core.fmtLatency(d.latency_ms) + ' (' + (d.model || 'gpt-4o') + ')';
+                                pingTag.textContent = 'Reachable in ' + core.fmtLatency(d.latency_ms) + ' (' + (d.model || 'gpt-4o') + ')';
                                 toast('Upstream reachable: ' + core.fmtLatency(d.latency_ms), 'ok');
                                 if (meterFill) meterFill.style.width = Math.min(100, Math.max(10, Math.round(d.latency_ms / 15))) + '%';
                             } else {
-                                pingTag.textContent = '✗ ' + (d.error || 'Failed');
+                                pingTag.textContent = 'Failed: ' + (d.error || 'upstream did not respond');
                                 toast('Upstream test: ' + (d.error || 'Failed'), 'error');
                             }
                         })

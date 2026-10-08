@@ -357,16 +357,21 @@
         const actRow = core.el('div', 'reach-stat-actions-row');
         const pingBtn = core.el('button', 'reach-btn reach-btn-primary reach-btn-sm');
         pingBtn.id = 'reach-stat-ping-btn';
-        pingBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Ping Test';
+        pingBtn.innerHTML = '<i class="fa-solid fa-bolt" aria-hidden="true"></i> Ping Test';
+        pingBtn.setAttribute('aria-label', 'Ping upstream');
         const restartBtn = core.el('button', 'reach-btn reach-btn-sm');
         restartBtn.id = 'reach-stat-restart-btn';
-        restartBtn.innerHTML = '<i class="fa-solid fa-rotate"></i> Restart';
+        restartBtn.innerHTML = '<i class="fa-solid fa-rotate" aria-hidden="true"></i> Restart';
+        restartBtn.setAttribute('aria-label', 'Restart endpoint');
         const startBtn = core.el('button', 'reach-btn reach-btn-primary reach-btn-sm');
         startBtn.id = 'reach-stat-start-btn';
-        startBtn.innerHTML = '<i class="fa-solid fa-power-off"></i> Start Endpoint';
+        startBtn.innerHTML = '<i class="fa-solid fa-power-off" aria-hidden="true"></i> Start Endpoint';
+        startBtn.setAttribute('aria-label', 'Start endpoint');
         const refreshBtn = core.el('button', 'reach-btn reach-btn-sm');
         refreshBtn.id = 'reach-stat-refresh-btn';
-        refreshBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate"></i>';
+        refreshBtn.innerHTML = '<i class="fa-solid fa-arrows-rotate" aria-hidden="true"></i>';
+        refreshBtn.setAttribute('aria-label', 'Refresh status');
+        refreshBtn.title = 'Refresh status';
         actRow.appendChild(pingBtn);
         actRow.appendChild(startBtn);
         actRow.appendChild(restartBtn);
@@ -376,6 +381,8 @@
         const pingResult = core.el('div', 'reach-result reach-stat-ping-result');
         pingResult.id = 'reach-stat-ping-result';
         pingResult.hidden = true;
+        pingResult.setAttribute('role', 'status');
+        pingResult.setAttribute('aria-live', 'polite');
         c1.appendChild(pingResult);
         panel.appendChild(c1);
 
@@ -386,7 +393,8 @@
         c2Title.innerHTML = '<i class="fa-solid fa-link"></i> Endpoint';
         const copyBtn = core.el('button', 'reach-btn reach-btn-sm');
         copyBtn.id = 'reach-stat-copy-btn';
-        copyBtn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy';
+        copyBtn.innerHTML = '<i class="fa-regular fa-copy" aria-hidden="true"></i> Copy';
+        copyBtn.setAttribute('aria-label', 'Copy endpoint URL');
         c2Head.appendChild(c2Title);
         c2Head.appendChild(copyBtn);
         c2.appendChild(c2Head);
@@ -588,14 +596,13 @@
         restartBtn.addEventListener('click', () => {
             restartBtn.disabled = true;
             core.toast('Restarting relay…', 'info');
-            core.relayFetch('/_reach/restart', { method: 'POST' }, 8000)
+            // Served by the local control server, not the relay: the old
+            // POST /_reach/restart hit a route the relay never had (404), so
+            // this button silently did nothing.
+            core.restartEndpoint()
                 .then(() => {
-                    setTimeout(() => {
-                        core.refreshLocal().then(() => {
-                            updateStationaryValues(panel);
-                            core.toast('Relay restarted ✓', 'ok');
-                        });
-                    }, 1200);
+                    updateStationaryValues(panel);
+                    core.toast('Relay restarted ✓', 'ok');
                 })
                 .catch(err => core.toast('Restart: ' + err.message, 'error'))
                 .finally(() => { restartBtn.disabled = false; });

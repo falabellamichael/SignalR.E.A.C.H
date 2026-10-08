@@ -151,7 +151,7 @@ DEFAULT_SETTINGS = {
         "keys": [],
         "ip_allowlist": [],            # empty = everyone (loopback always ok)
         "ip_blocklist": [],
-        "cors_origins": "*",           # "*" or comma-separated origins
+        "cors_origins": "",            # empty = local tools only (loopback pages, null, vscode-webview); "*" or a comma-separated list opts others in
         # A genuine same-machine client (loopback, no proxy headers, loopback
         # Host, no foreign Origin) may skip the key. Turn off to make even the
         # owner's local tools present one.
@@ -437,6 +437,7 @@ def find_omniroute_key():
     return rows[0][1] if rows else None
 
 
+# MIRROR of tools/reach/keys.py:mask_key: keep the two in sync.
 def mask_key(key):
     """Mask key for safe display in logs and UI (prefix only — no secret chars)."""
     if not key or not isinstance(key, str):
@@ -660,7 +661,7 @@ def validate_settings(cfg):
         for item in value:
             _expect(isinstance(item, str) and 1 <= len(item) <= 64,
                     "access.%s entries must be strings" % key)
-    _str(access.get("cors_origins", "*"), "access.cors_origins", 1, 2000)
+    _str(access.get("cors_origins", ""), "access.cors_origins", 0, 2000)
     _bool(access.get("local_bypass", True), "access.local_bypass")
     _int(access.get("auth_fail_limit", 8), 0, 1000, "access.auth_fail_limit")
     _int(access.get("auth_lockout_s", 300), 1, 86400, "access.auth_lockout_s")

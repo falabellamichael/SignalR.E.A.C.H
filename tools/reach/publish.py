@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from . import GIST_FILE, GIST_ID
-from .config import CONFIG_DIR
+from .config import CONFIG_DIR, load_config
 from .runtime import (
     no_window_kwargs,
     public_url_from_server,
@@ -34,6 +34,12 @@ def find_gh():
 
 
 def publish(quiet=False):
+    # Keyless mode is local-only (the relay refuses remote clients without a
+    # key), so there is nothing worth advertising; matches the relay's guard.
+    if not (load_config().get("access") or {}).get("key_required", False):
+        if not quiet:
+            print("publish: refusing to publish while access keys are not required")
+        return False
     port = runtime_port()
     url = public_url_from_server(port)
     if not url:

@@ -78,7 +78,7 @@ because its callee does. **GAP**: no check on this argument; see §3.
 | `agents:context` | `id: string` | PAREN |
 | `agents:compact` | `id: string` | PAREN |
 | `agents:stop` | `id: string` | **OK** — no-op when no loop exists |
-| `agents:setTodos` | `{id, todos}` | **GAP** — `todos` is not shape-checked (§3.1) |
+| `agents:setTodos` | `{id, todos}` | **OK** — array, ≤100, text ≤500, status enum |
 | `agents:appendNote` | `{id, content}` | **OK** — `String(content).slice(0, 20000)` |
 | `agents:respondApproval` | `{requestId, approved}` | PAREN (unknown `requestId` ignores) |
 | `agents:resolveEdit` | `{id, editId, accepted}` | **OK** — edit resolved from the store by id |
@@ -112,11 +112,11 @@ because its callee does. **GAP**: no check on this argument; see §3.
 | --- | --- | --- |
 | `files:tree` | `{agentId?, projectDir?, directory?, offset?}` | **OK** — root required, `listDirectory` bounded |
 | `files:read` | `{agentId?, projectDir?, path, }` | **OK** — `resolveInProject` containment + **2 MB cap** |
-| `files:write` | `{agentId?, projectDir?, path, content}` | **OK** containment; **GAP** no size cap (§3.2) |
+| `files:write` | `{agentId?, projectDir?, path, content}` | **OK** containment; content capped at 2,000,000 chars |
 | `project:create` | `{name, parent}` | **OK** name `/^[A-Za-z0-9 _-]+$/`, existing-dir refused; **GAP** `parent` (§3.3) |
-| `project:list` | `dir: string` | **GAP** — bare `fs.readdirSync(dir)` (§3.4) |
+| `project:list` | `dir: string` | **OK** — only a saved project directory, ≤500 files |
 | `dialog:pickDir` | (none) | OK — OS-mediated picker |
-| `shell:openDir` | `dir: string` | **GAP by design** — opens any path in the OS file manager (§3.5) |
+| `shell:openDir` | `dir: string` | **OK** — saved projects open directly; other paths need a confirm dialog |
 
 ### Settings, connections, models, telemetry, theme
 
@@ -126,7 +126,7 @@ because its callee does. **GAP**: no check on this argument; see §3.
 | `settings:save` | `patch: object` | **OK** — non-object coalesced to `{}`; budgets validated; connections authoritative only when the patch carries them |
 | `settings:budgetSchema` | (none) | OK |
 | `projects:get` | (none) | OK |
-| `projects:save` | `ps: Array` | **GAP** — array not shape-checked (§3.6) |
+| `projects:save` | `ps: Array` | **OK** — ≤200 entries, dir and name required and length-capped |
 | `connections:list` | (none) | OK |
 | `connections:save` | `{action, id?, …}` | **OK** — switch with a `default` that refuses; mutations are pure until write |
 | `connections:ping` | `{connectionId?}` | **OK** — falls back to active; `resolveEndpoint` validates |

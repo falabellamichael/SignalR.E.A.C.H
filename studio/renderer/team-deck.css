@@ -8,6 +8,7 @@
   align-self: stretch; width: 100%; min-width: 0; gap: 10px;
   color: var(--deck-ink);
 }
+:root[data-scheme="light"] .team-deck,
 :root[data-theme="light"] .team-deck {
   --deck-line: #949187; --deck-ink: #363b3c; --deck-muted: #626766;
   --deck-surface: #fbf7ee; --deck-selected: #eeebe4;

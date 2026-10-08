@@ -2,15 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' blob: data:" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' blob: data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'" />
   <title>Reach Studio</title>
   <script src="boot.js"></script>
+  <script src="theme-data.js"></script>
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
   <link rel="stylesheet" href="workspace.css" />
   <link rel="stylesheet" href="studio-prd.css" />
   <link rel="stylesheet" href="team-deck.css" />
+  <link rel="stylesheet" href="activity-bar.css" />
   <link rel="stylesheet" href="home.css" />
+  <link rel="stylesheet" href="create-page.css" />
   <link rel="stylesheet" href="account-menu.css" />
 </head>
 <body>
@@ -35,9 +38,23 @@
     </nav>
     <div class="statusbar">
       <div id="activity-global" class="chip" hidden><i class="activity-spinner" aria-hidden="true"></i><span></span></div>
-      <button id="theme-toggle" class="chip theme-toggle" type="button" role="switch" aria-label="Light theme" aria-checked="false">
-        <span class="theme-icon" aria-hidden="true">☾</span><span class="theme-label">Dark</span>
-      </button>
+      <div class="theme-control">
+        <div class="theme-pill">
+          <select id="theme-select" aria-label="Theme"></select>
+          <span class="theme-pill-sep" aria-hidden="true">|</span>
+          <button id="theme-accent" class="theme-accent" type="button" aria-label="Accent color" aria-haspopup="dialog" aria-expanded="false" aria-controls="theme-accent-pop" title="Accent color">
+            <span class="theme-wheel" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div id="theme-accent-pop" class="theme-accent-pop" role="dialog" aria-label="Accent color" hidden>
+          <div id="theme-sv" class="theme-sv" role="application" aria-label="Saturation and brightness"><i></i></div>
+          <input id="theme-hue" class="theme-hue" type="range" min="0" max="360" value="90" aria-label="Hue" />
+          <label class="theme-tint">Tint
+            <input id="theme-tint" type="range" min="0" max="100" value="0" aria-label="Tint intensity" />
+            <span id="theme-tint-value">0</span>
+          </label>
+        </div>
+      </div>
       <div class="settings-menu" id="drawer-menu-wrap">
         <button id="btn-toggle-files" class="chip toggle" title="Choose Files or Browser" aria-expanded="false" aria-controls="drawer-menu">Files &#x25BE;</button>
         <div id="drawer-menu" class="settings-dropdown hidden" role="menu">
@@ -77,37 +94,38 @@
        Settings. Each button carries its own hotkey in data-hotkey and shows it
        in a kbd hint. -->
   <nav class="rail" id="nav-rail" aria-label="Views">
+    <button id="rail-toggle" class="rail-toggle" type="button" aria-expanded="false" aria-label="Expand the navigation rail" title="Expand the navigation rail">&#8250;</button>
     <button class="rail-item" id="rail-workspace" data-view="workspace" data-hotkey="1" title="Workspace dashboard (Ctrl+1)">
-      <span class="rail-icon" aria-hidden="true">&#9636;</span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2" width="5.2" height="5.2" rx=".6"/><rect x="8.8" y="2" width="5.2" height="5.2" rx=".6"/><rect x="2" y="8.8" width="5.2" height="5.2" rx=".6"/><rect x="8.8" y="8.8" width="5.2" height="5.2" rx=".6"/></svg></span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
     </button>
     <button class="rail-item" id="rail-playground" data-view="playground" data-hotkey="2" title="Prompt console (Ctrl+2)">
-      <span class="rail-icon" aria-hidden="true">&#9655;</span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 2 14 8 2 14Z"/></svg></span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
     </button>
     <div class="rail-sep" role="separator"></div>
     <button class="rail-item" id="rail-home" data-view="home" title="Home overview">
-      <span class="rail-icon" aria-hidden="true">&#8962;</span><span class="rail-label">Home</span>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M8 2 14 7.2V14H9.6V9.2H6.4V14H2V7.2Z"/></svg></span><span class="rail-label">Home</span>
     </button>
     <button class="rail-item" id="rail-projects" data-view="projects" data-hotkey="3" title="Projects (Ctrl+3)">
-      <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 2h4.5l1.3 1.8H14V14H2Z"/></svg></span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd><i class="rail-badge" id="rail-projects-badge" hidden></i>
     </button>
     <button class="rail-item" id="rail-agents" data-view="agents" data-hotkey="4" title="Agents (Ctrl+4)">
-      <span class="rail-icon" aria-hidden="true">&#9673;</span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2m0 3.4a2.6 2.6 0 1 1 0 5.2 2.6 2.6 0 0 1 0-5.2"/><circle cx="8" cy="8" r="1.35"/></svg></span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd><i class="rail-badge" id="rail-agents-badge" hidden></i>
     </button>
     <button class="rail-item" id="rail-create" data-view="create" data-hotkey="5" title="Create (Ctrl+5)">
-      <span class="rail-icon" aria-hidden="true">&#10010;</span><span class="rail-label">Create</span><kbd class="rail-key">5</kbd>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M6.8 2h2.4v4.8H14v2.4H9.2V14H6.8V9.2H2V6.8h4.8Z"/></svg></span><span class="rail-label">Create</span><kbd class="rail-key">5</kbd>
     </button>
     <button class="rail-item" id="rail-settings" data-view="settings" data-hotkey="6" title="Settings (Ctrl+6)">
-      <span class="rail-icon" aria-hidden="true">&#9881;</span><span class="rail-label">Settings</span><kbd class="rail-key">6</kbd>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="4.15" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="1.55"/><g><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(45 8 8)"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(90 8 8)"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(135 8 8)"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(180 8 8)"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(225 8 8)"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(270 8 8)"/><rect x="7.2" y="2" width="1.6" height="2.4" rx=".3" transform="rotate(315 8 8)"/></g></svg></span><span class="rail-label">Settings</span><kbd class="rail-key">6</kbd>
     </button>
     <div class="rail-sep" role="separator"></div>
     <!-- No numeric hotkey: PRD1 pins Ctrl/Cmd+1-6 to the six primary views, and
          the smoke asserts exactly that mapping. Refactor joins About as an
          unnumbered rail destination. -->
     <button class="rail-item" id="rail-refactor" data-view="refactor" title="Refactor workbench">
-      <span class="rail-icon" aria-hidden="true">&#9998;</span><span class="rail-label">Refactor</span>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M9.8 2 14 6.2 6.4 14H2V9.6Z"/></svg></span><span class="rail-label">Refactor</span>
     </button>
     <button class="rail-item" id="rail-about" data-view="about" title="About REACH Studio">
-      <span class="rail-icon" aria-hidden="true">&#8505;</span><span class="rail-label">About</span>
+      <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2M7.2 4.3h1.6V5.9H7.2zm0 2.7h1.6v4.6H7.2z"/></svg></span><span class="rail-label">About</span>
     </button>
   </nav>
   <main>
@@ -352,7 +370,21 @@
         <div class="side-title">Conversations</div>
         <select id="agent-project-select" title="Conversations stem from a project"></select>
         <div id="background-agent-alerts" class="background-agent-alerts hidden" role="status" aria-live="polite"></div>
-        <div id="agent-tree" class="agent-tree"></div>
+        <!-- Explorer-style groups. app.js rebuilds the CONTENTS of #agent-tree
+             from scratch on every loadAgentTree() call (≈20 call sites), so
+             sectioning the rows themselves would be overwritten. Instead the
+             rows stay exactly where app.js puts them — .tree-node children of
+             #agent-tree — and activity-bar.js re-parents them into two stable
+             section bodies after each mutation. No row markup changes. -->
+        <div class="agent-tree-shell">
+          <section class="sidebar-section" id="agent-section-new" aria-expanded="true">
+            <button class="sidebar-section-head" type="button" aria-expanded="true" aria-controls="agent-body-new">
+              <span class="sidebar-section-caret" aria-hidden="true">&#9660;</span><span class="sidebar-section-title">Start</span>
+            </button>
+            <div class="sidebar-section-body" id="agent-body-new"></div>
+          </section>
+          <div id="agent-tree" class="agent-tree"></div>
+        </div>
         <div class="side-actions">
           <button id="btn-new-chat" class="gold">+ New Chat</button>
           <button id="btn-branch-chat" class="ghost">⑂ Branch This Chat</button>
@@ -472,23 +504,36 @@
 
     <!-- ========== CREATE PAGE ========== -->
     <section id="page-create" class="page">
-      <div class="create-layout">
-        <div class="create-col">
-          <div class="create-head">
-            <h2>Custom Agents</h2>
-            <button id="btn-new-persona" class="gold small">+ New</button>
+      <div class="create-workbench">
+        <div class="create-heading">
+          <div class="create-heading-title"><h1>Create</h1><p id="create-summary">Teams and agents</p></div>
+          <div class="create-heading-actions">
+            <button id="btn-new-team" class="gold" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New team</button>
+            <button id="btn-new-persona" class="ghost" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New agent</button>
           </div>
-          <p class="create-sub">Reusable personas: a name, an optional model override, and custom instructions that replace the generic assistant identity.</p>
-          <div id="persona-list" class="persona-list"></div>
         </div>
-        <div class="create-col">
-          <div class="create-head">
-            <h2>Teams</h2>
-            <button id="btn-new-team" class="gold small">+ New</button>
+        <div class="create-workbench-body">
+          <aside class="create-library" aria-label="Saved teams and custom agents">
+            <div class="create-library-tabs" role="tablist" aria-label="Create library">
+              <button id="create-tab-teams" type="button" role="tab" aria-selected="true" aria-controls="create-teams-panel" tabindex="0">Teams <span id="create-teams-count" class="create-count">0</span></button>
+              <button id="create-tab-agents" type="button" role="tab" aria-selected="false" aria-controls="create-agents-panel" tabindex="-1">Agents <span id="create-agents-count" class="create-count">0</span></button>
+            </div>
+            <input id="create-filter" type="search" placeholder="Filter name, role, or model" aria-label="Filter teams and agents" spellcheck="false" />
+            <div class="create-library-scroll">
+              <div id="create-teams-panel" role="tabpanel" aria-labelledby="create-tab-teams">
+                <div id="team-list" class="team-list"></div>
+              </div>
+              <div id="create-agents-panel" class="hidden" role="tabpanel" aria-labelledby="create-tab-agents">
+                <div id="persona-list" class="persona-list"></div>
+              </div>
+            </div>
+          </aside>
+          <div class="create-detail-scroll">
+            <section id="create-detail" aria-label="Selected library item"></section>
+            <section id="create-recovery" aria-label="Recoverable team runs">
+              <div id="team-recovery-list" class="team-list"></div>
+            </section>
           </div>
-          <p class="create-sub">A crew of custom agents. <strong>Parallel</strong>: every member gets the same task and they run simultaneously. <strong>Chain</strong>: members run in order, each one's answer is handed to the next.</p>
-          <div id="team-recovery-list" class="team-list"></div>
-          <div id="team-list" class="team-list"></div>
         </div>
       </div>
     </section>
@@ -599,35 +644,36 @@
           <div class="ws-metric"><span class="ws-metric-label">Uptime</span><strong id="ws-uptime">&mdash;</strong><small id="ws-uptime-note" class="dim">waiting</small></div>
         </div>
 
-        <div class="ws-grid">
-          <section class="ws-card">
-            <div class="ws-card-head"><h3>System activity</h3><span class="dim">last 60 samples</span></div>
-            <canvas id="ws-chart" height="150" role="img" aria-label="CPU and GPU activity history"></canvas>
-            <div class="ws-axis"><span>60 samples ago</span><span>now</span></div>
-          </section>
-          <section class="ws-card">
-            <div class="ws-card-head"><h3>Endpoint</h3><button id="ws-ping" class="ghost small">Ping</button></div>
-            <div id="ws-endpoint" class="ws-kv"><span class="dim">Not configured</span></div>
-            <div id="ws-ping-result" class="ws-ping-result" role="status"></div>
-            <p class="ws-note">Ping measures round-trip latency to the configured OpenAI-compatible endpoint. It calls <code>/models</code>; it does not modify anything.</p>
-          </section>
-        </div>
-
-        <div class="ws-grid">
-          <section class="ws-card">
-            <div class="ws-card-head"><h3>Codebase index</h3><button id="ws-index" class="ghost small">Index project</button></div>
-            <div id="ws-index-summary" class="ws-kv"><span class="dim">No project indexed</span></div>
-            <div id="ws-index-warnings" class="ws-warnings" hidden></div>
-            <div class="ws-search">
-              <input id="ws-symbol-query" type="text" placeholder="Search symbols&hellip;" spellcheck="false" aria-label="Search indexed symbols" />
-              <button id="ws-symbol-run" class="ghost small">Search</button>
-            </div>
-            <div id="ws-symbol-results" class="ws-symbols" role="list"></div>
-          </section>
-          <section class="ws-card">
-            <div class="ws-card-head"><h3>Top processes</h3><span class="dim">by working set</span></div>
-            <div id="ws-processes" class="ws-processes"></div>
-          </section>
+        <div class="ws-board">
+          <div class="ws-col">
+            <section class="ws-card">
+              <div class="ws-card-head"><h3>System activity</h3><span class="dim">last 60 samples</span></div>
+              <canvas id="ws-chart" height="150" role="img" aria-label="CPU and GPU activity history"></canvas>
+              <div class="ws-axis"><span>60 samples ago</span><span>now</span></div>
+            </section>
+            <section class="ws-card">
+              <div class="ws-card-head"><h3>Codebase index</h3><button id="ws-index" class="ghost small">Index project</button></div>
+              <div id="ws-index-summary" class="ws-kv"><span class="dim">No project indexed</span></div>
+              <div id="ws-index-warnings" class="ws-warnings" hidden></div>
+              <div class="ws-search">
+                <input id="ws-symbol-query" type="text" placeholder="Search symbols&hellip;" spellcheck="false" aria-label="Search indexed symbols" />
+                <button id="ws-symbol-run" class="ghost small">Search</button>
+              </div>
+              <div id="ws-symbol-results" class="ws-symbols" role="list"></div>
+            </section>
+          </div>
+          <div class="ws-col">
+            <section class="ws-card">
+              <div class="ws-card-head"><h3>Endpoint</h3><button id="ws-ping" class="ghost small">Ping</button></div>
+              <div id="ws-endpoint" class="ws-kv"><span class="dim">Not configured</span></div>
+              <div id="ws-ping-result" class="ws-ping-result" role="status"></div>
+              <p class="ws-note">Ping measures round-trip latency to the configured OpenAI-compatible endpoint. It calls <code>/models</code>; it does not modify anything.</p>
+            </section>
+            <section class="ws-card">
+              <div class="ws-card-head"><h3>Top processes</h3><span class="dim">by working set</span></div>
+              <div id="ws-processes" class="ws-processes"></div>
+            </section>
+          </div>
         </div>
       </div>
     </section>
@@ -1081,6 +1127,7 @@
   <script src="activity.js"></script>
   <script src="team-deck.js"></script>
   <script src="composer-intents.js"></script>
+  <script src="create-page.js"></script>
   <script src="command-line.js"></script>
   <script src="app.js"></script>
   <script src="scrollbar.js"></script>
@@ -1090,6 +1137,7 @@
   <script src="workspace.js"></script>
   <script src="team-composer.js"></script>
   <script src="telemetry.js"></script>
+  <script src="activity-bar.js"></script>
   <script src="workspace-shell.js"></script>
   <script src="connections-ui.js"></script>
   <script src="home.js"></script>

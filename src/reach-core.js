@@ -24,7 +24,8 @@
         page: 'dashboard',
         dirty: false,
         toastTimer: null,
-        version: '26.9.12' // x-release-please-version
+        starting: null,         // in-flight startEndpoint() promise
+        version: '26.9.14' // x-release-please-version
     };
 
     function prefsGet(key, fallback) {
@@ -59,11 +60,60 @@
     }
 
     function startEndpoint() {
-        return fetchWithTimeout(SUPERVISOR + '/start', {
-            method: 'POST',
-            headers: { 'X-Reach-Action': 'start' }
-        }, 90000).then(res => res.json().then(data => {
-            if (!res.ok || !data.ok) throw new Error(data.error || 'Endpoint could not start');
+        // The in-page button can be clicked twice faster than the relay and
+        // tunnel come up. Share one in-flight request instead of racing two
+        // start sequences at the supervisor (ensure_endpoint serialises them,
+        // but the second caller would just queue behind the first).
+        if (store.starting) return store.starting;
+        const request = supervisorStatus()
+            .then(status => {
+                if (status === 'offline') {
+                    throw new Error('The local Start control is not running. Start it '
+                        + 'once from a terminal: cd ' + REPO_URL + ' && python tools/reach.py start');
+                }
+                return fetchWithTimeout(SUPERVISOR + '/start', {
+                    method: 'POST',
+                    headers: { 'X-Reach-Action': 'start' }
+                }, 90000);
+            })
+            .then(res => res.json().then(data => ({ res, data })))
+            .then(({ res, data }) => {
+                if (!res.ok || !data.ok) {
+                    throw new Error(data.error || ('Start failed (HTTP ' + res.status + ')'));
+                }
+                return Promise.all([refreshLocal(), refreshPointer(true)]).then(() => data);
+            })
+            .finally(() => { store.starting = null; });
+        store.starting = request;
+        return request;
+    }
+
+    // 'ok' | 'offline' — is the local Start control reachable? A preflight is
+    // avoided on purpose: the supervisor answers OPTIONS without requiring the
+    // X-Reach-Action header, so this stays a cheap probe.
+    function supervisorStatus() {
+        return fetchWithTimeout(SUPERVISOR + '/status', undefined, 2500)
+            .then(res => (res.ok ? 'ok' : 'offline'))
+            .catch(() => 'offline');
+    }
+
+    // Reload the relay so changed settings apply. This lives on the local
+    // control server, not the relay: POST /_reach/restart to the relay 404s,
+    // which is why the Status panel's Restart button used to do nothing.
+    function restartEndpoint() {
+        return supervisorStatus().then(status => {
+            if (status === 'offline') {
+                throw new Error('The local control is not running. Start it with '
+                    + '`python tools/reach.py start`, then try again.');
+            }
+            return fetchWithTimeout(SUPERVISOR + '/restart', {
+                method: 'POST',
+                headers: { 'X-Reach-Action': 'restart' }
+            }, 90000);
+        }).then(res => res.json().then(data => {
+            if (!res.ok || !data.ok) {
+                throw new Error(data.error || ('Restart failed (HTTP ' + res.status + ')'));
+            }
             return Promise.all([refreshLocal(), refreshPointer(true)]).then(() => data);
         }));
     }
@@ -229,6 +279,8 @@
         prefsSet: prefsSet,
         relayFetch: relayFetch,
         startEndpoint: startEndpoint,
+        restartEndpoint: restartEndpoint,
+        supervisorStatus: supervisorStatus,
         refreshLocal: refreshLocal,
         refreshPointer: refreshPointer,
         loadSettings: loadSettings,

@@ -485,7 +485,7 @@
     const ctx = canvas.getContext('2d');
     const styles = getComputedStyle(document.documentElement);
     const grid = styles.getPropertyValue('--line').trim() || '#323027';
-    const gold = styles.getPropertyValue('--gold').trim() || '#d4af37';
+    const gold = styles.getPropertyValue('--gold').trim() || '#b6f04a';
     const okc = styles.getPropertyValue('--ok').trim() || '#7aa86a';
     const textc = styles.getPropertyValue('--dim').trim() || '#8a8578';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

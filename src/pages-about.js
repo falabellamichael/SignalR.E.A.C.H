@@ -37,7 +37,7 @@
         arch.appendChild(el('header', 'reach-card-head', 'Architecture'));
         const flow = el('pre', 'reach-snippet reach-flow');
         flow.appendChild(el('code', null,
-            'any OpenAI client\n      │\n      ▼\nhttps://<tunnel>/v1   (public · no auth · CORS *)\n      │\n      ▼\nreachd.py :20777      (loopback relay · stdlib only)\n      │  injects OmniRoute key server-side\n      │  pins alias → codegpt/codegpt-gpt-4o\n      │  rate limits · access key · analytics\n      ▼\nOmniRoute :20128/v1\n      ▼\ncodegpt free tier (gpt-4o)'));
+            'any OpenAI client\n      │\n      ▼\nhttps://<tunnel>/v1   (public · API key required)\n      │\n      ▼\nreachd.py :20777      (loopback relay · stdlib only)\n      │  injects OmniRoute key server-side\n      │  pins alias → codegpt/codegpt-gpt-4o\n      │  rate limits · access key · analytics\n      ▼\nOmniRoute :20128/v1\n      ▼\ncodegpt free tier (gpt-4o)'));
         arch.appendChild(flow);
         body.appendChild(arch);
 

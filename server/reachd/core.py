@@ -3,7 +3,8 @@
 
 REACH = RAG Endpoint & AI Chat Host.
 
-Public surface (CORS configurable, no auth by default):
+Public surface (API key required except for local tools; CORS allows local
+tools by default and other origins only via access.cors_origins):
   GET  /health, /status          liveness + rich status (never gated)
   GET  /public-url               {"public_url", "source"}
   GET  /v1/models                public, enabled model aliases

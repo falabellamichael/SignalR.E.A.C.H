@@ -34,7 +34,8 @@ def _report_access_posture(cfg, host):
                   file=sys.stderr, flush=True)
     elif exposed:
         print("  WARNING: this relay is reachable from outside but access.key_required "
-              "is OFF - anyone with the URL can use it.",
+              "is OFF - remote clients are refused and the URL is not published; "
+              "only local tools can use it.",
               file=sys.stderr, flush=True)
 
 
