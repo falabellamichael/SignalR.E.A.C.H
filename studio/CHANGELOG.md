@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.0](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.14...reach-studio-v26.10.0) (2026-10-08)
+
+
+### Miscellaneous Chores
+
+* release-as 26.10.0 ([#157](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/157)) ([8d8d760](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8d8d760cb0dbe36ef7152a079e5c668d2430b21c))
+
 ## [26.9.14](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.13...reach-studio-v26.9.14) (2026-10-07)
 
 
