@@ -20,9 +20,15 @@ def find_omniroute_key():
     return rows[0][1] if rows else None
 
 
+# MIRROR of server/reachd/settings.py:mask_key: keep the two in sync.
+# Kept as a copy so tools/ does not import the whole reachd package for a
+# display helper; tests/test_reach_cli.py asserts both return the same output.
 def mask_key(key):
-    if not key:
+    """Mask key for safe display in logs and UI (prefix only, no secret chars)."""
+    if not key or not isinstance(key, str):
         return "(none)"
     if len(key) <= 12:
         return "set (short)"
+    if key.startswith("sk-reach-"):
+        return "sk-reach-…"
     return key[:8] + "…" + key[-4:]
