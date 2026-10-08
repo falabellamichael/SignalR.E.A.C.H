@@ -49,7 +49,7 @@ See [edition build, installation, exports, and trust boundaries](docs/EXTENSION_
 The remaining endpoint/hosting instructions describe the operator runtime.
 The full runtime installer now requires `python tools/reach.py install-runtime`.
 
-A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint with **unlimited gpt-4o**. Access is by **API key** (`sk-reach-…`): the host decides who gets one, and nobody else can use the relay — see [Security](#security). Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
+A plugin for SimpleRAG — installable straight from this GitHub URL — that adds a hosted OpenAI-compatible endpoint serving **gpt-4o**, rate-limited per client by default. Access is by **API key** (`sk-reach-…`): the host decides who gets one, and nobody else can use the relay — see [Security](#security). Requests are relayed through a local [OmniRoute](https://github.com/diegosouzapw/OmniRoute) instance's `codegpt` provider.
 
 The plugin installs a full **control panel** into SimpleRAG's app bar — a menu panel with eight pages: **Dashboard, Browser, Endpoint, Models, Usage, Logs, Settings, About** — plus a dependency-free relay server, hosting tunnel, and a pointer URL that always resolves the live endpoint.
 
@@ -351,7 +351,7 @@ The **Reach Studio GUI** has two sandboxed distribution routes:
 
 ## VS Code
 
-The bundled extension (`vscode/`) is a zero-dependency chat panel for VS Code:
+The bundled extension (`vscode/`) is a chat panel for VS Code with no build step. Its one npm dependency, `playwright`, is optional: the REACH Browser page installs it on demand (or use `python tools/reach.py vscode install --with-playwright`) for headless page fetching, and the panel works without it:
 
 - **Activity Bar icon** opens the REACH chat — model dropdown, streaming replies, conversation history.
 - **Zero config by default** — follows the published endpoint pointer and loads its models. Existing `simplereach.endpoint` settings are preserved; additional providers can be added in the REACH settings panel.
@@ -706,7 +706,7 @@ is what protects the relay. TLS comes from the tunnel.
 ## Development
 
 ```bash
-python -m unittest tests.test_reachd tests.test_reach_cli -v   # 48 tests, stdlib only
+python -m unittest tests.test_reachd tests.test_reach_cli -v   # relay + CLI tests, stdlib only
 git config core.hooksPath .githooks                            # once per clone
 ```
 
