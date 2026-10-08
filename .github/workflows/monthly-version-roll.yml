@@ -2,6 +2,11 @@
 # always-bump-patch releases stay calendar-shaped: 26.9.1, 26.9.2, …
 # then 26.10.0, 26.10.1, … The Release-As commit is picked up by
 # release-please on the next push to main.
+#
+# main is pull-request only, so this job opens a branch and a pull request.
+# Squash merges on this repo keep the pull request title and drop the body,
+# which would discard the Release-As footer. Merge with:
+#   gh pr merge <number> --squash --body "Release-As: <YY.MM.0>"
 name: Monthly version roll
 
 on:
@@ -11,13 +16,16 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   roll:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (SHA-pinned)
-      - name: Emit Release-As commit when the month changed
+      - name: Open a Release-As pull request when the month changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(python3 -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")
           YY=$(date -u +%y)
@@ -27,9 +35,32 @@ jobs:
             echo "Version $VER already matches $YYMM — nothing to do."
             exit 0
           fi
+          BRANCH="chore/release-as-${YYMM}.0"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "chore: release-as $YYMM.0
-
-          Release-As: $YYMM.0"
-          git push
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists."
+          else
+            git checkout -b "$BRANCH"
+            git commit --allow-empty -m "chore: release-as ${YYMM}.0" -m "Release-As: ${YYMM}.0"
+            git push -u origin "$BRANCH"
+          fi
+          EXISTING=$(gh pr list --base main --head "$BRANCH" --state open --json number --jq "length")
+          if [[ "$EXISTING" != "0" ]]; then
+            echo "An open pull request for $BRANCH already exists."
+            exit 0
+          fi
+          export VER YYMM
+          python3 - <<'PY'
+          import os
+          ver = os.environ["VER"]
+          yymm = os.environ["YYMM"]
+          open("roll-body.md", "w", encoding="utf-8").write(
+              "Monthly calendar roll. The manifest is `%s`; this month is `%s`.\n\n"
+              "Squash-merge this pull request with the Release-As footer in the commit body, "
+              "or the next release stays on the previous month:\n\n"
+              "```\ngh pr merge --squash --body \"Release-As: %s\"\n```\n\n"
+              "Release-As: %s\n" % (ver, yymm, yymm, yymm)
+          )
+          PY
+          gh pr create --base main --head "$BRANCH" --title "chore: release-as ${YYMM}.0" --body-file roll-body.md
