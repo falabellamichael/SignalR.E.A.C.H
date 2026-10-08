@@ -1,5 +1,17 @@
 # Changelog
 
+## [26.10.0](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.14...v26.10.0) (2026-10-08)
+
+
+### Bug Fixes
+
+* **cli:** mask API keys without exposing suffix ([#26](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/26)) ([#147](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/147)) ([e175085](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e175085ae84761c73a0dbb8fc6555289eb192d2b))
+
+
+### Miscellaneous Chores
+
+* release-as 26.10.0 ([#157](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/157)) ([8d8d760](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8d8d760cb0dbe36ef7152a079e5c668d2430b21c))
+
 ## [26.9.14](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.13...v26.9.14) (2026-10-07)
 
 
