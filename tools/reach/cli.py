@@ -2,14 +2,17 @@
 """SignalR.E.A.C.H installer + runtime manager.
 
 REACH = RAG Endpoint & AI Chat Host — a SimpleRAG plugin that adds a hosted
-OpenAI-compatible endpoint with unlimited gpt-4o (no key required), relayed
-through a local OmniRoute instance's codegpt provider.
+OpenAI-compatible endpoint serving gpt-4o (sk-reach API key required by
+default), relayed through a local OmniRoute instance's codegpt provider.
 
 Install (the GitHub URL way):
 
     git clone https://github.com/falabellamichael/SignalR.E.A.C.H.git
     cd SignalR.E.A.C.H
-    python tools/reach.py install
+    python tools/reach.py install-runtime
+
+(``tools/reach.py install`` installs only the public frontend; ``install-runtime``
+is forwarded to this module's ``install`` command.)
 
 `install` writes ONLY outside SimpleRAG's own files:
   * %LOCALAPPDATA%\\RAGWorkspace\\extensions\\   registry.json + packages/signal-reach/

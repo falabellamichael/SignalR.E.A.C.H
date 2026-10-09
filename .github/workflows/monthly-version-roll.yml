@@ -1,7 +1,23 @@
 # Rolls the version to <YY.MM.0> at the start of each month so
 # always-bump-patch releases stay calendar-shaped: 26.9.1, 26.9.2, …
-# then 26.10.0, 26.10.1, … The Release-As commit is picked up by
-# release-please on the next push to main.
+# then 26.10.0, 26.10.1, …
+#
+# main is pull-request only, so this job opens a branch with an empty
+# `Release-As: <YY.MM.0>` commit and a pull request for it.
+#
+# Squash merges on this repo keep the pull request title and drop the commit
+# body, which would discard the Release-As footer. To make the roll
+# independent of how it is merged, the pull request body carries a
+# BEGIN_COMMIT_OVERRIDE block. When release-please reads a merged commit, it
+# uses that block from the associated pull request in place of the commit
+# message, so the footer reaches release-please however the pull request is
+# merged. The commit touches no files, so release-please applies it to
+# every package (`.` and `studio`).
+#
+# Nothing needs cleaning up afterwards: a Release-As footer only affects the
+# release that contains that commit, so later releases go back to patch bumps.
+# (A `release-as` key in release-please-config.json would pin every later
+# release until someone removed it, so this job doesn't use one.)
 name: Monthly version roll
 
 on:
@@ -11,13 +27,16 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   roll:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (SHA-pinned)
-      - name: Emit Release-As commit when the month changed
+      - name: Open a Release-As pull request when the month changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VER=$(python3 -c "import json; print(json.load(open('.release-please-manifest.json'))['.'])")
           YY=$(date -u +%y)
@@ -27,9 +46,41 @@ jobs:
             echo "Version $VER already matches $YYMM — nothing to do."
             exit 0
           fi
+          NEXT="${YYMM}.0"
+          BRANCH="chore/release-as-${NEXT}"
+          TITLE="chore: release-as ${NEXT}"
+          # An open or already-merged roll pull request for this month means
+          # the roll is done or waiting; don't open a second one.
+          STATES=$(gh pr list --base main --head "$BRANCH" --state all --json state --jq '[.[].state] | join(",")')
+          if [[ ",$STATES," == *",OPEN,"* || ",$STATES," == *",MERGED,"* ]]; then
+            echo "A roll pull request for $BRANCH is already open or merged ($STATES)."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit --allow-empty -m "chore: release-as $YYMM.0
-
-          Release-As: $YYMM.0"
-          git push
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "Branch $BRANCH already exists."
+          else
+            git checkout -b "$BRANCH"
+            git commit --allow-empty -m "$TITLE" -m "Release-As: ${NEXT}"
+            git push -u origin "$BRANCH"
+          fi
+          export VER YYMM NEXT TITLE
+          python3 - <<'PY'
+          import os
+          ver = os.environ["VER"]
+          yymm = os.environ["YYMM"]
+          nxt = os.environ["NEXT"]
+          title = os.environ["TITLE"]
+          open("roll-body.md", "w", encoding="utf-8").write(
+              "Monthly calendar roll. The manifest is `%s`; this month is `%s`, "
+              "so the next release is `%s` for every package.\n\n"
+              "Merge this pull request normally; no special commit message is needed. "
+              "release-please reads the override block below from this pull request "
+              "when it processes the merged commit, so the `Release-As` footer survives "
+              "a squash merge. Keep the block as it is.\n\n"
+              "BEGIN_COMMIT_OVERRIDE\n%s\n\nRelease-As: %s\nEND_COMMIT_OVERRIDE\n"
+              % (ver, yymm, nxt, title, nxt)
+          )
+          PY
+          gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file roll-body.md
