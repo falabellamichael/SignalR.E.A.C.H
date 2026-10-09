@@ -213,22 +213,44 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     console.log('Browser check: dialog focus passed');
     await ui(`
       const row = document.querySelector('.browser-actions');
-      const savedWidth = drawer.style.width;
-      for (const width of [260, 420, 900]) {
-        drawer.style.width = width + 'px';
-        const buttons = [...row.querySelectorAll('button')];
-        const centers = buttons.map(button => { const rect = button.getBoundingClientRect(); return rect.top + rect.height / 2; });
-        if (Math.max(...centers) - Math.min(...centers) > 1) throw new Error('Browser actions wrapped');
+      const chrome = document.querySelector('.browser-chrome');
+      const savedWidth = drawer.style.width, savedScroll = chrome.scrollTop;
+      try {
+        for (const width of [260, 420, 600, 900]) {
+          drawer.style.width = width + 'px';
+          await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const buttons = [...row.querySelectorAll('button')];
+          const compact = drawer.clientWidth <= 560;
+          if (getComputedStyle(row).flexWrap !== (compact ? 'wrap' : 'nowrap')) throw new Error('Browser actions did not follow their drawer breakpoint');
+          const centers = buttons.map(button => { const rect = button.getBoundingClientRect(); return rect.top + rect.height / 2; });
+          if (!compact && Math.max(...centers) - Math.min(...centers) > 1) throw new Error('Wide Browser actions wrapped');
+          if (compact && row.scrollWidth > row.clientWidth + 2) throw new Error('Wrapped Browser actions spill horizontally');
+          row.scrollLeft = 0;
+          const overflow = row.scrollWidth > row.clientWidth;
+          row.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
+          if (overflow ? row.scrollLeft <= 0 : row.scrollLeft !== 0) throw new Error('Browser action wheel scrolling failed');
+          row.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
+          if (row.scrollLeft !== 0) throw new Error('Browser action reverse scrolling failed');
+          for (const button of buttons) {
+            button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            await new Promise(r => requestAnimationFrame(r));
+            const bounds = button.getBoundingClientRect(), chromeBounds = chrome.getBoundingClientRect();
+            const drawerBounds = drawer.getBoundingClientRect(), viewportBounds = document.querySelector('#browser-viewport').getBoundingClientRect();
+            const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+            if (bounds.width < 20 || bounds.height < (compact ? 32 : 20) || bounds.left < Math.max(chromeBounds.left, drawerBounds.left) - 2 || bounds.right > Math.min(chromeBounds.right, drawerBounds.right) + 2
+              || bounds.top < chromeBounds.top - 2 || bounds.bottom > Math.min(chromeBounds.bottom, viewportBounds.top) + 2 || !hit || !button.contains(hit)) {
+              throw new Error('Browser action is clipped or unreachable: ' + JSON.stringify({ id: button.id, width, compact, bounds: bounds.toJSON(), chrome: chromeBounds.toJSON(), drawer: drawerBounds.toJSON(), viewport: viewportBounds.toJSON() }));
+            }
+          }
+        }
+      } finally {
+        drawer.style.width = savedWidth;
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+        chrome.scrollTop = savedScroll;
         row.scrollLeft = 0;
-        const overflow = row.scrollWidth > row.clientWidth;
-        row.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, bubbles: true, cancelable: true }));
-        if (overflow ? row.scrollLeft <= 0 : row.scrollLeft !== 0) throw new Error('Browser action wheel scrolling failed');
-        row.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }));
-        if (row.scrollLeft !== 0) throw new Error('Browser action reverse scrolling failed');
       }
-      drawer.style.width = savedWidth;
     `);
-    console.log('BROWSER ACTIONS SMOKE OK: single row and wheel scrolling both ways at narrow and wide panel widths.');
+    console.log('BROWSER ACTIONS SMOKE OK: compact wrapping, wide single row, wheel scrolling and reachable action hit targets.');
     win.showInactive();
     await new Promise(resolve => setTimeout(resolve, 150));
     const find = new Promise(resolve => second.webContents.once('found-in-page', (_event, result) => resolve(result)));

@@ -3137,16 +3137,31 @@ app.whenReady().then(() => {
             if (afterBranch !== before + 1) throw new Error('branch did not appear in tree (' + before + ' -> ' + afterBranch + ')');
             const branchNames = [...document.querySelectorAll('#agent-tree .tree-name')].map(n => n.textContent);
             if (!branchNames.some(t => t.startsWith('⑂'))) throw new Error('branch node not marked with ⑂');
-            // File drawer toggle + geometry: drawer must sit to the RIGHT of
-            // main (not below it), and the chat composer must stay visible.
+            // Files docks on the right until Main reaches its page minimum;
+            // an overlay then keeps Main's last pushed-aside width and anchor.
             const drawer = document.querySelector('#file-drawer');
             const toggle = document.querySelector('#btn-toggle-files');
             const mainEl = document.querySelector('main');
-              setDrawer(true);
-              const dr = drawer.getBoundingClientRect();
+            setDrawer(true);
+            const dr = drawer.getBoundingClientRect();
             const mr = mainEl.getBoundingClientRect();
-            if (dr.left < mr.right - 1) {
-              throw new Error('file drawer is not to the right of main (left=' + dr.left + ' mainRight=' + mr.right + ')');
+            const drawerRowBounds = drawer.parentElement.getBoundingClientRect();
+            const drawerRailBounds = document.querySelector('#nav-rail').getBoundingClientRect();
+            const drawerAvailable = drawerRowBounds.width - drawerRailBounds.width;
+            const drawerPageMinimum = parseFloat(getComputedStyle(drawer).getPropertyValue('--drawer-page-min')) || 760;
+            const drawerShouldOverlay = drawerAvailable - dr.width < drawerPageMinimum;
+            const drawerExpectedMainWidth = drawerShouldOverlay ? Math.min(drawerAvailable, drawerPageMinimum) : drawerAvailable - dr.width;
+            if (drawer.classList.contains('closed') || drawer.classList.contains('overlay') !== drawerShouldOverlay) {
+              throw new Error('Files drawer must stay open and overlap only below the page minimum');
+            }
+            if (Math.abs(mr.left - drawerRailBounds.right) > 2 || Math.abs(mr.width - drawerExpectedMainWidth) > 2) {
+              throw new Error('Files drawer changed the retained Main position or width');
+            }
+            if (Math.abs(dr.right - drawerRowBounds.right) > 2 || Math.abs(dr.top - mr.top) > 2) {
+              throw new Error('Files drawer is not aligned to the right side of the page');
+            }
+            if (!drawerShouldOverlay && dr.left < mr.right - 1) {
+              throw new Error('Docked Files drawer overlaps Main');
             }
             if (dr.width < 300) throw new Error('drawer width collapsed: ' + dr.width);
             const composer = document.querySelector('.composer');
@@ -4340,7 +4355,30 @@ app.whenReady().then(() => {
             const after = composer.getBoundingClientRect();
             if (!details.open) throw new Error('Completed activity cannot be expanded');
             if (Math.abs(before.top - after.top) > 1 || after.bottom > innerHeight || after.right > innerWidth + 1 || after.left < 0) throw new Error('Expanded activity displaced composer: ' + JSON.stringify({ before: before.toJSON(), after: after.toJSON(), width: innerWidth, height: innerHeight }));
-            if (after.right > document.querySelector('#file-drawer').getBoundingClientRect().left + 1) throw new Error('Composer extends underneath the Files panel');
+            const drawerEl = document.querySelector('#file-drawer');
+            const drawerBounds = drawerEl.getBoundingClientRect();
+            const mainBounds = document.querySelector('main').getBoundingClientRect();
+            const railBounds = document.querySelector('#nav-rail').getBoundingClientRect();
+            const rowBounds = document.querySelector('.app-body').getBoundingClientRect();
+            const available = rowBounds.width - railBounds.width;
+            const pageMinimum = parseFloat(getComputedStyle(drawerEl).getPropertyValue('--drawer-page-min')) || 760;
+            const shouldOverlay = available - drawerBounds.width < pageMinimum;
+            const expectedMainWidth = shouldOverlay ? Math.min(available, pageMinimum) : available - drawerBounds.width;
+            if (drawerEl.classList.contains('closed') || drawerEl.classList.contains('overlay') !== shouldOverlay) throw new Error('Files drawer mode does not match the available page width');
+            if (Math.abs(mainBounds.width - expectedMainWidth) > 2 || Math.abs(mainBounds.left - railBounds.right) > 2) throw new Error('Files drawer changed the retained Main width or left edge');
+            if (Math.abs(drawerBounds.right - rowBounds.right) > 2 || Math.abs(drawerBounds.top - mainBounds.top) > 2) throw new Error('Files drawer lost its right-side anchor');
+            if (after.left < mainBounds.left - 1 || after.right > (shouldOverlay ? mainBounds.right : drawerBounds.left) + 1) throw new Error(shouldOverlay ? 'Composer extends outside retained Main bounds' : 'Composer extends underneath the docked Files panel');
+            if (shouldOverlay) {
+              setDrawer(false);
+              await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+              for (const control of [input, document.querySelector('#btn-send')]) {
+                const bounds = control.getBoundingClientRect();
+                const hit = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+                if (bounds.width < 20 || bounds.height < 20 || !hit || !control.contains(hit)) throw new Error('Closing the Files overlay did not expose the composer hit target: ' + control.id);
+              }
+              setDrawer(true);
+              await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            }
             if (scroll.clientHeight < 60 || input.getBoundingClientRect().width < 60) throw new Error('Conversation or input squeezed out of view: ' + JSON.stringify({ height: scroll.clientHeight, inputWidth: input.getBoundingClientRect().width, window: [innerWidth, innerHeight] }));
             if (document.body.scrollHeight > innerHeight + 1) throw new Error('Conversation overflowed the window');
             const header = document.querySelector('#agent-model-info');
