@@ -1,12 +1,16 @@
 /* Reach Studio — Agents sidebar: dense Explorer styling + collapsible sections.
+ * The Projects sidebar shell (title, rows, action bar) shares that look.
  *
- * SCOPE IS DELIBERATE. Everything below is prefixed with `#page-agents aside`.
- * The Agents page is `<aside>` + `<section class="work workbench">` as siblings,
- * so this stylesheet physically cannot reach:
+ * SCOPE IS DELIBERATE. Agents rules stay prefixed with `#page-agents aside`.
+ * Projects rules stay prefixed with `#page-projects aside`. Each page is
+ * `<aside>` + a work section as siblings, so this stylesheet cannot reach:
  *   - the pinned conversation header (#agent-model-info) — the "same header spot"
  *     that holds the Conversation summary and the Team button, or
- *   - the TEAMS deck (#team-deck-slot, .team-deck, .team-tabs, .member-card).
- * Those are frozen. Do not add selectors here that escape the aside.
+ *   - the TEAMS deck (#team-deck-slot, .team-deck, .team-tabs, .member-card), or
+ *   - the Projects work area (command bar, log, compile actions).
+ * Those are frozen. Do not add selectors here that escape either aside.
+ *
+ * Bottom action labels stay centered on both sidebars. Row names stay left.
  *
  * Colour comes only from the theme custom properties in styles.css so the light
  * theme stays in parity. Gold marks the prompt, a running session, and the
@@ -15,7 +19,8 @@
 
 /* --------------------------------------------------------------- aside shell */
 
-#page-agents aside {
+#page-agents aside,
+#page-projects aside {
   width: 268px;
   padding: 8px 8px 10px;
   gap: 6px;
@@ -23,9 +28,78 @@
   font-family: 'Segoe UI', system-ui, sans-serif;
 }
 
+/* Menu width is the slider. 100 is the full 268px shell. 0 is half of that
+   and the thin lock. activity-bar.js sets --panel-width on each aside. */
+#page-agents aside,
+#page-projects aside {
+  --panel-width: 100;
+  width: calc(134px + (134px * var(--panel-width) / 100));
+  flex: 0 0 auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  #page-agents aside,
+  #page-projects aside { transition: width .12s ease; }
+  #page-agents aside[data-sizing="1"],
+  #page-projects aside[data-sizing="1"] { transition: none; }
+}
+
+#page-agents aside .panel-width,
+#page-projects aside .panel-width {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 14px;
+  margin-top: -2px;
+}
+
+#page-agents aside .panel-width input[type="range"],
+#page-projects aside .panel-width input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+#page-agents aside .panel-width input[type="range"]::-webkit-slider-runnable-track,
+#page-projects aside .panel-width input[type="range"]::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--gold) 0 2px, var(--line) 2px);
+}
+
+#page-agents aside .panel-width input[type="range"]::-webkit-slider-thumb,
+#page-projects aside .panel-width input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-top: -4px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--gold);
+}
+
+#page-agents aside[data-panel="thin"] .panel-width::after,
+#page-projects aside[data-panel="thin"] .panel-width::after {
+  content: '';
+  flex: 0 0 auto;
+  width: 2px;
+  height: 9px;
+  border-radius: 1px;
+  background: var(--gold);
+}
+
 /* Prompt + explorer label. The dollar sign is the CLI cue; the rest stays a
    quiet VS Code section title. */
-#page-agents aside .side-title {
+#page-agents aside .side-title,
+#page-projects aside .side-title {
   font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
   font-size: 11px;
   font-weight: 500;
@@ -36,7 +110,8 @@
   border-bottom: 1px solid var(--line);
 }
 
-#page-agents aside .side-title::before {
+#page-agents aside .side-title::before,
+#page-projects aside .side-title::before {
   content: '$';
   color: var(--gold);
   margin-right: 8px;
@@ -53,19 +128,105 @@
 
 /* Dense action row. Keeps the existing gold/ghost identities but stops the
    buttons from dominating the sidebar. */
-#page-agents aside .side-actions {
+#page-agents aside .side-actions,
+#page-projects aside .side-actions {
   gap: 4px;
   padding-top: 8px;
   border-top: 1px solid var(--line);
 }
 
-#page-agents aside .side-actions button {
+/* Full-width like the Agents actions, but the label stays centered — the same
+   alignment the Projects buttons had before this shell was shared. */
+#page-agents aside .side-actions button,
+#page-projects aside .side-actions button {
   width: 100%;
   padding: 5px 8px;
   font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
   font-size: 11.5px;
   border-radius: 4px;
-  text-align: left;
+  text-align: center;
+}
+
+/* Projects list rows follow the conversation rows: dense mono names, a gold
+   leading bar on the active project, and a remove control that appears on hover. */
+#page-projects aside #project-list { gap: 1px; padding: 1px 0; }
+
+#page-projects aside #project-list li { border-radius: 4px; }
+
+#page-projects aside .project-open {
+  padding: 3px 6px;
+  border-radius: 3px;
+  font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+#page-projects aside .project-remove {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  margin-right: 2px;
+  padding: 0 4px;
+  font-size: 13px;
+  opacity: 0;
+}
+
+#page-projects aside #project-list li:hover .project-remove,
+#page-projects aside #project-list li:focus-within .project-remove { opacity: 1; }
+
+#page-projects aside #project-list li.active {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--gold) 12%, var(--panel2));
+  color: var(--text);
+  box-shadow: inset 2px 0 0 var(--gold);
+}
+
+#page-projects aside #project-list li.active .project-open { color: var(--gold); }
+
+#page-projects aside .project-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#page-projects aside .project-brief { display: none; }
+
+#page-projects aside[data-panel="thin"] .project-open {
+  display: flex;
+  align-items: center;
+  position: relative;
+}
+
+#page-projects aside[data-panel="thin"] .project-name {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+#page-projects aside[data-panel="thin"] .project-brief {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+#page-projects aside[data-panel="thin"] .project-remove { display: none; }
+
+#page-projects aside[data-panel="thin"] .side-actions button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 4px;
+  padding-right: 4px;
 }
 
 /* ------------------------------------------------------- collapsible sections */
@@ -201,8 +362,70 @@
   box-shadow: inset 2px 0 0 var(--gold);
 }
 
-#page-agents aside .tree-node.active > .tree-label .tree-name { color: var(--gold); }
+#page-agents aside .tree-node.active > .tree-label .tree-name,
+#page-agents aside .tree-node.active > .tree-label .tree-brief { color: var(--gold); }
 #page-agents aside .tree-node.active > .tree-label .tree-meta { color: var(--gold-dim); }
+
+/* Thin lock: half width. The full title stays available to assistive tech.
+   What paints is the status mark, the first word, and the time. Depth indent
+   is an inline style, so the reset has to win over it or a deep branch shoves
+   the mark off the row. */
+#page-agents aside[data-panel="thin"] .tree-node { padding-left: 0 !important; }
+
+#page-agents aside[data-panel="thin"] .tree-label { position: relative; }
+
+#page-agents aside .tree-brief { display: none; }
+
+#page-agents aside[data-panel="thin"] .tree-brief {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+/* Keep the name available to assistive tech and the tooltip, but do not paint it. */
+#page-agents aside[data-panel="thin"] .tree-name,
+#page-agents aside[data-panel="thin"] .tree-status,
+#page-agents aside[data-panel="thin"] .tree-sep {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+#page-agents aside[data-panel="thin"] .tree-delete { display: none; }
+
+#page-agents aside[data-panel="thin"] .tree-dot {
+  width: 9px;
+  height: 9px;
+}
+
+#page-agents aside[data-panel="thin"] .tree-meta {
+  margin-left: auto;
+  padding-left: 4px;
+}
+
+#page-agents aside[data-panel="thin"] .tree-new-chat {
+  justify-content: center;
+  font-size: 0;
+}
+
+#page-agents aside[data-panel="thin"] .tree-new-chat::before { font-size: 12px; }
+
+#page-agents aside[data-panel="thin"] .side-actions button {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 4px;
+  padding-right: 4px;
+}
 
 #page-agents aside .tree-empty { padding: 8px 6px; font-size: 11.5px; }
 

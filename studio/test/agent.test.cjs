@@ -313,8 +313,14 @@ const { allowedNames, needsApproval, resolveInProject, globMatch } = require('..
   assert.ok(allowedNames().includes('reach.compile'));
   assert.strictEqual(needsApproval('reach.compile'), true);
   assert.strictEqual(needsApproval('read'), false);
-  assert.throws(() => resolveInProject('D:/proj', '../escape.txt'));
-  assert.strictEqual(resolveInProject('D:/proj', 'src/index.rsh'), path.resolve('D:/proj', 'src/index.rsh'));
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-registry-path-'));
+  try {
+    assert.throws(() => resolveInProject(projectDir, '../escape.txt'));
+    assert.strictEqual(resolveInProject(projectDir, 'src/index.rsh'), path.resolve(projectDir, 'src/index.rsh'));
+  } finally {
+    assert.strictEqual(path.dirname(path.resolve(projectDir)), path.resolve(os.tmpdir()));
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  }
   assert.ok(globMatch('**/*.rsh', 'src/index.rsh'));
   assert.ok(globMatch('*.rsh', 'index.rsh'));
   assert.ok(!globMatch('*.rsh', 'src/index.rsh'));

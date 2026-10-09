@@ -9,7 +9,7 @@
  * that also carries the Team button) and the TEAMS deck (#team-deck-slot,
  * .team-deck*, .team-tabs, .member-card) are frozen. Nothing here queries,
  * styles or re-parents them, and activity-bar.css is scoped to
- * `#page-agents aside` so it cannot leak into them either.
+ * `#page-agents aside` and `#page-projects aside` so it cannot leak into them either.
  *
  * WHY THE TREE IS RE-PARENTED RATHER THAN RE-RENDERED
  * --------------------------------------------------
@@ -53,6 +53,84 @@
     railExpanded = !railExpanded;
     applyRail(railExpanded);
   });
+
+  /* --------------------------------------------------------- panel width */
+
+  /* Full width is 268px. The slider floor is exactly half of that. Releasing
+     the thumb in the last few steps snaps to that floor and locks the thin
+     presentation. Agents keep a status mark, the first word, and the time.
+     Projects keep the first word. A first word that does not fit becomes its
+     first two letters plus "...". Sliding or stepping back up unlocks the
+     full names. Keyboard steps do not snap, so one arrow press can leave
+     the lock. Each menu remembers its own width. */
+  const PANEL_SNAP = 4;
+
+  /* The brief is the first word. It only has a bounded slot in the thin lock,
+     so the fit check has to run after layout, and again when the width
+     transition finishes. A word that still overflows becomes two letters. */
+  let fitFrame = 0;
+  function fitBriefs() {
+    document.querySelectorAll('#page-agents aside, #page-projects aside').forEach(aside => {
+      const thin = aside.dataset.panel === 'thin';
+      aside.querySelectorAll('.tree-brief, .project-brief').forEach(el => {
+        const word = el.dataset.word || '';
+        el.textContent = word;
+        if (!thin || el.clientWidth <= 0 || word.length <= 2) return;
+        if (el.scrollWidth > el.clientWidth + 1) {
+          el.textContent = `${Array.from(word).slice(0, 2).join('')}...`;
+        }
+      });
+    });
+  }
+  function scheduleFit() {
+    if (fitFrame) return;
+    fitFrame = requestAnimationFrame(() => {
+      fitFrame = 0;
+      fitBriefs();
+    });
+  }
+
+  function bindPanel(aside, input, storageKey, noun) {
+    if (!aside || !input) return;
+    let fromPointer = false;
+    function apply(value, { snap = false, dragging = false } = {}) {
+      let next = Math.min(100, Math.max(0, Math.round(Number(value) || 0)));
+      if (snap && next <= PANEL_SNAP) next = 0;
+      const thin = next <= PANEL_SNAP;
+      input.value = String(next);
+      if (dragging) aside.dataset.sizing = '1';
+      else aside.removeAttribute('data-sizing');
+      aside.style.setProperty('--panel-width', String(next));
+      aside.dataset.panel = thin ? 'thin' : 'wide';
+      const text = thin
+        ? 'Thin panel, locked at half width'
+        : next >= 100 ? 'Full width' : `Width ${next}%`;
+      input.setAttribute('aria-valuetext', text);
+      input.title = thin
+        ? `Thin panel locked at half width. Slide right to show ${noun}.`
+        : 'Slide left to half width to lock the thin panel.';
+      try { localStorage.setItem(storageKey, String(next)); } catch { /* private mode */ }
+      scheduleFit();
+    }
+    aside.addEventListener('transitionend', event => {
+      if (event.target === aside && event.propertyName === 'width') scheduleFit();
+    });
+    let stored = 100;
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw !== null && raw !== '') stored = Number(raw);
+    } catch { /* ignore */ }
+    apply(Number.isFinite(stored) ? stored : 100);
+    input.addEventListener('pointerdown', () => { fromPointer = true; });
+    input.addEventListener('input', () => apply(input.value, { dragging: true }));
+    input.addEventListener('change', () => {
+      apply(input.value, { snap: fromPointer });
+      fromPointer = false;
+    });
+  }
+
+  bindPanel(document.querySelector('#page-agents aside'), $('#agent-panel-width'), 'reach.agentsPanelWidth', 'conversation names');
+  bindPanel(document.querySelector('#page-projects aside'), $('#project-panel-width'), 'reach.projectsPanelWidth', 'project names');
 
   /* ------------------------------------------------------------ rail badges */
 
@@ -156,7 +234,13 @@
     new MutationObserver(() => {
       distribute();
       refreshBadges();
+      scheduleFit();
     }).observe(treeEl, { childList: true });
+  }
+
+  const projectListEl = document.querySelector('#project-list');
+  if (projectListEl) {
+    new MutationObserver(() => scheduleFit()).observe(projectListEl, { childList: true });
   }
 
   /* Live status changes (a run starting or finishing) arrive as agent events

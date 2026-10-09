@@ -307,6 +307,9 @@
     <section id="page-projects" class="page">
       <aside>
         <div class="side-title">Projects</div>
+        <label class="panel-width">
+          <input id="project-panel-width" type="range" min="0" max="100" step="1" value="100" aria-label="Project panel width" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Full width" title="Slide left to half width to lock the thin panel." />
+        </label>
         <ul id="project-list"></ul>
         <div class="side-actions">
           <button id="btn-new" class="gold">+ New Project</button>
@@ -368,6 +371,9 @@
     <section id="page-agents" class="page">
       <aside>
         <div class="side-title">Conversations</div>
+        <label class="panel-width">
+          <input id="agent-panel-width" type="range" min="0" max="100" step="1" value="100" aria-label="Conversation panel width" aria-valuemin="0" aria-valuemax="100" aria-valuetext="Full width" title="Slide left to half width to lock the thin panel." />
+        </label>
         <select id="agent-project-select" title="Conversations stem from a project"></select>
         <div id="background-agent-alerts" class="background-agent-alerts hidden" role="status" aria-live="polite"></div>
         <!-- Explorer-style groups. app.js rebuilds the CONTENTS of #agent-tree
@@ -881,6 +887,7 @@
       <div id="editor-empty" class="empty"><p class="sub">Pick a file from the tree.</p></div>
       <div class="editor-footer">
         <span id="editor-status" class="dim"></span>
+        <div id="editor-live-tools" class="editor-live-tools" hidden></div>
         <button id="btn-save-file" class="ghost small hidden">Save (Ctrl+S)</button>
       </div>
     </div>

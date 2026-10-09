@@ -34,7 +34,9 @@ const { decideTeamPriority } = require('./agent/jev-team-priority.cjs');
 const { listRoleChoices } = require('./agent/roles.cjs');
 const reachProcess = require('./agent/reach-process.cjs');
 const { resolveInProject } = require('./agent/tool-registry.cjs');
-const { readTextFile, writeTextFile, readPreviewFile, previewKindFor } = require('./agent/text-files.cjs');
+const { readTextFile, writeTextFile, readPreviewFile, previewKindFor, onFileWrite } = require('./agent/text-files.cjs');
+const { liveEventFor } = require('./agent/live-change.cjs');
+const { rememberPayload, clearRemembered } = require('./agent/live-context.cjs');
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
 const { StudioBrowser } = require('./browser/host.cjs');
@@ -113,6 +115,29 @@ const smokeProject = smokeRoot ? path.join(smokeRoot, 'project') : null;
 if (smokeRoot) app.setPath('userData', path.join(smokeRoot, 'profile'));
 
 let win = null;
+
+function publishFileLive(info) {
+  try {
+    const payload = liveEventFor(info);
+    if (!payload) return;
+    rememberPayload(payload);
+    if (!win || win.isDestroyed()) return;
+    win.webContents.send('files:live', payload);
+  } catch { /* a live-view failure must not fail the write */ }
+}
+
+function forgetLiveContext(root, rel) {
+  const cleared = clearRemembered(root, rel);
+  if (!cleared) return;
+  for (const loop of agentLoops.values()) {
+    try {
+      if (loop.projectDir && path.resolve(loop.projectDir).toLowerCase() === path.resolve(String(root)).toLowerCase()) {
+        loop.readMemo?.invalidate(cleared.abs);
+      }
+    } catch { /* a stale memo must not block clearing the highlight */ }
+  }
+}
+onFileWrite((file, info = {}) => publishFileLive({ ...info, file }));
 const attention = createAttention({ Notification, app, shell, getWindow: () => win });
 let agentStore = null;
 let personaStore = null;
@@ -1650,7 +1675,18 @@ function registerIpc() {
       const text = String(content === undefined ? '' : content);
       if (text.length > 2000000) return { ok: false, err: 'File is larger than 2 MB.' };
       fs.mkdirSync(path.dirname(abs), { recursive: true });
-      writeTextFile(abs, text, { root, scope: agentId || 'editor' });
+      // The editor already has this text. Replaying it would reset the cursor and paint a fake diff.
+      writeTextFile(abs, text, { root, scope: agentId || 'editor', live: false });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, err: e.message };
+    }
+  });
+  ipcMain.handle('files:clearLive', (_e, { projectDir, path: rel } = {}) => {
+    if (!projectDir || !rel) return { ok: false, err: 'A project and path are required.' };
+    try {
+      resolveInProject(projectDir, rel);
+      forgetLiveContext(projectDir, rel);
       return { ok: true };
     } catch (e) {
       return { ok: false, err: e.message };
@@ -2262,6 +2298,19 @@ function registerIpc() {
           ok: false, err: res.error, rolledBack: !!res.rolledBack,
           rollbackFailed: !!res.rollbackFailed, restoreErrors: res.restoreErrors || [],
         };
+      }
+      // Refactor writes through fs, not writeTextFile, so publish the same live diff here.
+      for (const file of plan.files || []) {
+        if (!res.applied.includes(file.path)) continue;
+        publishFileLive({
+          root: dir,
+          file: file.abs,
+          path: file.path,
+          before: file.before == null ? '' : String(file.before),
+          after: file.after == null ? '' : String(file.after),
+          created: !!file.creating,
+          live: true,
+        });
       }
       const out = { ok: true, applied: res.applied, summary: refactorEngine.summarizePlan(plan) };
       if (selection) out.selection = selection;

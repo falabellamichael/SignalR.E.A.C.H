@@ -11,9 +11,16 @@ test('tool headlines name the file, pattern, or command', () => {
   assert.equal(toolHeadline('glob', { pattern: '**/*.js' }, {
     pattern: '**/*.js', matches: ['a.js', 'b.js'],
   }), '**/*.js · 2 files');
+  assert.equal(toolHeadline('glob', { pattern: '*/' }, {
+    pattern: '*/', matches: ['src/', 'build/'],
+  }), '*/ · 2 directories');
+  assert.equal(toolHeadline('glob', { pattern: '*/' }, {
+    matches: ['src/'],
+  }), '*/ · 1 directory');
   assert.equal(toolHeadline('search', { pattern: 'toolHeadline' }, {
     matches: ['app.js:1: toolHeadline'],
   }), 'toolHeadline · 1 hit');
   assert.equal(toolHeadline('shell', { command: 'npm test' }, { exitCode: 0 }), 'npm test · exit 0');
   assert.equal(toolHeadline('list', { path: '' }, {}), '.');
+  assert.equal(toolHeadline('list', { path: '' }, { truncated: true }), '. · truncated');
 });

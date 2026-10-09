@@ -29,6 +29,7 @@ const { untrustedData } = require('./untrusted.cjs');
 const { budgetPolicy, reserveGuard, checkpoint } = require('./budget-awareness.cjs');
 const { resolveBudgets, cap } = require('./budgets.cjs');
 const { buildCodeContext, formatInjection } = require('./code-context.cjs');
+const { formatRemovedContext } = require('./live-context.cjs');
 const { decideContext, recentQuery } = require('./jev-context.cjs');
 const { intersectFeatures } = require('./jev-auto.cjs');
 const { reviewCompletion, notice: jevNotice, correctionInstruction, taskForReview } = require('./jev-policy.cjs');
@@ -538,6 +539,17 @@ class AgentLoop {
     return [...messages, { role: 'user', content: formatInjection(block) }];
   }
 
+  /* Red lines still painted in the editor. Separate from the symbol index:
+   * those lines are not in the saved file, and a refresh is what drops them. */
+  _withRemovedContext(messages) {
+    let block = '';
+    try { block = formatRemovedContext(this.projectDir); } catch { return messages; }
+    if (!block) return messages;
+    const next = [...messages, { role: 'user', content: block }];
+    if (budgetExceeded(this._requestBody(next), this._inputLimits())) return messages;
+    return next;
+  }
+
   async _withSelectedCodeContext(messages) {
     if (!this.jev) return this._withCodeContext(messages);
     const block = this._codeContextBlock(messages);
@@ -596,6 +608,7 @@ class AgentLoop {
       requestMessages = prepared;
       this._emit('code-context', { injected: false, reason: 'Endpoint input allowance is reserved for conversation instructions and results.' });
     }
+    requestMessages = this._withRemovedContext(requestMessages);
     let reply;
     try { reply = await this._readAnswer(requestMessages); }
     catch (error) {

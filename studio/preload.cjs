@@ -162,6 +162,8 @@ contextBridge.exposeInMainWorld('reach', {
     read: (agentId, relPath, projectDir) => ipcRenderer.invoke('files:read', { agentId, path: relPath, projectDir }),
     write: (agentId, relPath, content, projectDir) => ipcRenderer.invoke('files:write', { agentId, path: relPath, content, projectDir }),
     openExternal: (agentId, relPath, projectDir) => ipcRenderer.invoke('files:openExternal', { agentId, path: relPath, projectDir }),
+    onLive: (cb) => ipcRenderer.on('files:live', (_e, payload) => cb(payload)),
+    clearLive: (projectDir, relPath) => ipcRenderer.invoke('files:clearLive', { projectDir, path: relPath }),
   },
 
   // Models. Pass nothing to list the ACTIVE connection's models (playground,

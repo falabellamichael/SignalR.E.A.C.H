@@ -688,8 +688,16 @@ body.resizing-y, body.resizing-y * {
   padding: 3px 6px; border-radius: 4px; cursor: default; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; color: var(--dim);
 }
-.tree-entry.file { cursor: pointer; color: var(--text); }
+.tree-entry.file { cursor: pointer; color: var(--text); display: flex; align-items: center; gap: 6px; }
 .tree-entry.file:hover { background: var(--panel2); color: var(--gold); }
+.tree-entry.file .tree-file-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tree-live-stat { margin-left: auto; flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+.tree-live-stat .add { color: var(--diff-add); }
+.tree-live-stat .del { color: var(--diff-del); }
+.tree-live-stat .add + .del { margin-left: 6px; }
+.tree-live-stat .chg { color: var(--dim); }
+.tree-entry.file.live-add,
+.tree-entry.file.live-add:hover { color: var(--diff-add); }
 .tree-entry.dir { cursor: pointer; }
 .tree-entry.dir:hover, .tree-entry:focus-visible { background: var(--panel2); color: var(--gold); }
 .editor-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -723,9 +731,23 @@ body.resizing-y, body.resizing-y * {
 .preview-media { max-width: 100%; max-height: 100%; }
 .preview-pdf { width: 100%; height: 100%; min-height: 320px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
 .editor-footer {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 4px 12px; border-top: 1px solid var(--line); font-size: 11px;
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  padding: 4px 8px 4px 12px; border-top: 1px solid var(--line); font-size: 11px;
 }
+#editor-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.editor-live-tools { display: flex; align-items: center; gap: 1px; flex: none; }
+.editor-live-tools[hidden] { display: none; }
+button.editor-live-tool {
+  width: 18px; height: 18px; padding: 0; border: 0; border-radius: 3px;
+  background: transparent; color: var(--dim); line-height: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+button.editor-live-tool:hover,
+button.editor-live-tool:focus-visible {
+  border-color: transparent; color: var(--gold); background: var(--hover); outline: none;
+}
+button.editor-live-tool:disabled { opacity: .35; background: transparent; color: var(--dim); }
+button.editor-live-tool[hidden] { display: none; }
 
 /* chat polish */
 .msg-ts { display: block; font-size: 10px; color: var(--muted); margin-top: 6px; }
@@ -893,6 +915,42 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 .diff-line { padding: 0 14px; white-space: pre-wrap; word-break: break-all; }
 .diff-line.add { background: rgba(122, 168, 106, 0.12); color: var(--diff-add); }
 .diff-line.del { background: rgba(201, 106, 74, 0.12); color: var(--diff-del); }
+.cm-line.cm-live-add {
+  background-color: color-mix(in srgb, var(--diff-add) 28%, transparent);
+  box-shadow: inset 3px 0 0 var(--diff-add);
+}
+.cm-lineNumbers .cm-gutterElement { flex: none; }
+.cm-live-del {
+  display: block;
+  position: relative;
+  box-sizing: border-box;
+  /* inline-size containment stops a long removed line from widening the editor. */
+  contain: inline-size;
+  width: 100%;
+  height: calc(var(--live-del-rows, 1) * 14px);
+  margin: 0;
+  padding: 0;
+  color: var(--diff-del);
+  background: color-mix(in srgb, var(--diff-del) 18%, transparent);
+  box-shadow: inset 2px 0 0 var(--diff-del);
+  font-family: Menlo, Consolas, 'Courier New', monospace;
+  font-size: 11px;
+  line-height: 14px;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cm-live-del-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 14px;
+  padding: 0 8px 0 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .diff-line.ctx { color: var(--dim); }
 .diff-line.gap { color: var(--muted); font-style: italic; text-align: center; padding: 4px 0; }
 .edit-actions {

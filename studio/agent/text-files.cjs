@@ -90,11 +90,12 @@ function onFileWrite(listener) {
 function writeTextFile(file, content, options = {}) {
   assertTextPath(file);
   if (options.root) engines.assertWritePath(options.root, path.relative(options.root, file));
-  const before = fs.existsSync(file) ? fs.readFileSync(file) : null;
+  const existed = fs.existsSync(file);
+  const before = existed ? fs.readFileSync(file) : null;
   if ('expectedHash' in options && options.expectedHash !== (before === null ? null : engines.hash(before))) {
     throw new Error('The file changed since this edit was proposed. Refresh the proposal before accepting it.');
   }
-  const existing = fs.existsSync(file) ? readTextFile(file) : { encoding: 'utf-8', bom: Buffer.alloc(0) };
+  const existing = existed ? readTextFile(file) : { encoding: 'utf-8', bom: Buffer.alloc(0) };
   let body = Buffer.from(String(content), existing.encoding === 'utf-8' ? 'utf8' : 'utf16le');
   if (existing.encoding === 'utf-16be') body = body.swap16();
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -103,8 +104,18 @@ function writeTextFile(file, content, options = {}) {
   try { fs.writeFileSync(tmp, bytes); fs.renameSync(tmp, file); }
   finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
   engines.receipt(options.root ? path.relative(options.root, file) : path.basename(file), before, fs.readFileSync(file), options.scope || 'editor');
+  /* `before` is the previous decoded text ('' for a new file). `live: false`
+   * marks a user save so the editor does not replay its own write. Listeners
+   * that only take the path are unchanged. */
+  const info = {
+    before: existing.content ?? '',
+    after: String(content),
+    root: options.root || '',
+    live: options.live !== false,
+    created: !existed,
+  };
   for (const listener of writeObservers) {
-    try { listener(file); } catch { /* a failing observer must not fail the write */ }
+    try { listener(file, info); } catch { /* a failing observer must not fail the write */ }
   }
 }
 

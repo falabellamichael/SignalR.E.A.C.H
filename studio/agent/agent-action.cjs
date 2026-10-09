@@ -218,17 +218,19 @@ function canonicalToolName(nativeName) {
 }
 
 function jsonType(value) {
-  if (Array.isArray(value)) return { type: 'array', items: { type: 'string' } };
+  if (Array.isArray(value)) return { type: 'array', items: value.length ? jsonType(value[0]) : {} };
   if (typeof value === 'number') return { type: 'number' };
   if (typeof value === 'boolean') return { type: 'boolean' };
-  if (value && typeof value === 'object') return { type: 'object', additionalProperties: true };
+  if (value && typeof value === 'object') return { type: 'object',
+    properties: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonType(item)])),
+    additionalProperties: true };
   return { type: 'string' };
 }
 
 /* OpenAI function definitions derived from the tool registry. Descriptions
- * come from the tool help line; parameter shapes are inferred from each
- * tool's example arguments, with `additionalProperties: true` because the
- * examples are not exhaustive (the tool runner still validates). */
+ * come from the tool help line; declared params advertise every supported
+ * option, while examples retain nested argument shapes. The contract remains
+ * permissive here; the tool runner validates required fields at dispatch. */
 function toolDefs({ includeCollab = false, disabled = [] } = {}) {
   const defs = [];
   for (const [name, tool] of Object.entries(TOOLS)) {
@@ -237,6 +239,16 @@ function toolDefs({ includeCollab = false, disabled = [] } = {}) {
     const { action, ...example } = tool.example || {};
     const properties = {};
     for (const [key, value] of Object.entries(example)) properties[key] = jsonType(value);
+    for (const field of tool.params) {
+      const property = { ...properties[field.name], type: field.type };
+      if (field.type === 'array' && !property.items) property.items = {};
+      if (field.type === 'object') property.additionalProperties = true;
+      if (field.min !== undefined) property.minimum = field.min;
+      if (field.maxLength !== undefined) property.maxLength = field.maxLength;
+      if (field.maxItems !== undefined) property.maxItems = field.maxItems;
+      if (field.default !== undefined) property.default = structuredClone(field.default);
+      properties[field.name] = property;
+    }
     defs.push({ type: 'function', function: {
       name: nativeToolName(name),
       description: String(tool.help || '').trim(),

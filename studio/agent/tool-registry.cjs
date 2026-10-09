@@ -21,21 +21,80 @@ const { readTextFile, writeTextFile, assertTextPath } = require('./text-files.cj
 const { runFileScan } = require('./file-scan.cjs');
 const { PARAMS, COMMAND_PATHS } = require('./tool-params.cjs');
 const { resolveInProject } = require('./paths.cjs');
+const { lookupRemoved } = require('./live-context.cjs');
 
 function scanBudget(limit) {
   const deadline = Date.now() + 10000;
-  let visited = 0, chars = 0, truncated = false;
+  let visited = 0, chars = 0, reason = null;
   return {
     visit(count) {
-      if (count >= limit || ++visited > 20000 || chars >= 30000 || Date.now() >= deadline) {
-        truncated = true;
-        return false;
-      }
+      if (reason) return false;
+      if (count >= limit) reason = 'result-limit';
+      else if (++visited > 20000) reason = 'entry-limit';
+      else if (chars >= 30000) reason = 'output-limit';
+      else if (Date.now() >= deadline) reason = 'time-limit';
+      if (reason) return false;
       return true;
     },
     add(text) { chars += text.length; },
-    get truncated() { return truncated; },
+    get truncated() { return reason !== null; },
+    get reason() { return reason; },
   };
+}
+
+// Search source folders before generated trees, but retain generated files for
+// explicitly scoped searches and for scans whose budget can reach them.
+const DEFERRED_SCAN_DIRS = new Set([
+  'build', 'dist', 'out', 'target', 'coverage', 'electron_dist', 'artifacts',
+  'venv', 'env', 'site-packages', '_internal', 'obj',
+]);
+const SKIPPED_SCAN_DIRS = new Set(['node_modules', '__pycache__', '.git']);
+
+function scanRoot(ctx, requested) {
+  const base = resolveInProject(ctx.projectDir, requested || '.');
+  if (!fs.statSync(base).isDirectory()) throw new Error('Scan path must be a directory.');
+  // A bad requested scope must fail; unreadable descendants can be reported as
+  // partial results without discarding matches from the rest of the project.
+  const entries = fs.readdirSync(base, { withFileTypes: true });
+  return { base, entries };
+}
+
+function scanEntries(root, budget, count, accept, canDescend = () => true) {
+  const pending = [{ dir: root.base, rel: '', entries: root.entries, deferred: false }];
+  const deferred = [];
+  const warnings = [];
+  let next = 0, nextDeferred = 0;
+  while (next < pending.length || nextDeferred < deferred.length) {
+    const folder = next < pending.length ? pending[next++] : deferred[nextDeferred++];
+    let entries = folder.entries;
+    if (!entries) {
+      try { entries = fs.readdirSync(folder.dir, { withFileTypes: true }); }
+      catch (error) {
+        if (warnings.length < 20) warnings.push(`Cannot scan ${folder.rel}: ${error.code || 'directory read failed'}`);
+        continue;
+      }
+    }
+    for (const entry of entries) {
+      if (!budget.visit(count())) return scanStatus(budget, warnings);
+      if (entry.isSymbolicLink()) continue;
+      const rel = folder.rel ? folder.rel + '/' + entry.name : entry.name;
+      const directory = entry.isDirectory();
+      if (directory && (SKIPPED_SCAN_DIRS.has(entry.name) || entry.name.startsWith('.'))) continue;
+      if (accept(entry, rel, folder.dir) === false) return scanStatus(budget, warnings);
+      if (directory && canDescend(rel + '/')) {
+        const child = { dir: path.join(folder.dir, entry.name), rel,
+          deferred: folder.deferred || DEFERRED_SCAN_DIRS.has(entry.name.toLowerCase()) };
+        (child.deferred ? deferred : pending).push(child);
+      }
+    }
+  }
+  return scanStatus(budget, warnings);
+}
+
+function scanStatus(budget, warnings) {
+  return { truncated: budget.truncated || warnings.length > 0,
+    ...(budget.reason ? { truncationReason: budget.reason } : {}),
+    ...(warnings.length ? { warnings } : {}) };
 }
 
 /* Whether this call should return a reviewable proposal instead of writing
@@ -119,7 +178,7 @@ function memoryStoreFromCtx(ctx) {
 const CORE_TOOLS = {
   read: {
     class: 'read', tier: 'core', approval: false, budget: Infinity,
-    help: 'reads one file completely (including unsaved editor changes). Optional inclusive 1-based startLine / endLine for a range.',
+    help: 'reads one file completely (including unsaved editor changes). Optional inclusive 1-based startLine / endLine for a range. removedLines, when present, are the red lines still shown for a live edit and are not in content. at is the 1-based current line they precede, or null at the end of the file.',
     example: { action: 'read', path: 'index.rsh' },
     async execute(args, ctx) {
       const abs = resolveInProject(ctx.projectDir, args.path);
@@ -129,7 +188,13 @@ const CORE_TOOLS = {
       const end = Math.min(lines.length, Number.isInteger(args.endLine) ? args.endLine : lines.length);
       if (start > end) return { ok: false, error: `Invalid range ${start}-${end}; file has ${lines.length} lines.` };
       const slice = lines.slice(start - 1, end).join('\n');
-      return { ok: true, path: args.path, startLine: start, endLine: end, content: slice, totalLines: lines.length };
+      const result = { ok: true, path: args.path, startLine: start, endLine: end, content: slice, totalLines: lines.length };
+      const removed = lookupRemoved(ctx.projectDir, args.path);
+      if (removed && removed.lines.length) {
+        result.removedLines = removed.lines;
+        if (removed.truncated) result.removedTruncated = true;
+      }
+      return result;
     },
   },
   write: {
@@ -166,32 +231,24 @@ const CORE_TOOLS = {
   },
   glob: {
     class: 'read', tier: 'core', approval: false, budget: 40000,
-    help: 'finds files by path/name pattern, e.g. "*.rsh", "build/**". Optional path scopes the search to a subdirectory.',
+    help: 'finds files by path/name pattern, e.g. "*.rsh", "build/**". **/ also matches the root; a trailing / finds directories. Optional path scopes the search. truncated means the scan is incomplete.',
     example: { action: 'glob', pattern: '**/*.rsh' },
     async execute(args, ctx) {
       if (!ctx.inScanWorker) return runFileScan('glob', args, ctx);
       const pattern = String(args.pattern || '*');
-      const base = resolveInProject(ctx.projectDir, args.path || '.');
+      const root = scanRoot(ctx, args.path);
       const matches = [];
       const budget = scanBudget(200);
-      const walk = (dir, rel) => {
-        let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-        for (const e of entries) {
-          if (!budget.visit(matches.length)) return;
-          if (e.isSymbolicLink()) continue;
-          const childRel = rel ? rel + '/' + e.name : e.name;
-          if (e.isDirectory()) {
-            if (e.name === 'node_modules' || e.name === '__pycache__' || e.name === '.git' || e.name.startsWith('.')) continue;
-            walk(path.join(dir, e.name), childRel);
-          } else if (globMatch(pattern, childRel)) {
-            matches.push(childRel);
-            budget.add(childRel);
-          }
+      const directories = pattern.endsWith('/');
+      const status = scanEntries(root, budget, () => matches.length, (entry, rel) => {
+        if (entry.isDirectory() !== directories) return;
+        const candidate = directories ? rel + '/' : rel;
+        if (globMatch(pattern, candidate)) {
+          matches.push(candidate);
+          budget.add(candidate);
         }
-      };
-      walk(base, '');
-      return { ok: true, pattern, matches, truncated: budget.truncated };
+      }, prefix => globMatch(pattern, prefix, true));
+      return { ok: true, pattern, matches, ...status };
     },
   },
   search: {
@@ -200,7 +257,7 @@ const CORE_TOOLS = {
     example: { action: 'search', pattern: 'reach 0.1', regex: false },
     async execute(args, ctx) {
       if (!ctx.inScanWorker) return runFileScan('search', args, ctx);
-      const base = resolveInProject(ctx.projectDir, args.path || '.');
+      const root = scanRoot(ctx, args.path);
       const pattern = String(args.pattern || '');
       const isRegex = !!args.regex;
       const caseSensitive = !!args.caseSensitive;
@@ -208,37 +265,24 @@ const CORE_TOOLS = {
       const results = [];
       const budget = scanBudget(200);
       const regex = isRegex ? new RegExp(pattern, caseSensitive ? 'g' : 'gi') : null;
-      const walk = (dir, rel) => {
-        let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-        for (const e of entries) {
-          if (!budget.visit(results.length)) return;
-          if (e.isSymbolicLink()) continue;
-          const childRel = rel ? rel + '/' + e.name : e.name;
-          if (e.isDirectory()) {
-            if (e.name === 'node_modules' || e.name === '__pycache__' || e.name === '.git' || e.name.startsWith('.')) continue;
-            walk(path.join(dir, e.name), childRel);
-          } else {
-            if (include && !globMatch(include, childRel)) continue;
-            let text;
-            try { text = readTextFile(path.join(dir, e.name)).content; } catch { continue; }
-            const lines = text.split(/\r?\n/);
-            for (let i = 0; i < lines.length; i++) {
-              let match = false;
-              if (regex) { regex.lastIndex = 0; match = regex.test(lines[i]); }
-              else { match = caseSensitive ? lines[i].includes(pattern) : lines[i].toLowerCase().includes(pattern.toLowerCase()); }
-              if (match) {
-                if (!budget.visit(results.length)) return;
-                const hit = `${childRel}:${i + 1}: ${lines[i].slice(0, 500)}`;
-                results.push(hit);
-                budget.add(hit);
-              }
-            }
+      const status = scanEntries(root, budget, () => results.length, (entry, rel, dir) => {
+        if (entry.isDirectory() || (include && !globMatch(include, rel))) return;
+        let text;
+        try { text = readTextFile(path.join(dir, entry.name)).content; } catch { return; }
+        const lines = text.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+          let match;
+          if (regex) { regex.lastIndex = 0; match = regex.test(lines[i]); }
+          else { match = caseSensitive ? lines[i].includes(pattern) : lines[i].toLowerCase().includes(pattern.toLowerCase()); }
+          if (match) {
+            if (!budget.visit(results.length)) return false;
+            const hit = `${rel}:${i + 1}: ${lines[i].slice(0, 500)}`;
+            results.push(hit);
+            budget.add(hit);
           }
         }
-      };
-      walk(base, '');
-      return { ok: true, pattern, matches: results, truncated: budget.truncated };
+      }, prefix => !include || globMatch(include, prefix, true));
+      return { ok: true, pattern, matches: results, ...status };
     },
   },
   list: {
@@ -247,23 +291,27 @@ const CORE_TOOLS = {
     example: { action: 'list', path: '' },
     async execute(args, ctx) {
       if (!ctx.inScanWorker) return runFileScan('list', args, ctx);
-      const base = resolveInProject(ctx.projectDir, args.path || '.');
-      const lines = [];
+      const root = scanRoot(ctx, args.path);
+      const children = new Map();
+      let count = 0;
       const budget = scanBudget(300);
-      const walk = (dir, prefix) => {
-        let entries;
-        try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
-        for (const e of entries) {
-          if (!budget.visit(lines.length)) return;
-          if (e.isSymbolicLink()) continue;
-          if (e.name === 'node_modules' || e.name === '__pycache__' || e.name === '.git' || e.name.startsWith('.')) continue;
-          lines.push(prefix + (e.isDirectory() ? '📁 ' : '📄 ') + e.name);
-          budget.add(lines[lines.length - 1]);
-          if (e.isDirectory()) walk(path.join(dir, e.name), prefix + '  ');
+      const status = scanEntries(root, budget, () => count, (entry, rel) => {
+        if (entry.name.startsWith('.')) return;
+        const parent = rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '';
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push({ rel, name: entry.name, directory: entry.isDirectory() });
+        count++;
+        budget.add('  '.repeat(rel.split('/').length - 1) + entry.name + '📁 ');
+      });
+      const lines = [];
+      const render = (parent, prefix) => {
+        for (const entry of children.get(parent) || []) {
+          lines.push(prefix + (entry.directory ? '📁 ' : '📄 ') + entry.name);
+          if (entry.directory) render(entry.rel, prefix + '  ');
         }
       };
-      walk(base, '');
-      return { ok: true, tree: lines.join('\n'), truncated: budget.truncated };
+      render('', '');
+      return { ok: true, tree: lines.join('\n'), ...status };
     },
   },
   shell: {
@@ -578,39 +626,35 @@ function budgetFor(name, fallback = 40000) {
   return tool.budget || fallback;
 }
 
-/* Tiny glob matcher: supports **, *, ?. No character classes.
- * Implemented by hand to avoid the escape-class hazard of encoding
- * placeholders as regex metacharacters. */
-function globMatch(pattern, str) {
+/* Tiny glob matcher: supports **, *, ?. No character classes. A directory
+ * prefix check prunes branches a pattern cannot reach. Memoized states avoid
+ * repeatedly backtracking through the same wildcard/path combination. */
+function globMatch(pattern, str, directoryPrefix = false) {
   const p = String(pattern);
   const s = String(str);
-  let pi = 0, si = 0;
-  let starPi = -1, starSi = -1;
-  while (si < s.length) {
-    if (pi < p.length && (p[pi] === '?' || p[pi] === s[si])) {
-      pi++; si++;
-    } else if (pi < p.length && p[pi] === '*') {
-      // Collapse consecutive stars; a double-star crosses /, single doesn't.
-      let doubleStar = false;
-      while (pi < p.length && p[pi] === '*') { pi++; if (pi < p.length && p[pi] === '*') { doubleStar = true; pi++; } }
-      starPi = pi; starSi = si;
-      if (doubleStar) {
-        // Try to match the rest at every position, including across slashes.
-        while (starSi <= s.length) {
-          if (globMatch(p.slice(starPi), s.slice(starSi))) return true;
-          starSi++;
-        }
-        return false;
-      }
-    } else if (starPi !== -1 && s[starSi] !== '/') {
-      si = ++starSi;
-      pi = starPi;
+  const memo = new Map();
+  const match = (pi, si) => {
+    const key = pi * (s.length + 1) + si;
+    if (memo.has(key)) return memo.get(key);
+    let result;
+    if (directoryPrefix && si === s.length) result = pi < p.length;
+    else if (pi === p.length) result = si === s.length;
+    else if (p[pi] === '*') {
+      let end = pi + 1;
+      while (p[end] === '*') end++;
+      const recursive = end - pi > 1;
+      const directoryStar = recursive && p[end] === '/' && (pi === 0 || p[pi - 1] === '/');
+      // **/ can consume zero directories, including at the project root.
+      result = ((!directoryStar || si === 0 || s[si - 1] === '/') && match(directoryStar ? end + 1 : end, si))
+        || (si < s.length && (recursive || s[si] !== '/') && match(pi, si + 1));
     } else {
-      return false;
+      result = si < s.length && (p[pi] === s[si] || (p[pi] === '?' && s[si] !== '/'))
+        && match(pi + 1, si + 1);
     }
-  }
-  while (pi < p.length && p[pi] === '*') pi++;
-  return pi === p.length;
+    memo.set(key, result);
+    return result;
+  };
+  return match(0, 0);
 }
 
 module.exports = {

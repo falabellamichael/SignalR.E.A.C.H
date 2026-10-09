@@ -219,7 +219,7 @@ async function runToolCall(agentId, name, args, context) {
   // top-level strings, left collections untouched, and applied the cut to the
   // caller's copy while persisting the full shape.
   const { value: truncated, bytes, truncated: wasTruncated, elided } = boundResult(result, { budget: budgetFor(name) });
-  if (!record.cached) context.readMemo?.set(name, args, truncated);
+  if (!record.cached && !wasTruncated) context.readMemo?.set(name, args, truncated);
 
   record.ok = !!result.ok;
   if (result.error) record.error = result.error;
@@ -280,12 +280,16 @@ function toolHeadline(name, args, result) {
     const pattern = String(a.pattern || r.pattern || '').trim().slice(0, 80);
     if (pattern) bits.push(pattern);
     if (Array.isArray(r.matches)) {
-      const noun = name === 'glob' ? 'file' : 'hit';
-      bits.push(`${r.matches.length} ${noun}${r.matches.length === 1 ? '' : 's'}`);
+      const count = r.matches.length;
+      const directories = name === 'glob' && String(a.pattern || r.pattern || '').endsWith('/');
+      const noun = directories ? (count === 1 ? 'directory' : 'directories')
+        : (name === 'glob' ? 'file' : 'hit') + (count === 1 ? '' : 's');
+      bits.push(`${count} ${noun}`);
     }
     if (r.truncated) bits.push('truncated');
   } else if (name === 'list') {
     bits.push(file || String(a.path || '.').replace(/\\/g, '/').slice(0, 80));
+    if (r.truncated) bits.push('truncated');
   } else if (name === 'shell') {
     const command = String(a.command || '').replace(/\s+/g, ' ').trim().slice(0, 72);
     if (command) bits.push(command);

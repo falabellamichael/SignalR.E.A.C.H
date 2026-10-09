@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const { onFileWrite } = require('./text-files.cjs');
+const { resolveInProject } = require('./paths.cjs');
 
 const READ_TOOLS = new Set(['read', 'list', 'glob', 'search', 'code.index', 'code.search', 'code.context', 'code.impact']);
 const MAX_ENTRIES = 64;
@@ -21,10 +22,11 @@ class ReadMemo {
 
   descriptor(name, args = {}) {
     if (!this.root || !READ_TOOLS.has(name) || args?.refresh === true) return null;
-    const scope = path.resolve(this.root, String(args.path || '.'));
-    if (scope !== this.root && !scope.startsWith(this.root + path.sep)) return null;
-    let stat;
-    try { stat = fs.statSync(scope); } catch { return null; }
+    let scope, stat;
+    try {
+      scope = resolveInProject(this.root, String(args.path || '.'));
+      stat = fs.statSync(scope);
+    } catch { return null; }
     const digest = createHash('sha256').update(JSON.stringify(args || {})).digest('hex');
     return { scope, key: `${name}:${scope}:${stat.mtimeMs}:${stat.size}:${digest}` };
   }
@@ -40,7 +42,7 @@ class ReadMemo {
 
   set(name, args, value) {
     const descriptor = this.descriptor(name, args);
-    if (!descriptor || !value?.ok || value.pending) return;
+    if (!descriptor || !value?.ok || value.pending || value.truncated || value.incomplete || value._bounded) return;
     const bytes = Buffer.byteLength(JSON.stringify(value));
     if (bytes > MAX_BYTES) return;
     this._drop(descriptor.key);

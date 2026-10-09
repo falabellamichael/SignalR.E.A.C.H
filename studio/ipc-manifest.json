@@ -236,6 +236,13 @@
     "args": [],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "files:clearLive": {
+    "module": "main.mjs",
+    "args": [
+      "{ projectDir, path: rel }"
+    ],
+    "returns": "See handler implementation; result shapes are not yet runtime-validated"
+  },
   "files:openExternal": {
     "module": "main.mjs",
     "args": [
