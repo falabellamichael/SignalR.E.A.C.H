@@ -479,6 +479,20 @@ def generate_client_key(name="Default"):
     }
 
 
+def ensure_key_ids(access):
+    """Every client key needs a stable id: the /_reach/keys/<id> routes
+    address keys by it, and restore_masked_client_keys matches on it. A
+    hand-edited or patch-supplied entry may lack one — mint it rather than
+    leave the key addressable only by its own secret."""
+    changed = False
+    for k in (access or {}).get("keys") or []:
+        if isinstance(k, dict) \
+                and not (isinstance(k.get("id"), str) and k["id"].strip()):
+            k["id"] = "key_" + secrets.token_hex(4)
+            changed = True
+    return changed
+
+
 def key_expired(key, now=None):
     """True when a key carries an expiry that has passed.
 
@@ -708,7 +722,15 @@ def validate_settings(cfg):
     _int(cfg["system"].get("security_revision", 0), 0, 1000,
          "system.security_revision")
     _bool(cfg["system"].get("host_bind", True), "system.host_bind")
-    _str(cfg["system"].get("host_salt", ""), "system.host_salt", 0, 64)
+    salt = cfg["system"].get("host_salt", "")
+    _str(salt, "system.host_salt", 0, 64)
+    if salt:
+        # hostid._derive_key() feeds the salt to bytes.fromhex(); a non-hex
+        # value would not fail here but crash inside hostid.seal on save.
+        try:
+            bytes.fromhex(salt)
+        except ValueError:
+            raise SettingsError("system.host_salt must be hex")
     _str(cfg["system"].get("host_machine_hint", ""),
          "system.host_machine_hint", 0, 200)
 
@@ -833,22 +855,24 @@ def _seal_config(cfg, material):
         value = out.get(field)
         if isinstance(value, str) and value and not hostid.is_sealed(value):
             out[field] = hostid.seal(value, material, salt)
-    system = out.setdefault("system", {})
-    token = system.get("admin_token")
-    if isinstance(token, str) and token and not hostid.is_sealed(token):
-        system["admin_token"] = hostid.seal(token, material, salt)
-    access = out.setdefault("access", {})
-    legacy = access.get("access_key")
-    if isinstance(legacy, str) and legacy and not hostid.is_sealed(legacy):
-        access["access_key"] = hostid.seal(legacy, material, salt)
-    keys = access.get("keys")
-    if isinstance(keys, list):
-        for entry in keys:
-            if not isinstance(entry, dict):
-                continue
-            raw = entry.get("key")
-            if isinstance(raw, str) and raw and not hostid.is_sealed(raw):
-                entry["key"] = hostid.seal(raw, material, salt)
+    system = out.get("system")
+    if isinstance(system, dict):
+        token = system.get("admin_token")
+        if isinstance(token, str) and token and not hostid.is_sealed(token):
+            system["admin_token"] = hostid.seal(token, material, salt)
+    access = out.get("access")
+    if isinstance(access, dict):
+        legacy = access.get("access_key")
+        if isinstance(legacy, str) and legacy and not hostid.is_sealed(legacy):
+            access["access_key"] = hostid.seal(legacy, material, salt)
+        keys = access.get("keys")
+        if isinstance(keys, list):
+            for entry in keys:
+                if not isinstance(entry, dict):
+                    continue
+                raw = entry.get("key")
+                if isinstance(raw, str) and raw and not hostid.is_sealed(raw):
+                    entry["key"] = hostid.seal(raw, material, salt)
     return out
 
 def _unseal_config(cfg, material, path):
@@ -869,13 +893,13 @@ def _unseal_config(cfg, material, path):
         for field in _SEALED_FIELDS:
             if field in cfg:
                 cfg[field] = _open(cfg[field])
-        system = cfg.setdefault("system", {})
-        if "admin_token" in system:
+        system = cfg.get("system")
+        if isinstance(system, dict) and "admin_token" in system:
             system["admin_token"] = _open(system["admin_token"])
-        access = cfg.setdefault("access", {})
-        if "access_key" in access:
+        access = cfg.get("access")
+        if isinstance(access, dict) and "access_key" in access:
             access["access_key"] = _open(access["access_key"])
-        keys = access.get("keys")
+        keys = access.get("keys") if isinstance(access, dict) else None
         if isinstance(keys, list):
             for entry in keys:
                 if isinstance(entry, dict) and "key" in entry:
@@ -886,31 +910,431 @@ def _unseal_config(cfg, material, path):
         # key, and leave the config loadable so the operator sees the reason.
         for field in _SEALED_FIELDS:
             cfg[field] = ""
-        system = cfg.setdefault("system", {})
-        system["admin_token"] = ""
-        access = cfg.setdefault("access", {})
-        access["access_key"] = ""
-        keys = access.get("keys")
-        if isinstance(keys, list):
-            for entry in keys:
-                if isinstance(entry, dict) and hostid.is_sealed(entry.get("key")):
-                    entry["key"] = ""
+        system = cfg.get("system")
+        if isinstance(system, dict):
+            system["admin_token"] = ""
+        access = cfg.get("access")
+        if isinstance(access, dict):
+            access["access_key"] = ""
+            keys = access.get("keys")
+            if isinstance(keys, list):
+                for entry in keys:
+                    if isinstance(entry, dict) \
+                            and hostid.is_sealed(entry.get("key")):
+                        entry["key"] = ""
         return cfg, str(exc)
     return cfg, None
 
+def _repair_config(cfg):
+    """Return a copy of cfg with every invalid field reset to its default.
+
+    validate_settings() reports only the FIRST problem, so a config that
+    fails it cannot be trusted wholesale — but discarding the whole file
+    loses keys and tuning that are fine. Every field is therefore checked on
+    its own and reset to its DEFAULT_SETTINGS value when it fails; model
+    aliases that cannot be made valid are kept visible but disabled. The
+    fields that were reset are listed in cfg["_repair_notes"]. The saved
+    file itself is left untouched so nothing the operator wrote is
+    silently committed.
+    """
+    try:
+        fixed = json.loads(json.dumps(cfg))
+    except (TypeError, ValueError):
+        fixed = {}
+    if not isinstance(fixed, dict):
+        fixed = {}
+    repairs = []
+
+    for key in list(fixed):
+        if key not in DEFAULT_SETTINGS and not str(key).startswith("_"):
+            del fixed[key]
+            repairs.append("unknown key %r removed" % key)
+
+    def _ok(fn, *args):
+        try:
+            fn(*args)
+            return True
+        except (SettingsError, ValueError, TypeError):
+            return False
+
+    def _section(name):
+        if not isinstance(fixed.get(name), dict):
+            fixed[name] = {}
+            repairs.append("%s rebuilt (was not an object)" % name)
+        sec = fixed[name]
+        for key in set(sec) - set(DEFAULT_SETTINGS[name]):
+            del sec[key]
+            repairs.append("%s.%s removed (unknown)" % (name, key))
+        for key, value in DEFAULT_SETTINGS[name].items():
+            if key not in sec:
+                sec[key] = json.loads(json.dumps(value))
+        return sec
+
+    def _fix(container, key, default, label=None):
+        container[key] = json.loads(json.dumps(default))
+        repairs.append((label or key) + " reset to default")
+
+    # ---- top-level scalars, urls, enums ----
+    for field, (lo, hi) in NUMERIC_FIELDS.items():
+        if not _ok(_int, fixed.get(field), lo, hi, field):
+            _fix(fixed, field, DEFAULT_SETTINGS[field])
+    for field in ("omniroute_url", "bridge_url"):
+        if not _ok(_require_local_url, fixed.get(field, ""), field):
+            _fix(fixed, field, DEFAULT_SETTINGS[field])
+    okey = fixed.get("omniroute_key", "")
+    if not hostid.is_sealed(okey) \
+            and not (isinstance(okey, str) and len(okey) <= 500):
+        _fix(fixed, "omniroute_key", "")
+    if fixed.get("host") not in ("127.0.0.1", "localhost", "0.0.0.0"):
+        _fix(fixed, "host", DEFAULT_SETTINGS["host"])
+    if fixed.get("tunnel") not in ("ngrok", "cloudflared", "none"):
+        _fix(fixed, "tunnel", DEFAULT_SETTINGS["tunnel"])
+    override = fixed.get("public_url_override")
+    if override is not None and not (isinstance(override, str)
+                                     and override.startswith("https://")):
+        _fix(fixed, "public_url_override", None)
+    try:
+        _str(fixed.get("account_service_url", ""), "account_service_url", 0, 500)
+        if fixed["account_service_url"]:
+            from reachd.account_proxy import account_service_target
+            _s, _h, aport = account_service_target(fixed["account_service_url"])
+            _expect(aport != fixed.get("port"),
+                    "account_service_url must use a different port than the relay")
+    except (SettingsError, ValueError):
+        _fix(fixed, "account_service_url", "")
+
+    # ---- request ----
+    req = _section("request")
+    reqd = DEFAULT_SETTINGS["request"]
+    for key in ("default_model", "inject_system_prompt"):
+        if not (isinstance(req[key], str) and len(req[key]) <= 8000):
+            _fix(req, key, reqd[key], "request." + key)
+    if type(req["default_stream"]) is not bool:
+        _fix(req, "default_stream", reqd["default_stream"], "request.default_stream")
+    for field, (lo, hi) in REQUEST_NUMERIC.items():
+        if not _ok(_int, req.get(field), lo, hi, field):
+            _fix(req, field, reqd[field], "request." + field)
+    for key in ("allow_tools", "allow_response_format", "allow_logprobs",
+                "reject_blocked"):
+        if type(req[key]) is not bool:
+            _fix(req, key, reqd[key], "request." + key)
+    blocked = req["blocked_fields"]
+    if not (isinstance(blocked, list) and len(blocked) <= 64 and all(
+            isinstance(i, str) and 1 <= len(i) <= 64 for i in blocked)):
+        _fix(req, "blocked_fields", reqd["blocked_fields"], "request.blocked_fields")
+    if not (_ok(_float, req["temperature_min"], 0, 2, "t")
+            and _ok(_float, req["temperature_max"], 0, 2, "t")
+            and req["temperature_min"] <= req["temperature_max"]):
+        _fix(req, "temperature_min", reqd["temperature_min"],
+             "request.temperature_min")
+        _fix(req, "temperature_max", reqd["temperature_max"],
+             "request.temperature_max")
+
+    # ---- models ----
+    models = fixed.get("models")
+    if not isinstance(models, dict):
+        _fix(fixed, "models", DEFAULT_SETTINGS["models"])
+    else:
+        for alias in list(models)[32:]:
+            del models[alias]
+            repairs.append("model alias %r dropped (over 32)" % alias)
+        for alias in list(models):
+            if not ALIAS_PATTERN.fullmatch(alias):
+                del models[alias]
+                repairs.append("model alias %r dropped (invalid name)" % alias)
+                continue
+            spec = models[alias]
+            merged = {**MODEL_SPEC_DEFAULTS,
+                      **(spec if isinstance(spec, dict) else {})}
+            errs = []
+            try:
+                _validate_model_spec(alias, merged, set(models), errs)
+            except SettingsError as exc:
+                errs.append(str(exc))
+            if errs:
+                upstream = merged.get("upstream")
+                models[alias] = {
+                    **MODEL_SPEC_DEFAULTS,
+                    "upstream": upstream
+                    if isinstance(upstream, str)
+                    and UPSTREAM_PATTERN.fullmatch(upstream)
+                    else "disabled/invalid-spec",
+                    "enabled": False, "public": False,
+                    "description": "Disabled: saved spec was invalid"}
+                repairs.append("model %r disabled (invalid spec)" % alias)
+            else:
+                models[alias] = merged
+        for alias, spec in models.items():
+            fb = spec.get("fallback")
+            if fb and (fb == alias or fb not in models):
+                spec["fallback"] = None
+                repairs.append("model %r fallback cleared (dangling)" % alias)
+        if not models:
+            _fix(fixed, "models", DEFAULT_SETTINGS["models"])
+
+    # ---- rate_limits ----
+    rl = _section("rate_limits")
+    rld = DEFAULT_SETTINGS["rate_limits"]
+    if type(rl["enabled"]) is not bool:
+        _fix(rl, "enabled", rld["enabled"], "rate_limits.enabled")
+    for field, (lo, hi) in RATE_LIMIT_FIELDS.items():
+        if not _ok(_int, rl.get(field), lo, hi, field):
+            _fix(rl, field, rld[field], "rate_limits." + field)
+
+    # ---- access ----
+    access_broken = not isinstance(fixed.get("access"), dict)
+    acc = _section("access")
+    accd = DEFAULT_SETTINGS["access"]
+    if type(acc["key_required"]) is not bool:
+        _fix(acc, "key_required", accd["key_required"], "access.key_required")
+    akey = acc["access_key"]
+    if not hostid.is_sealed(akey) \
+            and not (isinstance(akey, str) and len(akey) <= 128):
+        _fix(acc, "access_key", "", "access.access_key")
+    keys = acc["keys"] if isinstance(acc["keys"], list) else []
+    clean = []
+    for k in keys:
+        if not isinstance(k, dict):
+            repairs.append("access.keys non-object entry dropped")
+            continue
+        kv = k.get("key")
+        if not hostid.is_sealed(kv) and not isinstance(kv, str):
+            kv = k["key"] = ""
+            repairs.append("access.keys entry with unreadable key blanked")
+        if isinstance(kv, str) and kv and len(kv) < 6:
+            repairs.append("access.keys entry with too-short key dropped")
+            continue
+        if not isinstance(k.get("name", "Key"), str):
+            k["name"] = "Key"
+        if not _ok(_int, k.get("rate_limit_rpm", 0), 0, 100000,
+                   "rate_limit_rpm"):
+            k["rate_limit_rpm"] = 0
+        if not _ok(_int, k.get("tokens_day", 0), 0, 1000000000, "tokens_day"):
+            k["tokens_day"] = 0
+        ex = k.get("expires_at")
+        if ex is not None:
+            ok = isinstance(ex, str)
+            if ok and ex.strip():
+                try:
+                    time.strptime(ex.strip(), "%Y-%m-%dT%H:%M:%SZ")
+                except ValueError:
+                    ok = False
+            if not ok:
+                k["expires_at"] = None
+        clean.append(k)
+    if not clean and not (isinstance(acc["access_key"], str)
+                          and acc["access_key"]):
+        # Every other load path guarantees at least one credential exists;
+        # keep that invariant so the owner is not locked out entirely.
+        clean.append(generate_client_key("Default"))
+        repairs.append("access.keys had no usable key — minted a fresh "
+                       "Default key")
+    acc["keys"] = clean[:100]
+    # The key-management routes address entries by id alone — a repaired or
+    # hand-edited key without one must get it here, not at request time.
+    if ensure_key_ids(acc):
+        repairs.append("access.keys entries missing ids — minted")
+    for key in ("ip_allowlist", "ip_blocklist"):
+        value = acc[key]
+        if not isinstance(value, list):
+            value = []
+            repairs.append("access.%s reset (was not a list)" % key)
+        cleaned = [i for i in value
+                   if isinstance(i, str) and 1 <= len(i) <= 64][:256]
+        if len(cleaned) != len(value):
+            repairs.append("access.%s dropped %d invalid entr%s"
+                           % (key, len(value) - len(cleaned),
+                              "y" if len(value) - len(cleaned) == 1 else "ies"))
+        acc[key] = cleaned
+    if not (isinstance(acc["cors_origins"], str)
+            and len(acc["cors_origins"]) <= 2000):
+        _fix(acc, "cors_origins", "", "access.cors_origins")
+    if type(acc["local_bypass"]) is not bool:
+        _fix(acc, "local_bypass", accd["local_bypass"], "access.local_bypass")
+    if not _ok(_int, acc["auth_fail_limit"], 0, 1000, "auth_fail_limit"):
+        _fix(acc, "auth_fail_limit", accd["auth_fail_limit"],
+             "access.auth_fail_limit")
+    if not _ok(_int, acc["auth_lockout_s"], 1, 86400, "auth_lockout_s"):
+        _fix(acc, "auth_lockout_s", accd["auth_lockout_s"],
+             "access.auth_lockout_s")
+    proxies = acc["trusted_proxies"]
+    if not isinstance(proxies, list):
+        proxies = []
+    kept = []
+    for item in proxies[:64]:
+        ok = isinstance(item, str) and 1 <= len(item) <= 64
+        if ok:
+            try:
+                ipaddress.ip_network(item.strip(), strict=False)
+            except ValueError:
+                ok = False
+        if ok:
+            kept.append(item)
+        else:
+            repairs.append("access.trusted_proxies dropped %r"
+                           % str(item)[:40])
+    acc["trusted_proxies"] = kept
+    if access_broken:
+        # A corrupt access section is rebuilt under the current security
+        # posture — the same reason the key_required migration exists —
+        # rather than the historical permissive default.
+        acc["key_required"] = True
+        repairs.append("access.key_required on (section was corrupt)")
+    # key_required with no usable credential would refuse everyone; the
+    # validator forbids that state, so repair turns the requirement off.
+    if acc["key_required"]:
+        has_key = isinstance(acc["access_key"], str) \
+            and len(acc["access_key"]) >= 6 \
+            or any(k.get("enabled", True) and isinstance(k.get("key"), str)
+                   and k["key"] for k in acc["keys"])
+        if not has_key:
+            acc["key_required"] = False
+            repairs.append("access.key_required turned off (no usable key)")
+
+    # ---- cache ----
+    cache = _section("cache")
+    cached = DEFAULT_SETTINGS["cache"]
+    if type(cache["enabled"]) is not bool:
+        _fix(cache, "enabled", cached["enabled"], "cache.enabled")
+    for field, (lo, hi) in CACHE_FIELDS.items():
+        if not _ok(_int, cache.get(field), lo, hi, field):
+            _fix(cache, field, cached[field], "cache." + field)
+    if type(cache["match_temperature"]) is not bool:
+        _fix(cache, "match_temperature", cached["match_temperature"],
+             "cache.match_temperature")
+
+    # ---- data ----
+    data = _section("data")
+    datad = DEFAULT_SETTINGS["data"]
+    if not _ok(_int, data["log_retention_days"], 1, 365, "log_retention_days"):
+        _fix(data, "log_retention_days", datad["log_retention_days"],
+             "data.log_retention_days")
+    if data["log_level"] not in ("none", "errors", "normal", "verbose"):
+        _fix(data, "log_level", datad["log_level"], "data.log_level")
+    if type(data["log_bodies"]) is not bool:
+        _fix(data, "log_bodies", datad["log_bodies"], "data.log_bodies")
+
+    # ---- publish + system ----
+    pub = _section("publish")
+    pubd = DEFAULT_SETTINGS["publish"]
+    if type(pub["enabled"]) is not bool:
+        _fix(pub, "enabled", pubd["enabled"], "publish.enabled")
+    if not _ok(_int, pub["interval_min"], 0, 1440, "interval_min"):
+        _fix(pub, "interval_min", pubd["interval_min"], "publish.interval_min")
+
+    syssec = _section("system")
+    sysd = DEFAULT_SETTINGS["system"]
+    if type(syssec["allow_remote_admin"]) is not bool:
+        _fix(syssec, "allow_remote_admin", sysd["allow_remote_admin"],
+             "system.allow_remote_admin")
+    if not _ok(_int, syssec["log_rotation_mb"], 1, 100, "log_rotation_mb"):
+        _fix(syssec, "log_rotation_mb", sysd["log_rotation_mb"],
+             "system.log_rotation_mb")
+    atoken = syssec["admin_token"]
+    if not hostid.is_sealed(atoken) \
+            and not (isinstance(atoken, str) and len(atoken) <= 128):
+        _fix(syssec, "admin_token", "", "system.admin_token")
+    if not _ok(_int, syssec["security_revision"], 0, 1000,
+               "security_revision"):
+        _fix(syssec, "security_revision", sysd["security_revision"],
+             "system.security_revision")
+    if type(syssec["host_bind"]) is not bool:
+        _fix(syssec, "host_bind", sysd["host_bind"], "system.host_bind")
+    salt_ok = isinstance(syssec["host_salt"], str) \
+        and len(syssec["host_salt"]) <= 64
+    if salt_ok and syssec["host_salt"]:
+        try:
+            bytes.fromhex(syssec["host_salt"])
+        except ValueError:
+            salt_ok = False
+    if not salt_ok:
+        # "" would switch every future save back to plaintext secrets, and a
+        # corrupt salt can never unseal anything anyway — mint a fresh one.
+        salt_default = hostid.new_salt() if syssec["host_bind"] else ""
+        _fix(syssec, "host_salt", salt_default, "system.host_salt")
+    if not (isinstance(syssec["host_machine_hint"], str)
+            and len(syssec["host_machine_hint"]) <= 200):
+        _fix(syssec, "host_machine_hint", sysd["host_machine_hint"],
+             "system.host_machine_hint")
+
+    fixed["_repair_notes"] = repairs
+    try:
+        validate_settings(fixed)
+    except SettingsError:
+        # Repair covers every field the validator checks, so this should be
+        # unreachable — but a config must never come back broken. Keep the
+        # (repaired) access material so clients are not locked out, and give
+        # up on everything else.
+        safe = json.loads(json.dumps(DEFAULT_SETTINGS))
+        safe["access"] = acc
+        try:
+            validate_settings(safe)
+        except SettingsError:
+            safe = json.loads(json.dumps(DEFAULT_SETTINGS))
+        if not (safe["access"].get("access_key")
+                or safe["access"].get("keys")):
+            generated = generate_client_key("Default")
+            safe["access"]["keys"] = [generated]
+            safe["access"]["access_key"] = generated["key"]
+            safe["access"]["key_required"] = True
+        safe["_repair_notes"] = repairs
+        fixed = safe
+    return fixed
+
+
+def _preserve_corrupt_config(path):
+    """Move an unreadable config file aside so a fresh write cannot destroy it.
+
+    A truncated or hand-broken config.json may still hold the only copy of
+    client keys and sealed secrets — overwriting it silently would lose them
+    for good. Returns the preserved path, or None when the file could not be
+    moved nor copied.
+    """
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    target = path.with_name(path.name + ".corrupt-" + stamp)
+    try:
+        path.replace(target)
+        return target
+    except OSError:
+        pass
+    try:
+        shutil.copy2(path, target)
+        return target
+    except OSError:
+        return None
+
+
 def load_config(path):
+    parse_error = None
     if path.is_file():
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            raw = {}
+        except (OSError, json.JSONDecodeError) as exc:
+            raw = None
+            parse_error = exc
         if isinstance(raw, dict):
             cfg = {**DEFAULT_SETTINGS, **raw}
+            # Every merge below must survive malformed input: a saved section
+            # that is not an object, a models list that is a string, a key
+            # list that is a number. load_config() may never raise, so the
+            # merge only spreads dicts and defers all repair to _repair_config.
             for section in ("request", "rate_limits", "access", "cache",
                             "data", "publish", "system"):
-                cfg[section] = {**DEFAULT_SETTINGS[section],
-                                **(raw.get(section) or {})}
-            raw_models = raw.get("models") or {}
+                if section not in raw:
+                    # Fresh deep copy — pointing cfg at DEFAULT_SETTINGS' own
+                    # dict would let the migrations below write minted keys
+                    # and tokens into module-level state.
+                    cfg[section] = json.loads(json.dumps(
+                        DEFAULT_SETTINGS[section]))
+                    continue
+                sub = raw[section]
+                if isinstance(sub, dict):
+                    cfg[section] = {**DEFAULT_SETTINGS[section], **sub}
+                # A non-object section keeps its (bad) value from the spread
+                # merge — validation fails, _repair_config rebuilds it, and
+                # the operator sees a note instead of a silent revert.
+            raw_models = raw.get("models")
+            raw_models = raw_models if isinstance(raw_models, dict) else {}
             saved_models = {
                 alias: {**MODEL_SPEC_DEFAULTS,
                         **(spec if isinstance(spec, dict) else {})}
@@ -921,7 +1345,9 @@ def load_config(path):
             # defaults wholesale would hide new models (the CodeGPT economy
             # set) from every existing install. A saved alias still wins, and an
             # alias the user deleted stays deleted via _removed_models.
-            removed_models = {alias for alias in (raw.get("_removed_models") or [])
+            removed_raw = raw.get("_removed_models")
+            removed_models = {alias for alias in
+                              (removed_raw if isinstance(removed_raw, list) else [])
                               if isinstance(alias, str)}
             cfg["models"] = {
                 alias: spec
@@ -932,28 +1358,37 @@ def load_config(path):
             if not cfg["models"]:
                 cfg["models"] = dict(DEFAULT_SETTINGS["models"])
 
-            access = cfg.setdefault("access", {})
-            keys = list(access.get("keys") or [])
+            # Migrations write into dict sections only; a corrupt (non-object)
+            # section keeps its value so validation reports it and
+            # _repair_config rebuilds it with defaults.
+            access = cfg.get("access")
             dirty = False
-            if not keys:
-                legacy_key = access.get("access_key")
-                if legacy_key and len(legacy_key) >= 6:
-                    keys.append({
-                        "id": "key_legacy",
-                        "name": "Legacy Key",
-                        "key": legacy_key,
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "last_used_at": None,
-                        "enabled": True,
-                        "rate_limit_rpm": 0,
-                    })
-                else:
-                    def_k = generate_client_key("Default")
-                    keys.append(def_k)
-                    if not access.get("access_key"):
-                        access["access_key"] = def_k["key"]
-                access["keys"] = keys
-                dirty = True
+            if isinstance(access, dict):
+                raw_keys = access.get("keys")
+                keys = list(raw_keys) if isinstance(raw_keys, list) else []
+                if not keys:
+                    legacy_key = access.get("access_key")
+                    if isinstance(legacy_key, str) and len(legacy_key) >= 6:
+                        keys.append({
+                            "id": "key_legacy",
+                            "name": "Legacy Key",
+                            "key": legacy_key,
+                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "last_used_at": None,
+                            "enabled": True,
+                            "rate_limit_rpm": 0,
+                        })
+                    else:
+                        def_k = generate_client_key("Default")
+                        keys.append(def_k)
+                        if not access.get("access_key"):
+                            access["access_key"] = def_k["key"]
+                    access["keys"] = keys
+                    dirty = True
+                # Keys that predate ids (hand-edited configs) must get one —
+                # the key-management routes address entries by id alone.
+                if ensure_key_ids(access):
+                    dirty = True
 
             if not cfg.get("omniroute_key"):
                 detected = find_omniroute_key()
@@ -961,33 +1396,42 @@ def load_config(path):
                     cfg["omniroute_key"] = detected
                     dirty = True
 
-            if not cfg.setdefault("system", {}).get("admin_token"):
-                cfg["system"]["admin_token"] = generate_admin_token()
-                dirty = True
-            # Security migration 1: installs from before keys were enforced
-            # served anyone who found the tunnel URL. Every install already has
-            # a minted key by this point, so requiring one locks out strangers
-            # without locking out the owner. Runs once; the operator can turn it
-            # back off afterwards and it will stay off.
-            if int(cfg["system"].get("security_revision") or 0) < SECURITY_REVISION:
-                access["key_required"] = True
-                cfg["system"]["security_revision"] = SECURITY_REVISION
-                dirty = True
-            # Host binding: mint the per-install salt once. Every host secret
-            # is sealed against (machine id + this salt), so the salt is what
-            # makes two installs on the same machine independent.
-            system = cfg.setdefault("system", {})
-            if system.get("host_bind", True) and not system.get("host_salt"):
-                system["host_salt"] = hostid.new_salt()
-                dirty = True
-            # A non-secret marker the tray can compare against, so the tray and
-            # relay agree on which machine this install belongs to without
-            # duplicating the fingerprint logic in JavaScript.
-            if system.get("host_bind", True):
-                hint = hostid.machine_hint()
-                if hint and system.get("host_machine_hint") != hint:
-                    system["host_machine_hint"] = hint
+            system = cfg.get("system")
+            if isinstance(system, dict):
+                if not system.get("admin_token"):
+                    system["admin_token"] = generate_admin_token()
                     dirty = True
+                # Security migration 1: installs from before keys were enforced
+                # served anyone who found the tunnel URL. Every install already
+                # has a minted key by this point, so requiring one locks out
+                # strangers without locking out the owner. Runs once; the
+                # operator can turn it back off afterwards and it will stay off.
+                try:
+                    revision = int(system.get("security_revision") or 0)
+                except (TypeError, ValueError):
+                    # An unreadable revision means the migration never recorded
+                    # success — apply it rather than skip it (fails closed).
+                    revision = 0
+                if revision < SECURITY_REVISION:
+                    if isinstance(access, dict):
+                        access["key_required"] = True
+                    system["security_revision"] = SECURITY_REVISION
+                    dirty = True
+                # Host binding: mint the per-install salt once. Every host
+                # secret is sealed against (machine id + this salt), so the
+                # salt is what makes two installs on the same machine
+                # independent.
+                if system.get("host_bind", True) and not system.get("host_salt"):
+                    system["host_salt"] = hostid.new_salt()
+                    dirty = True
+                # A non-secret marker the tray can compare against, so the tray
+                # and relay agree on which machine this install belongs to
+                # without duplicating the fingerprint logic in JavaScript.
+                if system.get("host_bind", True):
+                    hint = hostid.machine_hint()
+                    if hint and system.get("host_machine_hint") != hint:
+                        system["host_machine_hint"] = hint
+                        dirty = True
 
             if dirty:
                 try:
@@ -1009,9 +1453,51 @@ def load_config(path):
                 validate_settings(cfg)
                 return cfg
             except SettingsError as exc:
-                print("config warning: %s — using defaults where possible" % exc)
-                cfg["_last_config_error"] = str(exc)
-                return cfg
+                # A broken config must not reach the runtime: fields the
+                # request path reads without re-checking (rate limits,
+                # model specs) would crash every request with a 500.
+                # Repair field-by-field and report what had to be reset;
+                # the saved file is left alone so the operator can still
+                # fix it by hand.
+                print("config warning: %s — invalid fields reset to defaults"
+                      % exc)
+                repaired = _repair_config(cfg)
+                repaired["_last_config_error"] = str(exc)
+                return repaired
+        # The file exists but did not yield a settings object — parsed but
+        # the wrong shape (list/str/number), or unreadable entirely.
+        if parse_error is None:
+            parse_error = SettingsError(
+                "config file holds %s, not an object" % type(raw).__name__)
+    if parse_error is not None:
+        # NEVER let the corrupt bytes be overwritten in place: a truncated or
+        # hand-broken config.json may still hold the only copy of client keys
+        # and sealed secrets. Move it aside first; only once the evidence is
+        # preserved does a fresh config take its place — and if the file can
+        # not even be moved, boot in memory and leave it untouched.
+        preserved = _preserve_corrupt_config(path)
+        if preserved:
+            print("config error: %s — old file kept at %s; starting fresh"
+                  % (parse_error, preserved))
+        else:
+            print("config error: %s — could not move the old file aside; "
+                  "running fresh in memory only" % parse_error)
+        init_cfg = _fresh_config()
+        init_cfg["_last_config_error"] = "config unreadable: %s" % parse_error
+        if preserved:
+            try:
+                save_cfg = dict(init_cfg)
+                save_cfg.pop("_last_config_error", None)
+                save_config(save_cfg, path)
+            except Exception:
+                pass
+        return init_cfg
+    return _fresh_config()
+
+
+def _fresh_config():
+    """A brand-new install config: default settings plus minted credentials
+    and host-binding fields, so the first save seals everything."""
     init_cfg = json.loads(json.dumps(DEFAULT_SETTINGS))
     def_k = generate_client_key("Default")
     init_cfg["access"]["keys"] = [def_k]

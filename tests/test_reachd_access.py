@@ -313,16 +313,21 @@ class IpListTests(RelayFixture):
 
 
 class HealthRedactionTests(RelayFixture):
-    LEAKY = ("upstream", "bridge_url", "config_error")
+    # Internal addresses, usage aggregates, the model list, publish state —
+    # all operator data. A remote caller gets liveness fields and nothing
+    # else; absence beats nulling because the field list itself is info.
+    OPERATOR_ONLY = ("upstream", "bridge_url", "config_error", "in_flight",
+                     "today", "models", "model_count", "cache",
+                     "p95_latency_ms", "tokens_per_sec", "uptime_s",
+                     "last_published_at", "publish_enabled", "public_url")
 
     def test_stranger_does_not_see_internals(self):
         status, body, _ = self.call("GET", "/health", TUNNEL)
         self.assertEqual(status, 200)          # liveness stays public
         data = json.loads(body)
         self.assertTrue(data["ok"])
-        for field in self.LEAKY:
-            self.assertIsNone(data[field], field)
-        self.assertEqual(data["in_flight"], [])
+        for field in self.OPERATOR_ONLY:
+            self.assertNotIn(field, data)
 
     def test_stranger_does_not_see_in_flight_client_addresses(self):
         self.state.in_flight[1] = {"model": "gpt-4o", "ip": "192.0.2.55",
@@ -353,6 +358,29 @@ class ResetAndAuditTests(RelayFixture):
         self.assertEqual(status, 200)
         self.assertTrue(self.state.cfg["access"]["key_required"])
         self.assertEqual(self.status("GET", "/v1/models", TUNNEL), 401)
+
+    def test_reset_keeps_host_salt_so_secrets_stay_sealed(self):
+        """Dropping host_salt on reset leaves save_config with no sealing
+        material: the kept keys, admin token and upstream credential would be
+        written as plaintext until the next restart."""
+        salt = reachd.hostid.new_salt()
+        self.state.cfg["system"]["host_bind"] = True
+        self.state.cfg["system"]["host_salt"] = salt
+        self.state.cfg["system"]["host_machine_hint"] = "hint-abc"
+        self.state.cfg["omniroute_key"] = "sk-upstream-secret"
+        with patch.object(reachd.hostid, "raw_machine_id",
+                          return_value="HOST-MACHINE"):
+            self.assertEqual(self.status("POST", "/_reach/reset"), 200)
+        system = self.state.cfg["system"]
+        self.assertEqual(system["host_salt"], salt)
+        self.assertEqual(system["host_machine_hint"], "hint-abc")
+        self.assertTrue(system["host_bind"])
+        raw = json.loads(self.state.cfg_path.read_text())
+        self.assertTrue(reachd.hostid.is_sealed(raw["omniroute_key"]))
+        self.assertTrue(
+            reachd.hostid.is_sealed(raw["access"]["keys"][0]["key"]))
+        self.assertNotIn("sk-upstream-secret",
+                         self.state.cfg_path.read_text())
 
     def test_loosening_access_is_audited(self):
         status = self.status("PUT", "/_reach/settings",
@@ -391,6 +419,116 @@ class EnsureKeyTests(RelayFixture):
         _s, minted = self._ensure()
         headers = {**TUNNEL, "Authorization": "Bearer " + minted["key"]}
         self.assertEqual(self.status("GET", "/v1/models", headers), 200)
+
+
+class KeyManagementApiTests(RelayFixture):
+    """/_reach/keys routes: audit coverage and id-only addressing."""
+
+    def _audit_actions(self):
+        body = json.loads(self.call("GET", "/_reach/audit")[1])
+        return body["events"]
+
+    def test_create_key_is_audited(self):
+        status, body, _ = self.call("POST", "/_reach/keys",
+                                    {"Content-Type": "application/json"},
+                                    body=json.dumps({"name": "Phone"}).encode())
+        self.assertEqual(status, 201)
+        created = json.loads(body)["key"]
+        events = self._audit_actions()
+        self.assertTrue(any(e["action"] == "keys.create"
+                            and created["id"] in e["detail"]
+                            for e in events))
+        # The minted secret itself must never enter the audit trail.
+        self.assertNotIn(created["key"],
+                         json.dumps(events))
+
+    def test_key_patch_is_audited(self):
+        status = self.status("PATCH", "/_reach/keys/" + self.key["id"],
+                             {"Content-Type": "application/json"},
+                             body=json.dumps({"name": "Renamed"}).encode())
+        self.assertEqual(status, 200)
+        events = self._audit_actions()
+        self.assertTrue(any(e["action"] == "keys.update"
+                            and self.key["id"] in e["detail"]
+                            and "name" in e["detail"]
+                            for e in events))
+
+    def test_settings_put_audits_key_list_changes(self):
+        new_key = reachd.generate_client_key("Tablet")
+        patch = {"access": {"keys": [new_key]}}  # replaces: drops self.key
+        status = self.status("PUT", "/_reach/settings",
+                             {"Content-Type": "application/json"},
+                             body=json.dumps(patch).encode())
+        self.assertEqual(status, 200)
+        events = self._audit_actions()
+        detail = next((e["detail"] for e in events
+                       if e["action"] == "access.change"
+                       and "key added" in e["detail"]), None)
+        self.assertIsNotNone(detail)
+        self.assertIn("key removed", detail)
+        self.assertNotIn(new_key["key"], detail)
+        self.assertNotIn(self.key["key"], detail)
+
+    def test_delete_addresses_keys_by_id_not_secret(self):
+        """The raw sk-reach-… secret must never work as a URL component —
+        it would land in browser history and access logs."""
+        # A second credential keeps key_required valid once the client key
+        # is gone — the validator forbids deleting the last usable key.
+        self.state.cfg["access"]["access_key"] = "sk-legacy-xyz123"
+        status = self.status("DELETE", "/_reach/keys/" + self.key["key"])
+        self.assertEqual(status, 404)
+        # The key is still there and still works.
+        self.assertEqual(self.status("GET", "/v1/models",
+                                     self.bearer(**TUNNEL)), 200)
+        status = self.status("DELETE", "/_reach/keys/" + self.key["id"])
+        self.assertEqual(status, 200)
+        self.assertEqual(self.status("GET", "/v1/models",
+                                     self.bearer(**TUNNEL)), 401)
+
+    def test_patch_addresses_keys_by_id_not_secret(self):
+        status = self.status("PATCH", "/_reach/keys/" + self.key["key"],
+                             {"Content-Type": "application/json"},
+                             body=json.dumps({"enabled": False}).encode())
+        self.assertEqual(status, 404)
+        self.assertTrue(self.key.get("enabled", True))
+
+    def test_settings_put_mints_ids_for_idless_keys(self):
+        idless = {"name": "HandEdited", "key": "sk-reach-hand01",
+                  "enabled": True}
+        status = self.status("PUT", "/_reach/settings",
+                             {"Content-Type": "application/json"},
+                             body=json.dumps({"access": {"keys": [idless]}}).encode())
+        self.assertEqual(status, 200)
+        saved = self.state.cfg["access"]["keys"][0]
+        self.assertTrue(saved["id"].startswith("key_"))
+        # …and the minted id is the addressable one.
+        self.assertEqual(
+            self.status("PATCH", "/_reach/keys/" + saved["id"],
+                        {"Content-Type": "application/json"},
+                        body=json.dumps({"name": "Laptop"}).encode()), 200)
+        self.assertEqual(saved["name"], "Laptop")
+
+
+class PublicHealthPayloadTests(RelayFixture):
+    """/health is unauthenticated: remote callers get liveness only, never
+    the operator's usage aggregates or internal addresses."""
+
+    def test_remote_health_is_a_minimal_liveness_payload(self):
+        status, body, _ = self.call("GET", "/health", TUNNEL)
+        self.assertEqual(status, 200)
+        snap = json.loads(body)
+        self.assertEqual(set(snap),
+                         {"service", "version", "ok", "access_required"})
+        self.assertTrue(snap["ok"])
+        self.assertTrue(snap["access_required"])
+
+    def test_local_health_keeps_the_full_snapshot(self):
+        status, body, _ = self.call("GET", "/health")
+        self.assertEqual(status, 200)
+        snap = json.loads(body)
+        for field in ("today", "models", "upstream", "in_flight", "cache",
+                      "p95_latency_ms"):
+            self.assertIn(field, snap)
 
 
 class ConnectionIntegrityTests(RelayFixture):

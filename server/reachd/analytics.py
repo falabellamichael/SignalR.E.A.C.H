@@ -100,7 +100,10 @@ class Analytics:
     def add_tokens(self, ip, tokens):
         if not tokens:
             return 0
-        day = time.strftime("%Y-%m-%d")
+        # UTC day boundary: the client-facing budget error says the allowance
+        # "resets at 00:00 UTC", and a remote caller cannot interpret the
+        # host's local midnight anyway.
+        day = time.strftime("%Y-%m-%d", time.gmtime())
         try:
             def _write(conn):
                 conn.execute(
@@ -117,7 +120,7 @@ class Analytics:
             return 0
 
     def tokens_today(self, key):
-        day = time.strftime("%Y-%m-%d")
+        day = time.strftime("%Y-%m-%d", time.gmtime())
         try:
             def _read(conn):
                 row = conn.execute(

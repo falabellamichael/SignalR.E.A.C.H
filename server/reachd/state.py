@@ -8,6 +8,7 @@ import time
 import urllib.request
 
 import reachd.core as core   # PORT is read at call time (cycle-safe)
+from reachd import net
 from reachd.analytics import Analytics
 from reachd.cache import ResponseCache
 from reachd.const import (
@@ -104,7 +105,7 @@ class RelayState:
                 req = urllib.request.Request(
                     self.omniroute_url.rstrip("/") + "/models",
                     headers={"Authorization": "Bearer " + self.key})
-                with urllib.request.urlopen(req, timeout=4) as resp:
+                with net.urlopen(req, timeout=4) as resp:
                     ok = resp.status == 200
             except Exception:
                 ok = False
@@ -152,7 +153,7 @@ class RelayState:
             return None, None
         try:
             req = urllib.request.Request("http://127.0.0.1:4040/api/tunnels")
-            with urllib.request.urlopen(req, timeout=2) as resp:
+            with net.urlopen(req, timeout=2) as resp:
                 payload = json.loads(resp.read().decode("utf-8", "replace"))
             for tun in payload.get("tunnels", []):
                 if tun.get("proto") == "https" and tun.get("public_url"):
@@ -232,8 +233,18 @@ class RelayState:
     def snapshot(self, redact=False):
         """Status for /health. redact=True is for anyone who is not the local
         operator: the public tunnel serves this route unauthenticated, so it
-        must not hand strangers the internal upstream addresses, the config
-        error text, or the IP address of every request currently in flight."""
+        must not hand strangers internal addresses, usage aggregates, the
+        model list, publish state, or in-flight request data. Remote callers
+        get a pure liveness payload — service/version/ok plus whether they
+        need a key; everything else is operator data."""
+        if redact:
+            return {
+                "service": SERVICE,
+                "version": VERSION,
+                "ok": True,
+                "access_required": bool(self.cfg.get("access", {})
+                                        .get("key_required")),
+            }
         with self._lock:
             stats = self.analytics.stats()
             today = stats.get("today", {})

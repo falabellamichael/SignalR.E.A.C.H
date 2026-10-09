@@ -21,6 +21,7 @@ class MeteredRelayTests(unittest.TestCase):
             "cache": {"enabled": True}, "upstream_retries": 3, "retry_delay_ms": 0,
             "data": {}, "rate_limits": {}}
         state.limiter.check.return_value = (True, {}, None)
+        state.limiter.check_model.return_value = (True, {}, None)
         state.circuit_open.return_value = False
         state.gate.acquire.return_value = True
         state.key = "operator-test-key"
@@ -82,7 +83,7 @@ class MeteredRelayTests(unittest.TestCase):
 
     def test_metered_dispatch_skips_cache_retry_and_fallback(self):
         state, h = self.state(), self.handler()
-        with patch.object(core, "STATE", state), patch("urllib.request.urlopen", side_effect=OSError("failed")) as upstream:
+        with patch.object(core, "STATE", state), patch("reachd.net.urlopen", side_effect=OSError("failed")) as upstream:
             self.assertIsNone(chat_execute(h))
         self.assertEqual(upstream.call_count, 1)
         state.cache.get.assert_not_called()
@@ -91,7 +92,7 @@ class MeteredRelayTests(unittest.TestCase):
     def test_metered_route_cannot_raise_requested_output_budget(self):
         state, h = self.state(), self.handler()
         state.cfg["models"]["test"]["min_output_tokens"] = 100
-        with patch.object(core, "STATE", state), patch("urllib.request.urlopen") as upstream:
+        with patch.object(core, "STATE", state), patch("reachd.net.urlopen") as upstream:
             self.assertIsNone(chat_execute(h))
         upstream.assert_not_called()
         self.assertEqual(h._json.call_args.args[0], 400)
@@ -99,7 +100,7 @@ class MeteredRelayTests(unittest.TestCase):
     def test_metered_route_rejects_scrubber_that_can_drop_usage(self):
         state, h = self.state(), self.handler({"stream": True})
         state.cfg["models"]["test"]["strip_trailing_roles"] = True
-        with patch.object(core, "STATE", state), patch("urllib.request.urlopen") as upstream:
+        with patch.object(core, "STATE", state), patch("reachd.net.urlopen") as upstream:
             self.assertIsNone(chat_execute(h))
         upstream.assert_not_called()
         self.assertEqual(h._json.call_args.args[1]["error"]["code"], "unmetered_route")
@@ -139,7 +140,7 @@ class MeteredRelayTests(unittest.TestCase):
                "requested": "test", "upstream_model": "vendor/test", "spec": {"fallback": "backup"},
                "stream": True, "metered": True, "total_chars": 50, "request_body": None,
                "fallback_used": False, "cache_cfg": {}, "cache_key": None, "models": state.cfg["models"]}
-        with patch.object(core, "STATE", state), patch("urllib.request.urlopen") as upstream:
+        with patch.object(core, "STATE", state), patch("reachd.net.urlopen") as upstream:
             chat_finalize(h, source, ctx)
         upstream.assert_not_called()
         self.assertEqual(h._json.call_args.args[0], 502)

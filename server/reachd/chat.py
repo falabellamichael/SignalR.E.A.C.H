@@ -6,6 +6,7 @@ import urllib.error
 import urllib.request
 
 import reachd.core as core  # STATE is read at call time (cycle-safe)
+from reachd import net
 from reachd.const import CLIENT_DISCONNECT_ERRORS
 from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
@@ -153,11 +154,14 @@ def chat_execute(h):
         return None
 
     # ---- per-model rate limit bucket ----
-    # No key_bucket here on purpose: the limiter is consulted twice per chat
-    # request (shared buckets above, per-model here) and the key must be
-    # charged exactly once, or its cap would be halved.
-    allowed, rl_headers, reason = core.STATE.limiter.check(ip, core.STATE.cfg,
-                                                      model=requested)
+    # The limiter is consulted twice per chat request — the shared
+    # per-IP/global/key budgets above, the model bucket here once the alias
+    # is known. check_model meters ONLY the model bucket: re-running check()
+    # would charge the per-IP and global buckets a second time, halving every
+    # shared allowance.
+    allowed, model_headers, reason = core.STATE.limiter.check_model(
+        ip, core.STATE.cfg, requested)
+    rl_headers = {**rl_headers, **model_headers}
     if not allowed:
         h._log_chat(model=requested, upstream_model=None, ip=ip,
                        user_agent=h.headers.get("User-Agent"), status=429,
@@ -348,7 +352,8 @@ def chat_execute(h):
     cache_cfg = {} if metered else core.STATE.cfg.get("cache", {})
     cache_key = None
     if cache_cfg.get("enabled") and not stream:
-        cache_key = h._cache_key(payload, cache_cfg)
+        cache_key = h._cache_key(payload, cache_cfg,
+                                 getattr(h, "_auth_key_id", "") or "local")
         cached_body = core.STATE.cache.get(cache_key)
         if cached_body is not None:
             latency_ms = int((time.time() - started) * 1000)
@@ -402,7 +407,7 @@ def chat_execute(h):
                 req = urllib.request.Request(
                     url, data=encoded, method="POST",
                     headers=auth_headers)
-                upstream = urllib.request.urlopen(
+                upstream = net.urlopen(
                     req,
                     timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)
                                 if stream
@@ -446,7 +451,7 @@ def chat_execute(h):
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)
-                    upstream = urllib.request.urlopen(
+                    upstream = net.urlopen(
                         fb_req,
                         timeout=int(core.STATE.cfg.get("upstream_timeout_s", 600)))
                     upstream_model = fb_upstream
@@ -667,7 +672,7 @@ def chat_finalize(h, upstream, ctx):
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)
-                    fallback = urllib.request.urlopen(
+                    fallback = net.urlopen(
                         fb_req,
                         timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)))
                     fb_prefix, fb_answered, fb_failure = _probe(
@@ -746,9 +751,26 @@ def chat_finalize(h, upstream, ctx):
             content_type = "text/event-stream"
 
         def _next_line():
+            """The next upstream line, post-commit. A stalled or broken read
+            (socket.timeout when the provider goes silent past
+            stream_timeout_s, a reset connection) becomes a synthetic SSE
+            error event so the loops below can end the stream the same way
+            they end a provider-reported failure: data: {"error": ...}
+            followed by [DONE] and a clean terminating chunk — never an
+            exception escaping into a raw 500 inside an open chunked body."""
             if pending_prefix:
                 return pending_prefix.pop(0)
-            return upstream.readline()
+            try:
+                return upstream.readline()
+            except TimeoutError:
+                code, message = "upstream_stalled", \
+                    "The upstream provider stopped responding mid-stream."
+            except Exception:
+                code, message = "upstream_stream_lost", \
+                    "The connection to the upstream provider was lost mid-stream."
+            return ("data: " + json.dumps({"error": {
+                "message": message, "type": "upstream_error",
+                "code": code}}) + "\n\n").encode("utf-8")
 
         stream_failure = None
         refused = False

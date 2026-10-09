@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import reachd.core as core  # core.STATE is read at call time (cycle-safe)
+from reachd import net
 from reachd.browser import BrowserError, fetch_page
 from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
@@ -27,6 +28,7 @@ from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
 from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
     DEFAULT_SETTINGS,
+    ensure_key_ids,
     key_expired,
     SettingsError,
     generate_client_key,
@@ -718,8 +720,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                     access = core.STATE.cfg.setdefault("access", {})
                     keys = access.setdefault("keys", [])
                     orig_len = len(keys)
-                    access["keys"] = [k for k in keys
-                                      if k.get("id") != key_id and k.get("key") != key_id]
+                    # Match on the stable id only — accepting the raw secret
+                    # as an address put credentials into URLs (browser
+                    # history, access logs).
+                    access["keys"] = [k for k in keys if k.get("id") != key_id]
                     if len(access["keys"]) < orig_len:
                         save_config(core.STATE.cfg, core.STATE.cfg_path)
                         self._audit("keys.revoke", "id=%s" % key_id)
@@ -754,7 +758,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                     keys = access.setdefault("keys", [])
                     found = None
                     for index, k in enumerate(keys):
-                        if k.get("id") == key_id or k.get("key") == key_id:
+                        # Id-only addressing, same as DELETE: the raw secret
+                        # must never be a URL path component.
+                        if k.get("id") == key_id:
                             updated = dict(k)
                             if "name" in patch:
                                 updated["name"] = str(patch["name"]).strip()
@@ -794,6 +800,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                             found = k
                             break
                     if found:
+                        # Field names only — values (never mind secrets) do
+                        # not belong in the audit log.
+                        self._audit("keys.update", "id=%s fields=%s"
+                                    % (key_id, ",".join(sorted(patch.keys()))))
                         self._json(200, {"updated": True, "key": public_key_view(found)})
                     else:
                         self._json(404, {"error": {"message": "Key not found", "type": "not_found"}})
@@ -1020,6 +1030,10 @@ class RelayHandler(BaseHTTPRequestHandler):
             keys = access.setdefault("keys", [])
             keys.append(new_key)
             save_config(core.STATE.cfg, core.STATE.cfg_path)
+        # A minted credential is exactly what the audit trail exists for —
+        # ensure and revoke are both recorded, so create must be too.
+        self._audit("keys.create", "id=%s name=%s"
+                    % (new_key.get("id"), name[:64]))
         self._json(201, {"created": True, "key": new_key})
 
     def handle_ensure_key(self):
@@ -1120,6 +1134,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 access_patch.pop("access_key")
             restore_masked_client_keys(core.STATE.cfg.get("access"), access_patch)
         next_cfg = merged_settings(core.STATE.cfg, patch)
+        # Patch-supplied keys may lack an id; mint one so the /_reach/keys/<id>
+        # routes can address them (they deliberately never match raw secrets).
+        ensure_key_ids(next_cfg.get("access"))
         try:
             validate_settings(next_cfg)
         except SettingsError as exc:
@@ -1149,13 +1166,46 @@ class RelayHandler(BaseHTTPRequestHandler):
             if (old.get(field) or []) != (new.get(field) or []):
                 changes.append("%s %d->%d entries" % (field, len(old.get(field) or []),
                                                       len(new.get(field) or [])))
+        # The key list is part of the access posture too: a full PUT can mint,
+        # revoke or retune keys wholesale and none of it should pass
+        # unrecorded. Entries are compared by id; secrets never appear — a
+        # changed key value is reported as "rotated" only.
+        def _key_map(acc):
+            return {k.get("id"): k for k in acc.get("keys") or []
+                    if isinstance(k, dict) and k.get("id")}
+        old_keys, new_keys = _key_map(old), _key_map(new)
+        for kid in sorted(set(new_keys) - set(old_keys)):
+            changes.append("key added id=%s name=%r"
+                           % (kid, new_keys[kid].get("name")))
+        for kid in sorted(set(old_keys) - set(new_keys)):
+            changes.append("key removed id=%s name=%r"
+                           % (kid, old_keys[kid].get("name")))
+        for kid in sorted(set(old_keys) & set(new_keys)):
+            diffs = [f for f in ("name", "enabled", "expires_at",
+                                 "rate_limit_rpm", "tokens_day")
+                     if old_keys[kid].get(f) != new_keys[kid].get(f)]
+            if old_keys[kid].get("key") != new_keys[kid].get("key"):
+                diffs.append("rotated")
+            if diffs:
+                changes.append("key %s changed: %s" % (kid, ", ".join(diffs)))
+        # The legacy shared key is part of the posture as well; presence and
+        # rotation only, never the value.
+        if bool(old.get("access_key")) != bool(new.get("access_key")):
+            changes.append("access_key %s"
+                           % ("set" if new.get("access_key") else "cleared"))
+        elif old.get("access_key") != new.get("access_key"):
+            changes.append("access_key rotated")
         if changes:
             self._audit("access.change", "; ".join(changes))
 
     def handle_reset(self):
         keep = self._reset_keep()
         next_cfg = merged_settings(DEFAULT_SETTINGS, keep)
-        save_config(next_cfg, core.STATE.cfg_path)
+        try:
+            save_config(next_cfg, core.STATE.cfg_path)
+        except (OSError, SettingsError) as exc:
+            return self._json(500, {"error": {"message": "could not persist: %s" % exc,
+                                              "type": "server_error"}})
         core.STATE.cfg = next_cfg
         core.STATE.poll_public_url()
         self._audit("settings.reset", "access control preserved")
@@ -1163,18 +1213,24 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _reset_keep():
-        """What survives a reset to defaults: the upstream credential and the
-        whole access section (keys, key_required, IP lists, trusted proxies).
-        Resetting model aliases and tuning must never re-open a relay the
-        operator locked down — the previous version kept only the legacy key
-        and silently switched key_required back off."""
+        """What survives a reset to defaults: the upstream credential, the
+        whole access section (keys, key_required, IP lists, trusted proxies),
+        and the host-binding fields. Resetting model aliases and tuning must
+        never re-open a relay the operator locked down — the previous version
+        kept only the legacy key and silently switched key_required back off.
+        host_salt has to come along too: without it save_config finds no
+        sealing material and writes the kept secrets as plaintext until the
+        next restart mints a new salt."""
         cfg = core.STATE.cfg
         system = cfg.get("system") or {}
         return {
             "omniroute_key": cfg.get("omniroute_key", ""),
             "access": json.loads(json.dumps(cfg.get("access") or {})),
             "system": {"admin_token": system.get("admin_token", ""),
-                       "security_revision": system.get("security_revision", 0)},
+                       "security_revision": system.get("security_revision", 0),
+                       "host_bind": system.get("host_bind", True),
+                       "host_salt": system.get("host_salt", ""),
+                       "host_machine_hint": system.get("host_machine_hint", "")},
         }
 
     def handle_settings_test(self):
@@ -1218,7 +1274,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             req = urllib.request.Request(
                 url, data=json.dumps(payload).encode("utf-8"), method="POST",
                 headers=headers)
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with net.urlopen(req, timeout=60) as resp:
                 data = json.loads(resp.read().decode("utf-8", "replace"))
             reply = (data.get("choices") or [{}])[0].get("message", {}).get("content")
             self._json(200, {"ok": True, "reply": reply,
@@ -1267,6 +1323,10 @@ class RelayHandler(BaseHTTPRequestHandler):
         try:
             # Plain GET /health through the public URL. ssl context is the
             # default (verifies certificate + hostname) — a bad cert raises.
+            # This check intentionally keeps the system proxy (unlike
+            # net.urlopen's local calls): a host behind a corporate egress
+            # proxy needs it to reach the internet, and the request carries
+            # no credentials anyway.
             req = urllib.request.Request(url.rstrip("/") + "/health",
                                          headers=probe_headers)
             with urllib.request.urlopen(req, timeout=20) as resp:
@@ -1300,9 +1360,18 @@ class RelayHandler(BaseHTTPRequestHandler):
         access = core.STATE.cfg.get("access", {}) or {}
         headers = {"Content-Type": "application/json",
                    "ngrok-skip-browser-warning": "1"}
-        legacy_key = access.get("access_key")
-        if access.get("key_required") and legacy_key:
-            headers["Authorization"] = "Bearer " + legacy_key
+        # Any credential the gate would accept: prefer a live client key,
+        # fall back to the legacy access_key. Probing without auth would
+        # report a healthy endpoint as broken whenever the operator relies
+        # on per-client keys alone — and a remote caller needs a key even
+        # when key_required is off (that flag only exempts local tools).
+        probe_key = next(
+            (k.get("key") for k in access.get("keys", [])
+             if k.get("enabled", True) and k.get("key")
+             and not key_expired(k)),
+            None) or access.get("access_key")
+        if probe_key:
+            headers["Authorization"] = "Bearer " + probe_key
         payload = {"model": sorted(core.STATE.public_models() or ["gpt-4o"])[0],
                    "messages": [{"role": "user",
                                  "content": "Reply with exactly: REACH OK"}],
@@ -1312,6 +1381,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 url.rstrip("/") + "/v1/chat/completions",
                 data=json.dumps(payload).encode("utf-8"), method="POST",
                 headers=headers)
+            # System proxy kept on purpose (see the /health probe above): the
+            # Authorization header rides inside TLS over CONNECT, so a proxy
+            # only learns the tunnel hostname — same as any client would.
             with urllib.request.urlopen(req, timeout=60) as resp:
                 chat_ms = round((time.time() - probe_started) * 1000)
                 data = json.loads(resp.read().decode("utf-8", "replace"))
@@ -1429,10 +1501,14 @@ class RelayHandler(BaseHTTPRequestHandler):
         return None
 
     @staticmethod
-    def _cache_key(payload, cache_cfg):
+    def _cache_key(payload, cache_cfg, key_scope=""):
+        # The authenticated key id is part of the lookup: cache hits skip
+        # upstream metering, so letting one key's entry serve another would
+        # let a capped key free-ride on prompts it never paid for.
         key_payload = {"model": payload.get("model"), "messages": payload.get("messages"),
                        "tools": payload.get("tools"),
-                       "response_format": payload.get("response_format")}
+                       "response_format": payload.get("response_format"),
+                       "key": key_scope or "local"}
         if cache_cfg.get("match_temperature"):
             key_payload["temperature"] = payload.get("temperature")
         raw = json.dumps(key_payload, sort_keys=True,

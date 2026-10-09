@@ -358,6 +358,32 @@ class KeyLimitsAccessorTests(RelayFixture):
         self.assertEqual(self._handler_for(broken).key_limits(), (None, 0, 0))
 
 
+class SharedBucketChargeTests(RelayFixture):
+    """The chat path consults the limiter twice — shared budgets before the
+    body is read, the per-model bucket after the alias is known. The second
+    pass must meter ONLY the model: re-running the shared buckets would
+    charge per-IP and global twice per request and halve every allowance."""
+
+    rate_limit_overrides = {"per_ip_rpm": 60, "global_rpm": 1000, "burst": 0}
+
+    def test_one_request_costs_one_shared_token(self):
+        self.state.cfg["upstream_retries"] = 0
+        self.state.cfg["models"]["gpt-4o"]["rate_limits"]["rpm"] = 10
+        body = json.dumps({"model": "gpt-4o",
+                           "messages": [{"role": "user", "content": "hi"}]}).encode()
+        # Nothing listens on the upstream port in tests, so the request fails
+        # AFTER both limiter phases — which is exactly what this measures.
+        status, _b = self.call("POST", "/v1/chat/completions",
+                               self.bearer(**{"Content-Type": "application/json"}),
+                               body=body)
+        self.assertIn(status, (502, 503))
+        self.assertAlmostEqual(
+            self.state.limiter._buckets["203.0.113.9"]["tokens"], 59.0)
+        self.assertAlmostEqual(self.state.limiter._global["tokens"], 999.0)
+        self.assertAlmostEqual(
+            self.state.limiter._buckets["203.0.113.9::gpt-4o"]["tokens"], 9.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

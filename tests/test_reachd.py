@@ -320,6 +320,19 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(total, 150)
         self.assertEqual(self.analytics.tokens_today("1.2.3.4"), 150)
 
+    def test_token_budget_day_rolls_on_utc_midnight(self):
+        """The client-facing budget error says the allowance "resets at
+        00:00 UTC" — the day bucket must roll on the UTC date, not the
+        host's local midnight."""
+        day1 = time.struct_time((2026, 1, 15, 3, 0, 0, 3, 15, 0))
+        day2 = time.struct_time((2026, 1, 16, 0, 0, 1, 4, 16, 0))
+        with patch("time.gmtime", return_value=day1):
+            self.analytics.add_tokens("key::k1", 100)
+            self.assertEqual(self.analytics.tokens_today("key::k1"), 100)
+        # A new UTC date means a new day — the counter must reset.
+        with patch("time.gmtime", return_value=day2):
+            self.assertEqual(self.analytics.tokens_today("key::k1"), 0)
+
     def test_log_detail_returns_bodies_and_404s_cleanly(self):
         self._log(request_body='{"model": "gpt-4o"}',
                   response_body='{"choices": []}', cached=True)
@@ -403,6 +416,55 @@ class RateLimiterTests(unittest.TestCase):
             else:
                 self.assertEqual(reason, "model_rpm")
         self.assertEqual(ok, 2)
+
+    def test_second_phase_charges_only_the_model_bucket(self):
+        """chat_execute consults the limiter twice per request — check() for
+        the shared budgets, check_model() once the alias is known. The second
+        pass must not re-charge the per-IP or global buckets, or every request
+        would pay double and the configured rpm would be halved."""
+        limiter = reachd.RateLimiter()
+        settings = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        settings["rate_limits"] = {"enabled": True, "per_ip_rpm": 60,
+                                   "global_rpm": 1000, "burst": 0}
+        settings["models"]["gpt-4o"]["rate_limits"]["rpm"] = 10
+
+        ok, _h, _r = limiter.check("9.9.9.9", settings)
+        self.assertTrue(ok)
+        ok, headers, _r = limiter.check_model("9.9.9.9", settings, "gpt-4o")
+        self.assertTrue(ok)
+
+        # One logical request: exactly one shared token, one model token.
+        self.assertAlmostEqual(limiter._buckets["9.9.9.9"]["tokens"], 59.0)
+        self.assertAlmostEqual(limiter._global["tokens"], 999.0)
+        self.assertAlmostEqual(limiter._buckets["9.9.9.9::gpt-4o"]["tokens"], 9.0)
+        self.assertEqual(headers["X-RateLimit-Limit"], "10")
+
+    def test_second_phase_still_enforces_the_model_cap(self):
+        limiter = reachd.RateLimiter()
+        settings = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        settings["rate_limits"] = {"enabled": True, "per_ip_rpm": 1000,
+                                   "global_rpm": 1000, "burst": 0}
+        settings["models"]["gpt-4o"]["rate_limits"]["rpm"] = 2
+        for _ in range(2):
+            self.assertTrue(limiter.check("1.1.1.1", settings)[0])
+            self.assertTrue(limiter.check_model("1.1.1.1", settings, "gpt-4o")[0])
+        allowed, headers, reason = limiter.check_model("1.1.1.1", settings, "gpt-4o")
+        self.assertFalse(allowed)
+        self.assertEqual(reason, "model_rpm")
+        self.assertEqual(headers["X-RateLimit-Remaining"], "0")
+        self.assertGreaterEqual(int(headers["Retry-After"]), 1)
+
+    def test_second_phase_is_free_without_a_model_cap(self):
+        limiter = reachd.RateLimiter()
+        settings = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        for _ in range(5):
+            allowed, headers, reason = limiter.check_model("1.1.1.1", settings, "gpt-4o")
+            self.assertEqual((allowed, headers, reason), (True, {}, None))
+        # Disabling shared limits also disables the model bucket.
+        settings["rate_limits"]["enabled"] = False
+        settings["models"]["gpt-4o"]["rate_limits"]["rpm"] = 1
+        self.assertEqual(limiter.check_model("1.1.1.1", settings, "gpt-4o"),
+                         (True, {}, None))
 
     def _rl_settings(self):
         settings = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
@@ -536,6 +598,23 @@ class ResponseCacheTests(unittest.TestCase):
         key4 = reachd.RelayHandler._cache_key(payload, cache_cfg)
         self.assertEqual(key3, key4)
 
+    def test_cache_key_scopes_entries_per_api_key(self):
+        """Cache hits skip upstream metering — a shared key space would let
+        one key's warmed answers serve another key for free, and leak what
+        the other asked. The authenticated key id is part of the hash."""
+        payload = {"model": "gpt-4o",
+                   "messages": [{"role": "user", "content": "hi"}]}
+        cache_cfg = {"match_temperature": False}
+        a = reachd.RelayHandler._cache_key(payload, cache_cfg, "key_aaa")
+        b = reachd.RelayHandler._cache_key(payload, cache_cfg, "key_bbb")
+        self.assertNotEqual(a, b)
+        a2 = reachd.RelayHandler._cache_key(payload, cache_cfg, "key_aaa")
+        self.assertEqual(a, a2)
+        # The unauthenticated/local scope is shared among local tools, and
+        # never collides with a named key's entries.
+        local = reachd.RelayHandler._cache_key(payload, cache_cfg, "")
+        self.assertNotEqual(local, a)
+
 
 class ClientKeyManagementTests(unittest.TestCase):
     def test_generate_client_key_format(self):
@@ -634,6 +713,171 @@ class ClientKeyManagementTests(unittest.TestCase):
             cfg["access"], patch["access"])
         self.assertFalse(touched)
         self.assertEqual(patch["access"]["keys"][0]["key"], raw_key)
+
+
+class ConfigRepairTests(unittest.TestCase):
+    """A config that fails validation must never reach the runtime.
+
+    Fields the request path reads without re-checking (rate limits, model
+    specs, key entries) would crash every request with a 500. load_config
+    therefore repairs field-by-field and reports what had to be reset.
+    """
+
+    def _load(self, fragment):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = Path(td.name) / "config.json"
+        path.write_text(json.dumps(fragment), encoding="utf-8")
+        return reachd.load_config(path)
+
+    def test_bad_scalar_falls_back_to_default_and_is_reported(self):
+        cfg = self._load({"rate_limits": {"per_ip_rpm": "lots"}})
+        reachd.validate_settings(cfg)  # must not raise
+        self.assertEqual(cfg["rate_limits"]["per_ip_rpm"],
+                         reachd.DEFAULT_SETTINGS["rate_limits"]["per_ip_rpm"])
+        self.assertIn("per_ip_rpm", cfg["_last_config_error"])
+        self.assertTrue(any("per_ip_rpm" in note
+                            for note in cfg["_repair_notes"]))
+
+    def test_repaired_config_does_not_crash_the_limiter(self):
+        cfg = self._load({"rate_limits": {"per_ip_rpm": "lots",
+                                          "global_rpm": "also bad"}})
+        ok, _headers, _reason = reachd.RateLimiter().check("1.2.3.4", cfg)
+        self.assertTrue(ok)
+
+    def test_non_object_sections_are_rebuilt(self):
+        cfg = self._load({"access": "junk", "cache": 42,
+                          "request": ["not", "a", "dict"]})
+        reachd.validate_settings(cfg)
+        self.assertTrue(any("access" in n for n in cfg["_repair_notes"]))
+        self.assertTrue(any("cache" in n for n in cfg["_repair_notes"]))
+
+    def test_malformed_key_entries_are_dropped_or_cleaned(self):
+        cfg = self._load({"access": {"key_required": True, "keys": [
+            "not-an-object",
+            {"key": "sk-reach-goodkey123", "name": "ok", "enabled": True},
+            {"key": 12345, "name": "blanked"},
+            {"key": "tiny"}]}})
+        reachd.validate_settings(cfg)
+        keys = cfg["access"]["keys"]
+        self.assertTrue(all(isinstance(k, dict) for k in keys))
+        self.assertTrue(any(k.get("key") == "sk-reach-goodkey123"
+                            for k in keys))
+        self.assertTrue(all(k.get("key") == "" or len(k.get("key", "")) >= 6
+                            for k in keys))
+        self.assertTrue(cfg["access"]["key_required"])
+
+    def test_keyless_required_config_gets_a_fresh_key(self):
+        cfg = self._load({"access": {"key_required": True,
+                                     "keys": ["junk", 42]}})
+        reachd.validate_settings(cfg)
+        self.assertTrue(cfg["access"]["key_required"])
+        self.assertTrue(any(str(k.get("key", "")).startswith("sk-reach-")
+                            for k in cfg["access"]["keys"]))
+
+    def test_invalid_model_spec_is_disabled_not_deleted(self):
+        cfg = self._load({"models": {"gpt-4o": {
+            "upstream": "codegpt/codegpt-gpt-4o", "temperature_min": 99}}})
+        reachd.validate_settings(cfg)
+        spec = cfg["models"]["gpt-4o"]
+        self.assertFalse(spec["enabled"])
+        self.assertFalse(spec["public"])
+        self.assertTrue(any("gpt-4o" in n for n in cfg["_repair_notes"]))
+
+    def test_models_that_are_not_an_object_restore_defaults(self):
+        cfg = self._load({"models": ["gpt-4o"]})
+        reachd.validate_settings(cfg)
+        self.assertIn("gpt-4o", cfg["models"])
+
+    def test_dangling_fallback_does_not_survive(self):
+        cfg = self._load({"models": {"gpt-4o": {
+            "upstream": "codegpt/codegpt-gpt-4o", "fallback": "gone"}}})
+        reachd.validate_settings(cfg)
+        self.assertIsNone(cfg["models"]["gpt-4o"]["fallback"])
+
+    def test_unknown_top_level_key_is_dropped(self):
+        cfg = self._load({"bogus": {"x": 1}})
+        reachd.validate_settings(cfg)
+        self.assertNotIn("bogus", cfg)
+
+    def test_unreadable_security_revision_migrates_fail_closed(self):
+        cfg = self._load({"system": {"security_revision": "unknown"}})
+        reachd.validate_settings(cfg)
+        self.assertIsInstance(cfg["system"]["security_revision"], int)
+        self.assertTrue(cfg["access"]["key_required"])
+
+    def test_bad_trusted_proxies_entries_are_dropped(self):
+        cfg = self._load({"access": {"trusted_proxies":
+                                     ["10.0.0.0/8", "not-a-cidr", 7]}})
+        reachd.validate_settings(cfg)
+        self.assertEqual(cfg["access"]["trusted_proxies"], ["10.0.0.0/8"])
+
+    def test_saved_file_is_not_rewritten_by_repair(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = Path(td.name) / "config.json"
+        original = {"rate_limits": {"per_ip_rpm": "lots"}}
+        path.write_text(json.dumps(original), encoding="utf-8")
+        cfg = reachd.load_config(path)
+        # In-memory cfg is repaired…
+        self.assertEqual(cfg["rate_limits"]["per_ip_rpm"],
+                         reachd.DEFAULT_SETTINGS["rate_limits"]["per_ip_rpm"])
+        # …but the file keeps the operator's bytes (minus any migration
+        # fields written before validation ran). The bad value itself must
+        # still be there to fix by hand.
+        on_disk = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(on_disk["rate_limits"]["per_ip_rpm"], "lots")
+
+    def test_corrupt_json_is_preserved_not_wiped(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = Path(td.name) / "config.json"
+        # Truncated mid-write: the bytes still hold a rescuable client key.
+        path.write_text('{"access": {"keys": [{"key": "sk-reach-rescuable"}',
+                        encoding="utf-8")
+        cfg = reachd.load_config(path)
+        # A working config still comes back, with a loud marker…
+        reachd.validate_settings(cfg)
+        self.assertTrue(cfg["_last_config_error"])
+        # …and the unreadable file was moved aside, never overwritten.
+        preserved = list(Path(td.name).glob("config.json.corrupt-*"))
+        self.assertEqual(len(preserved), 1)
+        self.assertIn("sk-reach-rescuable",
+                      preserved[0].read_text(encoding="utf-8"))
+        # A clean fresh config took its place, minting a new key (sealed on
+        # disk when host binding is available, plaintext otherwise).
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        saved_key = saved["access"]["keys"][0]["key"]
+        if isinstance(saved_key, dict):
+            self.assertTrue(reachd.hostid.is_sealed(saved_key))
+        else:
+            self.assertTrue(saved_key.startswith("sk-reach-"))
+
+    def test_non_object_json_is_preserved_too(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = Path(td.name) / "config.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        cfg = reachd.load_config(path)
+        reachd.validate_settings(cfg)
+        self.assertTrue(cfg["_last_config_error"])
+        preserved = list(Path(td.name).glob("config.json.corrupt-*"))
+        self.assertEqual(len(preserved), 1)
+        self.assertEqual(preserved[0].read_text(encoding="utf-8"), "[1, 2, 3]")
+
+    def test_unmovable_corrupt_file_is_never_overwritten(self):
+        td = tempfile.TemporaryDirectory()
+        self.addCleanup(td.cleanup)
+        path = Path(td.name) / "config.json"
+        path.write_text("{ garbage", encoding="utf-8")
+        with patch("pathlib.Path.replace", side_effect=OSError("locked")), \
+                patch("shutil.copy2", side_effect=OSError("denied")):
+            cfg = reachd.load_config(path)
+        # The relay still boots a usable in-memory config…
+        reachd.validate_settings(cfg)
+        self.assertTrue(cfg["access"]["keys"])
+        # …and the unreadable file was left alone rather than destroyed.
+        self.assertEqual(path.read_text(encoding="utf-8"), "{ garbage")
 
 
 class AdminGateTests(unittest.TestCase):
@@ -774,7 +1018,7 @@ class ConcurrencyGateTests(unittest.TestCase):
 
         with patch.object(core, "STATE", state):
             initial_active = state.gate._active
-            with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+            with patch("reachd.net.urlopen", side_effect=OSError("connection refused")):
                 res = chat_execute(h)
                 self.assertIsNone(res)
 
@@ -821,7 +1065,7 @@ class StreamPreflightTests(unittest.TestCase):
         }
         with patch.object(core, "STATE", state):
             if urlopen:
-                with patch("urllib.request.urlopen", side_effect=urlopen):
+                with patch("reachd.net.urlopen", side_effect=urlopen):
                     chat_finalize(h, source, ctx)
             else:
                 chat_finalize(h, source, ctx)
@@ -939,6 +1183,58 @@ class StreamPreflightTests(unittest.TestCase):
         state.gate.release.assert_called_once()
         self.assertTrue(original.closed)
         self.assertTrue(fallback.closed)
+
+    class _StallingSource(io.BytesIO):
+        """readline() serves the buffered SSE bytes, then dies the way a
+        socket does when the provider goes silent past stream_timeout_s or
+        the connection is reset — post-commit, where an escaping exception
+        used to write a raw HTTP 500 into the open chunked stream."""
+        def __init__(self, data, exc):
+            super().__init__(data)
+            self.headers = {"Content-Type": "text/event-stream"}
+            self._exc = exc
+        def readline(self, *args, **kwargs):
+            line = super().readline(*args, **kwargs)
+            if not line:
+                raise self._exc
+            return line
+
+    _PARTIAL_EVENT = (
+        b'data: {"id":"c1","object":"chat.completion.chunk","created":1,'
+        b'"model":"test","choices":[{"index":0,"delta":{"content":"hel"},'
+        b'"finish_reason":null}]}\n\n')
+
+    def _assert_stream_ended_cleanly(self, h, state, code):
+        chunks = [call.args[0] for call in h._write_chunk.call_args_list]
+        sent = b"".join(chunks)
+        # The commit was a real 200 SSE stream — never re-answered with a
+        # second HTTP status inside the chunked body.
+        h.send_response.assert_called_once_with(200)
+        h._json.assert_not_called()
+        self.assertIn(('"code": "%s"' % code).encode(), sent)
+        self.assertEqual(chunks[-2], b"data: [DONE]\n\n")
+        self.assertEqual(chunks[-1], b"")
+        self.assertEqual(h._log_chat.call_args.kwargs["error"], code)
+        state.note_failure.assert_called_once_with("bridge")
+        state.gate.release.assert_called_once()
+
+    def test_upstream_stall_mid_stream_becomes_sse_error(self):
+        source = self._StallingSource(self._PARTIAL_EVENT,
+                                      TimeoutError("timed out"))
+        h, state = self._finalize(source)
+        self._assert_stream_ended_cleanly(h, state, "upstream_stalled")
+
+    def test_upstream_reset_mid_stream_becomes_sse_error(self):
+        source = self._StallingSource(
+            self._PARTIAL_EVENT, ConnectionResetError("connection reset"))
+        h, state = self._finalize(source)
+        self._assert_stream_ended_cleanly(h, state, "upstream_stream_lost")
+
+    def test_upstream_stall_in_scrubbed_stream_becomes_sse_error(self):
+        source = self._StallingSource(self._PARTIAL_EVENT,
+                                      TimeoutError("timed out"))
+        h, state = self._finalize(source, strip_roles=True)
+        self._assert_stream_ended_cleanly(h, state, "upstream_stalled")
 
     def test_json_fallback_to_stream_request_is_forwarded_as_sse(self):
         original = self._stream({"error": {"message": "Primary failed."}}, b"[DONE]")
@@ -1104,6 +1400,191 @@ class DiagnosticsRouteTests(unittest.TestCase):
         self.assertFalse(chat_check["ok"])
         self.assertIn("429", chat_check["detail"])
 
+    def _probe_auth_header(self, access, public_url="https://live.example.test"):
+        """Run handle_diagnose against a fake healthy endpoint and return the
+        Authorization header the chat probe sent (None if absent)."""
+        from reachd import core
+        import io
+        state, h = self._state_and_handler(public_url)
+        state.cfg["access"] = access
+
+        health_body = json.dumps({"ok": True}).encode()
+        chat_body = json.dumps(
+            {"choices": [{"message": {"content": "REACH OK"}}]}).encode()
+
+        class _FakeResp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        sent = {}
+
+        def fake_urlopen(req, timeout=None):
+            if req.full_url.endswith("/health"):
+                return _FakeResp(health_body)
+            sent["auth"] = req.headers.get("Authorization")
+            return _FakeResp(chat_body)
+
+        with patch.object(core, "STATE", state):
+            with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                h.handle_diagnose()
+        self.assertEqual(h._json.call_args[0][0], 200)
+        return sent.get("auth")
+
+    def test_diagnose_probe_uses_a_client_key_when_no_legacy_key(self):
+        """Regression: the probe used to authenticate with access_key only —
+        an operator who removed it and relies on per-client keys got a 401
+        and a false 'endpoint broken' report on a healthy service."""
+        auth = self._probe_auth_header({
+            "key_required": True, "access_key": "",
+            "keys": [{"name": "Laptop", "key": "sk-reach-abc123",
+                      "enabled": True}]})
+        self.assertEqual(auth, "Bearer sk-reach-abc123")
+
+    def test_diagnose_probe_skips_disabled_and_expired_keys(self):
+        future = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                               time.gmtime(time.time() + 86400))
+        auth = self._probe_auth_header({
+            "key_required": True, "access_key": "",
+            "keys": [
+                {"name": "Off", "key": "sk-reach-off",
+                 "enabled": False},
+                {"name": "Lapsed", "key": "sk-reach-old",
+                 "enabled": True, "expires_at": "2020-01-01T00:00:00Z"},
+                {"name": "Live", "key": "sk-reach-live",
+                 "enabled": True, "expires_at": future},
+            ]})
+        self.assertEqual(auth, "Bearer sk-reach-live")
+
+    def test_diagnose_probe_falls_back_to_legacy_key(self):
+        auth = self._probe_auth_header({
+            "key_required": True, "access_key": "sk-legacy-9",
+            "keys": [{"name": "Dead", "key": "sk-reach-x",
+                      "enabled": False}]})
+        self.assertEqual(auth, "Bearer sk-legacy-9")
+
+    def test_diagnose_probe_sends_key_even_when_key_required_off(self):
+        """key_required=false only exempts local tools; a probe arriving via
+        the public tunnel is remote and still needs a credential."""
+        auth = self._probe_auth_header({
+            "key_required": False, "access_key": "",
+            "keys": [{"name": "Laptop", "key": "sk-reach-abc123",
+                      "enabled": True}]})
+        self.assertEqual(auth, "Bearer sk-reach-abc123")
+
+    def test_diagnose_probe_sends_no_auth_when_no_keys_exist(self):
+        auth = self._probe_auth_header({
+            "key_required": False, "access_key": "", "keys": []})
+        self.assertIsNone(auth)
+
+
+class ProxyBypassTests(unittest.TestCase):
+    """Regression: urllib's global urlopen honors HTTP(S)_PROXY env vars and
+    OS proxy settings — a host proxy without a localhost bypass would
+    receive the OmniRoute bearer token. Every local/trusted call must go
+    through reachd.net.urlopen, whose opener is built with ProxyHandler({})."""
+
+    def _state(self):
+        from reachd.state import RelayState
+        with tempfile.NamedTemporaryFile() as tf:
+            return RelayState(json.loads(json.dumps(reachd.DEFAULT_SETTINGS)),
+                              Path(tf.name))
+
+    def test_net_urlopen_never_consults_proxy_settings(self):
+        """If the direct opener ever read env/OS proxy config, this call
+        would raise inside the patched getproxies instead of connecting."""
+        import threading
+        import urllib.request
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from reachd import net
+
+        class _H(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            url = "http://127.0.0.1:%d/" % server.server_address[1]
+            with patch("urllib.request.getproxies",
+                       side_effect=AssertionError("proxy config consulted")):
+                with net.urlopen(urllib.request.Request(url), timeout=5) as r:
+                    self.assertEqual(r.read(), b"ok")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_chat_dispatch_uses_the_direct_opener(self):
+        from reachd import core
+        from reachd.chat import chat_execute
+        state = self._state()
+        state.cfg["models"]["gpt-4o"]["enabled"] = True
+
+        h = MagicMock()
+        h._client_ip.return_value = "127.0.0.1"
+        h.key_limits.return_value = (None, 0, 0)
+        raw = json.dumps({"model": "gpt-4o",
+                          "messages": [{"role": "user", "content": "hi"}],
+                          "stream": False}).encode()
+        h._read_body.return_value = raw
+        h.rfile = io.BytesIO(raw)
+        h.headers = {"Content-Length": str(len(raw))}
+        h._check_access.return_value = True
+
+        def no_global(*a, **kw):
+            raise AssertionError("proxy-aware urlopen used for upstream call")
+
+        with patch.object(core, "STATE", state), \
+                patch("urllib.request.urlopen", side_effect=no_global), \
+                patch("reachd.net.urlopen", return_value=MagicMock()):
+            chat_execute(h)
+
+    def test_upstream_liveness_uses_the_direct_opener(self):
+        state = self._state()
+        state.cfg["omniroute_key"] = "test-key"
+
+        def no_global(*a, **kw):
+            raise AssertionError("proxy-aware urlopen used for liveness call")
+
+        with patch("urllib.request.urlopen", side_effect=no_global), \
+                patch("reachd.net.urlopen", return_value=MagicMock()):
+            state.upstream_alive()
+
+    def test_ngrok_discovery_uses_the_direct_opener(self):
+        state = self._state()
+        state.cfg["tunnel"] = "ngrok"
+
+        def no_global(*a, **kw):
+            raise AssertionError("proxy-aware urlopen used for discovery")
+
+        payload = json.dumps({"tunnels": [{
+            "proto": "https", "public_url": "https://x.ngrok.io"}]}).encode()
+
+        class _Resp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with patch("urllib.request.urlopen", side_effect=no_global), \
+                patch("reachd.net.urlopen", return_value=_Resp(payload)):
+            url, source = state.discover_public_url()
+        self.assertEqual(url, "https://x.ngrok.io")
+
 
 class PublishTimestampTests(unittest.TestCase):
     """PRD 'Publish Public Pointer URL': UI displays publication timestamp;
@@ -1254,7 +1735,7 @@ class SystemMessageMergeTests(unittest.TestCase):
             return MagicMock()
 
         with patch.object(core, "STATE", state), \
-                patch("urllib.request.urlopen", side_effect=fake_urlopen):
+                patch("reachd.net.urlopen", side_effect=fake_urlopen):
             chat_execute(h)
 
         roles = [m["role"] for m in sent["body"]["messages"]]

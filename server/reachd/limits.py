@@ -157,6 +157,39 @@ class RateLimiter:
                 self._buckets[key_bucket]["tokens"] -= 1.0
         return True, headers, None
 
+    def check_model(self, ip, settings, model):
+        """Meter ONLY the per-model bucket. Returns (allowed, headers, reason).
+
+        A chat request consults the limiter twice: check() pays the shared
+        per-IP/global/(key) budgets before the body is even read, and this
+        pays the alias's own rpm once the model is known. Re-running check()
+        here would charge the per-IP and global buckets a second time and
+        halve every shared allowance.
+        """
+        rl = settings.get("rate_limits", {})
+        model_rpm = (settings.get("models", {}).get(model, {})
+                     .get("rate_limits", {}).get("rpm", 0)) if model else 0
+        if not rl.get("enabled") or not model_rpm:
+            return True, {}, None
+        with self._lock:
+            self._evict_stale()
+            now = time.time()
+            burst = float(rl.get("burst", 4))
+            bucket = self._buckets.setdefault(
+                ip + "::" + model, {"tokens": 0.0, "updated": 0.0})
+            self._refill(bucket, float(model_rpm) / 60.0,
+                         float(model_rpm) + burst, now)
+            if bucket["tokens"] < 1:
+                wait = (1.0 - bucket["tokens"]) * 60.0 / float(model_rpm)
+                return False, {"X-RateLimit-Limit": str(int(model_rpm + burst)),
+                               "X-RateLimit-Remaining": "0",
+                               "Retry-After": str(max(1, int(wait)) + 1)}, \
+                    "model_rpm"
+            bucket["tokens"] -= 1.0
+            return True, {"X-RateLimit-Limit": str(int(model_rpm + burst)),
+                          "X-RateLimit-Remaining":
+                              str(max(0, int(bucket["tokens"])))}, None
+
 
 # ----------------------------------------------------------------------
 # Relay state
