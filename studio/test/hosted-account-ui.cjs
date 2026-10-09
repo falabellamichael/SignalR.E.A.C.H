@@ -132,7 +132,7 @@ const timeout = setTimeout(() => { console.error('Account UI timed out'); app.ex
   await run("document.querySelector('#account-menu-close').click(); document.querySelector('#tab-settings').click(); document.querySelector('#tab-settings-menu [data-settings-panel=budgeting]').onclick()");
   assert.equal(await run("document.querySelector('#settings-budgeting').classList.contains('hidden')"), false);
   assert.equal(await run("document.querySelector('.page.active').id"), 'page-projects');
-  await run(`(async () => { await selectAgent(await reachApi.agents.get(${JSON.stringify(fixture.id)})); await showTab('agents'); document.querySelector('#btn-agent-settings').click(); await document.querySelector('#btn-agent-settings-menu [data-settings-panel=conversation]').onclick(); })()`);
+  await run(`(async () => { await selectAgent(await reachApi.agents.get(${JSON.stringify(fixture.id)})); await showTab('agents'); document.querySelector('#tab-settings').click(); await document.querySelector('#tab-settings-menu [data-settings-panel=conversation]').onclick(); })()`);
   assert.equal(await run("document.querySelector('#agent-set-name').value"), 'Menu fixture');
   await run("document.querySelector('#agent-set-name').value='Pending name'; document.querySelector('#agent-set-name').dispatchEvent(new Event('input',{bubbles:true})); document.querySelector('#agent-set-model').value='Pending model'; document.querySelector('#agent-set-model').dispatchEvent(new Event('change',{bubbles:true})); document.querySelector('#account-menu-close').click(); openSettingsPanel('conversation')");
   assert.equal(await run("document.querySelector('#agent-set-name').value"), 'Pending name');

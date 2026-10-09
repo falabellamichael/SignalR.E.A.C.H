@@ -51,6 +51,7 @@
     '.settings-dropdown',
     '.sb-popover',
     '.composer-suggestions',
+    '.msg-translate-pop',
   ]);
 
   const MODAL_SELECTOR = MODAL_SELECTORS.join(',');

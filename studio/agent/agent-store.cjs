@@ -349,7 +349,7 @@ class AgentStore {
       : [];
     const todos = Array.isArray(data.todos)
       ? data.todos.map(t => ({
-        text: String(t && t.text || '').slice(0, 500),
+        text: String(t && t.text || ''),
         status: ['pending', 'in_progress', 'completed', 'cancelled'].includes(t && t.status) ? t.status : 'pending',
       }))
       : [];
@@ -439,7 +439,7 @@ class AgentStore {
     const agent = this.get(id);
     if (!agent) return null;
     agent.todos = Array.isArray(todos) ? todos.map(t => ({
-      text: String(t.text || '').slice(0, 500),
+      text: String(t.text || ''),
       status: ['pending', 'in_progress', 'completed', 'cancelled'].includes(t.status) ? t.status : 'pending',
     })) : [];
     agent.updatedAt = Date.now();

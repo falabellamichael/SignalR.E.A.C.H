@@ -317,6 +317,24 @@ def chat_execute(h):
     # models). It authenticates through the host's signed-in CodeGPT session,
     # so it needs no OmniRoute key — and must never be handed one.
     use_bridge = upstream_model.startswith("bridge/")
+    # The bridge honours a text transcript and nothing else. The account service
+    # is what enforces that, and it rejects the WHOLE request over an extra field
+    # ("Subscription bridges support text messages and streaming"). A client
+    # sending temperature — every OpenAI-compatible one does, including this
+    # host's own prompt console and message Translate — would otherwise fail with
+    # a 400 that has nothing to do with what the caller asked for. Drop the
+    # controls the bridge cannot honour, which is the same policy the relay
+    # already applies to blocked_fields above.
+    if use_bridge:
+        for field in ("temperature", "top_p", "frequency_penalty",
+                      "presence_penalty", "stop", "seed", "logprobs",
+                      "top_logprobs", "logit_bias", "response_format",
+                      "tool_choice", "tools", "parallel_tool_calls",
+                      "n", "max_tokens", "max_completion_tokens",
+                      "stream_options", "reasoning_effort", "verbosity",
+                      "modalities", "audio", "prediction",
+                      "web_search_options"):
+            payload.pop(field, None)
     # Publish what this request is doing while it runs (see /status in_flight).
     record = getattr(h, "_reach_request", None)
     if isinstance(record, dict):

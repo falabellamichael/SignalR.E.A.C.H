@@ -1,0 +1,179 @@
+/* Breakpoints follow the usable page width, including rail and drawer changes. */
+main, .account-menu-panel { container-type: inline-size; container-name: page; }
+.app-body { position: relative; --rail-width: 48px; }
+.file-drawer {
+  --drawer-page-min: 760px;
+  container-type: inline-size;
+  container-name: drawer;
+  max-width: calc(100% - var(--rail-width) - 24px);
+}
+.file-drawer.overlay {
+  position: absolute;
+  inset-block: 0;
+  right: 0;
+  z-index: 6;
+  box-shadow: -12px 0 32px var(--shadow);
+}
+/* The page reaches its left gutter before the drawer overlaps. Keep that
+   compact width during overlap instead of recentering in the full row. */
+.app-body:has(> .file-drawer.overlay:not(.closed)) > main {
+  flex: 0 0 var(--drawer-page-width);
+}
+/* The overlay stays below Studio menus/dialogs; its own controls stay reachable. */
+.drawer-head { flex-shrink: 0; }
+.drawer-head-actions > button { min-width: 32px; min-height: 32px; }
+#btn-toggle-files { min-height: 32px; flex-shrink: 0; }
+#cmd-input, #cmd-mode { min-width: 0; }
+.account-menu .settings-scroll { min-width: 0; }
+.browser-chrome { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+#browser-viewport { overflow: hidden; }
+.browser-welcome { height: 100%; overflow: auto; }
+
+@container drawer (max-width: 560px) {
+  .browser-actions { flex-wrap: wrap; overflow: visible; }
+  .browser-actions > button { min-height: 32px; }
+}
+@container drawer (max-width: 380px) {
+  .browser-toolbar:not(.browser-actions) { flex-wrap: wrap; }
+  #browser-address { flex: 1 1 100%; order: 1; }
+}
+
+@container page (max-width: 900px) {
+  #page-projects .project-head { flex-wrap: wrap; }
+  #page-projects .project-head > :first-child { min-width: 0; flex: 1 1 100%; }
+  #page-projects .project-actions { justify-content: flex-start; }
+  #page-projects .cmdbar { flex-wrap: wrap; }
+  #page-projects #cmd-input { flex: 1 1 180px; }
+  #page-settings .settings-nav { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; }
+  #page-settings .conn-list { grid-template-columns: minmax(0, 1fr); }
+  #page-settings .conn-workspace.editing { grid-template-columns: minmax(0, 1fr); }
+}
+
+@container page (max-width: 720px) {
+  #page-projects, #page-agents { flex-direction: column; }
+  #page-projects > aside, #page-agents > aside {
+    width: 100%; flex: 0 0 auto; max-height: min(190px, 32%);
+    min-height: 120px; flex-direction: row; flex-wrap: wrap;
+    align-content: flex-start; gap: 6px 10px; overflow: auto;
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
+  #page-projects > aside .side-title, #page-agents > aside .side-title {
+    flex: 1 1 auto; padding-block: 4px; border: 0;
+  }
+  #page-projects > aside .panel-width, #page-agents > aside .panel-width { display: none; }
+  #page-projects > aside .side-actions, #page-agents > aside .side-actions {
+    flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; gap: 6px;
+  }
+  #page-projects > aside .side-actions button, #page-agents > aside .side-actions button {
+    width: auto; min-height: 32px; white-space: normal;
+  }
+  #project-list { flex: 1 1 100%; min-height: 40px; max-height: 80px; order: 2; }
+  #page-agents #agent-project-select { width: auto; max-width: 60%; min-width: 0; }
+  #page-agents .agent-tree-shell { flex: 1 1 100%; min-height: 48px; max-height: 80px; order: 2; }
+  #page-agents .background-agent-alerts { flex: 1 1 100%; }
+  #page-projects > .work, #page-agents > .work { padding: 12px; }
+  #page-projects #project-view { gap: 10px; }
+  #page-projects .work { overflow-y: auto; }
+  #page-projects .project-command-tabs-row { margin-bottom: -10px; }
+  #page-projects .project-head button { flex-shrink: 0; min-height: 32px; }
+  #page-settings .settings-scroll { padding: 16px 0 0; }
+  #page-settings .settings-nav button { flex: 1 1 150px; min-height: 32px; }
+  .account-menu .home-account-url-row { flex-wrap: wrap; }
+  .account-menu .home-account-url-row input { flex-basis: 100%; }
+  .account-menu .home-card-head { flex-wrap: wrap; }
+  .account-menu .telemetry-source-row { grid-template-columns: 20px minmax(0, 1fr) 70px; }
+  .account-menu .telemetry-source-row input[type=url] { grid-row: 2; grid-column: 1 / -1; }
+}
+
+/* The conversation has its own container after its sidebar takes space. */
+@container (max-width: 480px) {
+  #agent-view .composer { grid-template-columns: auto minmax(0, 1fr); }
+  #agent-view .composer-actions { grid-column: 1 / -1; flex-wrap: wrap; }
+  #agent-view .composer-actions > button { min-height: 32px; }
+  #agent-view #composer-model { max-width: 100%; margin-right: auto; }
+  #agent-view .composer-footer { flex-wrap: wrap; }
+  #agent-view .composer-tools { flex-basis: 100%; flex-wrap: wrap; overflow: visible; }
+  #agent-view .telemetry-control { margin-left: auto; }
+  #agent-view .composer-suggestion { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+}
+
+/* Short windows keep navigation beside the chat to preserve its vertical room.
+   Expanded model details keep local scroll and the composer remains pinned. */
+@media (max-height: 600px) {
+  @container page (max-width: 720px) {
+    #page-agents { flex-direction: row; }
+    #page-agents > aside {
+      width: clamp(134px, 28cqw, 190px); min-height: 0; max-height: none;
+      flex-direction: column; flex-wrap: nowrap; overflow-y: auto;
+      border-right: 1px solid var(--line); border-bottom: 0;
+    }
+    #page-agents > aside .side-title { flex: 0 0 auto; }
+    #page-agents > aside .side-actions { flex-direction: column; }
+    #page-agents > aside .side-actions button { width: 100%; }
+    #page-agents #agent-project-select { width: 100%; max-width: 100%; flex-shrink: 0; }
+    #page-agents .agent-tree-shell { flex: 1 1 0; min-height: 48px; max-height: none; order: 0; }
+    #page-agents > .work { padding: 8px; }
+    #agent-view { gap: 8px; }
+    #agent-view .model-info-content { max-height: 48px; }
+    #agent-view .chat-pane { gap: 6px; }
+    #agent-view .chat-scroll { min-height: 48px; }
+    #agent-view .composer-footer { flex-wrap: nowrap; overflow-x: auto; }
+    #agent-view .composer-tools { flex-basis: auto; flex-wrap: nowrap; overflow-x: auto; }
+  }
+}
+
+@media (max-width: 1100px) {
+  /* Honor a saved expanded rail without spending scarce page space on labels. */
+  :root[data-rail="expanded"] .rail { width: 48px; padding: 8px 0; }
+  :root[data-rail="expanded"] .rail-item { width: 34px; height: 34px; padding: 0; justify-content: center; }
+  :root[data-rail="expanded"] .rail-label,
+  :root[data-rail="expanded"] .rail-key { display: none; }
+  .rail-toggle { display: none; }
+}
+@media (max-width: 850px) {
+  body > header { flex-wrap: wrap; gap: 10px; padding: 10px 14px; }
+  body > header .statusbar { flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
+  .statusbar-bottom { flex-wrap: wrap; gap: 6px; padding-inline: 12px; }
+  .statusbar-bottom .sb-group { flex-wrap: wrap; gap: 6px; }
+}
+
+/* Both layouts keep compact gutters; page-sized is the default preference. */
+main, .account-menu-panel { --page-gutter: 24px; }
+main :is(
+  #page-home .home-content,
+  #page-projects > .work,
+  #page-agents > .work,
+  #page-create .create-workbench,
+  #page-settings .settings-scroll,
+  #page-workspace .ws-wrap,
+  #page-playground .pg-wrap,
+  #page-about .ab-wrap,
+  #page-refactor .rf-wrap
+) { padding-inline: var(--page-gutter); }
+.account-menu-panel { padding-inline: var(--page-gutter); }
+
+/* Center comfortable page widths while allowing them to shrink to their panel. */
+main :is(
+  #page-create .create-workbench,
+  #page-workspace .ws-wrap,
+  #page-playground .pg-wrap,
+  #page-refactor .rf-wrap
+) { width: 100%; max-width: 1400px; margin-inline: auto; }
+#page-projects #project-view { width: 100%; max-width: 1400px; margin-inline: auto; }
+#page-agents #agent-view { width: 100%; }
+#page-about .ab-wrap { width: 100%; margin-inline: auto; }
+
+:root[data-page-layout="full-width"] main :is(
+  #page-home .home-content,
+  #page-create .create-workbench,
+  #page-workspace .ws-wrap,
+  #page-playground .pg-wrap,
+  #page-about .ab-wrap,
+  #page-refactor .rf-wrap,
+  #page-projects #project-view,
+  #page-agents #agent-view,
+  #page-agents #no-agent.telemetry-landing
+) { width: 100%; max-width: none; margin-inline: 0; }
+:root[data-page-layout="full-width"] .settings-scroll :is(.settings-panel, #settings-connection) { max-width: none; margin-inline: 0; }
+:root[data-page-layout="full-width"] #page-projects #no-project,
+:root[data-page-layout="full-width"] #page-agents #no-agent { margin: 0; align-items: flex-start; text-align: left; }

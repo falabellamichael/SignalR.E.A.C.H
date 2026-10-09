@@ -263,7 +263,8 @@ function themeChoice() {
 }
 
 function loadSettings() {
-  return hostedAccount.hydrate(settingsStore.load());
+  const settings = hostedAccount.hydrate(settingsStore.load());
+  return { ...settings, pageLayout: settings.pageLayout === 'full-width' ? 'full-width' : 'page-sized' };
 }
 function saveSettings(s) {
   const existing = s.connections?.find(connection => connection.id === HOSTED_CONNECTION_ID);
@@ -722,6 +723,7 @@ function registerIpc() {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
     const current = loadSettings();
     const next = { ...current, ...patch };
+    if (Object.hasOwn(patch, 'pageLayout')) next.pageLayout = patch.pageLayout === 'full-width' ? 'full-width' : 'page-sized';
     if (Object.hasOwn(patch, 'jevEnabled')) next.jevEnabled = patch.jevEnabled === true;
     if (Object.hasOwn(patch, 'jevAutoMode')) next.jevAutoMode = patch.jevAutoMode === true;
     if (patch.jevApiKeyAction === 'clear') next.jevApiKey = '';
@@ -744,6 +746,7 @@ function registerIpc() {
     const connectionsAuthoritative = Array.isArray(patch.connections);
     saveSettings(connections.preserveCapabilities(current,
       connections.applyLegacyWrite(next, { connectionsAuthoritative })));
+    if (Object.keys(patch).length === 1 && Object.hasOwn(patch, 'pageLayout')) return { ok: true };
     // Settings drive every agent loop's endpoint + default model — drop the
     // cache so the next message builds a fresh loop with the new values.
     for (const [id, loop] of agentLoops) {
@@ -1031,7 +1034,7 @@ function registerIpc() {
       return { ok: false, err: 'Todos must be a list of at most 100 items.' };
     }
     const clean = todos.map(item => ({
-      text: String(item && item.text || '').slice(0, 500),
+      text: String(item && item.text || ''),
       status: ['pending', 'in_progress', 'completed', 'cancelled'].includes(item && item.status) ? item.status : 'pending',
     }));
     const agent = getAgentStore().setTodos(id, clean);
@@ -2046,19 +2049,40 @@ function registerIpc() {
 
       const stream = payload.stream !== false;
       const maxTokens = Number.isSafeInteger(payload.maxTokens) && payload.maxTokens > 0 ? payload.maxTokens : 0;
+      // Generation controls are optional: a text-only subscription bridge rejects
+      // ANY it does not honour — the whole request dies on one extra field. A
+      // caller asks for a bare transcript with `controls: false` (and the relay
+      // strips the same fields for bridge models regardless).
       const temperature = Number.isFinite(payload.temperature) ? Math.max(0, Math.min(2, payload.temperature)) : 0.7;
-      const body = { model, messages, stream, temperature };
-      if (maxTokens > 0) body.max_tokens = maxTokens;
+      const textOnly = capabilityStore.get(payload.connectionId || '', base, model)?.textOnly === true;
+      const body = { model, messages, stream };
+      if (payload.controls !== false && !textOnly) {
+        body.temperature = temperature;
+        if (maxTokens > 0) body.max_tokens = maxTokens;
+      }
 
-      const response = await fetch(base + '/chat/completions', {
-        method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal,
+      const post = (out) => fetch(base + '/chat/completions', {
+        method: 'POST', headers, body: JSON.stringify(out), signal: controller.signal,
       });
+      let response = await post(body);
 
       if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        // Surface the provider's own message: "429 rate limit exceeded" is far
-        // more useful to a developer than "request failed".
-        return { ok: false, status: response.status, err: text ? text.slice(0, 400) : `HTTP ${response.status}` };
+        let text = await response.text().catch(() => '');
+        // A subscription bridge rejects the WHOLE request over a single
+        // control field ("unsupported_field"), and nothing on the connection
+        // record says it is one — when a 400 names that code, strip the
+        // controls and retry once. The bare transcript is what it accepts.
+        if (response.status === 400 && /unsupported[_ ]?field/i.test(text) && /Subscription bridges support text messages and streaming/i.test(text)
+            && (body.temperature !== undefined || body.max_tokens !== undefined)) {
+          response = await post({ model, messages, stream });
+          if (response.ok) capabilityStore.record(payload.connectionId || '', base, model, { textOnly: true });
+          text = response.ok ? '' : await response.text().catch(() => '');
+        }
+        if (!response.ok) {
+          // Surface the provider's own message: "429 rate limit exceeded" is far
+          // more useful to a developer than "request failed".
+          return { ok: false, status: response.status, err: text ? text.slice(0, 400) : `HTTP ${response.status}` };
+        }
       }
 
       const reply = await readChatResponse(response, {
@@ -3787,8 +3811,7 @@ app.whenReady().then(() => {
             const fixture = await reachApi.agents.create('Budget settings check', ${JSON.stringify(smokeProject)}, 'fixture');
             await selectAgent(fixture.agent);
             await showTab('agents');
-            document.querySelector('#btn-agent-settings').click();
-            if (document.querySelector('#btn-agent-settings-menu').classList.contains('hidden')) throw new Error('Conversation Settings dropdown did not open');
+            if (document.querySelector('#btn-agent-settings')) throw new Error('Conversation header still has a Settings control');
             if (document.querySelector('#agent-settings-modal')) throw new Error('Old Settings overlay remains');
             await openSettingsPanel('budgeting');
             if (document.querySelectorAll('.settings-content:not(.hidden)').length !== 1) throw new Error('Settings panels overlap');

@@ -67,6 +67,17 @@ test('every modal in the markup is covered by the modal selectors', () => {
   }
 });
 
+test('an open Translate popover stays reachable above the native browser', () => {
+  const popover = element();
+  const document = {
+    querySelectorAll: selector => selector.split(',').includes('.msg-translate-pop:not(.hidden)') ? [popover] : [],
+  };
+  assert.equal(browserFloatingOpen(document), true);
+  assert.equal(browserOverlayOpen(document), true);
+  popover.hidden = true;
+  assert.equal(browserOverlayOpen(document), false, 'A closed popover restores the native view');
+});
+
 test('an open account menu hides the native view', () => {
   assert.equal(browserOverlayOpen(root({ floating: [element()] })), true);
 });

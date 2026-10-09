@@ -539,7 +539,11 @@
     status(els.endpointStatus, 'Testing completion…', 'running');
     const runId = chat.runId;
     try {
-      const result = await api.playground.run({ runId, connectionId, model, prompt, stream: true, maxTokens: 256 });
+      // A connectivity probe asks for the strictest contract: model, messages
+      // and stream only. Subscription bridges reject any control field with a
+      // blanket 400, and the probe should answer "does this endpoint reply at
+      // all", not "does it tolerate temperature".
+      const result = await api.playground.run({ runId, connectionId, model, prompt, stream: true, controls: false });
       // Another Home run may have started if this one was stopped and settled.
       if (chat.runId !== runId) return;
       if (!result?.ok) {

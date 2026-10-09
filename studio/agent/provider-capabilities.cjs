@@ -36,7 +36,7 @@ function normalizeCapabilities(value) {
     const model = String(entry.model || '').slice(0, 240);
     if (!endpoint || !model) continue;
     const fact = { endpoint, model };
-    for (const key of ['toolCalling', 'reasoningParam', 'streaming', 'outputTokenLimit']) {
+    for (const key of ['toolCalling', 'reasoningParam', 'streaming', 'outputTokenLimit', 'textOnly']) {
       if (typeof entry[key] === 'boolean') fact[key] = entry[key];
     }
     if (Number.isSafeInteger(entry.maxTokensCeiling) && entry.maxTokensCeiling > 0) {

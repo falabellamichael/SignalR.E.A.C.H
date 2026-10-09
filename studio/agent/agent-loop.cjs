@@ -67,6 +67,9 @@ class AgentLoop {
     this.noToolCalling = capabilityStore?.get(connectionId, endpoint, this.model)?.toolCalling === false;
     this.noStreaming = capabilityStore?.get(connectionId, endpoint, this.model)?.streaming === false;
     this.maxTokensCeiling = capabilityStore?.get(connectionId, endpoint, this.model)?.maxTokensCeiling || null;
+    // A subscription bridge rejects the WHOLE request over a single generation
+    // control ("unsupported_field"). Learned once, then requests go out bare.
+    this.textOnly = capabilityStore?.get(connectionId, endpoint, this.model)?.textOnly === true;
     this.projectDir = projectDir;
     this.reachExecutor = reachExecutor;
     this.browserExecutor = browserExecutor;
@@ -345,16 +348,18 @@ class AgentLoop {
       messages: normalizeChatMessages([...messages, { role: 'system', content: budgetPolicy({ maxTokens, purpose, budgets: this._budgets(), round: this.requestRound || 1, contextChars: contextChars(messages), concise }) }, ...reminder]),
       stream: stream && !this.noStreaming,
     };
-    if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
-    if (maxTokens > 0) body.max_tokens = this.maxTokensCeiling
-      ? Math.min(maxTokens, this.maxTokensCeiling) : maxTokens;
-    // Native protocol: advertise the same registry as real OpenAI functions.
-    // Summary/compaction requests never carry tools — they must not act.
-    if (this.nativeTools && purpose !== 'summary' && !this.noToolCalling) {
-      body.tools = toolDefs({ includeCollab: this._inCrew(), disabled: disabledTools(settings, TOOLS) });
-    }
-    if (settings.temperature !== null && settings.temperature !== undefined) {
-      body.temperature = settings.temperature;
+    if (!this.textOnly) {
+      if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
+      if (maxTokens > 0) body.max_tokens = this.maxTokensCeiling
+        ? Math.min(maxTokens, this.maxTokensCeiling) : maxTokens;
+      // Native protocol: advertise the same registry as real OpenAI functions.
+      // Summary/compaction requests never carry tools — they must not act.
+      if (this.nativeTools && purpose !== 'summary' && !this.noToolCalling) {
+        body.tools = toolDefs({ includeCollab: this._inCrew(), disabled: disabledTools(settings, TOOLS) });
+      }
+      if (settings.temperature !== null && settings.temperature !== undefined) {
+        body.temperature = settings.temperature;
+      }
     }
     return body;
   }
@@ -420,6 +425,18 @@ class AgentLoop {
         return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
       }
       if ([400, 422].includes(response.status)) {
+        // A subscription bridge rejects the WHOLE request over one generation
+        // control ("unsupported_field"). Nothing names which field, so strip
+        // them all and remember — the next run on this endpoint starts bare.
+        // The blanket message can't identify a field, so it must never feed
+        // the per-capability heuristics below ("streaming" appears in it).
+        const isUnsupportedField = /unsupported[_ ]?field/i.test(text) && /Subscription bridges support text messages and streaming/i.test(text);
+        if (isUnsupportedField && !this.textOnly
+            && (body.temperature !== undefined || body.max_tokens !== undefined || body.tools || body.chat_template_kwargs)) {
+          this.textOnly = true;
+          this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { textOnly: true });
+          return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
+        }
         const { observedMaxTokensCeiling } = require('./provider-capabilities.cjs');
         const ceiling = observedMaxTokensCeiling(text);
         if (ceiling && body.max_tokens > ceiling) {
@@ -427,12 +444,12 @@ class AgentLoop {
           this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { maxTokensCeiling: ceiling });
           return this._fetchChat(messages, { stream, maxTokens: ceiling, purpose, concise });
         }
-        if (body.tools && /(?:unsupported|not supported|unknown|unrecognized).{0,80}(?:tools|function.calling)|(?:tools|function.calling).{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
+        if (!isUnsupportedField && body.tools && /(?:unsupported|not supported|unknown|unrecognized).{0,80}(?:tools|function.calling)|(?:tools|function.calling).{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
           this.noToolCalling = true;
           this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { toolCalling: false });
           return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
         }
-        if (body.stream && /(?:unsupported|not supported|unknown|unrecognized).{0,80}stream|stream.{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
+        if (!isUnsupportedField && body.stream && /(?:unsupported|not supported|unknown|unrecognized).{0,80}stream|stream.{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
           this.noStreaming = true;
           this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { streaming: false });
           return this._fetchChat(messages, { stream: false, maxTokens, purpose, concise });

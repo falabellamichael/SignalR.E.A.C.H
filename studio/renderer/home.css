@@ -2,7 +2,7 @@
    scrolls, so the app header, rail, and status bar stay in place. */
 #page-home { min-width: 0; }
 .home-scroll { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
-.home-content { width: min(100%, 1390px); margin: 0 auto; padding: 32px clamp(24px, 4vw, 64px) 24px; }
+.home-content { width: min(100%, 1390px); margin: 0 auto; padding: 32px 24px 24px; }
 .home-content :is(button, input, select, textarea):focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 
 .home-hero {
@@ -10,7 +10,7 @@
   justify-content: space-between; gap: 24px; overflow: hidden;
   padding: 8px 0 26px; border-bottom: 1px solid var(--line);
 }
-.home-hero-copy { z-index: 1; max-width: 720px; }
+.home-hero-copy { z-index: 1; min-width: 0; max-width: 720px; }
 .home-eyebrow { color: var(--gold-dim); font-size: 10px; font-weight: 700; letter-spacing: .19em; line-height: 1.5; }
 .home-eyebrow span { color: var(--dim); margin-inline: 6px; }
 .home-hero h2 {
@@ -35,8 +35,9 @@
 .home-tool-grid, .home-value-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .home-card, .home-plan-card { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 5px 26px color-mix(in srgb, var(--shadow) 32%, transparent); }
 .home-tool-card { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 23px; }
-.home-card-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
-.home-card-title { display: flex; align-items: center; gap: 13px; min-width: 0; }
+.home-card-head { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 10px; }
+.home-card-title { display: flex; align-items: center; gap: 13px; flex: 1 1 200px; min-width: 0; }
+.home-card-title > div { min-width: 0; overflow-wrap: anywhere; }
 .home-card-icon { flex: 0 0 42px; width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid color-mix(in srgb, var(--gold) 55%, var(--line)); border-radius: 8px; color: var(--gold); font: 19px Consolas, 'Courier New', monospace; }
 .home-chat-icon { font-size: 24px; }
 .home-card-kicker { color: var(--gold-dim); font-size: 9px; font-weight: 700; letter-spacing: .13em; }
@@ -124,26 +125,33 @@
 .home-footer b { color: var(--gold-dim); font-weight: 600; letter-spacing: .15em; }
 .home-footer span span { color: var(--gold-dim); padding: 0 6px; }
 
-@media (max-width: 1160px) {
-  .home-content { padding-inline: 26px; }
+/* Respond to the space left by the rail and docked panels, rather than the
+   window width. The main area supplies the named page container. */
+@container page (max-width: 1100px) {
   .home-hero-art { flex-basis: 190px; transform: scale(.85); transform-origin: right center; }
   .home-tool-card { padding: 18px; }
-  .home-card h3 { font-size: 21px; }
-  .home-text-link { font-size: 10px; }
 }
-@media (max-width: 1040px) {
+@container page (max-width: 900px) {
   .home-tool-grid, .home-value-grid { grid-template-columns: 1fr; }
-  .home-plan-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .home-tool-card { padding: 21px; }
   .home-card-description { min-height: 0; }
-}
-@media (max-width: 760px) {
-  .home-content { padding: 26px 18px 20px; }
-  .home-hero { min-height: 0; }
   .home-hero-art { display: none; }
   .home-section-intro { align-items: start; flex-direction: column; gap: 8px; }
+}
+@container page (max-width: 640px) {
+  .home-content { padding: 26px 24px 20px; }
+  .home-hero { min-height: 0; }
   .home-plan-grid { grid-template-columns: 1fr; }
   .home-plan-card { min-height: 130px; }
+  .home-command-row { flex-wrap: wrap; }
+  .home-command-mode-field, .home-command-entry { flex: 1 1 100%; }
+  .home-endpoint-row { flex-wrap: wrap; }
+  .home-endpoint-row .home-field { flex-basis: 100%; }
+  .home-inline-status { flex-basis: 100%; }
+  .home-plan-end { flex-wrap: wrap; }
+  .home-content :is(button, input, select) { min-height: 32px; }
+  .home-command-tab-close, .home-command-new-tab { min-width: 32px; }
+  .home-run-split #home-command-run-more { min-width: 32px; }
 }
 
 /* Hosted account state uses the same compact cards and gold accents as Home. */
@@ -159,5 +167,11 @@
 .home-allowance-grid h3 { font-size: clamp(18px, 1.8vw, 25px); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .home-allowance-grid span { color: var(--dim); font-size: 10px; line-height: 1.5; }
 .home-action-row [hidden] { display: none; }
-@media (max-width: 1040px) { .home-account-grid { grid-template-columns: 1fr; } .home-allowance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 760px) { .home-account-url-row { flex-wrap: wrap; } .home-account-url-row input { flex-basis: 100%; } }
+@container page (max-width: 900px) {
+  .home-account-grid { grid-template-columns: 1fr; }
+  .home-allowance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container page (max-width: 640px) {
+  .home-account-url-row { flex-wrap: wrap; }
+  .home-account-url-row input { flex-basis: 100%; }
+}

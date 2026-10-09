@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="home.css" />
   <link rel="stylesheet" href="create-page.css" />
   <link rel="stylesheet" href="account-menu.css" />
+  <link rel="stylesheet" href="responsive.css" />
 </head>
 <body>
   <header>
@@ -31,6 +32,7 @@
         <button id="tab-settings" class="tab" aria-expanded="false" aria-controls="tab-settings-menu">Settings &#9662;</button>
         <div id="tab-settings-menu" class="settings-dropdown hidden">
           <button data-settings-panel="connection">Connection &amp; default model</button>
+          <button data-settings-panel="appearance">Appearance</button>
           <button data-settings-panel="conversation">Conversation &amp; permissions</button>
           <button data-settings-panel="budgeting">Budgeting</button>
         </div>
@@ -98,7 +100,7 @@
     <button class="rail-item" id="rail-workspace" data-view="workspace" data-hotkey="1" title="Workspace dashboard (Ctrl+1)">
       <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><rect x="2" y="2" width="5.2" height="5.2" rx=".6"/><rect x="8.8" y="2" width="5.2" height="5.2" rx=".6"/><rect x="2" y="8.8" width="5.2" height="5.2" rx=".6"/><rect x="8.8" y="8.8" width="5.2" height="5.2" rx=".6"/></svg></span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
     </button>
-    <button class="rail-item" id="rail-playground" data-view="playground" data-hotkey="2" title="Prompt console (Ctrl+2)">
+    <button class="rail-item" id="rail-playground" data-view="playground" data-hotkey="2" title="Prompt studio (Ctrl+2)">
       <span class="rail-icon" aria-hidden="true"><svg viewBox="0 0 16 16"><path d="M2 2 14 8 2 14Z"/></svg></span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
     </button>
     <div class="rail-sep" role="separator"></div>
@@ -200,7 +202,7 @@
               <section class="home-card home-tool-card" aria-labelledby="home-chat-title">
                 <div class="home-card-head">
                   <div class="home-card-title"><span class="home-card-icon home-chat-icon" aria-hidden="true">&#9672;</span><div><p class="home-card-kicker">ENDPOINTS / QUICK TEST</p><h3 id="home-chat-title">Endpoint chat</h3></div></div>
-                  <button id="home-playground-link" class="home-text-link" type="button">Open Console <span aria-hidden="true">&#8599;</span></button>
+                  <button id="home-playground-link" class="home-text-link" type="button">Open Studio <span aria-hidden="true">&#8599;</span></button>
                 </div>
                 <p class="home-card-description">Ping a configured endpoint, then try one independent prompt.</p>
                 <div class="home-endpoint-row">
@@ -426,14 +428,6 @@
                   <button id="btn-dispatch-team" class="ghost" title="Send a task to a team of custom agents">⚡ Team…</button>
                   <button id="btn-agent-continue" class="ghost hidden">Continue</button>
                   <button id="btn-agent-stop" class="ghost hidden">Stop</button>
-                  <div class="settings-menu">
-                    <button id="btn-agent-settings" class="ghost" aria-expanded="false" aria-controls="btn-agent-settings-menu">Settings &#9662;</button>
-                    <div id="btn-agent-settings-menu" class="settings-dropdown hidden">
-                      <button data-settings-panel="connection">Connection &amp; default model</button>
-                      <button data-settings-panel="conversation">Conversation &amp; permissions</button>
-                      <button data-settings-panel="budgeting">Budgeting</button>
-                    </div>
-                  </div>
                   <button id="btn-agent-delete" class="ghost danger">Delete</button>
                 </div>
               </div>
@@ -548,6 +542,7 @@
     <section id="page-settings" class="page">
 <nav class="settings-nav" aria-label="Settings sections">
         <button data-settings-panel="connection" class="ghost">Connection</button>
+        <button data-settings-panel="appearance" class="ghost">Appearance</button>
         <button data-settings-panel="conversation" class="ghost">Conversation &amp; permissions</button>
         <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
       </nav>
@@ -590,6 +585,12 @@
           <button id="btn-save-settings" class="gold">Save Settings</button>
           <span id="settings-status" class="dim"></span>
         </div>
+      </div>
+      <div id="settings-appearance" class="settings-panel settings-content hidden">
+        <h2>Appearance</h2>
+        <label class="check"><input id="set-page-sized" type="checkbox" checked aria-describedby="page-layout-help" /> Page-sized layout</label>
+        <p id="page-layout-help" class="settings-description">Keep content centered at a comfortable width. Turn off to use the full width.</p>
+        <p id="page-layout-status" class="dim" role="status" aria-live="polite"></p>
       </div>
 <div id="settings-conversation" class="settings-panel settings-content hidden">      <h2>Conversation &amp; permissions</h2><p id="agent-settings-context" class="dim"></p>
       <label>Name</label>
@@ -684,69 +685,93 @@
       </div>
     </section>
 
-    <!-- ========== PLAYGROUND PAGE (PRD: Interactive Prompt Console / US-2) ========== -->
+    <!-- ========== PLAYGROUND PAGE (PRD: Interactive Prompt Console / US-2) ==========
+         A prompt-studio bench: one completion, instrument tiles, and a log that
+         stays on this page. It is not a conversation. -->
     <section id="page-playground" class="page">
       <div class="pg-wrap">
         <header class="pg-head">
-          <h2>Prompt Console</h2>
-          <p class="dim" id="pg-hint">Runs a completion against the configured endpoint. Nothing is saved to a conversation.</p>
+          <h2>Prompt Studio</h2>
+          <p class="dim" id="pg-hint">One completion on the bench. Nothing is written to a conversation.</p>
+          <span id="pg-status" class="dim" role="status"></span>
         </header>
 
-        <div class="pg-controls">
-          <div class="pg-field">
+        <div class="pg-tiles" aria-label="Bench instruments">
+          <div class="pg-tile">
             <label for="pg-conn">Connection</label>
             <select id="pg-conn"></select>
           </div>
-          <div class="pg-field">
+          <div class="pg-tile pg-tile-model">
             <label for="pg-model">Model <span id="pg-model-src" class="dim"></span></label>
             <div class="row">
               <input id="pg-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
-              <button id="pg-browse" class="ghost small">Browse&hellip;</button>
+              <button id="pg-browse" class="ghost small" type="button">Browse&hellip;</button>
             </div>
             <datalist id="pg-model-list"></datalist>
           </div>
-          <div class="pg-field">
-            <label for="pg-temp">Temperature <span id="pg-temp-val" class="dim">0.7</span></label>
+          <div class="pg-tile">
+            <label for="pg-temp">Temperature <span id="pg-temp-val" class="dim">0.70</span></label>
             <input id="pg-temp" type="range" min="0" max="2" step="0.05" value="0.7" />
           </div>
-          <div class="pg-field">
+          <div class="pg-tile">
             <label for="pg-max">Max tokens</label>
-            <input id="pg-max" type="number" min="0" max="2147483647" step="64" value="1024" />
-            <small class="dim">0 lets the provider choose.</small>
+            <input id="pg-max" type="number" min="0" max="2147483647" step="64" value="1024" title="0 lets the provider choose." />
           </div>
-          <div class="pg-field">
-            <label class="check"><input id="pg-stream" type="checkbox" checked /> Stream response</label>
+          <div class="pg-tile pg-tile-flags">
+            <label class="check"><input id="pg-stream" type="checkbox" checked /> Stream</label>
+            <label class="check" title="Turn this off for a bridge that rejects sampling fields."><input id="pg-controls" type="checkbox" checked /> Send temperature</label>
+          </div>
+          <div class="pg-tile pg-tile-budget">
+            <span class="pg-tile-kicker">Prompt size</span>
+            <b id="pg-budget-tokens">0</b>
+            <small id="pg-budget-detail" class="dim">0 system · 0 prompt</small>
           </div>
         </div>
+
+        <div id="pg-presets" class="pg-presets" role="toolbar" aria-label="System presets"></div>
 
         <div class="pg-panes">
           <div class="pg-pane">
             <label for="pg-system">System prompt</label>
-            <textarea id="pg-system" rows="3" spellcheck="false" placeholder="Optional. Sets the model's behaviour for this test."></textarea>
+            <textarea id="pg-system" rows="3" spellcheck="false" placeholder="Optional. Sets the model's behaviour for this run."></textarea>
             <label for="pg-prompt">Prompt</label>
-            <textarea id="pg-prompt" rows="10" spellcheck="false" placeholder="Ask something&hellip;"></textarea>
+            <textarea id="pg-prompt" rows="8" spellcheck="false" placeholder="The text this run should answer&hellip;"></textarea>
             <div class="pg-actions">
-              <button id="pg-run" class="gold">Execute Completion</button>
-              <button id="pg-stop" class="ghost" disabled>Stop</button>
-              <button id="pg-clear" class="ghost small">Clear</button>
-              <span id="pg-status" class="dim" role="status"></span>
+              <button id="pg-run" class="gold" type="button">Run completion</button>
+              <button id="pg-stop" class="ghost" type="button" disabled>Stop</button>
+              <button id="pg-clear" class="ghost small" type="button">Clear</button>
+              <button id="pg-copy-prompt" class="ghost small" type="button">Copy prompt</button>
+              <span class="dim pg-shortcut">Ctrl+Enter</span>
             </div>
           </div>
           <div class="pg-pane">
             <div class="pg-response-head">
               <label>Response</label>
-              <div class="pg-metrics" id="pg-metrics">
-                <span class="pg-metric" title="Time to first streamed token"><b id="pg-ttft">&mdash;</b><small>TTFT</small></span>
-                <span class="pg-metric" title="Total round-trip"><b id="pg-elapsed">&mdash;</b><small>total</small></span>
-                <span class="pg-metric" title="Tokens per second"><b id="pg-tps">&mdash;</b><small>tok/s</small></span>
-                <span class="pg-metric" title="Completion tokens"><b id="pg-tokens">&mdash;</b><small>tokens</small></span>
-              </div>
+            </div>
+            <div class="pg-metrics" id="pg-metrics">
+              <span class="pg-metric" title="Time to first streamed token"><b id="pg-ttft">&mdash;</b><small>TTFT</small></span>
+              <span class="pg-metric" title="Total round-trip"><b id="pg-elapsed">&mdash;</b><small>total</small></span>
+              <span class="pg-metric" title="Tokens per second"><b id="pg-tps">&mdash;</b><small>tok/s</small></span>
+              <span class="pg-metric" title="Completion tokens"><b id="pg-tokens">&mdash;</b><small>tokens</small></span>
+              <span class="pg-metric" title="Why the model stopped"><b id="pg-finish">&mdash;</b><small>finish</small></span>
+              <span class="pg-metric" title="Reasoning characters, when the model reports them"><b id="pg-reason">&mdash;</b><small>reason</small></span>
             </div>
             <pre id="pg-output" class="pg-output" role="log" aria-live="polite"></pre>
             <details id="pg-raw-wrap" class="pg-raw" hidden>
-              <summary>Raw JSON</summary>
+              <summary>Usage JSON</summary>
               <pre id="pg-raw" class="pg-raw-body"></pre>
             </details>
+            <div class="pg-log">
+              <div class="pg-log-head">
+                <span>Bench log</span>
+                <div class="pg-log-actions">
+                  <button id="pg-copy-output" class="ghost small" type="button">Copy</button>
+                  <button id="pg-log-stop" class="ghost small" type="button" disabled title="Stop the response">Stop</button>
+                  <button id="pg-log-clear" class="ghost small" type="button">Clear log</button>
+                </div>
+              </div>
+              <div id="pg-log" class="pg-log-list"></div>
+            </div>
           </div>
         </div>
       </div>
@@ -892,6 +917,7 @@
       </div>
     </div>
     <section id="browser-panel" class="hidden" aria-label="Browser">
+      <div class="browser-chrome">
       <div class="browser-tabstrip"><div id="browser-tabs" role="tablist" aria-label="Browser tabs"></div><button id="browser-new" class="ghost small" title="New browser tab (Ctrl+T)">+</button></div>
       <form id="browser-navigation" class="browser-toolbar">
         <button type="button" id="browser-back" class="ghost small" title="Back" aria-label="Back">←</button>
@@ -915,6 +941,7 @@
         <div><button id="browser-selection-show" class="ghost small">Show selected tab</button><button id="browser-selection-clear" class="ghost small">Clear selection</button></div>
       </div>
       <div id="browser-find" class="browser-toolbar hidden"><input id="browser-find-text" placeholder="Find on page" aria-label="Find on page" /><button id="browser-find-next" class="ghost small">Next</button><button id="browser-find-close" class="ghost small" aria-label="Close find">×</button></div>
+      </div>
       <div id="browser-viewport"><div class="browser-welcome"><h3>REACH Browser</h3><p>Open a website or local development server above.</p><p>Turn on Elements to right-click an element or selection and add it to your chat draft.</p></div></div>
       <div id="browser-status" class="dim" role="status">Ready</div>
     </section>
@@ -1136,6 +1163,8 @@
   <script src="composer-intents.js"></script>
   <script src="create-page.js"></script>
   <script src="command-line.js"></script>
+  <script src="languages.js"></script>
+  <script src="translate.js"></script>
   <script src="app.js"></script>
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>

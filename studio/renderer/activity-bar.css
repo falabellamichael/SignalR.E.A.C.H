@@ -367,9 +367,10 @@
 #page-agents aside .tree-node.active > .tree-label .tree-meta { color: var(--gold-dim); }
 
 /* Thin lock: half width. The full title stays available to assistive tech.
-   What paints is the status mark, the first word, and the time. Depth indent
-   is an inline style, so the reset has to win over it or a deep branch shoves
-   the mark off the row. */
+   What paints is the status mark, the first word, and the time. Hovering a
+   chat swaps that time for the delete control. Depth indent is an inline
+   style, so the reset has to win over it or a deep branch shoves the mark
+   off the row. */
 #page-agents aside[data-panel="thin"] .tree-node { padding-left: 0 !important; }
 
 #page-agents aside[data-panel="thin"] .tree-label { position: relative; }
@@ -400,7 +401,35 @@
   border: 0;
 }
 
-#page-agents aside[data-panel="thin"] .tree-delete { display: none; }
+/* The time keeps its slot. The delete control sits on that slot and only
+   accepts the pointer while this chat is hovered or its control is focused. */
+#page-agents aside[data-panel="thin"] .tree-delete {
+  display: flex;
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0;
+  padding: 0 6px;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  transition: none;
+}
+
+#page-agents aside[data-panel="thin"] .tree-label:hover .tree-delete,
+#page-agents aside[data-panel="thin"] .tree-label:focus-within .tree-delete {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+#page-agents aside[data-panel="thin"] .tree-label:hover .tree-time,
+#page-agents aside[data-panel="thin"] .tree-label:focus-within .tree-time {
+  visibility: hidden;
+}
 
 #page-agents aside[data-panel="thin"] .tree-dot {
   width: 9px;

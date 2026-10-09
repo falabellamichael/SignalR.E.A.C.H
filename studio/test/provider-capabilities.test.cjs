@@ -89,6 +89,78 @@ test('a second loop on one connection skips a reasoning parameter already reject
   assert.equal(requests.filter(body => body.chat_template_kwargs).length, 1);
 });
 
+test('a subscription-bridge unsupported_field rejection teaches textOnly and retries bare', async t => {
+  const endpoint = 'http://bridge.invalid/v1';
+  let settings = connections.normalizeSettings({ connections: [
+    { id: 'conn-9', name: 'Bridge', endpoint, model: 'm' },
+  ], activeConnection: 'conn-9' }).settings;
+  const capabilityStore = createCapabilityStore({ load: () => settings, save: value => { settings = connections.normalizeSettings(value).settings; } });
+  const originalFetch = global.fetch;
+  const requests = [];
+  global.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    requests.push(body);
+    const hasControls = body.temperature !== undefined || body.max_tokens !== undefined || body.tools;
+    return hasControls
+      ? { ok: false, status: 400, text: async () => '{"error":{"code":"unsupported_field","message":"Subscription bridges support text messages and streaming; other generation controls are unsupported.","type":"reach_service_error"}}', headers: { get: () => null } }
+      : { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }), text: async () => '' };
+  };
+  t.after(() => { global.fetch = originalFetch; });
+  const makeLoop = () => {
+    const loop = new AgentLoop({ agentId: 'a', store: { get: () => ({ settings: {} }) },
+      endpoint, connectionId: 'conn-9', capabilityStore, model: 'm',
+      budgets: { ...resolveBudgets(), maxTokens: 512 } });
+    loop.abortController = new AbortController();
+    return loop;
+  };
+  await makeLoop()._fetchChat([{ role: 'user', content: 'hello' }], { stream: true });
+  assert.equal(requests.length, 2, 'first loop retries without the rejected controls');
+  assert.equal(requests[1].temperature, undefined);
+  assert.equal(requests[1].max_tokens, undefined);
+  assert.equal(requests[1].stream, true, 'stream survives the strip');
+  assert.equal(settings.connections[0].capabilities[0].textOnly, true);
+  await makeLoop()._fetchChat([{ role: 'user', content: 'hello' }], { stream: true });
+  assert.equal(requests.length, 3, 'second loop starts bare — no doomed request');
+  assert.equal(requests[2].temperature, undefined);
+});
+
+for (const [code, message] of [
+  ['output_limit', 'Output limit must be between 1 and 1024.'],
+  ['unsupported_field', 'This request includes unsupported fields.'],
+]) {
+  test(`a generic hosted ${code} rejection does not disable native tools`, async t => {
+    const endpoint = `http://generic-${code}.invalid/v1`;
+    let settings = connections.normalizeSettings({ connections: [
+      { id: 'generic', name: 'Hosted', endpoint, model: 'm' },
+    ], activeConnection: 'generic' }).settings;
+    const capabilityStore = createCapabilityStore({ load: () => settings,
+      save: value => { settings = connections.normalizeSettings(value).settings; } });
+    const originalFetch = global.fetch;
+    const requests = [];
+    global.fetch = async (_url, options) => {
+      requests.push(JSON.parse(options.body));
+      return { ok: false, status: 400,
+        text: async () => JSON.stringify({ error: { code, message, type: 'reach_service_error' } }),
+        headers: { get: () => null } };
+    };
+    t.after(() => { global.fetch = originalFetch; });
+    const makeLoop = () => {
+      const loop = new AgentLoop({ agentId: 'a', store: { get: () => ({ settings: {} }) },
+        endpoint, connectionId: 'generic', capabilityStore, model: 'm', nativeTools: true,
+        budgets: { ...resolveBudgets(), maxTokens: 2048 } });
+      loop.abortController = new AbortController();
+      return loop;
+    };
+    const messages = [{ role: 'user', content: 'hello' }];
+    await assert.rejects(makeLoop()._fetchChat(messages, { stream: true }), /HTTP 400/);
+    assert.equal(requests.length, 1, 'ordinary validation failures must not retry bare');
+    assert.notEqual(capabilityStore.get('generic', endpoint, 'm')?.textOnly, true);
+    const next = makeLoop()._requestBody(messages);
+    assert.equal(next.max_tokens, 2048);
+    assert.ok(next.tools?.length, 'the next loop still advertises native tools');
+  });
+}
+
 test('settings form saves preserve facts only while the connection URL is unchanged', () => {
   const current = { connections: [{ id: 'a', endpoint: 'http://one/v1', capabilities: [
     { endpoint: 'http://one/v1', model: 'm', streaming: true },

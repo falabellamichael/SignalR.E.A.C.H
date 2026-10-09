@@ -12,10 +12,14 @@ let settingsOpenSequence = 0;
 
 function closeSettingsMenus() {
   document.querySelectorAll('.settings-dropdown').forEach(el => el.classList.add('hidden'));
-  for (const id of ['tab-settings', 'btn-agent-settings']) $('#' + id).setAttribute('aria-expanded', 'false');
+  for (const id of ['tab-settings']) {
+    const trigger = document.getElementById(id);
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+  }
 }
-for (const id of ['tab-settings', 'btn-agent-settings']) {
+for (const id of ['tab-settings']) {
   const trigger = $('#' + id), menu = $('#' + id + '-menu');
+  if (!trigger || !menu) continue;
   trigger.onclick = () => {
     const opening = menu.classList.contains('hidden');
     closeSettingsMenus();
@@ -81,6 +85,25 @@ async function openSettingsPanel(panel) {
 document.querySelectorAll('[data-settings-panel]').forEach(button => {
   button.onclick = () => openSettingsPanel(button.dataset.settingsPanel).catch(e => showNotice(e.message));
 });
+
+$('#set-page-sized').onchange = async () => {
+  const toggle = $('#set-page-sized'), status = $('#page-layout-status');
+  const previous = document.documentElement.dataset.pageLayout === 'full-width' ? 'full-width' : 'page-sized';
+  const pageLayout = toggle.checked ? 'page-sized' : 'full-width';
+  toggle.disabled = true;
+  status.textContent = 'Saving…';
+  try {
+    const result = await reachApi.saveSettings({ pageLayout });
+    if (!result || result.ok === false) throw new Error(result?.err || 'Could not save layout.');
+    document.documentElement.dataset.pageLayout = pageLayout;
+    status.textContent = pageLayout === 'page-sized' ? 'Saved. Pages use a centered layout.' : 'Saved. Pages use the full width.';
+  } catch (error) {
+    toggle.checked = previous === 'page-sized';
+    status.textContent = error.message;
+  } finally {
+    toggle.disabled = false;
+  }
+};
 
 function fillBudgetFields(values) {
   const host = $('#budget-fields');
