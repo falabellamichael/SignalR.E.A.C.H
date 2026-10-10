@@ -152,14 +152,18 @@ class ReachClient:
         """The endpoint to use. Never substitutes a different endpoint.
 
         The public pointer gist is consulted only when "public" was chosen
-        explicitly (``--base public``). Any other base (a URL, the local
-        preset, REACH_BASE_URL) is used as-is even if it is down right now,
-        so an unreachable endpoint is reported instead of silently replaced.
-        Returns None only when the public pointer cannot be read.
+        explicitly (``--base public``). ``local`` is the relay on this
+        machine. Any other base (a URL, REACH_BASE_URL) is used as-is even
+        if it is down right now, so an unreachable endpoint is reported
+        instead of silently replaced. Returns None only when "public" was
+        chosen and the pointer cannot be read.
         """
-        if (self.base or "").strip().lower() == "public":
+        name = (self.base or "").strip().lower()
+        if name == "public":
             url = discover_public_url()
             return url.rstrip("/") if url else None
+        if name == "local":
+            return "http://127.0.0.1:20777/v1"
         return self.base
     @staticmethod
     def _reachable(base, key=""):
