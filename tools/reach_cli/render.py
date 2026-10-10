@@ -11,7 +11,8 @@ text instead, so piped output stays exactly what the model sent.
 import re
 import shutil
 
-from .terminal import PAINT, c_bold, c_cyan, c_dim
+from . import terminal
+from .terminal import c_bold, c_cyan, c_dim
 
 _FENCE = re.compile(r"^\s*(```|~~~)\s*([\w+#.-]*)\s*$")
 _HEADING = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
@@ -28,7 +29,8 @@ MIN_WIDTH = 20
 
 def enabled():
     """Render markdown only when colour is on (TTY and not NO_COLOR)."""
-    return bool(PAINT.on)
+    # read terminal.PAINT at call time: __main__ replaces the object at startup
+    return bool(getattr(terminal.PAINT, "on", False))
 
 
 def text_width(columns=None):
