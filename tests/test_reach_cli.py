@@ -1410,3 +1410,108 @@ class RenderPaintBindingTests(unittest.TestCase):
             self.assertFalse(render.enabled())
         finally:
             terminal.PAINT = saved
+
+
+class FooterAndPromptHookTests(unittest.TestCase):
+    """Hooks for Main Chat: terminal.read_prompt() and client.last_turn."""
+
+    def _chat(self, script, inputs, agent=False, patch_reader=None):
+        from reach_cli import terminal
+        client = ReachClient("http://relay/v1", model="m")
+        client.agent = agent
+        client.workpath = __import__("tempfile").mkdtemp()
+        it = iter(inputs)
+        seen = []
+
+        def footer(c, cited=False):
+            seen.append(dict(c.last_turn))
+        rec = _Recorder(script)
+        ctx = [unittest.mock.patch("urllib.request.urlopen", rec),
+               unittest.mock.patch.object(chat_mod, "banner", lambda *a: None),
+               unittest.mock.patch.object(chat_mod, "print_footer", footer)]
+        if patch_reader:
+            ctx.append(unittest.mock.patch.object(terminal, "read_prompt",
+                                                  lambda: next(it), create=True))
+        else:
+            ctx.append(unittest.mock.patch("builtins.input", lambda *_: next(it)))
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for c in ctx:
+                stack.enter_context(c)
+            stack.enter_context(contextlib.redirect_stdout(out))
+            chat_mod.run_chat(client, client.base)
+        return client, seen, rec
+
+    def test_read_prompt_used_when_present(self):
+        from reach_cli import terminal
+        with unittest.mock.patch("builtins.input",
+                                 side_effect=AssertionError("input() used")):
+            _, seen, rec = self._chat(
+                [_Resp([_delta(content="hi"), "data: [DONE]\n"])],
+                ["hello", "/exit"], patch_reader=True)
+        self.assertEqual(rec.payloads[0]["messages"][-1]["content"], "hello")
+
+    def test_falls_back_to_input_without_read_prompt(self):
+        from reach_cli import terminal
+        saved = getattr(terminal, "read_prompt", None)
+        if saved is not None:
+            delattr(terminal, "read_prompt")
+        try:
+            _, _, rec = self._chat([_Resp([_delta(content="hi"), "data: [DONE]\n"])],
+                                   ["hello", "/exit"])
+        finally:
+            if saved is not None:
+                terminal.read_prompt = saved
+        self.assertEqual(len(rec.payloads), 1)
+
+    def test_last_turn_plain_chat_with_stream_usage(self):
+        resp = _Resp([_delta(content="hi"),
+                      _sse({"choices": [], "usage": {"prompt_tokens": 5,
+                                                     "completion_tokens": 2,
+                                                     "total_tokens": 7}}),
+                      "data: [DONE]\n"])
+        client, seen, _ = self._chat([resp], ["hello", "/exit"])
+        self.assertEqual(seen[0]["tokens"], 7)
+        self.assertEqual(seen[0]["rounds"], 1)
+        self.assertIsInstance(seen[0]["latency"], float)
+        self.assertEqual(client.last_turn, seen[0])
+
+    def test_last_turn_tokens_none_without_usage(self):
+        client, seen, _ = self._chat([_Resp([_delta(content="hi"), "data: [DONE]\n"])],
+                                     ["hello", "/exit"])
+        self.assertIsNone(seen[0]["tokens"])
+        self.assertEqual(seen[0]["rounds"], 1)
+
+    def test_last_turn_agent_counts_rounds_and_sums_tokens(self):
+        r1 = _Resp(body={"usage": {"total_tokens": 10}, "choices": [{"message": {
+            "tool_calls": [{"id": "a", "type": "function",
+                            "function": {"name": "list", "arguments": "{}"}}]}}]})
+        r2 = _Resp(body={"usage": {"prompt_tokens": 3, "completion_tokens": 4},
+                         "choices": [{"message": {"content": "done"}}]})
+        from reach_cli import terminal  # noqa: F401
+        client = ReachClient("http://relay/v1", model="m", no_stream=True)
+        client.agent = True
+        client.workpath = __import__("tempfile").mkdtemp()
+        history = [{"role": "user", "content": "go"}]
+        seen = []
+        rec = _Recorder([r1, r2])
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "print_footer",
+                                           lambda c, cited=False: seen.append(dict(c.last_turn))), \
+                contextlib.redirect_stdout(io.StringIO()):
+            chat_mod.run_agent_turn(client, history, chat_mod.AgentState())
+        # prose after tool results is nudged MAX_RECOVERY times, so 4 rounds
+        self.assertEqual(client.last_turn["rounds"], 2 + chat_mod.MAX_RECOVERY)
+        self.assertEqual(client.last_turn["tokens"], 10 + 7 * (1 + chat_mod.MAX_RECOVERY))
+        self.assertEqual(seen[-1], client.last_turn)
+
+    def test_last_turn_published_on_failure(self):
+        client = ReachClient("http://relay/v1", model="m")
+        client.agent = True
+        client.workpath = __import__("tempfile").mkdtemp()
+        with unittest.mock.patch("urllib.request.urlopen", _Recorder([_http_error(401)])), \
+                contextlib.redirect_stdout(io.StringIO()):
+            chat_mod.run_agent_turn(client, [{"role": "user", "content": "x"}],
+                                    chat_mod.AgentState())
+        self.assertEqual(client.last_turn["rounds"], 1)
+        self.assertIsNone(client.last_turn["tokens"])
