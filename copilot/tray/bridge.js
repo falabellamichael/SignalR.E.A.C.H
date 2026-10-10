@@ -116,8 +116,29 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                     // Every browser page can expose provisional DOM text before
                     // the verified answer, including CodeGPT's "Reasoned for" header.
                     // Keep reasoning live, then send only the settled final answer.
-                    const content = await sender(text, { signal: controller.signal, model, label: modelLabel(model), onDelta: undefined, onReasoning: stream ? onReasoning : undefined });
+                    const result = await sender(text, { signal: controller.signal, model, label: modelLabel(model),
+                        ...(provider === 'codegpt' && Array.isArray(body.messages) ? { messages: body.messages } : {}),
+                        // CodeGPT serves caller-advertised OpenAI function tools natively.
+                        ...(provider === 'codegpt' && Array.isArray(body.tools) && body.tools.length ? { tools: body.tools,
+                            ...(typeof body.parallel_tool_calls === 'boolean' ? { parallelToolCalls: body.parallel_tool_calls } : {}) } : {}),
+                        onDelta: undefined, onReasoning: stream ? onReasoning : undefined });
                     if (res.destroyed) return;
+                    const toolCalls = provider === 'codegpt' && result && typeof result === 'object'
+                        && Array.isArray(result.tool_calls) && result.tool_calls.length ? result.tool_calls : null;
+                    const content = toolCalls ? String(result.content || '') : result;
+                    if (toolCalls) {
+                        if (!openai) return json(200, { ok: true, content, tool_calls: toolCalls, ms: Date.now() - start });
+                        if (!stream) return json(200, { ...base, object: 'chat.completion', choices: [{ index: 0,
+                            message: { role: 'assistant', content: content || null, tool_calls: toolCalls }, finish_reason: 'tool_calls' }] });
+                        if (content) onDelta(content);
+                        toolCalls.forEach((call, index) => {
+                            event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: { ...(roleSent ? {} : { role: 'assistant' }),
+                                tool_calls: [{ index, id: call.id, type: 'function', function: { name: call.function.name, arguments: call.function.arguments } }] }, finish_reason: null }] });
+                            roleSent = true;
+                        });
+                        event({ ...base, object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+                        return res.end('data: [DONE]\n\n');
+                    }
                     if (typeof content !== 'string' || !content.trim()) throw new Error('The browser provider returned no final answer.');
                     if (!openai) return json(200, { ok: true, content, ms: Date.now() - start });
                     if (!stream) return json(200, { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] });

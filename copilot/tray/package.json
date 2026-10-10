@@ -26,6 +26,7 @@
       "endpoint.js",
       "bridge.js",
       "economy-models.js",
+      "codegpt-inference.js",
       "gemini.js",
       "preload.js",
       "panel.html",
