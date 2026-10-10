@@ -1,14 +1,26 @@
 """Chat modes: interactive REPL, one-shot ask, grounded web answer."""
 
+import inspect
 import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse
 
-from .agent_tools import TOOLS, run_tool, tool_help_text
-from .client import ReachApiError
+from .agent_tools import (
+    TOOLS,
+    edit_diff,
+    format_args,
+    summarize_result,
+    parse_tool_arguments,
+    run_tool,
+    tool_help_text,
+    tool_schemas,
+)
+from .client import ReachApiError, ReachTransientError, usage_tokens
+from . import render, terminal
 from .grounding import build_grounded_messages
 from .terminal import (
     ReplSession,
@@ -204,54 +216,328 @@ def set_system_message(history, client):
         history.insert(0, {"role": "system", "content": prompt})
 
 
-def stream_reply(client, messages, indent=None):
+# ---- resilient requests ----------------------------------------------------
+
+MAX_ATTEMPTS = 4
+BACKOFF_BASE = 1.0
+BACKOFF_CAP = 8.0
+_sleep = time.sleep  # patched in tests
+
+_CONTINUE_PROMPT = (
+    "[run control] Your previous reply was cut off by a connection drop. "
+    "Continue exactly where it stopped; do not repeat earlier text."
+)
+
+
+def _backoff(attempt):
+    return min(BACKOFF_CAP, BACKOFF_BASE * (2 ** (attempt - 1)))
+
+
+def _complete_tool_calls(calls):
+    """Tool calls whose arguments decode cleanly (safe to keep after a cut)."""
+    return [c for c in calls or []
+            if parse_tool_arguments(c["function"].get("arguments"))[1] is None]
+
+
+def request_reply(client, messages, tools=None, on_text=None, on_retry=None):
+    """Ask the endpoint with retries on the SAME provider and model.
+
+    Returns (ok, {"content", "tool_calls"}). Transient failures back off and
+    retry; text already streamed is kept and the model is asked to continue,
+    so a cut stream never loses work. Never touches client.model/base.
+    """
+    kept_text = ""
+    last = None
+    attempts = 0
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        convo = list(messages)
+        if kept_text:
+            convo += [{"role": "assistant", "content": kept_text},
+                      {"role": "user", "content": _CONTINUE_PROMPT}]
+        attempts = attempt
+        try:
+            result = client.complete(convo, tools=tools, on_text=on_text)
+            return True, {"content": kept_text + (result.get("content") or ""),
+                          "tool_calls": result.get("tool_calls") or []}
+        except ReachTransientError as exc:
+            last = exc
+            got = exc.partial or {}
+            kept_text += got.get("content") or ""
+            calls = _complete_tool_calls(got.get("tool_calls"))
+            if calls:  # the call(s) arrived whole before the cut: use them
+                return True, {"content": kept_text, "tool_calls": calls}
+            if attempt < MAX_ATTEMPTS:
+                if on_retry:
+                    on_retry(attempt + 1)
+                _sleep(_backoff(attempt))
+                continue
+        except ReachApiError as exc:
+            last = exc
+            break
+        except Exception as exc:  # never let an unexpected error escape
+            last = exc
+            break
+    if kept_text:  # keep what arrived rather than discarding it
+        return True, {"content": kept_text, "tool_calls": []}
+    return False, {"content": "", "tool_calls": [], "error": str(last or ""),
+                   "reason": failure_reason(last, getattr(client, "base", "")),
+                   "attempts": attempts,
+                   "retryable": isinstance(last, ReachTransientError)}
+
+
+def _host_port(base):
+    try:
+        parsed = urllib.parse.urlparse(base or "")
+    except ValueError:
+        return ""
+    if not parsed.hostname:
+        return ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return "%s:%s" % (parsed.hostname, port)
+
+
+def failure_reason(exc, base=""):
+    """A short plain reason for a failed request, e.g. 'rate limited (429)'."""
+    status = getattr(exc, "status", None)
+    if status == "timeout":
+        return "timed out"
+    if status == "unreachable":
+        where = _host_port(base)
+        return "endpoint unreachable (%s)" % where if where else "endpoint unreachable"
+    if status == "cut":
+        return "stream cut off"
+    if isinstance(status, int):
+        if status in (401, 403):
+            return "auth rejected (%d)" % status
+        if status == 404:
+            return "model not available (404)"
+        if status == 429:
+            return "rate limited (429)"
+        if status == 408:
+            return "timed out (408)"
+        if status >= 500:
+            return "endpoint unavailable (%d)" % status
+        return "request rejected (%d)" % status
+    if isinstance(exc, ReachTransientError):
+        return "endpoint unavailable"
+    return "unexpected client error"
+
+
+def _calm_failure(result=None):
+    result = result or {}
+    attempts = result.get("attempts") or 0
+    reason = result.get("reason") or "unexpected client error"
+    if attempts > 1:
+        reason += ", after %d tries" % attempts
+    elif attempts == 1 and not result.get("retryable"):
+        reason += ", not retried"
+    elif attempts == 1:
+        reason += ", after 1 try"
+    print(c_red("  ✗ the model didn't answer: %s — "
+                "send your message again or /retry" % reason))
+
+
+class TurnMeter:
+    """Collects tokens/latency for one user turn and publishes client.last_turn."""
+
+    def __init__(self, client):
+        self.client = client
+        self.started = time.time()
+        self.tokens = None
+        self.rounds = 0
+
+    def add_round(self):
+        self.rounds += 1
+        got = usage_tokens(getattr(self.client, "usage", None))
+        if got is not None:
+            self.tokens = (self.tokens or 0) + got
+
+    def publish(self):
+        turn = {
+            "rounds": max(1, self.rounds),
+            "latency": round(time.time() - self.started, 3),
+        }
+        if self.tokens is not None:  # contract: omit unknown keys
+            turn["tokens"] = self.tokens
+        self.client.last_turn = turn
+        return turn
+
+
+def _reader_arity(reader):
+    """How many positional args read_prompt takes (2 = current contract)."""
+    try:
+        params = inspect.signature(reader).parameters.values()
+    except (TypeError, ValueError):
+        return 2
+    if any(p.kind == p.VAR_POSITIONAL for p in params):
+        return 2
+    return len([p for p in params
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
+
+
+def read_user_line(client=None, session=None):
+    """Next user line: a str (``""`` = ask again) or None = leave the REPL.
+
+    Contract with terminal.read_prompt(client, session): ``""`` means a blank
+    line or a first Ctrl-C whose hint is already printed; None means EOF or a
+    second Ctrl-C and ``bye.`` is already printed. Without read_prompt (or
+    with an old zero-arg one) EOF/Ctrl-C print ``bye.`` here and return None.
+    """
+    reader = getattr(terminal, "read_prompt", None)
+    try:
+        if callable(reader):
+            if _reader_arity(reader) >= 2:
+                return reader(client, session)
+            line = reader()  # old zero-arg hook
+            return "" if line is None else line
+        return input(c_bold(c_green("you ▸ ")))
+    except (EOFError, KeyboardInterrupt):
+        print(c_dim("\n  bye."))
+        return None
+
+
+def _interruptible(fn, poll=0.1):
+    """Run ``fn`` in a worker thread; the main thread waits in short slices.
+
+    On Windows a Ctrl-C does not interrupt a blocking socket read, so a
+    reply waiting on a slow upstream would ignore it until the read returns.
+    Waiting with Thread.join(timeout) keeps the main thread responsive on
+    every platform. A KeyboardInterrupt raised inside ``fn`` is re-raised here.
+    """
+    box = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # handed to the main thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        worker.join(poll)
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def stream_reply(client, messages, indent=None, tools=None, full=False):
     """Streams a reply under a styled left rule; returns (ok, full_text).
 
-    Shows an animated waiting line until the first token arrives, so a
-    long upstream wait (reasoning models, slow aliases, cold relays) is
-    never silent.
+    With ``full=True`` returns (ok, result) where result also carries native
+    ``tool_calls`` and ``stopped`` (Ctrl-C). Shows an animated waiting line
+    until the first token, and one dim status line per retry of the same
+    model. With colour on, markdown is rendered line by line (render.py) and
+    wrapped inside the gutter; NO_COLOR / non-TTY output is the raw text.
+    Ctrl-C stops only this answer: partial text is kept and '✗ stopped' shown.
     """
     if indent is None:
         indent = response_indent()
     response_open()
-    indicator = WaitIndicator(prefix=response_label())
-    indicator.start()
-    text_parts = []
-    buf = ""
-    at_start = True  # next write begins a fresh line
-    first = True     # first line continues after the 'ai ▸' label
+    md = render.MarkdownStream() if render.enabled() else None
+    # "midline": the cursor sits after text (or the 'ai ▸' label) on a line
+    state = {"at_start": True, "first": True, "wrote": False, "midline": True,
+             "need_label": False, "text": [],
+             "indicator": WaitIndicator(prefix=response_label())}
+    state["indicator"].start()
+
+    def begin_output():
+        state["indicator"].stop()
+        if state["need_label"]:  # text after a retry: reopen 'ai ▸' once
+            sys.stdout.write(response_label())
+            state["need_label"] = False
+            state["first"] = True
+        state["wrote"] = True
+
+    def emit_lines(lines):
+        if not lines:
+            return
+        begin_output()
+        for line in lines:
+            if not state["first"]:
+                sys.stdout.write(indent)
+            sys.stdout.write(line + "\n")
+            state["first"] = False
+        state["at_start"] = True
+        state["midline"] = False
+        sys.stdout.flush()
+
+    def write_raw(delta):
+        begin_output()
+        buf = delta
+        while True:
+            newline = buf.find("\n")
+            if newline == -1:
+                break
+            line, buf = buf[:newline], buf[newline + 1:]
+            if not state["first"] and state["at_start"]:
+                sys.stdout.write(indent)
+            sys.stdout.write(line + "\n")
+            state["at_start"] = True
+            state["first"] = False
+        if buf:
+            if not state["first"] and state["at_start"]:
+                sys.stdout.write(indent)
+            sys.stdout.write(buf)
+            state["at_start"] = False
+            state["first"] = False
+        state["midline"] = not delta.endswith("\n")
+        sys.stdout.flush()
+
+    def write(delta):
+        state["text"].append(delta)
+        if md is None:
+            write_raw(delta)
+        else:
+            emit_lines(md.feed(delta))
+
+    def retry(attempt):
+        # one dim status line per retry, no blank lines in between
+        state["indicator"].stop()
+        if state["midline"]:
+            sys.stdout.write("\n")
+            state["midline"] = False
+        status_line("model busy — retrying %s (%d/%d)…"
+                    % (client.model or "the auto model", attempt, MAX_ATTEMPTS))
+        state["at_start"] = True
+        if not state["wrote"]:
+            state["need_label"] = True
+
+    stopped = False
+    cancelled = threading.Event()
+
+    def guarded(fn):
+        def inner(*a):
+            if not cancelled.is_set():  # a stopped answer prints nothing more
+                fn(*a)
+        return inner
+
     try:
-        for delta in client.chat(messages):
-            indicator.stop()
-            text_parts.append(delta)
-            buf += delta
-            while True:
-                newline = buf.find("\n")
-                if newline == -1:
-                    break
-                line, buf = buf[:newline], buf[newline + 1:]
-                if not first and at_start:
-                    sys.stdout.write(indent)
-                sys.stdout.write(line + "\n")
-                at_start = True
-                first = False
-            if buf:
-                if not first and at_start:
-                    sys.stdout.write(indent)
-                sys.stdout.write(buf)
-                buf = ""  # consumed — never re-emit this chunk on the next delta
-                at_start = False
-                first = False
-            sys.stdout.flush()
-    except ReachApiError as exc:
-        indicator.stop()
-        print()
-        print(c_red("  ✗ " + str(exc)))
-        return False, ""
+        ok, result = _interruptible(
+            lambda: request_reply(client, messages, tools=tools,
+                                  on_text=guarded(write), on_retry=guarded(retry)))
+    except KeyboardInterrupt:
+        cancelled.set()
+        stopped = True
+        ok = True
+        result = {"content": "".join(state["text"]), "tool_calls": [],
+                  "stopped": True}
     finally:
-        indicator.stop()
-    print()
-    return True, "".join(text_parts)
+        state["indicator"].stop()
+    if md is not None:
+        emit_lines(md.flush())
+    if stopped:
+        if state["midline"]:
+            sys.stdout.write("\n")
+        print(c_red("  ✗ stopped"))
+        state["midline"] = False
+    elif state["midline"] or (ok and md is None):
+        print()
+    if not ok:
+        _calm_failure(result)
+    if full:
+        return ok, result
+    return ok, result.get("content", "")
 
 
 # ---- agent loop ------------------------------------------------------------
@@ -311,6 +597,48 @@ def parse_tool_blocks(text):
     return actions, status, invalid
 
 
+def _modern_console(env=None, platform=None):
+    """Windows Terminal / VS Code / non-Windows render ⏺ and ⎿; the legacy
+    conhost fonts (Consolas, Lucida Console) show them as boxes."""
+    env = os.environ if env is None else env
+    platform = os.name if platform is None else platform
+    if platform != "nt":
+        return True
+    return bool(env.get("WT_SESSION") or env.get("TERM_PROGRAM")
+                or env.get("ConEmuANSI") == "ON")
+
+
+def tool_glyphs(env=None, platform=None):
+    if _modern_console(env, platform):
+        return "⏺", "⎿"
+    return "●", "└"
+
+
+TOOL_GLYPH, RESULT_GLYPH = tool_glyphs()
+
+
+def show_tool_call(name, args):
+    """One compact line per tool call: '  ⏺ tool  key=value …'."""
+    summary = format_args(name, args)
+    if TOOLS.get(name, {}).get("approval"):
+        # exec/write tools keep the bold-yellow look; approval prompt unchanged
+        print(c_bold(c_yellow("  %s %s" % (TOOL_GLYPH, name))) + "  " + c_bold(summary))
+    else:
+        print(c_dim("  %s " % TOOL_GLYPH) + c_cyan(name)
+              + (c_dim("  " + summary) if summary else ""))
+    if name == "edit":
+        for sign, text in edit_diff(args):
+            paint = c_red if sign == "-" else c_green
+            print("      " + paint("%s %s" % (sign, text)))
+
+
+def show_tool_result(name, result):
+    """'    ⎿ ✓ summary' (green) or '    ⎿ ✗ summary' (red)."""
+    ok, summary = summarize_result(name, result)
+    marker = c_green("✓") if ok else c_red("✗")
+    print(c_dim("    %s " % RESULT_GLYPH) + marker + c_dim(" " + summary))
+
+
 def _execute_actions(client, actions, state):
     """Run each tool action; return the [tool result] message text."""
     ctx = {"todos": state.todos, "approve": state.approve}
@@ -318,17 +646,31 @@ def _execute_actions(client, actions, state):
     for action in actions:
         name = str(action.get("action"))
         args = {k: v for k, v in action.items() if k != "action"}
-        if TOOLS.get(name, {}).get("approval"):
-            preview = args.get("command") or args.get("path") or name
-            print(c_bold(c_yellow("  agent %s → ")) % name, c_bold(str(preview)))  # noqa: E501
-        else:
-            print(c_dim("  agent %s → %s" % (name, json.dumps(args)[:90])))
+        show_tool_call(name, args)
         result = run_tool(name, args, client.workpath, ctx)
-        first = result.splitlines()[0][:100] if result else ""
-        marker = c_red("✗") if result.startswith("error:") else c_green("✓")
-        print(marker + c_dim("  " + first))
+        show_tool_result(name, result)
         parts.append("tool %s %s:\n%s" % (name, json.dumps(args), result))
     return "[tool result]\n" + "\n\n".join(parts)
+
+
+def _execute_native(client, tool_calls, state):
+    """Run native tool_calls; return the role:tool messages for history."""
+    ctx = {"todos": state.todos, "approve": state.approve}
+    out = []
+    for call in tool_calls:
+        fn = call.get("function") or {}
+        name = str(fn.get("name") or "")
+        args, error = parse_tool_arguments(fn.get("arguments"))
+        if error:
+            result = "error: " + error
+            print(c_dim("  ⏺ %s  (unreadable arguments, asking again)" % name))
+        else:
+            show_tool_call(name, args)
+            result = run_tool(name, args, client.workpath, ctx)
+            show_tool_result(name, result)
+        out.append({"role": "tool", "tool_call_id": call.get("id") or "",
+                    "content": result})
+    return out
 
 
 def _apply_status(history, reply_text, status, state):
@@ -360,6 +702,7 @@ def run_agent_turn(client, history, state, instruction=None):
     """
     rounds = 0
     recovery = 0
+    meter = TurnMeter(client)
     if instruction:
         history.append({"role": "user", "content": instruction})
     try:
@@ -367,9 +710,23 @@ def run_agent_turn(client, history, state, instruction=None):
             rounds += 1
             set_system_message(history, client)
             print(c_dim("  ── agent round %d ──" % rounds))
-            ok, reply_text = stream_reply(client, history)
+            ok, result = stream_reply(client, history, tools=tool_schemas(),
+                                      full=True)
             if not ok:
                 return False
+            meter.add_round()
+            reply_text = result.get("content") or ""
+            if result.get("stopped"):  # Ctrl-C: keep the partial answer, end the turn
+                if reply_text:
+                    history.append({"role": "assistant", "content": reply_text})
+                return False
+            native = result.get("tool_calls") or []
+            if native:
+                recovery = 0
+                history.append({"role": "assistant", "content": reply_text,
+                                "tool_calls": native})
+                history.extend(_execute_native(client, native, state))
+                continue
             actions, status, invalid = parse_tool_blocks(reply_text)
             history.append({"role": "assistant", "content": reply_text})
 
@@ -386,7 +743,9 @@ def run_agent_turn(client, history, state, instruction=None):
                 continue
             # no action, no completion: recover or treat as the final answer
             had_results = any(
-                m.get("role") == "user" and m.get("content", "").startswith("[tool result]")
+                m.get("role") == "tool"
+                or (m.get("role") == "user"
+                    and str(m.get("content") or "").startswith("[tool result]"))
                 for m in history
             )
             if had_results and recovery < MAX_RECOVERY:
@@ -401,13 +760,20 @@ def run_agent_turn(client, history, state, instruction=None):
                       "actual tool, or finish with an agent_status complete block.",
                 })
                 continue
+            meter.publish()
             print_footer(client)
             return True  # plain prose answer — turn over
         print(c_yellow("  ⏸ agent round limit reached — send 'continue' to resume"))
         return True
-    except KeyboardInterrupt:
-        print(c_dim("\n  agent stopped."))
+    except KeyboardInterrupt:  # Ctrl-C during a tool or an approval 'q'
+        print()
+        print(c_red("  ✗ stopped"))
         return False
+    except Exception:  # never surface a traceback from the agent loop
+        _calm_failure()
+        return False
+    finally:
+        meter.publish()  # client.last_turn after every agent turn
 
 
 
@@ -439,22 +805,15 @@ def run_web_answer(client, query, fetch_pages=True):
         print()
 
     messages = build_grounded_messages(query, results, pages, rich=found["rich"])
-    stream_reply(client, messages)
+    meter = TurnMeter(client)
+    ok, _text = stream_reply(client, messages)
+    if ok:
+        meter.add_round()
+    meter.publish()
     print_footer(client, cited=True)
     return True
 
 
-
-
-def _host_port(base):
-    try:
-        parsed = urllib.parse.urlparse(base or "")
-    except ValueError:
-        return ""
-    if not parsed.hostname:
-        return ""
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    return "%s:%s" % (parsed.hostname, port)
 
 
 def endpoint_notice(client):
@@ -463,7 +822,7 @@ def endpoint_notice(client):
     try:
         up = type(client)._reachable(base, getattr(client, "key", "") or "")
     except Exception:
-        up = True
+        up = True  # unknown: say nothing rather than guess
     if up:
         return False
     where = _host_port(base) or base
@@ -478,22 +837,17 @@ def endpoint_notice(client):
 
 def run_chat(client, base):
     banner(client, base, "chat")
-    try:
-        endpoint_notice(client)
-    except Exception:
-        pass
+    endpoint_notice(client)
     history = []
     agent_state = AgentState()
     session = ReplSession()
     set_system_message(history, client)
     try:
         while True:
-            try:
-                line = input(c_bold(c_green("you ▸ ")))
-            except (EOFError, KeyboardInterrupt):
-                print(c_dim("\n  bye."))
+            line = read_user_line(client, session)
+            if line is None:  # EOF / second Ctrl-C: 'bye.' already printed
                 return
-            line = line.strip()
+            line = str(line).strip()
             if not line:
                 continue
             if line.startswith("/"):
@@ -511,11 +865,22 @@ def run_chat(client, base):
             if client.agent:
                 try:
                     run_agent_turn(client, history, agent_state)
-                except Exception as exc:
-                    print(c_red("  ✗ %s" % exc))
+                except Exception:
+                    _calm_failure()
                 continue
             try:
-                ok, reply_text = stream_reply(client, history)
+                meter = TurnMeter(client)
+                ok, result = stream_reply(client, history, full=True)
+                if ok:
+                    meter.add_round()
+                meter.publish()
+                reply_text = result.get("content") or ""
+                if result.get("stopped"):  # Ctrl-C: keep partial text, back to you ▸
+                    if reply_text:
+                        history.append({"role": "assistant", "content": reply_text})
+                    else:
+                        history.pop()
+                    continue
                 if ok:
                     history.append({"role": "assistant", "content": reply_text})
                     print_footer(client)
@@ -544,7 +909,11 @@ def run_ask(client, question, web=False):
     messages.append({"role": "user", "content": question})
     if client.agent:
         return run_agent_turn(client, messages, AgentState())
+    meter = TurnMeter(client)
     ok, reply_text = stream_reply(client, messages)
+    if ok:
+        meter.add_round()
+    meter.publish()
     if not ok:
         return False
     print_footer(client)

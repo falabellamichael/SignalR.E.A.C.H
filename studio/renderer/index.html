@@ -33,6 +33,7 @@
         <div id="tab-settings-menu" class="settings-dropdown hidden">
           <button data-settings-panel="connection">Connection &amp; default model</button>
           <button data-settings-panel="appearance">Appearance</button>
+          <button data-settings-panel="mcp">MCP servers</button>
           <button data-settings-panel="conversation">Conversation &amp; permissions</button>
           <button data-settings-panel="budgeting">Budgeting</button>
         </div>
@@ -543,6 +544,7 @@
 <nav class="settings-nav" aria-label="Settings sections">
         <button data-settings-panel="connection" class="ghost">Connection</button>
         <button data-settings-panel="appearance" class="ghost">Appearance</button>
+        <button data-settings-panel="mcp" class="ghost">MCP servers</button>
         <button data-settings-panel="conversation" class="ghost">Conversation &amp; permissions</button>
         <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
       </nav>
@@ -591,6 +593,32 @@
         <label class="check"><input id="set-page-sized" type="checkbox" checked aria-describedby="page-layout-help" /> Page-sized layout</label>
         <p id="page-layout-help" class="settings-description">Keep content centered at a comfortable width. Turn off to use the full width.</p>
         <p id="page-layout-status" class="dim" role="status" aria-live="polite"></p>
+      </div>
+      <div id="settings-mcp" class="settings-panel settings-content hidden">
+        <div class="conn-toolbar">
+          <h2>MCP servers</h2>
+          <div class="settings-actions">
+            <button id="btn-add-mcp" class="gold small" type="button">Add server</button>
+          </div>
+        </div>
+        <p class="settings-description">
+          External tools over the Model Context Protocol. A stdio server runs a
+          command that Studio starts and talks to over its console; an HTTP
+          server lives at a URL and is reached over Streamable HTTP. Enabled
+          servers are connected on demand and their tools appear in agent runs
+          as <code>server__tool</code>. Server output is treated as untrusted
+          data. Changes apply when you press <strong>Save</strong>.
+        </p>
+        <p id="mcp-empty" class="settings-description" hidden>No MCP servers yet. Add one to give agents tools from an external MCP server.</p>
+        <div id="mcp-workspace" class="conn-workspace">
+          <div id="mcp-list" class="conn-list" aria-label="MCP servers"></div>
+          <section id="mcp-editor" class="conn-editor hidden" aria-labelledby="mcp-editor-title"></section>
+        </div>
+        <span id="mcp-count" class="dim"></span>
+        <div class="settings-actions">
+          <button id="btn-save-mcp" class="gold">Save</button>
+          <span id="mcp-status" class="dim" role="status" aria-live="polite"></span>
+        </div>
       </div>
 <div id="settings-conversation" class="settings-panel settings-content hidden">      <h2>Conversation &amp; permissions</h2><p id="agent-settings-context" class="dim"></p>
       <label>Name</label>
@@ -1165,9 +1193,24 @@
   <script src="command-line.js"></script>
   <script src="languages.js"></script>
   <script src="translate.js"></script>
+  <script src="message-translation.js"></script>
+  <script src="message-actions.js"></script>
   <script src="app.js"></script>
+  <script src="app-projects.js"></script>
+  <script src="app-agents.js"></script>
+  <script src="app-chat.js"></script>
+  <script src="app-drawer.js"></script>
+  <script src="app-filetree.js"></script>
+  <script src="app-editor.js"></script>
+  <script src="app-settings.js"></script>
+  <script src="app-model-picker.js"></script>
+  <script src="app-create.js"></script>
+  <script src="app-composer-catalog.js"></script>
+  <script src="app-dispatch.js"></script>
+  <script src="app-team-events.js"></script>
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>
+  <script src="mcp-settings.js"></script>
   <script src="browser-overlay.js"></script>
   <script src="browser.js"></script>
   <script src="workspace.js"></script>

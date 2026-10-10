@@ -11,7 +11,7 @@ const languages = require('../renderer/languages.js');
 const translate = require('../renderer/translate.js');
 
 function requestFixture() {
-  const source = fs.readFileSync(path.join(__dirname, '../renderer/app.js'), 'utf8').replace(/\r\n/g, '\n');
+  const source = fs.readFileSync(path.join(__dirname, '../renderer/message-translation.js'), 'utf8').replace(/\r\n/g, '\n').replace(/^ {4}/gm, '');
   const popoverStart = source.indexOf('function openTranslatePopover(');
   const start = source.indexOf('  async function run() {', popoverStart);
   const end = source.indexOf('\n  swap.onclick = ', start);
@@ -25,7 +25,7 @@ function requestFixture() {
     input: { value: 'English' },
     languages,
     translate,
-    currentAgent: { id: 'translation-fixture' },
+    getCurrentAgent: () => ({ id: 'translation-fixture' }),
     runId: 0,
     go: { disabled: false, textContent: 'Translate' },
     swap: { disabled: false },

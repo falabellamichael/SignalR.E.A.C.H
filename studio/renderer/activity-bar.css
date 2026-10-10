@@ -86,15 +86,7 @@
   background: var(--gold);
 }
 
-#page-agents aside[data-panel="thin"] .panel-width::after,
-#page-projects aside[data-panel="thin"] .panel-width::after {
-  content: '';
-  flex: 0 0 auto;
-  width: 2px;
-  height: 9px;
-  border-radius: 1px;
-  background: var(--gold);
-}
+
 
 /* Prompt + explorer label. The dollar sign is the CLI cue; the rest stays a
    quiet VS Code section title. */
@@ -178,7 +170,6 @@
   border-color: transparent;
   background: color-mix(in srgb, var(--gold) 12%, var(--panel2));
   color: var(--text);
-  box-shadow: inset 2px 0 0 var(--gold);
 }
 
 #page-projects aside #project-list li.active .project-open { color: var(--gold); }
@@ -353,13 +344,11 @@
 #page-agents aside .tree-label:hover .tree-delete,
 #page-agents aside .tree-label:focus-within .tree-delete { opacity: 1; }
 
-/* Active row: a filled muted surface plus a 2px leading accent bar, drawn with
-   an inset shadow so the row geometry never shifts between states. */
+/* Active row: a filled muted surface — drawn without a leading accent bar. */
 #page-agents aside .tree-node.active > .tree-label {
   border-color: transparent;
   background: color-mix(in srgb, var(--gold) 12%, var(--panel2));
   color: var(--text);
-  box-shadow: inset 2px 0 0 var(--gold);
 }
 
 #page-agents aside .tree-node.active > .tree-label .tree-name,

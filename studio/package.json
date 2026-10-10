@@ -19,6 +19,8 @@
     "test:teams-click-ui": "electron test/team-deck-tab-click-ui.cjs",
     "test:agents-ui": "electron test/agents-scroll-ui.cjs",
     "test:persona-ui": "electron test/persona-modal-ui.cjs",
+    "test:translate-ui": "electron test/translate-popover-ui.cjs",
+    "test:mcp-ui": "electron test/mcp-settings-ui.cjs",
     "build:editor": "esbuild renderer/editor.src.js --bundle --minify --format=iife --outfile=renderer/editor.bundle.js",
     "build:activity": "node scripts/build-activity.cjs",
     "check:activity": "node scripts/build-activity.cjs --check",

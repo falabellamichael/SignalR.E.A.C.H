@@ -52,6 +52,10 @@ try {
 }
 if ($code -ne 0) { throw "install failed (exit $code). See output above; re-run with 'python tools\reach.py install --help' for options." }
 
+# 4. `signalreach` command on PATH (re-running is safe; open a new terminal after)
+Push-Location $Dir
+try { & $py tools\signalreach.py --install-shim } finally { Pop-Location }
+
 Write-Host ''
 Write-Host '[SignalREACH] done. Reload SimpleRAG -> Advanced -> SignalREACH.'
 Write-Host '[SignalREACH] add your own provider URL and API key in Settings.'

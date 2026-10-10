@@ -543,6 +543,30 @@ const COLLAB_TOOLS = {
       return net.reflect(ctx.agentId);
     },
   },
+  /* One surface for all crew correspondence: the mailbox holds EVERY accepted
+   * message (direct mail and broadcasts to 'all'), and Notes is the shared
+   * board members pin findings to. Direct sends still route through net.send
+   * so LINKS validation, budgets and wake rules are unchanged. */
+  'agent.mail': {
+    class: 'write', tier: 'collab', approval: false, budget: 40000,
+    help: 'the crew\'s unified mailbox — every message sent this run lands here, not just yours — plus the shared Notes board. Args: op \'read\'|\'send\'|\'note\'|\'notes\' (default read). read: optional agent filter and limit. send: to (peer name/id, or \'all\' to broadcast without waking anyone) + message. note: entry pins a note the whole crew can cite. notes: lists the board.',
+    example: { action: 'agent.mail', op: 'read', limit: 10 },
+    async execute(args, ctx) {
+      const net = netFromCtx(ctx);
+      if (!net) return noNet();
+      const op = String(args.op || 'read').trim().toLowerCase();
+      if (op === 'read') return net.mailbox(ctx.agentId, { agent: args.agent, limit: args.limit });
+      if (op === 'send') {
+        const to = String(args.to || '').trim();
+        if (to === '*' || /^(all|crew|everyone)$/i.test(to))
+          return net.broadcast({ from: ctx.agentId, message: args.message });
+        return net.send({ from: ctx.agentId, to, message: args.message });
+      }
+      if (op === 'note') return net.postNote(ctx.agentId, args.entry ?? args.message);
+      if (op === 'notes') return net.crewNotes();
+      return { ok: false, error: `Unknown agent.mail op '${op}'. Use 'read', 'send', 'note' or 'notes'.` };
+    },
+  },
 };
 
 const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS, ...require('./code-tools.cjs') };

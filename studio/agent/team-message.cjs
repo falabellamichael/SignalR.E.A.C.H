@@ -5,6 +5,8 @@ const { decode: decodeLinksCode } = require('./links-code.cjs');
 module.exports = ({ FINISHED }) => ({
   _emitDelivery(sender, rec, from, text, delivered, { fromName = '', source = 'agent' } = {}) {
     this.journal?.append('crew-message', { from, to: rec.id, source, message: text, delivered });
+    // Unified mailbox: every accepted delivery is also crew-visible mail.
+    this._recordMail?.({ from, fromName: sender ? sender.name : fromName, to: rec.id, toName: rec.name, text, source, delivered });
     require('./audit-event.cjs').auditEvent(this.auditLog, 'crew.handoff', { agent: from,
       allowed: true, detail: { to: rec.id, source, chars: text.length, delivered } });
     this._emit('agent-message', {

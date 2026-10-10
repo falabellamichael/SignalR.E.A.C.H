@@ -23,7 +23,9 @@ const errors = [];
 app.on('browser-window-created', (_event, window) => {
   win = window;
   setImmediate(() => window.removeAllListeners('ready-to-show'));
-  window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) errors.push(message); });
+  // The committed index.html CSP meta provokes this Chromium warning on every
+  // boot; sibling UI tests filter it the same way.
+  window.webContents.on('console-message', (_event, level, message) => { if (level >= 3 && !String(message).includes('frame-ancestors')) errors.push(message); });
 });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const run = code => win.webContents.executeJavaScript(code, true);

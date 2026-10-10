@@ -54,6 +54,11 @@ async function openSettingsPanel(panel) {
     // results persist per row until it is edited, so reopening does not re-ping).
     window.ReachConnPanel?.autoTest?.();
   }
+  if (panel === 'mcp') {
+    // Same principle: reload the card draft and handshake status so the panel
+    // reflects what the manager would actually run, not a stale snapshot.
+    window.ReachMcpPanel?.open?.();
+  }
   const agent = currentAgent ? await reachApi.agents.get(currentAgent.id) : null;
   if (sequence !== settingsOpenSequence) return;
   settingsAgent = agent;

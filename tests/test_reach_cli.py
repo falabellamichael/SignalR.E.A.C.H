@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 import unittest
 import unittest.mock
 
@@ -863,11 +864,14 @@ class SlashCommandTests(unittest.TestCase):
         client.workpath = self.workpath()
         seen = []
 
-        def fake_chat(messages, stream=True):
+        # chat mode now goes through request_reply -> client.complete
+        def fake_complete(messages, tools=None, on_text=None, stream=True):
             seen.append([m.get("content") for m in messages if m.get("role") == "user"])
-            yield "ok"
+            if on_text:
+                on_text("ok")
+            return {"content": "ok", "tool_calls": []}
 
-        client.chat = fake_chat
+        client.complete = fake_complete
         prompts = []
         answers = iter(["hello", "/retry", "/exit"])
 
@@ -886,23 +890,26 @@ class SlashCommandTests(unittest.TestCase):
         seen[:] = []
         calls = {"n": 0}
 
-        def failing_then_ok(messages, stream=True):
+        def failing_then_ok(messages, tools=None, on_text=None, stream=True):
             calls["n"] += 1
             seen.append([m.get("content") for m in messages if m.get("role") == "user"])
             if calls["n"] == 1:
-                raise ReachApiError("nope")
-            yield "recovered"
+                raise ReachApiError("nope", status=400)  # non-retryable: fails fast
+            if on_text:
+                on_text("recovered")
+            return {"content": "recovered", "tool_calls": []}
 
-        client.chat = failing_then_ok
+        client.complete = failing_then_ok
         answers = iter(["hello", "/retry", "/exit"])
         with unittest.mock.patch("builtins.input", side_effect=lambda _prompt="": next(answers)), self.redirect_stdout(self.io.StringIO()):
             run_chat(client, client.base)
         self.assertEqual(seen, [["hello"], ["hello"]])
 
-        def refuse_send(_messages, stream=True):
+        def refuse_send(*_args, **_kwargs):
             raise AssertionError("slash commands must not be sent as prompts")
 
         client.chat = refuse_send
+        client.complete = refuse_send
         client.base = "http://stay.example/v1"
         answers = iter(["/provider", "/no-such-command", "/exit"])
         quiet = self.io.StringIO()
@@ -1414,13 +1421,17 @@ class StartupBaseTests(unittest.TestCase):
     def test_chat_starts_when_the_relay_is_down_and_shows_the_notice(self):
         from reach_cli.__main__ import main
         from reach_cli.client import ReachClient
+        from reach_cli import chat as chat_mod
 
         out = self.io.StringIO()
 
         def eof(_prompt=""):
             raise EOFError
 
-        with unittest.mock.patch("reach_cli.client.discover_public_url",
+        # The module stub keeps other REPL tests off the network. This case
+        # needs the real notice.
+        with unittest.mock.patch.object(chat_mod, "endpoint_notice", _REAL_ENDPOINT_NOTICE), \
+                unittest.mock.patch("reach_cli.client.discover_public_url",
                                  side_effect=AssertionError("fallback")), \
                 unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": False)), \
                 unittest.mock.patch("builtins.input", side_effect=eof), \
@@ -1434,7 +1445,8 @@ class StartupBaseTests(unittest.TestCase):
         self.assertNotIn("Traceback", text)
 
         out = self.io.StringIO()
-        with unittest.mock.patch("reach_cli.client.discover_public_url",
+        with unittest.mock.patch.object(chat_mod, "endpoint_notice", _REAL_ENDPOINT_NOTICE), \
+                unittest.mock.patch("reach_cli.client.discover_public_url",
                                  return_value="https://pub.example:8443/v1/"), \
                 unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": False)), \
                 unittest.mock.patch("builtins.input", side_effect=eof), \
@@ -1505,3 +1517,780 @@ class StartupBaseTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ---- agent loop robustness (native tool_calls, retries, partial streams) ----
+
+import io  # noqa: E402
+import contextlib  # noqa: E402
+import urllib.error  # noqa: E402
+
+from reach_cli import chat as chat_mod  # noqa: E402
+from reach_cli.agent_tools import tool_schemas, parse_tool_arguments  # noqa: E402
+from reach_cli.client import ReachClient, ReachTransientError  # noqa: E402
+
+
+class _Resp:
+    """Fake urlopen response: iterable SSE lines or a JSON body."""
+
+    def __init__(self, lines=None, body=None, cut_after=None):
+        self._lines = [l.encode() if isinstance(l, str) else l for l in (lines or [])]
+        self._body = body
+        self._cut = cut_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return json.dumps(self._body).encode()
+
+    def __iter__(self):
+        for i, line in enumerate(self._lines):
+            if self._cut is not None and i >= self._cut:
+                raise ConnectionResetError("reset by peer")
+            yield line
+
+
+def _sse(obj):
+    return "data: " + json.dumps(obj) + "\n"
+
+
+def _delta(**delta):
+    return _sse({"choices": [{"delta": delta}]})
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("http://x/chat/completions", code, "err", {},
+                                  io.BytesIO(b'{"error":{"message":"busy"}}'))
+
+
+class _Recorder:
+    """Patch urlopen with a scripted sequence; records every payload."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.payloads = []
+        self.urls = []
+
+    def __call__(self, request, timeout=None):
+        self.urls.append(request.full_url)
+        self.payloads.append(json.loads(request.data.decode()))
+        # the last step repeats (the loop may nudge a prose answer up to
+        # MAX_RECOVERY times after tool results)
+        step = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+class AgentLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = __import__("tempfile").mkdtemp()
+        with open(os.path.join(self.tmp, "hello.txt"), "w") as fh:
+            fh.write("hi there\n")
+        self.client = ReachClient("http://relay/v1", model="codegpt-eco")
+        self.client.agent = True
+        self.client.workpath = self.tmp
+        self.sleep = unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None)
+        self.sleep.start()
+
+    def tearDown(self):
+        self.sleep.stop()
+
+    def run_agent(self, script):
+        rec = _Recorder(script)
+        out = io.StringIO()
+        history = [{"role": "user", "content": "read hello.txt"}]
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok = chat_mod.run_agent_turn(self.client, history, chat_mod.AgentState())
+        return ok, history, rec, out.getvalue()
+
+    def test_tool_schemas_openai_format(self):
+        schemas = tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        self.assertIn("read", names)
+        for s in schemas:
+            self.assertEqual(s["type"], "function")
+            self.assertEqual(s["function"]["parameters"]["type"], "object")
+
+    def test_native_tool_calls_streamed(self):
+        first = _Resp([
+            _delta(tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                                "function": {"name": "read", "arguments": ""}}]),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": '{"pa'}}]),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": 'th": "hello.txt"}'}}]),
+            _sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]\n",
+        ])
+        second = _Resp([_delta(content="It says hi there."), "data: [DONE]\n"])
+        ok, history, rec, out = self.run_agent([first, second])
+        self.assertTrue(ok)
+        self.assertIn("tools", rec.payloads[0])
+        assistant = [m for m in history if m.get("tool_calls")][0]
+        self.assertEqual(assistant["tool_calls"][0]["function"]["name"], "read")
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg["tool_call_id"], "call_1")
+        self.assertIn("hi there", tool_msg["content"])
+        # the second request carries the tool exchange back to the model
+        roles = [m["role"] for m in rec.payloads[1]["messages"]]
+        self.assertIn("tool", roles)
+        self.assertNotIn("Traceback", out)
+
+    def test_native_tool_calls_non_streamed(self):
+        self.client.no_stream = True
+        first = _Resp(body={"choices": [{"message": {"content": None, "tool_calls": [
+            {"id": "c9", "type": "function",
+             "function": {"name": "read", "arguments": '{"path": "hello.txt"}'}}]}}]})
+        second = _Resp(body={"choices": [{"message": {"content": "done"}}]})
+        ok, history, rec, _ = self.run_agent([first, second])
+        self.assertTrue(ok)
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg["tool_call_id"], "c9")
+        self.assertIn("hi there", tool_msg["content"])
+
+    def test_malformed_tool_arguments_handled(self):
+        self.assertIsNotNone(parse_tool_arguments("{not json")[1])
+        self.client.no_stream = True
+        first = _Resp(body={"choices": [{"message": {"tool_calls": [
+            {"id": "c1", "function": {"name": "read", "arguments": "{bad"}}]}}]})
+        second = _Resp(body={"choices": [{"message": {"content": "ok"}}]})
+        ok, history, _, out = self.run_agent([first, second])
+        self.assertTrue(ok)
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertTrue(tool_msg["content"].startswith("error:"))
+        self.assertNotIn("Traceback", out)
+
+    def test_text_tool_block_path_still_works(self):
+        block = '```tool\n{"action": "read", "path": "hello.txt"}\n```'
+        first = _Resp([_delta(content=block), "data: [DONE]\n"])
+        second = _Resp([_delta(content="Read it."), "data: [DONE]\n"])
+        ok, history, _, _ = self.run_agent([first, second])
+        self.assertTrue(ok)
+        results = [m for m in history if m["role"] == "user"
+                   and m["content"].startswith("[tool result]")]
+        self.assertEqual(len(results), 1)
+        self.assertIn("hi there", results[0]["content"])
+
+    def test_retries_same_provider_and_model(self):
+        ok_resp = _Resp([_delta(content="hello"), "data: [DONE]\n"])
+        ok, _, rec, out = self.run_agent(
+            [_http_error(502), _http_error(503), TimeoutError("slow"), ok_resp])
+        self.assertTrue(ok)
+        self.assertEqual(len(rec.payloads), 4)
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertEqual(set(rec.urls), {"http://relay/v1/chat/completions"})
+        self.assertEqual(self.client.model, "codegpt-eco")
+        self.assertIn("retrying", out)
+        self.assertNotIn("✗", out)
+
+    def test_partial_stream_is_kept_and_continued(self):
+        cut = _Resp([_delta(content="Hello "), _delta(content="wor"),
+                     _delta(content="ld")], cut_after=2)
+        rest = _Resp([_delta(content="ld!"), "data: [DONE]\n"])
+        ok, history, rec, out = self.run_agent([cut, rest])
+        self.assertTrue(ok)
+        self.assertEqual(history[-1]["content"], "Hello world!")
+        retry_msgs = rec.payloads[1]["messages"]
+        self.assertEqual(retry_msgs[-2], {"role": "assistant", "content": "Hello wor"})
+        self.assertEqual(rec.payloads[1]["model"], "codegpt-eco")
+        self.assertNotIn("Traceback", out)
+
+    def test_cut_after_complete_tool_call_keeps_it(self):
+        cut = _Resp([
+            _delta(tool_calls=[{"index": 0, "id": "k1", "function": {
+                "name": "read", "arguments": '{"path": "hello.txt"}'}}]),
+            "data: never\n"], cut_after=1)
+        final = _Resp([_delta(content="fine"), "data: [DONE]\n"])
+        ok, history, rec, _ = self.run_agent([cut, final])
+        self.assertTrue(ok)
+        # no re-request of the cut turn: request 2 already carries the tool result
+        self.assertIn("tool", [m["role"] for m in rec.payloads[1]["messages"]])
+        self.assertTrue(any(m["role"] == "tool" for m in history))
+
+    def test_graceful_final_failure_no_traceback(self):
+        ok, _, rec, out = self.run_agent([_http_error(502)] * chat_mod.MAX_ATTEMPTS)
+        self.assertFalse(ok)
+        self.assertEqual(len(rec.payloads), chat_mod.MAX_ATTEMPTS)
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn("HTTP 502", out)
+        self.assertEqual(out.count("✗ the model didn't answer"), 1)
+        self.assertNotIn("⏸", out)
+        line = ("  ✗ the model didn't answer: endpoint unavailable (502), after 4 tries"
+                " — send your message again or /retry")
+        self.assertIn(chat_mod.c_red(line), out)  # same red helper as the old error line
+        self.assertIn("endpoint unavailable (502), after 4 tries", out)
+
+    def test_non_retryable_4xx_fails_fast_with_reason(self):
+        for code, reason in ((401, "auth rejected (401)"),
+                             (403, "auth rejected (403)"),
+                             (404, "model not available (404)"),
+                             (400, "request rejected (400)")):
+            ok, _, rec, out = self.run_agent([_http_error(code)])
+            self.assertFalse(ok)
+            self.assertEqual(len(rec.payloads), 1, code)
+            self.assertIn(reason + ", not retried", out)
+            self.assertNotIn("retrying", out)
+            self.assertNotIn("Traceback", out)
+
+    def test_rate_limit_and_timeout_reasons(self):
+        n = chat_mod.MAX_ATTEMPTS
+        _, _, rec, out = self.run_agent([_http_error(429)] * n)
+        self.assertEqual(len(rec.payloads), n)
+        self.assertIn("rate limited (429), after %d tries" % n, out)
+        _, _, _, out = self.run_agent([TimeoutError("slow")] * n)
+        self.assertIn("timed out, after %d tries" % n, out)
+        _, _, _, out = self.run_agent(
+            [urllib.error.URLError(ConnectionRefusedError("refused"))] * n)
+        self.assertIn("endpoint unreachable (relay:80), after %d tries" % n, out)
+
+    def test_real_openai_tool_call_shapes_list_and_glob(self):
+        # exact shapes from the bridge: id, type function, arguments as JSON string
+        streamed = _Resp([
+            _sse({"id": "chatcmpl-1", "object": "chat.completion.chunk",
+                  "choices": [{"index": 0, "delta": {"role": "assistant", "content": None,
+                   "tool_calls": [{"index": 0, "id": "call_abc", "type": "function",
+                                   "function": {"name": "list", "arguments": ""}}]},
+                   "finish_reason": None}]}),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": "{\"path\": \"\"}"}}]),
+            _delta(tool_calls=[{"index": 1, "id": "call_def", "type": "function",
+                                "function": {"name": "glob",
+                                             "arguments": "{\"pattern\": \"*.txt\"}"}}]),
+            _sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]\n",
+        ])
+        final = _Resp([_delta(content="done"), "data: [DONE]\n"])
+        ok, history, rec, _ = self.run_agent([streamed, final])
+        self.assertTrue(ok)
+        call_msg = [m for m in history if m.get("tool_calls")][0]
+        self.assertEqual([c["id"] for c in call_msg["tool_calls"]], ["call_abc", "call_def"])
+        self.assertTrue(all(c["type"] == "function" for c in call_msg["tool_calls"]))
+        self.assertTrue(all(isinstance(c["function"]["arguments"], str)
+                            for c in call_msg["tool_calls"]))
+        tools = {m["tool_call_id"]: m["content"] for m in history if m["role"] == "tool"}
+        self.assertIn("hello.txt", tools["call_abc"])
+        self.assertIn("hello.txt", tools["call_def"])
+        # non-streamed, same shapes
+        self.client.no_stream = True
+        body = {"id": "chatcmpl-2", "object": "chat.completion", "choices": [{
+            "index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [
+                    {"id": "call_x", "type": "function",
+                     "function": {"name": "glob", "arguments": "{\"pattern\": \"**/*.txt\"}"}}]}}]}
+        ok, history, _, _ = self.run_agent(
+            [_Resp(body=body), _Resp(body={"choices": [{"message": {"content": "ok"}}]})])
+        self.assertTrue(ok)
+        tools = {m["tool_call_id"]: m["content"] for m in history if m["role"] == "tool"}
+        self.assertIn("hello.txt", tools["call_x"])
+
+    def test_unexpected_exception_never_escapes(self):
+        ok, _, _, out = self.run_agent([RuntimeError("boom")])
+        self.assertFalse(ok)
+        self.assertNotIn("Traceback", out)
+
+    def test_transient_error_carries_partial(self):
+        err = ReachTransientError("x", {"content": "ab", "tool_calls": []})
+        self.assertEqual(err.partial["content"], "ab")
+
+
+class RetryWiringTests(unittest.TestCase):
+    """/retry's prompt goes through request_reply in chat and /agent mode."""
+
+    def _run(self, agent):
+        client = ReachClient("http://relay/v1", model="codegpt-eco")
+        client.agent = agent
+        client.workpath = __import__("tempfile").mkdtemp()
+        inputs = iter(["hello", "/retry", "/exit"])
+        rec = _Recorder([_http_error(502), _http_error(502),
+                         _Resp([_delta(content="hi"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch("builtins.input", lambda *_: next(inputs)), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                unittest.mock.patch.object(chat_mod, "banner", lambda *a: None), \
+                unittest.mock.patch.object(chat_mod, "MAX_ATTEMPTS", 1), \
+                contextlib.redirect_stdout(out):
+            chat_mod.run_chat(client, "http://relay/v1")
+        return rec, out.getvalue()
+
+    def test_retry_in_chat_mode(self):
+        rec, out = self._run(agent=False)
+        self.assertGreaterEqual(len(rec.payloads), 2)
+        self.assertEqual(rec.payloads[-1]["messages"][-1]["content"], "hello")
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+
+    def test_retry_in_agent_mode(self):
+        rec, out = self._run(agent=True)
+        self.assertIn("tools", rec.payloads[-1])
+        self.assertIn("hello", [m.get("content") for m in rec.payloads[-1]["messages"]])
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+
+
+class NoEndpointFallbackTests(unittest.TestCase):
+    """resolve_base never swaps in the public pointer unless 'public' was picked."""
+
+    def test_explicit_or_preset_base_is_kept_even_when_down(self):
+        for base in ("http://127.0.0.1:1/v1", "http://127.0.0.1:20777/v1",
+                     "https://my.relay.example/v1"):
+            client = ReachClient(base)
+            with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                     side_effect=AssertionError("gist used")), \
+                    unittest.mock.patch("urllib.request.urlopen",
+                                        side_effect=AssertionError("probe/gist used")):
+                self.assertEqual(client.resolve_base(), base.rstrip("/"))
+
+    def test_public_uses_the_pointer_only_when_chosen(self):
+        client = ReachClient("public")
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 return_value="https://pub.example/v1/\n".strip()):
+            self.assertEqual(client.resolve_base(), "https://pub.example/v1")
+        with unittest.mock.patch("reach_cli.client.discover_public_url", return_value=None):
+            self.assertIsNone(client.resolve_base())
+
+    def test_unreachable_endpoint_red_line_names_host_port(self):
+        client = ReachClient("http://127.0.0.1:1/v1", model="m")
+        refused = urllib.error.URLError(ConnectionRefusedError("refused"))
+        rec = _Recorder([refused])
+        out = io.StringIO()
+        msgs = [{"role": "user", "content": "hi"}]
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                contextlib.redirect_stdout(out):
+            ok, _ = chat_mod.stream_reply(client, msgs)
+        self.assertFalse(ok)
+        self.assertIn(chat_mod.c_red(
+            "  ✗ the model didn't answer: endpoint unreachable (127.0.0.1:1), after 4 tries"
+            " — send your message again or /retry"), out.getvalue())
+        self.assertEqual(set(rec.urls), {"http://127.0.0.1:1/v1/chat/completions"})
+
+
+class ToolLineTests(unittest.TestCase):
+    """Compact '⏺ tool args' / '⎿ ✓ summary' agent lines."""
+
+    def setUp(self):
+        from reach_cli import agent_tools
+        self.at = agent_tools
+
+    def capture(self, fn, *a):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fn(*a)
+        return out.getvalue()
+
+    def test_compact_args_not_json(self):
+        self.assertEqual(self.at.format_args("read", {"path": "a.py", "startLine": 3}),
+                         "path=a.py startLine=3")
+        self.assertEqual(self.at.format_args("search", {"pattern": "def x", "regex": True}),
+                         'pattern="def x" regex')
+        self.assertEqual(self.at.format_args("todo_write", {"todos": [{}, {}]}), "2 item(s)")
+        line = self.capture(chat_mod.show_tool_call, "list", {"path": "src"})
+        self.assertEqual(line, "  ⏺ list  path=src\n")
+        self.assertNotIn("{", line)
+
+    def test_result_summaries(self):
+        s = self.at.summarize_result
+        self.assertEqual(s("read", "a.py (12 lines)\n    1 | x"), (True, "12 lines"))
+        self.assertEqual(s("list", "a/\n  b\nc"), (True, "3 entries"))
+        self.assertEqual(s("glob", "a.py\nb.py"), (True, "2 file(s)"))
+        self.assertEqual(s("search", "no matches"), (True, "no matches"))
+        self.assertEqual(s("shell", "exit code 1\n3 failed"), (False, "exit 1 · 3 failed"))
+        self.assertEqual(s("read", "error: no such file: x"), (False, "no such file: x"))
+        self.assertEqual(s("shell", "shell command denied by the user: rm"), (False, "denied"))
+        out = self.capture(chat_mod.show_tool_result, "list", "a\nb")
+        self.assertEqual(out, "    ⎿ ✓ 2 entries\n")
+
+    def test_edit_shows_short_diff(self):
+        args = {"path": "a.py", "search": "old = 1", "replace": "new = 2\nmore\nx\ny"}
+        out = self.capture(chat_mod.show_tool_call, "edit", args)
+        self.assertIn("⏺ edit  a.py", out)
+        self.assertIn("      - old = 1", out)
+        self.assertIn("      + new = 2", out)
+        self.assertIn("+ … 1 more line(s)", out)
+
+    def test_retry_lines_have_no_blank_lines_between(self):
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([_http_error(502)] * 4)
+        out = io.StringIO()
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                contextlib.redirect_stdout(out):
+            chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
+        lines = out.getvalue().split("\n")
+        start = next(i for i, l in enumerate(lines) if "retrying" in l)
+        tail = [l for l in lines[start:] if l != ""]
+        self.assertEqual(lines[start:start + len(tail)], tail)  # contiguous
+        self.assertEqual(len([l for l in tail if "retrying" in l]), 3)
+
+
+class MarkdownRenderTests(unittest.TestCase):
+    def setUp(self):
+        from reach_cli import render, terminal
+        self.render, self.terminal = render, terminal
+
+    def lines(self, text, width=40):
+        m = self.render.MarkdownStream(width)
+        out = []
+        for i in range(0, len(text), 7):  # arbitrary delta boundaries
+            out += m.feed(text[i:i + 7])
+        return out + m.flush()
+
+    def test_blocks_plain_paint(self):
+        text = ("# Title\n\nSome **bold** and `code`.\n```python\nprint(1)\n```\n"
+                "- a bullet that is long enough to wrap around the width\n1. one\n")
+        out = self.lines(text)
+        self.assertEqual(out[0], "Title")
+        self.assertEqual(out[2], "Some bold and code.")
+        self.assertTrue(out[3].startswith("┌─ python "))
+        self.assertEqual(out[4], "│ print(1)")
+        self.assertTrue(out[5].startswith("└─"))
+        self.assertTrue(out[6].startswith("• a bullet"))
+        self.assertTrue(out[7].startswith("  "))  # hanging indent
+        self.assertIn("1. one", out)
+        self.assertTrue(all(len(l) <= 40 for l in out))
+
+    def test_styles_when_colour_on(self):
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", True):
+            out = self.lines("## Head\n**b** `c`\n```\nx\n")
+        self.assertIn("\x1b[1m", out[0])
+        self.assertIn("\x1b[1mb\x1b[0m", out[1])
+        self.assertIn("\x1b[36mc\x1b[0m", out[1])
+        self.assertIn("code", out[2])           # default fence label
+        self.assertTrue(out[-1].endswith("\x1b[0m"))  # unterminated fence closed
+
+    def test_stream_reply_renders_in_gutter_when_colour_on(self):
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([_Resp([_delta(content="# Hi\nline **two**\n"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", True), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok, text = chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
+            expected = self.terminal.c_cyan("  │ ") + "line " + self.terminal.c_bold("two")
+        self.assertTrue(ok)
+        self.assertEqual(text, "# Hi\nline **two**\n")  # history keeps raw markdown
+        shown = out.getvalue()
+        self.assertNotIn("# Hi", shown)
+        self.assertIn(expected, shown)
+
+    def test_no_color_prints_raw_text(self):
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([_Resp([_delta(content="# Hi **x**\n"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", False), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
+        self.assertIn("ai ▸ # Hi **x**", out.getvalue())
+
+
+class CtrlCTests(unittest.TestCase):
+    """Ctrl-C stops only the current answer, keeps partial text."""
+
+    def _interrupting_resp(self):
+        class R(_Resp):
+            def __iter__(self):
+                yield _delta(content="partial ").encode()
+                raise KeyboardInterrupt
+        return R()
+
+    def test_chat_mode_stop_keeps_partial_and_returns_to_prompt(self):
+        client = ReachClient("http://relay/v1", model="m")
+        client.workpath = __import__("tempfile").mkdtemp()
+        inputs = iter(["hello", "again", "/exit"])
+        rec = _Recorder([self._interrupting_resp(),
+                         _Resp([_delta(content="fine"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch("builtins.input", lambda *_: next(inputs)), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "banner", lambda *a: None), \
+                contextlib.redirect_stdout(out):
+            chat_mod.run_chat(client, client.base)
+        text = out.getvalue()
+        self.assertIn(chat_mod.c_red("  ✗ stopped"), text)
+        self.assertIn("bye.", text)  # REPL kept running to /exit
+        second = rec.payloads[1]["messages"]
+        self.assertIn({"role": "assistant", "content": "partial "}, second)
+        self.assertEqual(second[-1]["content"], "again")
+        self.assertNotIn("Traceback", text)
+
+    def test_agent_mode_stop_ends_turn_keeps_partial(self):
+        client = ReachClient("http://relay/v1", model="m")
+        client.agent = True
+        client.workpath = __import__("tempfile").mkdtemp()
+        history = [{"role": "user", "content": "go"}]
+        rec = _Recorder([self._interrupting_resp()])
+        out = io.StringIO()
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok = chat_mod.run_agent_turn(client, history, chat_mod.AgentState())
+        self.assertFalse(ok)
+        self.assertEqual(history[-1], {"role": "assistant", "content": "partial "})
+        self.assertEqual(out.getvalue().count("✗ stopped"), 1)
+        self.assertEqual(len(rec.payloads), 1)  # no retry after a user stop
+
+
+class RenderPaintBindingTests(unittest.TestCase):
+    def test_enabled_follows_replaced_paint_object(self):
+        from reach_cli import render, terminal
+        saved = terminal.PAINT
+        try:
+            terminal.PAINT = terminal.Paint(True)   # what __main__ does at startup
+            self.assertTrue(render.enabled())
+            terminal.PAINT = terminal.Paint(False)
+            self.assertFalse(render.enabled())
+        finally:
+            terminal.PAINT = saved
+
+
+class FooterAndPromptHookTests(unittest.TestCase):
+    """Hooks for Main Chat: terminal.read_prompt() and client.last_turn."""
+
+    def _chat(self, script, inputs, agent=False, patch_reader=None):
+        from reach_cli import terminal
+        client = ReachClient("http://relay/v1", model="m")
+        client.agent = agent
+        client.workpath = __import__("tempfile").mkdtemp()
+        it = iter(inputs)
+        seen = []
+
+        def footer(c, cited=False):
+            seen.append(dict(c.last_turn))
+        rec = _Recorder(script)
+        ctx = [unittest.mock.patch("urllib.request.urlopen", rec),
+               unittest.mock.patch.object(chat_mod, "banner", lambda *a: None),
+               unittest.mock.patch.object(chat_mod, "print_footer", footer)]
+        if patch_reader:
+            ctx.append(unittest.mock.patch.object(terminal, "read_prompt",
+                                                  lambda c, s: next(it), create=True))
+        else:
+            ctx.append(unittest.mock.patch("builtins.input", lambda *_: next(it)))
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            for c in ctx:
+                stack.enter_context(c)
+            stack.enter_context(contextlib.redirect_stdout(out))
+            chat_mod.run_chat(client, client.base)
+        return client, seen, rec
+
+    def test_read_prompt_used_when_present(self):
+        from reach_cli import terminal
+        with unittest.mock.patch("builtins.input",
+                                 side_effect=AssertionError("input() used")):
+            _, seen, rec = self._chat(
+                [_Resp([_delta(content="hi"), "data: [DONE]\n"])],
+                ["hello", "/exit"], patch_reader=True)
+        self.assertEqual(rec.payloads[0]["messages"][-1]["content"], "hello")
+
+    def test_falls_back_to_input_without_read_prompt(self):
+        from reach_cli import terminal
+        saved = getattr(terminal, "read_prompt", None)
+        if saved is not None:
+            delattr(terminal, "read_prompt")
+        try:
+            _, _, rec = self._chat([_Resp([_delta(content="hi"), "data: [DONE]\n"])],
+                                   ["hello", "/exit"])
+        finally:
+            if saved is not None:
+                terminal.read_prompt = saved
+        self.assertEqual(len(rec.payloads), 1)
+
+    def test_last_turn_plain_chat_with_stream_usage(self):
+        resp = _Resp([_delta(content="hi"),
+                      _sse({"choices": [], "usage": {"prompt_tokens": 5,
+                                                     "completion_tokens": 2,
+                                                     "total_tokens": 7}}),
+                      "data: [DONE]\n"])
+        client, seen, _ = self._chat([resp], ["hello", "/exit"])
+        self.assertEqual(seen[0]["tokens"], 7)
+        self.assertEqual(seen[0]["rounds"], 1)
+        self.assertIsInstance(seen[0]["latency"], float)
+        self.assertEqual(client.last_turn, seen[0])
+
+    def test_last_turn_tokens_none_without_usage(self):
+        client, seen, _ = self._chat([_Resp([_delta(content="hi"), "data: [DONE]\n"])],
+                                     ["hello", "/exit"])
+        self.assertNotIn("tokens", seen[0])  # unknown keys are omitted
+        self.assertEqual(seen[0]["rounds"], 1)
+
+    def test_last_turn_agent_counts_rounds_and_sums_tokens(self):
+        r1 = _Resp(body={"usage": {"total_tokens": 10}, "choices": [{"message": {
+            "tool_calls": [{"id": "a", "type": "function",
+                            "function": {"name": "list", "arguments": "{}"}}]}}]})
+        r2 = _Resp(body={"usage": {"prompt_tokens": 3, "completion_tokens": 4},
+                         "choices": [{"message": {"content": "done"}}]})
+        from reach_cli import terminal  # noqa: F401
+        client = ReachClient("http://relay/v1", model="m", no_stream=True)
+        client.agent = True
+        client.workpath = __import__("tempfile").mkdtemp()
+        history = [{"role": "user", "content": "go"}]
+        seen = []
+        rec = _Recorder([r1, r2])
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "print_footer",
+                                           lambda c, cited=False: seen.append(dict(c.last_turn))), \
+                contextlib.redirect_stdout(io.StringIO()):
+            chat_mod.run_agent_turn(client, history, chat_mod.AgentState())
+        # prose after tool results is nudged MAX_RECOVERY times, so 4 rounds
+        self.assertEqual(client.last_turn["rounds"], 2 + chat_mod.MAX_RECOVERY)
+        self.assertEqual(client.last_turn["tokens"], 10 + 7 * (1 + chat_mod.MAX_RECOVERY))
+        self.assertEqual(seen[-1], client.last_turn)
+
+    def test_last_turn_published_on_failure(self):
+        client = ReachClient("http://relay/v1", model="m")
+        client.agent = True
+        client.workpath = __import__("tempfile").mkdtemp()
+        with unittest.mock.patch("urllib.request.urlopen", _Recorder([_http_error(401)])), \
+                contextlib.redirect_stdout(io.StringIO()):
+            chat_mod.run_agent_turn(client, [{"role": "user", "content": "x"}],
+                                    chat_mod.AgentState())
+        self.assertEqual(client.last_turn["rounds"], 1)
+        self.assertNotIn("tokens", client.last_turn)
+
+
+# run_chat probes the endpoint once at startup; keep REPL tests off the network
+_REAL_ENDPOINT_NOTICE = chat_mod.endpoint_notice
+_NOTICE_PATCH = unittest.mock.patch.object(chat_mod, "endpoint_notice", lambda c: False)
+
+
+def setUpModule():
+    _NOTICE_PATCH.start()
+
+
+def tearDownModule():
+    _NOTICE_PATCH.stop()
+
+
+class StarterCompatTests(unittest.TestCase):
+    def test_notice_when_local_relay_down_no_switch(self):
+        client = ReachClient("http://127.0.0.1:20777/v1")
+        out = io.StringIO()
+        with unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": False)), \
+                contextlib.redirect_stdout(out):
+            self.assertTrue(_REAL_ENDPOINT_NOTICE(client))
+        self.assertIn("no answer from 127.0.0.1:20777 yet", out.getvalue())
+        self.assertIn("python tools/reach.py start", out.getvalue())
+        self.assertEqual(client.base, "http://127.0.0.1:20777/v1")  # never switched
+
+    def test_no_notice_when_up(self):
+        client = ReachClient("http://127.0.0.1:20777/v1")
+        out = io.StringIO()
+        with unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": True)), \
+                contextlib.redirect_stdout(out):
+            self.assertFalse(_REAL_ENDPOINT_NOTICE(client))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_windows_legacy_console_glyph_fallback(self):
+        self.assertEqual(chat_mod.tool_glyphs({}, "nt"), ("●", "└"))
+        self.assertEqual(chat_mod.tool_glyphs({"WT_SESSION": "x"}, "nt"), ("⏺", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({"TERM_PROGRAM": "vscode"}, "nt"), ("⏺", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({}, "posix"), ("⏺", "⎿"))
+
+    def test_ctrl_c_is_immediate_while_request_blocks(self):
+        # the request sits in a blocking read (as on Windows, where SIGINT
+        # cannot interrupt it); the main thread must still see Ctrl-C at once
+        import threading
+        release = threading.Event()
+
+        def blocking():
+            release.wait(5)
+            return "late"
+
+        def interrupter():
+            raise KeyboardInterrupt
+
+        calls = {"n": 0}
+        real_join = threading.Thread.join
+
+        def join(self, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                interrupter()
+            return real_join(self, 0.01)
+        started = time.time()
+        with unittest.mock.patch.object(threading.Thread, "join", join):
+            with self.assertRaises(KeyboardInterrupt):
+                chat_mod._interruptible(blocking)
+        release.set()
+        self.assertLess(time.time() - started, 1.0)
+
+    def test_worker_exceptions_propagate(self):
+        with self.assertRaises(ValueError):
+            chat_mod._interruptible(lambda: (_ for _ in ()).throw(ValueError("x")))
+        self.assertEqual(chat_mod._interruptible(lambda: 5), 5)
+
+
+class ReadPromptContractTests(unittest.TestCase):
+    """terminal.read_prompt(client, session): '' re-prompts, None exits."""
+
+    def _run(self, reader, inputs=None):
+        from reach_cli import terminal
+        client = ReachClient("http://relay/v1", model="m")
+        client.workpath = __import__("tempfile").mkdtemp()
+        rec = _Recorder([_Resp([_delta(content="ok"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with contextlib.ExitStack() as st:
+            st.enter_context(unittest.mock.patch("urllib.request.urlopen", rec))
+            st.enter_context(unittest.mock.patch.object(chat_mod, "banner", lambda *a: None))
+            if reader is None:
+                saved = getattr(terminal, "read_prompt", None)
+                if saved is not None:
+                    st.enter_context(unittest.mock.patch.object(terminal, "read_prompt", None))
+                it = iter(inputs)
+
+                def fake_input(*_):
+                    v = next(it)
+                    if isinstance(v, BaseException):
+                        raise v
+                    return v
+                st.enter_context(unittest.mock.patch("builtins.input", fake_input))
+            else:
+                st.enter_context(unittest.mock.patch.object(terminal, "read_prompt", reader,
+                                                            create=True))
+            st.enter_context(contextlib.redirect_stdout(out))
+            chat_mod.run_chat(client, client.base)
+        return out.getvalue(), rec, client
+
+    def test_two_arg_reader_gets_client_and_session(self):
+        calls = []
+        answers = iter(["", "hello", None])
+
+        def reader(client, session):
+            calls.append((client, session))
+            return next(answers)
+        out, rec, client = self._run(reader)
+        self.assertEqual(len(calls), 3)  # '' re-prompted instead of exiting
+        self.assertIs(calls[0][0], client)
+        self.assertTrue(hasattr(calls[0][1], "remember"))  # the ReplSession
+        self.assertEqual(len(rec.payloads), 1)
+        self.assertNotIn("bye.", out)  # None: reader already printed it
+
+    def test_old_zero_arg_reader_still_works(self):
+        answers = iter(["hello", EOFError()])
+
+        def reader():
+            v = next(answers)
+            if isinstance(v, BaseException):
+                raise v
+            return v
+        out, rec, _ = self._run(reader)
+        self.assertEqual(len(rec.payloads), 1)
+        self.assertEqual(out.count("bye."), 1)
+
+    def test_input_fallback_eof_and_ctrl_c_print_bye_once(self):
+        for stop in (EOFError(), KeyboardInterrupt()):
+            out, rec, _ = self._run(None, ["hello", stop])
+            self.assertEqual(len(rec.payloads), 1)
+            self.assertEqual(out.count("bye."), 1)
+
+    def test_footer_printed_once_per_turn(self):
+        answers = iter(["hello", None])
+        with unittest.mock.patch.object(chat_mod, "print_footer") as footer:
+            self._run(lambda c, s: next(answers))
+        self.assertEqual(footer.call_count, 1)
+        self.assertEqual(footer.call_args.args[0].last_turn["rounds"], 1)

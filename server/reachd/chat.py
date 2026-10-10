@@ -10,6 +10,10 @@ from reachd import net
 from reachd.const import CLIENT_DISCONNECT_ERRORS
 from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
+# Signed-in browser-chat routes: the provider enforces its own limits, so the
+# relay forwards their full history and output budget untouched.
+BROWSER_CHAT_UPSTREAMS = {"bridge/copilot-chat", "bridge/chatgpt-chat", "bridge/gemini-chat"}
+
 
 def provider_usage(payload):
     """Only complete, coherent upstream counters are evidence of token usage.
@@ -148,6 +152,8 @@ def chat_execute(h):
         }, rl_headers)
         return
 
+    browser_chat = spec.get("upstream") in BROWSER_CHAT_UPSTREAMS
+
     if metered and spec.get("strip_trailing_roles"):
         h._json(400, {"error": {"message": "This model route cannot preserve final usage.",
                                 "code": "unmetered_route", "type": "invalid_request"}}, rl_headers)
@@ -204,7 +210,7 @@ def chat_execute(h):
                           rl_headers)
         return None
     max_messages = int(req_cfg.get("max_messages", 100))
-    if len(messages) > max_messages:
+    if not browser_chat and len(messages) > max_messages:
         h._json(400, {"error": {"message": "too many messages "
                                                       "(max %d)" % max_messages,
                                           "type": "invalid_request"}},
@@ -217,7 +223,7 @@ def chat_execute(h):
             if isinstance(content, str):
                 total_chars += len(content)
     max_input_chars = int(req_cfg.get("max_input_chars", 400000))
-    if total_chars > max_input_chars:
+    if not browser_chat and total_chars > max_input_chars:
         h._json(400, {"error": {"message": "input too large "
                                                       "(max %d chars)" % max_input_chars,
                                           "type": "invalid_request"}},
@@ -225,7 +231,7 @@ def chat_execute(h):
         return None
     max_prompt_tokens = int(core.STATE.cfg.get("rate_limits", {})
                             .get("max_prompt_tokens", 0) or 0)
-    if max_prompt_tokens and (total_chars // 4) > max_prompt_tokens:
+    if not browser_chat and max_prompt_tokens and (total_chars // 4) > max_prompt_tokens:
         h._json(400, {"error": {"message": "prompt exceeds %d "
                                                       "tokens (approx)" % max_prompt_tokens,
                                           "type": "invalid_request",
@@ -246,8 +252,8 @@ def chat_execute(h):
         payload["temperature"] = float(spec["temperature"])
 
     # ---- max_tokens: default + cap ----
-    effective_cap = int(req_cfg.get("max_tokens_cap", 0) or 0)
-    model_cap = int(spec.get("max_tokens_cap", 0) or 0)
+    effective_cap = 0 if browser_chat else int(req_cfg.get("max_tokens_cap", 0) or 0)
+    model_cap = 0 if browser_chat else int(spec.get("max_tokens_cap", 0) or 0)
     if effective_cap and model_cap:
         effective_cap = min(effective_cap, model_cap)
     else:
@@ -257,7 +263,7 @@ def chat_execute(h):
         if isinstance(requested_tokens, int) and requested_tokens > 0 \
                 and effective_cap:
             payload["max_tokens"] = min(requested_tokens, effective_cap)
-    elif spec.get("max_tokens") is not None:
+    elif not browser_chat and spec.get("max_tokens") is not None:
         payload["max_tokens"] = int(spec["max_tokens"])
 
     # ---- reasoning-model floor: models with long reasoning preambles
@@ -334,6 +340,13 @@ def chat_execute(h):
                       "stream_options", "reasoning_effort", "verbosity",
                       "modalities", "audio", "prediction",
                       "web_search_options"):
+            # The tray's CodeGPT bridge honours OpenAI function tools natively.
+            if field in ("tools", "tool_choice", "parallel_tool_calls") \
+                    and upstream_model.startswith("bridge/codegpt-eco"):
+                continue
+            # Signed-in browser-chat routes honour the caller's output budget.
+            if field == "max_tokens" and upstream_model in BROWSER_CHAT_UPSTREAMS:
+                continue
             payload.pop(field, None)
     # Publish what this request is doing while it runs (see /status in_flight).
     record = getattr(h, "_reach_request", None)
@@ -427,7 +440,7 @@ def chat_execute(h):
                     headers=auth_headers)
                 upstream = net.urlopen(
                     req,
-                    timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)
+                    timeout=None if browser_chat else int(core.STATE.cfg.get("stream_timeout_s", 300)
                                 if stream
                                 else core.STATE.cfg.get("upstream_timeout_s", 600)))
                 break
@@ -545,7 +558,7 @@ def chat_finalize(h, upstream, ctx):
         # only, or [DONE] without an answer. Keep the response uncommitted until
         # actual assistant text arrives, so errors can still use an HTTP status
         # and a configured fallback can be checked before the client sees 200.
-        stream_timeout = int(core.STATE.cfg.get("stream_timeout_s", 300))
+        stream_timeout = None if upstream_model in BROWSER_CHAT_UPSTREAMS else int(core.STATE.cfg.get("stream_timeout_s", 300))
         max_prefix_bytes = 8 * 1024 * 1024
 
         def _answer_or_error(parsed, strip_roles):

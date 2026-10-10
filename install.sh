@@ -39,6 +39,9 @@ fi
 echo "[SimpleREACH] installing..."
 (cd "$DIR" && "$PY" tools/reach.py install)
 
+# 4. `signalreach` command in ~/.local/bin (re-running is safe)
+(cd "$DIR" && "$PY" tools/signalreach.py --install-shim)
+
 echo ''
 echo '[SignalREACH] done. Reload SimpleRAG -> Advanced -> SignalREACH.'
 echo '[SignalREACH] add your own provider URL and API key in Settings.'

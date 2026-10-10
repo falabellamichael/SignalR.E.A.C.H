@@ -176,6 +176,16 @@ contextBridge.exposeInMainWorld('reach', {
     return ipcRenderer.invoke('models:list', target);
   },
 
+  // MCP (Model Context Protocol) servers configured in Settings → MCP.
+  // `list` returns each server with a status row (checking/ok/error, tool
+  // count, latency) and refreshes stale rows in the background. `test`
+  // forces one server to re-handshake right now. Errors come back as
+  // { ok:false, err } or in the row's status — never as a thrown IPC.
+  mcp: {
+    list: () => ipcRenderer.invoke('mcp:list'),
+    test: (serverId) => ipcRenderer.invoke('mcp:test', serverId),
+  },
+
   // Endpoint connections (multiple providers, each with its own key + model).
   connections: {
     list: () => ipcRenderer.invoke('connections:list'),

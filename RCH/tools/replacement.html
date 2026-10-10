@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RCH treasury replacement</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #151515; color: #f3f0e8; }
+    body { max-width: 850px; margin: 2rem auto; padding: 0 1rem 3rem; }
+    h1, h2 { line-height: 1.2; }
+    section { border: 1px solid #655b43; border-radius: 12px; padding: 1rem 1.25rem; margin: 1rem 0; }
+    dl { display: grid; grid-template-columns: 12rem minmax(0,1fr); gap: .4rem 1rem; }
+    dt { color: #e2c56f; } dd { margin: 0; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+    button { background: #d5b75f; color: #201d15; border: 0; border-radius: 8px; padding: .7rem 1rem; margin: .35rem .35rem .35rem 0; font: inherit; font-weight: 700; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    #status { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .note { color: #d8d0bd; } .hash { font: 13px/1.4 ui-monospace, monospace; overflow-wrap: anywhere; }
+    #transactions { padding-left: 1.25rem; }
+    @media (max-width: 580px) { dl { display: block; } dt { margin-top: .7rem; } }
+  </style>
+</head>
+<body>
+  <h1>RCH treasury replacement</h1>
+  <p class="note">This local review uses MetaMask on Ethereum mainnet. It stages a new paused sale with the GitHub wallet as treasury, moves sale authority from the old contract, updates this checkout’s pinned sale record, and then offers the 0.001 ETH minimum purchase. Review each address, amount, and gas estimate in MetaMask before approving each step.</p>
+  <section>
+    <h2>Reviewed route</h2>
+    <dl>
+      <dt>Network</dt><dd id="network">Ethereum Mainnet</dd>
+      <dt>Buyer and administrator</dt><dd id="admin">Loading</dd>
+      <dt>ETH treasury</dt><dd id="treasury">Loading</dd>
+      <dt>RCH token</dt><dd id="token">Loading</dd>
+      <dt>Current sale</dt><dd id="old-sale">Loading</dd>
+      <dt>Replacement sale</dt><dd id="new-sale">Loading</dd>
+      <dt>Deployment fee cap</dt><dd id="deployment-fee">Loading</dd>
+      <dt>Deployment plan expires</dt><dd id="expires">Loading</dd>
+      <dt>Connected wallet</dt><dd id="account">Not connected</dd>
+    </dl>
+    <button id="connect" disabled>Connect MetaMask</button>
+    <button id="refresh" disabled>Refresh chain state</button>
+    <button id="step" disabled>Loading next safe step</button>
+    <p class="note">The replacement deploys paused. The current sale is paused before the new sale receives mint authority. The new sale opens before the old mint role is revoked and the old sale is closed. If a step fails, refresh; the next action is selected from confirmed on-chain state.</p>
+  </section>
+  <section>
+    <h2>Purchase</h2>
+    <p>After the treasury replacement is verified, purchase exactly 0.001 ETH of RCH from the buyer wallet. The current contract minimum is 0.001 ETH; the live RCH amount changes with the ETH/USD feed. ETH proceeds go to the treasury above.</p>
+    <dl>
+      <dt>Live quote</dt><dd id="quote">Not quoted</dd>
+      <dt>Buyer ETH balance</dt><dd id="balance">—</dd>
+      <dt>Buyer RCH balance</dt><dd id="rch-balance">—</dd>
+    </dl>
+    <button id="get-quote" disabled>Get live 0.001 ETH quote</button>
+    <button id="buy" disabled>Buy 0.001 ETH of RCH</button>
+  </section>
+  <section>
+    <h2>Confirmed transaction hashes</h2>
+    <ol id="transactions"></ol>
+  </section>
+  <section><h2>Status</h2><p id="status" role="status">Loading the replacement plan…</p></section>
+  <script src="ethers.js"></script>
+  <script type="module" src="replacement.js"></script>
+</body>
+</html>
