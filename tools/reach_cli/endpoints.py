@@ -78,6 +78,9 @@ def normalize_url(value):
         if port is not None and not 1 <= port <= 65535 or parts.netloc.endswith(":"):
             raise ValueError()
         host = parts.hostname
+        # Python 3.8's urlsplit accepts some bracketed non-IPv6 hosts.
+        if parts.netloc.startswith("[") and ":" not in host:
+            raise ValueError()
         if "%" in host:
             raise ValueError()
         if ":" in host:

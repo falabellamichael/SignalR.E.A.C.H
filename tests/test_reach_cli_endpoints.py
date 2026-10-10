@@ -104,6 +104,15 @@ class EndpointRegistryTests(unittest.TestCase):
             self.assertNotIn("secret", str(raised.exception))
             self.assertNotIn("\x1b", str(raised.exception))
 
+    def test_bracketed_non_ipv6_host_is_rejected_on_older_urlsplit(self):
+        # Python 3.8 accepts this shape and reports "invalid" as the hostname.
+        parts = types.SimpleNamespace(
+            scheme="https", netloc="[invalid]", hostname="invalid",
+            username=None, password=None, port=None, path="/v1")
+        with mock.patch.object(endpoints.urllib.parse, "urlsplit", return_value=parts):
+            with self.assertRaises(endpoints.EndpointError):
+                endpoints.normalize_url("https://[invalid]/v1")
+
     def test_credential_reference_validation_and_isolation(self):
         with mock.patch.dict(os.environ, {"REACH_KEY": "built-in-only", "TEAM_API_KEY": " team-fixture "}):
             self.assertEqual(endpoints.credential_for({"url": "https://example.test"}), "")
