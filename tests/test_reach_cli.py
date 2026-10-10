@@ -1432,7 +1432,7 @@ class FooterAndPromptHookTests(unittest.TestCase):
                unittest.mock.patch.object(chat_mod, "print_footer", footer)]
         if patch_reader:
             ctx.append(unittest.mock.patch.object(terminal, "read_prompt",
-                                                  lambda: next(it), create=True))
+                                                  lambda c, s: next(it), create=True))
         else:
             ctx.append(unittest.mock.patch("builtins.input", lambda *_: next(it)))
         out = io.StringIO()
@@ -1480,7 +1480,7 @@ class FooterAndPromptHookTests(unittest.TestCase):
     def test_last_turn_tokens_none_without_usage(self):
         client, seen, _ = self._chat([_Resp([_delta(content="hi"), "data: [DONE]\n"])],
                                      ["hello", "/exit"])
-        self.assertIsNone(seen[0]["tokens"])
+        self.assertNotIn("tokens", seen[0])  # unknown keys are omitted
         self.assertEqual(seen[0]["rounds"], 1)
 
     def test_last_turn_agent_counts_rounds_and_sums_tokens(self):
@@ -1515,7 +1515,7 @@ class FooterAndPromptHookTests(unittest.TestCase):
             chat_mod.run_agent_turn(client, [{"role": "user", "content": "x"}],
                                     chat_mod.AgentState())
         self.assertEqual(client.last_turn["rounds"], 1)
-        self.assertIsNone(client.last_turn["tokens"])
+        self.assertNotIn("tokens", client.last_turn)
 
 
 # run_chat probes the endpoint once at startup; keep REPL tests off the network
@@ -1588,3 +1588,74 @@ class StarterCompatTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             chat_mod._interruptible(lambda: (_ for _ in ()).throw(ValueError("x")))
         self.assertEqual(chat_mod._interruptible(lambda: 5), 5)
+
+
+class ReadPromptContractTests(unittest.TestCase):
+    """terminal.read_prompt(client, session): '' re-prompts, None exits."""
+
+    def _run(self, reader, inputs=None):
+        from reach_cli import terminal
+        client = ReachClient("http://relay/v1", model="m")
+        client.workpath = __import__("tempfile").mkdtemp()
+        rec = _Recorder([_Resp([_delta(content="ok"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with contextlib.ExitStack() as st:
+            st.enter_context(unittest.mock.patch("urllib.request.urlopen", rec))
+            st.enter_context(unittest.mock.patch.object(chat_mod, "banner", lambda *a: None))
+            if reader is None:
+                saved = getattr(terminal, "read_prompt", None)
+                if saved is not None:
+                    st.enter_context(unittest.mock.patch.object(terminal, "read_prompt", None))
+                it = iter(inputs)
+
+                def fake_input(*_):
+                    v = next(it)
+                    if isinstance(v, BaseException):
+                        raise v
+                    return v
+                st.enter_context(unittest.mock.patch("builtins.input", fake_input))
+            else:
+                st.enter_context(unittest.mock.patch.object(terminal, "read_prompt", reader,
+                                                            create=True))
+            st.enter_context(contextlib.redirect_stdout(out))
+            chat_mod.run_chat(client, client.base)
+        return out.getvalue(), rec, client
+
+    def test_two_arg_reader_gets_client_and_session(self):
+        calls = []
+        answers = iter(["", "hello", None])
+
+        def reader(client, session):
+            calls.append((client, session))
+            return next(answers)
+        out, rec, client = self._run(reader)
+        self.assertEqual(len(calls), 3)  # '' re-prompted instead of exiting
+        self.assertIs(calls[0][0], client)
+        self.assertTrue(hasattr(calls[0][1], "remember"))  # the ReplSession
+        self.assertEqual(len(rec.payloads), 1)
+        self.assertNotIn("bye.", out)  # None: reader already printed it
+
+    def test_old_zero_arg_reader_still_works(self):
+        answers = iter(["hello", EOFError()])
+
+        def reader():
+            v = next(answers)
+            if isinstance(v, BaseException):
+                raise v
+            return v
+        out, rec, _ = self._run(reader)
+        self.assertEqual(len(rec.payloads), 1)
+        self.assertEqual(out.count("bye."), 1)
+
+    def test_input_fallback_eof_and_ctrl_c_print_bye_once(self):
+        for stop in (EOFError(), KeyboardInterrupt()):
+            out, rec, _ = self._run(None, ["hello", stop])
+            self.assertEqual(len(rec.payloads), 1)
+            self.assertEqual(out.count("bye."), 1)
+
+    def test_footer_printed_once_per_turn(self):
+        answers = iter(["hello", None])
+        with unittest.mock.patch.object(chat_mod, "print_footer") as footer:
+            self._run(lambda c, s: next(answers))
+        self.assertEqual(footer.call_count, 1)
+        self.assertEqual(footer.call_args.args[0].last_turn["rounds"], 1)

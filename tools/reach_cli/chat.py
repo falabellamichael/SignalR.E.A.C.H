@@ -1,5 +1,6 @@
 """Chat modes: interactive REPL, one-shot ask, grounded web answer."""
 
+import inspect
 import json
 import os
 import re
@@ -352,20 +353,47 @@ class TurnMeter:
             self.tokens = (self.tokens or 0) + got
 
     def publish(self):
-        self.client.last_turn = {
-            "tokens": self.tokens,
+        turn = {
             "rounds": max(1, self.rounds),
             "latency": round(time.time() - self.started, 3),
         }
-        return self.client.last_turn
+        if self.tokens is not None:  # contract: omit unknown keys
+            turn["tokens"] = self.tokens
+        self.client.last_turn = turn
+        return turn
 
 
-def read_user_line():
-    """Hook: terminal.read_prompt() when Main Chat's UX lands, else input()."""
+def _reader_arity(reader):
+    """How many positional args read_prompt takes (2 = current contract)."""
+    try:
+        params = inspect.signature(reader).parameters.values()
+    except (TypeError, ValueError):
+        return 2
+    if any(p.kind == p.VAR_POSITIONAL for p in params):
+        return 2
+    return len([p for p in params
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)])
+
+
+def read_user_line(client=None, session=None):
+    """Next user line: a str (``""`` = ask again) or None = leave the REPL.
+
+    Contract with terminal.read_prompt(client, session): ``""`` means a blank
+    line or a first Ctrl-C whose hint is already printed; None means EOF or a
+    second Ctrl-C and ``bye.`` is already printed. Without read_prompt (or
+    with an old zero-arg one) EOF/Ctrl-C print ``bye.`` here and return None.
+    """
     reader = getattr(terminal, "read_prompt", None)
-    if callable(reader):
-        return reader()
-    return input(c_bold(c_green("you ▸ ")))
+    try:
+        if callable(reader):
+            if _reader_arity(reader) >= 2:
+                return reader(client, session)
+            line = reader()  # old zero-arg hook
+            return "" if line is None else line
+        return input(c_bold(c_green("you ▸ ")))
+    except (EOFError, KeyboardInterrupt):
+        print(c_dim("\n  bye."))
+        return None
 
 
 def _interruptible(fn, poll=0.1):
@@ -777,7 +805,11 @@ def run_web_answer(client, query, fetch_pages=True):
         print()
 
     messages = build_grounded_messages(query, results, pages, rich=found["rich"])
-    stream_reply(client, messages)
+    meter = TurnMeter(client)
+    ok, _text = stream_reply(client, messages)
+    if ok:
+        meter.add_round()
+    meter.publish()
     print_footer(client, cited=True)
     return True
 
@@ -812,12 +844,10 @@ def run_chat(client, base):
     set_system_message(history, client)
     try:
         while True:
-            try:
-                line = read_user_line()
-            except (EOFError, KeyboardInterrupt):
-                print(c_dim("\n  bye."))
+            line = read_user_line(client, session)
+            if line is None:  # EOF / second Ctrl-C: 'bye.' already printed
                 return
-            line = line.strip()
+            line = str(line).strip()
             if not line:
                 continue
             if line.startswith("/"):
