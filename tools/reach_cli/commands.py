@@ -16,6 +16,7 @@ from .terminal import (
     c_red,
     c_yellow,
     status_line,
+    tprint,
 )
 
 # ---- slash commands -------------------------------------------------------
@@ -45,6 +46,7 @@ COMMANDS = (
     ("/compact", "shrink the conversation history"),
     ("/copy", "copy the last answer to the clipboard"),
     ("/save [file]", "save the conversation as JSONL"),
+    ("/layout <mode>", "centred page column or full-width UI"),
     ("/exit", "quit (Ctrl+D, or Ctrl+C twice)"),
 )
 
@@ -52,7 +54,7 @@ COMMANDS = (
 # Help stays one column (`  %-16s %s`) and is grouped so the list is scannable.
 # Every token appears in exactly one section.
 HELP_SECTIONS = (
-    ("session", ("/help", "/status", "/exit")),
+    ("session", ("/help", "/status", "/layout", "/exit")),
     ("endpoint", ("/endpoint", "/model", "/models")),
     ("chat", ("/web", "/retry", "/undo", "/compact", "/copy", "/clear", "/history", "/save")),
     ("agent", ("/agent", "/tools", "/workpath", "/system")),
@@ -780,6 +782,24 @@ def _cmd_save(_client, history, _session, argument):
     return SlashResult()
 
 
+def _cmd_layout(_client, _history, _session, argument):
+    """Show or switch the UI layout: centred column or full width."""
+    from .splash import layout_mode, set_layout
+    arg = (argument or "").strip().lower()
+    if not arg:
+        tprint(c_dim("  layout: %s — /layout center|full" % layout_mode()))
+        return SlashResult()
+    if set_layout(arg) is None:
+        tprint(c_yellow("  usage: /layout center|full"))
+        return SlashResult()
+    try:
+        save_session_config(layout=layout_mode())
+    except Exception:
+        pass
+    tprint(c_green("  layout: %s" % layout_mode()))
+    return SlashResult()
+
+
 def _cmd_exit(_client, _history, _session, _argument):
     return SlashResult(quit=True)
 
@@ -802,6 +822,7 @@ HANDLERS = {
     "/compact": _cmd_compact,
     "/copy": _cmd_copy,
     "/save": _cmd_save,
+    "/layout": _cmd_layout,
     "/exit": _cmd_exit,
 }
 

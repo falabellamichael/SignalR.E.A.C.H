@@ -26,8 +26,10 @@ def banner(client, base, mode):
         if _plain_chrome():
             print(plain_header(client, base, mode))
             return
+        width = banner_columns()
+        pad = margin_pad() + " " * max(0, (content_width() - width) // 2)
         for line in render_banner_lines(client, base, mode):
-            print(line)
+            print(pad + line)
     except Exception:
         try:
             print(plain_header(client, base, mode))
@@ -45,7 +47,8 @@ def print_footer(client, cited=False):
     so the chat loop can keep calling it.
     """
     try:
-        print(render_footer(client, cited=cited))
+        print(margin_pad()
+              + render_footer(client, cited=cited, columns=content_width()))
         print()
     except Exception as exc:
         print(c_red("  ✗ %s" % exc))
@@ -72,6 +75,50 @@ TIPS = (
 
 FOOTER_HINT = "? help · ^C stop · ^D quit"
 BANNER_MAX_COLUMNS = 90
+
+# ── layout: centred page column vs full window width ────────────────────
+PAGE_WIDTH = 96
+_LAYOUT = {"mode": "center"}  # "center" | "full"
+
+
+def set_layout(mode):
+    mode = str(mode or "").strip().lower()
+    if mode in ("center", "full"):
+        _LAYOUT["mode"] = mode
+        return mode
+    return None
+
+
+def layout_mode():
+    return _LAYOUT["mode"]
+
+
+def content_width():
+    """Width of the UI column — a centred page, or the whole window."""
+    cols = terminal_columns()
+    if _LAYOUT["mode"] == "full":
+        return max(1, cols - 1)
+    return max(1, min(PAGE_WIDTH, cols - 1))
+
+
+def content_margin():
+    """Left gutter under the centred layout; 0 at full width."""
+    if _LAYOUT["mode"] == "full":
+        return 0
+    return max(0, (terminal_columns() - content_width()) // 2)
+
+
+def margin_pad():
+    """Spaces that indent content under the centred layout.
+
+    Piped output stays clean — the gutter only exists on a real TTY.
+    """
+    try:
+        if not sys.stdout.isatty():
+            return ""
+    except Exception:
+        return ""
+    return " " * content_margin()
 
 
 def strip_ansi(text):
@@ -112,8 +159,8 @@ def terminal_columns(default=80):
         cols = shutil.get_terminal_size(fallback=(default, 24)).columns
     except Exception:
         cols = default
-    if not isinstance(cols, int) or cols < 20:
-        return default if isinstance(default, int) and default >= 20 else 80
+    if not isinstance(cols, int) or cols < 1:
+        return default if isinstance(default, int) and default >= 1 else 80
     return cols
 
 
@@ -139,10 +186,7 @@ def truncate_display(text, width):
 
 
 def banner_columns():
-    cols = terminal_columns()
-    if cols > BANNER_MAX_COLUMNS:
-        return BANNER_MAX_COLUMNS
-    return cols
+    return min(BANNER_MAX_COLUMNS, content_width())
 
 
 def _plain_chrome():
@@ -221,6 +265,8 @@ def current_tip(index=None):
 
 def _horizontal(width, left, mid, right):
     side = char_width(left) + char_width(right)
+    if width < side:
+        return truncate_display(left, width)
     fill = max(0, width - side)
     unit = char_width(mid) or 1
     count = fill // unit
@@ -230,6 +276,8 @@ def _horizontal(width, left, mid, right):
 
 def _row_colored(content, width):
     left, right = "│", "│"
+    if width < char_width(left) + char_width(right):
+        return c_cyan(truncate_display(left, width))
     inner = max(0, width - char_width(left) - char_width(right))
     visible = display_width(content)
     if visible > inner:
@@ -394,7 +442,7 @@ def render_footer(client, cited=False, columns=None):
         parts.append("grounded")
     left = "  └─ " + " · ".join(parts)
     right = FOOTER_HINT
-    cols = columns if isinstance(columns, int) and columns >= 20 else terminal_columns()
+    cols = columns if isinstance(columns, int) and columns >= 1 else terminal_columns()
     gap = cols - display_width(left) - display_width(right)
     if gap >= 1:
         return c_cyan(left) + (" " * gap) + c_dim(right)

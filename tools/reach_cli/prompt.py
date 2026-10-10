@@ -5,7 +5,7 @@ import os
 from .commands import command_tokens
 from .session import history_file_path
 from .splash import display_width, truncate_display
-from .terminal import c_bold, c_cyan, c_dim, c_green, c_red, c_yellow
+from .terminal import c_bold, c_cyan, c_dim, c_green, c_magenta, c_red, c_yellow
 
 _READLINE_READY = False
 _READLINE = None
@@ -135,13 +135,19 @@ def _complete_paths(text):
 
 
 def prompt_rule(client):
-    """Top rule framing the input line: ``┌─ <model> ───┐``."""
-    model = "auto"
-    if client is not None and getattr(client, "model", None):
-        model = " ".join(str(client.model).split()) or "auto"
-    if display_width(model) > 40:
-        model = truncate_display(model, 40)
-    return c_cyan("┌─ %s ───┐" % model)
+    """Top rule framing the input line: ``┌─ model · endpoint · mode · dir@br ─┐``."""
+    from .chatbox import client_meta, session_meta  # lazy: prompt <- terminal <- chatbox
+    model, endpoint, details = client_meta(client)
+    text = " · ".join(p for p in (model, endpoint, details) if p)
+    if display_width(text) > 60:
+        text = truncate_display(text, 60)
+    line = c_cyan("┌─ ") + c_magenta(model) + c_dim(
+        text[len(model):]) + c_cyan(" ───┐")
+    stats = session_meta(client)
+    if stats:
+        line += c_dim("  " + stats)
+    from .splash import margin_pad
+    return margin_pad() + line
 
 
 def _interrupt_armed(session):
@@ -183,6 +189,8 @@ def read_prompt(client=None, session=None):
 def _read_prompt(client, session):
     from . import terminal as term
     readline_mod = term.load_readline()
+    if use_chatbox():
+        return _read_boxed(client, session, None)
     _install_readline(readline_mod)
     print(prompt_rule(client))
     chunks = []
@@ -217,6 +225,40 @@ def _read_prompt(client, session):
             continue
         chunks.append(line)
         break
+    text = "\n".join(chunks)
+    _remember_history(text, readline_mod)
+    return text
+
+
+def use_chatbox():
+    """Only one editor may own cursor movement and resizing on a TTY."""
+    import sys
+    from . import terminal as term
+    try:
+        from .chatbox import editor_available
+        return bool(term.PAINT.on and sys.stdin.isatty() and sys.stdout.isatty()
+                    and editor_available())
+    except Exception:
+        return False
+
+
+def _read_boxed(client, session, readline_mod):
+    from .chatbox import read_boxed
+    try:
+        chunks = read_boxed(client)
+    except KeyboardInterrupt:
+        if _interrupt_armed(session):
+            _set_interrupt(session, False)
+            print(c_dim("\n  bye."))
+            return None
+        _set_interrupt(session, True)
+        print(c_yellow("  Ctrl-C again to quit \u00b7 /exit or Ctrl-D also quits"))
+        return ""
+    except EOFError:
+        _set_interrupt(session, False)
+        print(c_dim("\n  bye."))
+        return None
+    _set_interrupt(session, False)
     text = "\n".join(chunks)
     _remember_history(text, readline_mod)
     return text

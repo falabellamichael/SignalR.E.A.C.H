@@ -30,19 +30,21 @@ def load_session_config(path=None):
     if not isinstance(data, dict):
         return {}
     clean = {}
-    for key in ("endpoint", "model", "workpath"):
+    for key in ("endpoint", "model", "workpath", "layout"):
         value = data.get(key)
         if isinstance(value, str) and value.strip():
             clean[key] = value.strip()
     return clean
 
 
-def save_session_config(endpoint=None, model=None, workpath=None, path=None):
+def save_session_config(endpoint=None, model=None, workpath=None, path=None,
+                        layout=None):
     """Merge session fields and write them. Returns False instead of raising."""
     path = path or session_config_path()
     try:
         current = load_session_config(path)
-        updates = {"endpoint": endpoint, "model": model, "workpath": workpath}
+        updates = {"endpoint": endpoint, "model": model, "workpath": workpath,
+                   "layout": layout}
         for key, value in updates.items():
             if isinstance(value, str) and value.strip():
                 current[key] = value.strip()

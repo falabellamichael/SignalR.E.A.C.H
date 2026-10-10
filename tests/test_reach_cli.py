@@ -1,4 +1,5 @@
 """Offline unit tests for the SimpleREACH CLI (parser + grounding)."""
+import io
 import json
 import os
 import re
@@ -415,7 +416,8 @@ class SlashCommandTests(unittest.TestCase):
         self.assertEqual(tokens, [
             "/help", "/status", "/endpoint", "/model", "/models", "/web",
             "/agent", "/tools", "/workpath", "/system", "/clear", "/history",
-            "/retry", "/undo", "/compact", "/copy", "/save", "/exit",
+            "/retry", "/undo", "/compact", "/copy", "/save", "/layout",
+            "/exit",
         ])
         self.assertEqual(len(tokens), len(set(tokens)))
         self.assertEqual(set(HANDLERS), set(tokens))
@@ -998,7 +1000,7 @@ class CliUxTests(unittest.TestCase):
             lines = terminal.render_banner_lines(client, client.base, "chat", tip_index=0)
             widths = [terminal.display_width(line) for line in lines]
             self.assertEqual(len(set(widths)), 1)
-            self.assertEqual(widths[0], 80)
+            self.assertEqual(widths[0], 79)
             blob = "\n".join(terminal.strip_ansi(line) for line in lines)
             self.assertIn("⚡ REACH CLI v1.0.0", blob)
             self.assertIn("RAG Endpoint & AI Chat Host", blob)
@@ -1022,7 +1024,7 @@ class CliUxTests(unittest.TestCase):
             with unittest.mock.patch("shutil.get_terminal_size", return_value=narrow):
                 slim = terminal.render_banner_lines(client, client.base, "chat", tip_index=0)
             slim_widths = [terminal.display_width(line) for line in slim]
-            self.assertEqual(set(slim_widths), {40})
+            self.assertEqual(set(slim_widths), {39})
 
         terminal.PAINT = terminal.Paint(True)
         plain_out = self.io.StringIO()
@@ -1107,7 +1109,10 @@ class CliUxTests(unittest.TestCase):
             text = terminal.read_prompt(client)
         self.assertEqual(text, "one \ntwo")
         self.assertIn("you ▸", prompts[0])
-        self.assertIn("┌─ gpt-4o ───┐", out.getvalue())
+        rule = out.getvalue()
+        self.assertIn("gpt-4o", rule)
+        self.assertIn("127.0.0.1:20777", rule)
+        self.assertIn("chat", rule)
         with open(os.environ["REACH_CLI_HISTORY"], encoding="utf-8") as handle:
             saved = handle.read()
         self.assertIn("one", saved)
@@ -1671,9 +1676,190 @@ class ToolBlockParseTests(unittest.TestCase):
         self.assertIsNone(status)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
 
+class ChatBoxTests(unittest.TestCase):
+    """Fancy rounded input box: pure renderers and the TTY gate."""
+
+    def setUp(self):
+        from reach_cli import terminal
+        self._paint = terminal.PAINT
+        terminal.PAINT = terminal.Paint(False)
+
+    def tearDown(self):
+        from reach_cli import terminal
+        terminal.PAINT = self._paint
+
+    def test_box_lines_fill_width(self):
+        from reach_cli.chatbox import box_bottom, box_row, box_top, echo_box, visible_width
+        for width in (24, 40, 90, 120):
+            top = box_top(width, "you", "gpt-4o", "127.0.0.1:20777")
+            self.assertEqual(visible_width(top), width)
+            self.assertTrue(top.startswith("\u250c\u2500 you "))
+            self.assertTrue(top.endswith("\u2510"))
+            self.assertEqual(visible_width(box_row(width, "hello")), width)
+            self.assertEqual(visible_width(box_bottom(width)), width)
+            for line in echo_box("x" * 300 + "\nsecond", width):
+                self.assertEqual(visible_width(line), width)
+        self.assertIn("gpt-4o \u00b7 127.0.0.1:20777", box_top(90, "you", "gpt-4o", "127.0.0.1:20777"))
+        self.assertIn("/help", box_bottom(90))
+        self.assertIn("› hello", box_row(90, "hello"))
+
+    def test_box_top_carries_mode_and_workspace_details(self):
+        from reach_cli.chatbox import box_top, visible_width
+        top = box_top(90, "you", "gpt-4o", "127.0.0.1:20777",
+                      "agent · SimpleREACH@main")
+        self.assertIn("gpt-4o · 127.0.0.1:20777 · agent · SimpleREACH@main", top)
+        self.assertEqual(visible_width(top), 90)
+        # narrow widths shed the detail tail before the model name
+        slim = box_top(40, "you", "gpt-4o", "127.0.0.1:20777",
+                       "agent · SimpleREACH@main")
+        self.assertIn("gpt-4o", slim)
+        self.assertNotIn("SimpleREACH", slim)
+        self.assertEqual(visible_width(slim), 40)
+
+    def test_box_bottom_carries_session_stats(self):
+        from reach_cli.chatbox import box_bottom, session_meta, visible_width
+        client = type("C", (), {
+            "session_totals": {"turns": 3, "tokens": 9800, "rounds": 5,
+                               "latency": 4.2}})()
+        stats = session_meta(client)
+        self.assertEqual(stats, "3 turns · Σ 9.8k tok")
+        line = box_bottom(90, stats=stats)
+        self.assertIn("/help", line)
+        self.assertIn("3 turns · Σ 9.8k tok", line)
+        self.assertEqual(visible_width(line), 90)
+        self.assertEqual(session_meta(type("C", (), {})()), "")
+        self.assertEqual(session_meta(None), "")
+        # no session yet: bottom border stays clean, same width
+        self.assertEqual(visible_width(box_bottom(90)), 90)
+
+    def test_client_meta_reports_mode_and_workspace(self):
+        from reach_cli.chatbox import client_meta
+        client = type("C", (), {
+            "model": "gpt-4o", "base": "http://127.0.0.1:20777/v1",
+            "agent": True, "workpath": "D:\\proj\\my-app"})()
+        model, endpoint, details = client_meta(client)
+        self.assertEqual(model, "gpt-4o")
+        self.assertEqual(endpoint, "127.0.0.1:20777/v1")
+        self.assertIn("agent", details)
+        self.assertIn("my-app", details)
+        client.agent = False
+        self.assertIn("chat", client_meta(client)[2])
+
+    def test_turn_meter_accumulates_session_totals(self):
+        from reach_cli.chat import TurnMeter
+        client = type("C", (), {
+            "usage": {"prompt": None, "completion": None}})()
+        client.session_totals = {"turns": 0, "tokens": 0, "rounds": 0,
+                                 "latency": 0.0}
+        meter = TurnMeter(client)
+        meter.tokens = 1500
+        meter.add_round()
+        meter.publish()
+        meter2 = TurnMeter(client)
+        meter2.add_round()
+        meter2.publish()
+        self.assertEqual(client.session_totals["turns"], 2)
+        self.assertEqual(client.session_totals["tokens"], 1500)
+        self.assertEqual(client.session_totals["rounds"], 2)
+
+    def test_colored_width_and_endpoint(self):
+        from reach_cli import terminal
+        from reach_cli.chatbox import box_top, short_endpoint, visible_width
+        terminal.PAINT = terminal.Paint(True)
+        top = box_top(90, "you", "gpt-4o", "x")
+        self.assertIn("\x1b[", top)
+        self.assertEqual(visible_width(top), 90)
+        self.assertEqual(short_endpoint("http://127.0.0.1:20777/"), "127.0.0.1:20777")
+        self.assertEqual(short_endpoint(""), "local")
+
+    def test_read_boxed_echo_and_continuation(self):
+        import io
+        from reach_cli.chatbox import read_boxed
+        answers = iter(["one \\", "two"])
+        out = io.StringIO()
+        client = type("C", (), {"model": "gpt-4o", "base": "http://h:1"})()
+        with unittest.mock.patch("reach_cli.chatbox.box_width", return_value=60):
+            chunks = read_boxed(client, lambda _p="": next(answers), out)
+        self.assertEqual(chunks, ["one ", "two"])
+        self.assertIn("\u2502 \u203a one ", out.getvalue())
+        self.assertIn("\u2514", out.getvalue())
+
+    def test_gate_off_when_not_tty(self):
+        from reach_cli.prompt import use_chatbox
+        self.assertFalse(use_chatbox())
+
+
+class _FakeTTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+# Resize/input ownership regressions now live in test_reach_cli_resize_input.py.
+
+class LayoutTests(unittest.TestCase):
+    """Centre vs full-width layout state driving margins and the /layout cmd."""
+
+    def setUp(self):
+        from reach_cli import splash
+        self._mode = splash.layout_mode()
+        splash.set_layout("center")
+
+    def tearDown(self):
+        from reach_cli import splash
+        splash.set_layout(self._mode)
+
+    def _cols(self, cols):
+        return os.terminal_size((cols, 30))
+
+    def test_center_mode_caps_at_page_width(self):
+        from reach_cli import splash
+        with unittest.mock.patch("shutil.get_terminal_size",
+                                 return_value=self._cols(200)):
+            self.assertEqual(splash.content_width(), 96)
+            self.assertEqual(splash.content_margin(), (200 - 96) // 2)
+        with unittest.mock.patch("shutil.get_terminal_size",
+                                 return_value=self._cols(60)):
+            self.assertEqual(splash.content_width(), 59)
+            self.assertEqual(splash.content_margin(), 0)
+
+    def test_full_mode_uses_the_window(self):
+        from reach_cli import splash
+        splash.set_layout("full")
+        with unittest.mock.patch("shutil.get_terminal_size",
+                                 return_value=self._cols(200)):
+            self.assertEqual(splash.content_width(), 199)
+            self.assertEqual(splash.content_margin(), 0)
+
+    def test_layout_command_switches_and_persists(self):
+        import io as _io
+        from contextlib import redirect_stdout
+        from reach_cli import splash
+        from reach_cli.commands import handle_slash
+        client = type("C", (), {})()
+        out = _io.StringIO()
+        with redirect_stdout(out), \
+                unittest.mock.patch(
+                    "reach_cli.commands.save_session_config") as save:
+            handle_slash("/layout full", client, [])
+        self.assertEqual(splash.layout_mode(), "full")
+        save.assert_called_once_with(layout="full")
+        self.assertIn("layout: full", out.getvalue())
+        out = _io.StringIO()
+        with redirect_stdout(out):
+            handle_slash("/layout sideways", client, [])
+        self.assertIn("usage", out.getvalue())
+        self.assertEqual(splash.layout_mode(), "full")
+
+    def test_layout_round_trips_through_session_config(self):
+        import tempfile
+        from reach_cli import session
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.json")
+            self.assertTrue(session.save_session_config(
+                layout="full", path=path))
+            self.assertEqual(session.load_session_config(path)["layout"],
+                             "full")
 
 # ---- agent loop robustness (native tool_calls, retries, partial streams) ----
 
@@ -2457,3 +2643,6 @@ class ReadPromptContractTests(unittest.TestCase):
             self._run(lambda c, s: next(answers))
         self.assertEqual(footer.call_count, 1)
         self.assertEqual(footer.call_args.args[0].last_turn["rounds"], 1)
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

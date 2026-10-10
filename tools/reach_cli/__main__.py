@@ -100,7 +100,8 @@ def _add_common(parser, suppress):
         "-p",
         "--prompt",
         default=fallback(None),
-        help="question to answer; with no subcommand this is 'ask'",
+        help="question to answer; with no subcommand this is 'ask'; "
+        "with chat, send it first and keep the REPL open",
     )
     parser.add_argument(
         "--color",
@@ -193,7 +194,8 @@ def _paint_enabled(args):
 
 def _resolve_invocation(args):
     """Return (command, text, error). -p with no subcommand means ask."""
-    command = getattr(args, "command", None) or "chat"
+    explicit_command = getattr(args, "command", None)
+    command = explicit_command or "chat"
     text = getattr(args, "text", None)
     prompt = getattr(args, "prompt", None)
     if isinstance(text, str):
@@ -207,7 +209,8 @@ def _resolve_invocation(args):
     if command == "models" and prompt:
         return None, None, "models does not take --prompt"
     if command == "chat" and prompt:
-        command = "ask"
+        if explicit_command is None:
+            command = "ask"
         text = prompt
         prompt = None
     if command in ("ask", "web"):
@@ -348,7 +351,10 @@ def _main(argv=None):
                 print(alias)
             return 0
         if command == "chat":
-            run_chat(client, client.base)
+            if text:
+                run_chat(client, client.base, initial_prompt=text)
+            else:
+                run_chat(client, client.base)
         elif command == "ask":
             if not run_ask(client, text, web=False):
                 return 1

@@ -583,6 +583,14 @@ python tools/reach-cli.py models              # list served aliases
 # flags: --model gpt-4o | --base URL | --key sk-reach-… | --system "…" | --no-stream | --no-color
 ```
 
+Interactive chat keeps the new CLI's rectangular input box pinned below the
+transcript, including while the model streams. Its stdlib editor retains the
+draft and cursor in memory; one renderer reflows the transcript and footer on
+window resizing. Windows Unicode input, wrapped drafts, history, and command
+completion use native console events. Plain or piped terminals retain the
+line-oriented interface. `chat -p "question"` submits that initial turn and
+keeps the chat open; `-p "question"` alone is a one-shot request.
+
 Web mode ports SimpleRAG's websearch: DuckDuckGo HTML scraping (lite
 fallback), rotating user agents, rich answer modules, page excerpt fetch,
 and a grounding prompt with `[n]` citations. Auto-discovers the endpoint

@@ -98,7 +98,7 @@ def response_label():
     Separated from response_open so the waiting indicator can re-emit the
     label after clearing its animated line.
     """
-    return c_cyan("  │ ") + c_bold(c_magenta("ai ▸") + " ")
+    return margin_pad() + c_cyan("  │ ") + c_bold(c_magenta("ai ▸") + " ")
 
 
 def response_open():
@@ -111,20 +111,20 @@ def response_open():
 
 def response_indent():
     """Left-rule prefix for continuation lines of a streamed reply."""
-    return c_cyan("  │ ")
+    return margin_pad() + c_cyan("  │ ")
 
 
 
 
 def spinner(message):
-    sys.stdout.write("\r" + c_cyan(spinner_char()) + " " + message + "   ")
+    sys.stdout.write("\r" + margin_pad() + c_cyan(spinner_char()) + " " + message + "   ")
     sys.stdout.flush()
 
 
 
 
 def spinner_clear():
-    sys.stdout.write("\r" + " " * 60 + "\r")
+    sys.stdout.write("\r\x1b[2K")
     sys.stdout.flush()
 
 
@@ -157,7 +157,8 @@ class WaitIndicator:
         glyph = spinner_char() if PAINT.on else "."
         label = "%s… %ds" % (self._message, int(elapsed))
         sys.stdout.write(
-            self.CR + self._prefix + glyph + " " + c_dim(label) + "  "
+            self.CR + (self._prefix or margin_pad())
+            + glyph + " " + c_dim(label) + "  "
         )
         sys.stdout.flush()
 
@@ -168,9 +169,7 @@ class WaitIndicator:
         self._thread.start()
 
     def _clear(self):
-        sys.stdout.write(
-            self.CR + self._prefix + " " * 80 + self.CR + self._prefix
-        )
+        sys.stdout.write(self.CR + "\x1b[2K" + self._prefix)
         sys.stdout.flush()
 
     def stop(self):
@@ -198,7 +197,13 @@ def spin_while(message, seconds):
 
 
 def status_line(message):
-    print(c_dim("  " + message))
+    print(margin_pad() + c_dim("  " + message))
+
+
+def tprint(*args, sep=" "):
+    """print() aligned under the content margin (transcript lines)."""
+    pad = margin_pad()
+    print(pad + sep.join(str(a) for a in args).replace("\n", "\n" + pad))
 
 
 
@@ -234,12 +239,17 @@ from .commands import (  # noqa: E402
 from .splash import (  # noqa: E402
     banner,
     char_width,
+    content_margin,
+    content_width,
     display_width,
     git_branch,
+    layout_mode,
+    margin_pad,
     plain_header,
     print_footer,
     render_banner_lines,
     render_footer,
+    set_layout,
     strip_ansi,
 )
 from .session import (  # noqa: E402
@@ -256,3 +266,9 @@ from .prompt import (  # noqa: E402
     reset_prompt_interrupt,
     reset_readline_state,
 )
+
+
+def read_input(message=""):
+    """Use the active pinned editor for approvals, with plain input fallback."""
+    from .chatbox import read_inline_input
+    return read_inline_input(message)

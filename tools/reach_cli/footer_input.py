@@ -1,0 +1,463 @@
+"""Standard-library input for the persistent footer.
+
+The line's text and cursor are logical state. A single reader receives key
+and resize events; its callback is the only rendering path. Screen pixels
+are never used to reconstruct a draft, and input() never owns this cursor.
+"""
+
+import codecs
+from collections import deque
+from contextlib import contextmanager
+import os
+import re
+import sys
+
+
+def _complete(text, before_cursor):
+    from .prompt import complete_token
+    return complete_token(text, before_cursor)
+
+
+class EditBuffer:
+    """Small, testable editor. Cursor indices refer to Python code points."""
+
+    def __init__(self, text="", history=(), complete=None):
+        self.text = str(text)
+        self.cursor = len(self.text)
+        self.history = [str(line) for line in history if isinstance(line, str)]
+        self.complete = complete if complete is not None else _complete
+        self._history_index = None
+        self._draft = (self.text, self.cursor)
+        self._completion = None
+        self._search = None
+
+    def _replace(self, start, end, text):
+        self.text = self.text[:start] + text + self.text[end:]
+        self.cursor = start + len(text)
+
+    def _browse(self, direction):
+        if not self.history:
+            return
+        if self._history_index is None:
+            if direction > 0:
+                return
+            self._draft = (self.text, self.cursor)
+            self._history_index = len(self.history)
+        self._history_index = max(0, min(len(self.history),
+                                        self._history_index + direction))
+        if self._history_index == len(self.history):
+            self.text, self.cursor = self._draft
+            self._history_index = None
+        else:
+            self.text = self.history[self._history_index]
+            self.cursor = len(self.text)
+
+    def _tab(self):
+        if self._completion is not None:
+            start, suffix, matches, index = self._completion
+            index = (index + 1) % len(matches)
+            self.text = self.text[:start] + matches[index] + suffix
+            self.cursor = start + len(matches[index])
+            self._completion = (start, suffix, matches, index)
+            return
+        before = self.text[:self.cursor]
+        word = re.search(r"\S*$", before).group()
+        matches = list(dict.fromkeys(self.complete(word, before) or ()))
+        matches = [match for match in matches if isinstance(match, str)]
+        if not matches:
+            return
+        start, suffix = self.cursor - len(word), self.text[self.cursor:]
+        common = os.path.commonprefix(matches)
+        if len(matches) == 1:
+            self._replace(start, self.cursor, matches[0])
+        elif len(common) > len(word):
+            self._replace(start, self.cursor, common)
+            self._completion = (start, suffix, matches, -1)
+        else:
+            self._replace(start, self.cursor, matches[0])
+            self._completion = (start, suffix, matches, 0)
+
+    def _reverse_search(self):
+        if self._search is None:
+            self._draft = (self.text, self.cursor)
+            self._search = (self.text, len(self.history))
+        needle, end = self._search
+        for index in range(end - 1, -1, -1):
+            if needle in self.history[index]:
+                self.text = self.history[index]
+                self.cursor = len(self.text)
+                self._history_index = index
+                self._search = (needle, index)
+                return
+
+    def feed(self, key, text=""):
+        """Apply a normalized key; return whether text or cursor changed."""
+        old = (self.text, self.cursor)
+        if key != "tab":
+            self._completion = None
+        if key != "search":
+            self._search = None
+        if key == "text":
+            self._replace(self.cursor, self.cursor, text)
+        elif key == "left":
+            self.cursor = max(0, self.cursor - 1)
+        elif key == "right":
+            self.cursor = min(len(self.text), self.cursor + 1)
+        elif key == "home":
+            self.cursor = 0
+        elif key == "end":
+            self.cursor = len(self.text)
+        elif key == "backspace" and self.cursor:
+            self._replace(self.cursor - 1, self.cursor, "")
+        elif key == "delete":
+            self._replace(self.cursor, self.cursor + 1, "")
+        elif key == "kill_left":
+            self._replace(0, self.cursor, "")
+        elif key == "kill_right":
+            self._replace(self.cursor, len(self.text), "")
+        elif key == "word_left":
+            self.cursor = len(self.text[:self.cursor].rstrip())
+            while self.cursor and not self.text[self.cursor - 1].isspace():
+                self.cursor -= 1
+        elif key == "word_right":
+            while self.cursor < len(self.text) and not self.text[self.cursor].isspace():
+                self.cursor += 1
+            while self.cursor < len(self.text) and self.text[self.cursor].isspace():
+                self.cursor += 1
+        elif key == "erase_word":
+            end = self.cursor
+            self.feed("word_left")
+            self._replace(self.cursor, end, "")
+        elif key == "up":
+            self._browse(-1)
+        elif key == "down":
+            self._browse(1)
+        elif key == "tab":
+            self._tab()
+        elif key == "search":
+            self._reverse_search()
+        return old != (self.text, self.cursor)
+
+
+_CONTROL = {
+    "\r": "enter", "\n": "enter", "\x03": "interrupt",
+    "\x04": "eof", "\x1a": "eof", "\x08": "backspace",
+    "\x7f": "backspace", "\t": "tab", "\x01": "home",
+    "\x05": "end", "\x02": "left", "\x06": "right",
+    "\x10": "up", "\x0e": "down", "\x15": "kill_left",
+    "\x0b": "kill_right", "\x17": "erase_word", "\x12": "search",
+}
+
+
+class WindowsKeyDecoder:
+    """Decode native records, including Alt Unicode key-up-only input.
+
+    Ordinary key releases repeat their character and are ignored. Windows
+    Alt Unicode composition instead delivers its character on VK_MENU's
+    release. Surrogates can arrive in separate batches; retain their state.
+    """
+
+    _KEYS = {0x25: "left", 0x27: "right", 0x24: "home", 0x23: "end",
+             0x08: "backspace", 0x2e: "delete", 0x26: "up", 0x28: "down",
+             0x0d: "enter", 0x09: "tab"}
+
+    def __init__(self):
+        self._high_surrogate = None
+
+    def feed(self, key_down, repeat, virtual_key, char, control_state=0):
+        char = chr(char) if isinstance(char, int) else (char or "\0")
+        if not key_down and not (virtual_key == 0x12 and char != "\0"):
+            return []
+        ctrl = bool(control_state & (0x04 | 0x08))
+        alt = bool(control_state & (0x01 | 0x02))
+        key = self._KEYS.get(virtual_key) if key_down else None
+        if key is not None:
+            if ctrl and key in ("left", "right"):
+                key = "word_" + key
+            elif ctrl and key == "backspace":
+                key = "erase_word"
+            return [(key, "")] * max(1, repeat)
+        if char == "\0":
+            return []
+        if char in _CONTROL:
+            return [(_CONTROL[char], "")] * max(1, repeat)
+        # AltGr (Ctrl+Alt) produces ordinary Unicode text, not a shortcut.
+        if ctrl and not alt and virtual_key in (0x43, 0x44, 0x5a):
+            return [("interrupt" if virtual_key == 0x43 else "eof", "")]
+        code = ord(char)
+        if 0xd800 <= code <= 0xdbff:
+            self._high_surrogate = code
+            return []
+        if 0xdc00 <= code <= 0xdfff:
+            if self._high_surrogate is None:
+                return []
+            char = chr(0x10000 + ((self._high_surrogate - 0xd800) << 10)
+                       + code - 0xdc00)
+            self._high_surrogate = None
+        else:
+            self._high_surrogate = None
+        if ord(char) < 32:
+            return []
+        return [("text", char * max(1, repeat))]
+
+
+class PosixKeyDecoder:
+    """Incremental UTF-8 and terminal escape decoder; no display writes."""
+
+    _SEQUENCES = {
+        "\x1b[A": "up", "\x1b[B": "down", "\x1b[C": "right",
+        "\x1b[D": "left", "\x1b[H": "home", "\x1b[F": "end",
+        "\x1bOA": "up", "\x1bOB": "down", "\x1bOC": "right",
+        "\x1bOD": "left",
+        "\x1bOH": "home", "\x1bOF": "end", "\x1b[1~": "home",
+        "\x1b[4~": "end", "\x1b[7~": "home", "\x1b[8~": "end",
+        "\x1b[3~": "delete", "\x1b[1;5D": "word_left",
+        "\x1b[1;5C": "word_right",
+    }
+
+    def __init__(self):
+        self._utf8 = codecs.getincrementaldecoder("utf-8")("replace")
+        self._escape = ""
+        self._paste = False
+        self._paste_pending = ""
+        self._paste_cr = False
+
+    def feed(self, data):
+        events = []
+        text = self._utf8.decode(data) if isinstance(data, bytes) else data
+
+        def pasted(char):
+            if char == "\r":
+                events.append(("text", "\n"))
+                self._paste_cr = True
+            else:
+                if not (char == "\n" and self._paste_cr):
+                    events.append(("text", char))
+                self._paste_cr = False
+
+        for char in text:
+            if self._paste:
+                # Only the closing bracketed-paste delimiter has meaning.
+                # Other escapes and controls remain part of the logical draft.
+                self._paste_pending += char
+                while self._paste_pending and not "\x1b[201~".startswith(self._paste_pending):
+                    pasted(self._paste_pending[0])
+                    self._paste_pending = self._paste_pending[1:]
+                if self._paste_pending == "\x1b[201~":
+                    self._paste = False
+                    self._paste_pending = ""
+                    self._paste_cr = False
+                continue
+            if self._escape:
+                if self._escape == "\x1b" and char not in "[O":
+                    # Unsupported Alt shortcuts must not consume later text.
+                    self._escape = ""
+                else:
+                    self._escape += char
+                    if self._escape == "\x1b[200~":
+                        self._paste, self._escape = True, ""
+                    elif self._escape in self._SEQUENCES:
+                        events.append((self._SEQUENCES[self._escape], ""))
+                        self._escape = ""
+                    elif len(self._escape) > 2 and "@" <= char <= "~":
+                        self._escape = ""  # unrelated terminal report
+                    elif len(self._escape) > 32:
+                        self._escape = ""
+                    continue
+            if char == "\x1b":
+                self._escape = char
+            elif char in _CONTROL:
+                events.append((_CONTROL[char], ""))
+            elif ord(char) >= 32:
+                events.append(("text", char))
+        return events
+
+    def flush_escape(self):
+        self._escape = ""
+
+
+# Preserve repeated actions decoded from a native record. Read only one
+# native record/byte at a time so accepting a line does not consume the next
+# line's type-ahead from the terminal (including a command after /exit).
+_READ_AHEAD = deque()
+# Retain partial UTF-16/UTF-8 state between reads and prompt boundaries.
+_WINDOWS_DECODER = WindowsKeyDecoder()
+_POSIX_DECODER = PosixKeyDecoder()
+
+
+def _drive(editor, on_change, events):
+    on_change(editor.text, editor.cursor)
+    for key, text in events:
+        if key == "enter":
+            return editor.text
+        if key == "interrupt":
+            raise KeyboardInterrupt
+        if key == "eof":
+            if not editor.text:
+                raise EOFError
+            key = "delete"
+        if key == "resize" or editor.feed(key, text):
+            on_change(editor.text, editor.cursor)
+    raise EOFError
+
+
+def _windows_console_mode():
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.GetStdHandle.argtypes = [wintypes.DWORD]
+    k32.GetStdHandle.restype = wintypes.HANDLE
+    k32.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetConsoleMode.restype = wintypes.BOOL
+    k32.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.SetConsoleMode.restype = wintypes.BOOL
+    handle = k32.GetStdHandle(wintypes.DWORD(-10).value)
+    original = wintypes.DWORD()
+    if not k32.GetConsoleMode(handle, ctypes.byref(original)):
+        raise OSError(ctypes.get_last_error(), "Cannot read console input mode")
+    return k32, handle, original.value
+
+
+@contextmanager
+def session_input_mode():
+    """Keep native echo off while the footer owns the terminal.
+
+    Preserve processed Ctrl-C/ISIG between input calls so reply cancellation
+    keeps its existing signal behavior. read_line temporarily enters raw mode
+    and restores this non-echoing baseline. Restore the user's full mode when
+    the footer session ends, including failures and cancellation.
+    """
+    if os.name == "nt":
+        import ctypes
+        k32, handle, original = _windows_console_mode()
+        if not k32.SetConsoleMode(handle, original & ~0x0004):
+            raise OSError(ctypes.get_last_error(), "Cannot disable console input echo")
+        try:
+            yield
+        finally:
+            k32.SetConsoleMode(handle, original)
+    else:
+        import termios
+        fd = sys.stdin.fileno()
+        original = termios.tcgetattr(fd)
+        quiet = list(original)
+        quiet[3] &= ~(termios.ECHO | getattr(termios, "ECHONL", 0))
+        termios.tcsetattr(fd, termios.TCSANOW, quiet)
+        try:
+            yield
+        finally:
+            termios.tcsetattr(fd, termios.TCSANOW, original)
+
+
+def _windows_events():
+    import ctypes
+    from ctypes import wintypes
+
+    class KEY(ctypes.Structure):
+        _fields_ = [("down", wintypes.BOOL), ("repeat", wintypes.WORD),
+                    ("key", wintypes.WORD), ("scan", wintypes.WORD),
+                    ("char", ctypes.c_ushort), ("control", wintypes.DWORD)]
+
+    class EVENT(ctypes.Union):
+        _fields_ = [("key", KEY), ("padding", ctypes.c_byte * 16)]
+
+    class RECORD(ctypes.Structure):
+        _fields_ = [("kind", wintypes.WORD), ("event", EVENT)]
+
+    k32, handle, original = _windows_console_mode()
+    k32.ReadConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.POINTER(RECORD),
+                                     wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    k32.ReadConsoleInputW.restype = wintypes.BOOL
+    k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    # ReadConsoleInput owns editing; cooked echo, Quick Edit, and VT input
+    # cannot share it. Restore processed Ctrl-C for the streaming phase.
+    mode = (original | 0x0008 | 0x0080) & ~(
+        0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0040 | 0x0200)
+    if not k32.SetConsoleMode(handle, mode):
+        raise OSError(ctypes.get_last_error(), "Cannot set console input mode")
+    decoder = _WINDOWS_DECODER
+    records, count = (RECORD * 1)(), wintypes.DWORD()
+
+    def size():
+        try:
+            return os.get_terminal_size(sys.__stdout__.fileno())
+        except (OSError, AttributeError):
+            return None
+
+    previous_size = size()
+    try:
+        while True:
+            while _READ_AHEAD:
+                yield _READ_AHEAD.popleft()
+            ready = k32.WaitForSingleObject(handle, 50)
+            current_size = size()
+            if current_size != previous_size:
+                previous_size = current_size
+                yield "resize", ""
+            if ready == 258:  # WAIT_TIMEOUT: viewport-only resizes still redraw
+                continue
+            if ready != 0:
+                raise OSError(ctypes.get_last_error(), "Cannot wait for console input")
+            if not k32.ReadConsoleInputW(handle, records, len(records), ctypes.byref(count)):
+                raise OSError(ctypes.get_last_error(), "Cannot read console input")
+            for record in records[:count.value]:
+                if record.kind == 0x0004:  # WINDOW_BUFFER_SIZE_EVENT
+                    _READ_AHEAD.append(("resize", ""))
+                elif record.kind == 0x0001:
+                    key = record.event.key
+                    _READ_AHEAD.extend(decoder.feed(bool(key.down), key.repeat,
+                                                   key.key, key.char, key.control))
+    finally:
+        k32.SetConsoleMode(handle, original)
+
+
+def _posix_events():
+    import select
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    original = termios.tcgetattr(fd)
+    decoder = _POSIX_DECODER
+
+    def size():
+        try:
+            return os.get_terminal_size(fd)
+        except OSError:
+            return None
+
+    previous_size = size()
+    try:
+        tty.setraw(fd, termios.TCSANOW)
+        while True:
+            while _READ_AHEAD:
+                yield _READ_AHEAD.popleft()
+            readable, _, _ = select.select([fd], [], [], 0.05)
+            current_size = size()
+            if current_size != previous_size:
+                previous_size = current_size
+                yield "resize", ""
+            if not readable:
+                decoder.flush_escape()
+                continue
+            data = os.read(fd, 1)
+            if not data:
+                raise EOFError
+            _READ_AHEAD.extend(decoder.feed(data))
+    finally:
+        termios.tcsetattr(fd, termios.TCSANOW, original)
+
+
+def read_line(on_change, history=(), initial=""):
+    """Read a footer line; redraw through callback(text, cursor_index).
+
+    Raises KeyboardInterrupt for Ctrl-C and EOFError for Ctrl-D/Ctrl-Z on an
+    empty draft. Console modes are restored on accept, interruption, errors,
+    and callback failures. No native output is produced by this module.
+    """
+    editor = EditBuffer(initial, history)
+    events = _windows_events() if os.name == "nt" else _posix_events()
+    try:
+        return _drive(editor, on_change, events)
+    finally:
+        events.close()
