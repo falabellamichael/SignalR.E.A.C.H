@@ -1232,3 +1232,61 @@ class NoEndpointFallbackTests(unittest.TestCase):
             "  ✗ the model didn't answer: endpoint unreachable (127.0.0.1:1), after 4 tries"
             " — send your message again or /retry"), out.getvalue())
         self.assertEqual(set(rec.urls), {"http://127.0.0.1:1/v1/chat/completions"})
+
+
+class ToolLineTests(unittest.TestCase):
+    """Compact '⏺ tool args' / '⎿ ✓ summary' agent lines."""
+
+    def setUp(self):
+        from reach_cli import agent_tools
+        self.at = agent_tools
+
+    def capture(self, fn, *a):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fn(*a)
+        return out.getvalue()
+
+    def test_compact_args_not_json(self):
+        self.assertEqual(self.at.format_args("read", {"path": "a.py", "startLine": 3}),
+                         "path=a.py startLine=3")
+        self.assertEqual(self.at.format_args("search", {"pattern": "def x", "regex": True}),
+                         'pattern="def x" regex')
+        self.assertEqual(self.at.format_args("todo_write", {"todos": [{}, {}]}), "2 item(s)")
+        line = self.capture(chat_mod.show_tool_call, "list", {"path": "src"})
+        self.assertEqual(line, "  ⏺ list  path=src\n")
+        self.assertNotIn("{", line)
+
+    def test_result_summaries(self):
+        s = self.at.summarize_result
+        self.assertEqual(s("read", "a.py (12 lines)\n    1 | x"), (True, "12 lines"))
+        self.assertEqual(s("list", "a/\n  b\nc"), (True, "3 entries"))
+        self.assertEqual(s("glob", "a.py\nb.py"), (True, "2 file(s)"))
+        self.assertEqual(s("search", "no matches"), (True, "no matches"))
+        self.assertEqual(s("shell", "exit code 1\n3 failed"), (False, "exit 1 · 3 failed"))
+        self.assertEqual(s("read", "error: no such file: x"), (False, "no such file: x"))
+        self.assertEqual(s("shell", "shell command denied by the user: rm"), (False, "denied"))
+        out = self.capture(chat_mod.show_tool_result, "list", "a\nb")
+        self.assertEqual(out, "    ⎿ ✓ 2 entries\n")
+
+    def test_edit_shows_short_diff(self):
+        args = {"path": "a.py", "search": "old = 1", "replace": "new = 2\nmore\nx\ny"}
+        out = self.capture(chat_mod.show_tool_call, "edit", args)
+        self.assertIn("⏺ edit  a.py", out)
+        self.assertIn("      - old = 1", out)
+        self.assertIn("      + new = 2", out)
+        self.assertIn("+ … 1 more line(s)", out)
+
+    def test_retry_lines_have_no_blank_lines_between(self):
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([_http_error(502)] * 4)
+        out = io.StringIO()
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                contextlib.redirect_stdout(out):
+            chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
+        lines = out.getvalue().split("\n")
+        start = next(i for i, l in enumerate(lines) if "retrying" in l)
+        tail = [l for l in lines[start:] if l != ""]
+        self.assertEqual(lines[start:start + len(tail)], tail)  # contiguous
+        self.assertEqual(len([l for l in tail if "retrying" in l]), 3)
