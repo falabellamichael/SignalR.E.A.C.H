@@ -57,9 +57,10 @@ class FooterApprovalTests(unittest.TestCase):
 
     @staticmethod
     def answer(text):
-        def read(on_change, history=(), initial=""):
+        def read(on_change, history=(), initial="", on_scroll=None):
             events = [("text", text), ("enter", "")]
-            return footer_input._drive(footer_input.EditBuffer(initial, history), on_change, iter(events))
+            return footer_input._drive(footer_input.EditBuffer(initial, history),
+                                       on_change, iter(events), on_scroll=on_scroll)
         return mock.patch.object(footer_input, "read_line", side_effect=read)
 
     def test_owned_approval_uses_footer_and_resets_draft(self):
@@ -82,8 +83,26 @@ class FooterApprovalTests(unittest.TestCase):
         builtin.assert_called_once_with("allow fallback?")
         reader.assert_not_called()
 
+    def test_approval_can_scroll_history_without_editing_answer(self):
+        self.screen.write("\n".join("approval-history-%02d" % n for n in range(40)) + "\n")
+
+        def read(on_change, history=(), initial="", on_scroll=None):
+            on_change("y", 1)
+            on_scroll("page_up", 1)
+            snapshot = self.screen.snapshot()
+            self.assertFalse(snapshot["scroll"]["following"])
+            self.assertEqual((snapshot["text"], snapshot["cursor"]), ("y", 1))
+            self.assertLess(snapshot["scroll"]["top"], snapshot["scroll"]["max_top"])
+            on_scroll("page_down", 10)
+            self.assertTrue(self.screen.snapshot()["scroll"]["following"])
+            return "y"
+
+        with mock.patch.object(footer_input, "read_line", side_effect=read):
+            self.assertEqual(terminal.read_input("allow scrolled fixture?"), "y")
+        self.assertEqual(self.screen.snapshot()["text"], "")
+
     def test_interrupted_owned_approval_resets_and_propagates(self):
-        def interrupted(on_change, history=(), initial=""):
+        def interrupted(on_change, history=(), initial="", on_scroll=None):
             on_change("unfinished approval", 5)
             raise KeyboardInterrupt
         with mock.patch.object(footer_input, "read_line", side_effect=interrupted):

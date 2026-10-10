@@ -169,6 +169,142 @@ class FooterScreenTests(unittest.TestCase):
         self.assertIn(TL, wide[28])
         self.assertIn(BL, wide[30])
 
+    def test_transcript_scroll_lines_pages_and_return_live(self):
+        self.tty.resize(40, 12)
+        screen = self.screen()
+        screen.start()
+        screen.write("".join("history-%02d\n" % index for index in range(50)))
+        live = screen.snapshot()["scroll"]
+        self.assertTrue(
+            {"following", "top", "max_top", "total_rows", "visible_rows"}
+            <= set(live))
+        self.assertEqual(len(live["anchor"]), 2)
+        self.assertTrue(all(isinstance(value, int) and value >= 0
+                            for value in live["anchor"]))
+        self.assertTrue(live["following"])
+        self.assertEqual(live["top"], live["max_top"])
+        self.assertGreater(live["total_rows"], live["visible_rows"])
+        self.assertIn("history-49", "\n".join(frame_rows(self.tty.getvalue()).values()))
+
+        screen.scroll_lines(4)  # positive means older output
+        up = screen.snapshot()["scroll"]
+        self.assertFalse(up["following"])
+        self.assertLess(up["top"], up["max_top"])
+        self.assertLess(up["top"], live["top"])
+        scrolled_rows = frame_rows(self.tty.getvalue())
+        self.assertIn("scroll", "\n".join(scrolled_rows.values()).lower())
+        self.assertNotIn("history-49", "\n".join(scrolled_rows.values()))
+
+        screen.scroll_lines(-1)  # negative moves toward the live tail
+        one_down = screen.snapshot()["scroll"]
+        self.assertGreater(one_down["top"], up["top"])
+        screen.scroll_pages(1)
+        page_up = screen.snapshot()["scroll"]
+        self.assertLess(page_up["top"], one_down["top"])
+        screen.scroll_pages(-1)
+        page_down = screen.snapshot()["scroll"]
+        self.assertGreater(page_down["top"], page_up["top"])
+
+        screen.return_live()
+        returned = screen.snapshot()["scroll"]
+        self.assertTrue(returned["following"])
+        self.assertEqual(returned["top"], returned["max_top"])
+        self.assertIn("history-49", "\n".join(frame_rows(self.tty.getvalue()).values()))
+
+    def test_scrolled_view_keeps_anchor_draft_and_footer_during_output_and_resize(self):
+        self.tty.resize(40, 12)
+        screen = self.screen()
+        screen.start()
+        screen.write("".join("line-%02d\n" % index for index in range(45)))
+        draft = "draft \u6f22\u5b57"
+        screen.set_input(draft, cursor=7)
+        screen.scroll_lines(8)
+        initial = screen.snapshot()
+        self.assertFalse(initial["scroll"]["following"])
+        anchor = frame_rows(self.tty.getvalue())[1]
+        self.assertIn("line-", anchor)
+
+        screen.write("line-45\n")
+        streamed = screen.snapshot()
+        self.assertFalse(streamed["scroll"]["following"])
+        self.assertEqual(streamed["scroll"]["top"], initial["scroll"]["top"])
+        self.assertGreater(streamed["scroll"]["total_rows"],
+                           initial["scroll"]["total_rows"])
+        self.assertEqual(frame_rows(self.tty.getvalue())[1], anchor)
+        self.assertEqual((streamed["text"], streamed["cursor"]), (draft, 7))
+
+        self.tty.resize(60, 14)
+        screen.flush()
+        resized = screen.snapshot()
+        rows = frame_rows(self.tty.getvalue())
+        self.assertFalse(resized["scroll"]["following"])
+        self.assertEqual(rows[1], anchor)
+        self.assertEqual((resized["text"], resized["cursor"]), (draft, 7))
+        self.assertIn("scroll", "\n".join(rows.values()).lower())
+        top = resized["geometry"]["footer_top"] + 1
+        self.assertTrue(rows[top].startswith(TL))
+        self.assertTrue(rows[top].endswith(TR))
+        self.assertIn("test-model", rows[top])
+        self.assertTrue(rows[14].startswith(BL))
+        self.assertTrue(rows[14].endswith(BR))
+        self.assertIn("draft", "\n".join(rows.values()))
+        cursor_row, cursor_column = last_cursor(self.tty.getvalue())
+        self.assertEqual(cursor_row, resized["geometry"]["cursor_row"] + 1)
+        self.assertEqual(cursor_column, resized["geometry"]["cursor_column"] + 1)
+
+        screen.return_live()
+        self.assertIn("line-45", "\n".join(frame_rows(self.tty.getvalue()).values()))
+
+    def test_visible_submit_exits_scrollback_before_next_reply_streams(self):
+        self.tty.resize(40, 12)
+        screen = self.screen()
+        screen.start()
+        screen.finish_input("first question", echo=True)
+        screen.write("".join("old-reply-%02d\n" % index for index in range(35)))
+        screen.scroll_lines(8)
+        self.assertFalse(screen.snapshot()["scroll"]["following"])
+
+        screen.set_input("new question", cursor=len("new question"))
+        screen.finish_input("new question", echo=True)
+        submitted = screen.snapshot()
+        self.assertTrue(submitted["scroll"]["following"])
+        self.assertEqual(submitted["scroll"]["top"], submitted["scroll"]["max_top"])
+        self.assertEqual((submitted["text"], submitted["cursor"]), ("", 0))
+        screen.write("fresh-reply-marker\n")
+        shown = "\n".join(frame_rows(self.tty.getvalue()).values())
+        self.assertIn("new question", shown)
+        self.assertIn("fresh-reply-marker", shown)
+        self.assertTrue(screen.snapshot()["scroll"]["following"])
+
+    def test_wrapped_line_anchor_round_trips_narrow_wide_narrow(self):
+        self.tty.resize(18, 8)
+        screen = self.screen()
+        screen.start()
+        long_line = "".join("%02d-" % index for index in range(40))
+        screen.write("before\n" + long_line + "\nafter\n")
+        screen.scroll_lines(3)
+        narrow = screen.snapshot()
+        self.assertFalse(narrow["scroll"]["following"])
+        anchor = narrow["scroll"]["anchor"]
+        self.assertGreater(anchor[1], 0, "the first row must be inside the wrapped line")
+        first_row = frame_rows(self.tty.getvalue())[1]
+        self.assertIn("-", first_row)
+
+        self.tty.resize(60, 8)
+        screen.flush()
+        wide = screen.snapshot()
+        self.assertFalse(wide["scroll"]["following"])
+        self.assertEqual(wide["scroll"]["anchor"][0], anchor[0])
+        self.assertEqual(wide["transcript"], narrow["transcript"])
+
+        self.tty.resize(18, 8)
+        screen.flush()
+        restored = screen.snapshot()
+        self.assertFalse(restored["scroll"]["following"])
+        self.assertEqual(restored["scroll"]["anchor"], anchor)
+        self.assertEqual(frame_rows(self.tty.getvalue())[1], first_row)
+        self.assertEqual(restored["transcript"], narrow["transcript"])
+
     def test_center_margin_tracks_width_for_transcript_and_footer(self):
         splash.set_layout("center")
         self.tty.resize(200, 24)

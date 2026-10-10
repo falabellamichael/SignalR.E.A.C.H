@@ -232,7 +232,7 @@ def read_inline_input(message=""):
         screen.write(message + "\n")
     try:
         answer = read_line(lambda text, cursor: screen.set_input(
-            text, cursor, label="allow"))
+            text, cursor, label="allow"), on_scroll=screen.scroll)
         screen.finish_input(answer, echo=False)
         return answer
     except (KeyboardInterrupt, EOFError):
@@ -290,7 +290,8 @@ def read_boxed(client, reader=None, out=None):
                 history = []
             try:
                 line = read_line(lambda text, cursor: screen.set_input(
-                    text, cursor, chunks=tuple(chunks)), history=history)
+                    text, cursor, chunks=tuple(chunks)), history=history,
+                    on_scroll=screen.scroll)
             except (KeyboardInterrupt, EOFError):
                 screen.finish_input("", echo=False)
                 raise

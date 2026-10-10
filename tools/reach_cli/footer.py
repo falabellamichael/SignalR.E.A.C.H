@@ -6,6 +6,7 @@ back to recover a draft. The transcript is retained and reflowed on resize.
 """
 
 import os
+import bisect
 import shutil
 import threading
 import unicodedata
@@ -204,6 +205,13 @@ class FooterScreen:
         self._geometry = {}
         self._meta_key = None
         self._meta_value = None
+        self._follow_tail = True
+        self._scroll_anchor = None
+        self._visual_rows = []
+        self._scroll_state = {
+            "following": True, "top": 0, "max_top": 0,
+            "total_rows": 0, "visible_rows": 0, "anchor": None,
+        }
 
     def isatty(self):
         method = getattr(self.out, "isatty", None)
@@ -223,6 +231,7 @@ class FooterScreen:
                     "".join(glyph for glyph, _ in line.cells)
                     for line in self._lines),
                 "geometry": dict(self._geometry),
+                "scroll": dict(self._scroll_state),
                 "active": self._active,
             }
 
@@ -258,9 +267,11 @@ class FooterScreen:
                 return False
             self._last_size = self._size()
             self._lines = [_Line(self._layout(self._last_size[0])[1])]
+            self._follow_tail = True
+            self._scroll_anchor = None
             self._stop.clear()
             self._active = True
-            modes = "\x1b[?1049h"
+            modes = "\x1b[?1049h\x1b[?1000h\x1b[?1006h"
             if os.name != "nt":
                 modes += "\x1b[?2004h"
             self.out.write(modes)
@@ -276,7 +287,7 @@ class FooterScreen:
                 return
             self._active = False
             self._stop.set()
-            modes = "\x1b[?25h"
+            modes = "\x1b[?25h\x1b[?1006l\x1b[?1000l"
             if os.name != "nt":
                 modes += "\x1b[?2004l"
             self.out.write(modes + "\x1b[?1049l")
@@ -292,6 +303,13 @@ class FooterScreen:
                     return
                 if self._size() != self._last_size:
                     self._draw()
+            try:
+                from .footer_input import poll_scroll_events
+                events = poll_scroll_events() or ()
+            except (ImportError, AttributeError, OSError, RuntimeError):
+                events = ()
+            for action, amount in events:
+                self.scroll(action, amount)
 
     def write(self, text):
         text = str(text)
@@ -320,6 +338,56 @@ class FooterScreen:
     def reset_input(self):
         self.set_input("", 0)
 
+    def scroll_lines(self, delta):
+        """Scroll transcript rows; positive goes up, negative goes down."""
+        with self._lock:
+            if not self._active:
+                return
+            if self._size() != self._last_size:
+                self._draw()
+            state = self._scroll_state
+            top = max(0, min(state["max_top"], state["top"] - int(delta)))
+            if top >= state["max_top"]:
+                self._follow_tail = True
+                self._scroll_anchor = None
+            else:
+                self._follow_tail = False
+                self._scroll_anchor = self._visual_rows[top][:2]
+            self._draw()
+
+    def scroll_pages(self, delta):
+        """Scroll by a viewport, keeping one row of reading overlap."""
+        with self._lock:
+            if self._active and self._size() != self._last_size:
+                self._draw()
+            step = max(1, self._scroll_state["visible_rows"] - 1)
+            self.scroll_lines(int(delta) * step)
+
+    def return_live(self):
+        """Follow the newest output again."""
+        with self._lock:
+            self._follow_tail = True
+            self._scroll_anchor = None
+            if self._active:
+                self._draw()
+
+    def scroll(self, action, amount=1):
+        """Dispatch normalized editor and mouse scroll events."""
+        action = str(action)
+        if action.startswith("scroll_"):
+            action = action[len("scroll_"):]
+        amount = max(1, int(amount))
+        if action == "live":
+            self.return_live()
+        elif action == "page_up":
+            self.scroll_pages(amount)
+        elif action == "page_down":
+            self.scroll_pages(-amount)
+        elif action == "up":
+            self.scroll_lines(amount)
+        elif action == "down":
+            self.scroll_lines(-amount)
+
     def refresh_metadata(self):
         """Refresh the workspace branch once when a new prompt begins."""
         with self._lock:
@@ -333,6 +401,8 @@ class FooterScreen:
                 return
             self._banner_cleared = True
             self._lines = [_Line()]
+            self._follow_tail = True
+            self._scroll_anchor = None
             if self._active:
                 self._draw()
 
@@ -340,6 +410,8 @@ class FooterScreen:
         with self._lock:
             if echo:
                 self.clear_banner_on_submit()
+                self._follow_tail = True
+                self._scroll_anchor = None
             self._draft = ""
             self._cursor = 0
             self._chunks = ()
@@ -432,7 +504,7 @@ class FooterScreen:
 
     def _visual_transcript(self, width, margin):
         rows = []
-        for line in self._lines:
+        for line_index, line in enumerate(self._lines):
             cells = line.cells
             old = line.source_margin
             if old and len(cells) >= old and all(
@@ -444,16 +516,19 @@ class FooterScreen:
             if not prefix and raw.startswith("  \u2502 "):
                 continuation = _clip("  \u2502 ", max(0, width - 1))
             segment = []
+            segment_start = 0
             used = 0
             first = True
-            for glyph, style in cells:
+            for cell_index, (glyph, style) in enumerate(cells):
                 room = max(1, width - display_width(
                     prefix if first else continuation))
                 size = _glyph_width(glyph)
                 if segment and used + size > room:
                     lead = prefix if first else continuation
-                    rows.append(" " * margin + lead + _styled(segment))
+                    rows.append((line_index, segment_start,
+                                 " " * margin + lead + _styled(segment)))
                     segment, used, first = [], 0, False
+                    segment_start = cell_index
                 if size > room:
                     segment.append(("?", style))
                     used += 1
@@ -461,7 +536,8 @@ class FooterScreen:
                     segment.append((glyph, style))
                     used += size
             lead = prefix if first else continuation
-            rows.append(" " * margin + lead + _styled(segment))
+            rows.append((line_index, segment_start,
+                         " " * margin + lead + _styled(segment)))
         return rows
 
     def _footer(self, width, margin, height):
@@ -549,9 +625,33 @@ class FooterScreen:
         else:
             footer_height = 2 if rows == 3 else 1
         transcript_height = rows - footer_height
-        transcript = (self._visual_transcript(width, margin)[-transcript_height:]
-                      if transcript_height else [])
-        display = ([""] * max(0, transcript_height - len(transcript)) + transcript)
+        status_rows = 1 if transcript_height >= 2 else 0
+        visible_rows = transcript_height - status_rows
+        visual = self._visual_transcript(width, margin)
+        self._visual_rows = visual
+        max_top = max(0, len(visual) - visible_rows) if visible_rows else 0
+        if self._follow_tail:
+            top = max_top
+        elif self._scroll_anchor is None or not visual:
+            top = 0
+        else:
+            anchors = [(line, offset) for line, offset, _ in visual]
+            top = max(0, min(max_top,
+                             bisect.bisect_right(anchors, self._scroll_anchor) - 1))
+        anchor = visual[top][:2] if visual and visible_rows else None
+        self._scroll_state = {
+            "following": self._follow_tail, "top": top, "max_top": max_top,
+            "total_rows": len(visual), "visible_rows": visible_rows,
+            "anchor": list(anchor) if anchor is not None else None,
+        }
+        transcript = [item[2] for item in visual[top:top + visible_rows]]
+        display = [""] * max(0, visible_rows - len(transcript)) + transcript
+        if status_rows:
+            if self._follow_tail:
+                status = "live \u00b7 PgUp/PgDn / wheel"
+            else:
+                status = "scroll %d/%d \u00b7 PgDn live" % (top + 1, max_top + 1)
+            display.append(" " * margin + c_cyan(_clip(status, width)))
         footer, (cursor_row, cursor_col) = self._footer(
             width, margin, footer_height)
         display.extend(footer)
@@ -566,6 +666,7 @@ class FooterScreen:
             "columns": cols, "rows": rows, "footer_top": transcript_height,
             "footer_rows": footer_height, "footer_left": margin,
             "footer_width": width, "transcript_rows": transcript_height,
+            "scroll_status_row": transcript_height - 1 if status_rows else None,
             "cursor_row": screen_row - 1, "cursor_column": screen_col - 1,
         }
         self.out.write("".join(frame))

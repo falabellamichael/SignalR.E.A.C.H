@@ -591,6 +591,13 @@ completion use native console events. Plain or piped terminals retain the
 line-oriented interface. `chat -p "question"` submits that initial turn and
 keeps the chat open; `-p "question"` alone is a one-shot request.
 
+Use **Page Up / Page Down** or the **mouse wheel** to scroll earlier output
+while the input footer stays pinned. The `scroll` indicator shows your place;
+scrolling to the bottom resumes live output. Your draft and cursor remain in
+place while browsing history. Native Windows also accepts scroll controls
+while a response streams, until ordinary typed input is queued for the next
+prompt. On POSIX, scroll controls are read when the prompt is active.
+
 Web mode ports SimpleRAG's websearch: DuckDuckGo HTML scraping (lite
 fallback), rotating user agents, rich answer modules, page excerpt fetch,
 and a grounding prompt with `[n]` citations. Auto-discovers the endpoint

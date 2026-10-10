@@ -11,6 +11,7 @@ from contextlib import contextmanager
 import os
 import re
 import sys
+import threading
 
 
 def _complete(text, before_cursor):
@@ -159,7 +160,8 @@ class WindowsKeyDecoder:
 
     _KEYS = {0x25: "left", 0x27: "right", 0x24: "home", 0x23: "end",
              0x08: "backspace", 0x2e: "delete", 0x26: "up", 0x28: "down",
-             0x0d: "enter", 0x09: "tab"}
+             0x0d: "enter", 0x09: "tab", 0x21: "scroll_page_up",
+             0x22: "scroll_page_down"}
 
     def __init__(self):
         self._high_surrogate = None
@@ -201,6 +203,27 @@ class WindowsKeyDecoder:
         return [("text", char * max(1, repeat))]
 
 
+class WindowsMouseDecoder:
+    """Retain high-resolution vertical wheel deltas until a full notch."""
+
+    def __init__(self):
+        self._wheel_delta = 0
+
+    def feed(self, button_state, event_flags):
+        if not event_flags & 0x0004 or event_flags & 0x0008:
+            return []
+        delta = (int(button_state) >> 16) & 0xffff
+        if delta >= 0x8000:
+            delta -= 0x10000
+        self._wheel_delta += delta
+        steps = abs(self._wheel_delta) // 120
+        if not steps:
+            return []
+        direction = 1 if self._wheel_delta > 0 else -1
+        self._wheel_delta -= direction * steps * 120
+        return [("scroll_up" if direction > 0 else "scroll_down", steps)]
+
+
 class PosixKeyDecoder:
     """Incremental UTF-8 and terminal escape decoder; no display writes."""
 
@@ -213,6 +236,7 @@ class PosixKeyDecoder:
         "\x1b[4~": "end", "\x1b[7~": "home", "\x1b[8~": "end",
         "\x1b[3~": "delete", "\x1b[1;5D": "word_left",
         "\x1b[1;5C": "word_right",
+        "\x1b[5~": "scroll_page_up", "\x1b[6~": "scroll_page_down",
     }
 
     def __init__(self):
@@ -221,10 +245,35 @@ class PosixKeyDecoder:
         self._paste = False
         self._paste_pending = ""
         self._paste_cr = False
+        self._legacy_mouse = None
+
+    @staticmethod
+    def _mouse_action(button, x, y, release=False):
+        if release or x <= 0 or y <= 0 or x > 1000000 or y > 1000000:
+            return []
+        # The high wheel bit plus button 0/1 means vertical up/down.
+        # Ignore modifier bits, horizontal wheels, releases and motion.
+        if button & 64 and not button & 32 and (button & 3) in (0, 1):
+            return [("scroll_up" if (button & 3) == 0 else "scroll_down", 1)]
+        return []
 
     def feed(self, data):
         events = []
-        text = self._utf8.decode(data) if isinstance(data, bytes) else data
+
+        def characters():
+            if isinstance(data, bytes):
+                for value in data:
+                    if self._legacy_mouse is not None:
+                        # X10 coordinates are raw bytes, not UTF-8 text.
+                        # Decoding them first can merge two coordinates and
+                        # steal a following typed character as the third byte.
+                        yield chr(value)
+                    else:
+                        for char in self._utf8.decode(bytes([value])):
+                            yield char
+            else:
+                for char in data:
+                    yield char
 
         def pasted(char):
             if char == "\r":
@@ -235,7 +284,7 @@ class PosixKeyDecoder:
                     events.append(("text", char))
                 self._paste_cr = False
 
-        for char in text:
+        for char in characters():
             if self._paste:
                 # Only the closing bracketed-paste delimiter has meaning.
                 # Other escapes and controls remain part of the logical draft.
@@ -248,6 +297,14 @@ class PosixKeyDecoder:
                     self._paste_pending = ""
                     self._paste_cr = False
                 continue
+            if self._legacy_mouse is not None:
+                self._legacy_mouse += char
+                if len(self._legacy_mouse) == 3:
+                    button, x, y = (ord(value) - 32 for value in self._legacy_mouse)
+                    if 0 <= button <= 223 and 0 < x <= 223 and 0 < y <= 223:
+                        events.extend(self._mouse_action(button, x, y))
+                    self._legacy_mouse = None
+                continue
             if self._escape:
                 if self._escape == "\x1b" and char not in "[O":
                     # Unsupported Alt shortcuts must not consume later text.
@@ -256,12 +313,27 @@ class PosixKeyDecoder:
                     self._escape += char
                     if self._escape == "\x1b[200~":
                         self._paste, self._escape = True, ""
+                    elif self._escape == "\x1b[M":
+                        self._legacy_mouse, self._escape = "", ""
                     elif self._escape in self._SEQUENCES:
                         events.append((self._SEQUENCES[self._escape], ""))
                         self._escape = ""
+                    elif self._escape.startswith("\x1b[<") and char not in "Mm":
+                        if len(self._escape) > 64:
+                            self._escape = ""
                     elif len(self._escape) > 2 and "@" <= char <= "~":
-                        self._escape = ""  # unrelated terminal report
-                    elif len(self._escape) > 32:
+                        match = re.fullmatch(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])",
+                                             self._escape)
+                        if match:
+                            button, x, y = (int(value) for value in match.groups()[:3])
+                            events.extend(self._mouse_action(button, x, y,
+                                                             match.group(4) == "m"))
+                        page = re.fullmatch(r"\x1b\[([56])(?:;\d+)?~", self._escape)
+                        if page:
+                            events.append(("scroll_page_up" if page.group(1) == "5"
+                                           else "scroll_page_down", ""))
+                        self._escape = ""  # unrelated or invalid report
+                    elif len(self._escape) > 64:
                         self._escape = ""
                     continue
             if char == "\x1b":
@@ -273,7 +345,8 @@ class PosixKeyDecoder:
         return events
 
     def flush_escape(self):
-        self._escape = ""
+        if self._escape == "\x1b":
+            self._escape = ""
 
 
 # Preserve repeated actions decoded from a native record. Read only one
@@ -283,11 +356,21 @@ _READ_AHEAD = deque()
 # Retain partial UTF-16/UTF-8 state between reads and prompt boundaries.
 _WINDOWS_DECODER = WindowsKeyDecoder()
 _POSIX_DECODER = PosixKeyDecoder()
+_WINDOWS_MOUSE = WindowsMouseDecoder()
+_INPUT_LOCK = threading.RLock()
+_READ_ACTIVE = False
+_SESSION_ACTIVE = False
+_SCROLL_ACTIONS = {"scroll_page_up": "page_up", "scroll_page_down": "page_down",
+                   "scroll_up": "up", "scroll_down": "down", "scroll_live": "live"}
 
 
-def _drive(editor, on_change, events):
+def _drive(editor, on_change, events, on_scroll=None):
     on_change(editor.text, editor.cursor)
     for key, text in events:
+        if key in _SCROLL_ACTIONS:
+            if on_scroll is not None:
+                on_scroll(_SCROLL_ACTIONS[key], max(1, int(text or 1)))
+            continue
         if key == "enter":
             return editor.text
         if key == "interrupt":
@@ -327,14 +410,22 @@ def session_input_mode():
     and restores this non-echoing baseline. Restore the user's full mode when
     the footer session ends, including failures and cancellation.
     """
+    global _SESSION_ACTIVE
+    with _INPUT_LOCK:
+        was_active = _SESSION_ACTIVE
     if os.name == "nt":
         import ctypes
         k32, handle, original = _windows_console_mode()
-        if not k32.SetConsoleMode(handle, original & ~0x0004):
+        quiet = (original | 0x0008 | 0x0010 | 0x0080) & ~(0x0004 | 0x0040 | 0x0200)
+        if not k32.SetConsoleMode(handle, quiet):
             raise OSError(ctypes.get_last_error(), "Cannot disable console input echo")
         try:
+            with _INPUT_LOCK:
+                _SESSION_ACTIVE = True
             yield
         finally:
+            with _INPUT_LOCK:
+                _SESSION_ACTIVE = was_active
             k32.SetConsoleMode(handle, original)
     else:
         import termios
@@ -344,12 +435,16 @@ def session_input_mode():
         quiet[3] &= ~(termios.ECHO | getattr(termios, "ECHONL", 0))
         termios.tcsetattr(fd, termios.TCSANOW, quiet)
         try:
+            with _INPUT_LOCK:
+                _SESSION_ACTIVE = True
             yield
         finally:
+            with _INPUT_LOCK:
+                _SESSION_ACTIVE = was_active
             termios.tcsetattr(fd, termios.TCSANOW, original)
 
 
-def _windows_events():
+def _windows_record_api():
     import ctypes
     from ctypes import wintypes
 
@@ -358,8 +453,15 @@ def _windows_events():
                     ("key", wintypes.WORD), ("scan", wintypes.WORD),
                     ("char", ctypes.c_ushort), ("control", wintypes.DWORD)]
 
+    class COORD(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_short), ("y", ctypes.c_short)]
+
+    class MOUSE(ctypes.Structure):
+        _fields_ = [("position", COORD), ("buttons", wintypes.DWORD),
+                    ("control", wintypes.DWORD), ("flags", wintypes.DWORD)]
+
     class EVENT(ctypes.Union):
-        _fields_ = [("key", KEY), ("padding", ctypes.c_byte * 16)]
+        _fields_ = [("key", KEY), ("mouse", MOUSE), ("padding", ctypes.c_byte * 16)]
 
     class RECORD(ctypes.Structure):
         _fields_ = [("kind", wintypes.WORD), ("event", EVENT)]
@@ -368,15 +470,84 @@ def _windows_events():
     k32.ReadConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.POINTER(RECORD),
                                      wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
     k32.ReadConsoleInputW.restype = wintypes.BOOL
+    k32.PeekConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.POINTER(RECORD),
+                                     wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    k32.PeekConsoleInputW.restype = wintypes.BOOL
     k32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
     k32.WaitForSingleObject.restype = wintypes.DWORD
+    return k32, handle, original, RECORD
+
+
+def _decode_windows_record(record):
+    if record.kind == 0x0004:
+        return [("resize", "")]
+    if record.kind == 0x0001:
+        key = record.event.key
+        return _WINDOWS_DECODER.feed(bool(key.down), key.repeat, key.key,
+                                     key.char, key.control)
+    if record.kind == 0x0002:
+        mouse = record.event.mouse
+        return _WINDOWS_MOUSE.feed(mouse.buttons, mouse.flags)
+    return []
+
+
+def _poll_eligible(record):
+    if record.kind in (0x0002, 0x0004, 0x0010):  # mouse, resize, focus
+        return True
+    if record.kind != 0x0001:
+        return False
+    key = record.event.key
+    if not key.down:
+        # The editor ignores ordinary releases, including Enter's trailing
+        # carriage return. Alt Unicode input is delivered on VK_MENU's
+        # release and must stay queued for the next reader.
+        return key.key != 0x12 or not key.char
+    return key.key in (0x21, 0x22) and not key.char
+
+
+def poll_scroll_events():
+    """Poll leading Win32 scroll records while no editor is reading.
+
+    Consume ordinary key releases that the editor ignores, while retaining
+    Alt Unicode releases and all ordinary text/control key presses. Typed
+    input at the head of the queue therefore blocks subsequent scrolling
+    until the next prompt. POSIX bytes remain untouched between prompts.
+    """
+    if os.name != "nt" or not _INPUT_LOCK.acquire(blocking=False):
+        return []
+    try:
+        if _READ_ACTIVE or not _SESSION_ACTIVE:
+            return []
+        import ctypes
+        from ctypes import wintypes
+        k32, handle, _original, record_type = _windows_record_api()
+        records, count = (record_type * 1)(), wintypes.DWORD()
+        actions = []
+        for _ in range(64):
+            if not k32.PeekConsoleInputW(handle, records, 1, ctypes.byref(count)):
+                raise OSError(ctypes.get_last_error(), "Cannot inspect console input")
+            if not count.value or not _poll_eligible(records[0]):
+                break
+            if not k32.ReadConsoleInputW(handle, records, 1, ctypes.byref(count)):
+                raise OSError(ctypes.get_last_error(), "Cannot read console scroll input")
+            for key, amount in _decode_windows_record(records[0]):
+                if key in _SCROLL_ACTIONS:
+                    actions.append((_SCROLL_ACTIONS[key], max(1, int(amount or 1))))
+        return actions
+    finally:
+        _INPUT_LOCK.release()
+
+
+def _windows_events():
+    import ctypes
+    from ctypes import wintypes
+    k32, handle, original, RECORD = _windows_record_api()
     # ReadConsoleInput owns editing; cooked echo, Quick Edit, and VT input
     # cannot share it. Restore processed Ctrl-C for the streaming phase.
-    mode = (original | 0x0008 | 0x0080) & ~(
-        0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0040 | 0x0200)
+    mode = (original | 0x0008 | 0x0010 | 0x0080) & ~(
+        0x0001 | 0x0002 | 0x0004 | 0x0040 | 0x0200)
     if not k32.SetConsoleMode(handle, mode):
         raise OSError(ctypes.get_last_error(), "Cannot set console input mode")
-    decoder = _WINDOWS_DECODER
     records, count = (RECORD * 1)(), wintypes.DWORD()
 
     def size():
@@ -402,12 +573,7 @@ def _windows_events():
             if not k32.ReadConsoleInputW(handle, records, len(records), ctypes.byref(count)):
                 raise OSError(ctypes.get_last_error(), "Cannot read console input")
             for record in records[:count.value]:
-                if record.kind == 0x0004:  # WINDOW_BUFFER_SIZE_EVENT
-                    _READ_AHEAD.append(("resize", ""))
-                elif record.kind == 0x0001:
-                    key = record.event.key
-                    _READ_AHEAD.extend(decoder.feed(bool(key.down), key.repeat,
-                                                   key.key, key.char, key.control))
+                _READ_AHEAD.extend(_decode_windows_record(record))
     finally:
         k32.SetConsoleMode(handle, original)
 
@@ -448,16 +614,27 @@ def _posix_events():
         termios.tcsetattr(fd, termios.TCSANOW, original)
 
 
-def read_line(on_change, history=(), initial=""):
+def read_line(on_change, history=(), initial="", on_scroll=None):
     """Read a footer line; redraw through callback(text, cursor_index).
 
     Raises KeyboardInterrupt for Ctrl-C and EOFError for Ctrl-D/Ctrl-Z on an
     empty draft. Console modes are restored on accept, interruption, errors,
     and callback failures. No native output is produced by this module.
     """
-    editor = EditBuffer(initial, history)
-    events = _windows_events() if os.name == "nt" else _posix_events()
+    global _READ_ACTIVE
+    with _INPUT_LOCK:
+        if _READ_ACTIVE:
+            raise RuntimeError("A footer input reader is already active")
+        _READ_ACTIVE = True
+    events = None
     try:
-        return _drive(editor, on_change, events)
+        editor = EditBuffer(initial, history)
+        events = _windows_events() if os.name == "nt" else _posix_events()
+        return _drive(editor, on_change, events, on_scroll)
     finally:
-        events.close()
+        try:
+            if events is not None:
+                events.close()
+        finally:
+            with _INPUT_LOCK:
+                _READ_ACTIVE = False
