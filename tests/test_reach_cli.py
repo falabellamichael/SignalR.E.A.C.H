@@ -154,10 +154,11 @@ class ClientKeyTests(unittest.TestCase):
             os.environ.pop("REACH_KEY", None)
             self.assertNotIn("Authorization", ReachClient("http://relay/v1")._headers())
 
-    def test_key_falls_back_to_the_environment(self):
+    def test_subscription_key_falls_back_to_the_environment(self):
         from reach_cli.client import ReachClient
         with unittest.mock.patch.dict(os.environ, {"REACH_KEY": " sk-reach-env "}):
-            self.assertEqual(ReachClient("http://relay/v1").key, "sk-reach-env")
+            self.assertEqual(ReachClient("public").key, "sk-reach-env")
+            self.assertEqual(ReachClient("http://relay/v1").key, "")
 
     def test_explicit_key_beats_the_environment(self):
         from reach_cli.client import ReachClient
@@ -357,6 +358,7 @@ class SlashCommandTests(unittest.TestCase):
         client.base = "http://127.0.0.1:20777/v1"
         client.model = "gpt-4o"
         client.key = "sk-reach-" + ("UNIQUESECRET99" * 3)
+        client._builtin_key = client.key
         client.agent = False
         client.workpath = self.workpath()
         client.system = None
@@ -381,7 +383,8 @@ class SlashCommandTests(unittest.TestCase):
         if history is None:
             history = []
         out, err = self.io.StringIO(), self.io.StringIO()
-        with self.redirect_stdout(out), self.redirect_stderr(err):
+        with self.redirect_stdout(out), self.redirect_stderr(err), \
+                unittest.mock.patch("sys.stdin", self.io.StringIO("")):
             result = handle_slash(line, self.client if client is None else client, history, session)
         text, errors = out.getvalue(), err.getvalue()
         self.assertNotIn("Traceback", text)
@@ -414,10 +417,10 @@ class SlashCommandTests(unittest.TestCase):
 
         tokens = command_tokens()
         self.assertEqual(tokens, [
-            "/help", "/status", "/endpoint", "/model", "/models", "/web",
+            "/help", "/status", "/endpoint", "/endpoints", "/settings", "/model", "/models", "/web",
             "/agent", "/tools", "/workpath", "/system", "/clear", "/history",
             "/retry", "/undo", "/compact", "/copy", "/save", "/layout",
-            "/exit",
+            "/theme", "/themes", "/exit",
         ])
         self.assertEqual(len(tokens), len(set(tokens)))
         self.assertEqual(set(HANDLERS), set(tokens))
@@ -425,7 +428,7 @@ class SlashCommandTests(unittest.TestCase):
         self.assertNotIn("/quit", HANDLERS)
         blob = " ".join(spec + " " + desc for spec, desc in COMMANDS).lower()
         self.assertNotIn("provider", blob)
-        width = len("/web <question>")
+        width = len("/theme [name|preview|current|reset]")
         for spec, desc in COMMANDS:
             self.assertLessEqual(len(spec), width, spec)
             self.assertTrue(desc)
@@ -491,17 +494,20 @@ class SlashCommandTests(unittest.TestCase):
 
     def test_endpoint_lists_and_marks_the_current_one(self):
         patches = self.endpoint_patches()
-        with patches[0], patches[1], patches[2]:
+        with patches[0] as pointer, patches[1] as probe, patches[2]:
             _result, text, _history = self.invoke("/endpoint")
         self.assertIn("http://127.0.0.1:20777/v1", text)
-        self.assertIn("https://public.example/v1", text)
-        self.assertIn("usage: /endpoint <local|public|url>", text)
+        self.assertIn("subscription", text)
+        self.assertIn("[protected]", text)
+        self.assertIn("/endpoint <local|public|subscription|URL|NAME>", text)
+        pointer.assert_not_called()
+        probe.assert_not_called()
         for line in text.splitlines():
             stripped = line.strip()
             if stripped.startswith("- local"):
-                self.assertIn("●", line)
-            if stripped.startswith("- public"):
-                self.assertNotIn("●", line)
+                self.assertIn("* current", line)
+            if stripped.startswith("- subscription"):
+                self.assertNotIn("* current", line)
 
     def test_endpoint_switches_without_falling_back(self):
         self.client.base = "https://public.example/v1"
@@ -511,39 +517,48 @@ class SlashCommandTests(unittest.TestCase):
             return "public" in url
 
         patches = self.endpoint_patches(reachable=reachable, public="https://public.example/v1")
-        with patches[0], patches[1], patches[2] as resolve:
-            _result, text, _history = self.invoke("/endpoint local")
-        self.assertEqual(self.client.base, "https://public.example/v1")
-        self.assertIn("unreachable", text)
-        self.assertIn("stayed on https://public.example/v1", text)
+        with patches[0] as pointer, patches[1] as probe, patches[2] as resolve:
+            result, text, _history = self.invoke("/endpoint local")
+        self.assertTrue(result.success)
+        self.assertEqual(self.client.base, "http://127.0.0.1:20777/v1")
+        self.assertIn("checked in the background", text)
+        self.assertIsNone(self.client.model)
+        pointer.assert_not_called()
+        probe.assert_not_called()
         self.assertFalse(resolve.called)
 
         patches = self.endpoint_patches(reachable=True, public="https://public.example/v1")
         with patches[0], patches[1], patches[2] as resolve:
             _result, text, _history = self.invoke("/endpoint public")
-        self.assertEqual(self.client.base, "https://public.example/v1")
+        self.assertEqual(self.client.base, "public")
+        self.assertEqual(self.client.endpoint_name, "subscription")
         self.assertIn("endpoint →", text)
         self.assertFalse(resolve.called)
 
         patches = self.endpoint_patches(reachable=True, public=None)
         self.client.base = "http://127.0.0.1:20777/v1"
-        with patches[0], patches[1], patches[2]:
-            _result, text, _history = self.invoke("/endpoint public")
-        self.assertEqual(self.client.base, "http://127.0.0.1:20777/v1")
-        self.assertIn("unavailable", text)
-        self.assertIn("stayed on", text)
+        with patches[0] as pointer, patches[1] as probe, patches[2]:
+            result, text, _history = self.invoke("/endpoint public")
+        self.assertTrue(result.success)
+        self.assertEqual(self.client.base, "public")
+        self.assertIn("selection saved", text)
+        pointer.assert_not_called()
+        probe.assert_not_called()
 
-    def test_endpoint_rejects_bad_urls_and_a_dead_pointer(self):
+    def test_endpoint_rejects_bad_urls_without_blocking_on_the_pointer(self):
         original = self.client.base
         patches = self.endpoint_patches(boom=True)
-        with patches[0], patches[1], patches[2]:
+        with patches[0] as pointer, patches[1] as probe, patches[2]:
             _result, text, _history = self.invoke("/endpoint")
-        self.assertIn("pointer unavailable", text)
+        self.assertIn("resolved in background", text)
         self.assertIn(original, text)
+        pointer.assert_not_called()
+        probe.assert_not_called()
         for bad in ("file:///etc/passwd", "javascript:alert(1)", "ftp://files.example/v1", "nope"):
-            _result, text, _history = self.invoke("/endpoint " + bad)
+            result, text, _history = self.invoke("/endpoint " + bad)
             self.assertEqual(self.client.base, original)
-            self.assertIn("unknown endpoint", text)
+            self.assertFalse(result.success)
+            self.assertIn("endpoint:", text)
 
     def test_endpoint_switch_to_an_explicit_url(self):
         patches = self.endpoint_patches(reachable=True)
@@ -553,7 +568,7 @@ class SlashCommandTests(unittest.TestCase):
         self.assertIn("endpoint →", text)
         self.assertFalse(resolve.called)
 
-    def test_status_masks_the_key_and_reports_session(self):
+    def test_status_reports_credential_state_without_key_material(self):
         self.client.agent = True
         _result, text, _history = self.invoke("/status")
         self.assertIn("http://127.0.0.1:20777/v1", text)
@@ -561,13 +576,14 @@ class SlashCommandTests(unittest.TestCase):
         self.assertIn("gpt-4o", text)
         self.assertIn("on", text)
         self.assertIn(self.client.workpath, text)
-        self.assertIn("sk-reach-…", text)
+        self.assertIn("built-in credential (set)", text)
+        self.assertNotIn("sk-reach-", text)
         self.assertNotIn("UNIQUESECRET99", text)
         self.client.key = ""
         self.client.model = None
         self.client.agent = False
         _result, text, _history = self.invoke("/status")
-        self.assertIn("(none)", text)
+        self.assertIn("built-in credential (not set)", text)
         self.assertIn("(auto)", text)
         self.assertIn("off", text)
 
@@ -775,6 +791,25 @@ class SlashCommandTests(unittest.TestCase):
             with open(path, encoding="utf-8") as handle:
                 rows = [json.loads(line) for line in handle if line.strip()]
             self.assertEqual(rows, history)
+
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(tmp)
+                with unittest.mock.patch("reach_cli.commands.time.strftime",
+                                         return_value="20261010-200000") as stamp:
+                    result, text, _history = self.invoke("/save", history=history)
+                stamp.assert_called_once_with("%Y%m%d-%H%M%S")
+            finally:
+                os.chdir(previous_cwd)
+            self.assertTrue(result.success)
+            default_name = "reach-chat-20261010-200000.jsonl"
+            self.assertIn(default_name, text)
+            with open(os.path.join(tmp, default_name), "rb") as handle:
+                payload = handle.read()
+            self.assertEqual(payload, (json.dumps(history[0]) + os.linesep).encode("utf-8"))
+            self.assertEqual([json.loads(line) for line in payload.decode("utf-8").splitlines()],
+                             history)
+
             fd, blocker = tempfile.mkstemp(dir=tmp)
             os.close(fd)
             _result, text, _history = self.invoke(
@@ -787,6 +822,17 @@ class SlashCommandTests(unittest.TestCase):
         _result, text, _history = self.invoke("/history", history=history)
         self.assertIn("saved-line", text)
         self.assertIn("user:", text)
+
+        populated = [
+            {"role": "system", "content": "system fixture"},
+            {"role": "user", "content": "user fixture"},
+            {"role": "assistant", "content": "assistant fixture"},
+        ]
+        result, text, _history = self.invoke("/history", history=populated)
+        self.assertTrue(result.success)
+        for role in ("system", "user", "assistant"):
+            self.assertIn(role + ":", text)
+            self.assertIn(role + " fixture", text)
 
         session = ReplSession()
         session.remember("hello")
@@ -818,8 +864,11 @@ class SlashCommandTests(unittest.TestCase):
         self.assertEqual(self.client.system, "be brief")
         self.assertIn("set", text)
         _result, text, _history = self.invoke("/system")
+        self.assertEqual(self.client.system, "be brief")
+        self.assertIn("be brief", text)
+        _result, text, _history = self.invoke("/system clear")
         self.assertIsNone(self.client.system)
-        self.assertIn("cleared", text)
+        self.assertIn("reset to default", text)
 
         _result, text, _history = self.invoke("/agent")
         self.assertTrue(self.client.agent)
@@ -857,6 +906,21 @@ class SlashCommandTests(unittest.TestCase):
                 self.assertNotIn("Traceback", text)
                 if line == "/exit now":
                     self.assertTrue(result.quit)
+
+    def test_registered_slash_handlers_resolve_their_global_names(self):
+        import builtins
+        import dis
+        from reach_cli import commands
+
+        available_builtins = vars(builtins)
+        for name, handler in commands.HANDLERS.items():
+            missing = sorted({
+                instruction.argval for instruction in dis.get_instructions(handler)
+                if instruction.opname == "LOAD_GLOBAL"
+                and instruction.argval not in handler.__globals__
+                and instruction.argval not in available_builtins
+            })
+            self.assertEqual(missing, [], name)
 
     def test_repl_hook_retries_and_keeps_prompts(self):
         from reach_cli.chat import run_chat
@@ -1239,6 +1303,12 @@ class CliUxTests(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as handle:
             handle.write("{not json")
         self.assertEqual(load_session_config(path), {})
+        self.assertFalse(save_session_config(model="must-not-overwrite", path=path))
+        with open(path, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "{not json")
+        # Continue the persistence check with an intentionally repaired fixture.
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{}")
 
         client = self._client()
         client.models = lambda: ["gpt-4o", "claude"]
@@ -1394,11 +1464,20 @@ class StartupBaseTests(unittest.TestCase):
 
     def setUp(self):
         import io
+        import tempfile
         from contextlib import redirect_stdout
         from reach_cli import terminal
 
         self.io = io
         self.redirect_stdout = redirect_stdout
+        self._session_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._session_dir.cleanup)
+        session_env = unittest.mock.patch.dict(os.environ, {
+            "REACH_CLI_CONFIG": os.path.join(self._session_dir.name, "config.json"),
+            "REACH_CLI_HISTORY": os.path.join(self._session_dir.name, "history"),
+        })
+        session_env.start()
+        self.addCleanup(session_env.stop)
         terminal.PAINT = terminal.Paint(False)
         terminal.COLOR_FORCED = False
         self.addCleanup(lambda: setattr(terminal, "PAINT", terminal.Paint(False)))
@@ -2507,11 +2586,36 @@ _REAL_ENDPOINT_NOTICE = chat_mod.endpoint_notice
 _NOTICE_PATCH = unittest.mock.patch.object(chat_mod, "endpoint_notice", lambda c: False)
 
 
+class _OfflineModelDiscovery(object):
+    """Legacy tests never launch model-discovery workers or account requests.
+
+    Dedicated endpoint tests exercise the real service against owned loopback
+    servers. This fixture isolates the pre-existing parser/REPL tests.
+    """
+
+    def snapshot(self, base, key_ref="", key=None):
+        return {"status": "ready", "models": ["gpt-4o", "claude"],
+                "stale": False, "error": "", "fetched_at": None,
+                "request_id": None}
+
+    def refresh(self, base, key="", key_ref="", timeout=3):
+        return self.snapshot(base, key_ref=key_ref, key=key)
+
+    def wait(self, base, key_ref="", timeout=3, key=None):
+        return self.snapshot(base, key_ref=key_ref, key=key)
+
+
+_DISCOVERY_PATCH = unittest.mock.patch(
+    "reach_cli.discovery.MODEL_DISCOVERY", _OfflineModelDiscovery())
+
+
 def setUpModule():
     _NOTICE_PATCH.start()
+    _DISCOVERY_PATCH.start()
 
 
 def tearDownModule():
+    _DISCOVERY_PATCH.stop()
     _NOTICE_PATCH.stop()
 
 

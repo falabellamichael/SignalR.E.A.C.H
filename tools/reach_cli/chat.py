@@ -10,7 +10,9 @@ import time
 import urllib.parse
 
 from .agent_tools import (
+    DEFAULT_TOOL_NAMES,
     TOOLS,
+    cleanup_owned_processes,
     edit_diff,
     format_args,
     summarize_result,
@@ -55,10 +57,18 @@ DEFAULT_IDENTITY = (
 AGENT_SYSTEM_PROMPT = (
     "You are SimpleREACH, an agentic coding assistant. You operate inside a "
     "directory called the workpath and act through local tools.\n\n"
+    "The local file tools are available to you. For requests to inspect or "
+    "improve this workspace, use list or glob to discover relevant files, "
+    "then read or search them before drawing conclusions. Use relative paths "
+    "within the workpath. Do not ask the user to paste files or choose tools "
+    "when those tools can resolve the request. Ask only for a decision or "
+    "missing information that inspection cannot resolve.\n\n"
     "TOOLS:\n"
     + tool_help_text()
-    + "\n\nTo take an action, emit one standalone fenced tool block as your "
-    "whole reply (one action per turn):\n"
+    + "\n\nUse the provided native function tools when available. If native "
+    "tools are unavailable, emit one standalone fenced tool block as your "
+    "whole reply (one action per turn). Use tool_discover to search and "
+    "activate additional tools before calling them:\n"
     '```tool\n{"action": "search", "pattern": "def \\w+", "regex": true}\n```\n'
     "After every tool block you receive a [tool result] message. React to it "
     "with the next action. Never guess what a tool returned. Before starting a "
@@ -67,8 +77,9 @@ AGENT_SYSTEM_PROMPT = (
     "When the request is fully handled (plan complete, edits applied, changes "
     "verified with shell where possible), finish with exactly:\n"
     '```agent_status\n{"status": "complete", "summary": "What was done and how it was verified."}\n```\n'
-    "If you need a decision from the user, ask in plain prose and stop — do not "
-    "emit agent_status. Do not claim completion while work remains."
+    "If you need a decision from the user, stop with:\n"
+    '```agent_status\n{"status": "blocked", "reason": "The question or decision needed from the user."}\n```\n'
+    "Do not claim completion while work remains."
 )
 
 
@@ -196,7 +207,7 @@ def workpath_context(workpath):
     )
 
 
-def build_system(client):
+def build_system(client, state=None):
     parts = []
     parts.append(client.system or DEFAULT_IDENTITY)
     if client.agent:
@@ -207,11 +218,18 @@ def build_system(client):
             + "\n\nFiles in the workpath:\n"
             + workpath_context(client.workpath)
         )
+        if state is not None and state.selected_tools:
+            # The text protocol sees the same active extra capabilities as
+            # native calling; a large registry never fills every prompt.
+            active = [name for name in TOOLS if name in state.selected_tools]
+            if active:
+                parts.append("ADDITIONAL ACTIVE TOOLS (native or fenced):\n"
+                             + tool_help_text(active))
     return "\n\n".join(parts)
 
 
-def set_system_message(history, client):
-    prompt = build_system(client)
+def set_system_message(history, client, state=None):
+    prompt = build_system(client, state)
     history[:] = [m for m in history if m.get("role") != "system"]
     if prompt:
         history.insert(0, {"role": "system", "content": prompt})
@@ -240,6 +258,21 @@ def _complete_tool_calls(calls):
             if parse_tool_arguments(c["function"].get("arguments"))[1] is None]
 
 
+def _unsupported_native_tools(exc):
+    """Only a clear request-level capability rejection permits text fallback."""
+    if getattr(exc, "status", None) not in (400, 422):
+        return False
+    message = str(exc).lower()
+    noun = r"(?:tools?|tool_choice|function(?:s| calling|_calling)?)"
+    patterns = (
+        noun + r"\s+(?:are\s+|is\s+)?(?:not supported|unsupported|not permitted|not allowed)\b",
+        r"(?:does not|doesn't|cannot)\s+support\s+" + noun + r"\b",
+        r"(?:unsupported|unknown|unrecognized|unexpected|disallowed)\s+"
+        r"(?:request\s+)?(?:parameter|field|argument|feature)\s*[:=]?\s*[\"']?" + noun + r"\b",
+    )
+    return any(re.search(pattern, message) for pattern in patterns)
+
+
 def request_reply(client, messages, tools=None, on_text=None, on_retry=None,
                   cancelled=None):
     """Ask the endpoint with retries on the SAME provider and model.
@@ -248,9 +281,23 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None,
     retry; text already streamed is kept and the model is asked to continue,
     so a cut stream never loses work. Never touches client.model/base.
     """
+    if (getattr(client, "supports_tools", None) is False
+            or getattr(client, "_unsupported_tools_endpoint", None) == (
+                getattr(client, "base", None), getattr(client, "model", None))):
+        tools = None
     kept_text = ""
     last = None
     attempts = 0
+    text_started = False
+    fallback_used = False
+
+    def observe_text(delta):
+        nonlocal text_started
+        if delta:
+            text_started = True
+        if on_text:
+            on_text(delta)
+
     for attempt in range(1, MAX_ATTEMPTS + 1):
         if cancelled is not None and cancelled.is_set():
             return False, {"content": kept_text, "tool_calls": [], "stopped": True}
@@ -260,7 +307,26 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None,
                       {"role": "user", "content": _CONTINUE_PROMPT}]
         attempts = attempt
         try:
-            result = client.complete(convo, tools=tools, on_text=on_text)
+            try:
+                result = client.complete(convo, tools=tools, on_text=observe_text if on_text else None)
+            except ReachApiError as exc:
+                partial = getattr(exc, "partial", None) or {}
+                if (not tools or fallback_used or text_started or kept_text
+                        or (isinstance(partial, dict) and (
+                            partial.get("content") or partial.get("tool_calls")))
+                        or not _unsupported_native_tools(exc)):
+                    raise
+                if cancelled is not None and cancelled.is_set():
+                    return False, {"content": kept_text, "tool_calls": [], "stopped": True}
+                # This request was rejected before producing text or actions.
+                # Retry once with the same endpoint/model and the existing
+                # fenced protocol; remember only this endpoint/model pairing.
+                fallback_used = True
+                tools = None
+                client._unsupported_tools_endpoint = (
+                    getattr(client, "base", None), getattr(client, "model", None))
+                result = client.complete(convo, tools=None,
+                                         on_text=observe_text if on_text else None)
             return True, {"content": kept_text + (result.get("content") or ""),
                           "tool_calls": result.get("tool_calls") or []}
         except ReachTransientError as exc:
@@ -457,6 +523,8 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
     until the first token, and one dim status line per retry of the same
     model. With colour on, markdown is rendered line by line (render.py) and
     wrapped inside the gutter; NO_COLOR / non-TTY output is the raw text.
+    In agent mode, terminal control blocks are kept in history but displayed
+    only once, after the agent loop validates completion.
     Ctrl-C stops only this answer: partial text is kept and '✗ stopped' shown.
     """
     live_indent = indent is None
@@ -514,12 +582,20 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
         state["midline"] = not delta.endswith("\n")
         sys.stdout.flush()
 
-    def write(delta):
-        state["text"].append(delta)
+    def display(delta):
         if md is None:
             write_raw(delta)
         else:
             emit_lines(md.feed(delta))
+
+    control_display = _AgentReplyDisplay(display) if getattr(client, "agent", False) else None
+
+    def write(delta):
+        state["text"].append(delta)
+        if control_display is None:
+            display(delta)
+        else:
+            control_display.feed(delta)
 
     def retry(attempt):
         # one dim status line per retry, no blank lines in between
@@ -558,6 +634,8 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
                   "stopped": True}
     finally:
         state["indicator"].stop()
+    if control_display is not None:
+        control_display.finish()
     if md is not None:
         emit_lines(md.flush())
     if stopped:
@@ -577,7 +655,8 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
 # ---- agent loop ------------------------------------------------------------
 
 _TOOL_FENCE = re.compile(r"```tool\s*\n(.*?)```", re.DOTALL)
-_STATUS_FENCE = re.compile(r"```agent_status\s*\n(.*?)```", re.DOTALL)
+_STATUS_OPEN = re.compile(r"\A(?:[ \t]*\r?\n)* {0,3}```agent_status[ \t]*\r?\n")
+_JSON_STATUS_FENCE = re.compile(r"\A\s*```json[ \t]*\r?\n(.*?)\r?\n[ \t]*`{3,}[ \t]*\s*\Z", re.DOTALL | re.IGNORECASE)
 
 MAX_AGENT_ROUNDS = 16
 MAX_RECOVERY = 2
@@ -589,6 +668,12 @@ class AgentState:
     def __init__(self):
         self.todos = []
         self.auto_approve = False
+        self.selected_tools = set()
+        self.processes = {}
+
+    def tool_context(self):
+        return {"todos": self.todos, "approve": self.approve,
+                "selected_tools": self.selected_tools, "processes": self.processes}
 
     def approve(self, kind, detail):
         """Approval callback for exec/write tools."""
@@ -636,6 +721,106 @@ def _normalise_action(data):
     return data
 
 
+def _normalise_status(raw, compatible=False):
+    """Accept control metadata; ordinary JSON needs a strict terminal schema."""
+    try:
+        data = json.loads(raw.strip())
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Some models use the fence name as the JSON key. This dedicated key is
+    # run control even without a description; generic status JSON remains
+    # strict so ordinary data and quoted examples are not mistaken for it.
+    dedicated = "agent_status" in data
+    key = str(data.get("agent_status" if dedicated else "status", "")).strip().lower().replace("-", "_").replace(" ", "_")
+    canon = _STATUS_ALIASES.get(key)
+    if canon is None:
+        return None
+    if dedicated and "status" in data:
+        other = str(data["status"]).strip().lower().replace("-", "_").replace(" ", "_")
+        if _STATUS_ALIASES.get(other) != canon:
+            return None
+    if compatible:
+        if not set(data).issubset({"agent_status", "status", "summary", "reason", "message"}):
+            return None
+        if any(not isinstance(data[field], str) for field in ("summary", "reason", "message") if field in data):
+            return None
+    field = "summary" if canon == "complete" else "reason"
+    if not data.get(field) and isinstance(data.get("message"), str):
+        data[field] = data["message"]
+    if compatible:
+        explanation = data.get(field) or data.get("message")
+        if not dedicated and (not isinstance(explanation, str) or not explanation.strip()):
+            return None
+        if isinstance(explanation, str) and explanation.strip():
+            data[field] = explanation
+    data["status"] = canon
+    return data
+
+
+def _fence_line(line):
+    # Four spaces/tabs make an indented code example, not a control fence.
+    match = re.match(r"^ {0,3}(`{3,}|~{3,})([^\r\n]*)", line)
+    return (match.group(1), match.group(2).strip()) if match else None
+
+
+def _closes_fence(line, opener):
+    fence = _fence_line(line)
+    return bool(fence and not fence[1] and fence[0][0] == opener[0] and len(fence[0]) >= len(opener))
+
+
+def _explicit_control(block):
+    """Read a complete JSON control without treating backticks in strings as EOF."""
+    opening = _STATUS_OPEN.match(block)
+    if opening is None:
+        return None
+    body = block[opening.end():]
+    raw = body.lstrip()
+    try:
+        _, end = json.JSONDecoder().raw_decode(raw)
+    except ValueError:
+        return None
+    closing = re.match(r"\s*`{3,}", raw[end:])
+    if closing is None:
+        return None
+    return raw[:end], raw[end + closing.end():]
+
+
+def _explicit_status_payloads(text):
+    """Locate controls outside ordinary Markdown fences and indented examples."""
+    opener = None
+    held = None
+    for line in (text or "").splitlines(keepends=True):
+        if opener is not None:
+            if held is not None:
+                held.append(line)
+                control = _explicit_control("".join(held))
+                if control is not None:
+                    yield control[0]
+                    opener = held = None
+                    continue
+            if _closes_fence(line, opener):
+                opener = held = None
+            continue
+        fence = _fence_line(line)
+        if fence:
+            opener = fence[0]
+            held = [line] if fence == ("```", "agent_status") else None
+
+
+def _standalone_json_status(text):
+    """Compatibility for a model's entire reply, never a JSON example in prose."""
+    lines = [line for line in (text or "").splitlines() if line.strip()]
+    opening = _fence_line(lines[0]) if lines else None
+    if not opening or opening[0] != "```" or opening[1].lower() != "json":
+        return None
+    if not _closes_fence(lines[-1], "```"):
+        return None
+    match = _JSON_STATUS_FENCE.fullmatch(text or "")
+    return _normalise_status(match.group(1), compatible=True) if match else None
+
+
 def parse_tool_blocks(text):
     """Split a reply into (actions, status, invalid)."""
     actions = []
@@ -648,20 +833,119 @@ def parse_tool_blocks(text):
         if action:
             actions.append(action)
     status = None
-    for raw in _STATUS_FENCE.findall(text or ""):
-        try:
-            data = json.loads(raw.strip())
-        except (ValueError, AttributeError):
-            continue
-        if isinstance(data, dict):
-            key = str(data.get("status", "")).strip().lower()
-            key = key.replace("-", "_").replace(" ", "_")
-            canon = _STATUS_ALIASES.get(key)
-            if canon:
-                data["status"] = canon
-                status = data
+    for raw in _explicit_status_payloads(text):
+        data = _normalise_status(raw)
+        if data is not None:
+            status = data
     invalid = bool(_TOOL_FENCE.search(text or "")) and not actions
+    if status is None and not actions and not invalid:
+        status = _standalone_json_status(text)
     return actions, status, invalid
+
+
+class _AgentReplyDisplay:
+    """Stream prose/code while holding possible terminal metadata for validation.
+
+    Explicit control fences are hidden when valid. A compatible JSON envelope
+    is hidden only if it occupies the whole reply. Malformed blocks, examples,
+    and ordinary chat content keep their original bytes.
+    """
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.buf = ""
+        self.held = []
+        self.mode = None
+        self.first = True
+        self.leading = ""
+        self.code_fence = None
+        self.plain_line = False
+
+    def feed(self, delta):
+        self.buf += delta or ""
+        while "\n" in self.buf:
+            line, self.buf = self.buf.split("\n", 1)
+            self._line(line + "\n")
+        if self.buf and self.mode is None:
+            # Raw/non-TTY replies retain token streaming. Hold only a possible
+            # fence opener/closer at the start of a line, not ordinary prose.
+            stripped = self.buf.lstrip(" \t\r")
+            fences = (self.code_fence,) if self.code_fence else ("```", "~~~")
+            possible_fence = not self.plain_line and any(
+                fence.startswith(stripped) or stripped.startswith(fence) for fence in fences)
+            if self.plain_line or (stripped and not possible_fence):
+                self.emit(self.leading + self.buf)
+                self.leading = ""
+                self.buf = ""
+                self.first = False
+                self.plain_line = True
+
+    def _line(self, line):
+        if self.plain_line:
+            self.emit(line)
+            self.plain_line = not line.endswith("\n")
+            return
+        stripped = line.strip()
+        if self.mode == "candidate":
+            if not stripped:
+                self.held.append(line)
+                return
+            self.emit("".join(self.held))
+            self.held = []
+            self.mode = None
+        if self.mode in ("explicit", "json"):
+            self.held.append(line)
+            block = "".join(self.held)
+            control = _explicit_control(block) if self.mode == "explicit" else None
+            if control is None and not _closes_fence(line, "```"):
+                return
+            if self.mode == "json" and _standalone_json_status(block) is not None:
+                self.mode = "candidate"
+                return
+            hidden = self.mode == "explicit" and control and _normalise_status(control[0]) is not None
+            if hidden:
+                suffix = control[1]
+                if suffix.strip():
+                    self.emit(suffix)
+            else:
+                self.emit(block)
+            self.held = []
+            self.mode = None
+            return
+        if self.first and not stripped:
+            self.leading += line
+            return
+        if self.code_fence is not None:
+            self.emit(line)
+            if _closes_fence(line, self.code_fence):
+                self.code_fence = None
+            return
+        fence = _fence_line(line)
+        explicit = fence == ("```", "agent_status")
+        compatible = self.first and fence and fence[0] == "```" and fence[1].lower() == "json"
+        if explicit or compatible:
+            self.mode = "explicit" if explicit else "json"
+            self.held = [self.leading, line]
+            self.leading = ""
+            self.first = False
+            return
+        self.emit(self.leading + line)
+        self.leading = ""
+        self.first = False
+        if fence:
+            self.code_fence = fence[0]
+
+    def finish(self):
+        if self.buf:
+            self._line(self.buf)
+            self.buf = ""
+        if self.mode != "candidate" and self.held:
+            self.emit("".join(self.held))
+        if self.leading:
+            self.emit(self.leading)
+        self.held = []
+        self.leading = ""
+        self.mode = None
 
 
 def _modern_console(env=None, platform=None):
@@ -724,7 +1008,7 @@ class _ToolCancelled(KeyboardInterrupt):
 
 def _execute_actions(client, actions, state):
     """Run each tool action; return the [tool result] message text."""
-    ctx = {"todos": state.todos, "approve": state.approve}
+    ctx = state.tool_context()
     parts = []
     try:
         for action in actions:
@@ -744,7 +1028,7 @@ def _execute_actions(client, actions, state):
 
 def _execute_native(client, tool_calls, state):
     """Run native tool_calls; return the role:tool messages for history."""
-    ctx = {"todos": state.todos, "approve": state.approve}
+    ctx = state.tool_context()
     out = []
     try:
         for call in tool_calls:
@@ -771,7 +1055,7 @@ def _execute_native(client, tool_calls, state):
     return out
 
 
-def _apply_status(history, reply_text, status, state):
+def _apply_status(history, reply_text, status, state, fallback_summary=""):
     """Handle a run-control block. Returns True when the turn is over."""
     if status.get("status") == "blocked":
         tprint(c_yellow("  ⏸ agent blocked: " + str(status.get("reason", ""))[:300]))
@@ -779,7 +1063,6 @@ def _apply_status(history, reply_text, status, state):
     open_items = [t for t in state.todos if t.get("status") != "completed"]
     if open_items:
         # completion rejected — nudge the model to finish the plan
-        history.append({"role": "assistant", "content": reply_text})
         history.append({
             "role": "user",
             "content": "[run control] Completion rejected: %d plan item(s) "
@@ -787,8 +1070,30 @@ def _apply_status(history, reply_text, status, state):
             % (len(open_items), json.dumps(open_items)),
         })
         return False
-    tprint(c_green("  ⏹ agent complete: " + str(status.get("summary", ""))[:300]))
+    summary = str(status.get("summary") or "").strip() or fallback_summary.strip()
+    if not summary:
+        summary = "The model reported completion without a description."
+    tprint(c_green("  ⏹ agent complete: " + summary[:300]))
     return True
+
+
+def _agent_tool_schemas(client, state):
+    if getattr(client, "supports_tools", None) is False:
+        return None
+    if getattr(client, "_unsupported_tools_endpoint", None) == (
+            getattr(client, "base", None), getattr(client, "model", None)):
+        return None
+    selected = [name for name in TOOLS if name in state.selected_tools
+                and name not in DEFAULT_TOOL_NAMES]
+    names = list(DEFAULT_TOOL_NAMES) + selected
+    explicit = getattr(client, "tool_limit", None)
+    limit = min(16, explicit) if isinstance(explicit, int) and not isinstance(explicit, bool) and explicit > 0 else 16
+    if len(names) > limit:
+        # Discovery and newly selected tools remain usable with small native
+        # limits. The fenced protocol still supports the complete active set.
+        names = ["tool_discover"] + selected + [
+            name for name in DEFAULT_TOOL_NAMES if name != "tool_discover"]
+    return tool_schemas(names[:limit])
 
 
 def run_agent_turn(client, history, state, instruction=None):
@@ -800,15 +1105,16 @@ def run_agent_turn(client, history, state, instruction=None):
     """
     rounds = 0
     recovery = 0
+    last_answer = ""
     meter = TurnMeter(client)
     if instruction:
         history.append({"role": "user", "content": instruction})
     try:
         while rounds < MAX_AGENT_ROUNDS:
             rounds += 1
-            set_system_message(history, client)
+            set_system_message(history, client, state)
             tprint(c_dim("  ── agent round %d ──" % rounds))
-            ok, result = stream_reply(client, history, tools=tool_schemas(),
+            ok, result = stream_reply(client, history, tools=_agent_tool_schemas(client, state),
                                       full=True)
             if not ok:
                 if result.get("content"):
@@ -831,7 +1137,7 @@ def run_agent_turn(client, history, state, instruction=None):
             history.append({"role": "assistant", "content": reply_text})
 
             if status is not None:
-                if _apply_status(history, reply_text, status, state):
+                if _apply_status(history, reply_text, status, state, last_answer):
                     return True
                 continue
             if actions:
@@ -841,6 +1147,10 @@ def run_agent_turn(client, history, state, instruction=None):
                     "content": _execute_actions(client, actions, state),
                 })
                 continue
+            if not invalid and reply_text.strip():
+                # Keep only this run's substantive answer as an honest
+                # description when later terminal metadata omits its own.
+                last_answer = reply_text.strip()
             # no action, no completion: recover or treat as the final answer
             had_results = any(
                 m.get("role") == "tool"
@@ -944,6 +1254,8 @@ def run_chat(client, base, initial_prompt=None):
         saved = terminal.load_session_config()
         if saved.get("layout"):
             terminal.set_layout(saved["layout"])
+        if saved.get("theme"):
+            terminal.set_theme(saved["theme"])
     except Exception:
         pass
     from .chatbox import footer_session
@@ -956,6 +1268,27 @@ def _run_chat_loop(client, base, initial_prompt=None):
     endpoint_notice(client)
     history = []
     agent_state = AgentState()
+    from .chatbox import active_footer
+    screen = active_footer()
+    if screen is not None:
+        def run_mini_command(command):
+            context = agent_state.tool_context()
+            approve = context.get("approve")
+
+            def approve_mini(kind, detail):
+                screen.mini_terminal.set_status("awaiting approval")
+                screen.refresh_header()
+                allowed = bool(approve and approve(kind, detail))
+                screen.mini_terminal.set_status(
+                    "running" if allowed else "denied")
+                screen.refresh_header()
+                return allowed
+
+            context["approve"] = approve_mini
+            return run_tool("shell", {"command": command},
+                            client.workpath, context)
+
+        screen.set_mini_runner(run_mini_command)
     session = ReplSession()
     set_system_message(history, client)
     pending_prompt = initial_prompt
@@ -966,7 +1299,8 @@ def _run_chat_loop(client, base, initial_prompt=None):
                 from .chatbox import active_footer
                 screen = active_footer()
                 if screen is not None:
-                    screen.finish_input(line, echo=bool(str(line).strip()))
+                    from .input_privacy import sanitize_endpoint_command
+                    screen.finish_input(sanitize_endpoint_command(line), echo=bool(str(line).strip()))
             else:
                 line = read_user_line(client, session)
             if line is None:  # EOF / second Ctrl-C: 'bye.' already printed
@@ -1022,7 +1356,7 @@ def _run_chat_loop(client, base, initial_prompt=None):
                 history.pop()
     finally:
         # footer_session restores the caller's terminal and output stream.
-        pass
+        cleanup_owned_processes(client.workpath, agent_state.tool_context())
 
 
 
@@ -1036,7 +1370,11 @@ def run_ask(client, question, web=False):
         messages.append({"role": "system", "content": prompt})
     messages.append({"role": "user", "content": question})
     if client.agent:
-        return run_agent_turn(client, messages, AgentState())
+        state = AgentState()
+        try:
+            return run_agent_turn(client, messages, state)
+        finally:
+            cleanup_owned_processes(client.workpath, state.tool_context())
     meter = TurnMeter(client)
     ok, reply_text = stream_reply(client, messages)
     if ok:

@@ -21,8 +21,11 @@ from .terminal import (
 )
 
 def banner(client, base, mode):
-    """Startup splash. A TTY with colour gets the box; otherwise one plain line."""
+    """Startup splash. Pinned sessions render their compact HUD at the top."""
     try:
+        from .chatbox import active_footer
+        if active_footer() is not None:
+            return
         if _plain_chrome():
             print(plain_header(client, base, mode))
             return

@@ -8,7 +8,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
 
-from reach_cli import render, splash, terminal  # noqa: E402
+from reach_cli import render, splash, terminal, themes  # noqa: E402
 
 
 class NarrowTerminalTests(unittest.TestCase):
@@ -41,6 +41,15 @@ class NarrowTerminalTests(unittest.TestCase):
 
 
 class ReplyWidthTests(unittest.TestCase):
+    def setUp(self):
+        self.old_theme = themes.current_key()
+        self.old_managed_screen = terminal.PAINT.managed_screen
+        themes.select_theme("default")
+        terminal.PAINT.managed_screen = False
+        self.addCleanup(themes.select_theme, self.old_theme)
+        self.addCleanup(setattr, terminal.PAINT, "managed_screen",
+                        self.old_managed_screen)
+
     def test_live_stream_remeasures_each_source_line(self):
         stream = render.MarkdownStream()
         with mock.patch.object(render, "text_width", side_effect=(15, 5, 4)):

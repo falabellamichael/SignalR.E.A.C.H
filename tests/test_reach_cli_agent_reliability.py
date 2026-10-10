@@ -291,6 +291,22 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(result["content"], "partial")
         self.assertEqual(len(client.messages), 1)
 
+    def test_cancelled_native_rejection_stops_before_fenced_fallback(self):
+        event = threading.Event()
+
+        def reject(on_text):
+            event.set()
+            raise ReachApiError("tools are not supported", status=400)
+
+        client = ScriptClient([reject])
+        ok, result = chat.request_reply(
+            client, [{"role": "user", "content": "go"}], tools=[{"type": "function"}],
+            cancelled=event)
+        self.assertFalse(ok)
+        self.assertTrue(result["stopped"])
+        self.assertEqual(len(client.messages), 1)
+        self.assertFalse(hasattr(client, "_unsupported_tools_endpoint"))
+
     def test_cancel_during_backoff_does_not_start_next_request(self):
         event = threading.Event()
         client = ScriptClient([ReachTransientError("busy", status=503)])

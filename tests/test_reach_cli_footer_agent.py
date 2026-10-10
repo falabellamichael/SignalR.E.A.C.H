@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -57,7 +59,7 @@ class FooterApprovalTests(unittest.TestCase):
 
     @staticmethod
     def answer(text):
-        def read(on_change, history=(), initial="", on_scroll=None):
+        def read(on_change, history=(), initial="", on_scroll=None, fresh=False):
             events = [("text", text), ("enter", "")]
             return footer_input._drive(footer_input.EditBuffer(initial, history),
                                        on_change, iter(events), on_scroll=on_scroll)
@@ -75,6 +77,50 @@ class FooterApprovalTests(unittest.TestCase):
         self.assertNotIn("you", snapshot["transcript"])
         self.assertIn("allow", self.tty.getvalue())
 
+    def test_old_typeahead_cannot_approve_edit_and_returns_to_chat_fifo(self):
+        broker = footer_input._InputBroker()
+        broker._windows_pump = lambda: True
+        broker._posix_pump = lambda: True
+        broker._thread = threading.Thread(target=broker._run, daemon=True)
+        with broker._condition:
+            broker._put([("text", "y"), ("enter", ""),
+                         ("text", "/status"), ("enter", "")])
+        supplied = threading.Event()
+
+        def deny_after_fresh_boundary():
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                with broker._condition:
+                    if broker._parked is not None:
+                        broker._put([("scroll_page_up", ""),
+                                     ("text", "n"), ("enter", "")])
+                        supplied.set()
+                        return
+                time.sleep(0.001)
+
+        with mock.patch.object(footer_input, "_BROKER", broker), \
+                mock.patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                mock.patch.object(footer_input, "_reader_mode", contextlib.nullcontext), \
+                mock.patch.object(agent_tools.subprocess, "run") as executor:
+            broker._thread.start()
+            denial = threading.Thread(target=deny_after_fresh_boundary, daemon=True)
+            denial.start()
+            try:
+                result = agent_tools.run_tool("edit", {
+                    "path": "note.txt", "search": "original", "replace": "changed"},
+                    str(self.work), {"approve": chat.AgentState().approve, "todos": []})
+                self.assertTrue(supplied.is_set(), "approval waited for fresh input")
+                self.assertIn("denied by the user", result)
+                self.assertEqual(self.note.read_text(encoding="utf-8"), "original safe fixture\n")
+                self.assertEqual(footer_input.read_line(lambda *_: None), "y")
+                self.assertEqual(footer_input.read_line(lambda *_: None), "/status")
+                executor.assert_not_called()
+            finally:
+                broker.close()
+                denial.join(timeout=1)
+        self.assertFalse(broker._thread.is_alive())
+        self.assertFalse(footer_input._READ_ACTIVE)
+
     def test_unowned_approval_preserves_builtin_fallback(self):
         with mock.patch.object(chatbox, "_SCREEN", None), \
                 mock.patch("builtins.input", return_value="n") as builtin, \
@@ -86,7 +132,7 @@ class FooterApprovalTests(unittest.TestCase):
     def test_approval_can_scroll_history_without_editing_answer(self):
         self.screen.write("\n".join("approval-history-%02d" % n for n in range(40)) + "\n")
 
-        def read(on_change, history=(), initial="", on_scroll=None):
+        def read(on_change, history=(), initial="", on_scroll=None, fresh=False):
             on_change("y", 1)
             on_scroll("page_up", 1)
             snapshot = self.screen.snapshot()
@@ -102,7 +148,7 @@ class FooterApprovalTests(unittest.TestCase):
         self.assertEqual(self.screen.snapshot()["text"], "")
 
     def test_interrupted_owned_approval_resets_and_propagates(self):
-        def interrupted(on_change, history=(), initial="", on_scroll=None):
+        def interrupted(on_change, history=(), initial="", on_scroll=None, fresh=False):
             on_change("unfinished approval", 5)
             raise KeyboardInterrupt
         with mock.patch.object(footer_input, "read_line", side_effect=interrupted):
@@ -172,6 +218,18 @@ class FooterApprovalTests(unittest.TestCase):
             self.assertTrue(state.approve("shell", "never executed in this test"))
         reader.assert_called_once()
         self.assertTrue(state.auto_approve)
+
+    def test_approved_shell_cannot_consume_chat_terminal_input(self):
+        approve = mock.Mock(return_value=True)
+        done = SimpleNamespace(returncode=0, stdout="fixture output", stderr="")
+        with mock.patch.object(agent_tools.subprocess, "run", return_value=done) as executor:
+            result = agent_tools.run_tool("shell", {"command": "owned fixture"},
+                                          str(self.work), {"approve": approve})
+        approve.assert_called_once_with("shell", "owned fixture")
+        self.assertEqual(result, "exit code 0\nfixture output")
+        self.assertEqual(executor.call_args.kwargs["stdin"], agent_tools.subprocess.DEVNULL)
+        self.assertTrue(executor.call_args.kwargs["capture_output"])
+        self.assertEqual(executor.call_args.kwargs["cwd"], str(self.work))
 
 
 if __name__ == "__main__":

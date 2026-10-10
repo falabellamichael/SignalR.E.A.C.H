@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import shlex
 import sys
 
 from . import terminal
@@ -19,6 +20,9 @@ examples:
   reach-cli -p "what is REACH"           same as ask
   reach-cli web "latest REACH notes"     search, then a cited answer
   reach-cli models                       list model aliases
+  reach-cli endpoints                    list saved and protected endpoints
+  reach-cli endpoints add lab http://127.0.0.1:8080/v1 --key-env LAB_API_KEY
+  reach-cli endpoints test lab            refresh models without selecting
   reach-cli --continue                   resume endpoint, model, and workpath
 """.strip("\n")
 
@@ -53,14 +57,21 @@ def _add_common(parser, suppress):
     parser.add_argument(
         "--base",
         default=fallback(None),
-        help="endpoint base URL, or a name: 'local' or 'public' "
+        help="endpoint base URL, a saved custom name, 'local', or 'subscription' "
+        "('public' is an alias) "
         "(default: REACH_BASE_URL or the local relay; never falls back "
         "to another endpoint)",
     )
-    parser.add_argument(
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument(
         "--key",
         default=fallback(None),
         help="sk-reach API key for a hosted relay (or set REACH_KEY)",
+    )
+    credentials.add_argument(
+        "--key-env",
+        default=fallback(None),
+        help="use a credential from an existing environment variable; stores no key",
     )
     parser.add_argument("--model", default=fallback(None), help="model alias")
     parser.add_argument(
@@ -169,7 +180,24 @@ def build_parser():
         epilog="examples:\n  reach-cli models\n  reach-cli --base http://127.0.0.1:20777/v1 models",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    for child in (chat, ask, web, sub.choices["models"]):
+    endpoints = sub.add_parser(
+        "endpoints",
+        aliases=["endpoint"],
+        help="manage saved custom endpoints and protected local/subscription options",
+        description="List, add, edit, test, select, or remove custom endpoints. "
+        "Local and subscription options are protected. Only model metadata is fetched.",
+        epilog="examples:\n  reach-cli endpoints\n"
+        "  reach-cli endpoints add lab http://127.0.0.1:8080/v1 --key-env LAB_API_KEY\n"
+        "  reach-cli endpoints edit lab --no-key\n"
+        "  reach-cli endpoints test lab\n"
+        "  reach-cli endpoints select lab\n"
+        "  reach-cli endpoints remove lab\n"
+        "Common flags precede the operation; add/edit credential references follow it.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    endpoints.add_argument("endpoint_args", nargs=argparse.REMAINDER,
+                           help="list | add | edit | test | select | remove, then operation arguments")
+    for child in (chat, ask, web, sub.choices["models"], endpoints):
         _add_common(child, suppress=True)
     return parser
 
@@ -206,8 +234,8 @@ def _resolve_invocation(args):
         prompt = prompt.strip() or None
     else:
         prompt = None
-    if command == "models" and prompt:
-        return None, None, "models does not take --prompt"
+    if command in ("models", "endpoint", "endpoints") and prompt:
+        return None, None, "%s does not take --prompt" % command
     if command == "chat" and prompt:
         if explicit_command is None:
             command = "ask"
@@ -240,6 +268,87 @@ def _apply_workpath(client, path):
     return workpath
 
 
+def _endpoint_configuration(args):
+    """Resolve only local configuration; startup owns all connection checks."""
+    from .endpoints import (EndpointError, LOCAL_ENDPOINT_URL, get_custom,
+                            normalize_key_env, normalize_url)
+    raw = getattr(args, "base", None)
+    if raw is None:
+        saved = terminal.load_session_config()
+        selected = saved.get("endpoint_name")
+        if selected:
+            if selected.lower() in ("local", "public", "subscription"):
+                raw = selected
+            else:
+                try:
+                    get_custom(selected)
+                    raw = selected
+                except EndpointError:
+                    # The normal restore path provides its safe local fallback.
+                    raw = "local"
+        elif getattr(args, "resume", False) and saved.get("endpoint"):
+            raw = saved["endpoint"]
+        else:
+            raw = DEFAULT_BASE
+    key_env = normalize_key_env(getattr(args, "key_env", None))
+    explicit_key = getattr(args, "key", None) is not None
+    alias = raw.strip().lower() if isinstance(raw, str) else ""
+    if alias in ("local", "public", "subscription"):
+        base = "subscription" if alias == "public" else alias
+        name = "subscription" if alias == "public" else alias
+    elif isinstance(raw, str) and "://" in raw:
+        base = normalize_url(raw)
+        name = "local" if base == LOCAL_ENDPOINT_URL else None
+    else:
+        record = get_custom(raw)
+        base = record["url"]
+        name = raw.strip().lower()
+        if not explicit_key and key_env is None:
+            key_env = record.get("key_env")
+    return base, name, key_env
+
+
+def _restore_endpoint_selection(client, args):
+    """Named selections persist; general legacy session resume stays explicit."""
+    saved = terminal.load_session_config() if not getattr(args, "base", None) else {}
+    if getattr(args, "resume", False):
+        terminal.apply_saved_session(client, args)
+    elif saved.get("endpoint_name"):
+        endpoint_only = argparse.Namespace(**vars(args))
+        # These truthy flags suppress the unrelated saved model/workpath fields.
+        endpoint_only.model = True
+        endpoint_only.workpath = True
+        terminal.apply_saved_session(client, endpoint_only)
+    if ((getattr(client, "base", "") or "").lower() in ("public", "subscription")
+            and not getattr(client, "explicit_credential", False)
+            and not getattr(client, "key_env", None)):
+        client.key = getattr(client, "_builtin_key", "") or ""
+        client.key_env = None
+        client.key_ref = "builtin"
+
+
+def _run_endpoint_command(args, client):
+    """Share slash-command CRUD and wait only for its already scheduled refresh."""
+    from . import commands
+    from .discovery import MODEL_DISCOVERY
+    values = getattr(args, "endpoint_args", []) or []
+    argument = " ".join(shlex.quote(value) for value in values)
+    line = "/" + args.command + (" " + argument if argument else "")
+    result = commands.handle_slash(line, client, [])
+    target = result.refresh_target
+    snapshot = None
+    if target is not None:
+        base, key, key_ref = target
+        snapshot = MODEL_DISCOVERY.wait(base, key_ref=key_ref, key=key, timeout=3)
+        commands._print_discovery(target, refresh_requested=False)
+    if not result.success:
+        return 1
+    action = values[0].lower() if values else "list"
+    if action in ("test", "check") and (not snapshot or snapshot.get("status") != "ready"):
+        return 1
+    return 0
+
+
 def main(argv=None):
     try:
         return _main(argv)
@@ -265,6 +374,19 @@ def _main(argv=None):
     choice = getattr(args, "color", None) or "auto"
     if choice == "always" and getattr(args, "no_color", False):
         return _usage(parser, "--color always and --no-color conflict")
+    # Parent/subparser mutually exclusive groups also need a cross-scope check.
+    if getattr(args, "key", None) is not None and getattr(args, "key_env", None) is not None:
+        return _usage(parser, "choose either --key or --key-env")
+    if getattr(args, "key_env", None) is not None:
+        from .endpoints import EndpointError, normalize_key_env
+        try:
+            if not normalize_key_env(args.key_env):
+                raise EndpointError("--key-env requires an environment-variable name")
+        except EndpointError as exc:
+            return _usage(parser, str(exc))
+        if not os.environ.get(args.key_env, "").strip():
+            print(c_red("? %s is not set; configure that environment variable separately" % args.key_env))
+            return 1
 
     command, text, problem = _resolve_invocation(args)
     if problem:
@@ -280,12 +402,17 @@ def _main(argv=None):
         except Exception:
             pass
 
+    base, endpoint_name, key_env = _endpoint_configuration(args)
     client = ReachClient(
-        getattr(args, "base", None) or DEFAULT_BASE,
+        base,
         model=getattr(args, "model", None),
         no_stream=bool(getattr(args, "no_stream", False)),
         key=getattr(args, "key", None),
+        key_env=key_env,
     )
+    client.endpoint_name = endpoint_name
+    if getattr(args, "key_env", None) is not None:
+        client.explicit_credential = True
     if getattr(args, "system", None):
         client.system = args.system
     if getattr(args, "agent", False):
@@ -294,8 +421,10 @@ def _main(argv=None):
         if _apply_workpath(client, args.workpath) is None:
             return 1
 
-    if getattr(args, "resume", False):
-        terminal.apply_saved_session(client, args)
+    _restore_endpoint_selection(client, args)
+
+    if command in ("endpoint", "endpoints"):
+        return _run_endpoint_command(args, client)
 
     indicator = terminal.WaitIndicator(message="checking endpoint")
     indicator.start()
@@ -332,6 +461,8 @@ def _main(argv=None):
     if getattr(args, "base", None) or getattr(args, "model", None) or getattr(args, "workpath", None):
         terminal.save_session_config(
             endpoint=client.base if getattr(args, "base", None) else None,
+            **({"endpoint_name": getattr(client, "endpoint_name", None) or ""}
+               if getattr(args, "base", None) else {}),
             model=client.model if getattr(args, "model", None) else None,
             workpath=client.workpath if getattr(args, "workpath", None) else None,
         )

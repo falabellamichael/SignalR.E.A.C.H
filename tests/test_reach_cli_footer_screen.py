@@ -34,7 +34,7 @@ def last_cursor(output):
 
 
 def frame_rows(output):
-    """Visible rows in the final full redraw, keyed by one-based screen row."""
+    """Replay row patches following the latest full redraw."""
     frame = output.rsplit("\x1b[?25l\x1b[H", 1)[-1]
     return {
         int(row): splash.strip_ansi(text)
@@ -221,7 +221,8 @@ class FooterScreenTests(unittest.TestCase):
         screen.scroll_lines(8)
         initial = screen.snapshot()
         self.assertFalse(initial["scroll"]["following"])
-        anchor = frame_rows(self.tty.getvalue())[1]
+        transcript_row = initial["geometry"]["transcript_top"] + 1
+        anchor = frame_rows(self.tty.getvalue())[transcript_row]
         self.assertIn("line-", anchor)
 
         screen.write("line-45\n")
@@ -230,7 +231,7 @@ class FooterScreenTests(unittest.TestCase):
         self.assertEqual(streamed["scroll"]["top"], initial["scroll"]["top"])
         self.assertGreater(streamed["scroll"]["total_rows"],
                            initial["scroll"]["total_rows"])
-        self.assertEqual(frame_rows(self.tty.getvalue())[1], anchor)
+        self.assertEqual(frame_rows(self.tty.getvalue())[transcript_row], anchor)
         self.assertEqual((streamed["text"], streamed["cursor"]), (draft, 7))
 
         self.tty.resize(60, 14)
@@ -238,7 +239,8 @@ class FooterScreenTests(unittest.TestCase):
         resized = screen.snapshot()
         rows = frame_rows(self.tty.getvalue())
         self.assertFalse(resized["scroll"]["following"])
-        self.assertEqual(rows[1], anchor)
+        transcript_row = resized["geometry"]["transcript_top"] + 1
+        self.assertEqual(rows[transcript_row], anchor)
         self.assertEqual((resized["text"], resized["cursor"]), (draft, 7))
         self.assertIn("scroll", "\n".join(rows.values()).lower())
         top = resized["geometry"]["footer_top"] + 1
@@ -287,7 +289,8 @@ class FooterScreenTests(unittest.TestCase):
         self.assertFalse(narrow["scroll"]["following"])
         anchor = narrow["scroll"]["anchor"]
         self.assertGreater(anchor[1], 0, "the first row must be inside the wrapped line")
-        first_row = frame_rows(self.tty.getvalue())[1]
+        transcript_row = narrow["geometry"]["transcript_top"] + 1
+        first_row = frame_rows(self.tty.getvalue())[transcript_row]
         self.assertIn("-", first_row)
 
         self.tty.resize(60, 8)
@@ -302,7 +305,8 @@ class FooterScreenTests(unittest.TestCase):
         restored = screen.snapshot()
         self.assertFalse(restored["scroll"]["following"])
         self.assertEqual(restored["scroll"]["anchor"], anchor)
-        self.assertEqual(frame_rows(self.tty.getvalue())[1], first_row)
+        transcript_row = restored["geometry"]["transcript_top"] + 1
+        self.assertEqual(frame_rows(self.tty.getvalue())[transcript_row], first_row)
         self.assertEqual(restored["transcript"], narrow["transcript"])
 
     def test_center_margin_tracks_width_for_transcript_and_footer(self):
@@ -589,6 +593,166 @@ class FooterScreenTests(unittest.TestCase):
         self.assertNotIn("\x1b[?7h", restored)
         screen.close()
         self.assertEqual(self.tty.getvalue(), restored)
+
+    def test_scrolling_large_history_does_not_rewrap_unchanged_lines(self):
+        screen = self.screen()
+        screen.start()
+        screen.write("".join("history-%05d normal text \u6f22\u5b57\n" % index
+                             for index in range(3000)))
+        glyph_width = footer._glyph_width
+        with patch.object(footer, "_glyph_width", wraps=glyph_width) as measure:
+            screen.scroll_lines(8)
+            self.assertLess(measure.call_count, 1500)
+        self.assertEqual(screen.snapshot()["scroll"]["total_rows"], 3001)
+        self.assertFalse(screen.snapshot()["scroll"]["following"])
+
+    def test_streaming_long_partial_line_reflows_only_its_changed_tail(self):
+        screen = self.screen()
+        screen.start()
+        screen.write("x" * 25000)
+        glyph_width = footer._glyph_width
+        with patch.object(footer, "_glyph_width", wraps=glyph_width) as measure:
+            screen.write("e\u0301\u6f22")
+            self.assertLess(measure.call_count, 1500)
+        incremental = list(screen._visual_rows)
+        screen._visual_key = None  # independent complete reflow of final cells
+        screen._draw()
+        self.assertEqual(screen._visual_rows, incremental)
+        self.assertTrue(screen.snapshot()["transcript"].endswith("e\u0301\u6f22"))
+
+    def test_streaming_while_scrolled_updates_status_without_repainting_history(self):
+        screen = self.screen()
+        screen.start()
+        screen.write("".join("history-%03d\n" % index for index in range(100)))
+        screen.set_input("keep this \u6f22\u5b57 draft", 5)
+        screen.scroll_lines(50)
+        before_state = screen.snapshot()
+        before = len(self.tty.getvalue())
+        screen.write("new streamed line\n")
+        output = self.tty.getvalue()[before:]
+        changed = frame_rows(output)
+        self.assertNotIn("\x1b[?25l\x1b[H", output)
+        self.assertEqual(set(changed), {
+            before_state["geometry"]["scroll_status_row"] + 1})
+        after = screen.snapshot()
+        self.assertEqual(after["scroll"]["anchor"], before_state["scroll"]["anchor"])
+        self.assertEqual((after["text"], after["cursor"]),
+                         (before_state["text"], before_state["cursor"]))
+        self.assertEqual(last_cursor(output),
+                         (after["geometry"]["cursor_row"] + 1,
+                          after["geometry"]["cursor_column"] + 1))
+
+    def test_navigation_burst_preserves_event_order_and_draws_once(self):
+        def ready_screen():
+            tty = MutableTTY(columns=40, rows=12)
+            screen = FooterScreen(self.client, tty, size=tty.get_size)
+            self.addCleanup(screen.close)
+            screen.start()
+            screen.write("".join("row-%03d\n" % index for index in range(150)))
+            screen.set_input("draft \u6f22\u5b57", 7)
+            return screen
+
+        events = ([('up', 1)] * 32 + [('down', 1)] * 8 +
+                  [('page_up', 2), ('live', 1), ('up', 7),
+                   ('page_down', 1), ('up', 4)])
+        sequential, batched = ready_screen(), ready_screen()
+        for action, amount in events:
+            sequential.scroll(action, amount)
+        with patch.object(batched, "_draw", wraps=batched._draw) as draw:
+            batched.scroll_events(events)
+            self.assertEqual(draw.call_count, 1)
+        expected, actual = sequential.snapshot(), batched.snapshot()
+        self.assertEqual(actual["scroll"], expected["scroll"])
+        self.assertEqual((actual["text"], actual["cursor"]), ("draft \u6f22\u5b57", 7))
+        self.assertEqual(actual["transcript"], expected["transcript"])
+
+    def test_incremental_reflow_matches_full_reflow_for_edits_styles_and_resize(self):
+        screen = self.screen()
+        screen.start()
+        chunks = (
+            "before\n" + "abcdef\u6f22e\u0301" * 30,
+            "\rready\x1b[K", "\n  \u2502 " + "box " * 80,
+            "\x1b[31mRED\x1b[0m", "\b!", "\r\x1b[4Gnew",
+            "\x1b[1Kstart", "\r\x1b[2K\u6f22\u5b57 clean", "\nlast",
+        )
+        for index, chunk in enumerate(chunks):
+            with self.subTest(index=index):
+                screen.write(chunk)
+                incremental = list(screen._visual_rows)
+                screen._visual_key = None
+                screen._draw()
+                self.assertEqual(screen._visual_rows, incremental)
+        transcript = screen.snapshot()["transcript"]
+        for columns in (18, 40, 120, 18, 80):
+            with self.subTest(columns=columns):
+                self.tty.resize(columns, 12)
+                screen.flush()
+                reflowed = list(screen._visual_rows)
+                screen._visual_key = None
+                screen._draw()
+                self.assertEqual(screen._visual_rows, reflowed)
+                self.assertEqual(screen.snapshot()["transcript"], transcript)
+
+    def test_incremental_stream_frames_repaint_only_changed_rows(self):
+        screen = self.screen()
+        screen.start()
+        screen.write("answer ")
+        before = len(self.tty.getvalue())
+        screen.write("more")
+        output = self.tty.getvalue()[before:]
+        self.assertEqual(len(frame_rows(output)), 1)
+        self.assertIn("answer more", visible_text(output))
+        self.assertNotIn("\x1b[?25l\x1b[H", output)
+        complete = frame_rows(self.tty.getvalue())
+        self.assertEqual(len(complete), 24)
+        self.assertTrue(complete[22].startswith(TL))
+        self.assertTrue(complete[24].endswith(BR))
+
+    def test_response_indent_tracks_resize_between_newline_and_first_glyph(self):
+        splash.set_layout("center")
+        self.tty.resize(100, 24)
+        screen = self.screen()
+        screen.start()
+        with patch.object(splash, "terminal_columns", side_effect=lambda: self.tty.columns), \
+                patch.object(sys, "stdout", screen):
+            screen.write(terminal.response_indent() + "LIVE00000\n")
+            for index, columns in enumerate((150, 18, 100, 150, 100), 1):
+                with self.subTest(columns=columns, index=index):
+                    self.tty.resize(columns, 24)
+                    screen.flush()  # existing empty line was created at the old width
+                    marker = "LIVE%05d" % index
+                    screen.write(terminal.response_indent() + marker + "\n")
+                    margin = screen.snapshot()["geometry"]["footer_left"]
+                    output = next(text for _, _, text in screen._visual_rows
+                                  if marker in splash.strip_ansi(text))
+                    self.assertEqual(splash.strip_ansi(output),
+                                     " " * margin + "  \u2502 " + marker)
+                    # Reflow every retained reply at the current gutter.
+                    for _, _, text in screen._visual_rows:
+                        visible = splash.strip_ansi(text)
+                        if "LIVE" in visible:
+                            self.assertTrue(visible.startswith(" " * margin + "  \u2502 "))
+
+    def test_resize_margin_refresh_preserves_model_indent_and_input_prefix(self):
+        splash.set_layout("center")
+        self.tty.resize(100, 24)
+        screen = self.screen()
+        screen.start()
+        screen.finish_input("    user indented", echo=True)
+        screen.write("\n")
+        self.tty.resize(150, 24)
+        with patch.object(splash, "terminal_columns", return_value=150), \
+                patch.object(sys, "stdout", screen):
+            screen.write(terminal.response_indent() + "    model indented\n")
+        rows = [splash.strip_ansi(text) for _, _, text in screen._visual_rows]
+        self.assertIn(" " * 27 + "  \u2502     model indented", rows)
+        self.assertIn(" " * 27 + "you \u25b8     user indented", rows)
+        screen.scroll_lines(1)
+        self.tty.resize(100, 24)
+        screen.flush()
+        rows = [splash.strip_ansi(text) for _, _, text in screen._visual_rows]
+        self.assertIn(" " * 2 + "  \u2502     model indented", rows)
+        self.assertIn(" " * 2 + "you \u25b8     user indented", rows)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,10 @@ import sys
 import threading
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from collections import deque
+from contextlib import nullcontext
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
 from reach_cli import footer_input
@@ -452,12 +455,17 @@ class FooterReadDriverTests(unittest.TestCase):
 
 
 class SessionInputModeTests(unittest.TestCase):
+    def setUp(self):
+        self.broker_patch = patch.object(footer_input, "_InputBroker")
+        self.broker = self.broker_patch.start().return_value
+        self.addCleanup(self.broker_patch.stop)
+
     def test_windows_keeps_processed_input_and_restores_original(self):
         original_platform = os.name
         for fail in (False, True):
             modes = []
             original = 0x0001 | 0x0002 | 0x0004 | 0x0040
-            quiet = (original | 0x0008 | 0x0010 | 0x0080) & ~(0x0004 | 0x0040 | 0x0200)
+            quiet = (original | 0x0008 | 0x0010 | 0x0080) & ~(0x0002 | 0x0004 | 0x0040 | 0x0200)
             api = types.SimpleNamespace(SetConsoleMode=lambda handle, mode:
                                         modes.append((handle, mode)) or True)
             with self.subTest(fail=fail), \
@@ -470,6 +478,7 @@ class SessionInputModeTests(unittest.TestCase):
                         self.assertEqual(modes, [(123, quiet)])
                         self.assertTrue(modes[-1][1] & 0x0001)
                         self.assertTrue(modes[-1][1] & 0x0010)
+                        self.assertFalse(modes[-1][1] & 0x0002)
                         self.assertFalse(modes[-1][1] & 0x0040)
                         self.assertTrue(footer_input._SESSION_ACTIVE)
                         if fail:
@@ -479,12 +488,13 @@ class SessionInputModeTests(unittest.TestCase):
             self.assertEqual(modes, [(123, quiet), (123, original)])
             self.assertFalse(footer_input._SESSION_ACTIVE)
 
-    def test_posix_keeps_isig_and_restores_original(self):
+    def test_posix_raw_session_preserves_original_and_restores_on_error(self):
         original_platform = os.name
         for fail in (False, True):
             modes = []
-            original = [0, 0, 0, 0x01 | 0x08 | 0x40, 0, 0, []]
-            api = types.SimpleNamespace(ECHO=0x08, ECHONL=0x40, TCSANOW=0,
+            original = [0x80, 0x01, 0x00, 0x01 | 0x02 | 0x08 | 0x40, 0, 0, [0] * 32]
+            api = types.SimpleNamespace(ECHO=0x08, ECHONL=0x40, ICANON=0x02, ISIG=0x01,
+                                        ICRNL=0x80, OPOST=0x01, VMIN=6, VTIME=5, TCSANOW=0,
                                         tcgetattr=lambda fd: original,
                                         tcsetattr=lambda fd, when, mode:
                                         modes.append((fd, when, list(mode))))
@@ -497,13 +507,17 @@ class SessionInputModeTests(unittest.TestCase):
                     with footer_input.session_input_mode():
                         self.assertEqual(os.name, original_platform)
                         self.assertTrue(footer_input._SESSION_ACTIVE)
-                        self.assertEqual(modes[-1][2][3], 0x01)
+                        self.assertEqual(modes[-1][2][3], 0)
+                        self.assertEqual(modes[-1][2][0], 0)
+                        self.assertEqual(modes[-1][2][1], 0)
+                        self.assertEqual(modes[-1][2][6][6], 1)
+                        self.assertEqual(modes[-1][2][6][5], 0)
                         if fail:
                             raise RuntimeError("session failed")
                 except RuntimeError:
                     self.assertTrue(fail)
             self.assertEqual(modes[-1], (321, 0, original))
-            self.assertEqual(original[3], 0x01 | 0x08 | 0x40)
+            self.assertEqual(original[3], 0x01 | 0x02 | 0x08 | 0x40)
             self.assertFalse(footer_input._SESSION_ACTIVE)
 
 
@@ -562,72 +576,376 @@ class ScrollPollTests(unittest.TestCase):
 
     def poll(self, descriptions):
         api, record_type, records, reads = self.fake_native(descriptions)
+        broker = footer_input._InputBroker()
+        broker._native = (api, 1, 0, record_type)
         with patch.object(footer_input, "os", types.SimpleNamespace(name="nt")), \
                 patch.object(footer_input, "_SESSION_ACTIVE", True), \
                 patch.object(footer_input, "_READ_ACTIVE", False), \
-                patch.object(footer_input, "_windows_record_api", return_value=(api, 1, 0, record_type)), \
-                patch.object(footer_input, "_WINDOWS_MOUSE", WindowsMouseDecoder()), \
-                patch.object(footer_input, "_WINDOWS_DECODER", WindowsKeyDecoder()):
+                patch.object(footer_input, "_BROKER", broker):
+            with broker._condition:
+                while not broker._windows_pump():
+                    pass
             actions = footer_input.poll_scroll_events()
-        return actions, records, reads
+        return actions, list(broker._pending), reads, records
 
-    def test_leading_scroll_and_harmless_records_are_consumed_until_text(self):
-        actions, records, reads = self.poll([
+    def test_typing_does_not_block_later_page_and_wheel_navigation(self):
+        actions, pending, reads, records = self.poll([
             {"key": 0x21}, {"key": 0x21, "down": False}, {"kind": 4},
             {"kind": 2, "delta": -240}, {"kind": 16}, {"char": ord("a")},
-            {"key": 0x22},
+            {"key": 0x22}, {"char": ord("b")}, {"key": 0x0d, "char": 13},
         ])
-        self.assertEqual(actions, [("page_up", 1), ("down", 2)])
-        self.assertEqual(len(reads), 5)
-        self.assertEqual(len(records), 2)
-        self.assertEqual(records[0].event.key.char, ord("a"))
-
-    def test_unicode_alt_release_and_control_heads_are_not_consumed(self):
-        for head in ({"char": ord("x")}, {"char": 3, "key": 0x43},
-                     {"char": ord("x"), "key": 0x12, "down": False},
-                     {"char": 0x0301, "key": 0x12, "down": False},
-                     {"char": 0xd83d, "key": 0x12, "down": False},
-                     {"char": 0xde42, "key": 0x12, "down": False}):
-            with self.subTest(head=head):
-                actions, records, reads = self.poll([head, {"key": 0x21}])
-                self.assertEqual(actions, [])
-                self.assertEqual(reads, [])
-                self.assertEqual(len(records), 2)
-
-    def test_enter_release_does_not_block_streaming_page_and_wheel(self):
-        actions, records, reads = self.poll([
-            {"key": 0x0d, "char": ord("\r"), "down": False},
-            {"key": 0x21}, {"kind": 2, "delta": -120},
-        ])
-        self.assertEqual(actions, [("page_up", 1), ("down", 1)])
-        self.assertEqual(len(reads), 3)
+        self.assertEqual(actions, [("page_up", 1), ("down", 2), ("page_down", 1)])
+        self.assertEqual(pending, [("text", "ab"), ("enter", "")])
+        self.assertEqual(len(reads), 9)
         self.assertEqual(records, [])
 
-    def test_ordinary_key_releases_follow_editor_ignore_semantics(self):
-        for release in ({"key": 0x58, "char": ord("x"), "down": False},
-                        {"key": 0, "char": ord("界"), "down": False},
-                        {"key": 0x43, "char": 3, "down": False},
-                        {"key": 0x12, "down": False}):
-            with self.subTest(release=release):
-                actions, records, reads = self.poll([release, {"key": 0x21}])
-                self.assertEqual(actions, [("page_up", 1)])
-                self.assertEqual(len(reads), 2)
-                self.assertEqual(records, [])
+    def test_alt_unicode_and_surrogates_are_retained_behind_navigation(self):
+        actions, pending, reads, records = self.poll([
+            {"char": ord("x"), "key": 0x12, "down": False},
+            {"char": 0x0301, "key": 0x12, "down": False},
+            {"char": 0xd83d, "key": 0x12, "down": False},
+            {"key": 0x21},
+            {"char": 0xde42, "key": 0x12, "down": False},
+        ])
+        self.assertEqual(actions, [("page_up", 1)])
+        self.assertEqual(pending, [("text", "x\u0301\U0001f642")])
+        self.assertEqual(len(reads), 5)
+        self.assertEqual(records, [])
 
-    def test_inactive_session_or_active_reader_does_not_touch_native_api(self):
-        with patch.object(footer_input, "os", types.SimpleNamespace(name="nt")), \
-                patch.object(footer_input, "_windows_record_api") as native:
-            for session, reader in ((False, False), (True, True)):
-                with patch.object(footer_input, "_SESSION_ACTIVE", session), \
-                        patch.object(footer_input, "_READ_ACTIVE", reader):
-                    self.assertEqual(footer_input.poll_scroll_events(), [])
-            native.assert_not_called()
+    def test_large_mixed_burst_coalesces_scroll_and_preserves_edit_fifo(self):
+        descriptions = [{"char": ord("a")}] * 2000
+        descriptions += [{"key": 0x21}] * 100
+        descriptions += [{"key": 0x25}, {"char": ord("X")},
+                         {"key": 0x0d, "char": 13}, {"char": ord("b")},
+                         {"kind": 2, "delta": -120}]
+        actions, pending, reads, records = self.poll(descriptions)
+        self.assertEqual(actions, [("page_up", 100), ("down", 1)])
+        self.assertEqual(pending, [("text", "a" * 2000), ("left", ""),
+                                   ("text", "X"), ("enter", ""), ("text", "b")])
+        self.assertEqual(len(reads), len(descriptions))
+        self.assertEqual(records, [])
 
-    def test_posix_polling_leaves_input_bytes_untouched(self):
-        with patch.object(footer_input, "os", types.SimpleNamespace(name="posix")), \
+    def test_poll_never_reads_native_input_even_during_editor(self):
+        broker = footer_input._InputBroker()
+        with broker._condition:
+            broker._put([("text", "draft"), ("scroll_up", 3)])
+        with patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                patch.object(footer_input, "_READ_ACTIVE", True), \
+                patch.object(footer_input, "_BROKER", broker), \
                 patch.object(footer_input, "_windows_record_api") as native:
+            self.assertEqual(footer_input.poll_scroll_events(), [("up", 3)])
             self.assertEqual(footer_input.poll_scroll_events(), [])
             native.assert_not_called()
+        self.assertEqual(list(broker._pending), [("text", "draft")])
+
+    def test_inactive_session_does_not_expose_old_broker(self):
+        with patch.object(footer_input, "_SESSION_ACTIVE", False), \
+                patch.object(footer_input, "_BROKER") as broker:
+            self.assertEqual(footer_input.poll_scroll_events(), [])
+            broker.navigation.assert_not_called()
+
+
+class InputBrokerTests(unittest.TestCase):
+    def put(self, broker, events):
+        with broker._condition:
+            broker._put(events)
+
+    def test_control_priority_does_not_reorder_text_edit_enter_or_eof(self):
+        broker = footer_input._InputBroker()
+        with patch.object(footer_input, "_READ_ACTIVE", True):
+            self.put(broker, [("text", "draft"), ("left", ""), ("eof", ""),
+                              ("enter", ""), ("scroll_page_up", 2),
+                              ("interrupt", ""), ("resize", "")])
+        self.assertEqual(broker.event(), ("interrupt", ""))
+        self.assertEqual(broker.event(), ("resize", ""))
+        self.assertEqual([broker.event() for _ in range(4)],
+                         [("text", "draft"), ("left", ""), ("eof", ""), ("enter", "")])
+        self.assertEqual(broker.navigation(), [("page_up", 2)])
+
+    def test_only_watcher_consumes_navigation_and_preserves_clamped_order(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("scroll_up", 1)])
+        first_watcher_batch = broker.navigation()
+        # The watcher may pause before applying its first batch. An editor
+        # must not steal and apply later navigation ahead of that batch.
+        self.put(broker, [("scroll_down", 1), ("text", "draft"), ("enter", "")])
+        self.assertEqual(broker.event(), ("text", "draft"))
+        self.assertEqual(broker.event(), ("enter", ""))
+        second_watcher_batch = broker.navigation()
+        self.assertEqual(first_watcher_batch, [("up", 1)])
+        self.assertEqual(second_watcher_batch, [("down", 1)])
+        top = 0
+        for action, amount in first_watcher_batch + second_watcher_batch:
+            delta = amount if action == "up" else -amount
+            top = max(0, min(10, top - delta))
+        self.assertEqual(top, 1)
+        # Reversing the batches would clamp down then up back to row zero.
+        reverse = 0
+        for action, amount in second_watcher_batch + first_watcher_batch:
+            delta = amount if action == "up" else -amount
+            reverse = max(0, min(10, reverse - delta))
+        self.assertEqual(reverse, 0)
+
+    def test_batch_scroll_calls_renderer_once_and_keeps_draft_cursor(self):
+        class Screen:
+            def __init__(self):
+                self.batches = []
+            def scroll(self, *args):
+                self.fail = args
+            def scroll_events(self, events):
+                self.batches.append(events)
+        screen = Screen()
+        editor = EditBuffer("draft")
+        editor.cursor = 2
+        events = [("scroll_batch", [("page_up", 1), ("down", 2), ("up", 3)]),
+                  ("enter", "")]
+        result = footer_input._drive(editor, lambda *_: None, events, screen.scroll)
+        self.assertEqual(result, "draft")
+        self.assertEqual(editor.cursor, 2)
+        self.assertEqual(screen.batches, [[("page_up", 1), ("down", 2), ("up", 3)]])
+        self.assertFalse(hasattr(screen, "fail"))
+
+    def test_urgent_posix_cancel_is_guarded_and_deduplicated(self):
+        broker = footer_input._InputBroker()
+        with patch.object(footer_input, "os", types.SimpleNamespace(name="posix")), \
+                patch.object(footer_input, "_READ_ACTIVE", False), \
+                patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                patch.object(footer_input, "_BROKER", broker), \
+                patch("_thread.interrupt_main") as interrupt:
+            self.put(broker, [("text", "before"), ("interrupt", ""),
+                              ("interrupt", ""), ("text", "after")])
+            interrupt.assert_called_once_with()
+            self.assertEqual(list(broker._pending), [("text", "beforeafter")])
+            broker.close()
+            self.put(broker, [("interrupt", "")])
+            interrupt.assert_called_once_with()
+
+    def test_busy_bracketed_paste_retains_literal_cancel_and_crlf(self):
+        decoder = PosixKeyDecoder()
+        broker = footer_input._InputBroker()
+        with patch.object(footer_input, "_READ_ACTIVE", False), \
+                patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                patch.object(footer_input, "_BROKER", broker), \
+                patch("_thread.interrupt_main") as interrupt:
+            self.put(broker, decoder.feed(b"\x1b[200~A\r\nB\x03\x1b[201~\r"))
+            self.assertEqual(list(broker._pending), [("text", "A\nB\x03"), ("enter", "")])
+            interrupt.assert_not_called()
+
+    def test_reply_cancel_signals_only_verified_own_foreground_group(self):
+        import signal
+        broker = footer_input._InputBroker()
+        broker._fd = 91
+        kill = Mock()
+        platform = types.SimpleNamespace(name="posix", getpgrp=lambda: 123,
+                                         tcgetpgrp=lambda fd: 123, killpg=kill)
+        with patch.object(footer_input, "os", platform), \
+                patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                patch.object(footer_input, "_READ_ACTIVE", False), \
+                patch.object(footer_input, "_BROKER", broker), \
+                patch("_thread.interrupt_main") as main_interrupt:
+            self.put(broker, [("interrupt", ""), ("interrupt", "")])
+            kill.assert_called_once_with(123, signal.SIGINT)
+            main_interrupt.assert_not_called()
+
+    def test_unverified_foreground_or_signal_error_falls_back_to_python(self):
+        cases = [(0, 0, None), (-1, -1, None), (123, 999, None),
+                 (123, OSError("no tty"), None),
+                 (OSError("no group"), 123, None),
+                 (123, 123, OSError("signal denied"))]
+        for group, foreground, signal_error in cases:
+            with self.subTest(group=group, foreground=foreground, signal_error=signal_error):
+                broker = footer_input._InputBroker()
+                broker._fd = 91
+                get_group = Mock(return_value=group)
+                get_foreground = Mock(return_value=foreground)
+                if isinstance(group, Exception):
+                    get_group.side_effect = group
+                if isinstance(foreground, Exception):
+                    get_foreground.side_effect = foreground
+                kill = Mock(side_effect=signal_error)
+                platform = types.SimpleNamespace(name="posix", getpgrp=get_group,
+                                                 tcgetpgrp=get_foreground, killpg=kill)
+                with patch.object(footer_input, "os", platform), \
+                        patch("_thread.interrupt_main") as main_interrupt:
+                    broker._interrupt_reply()
+                    main_interrupt.assert_called_once_with()
+                if signal_error is None:
+                    kill.assert_not_called()
+
+    def test_session_lifecycle_guard_prevents_foreground_signals_after_close(self):
+        broker = footer_input._InputBroker()
+        for active, owner, closed, stopped in ((False, broker, False, False),
+                                               (True, object(), False, False),
+                                               (True, broker, True, False),
+                                               (True, broker, False, True)):
+            with self.subTest(active=active, owner=owner, closed=closed, stopped=stopped):
+                broker._closed = closed
+                broker._stop.clear()
+                if stopped:
+                    broker._stop.set()
+                with patch.object(footer_input, "os", types.SimpleNamespace(name="posix")), \
+                        patch.object(footer_input, "_SESSION_ACTIVE", active), \
+                        patch.object(footer_input, "_READ_ACTIVE", False), \
+                        patch.object(footer_input, "_BROKER", owner), \
+                        patch.object(broker, "_interrupt_reply") as signal_reply:
+                    self.put(broker, [("interrupt", "")])
+                    signal_reply.assert_not_called()
+
+    def test_text_batching_preserves_multiline_unicode_and_boundary(self):
+        broker = footer_input._InputBroker()
+        text = "\u754c\U0001f642\n" * 4000
+        self.put(broker, [("text", char) for char in text] + [("enter", ""), ("text", "next")])
+        self.assertEqual("".join(value for key, value in broker._pending if key == "text"),
+                         text + "next")
+        self.assertLessEqual(len(broker._pending), 4)
+        self.assertEqual([key for key, _ in broker._pending], ["text", "text", "enter", "text"])
+
+    def test_fresh_reader_parks_all_native_backlog_and_restores_fifo(self):
+        native = ScrollPollTests()
+        api, record_type, records, reads = native.fake_native(
+            [{"char": ord("a")}] * 300 + [{"char": ord("y")}, {"key": 0x0d, "char": 13}])
+        broker = footer_input._InputBroker()
+        broker._native = (api, 1, 0, record_type)
+        with patch.object(footer_input, "os", types.SimpleNamespace(name="nt")):
+            broker._thread = threading.Thread(target=broker._run, daemon=True)
+            broker._thread.start()
+            try:
+                broker.begin_reader(fresh=True)
+                self.assertEqual(records, [])
+                self.assertEqual(list(broker._pending), [])
+                self.assertEqual(list(broker._parked[0]), [("text", "a" * 300 + "y"), ("enter", "")])
+                self.put(broker, [("text", "n"), ("enter", ""), ("text", "new")])
+                self.assertEqual(broker.event(), ("text", "n"))
+                self.assertEqual(broker.event(), ("enter", ""))
+                broker.end_reader()
+                self.assertEqual(list(broker._pending), [("text", "a" * 300 + "y"),
+                                                       ("enter", ""), ("text", "new")])
+            finally:
+                broker.close()
+        self.assertEqual(len(reads), 302)
+
+    def test_fresh_boundary_timeout_is_fail_closed_and_cannot_park_later(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "y"), ("enter", "")])
+        with self.assertRaisesRegex(EOFError, "prompt boundary"):
+            broker.begin_reader(fresh=True)
+        self.assertEqual(broker._barriers, [])
+        self.assertIsNone(broker._parked)
+        self.assertEqual(list(broker._pending), [("text", "y"), ("enter", "")])
+
+    def test_unfinished_old_sequences_deny_approval_and_keep_normal_input(self):
+        cases = [(b"\x1b[200~", b"y\x1b[201~\r", "y"),
+                 (b"\x1b[200~y\x1b[20", b"1~\r", "y"),
+                 ("\u754c".encode("utf8")[:1], "\u754c".encode("utf8")[1:] + b"\r", "\u754c"),
+                 (b"\x1b", b"y\r", "y"),
+                 (b"\x1b[M", bytes([96, 37, 37]) + b"y\r", "y")]
+        for prefix, suffix, text in cases:
+            with self.subTest(prefix=prefix):
+                broker = footer_input._InputBroker()
+                self.put(broker, broker._posix_decoder.feed(prefix))
+                with patch.object(footer_input, "os", types.SimpleNamespace(name="posix")), \
+                        patch.object(broker, "_posix_pump", return_value=True):
+                    broker._thread = threading.Thread(target=broker._run, daemon=True)
+                    broker._thread.start()
+                    try:
+                        with self.assertRaisesRegex(EOFError, "Incomplete terminal input"):
+                            broker.begin_reader(fresh=True)
+                        self.assertIsNone(broker._parked)
+                        self.put(broker, broker._posix_decoder.feed(suffix))
+                        result = footer_input._drive(EditBuffer(), lambda *_: None,
+                                                     footer_input._broker_events(broker))
+                        self.assertEqual(result, text)
+                    finally:
+                        broker.close()
+
+    def test_unfinished_utf16_denies_approval_and_preserves_completion(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, broker._windows_decoder.feed(True, 1, 0, "\ud83d"))
+        with patch.object(footer_input, "os", types.SimpleNamespace(name="nt")), \
+                patch.object(broker, "_windows_pump", return_value=True):
+            broker._thread = threading.Thread(target=broker._run, daemon=True)
+            broker._thread.start()
+            try:
+                with self.assertRaisesRegex(EOFError, "Incomplete terminal input"):
+                    broker.begin_reader(fresh=True)
+                self.put(broker, broker._windows_decoder.feed(True, 1, 0, "\ude42"))
+                self.put(broker, [("enter", "")])
+                result = footer_input._drive(EditBuffer(), lambda *_: None,
+                                             footer_input._broker_events(broker))
+                self.assertEqual(result, "\U0001f642")
+            finally:
+                broker.close()
+
+    def test_fresh_prompt_cancel_during_boundary_is_immediate_and_preserves_typing(self):
+        for during_pump, drained in ((False, True), (True, True), (True, False)):
+            with self.subTest(during_pump=during_pump, drained=drained):
+                broker = footer_input._InputBroker()
+                self.put(broker, [("text", "old-y"), ("enter", "")])
+                injected = []
+
+                def pump():
+                    if during_pump and broker._barriers and not injected:
+                        broker._put([("interrupt", ""), ("interrupt", "")])
+                        injected.append(True)
+                    return drained
+
+                def visible(text, cursor):
+                    if not during_pump and not injected:
+                        self.put(broker, [("interrupt", ""), ("interrupt", "")])
+                        injected.append(True)
+
+                with patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                        patch.object(footer_input, "_BROKER", broker), \
+                        patch.object(footer_input, "_reader_mode", return_value=nullcontext()), \
+                        patch.object(broker, "_windows_pump", side_effect=pump), \
+                        patch.object(broker, "_posix_pump", side_effect=pump):
+                    broker._thread = threading.Thread(target=broker._run, daemon=True)
+                    broker._thread.start()
+                    try:
+                        with self.assertRaises(KeyboardInterrupt):
+                            footer_input.read_line(visible, fresh=True)
+                        self.assertEqual(injected, [True])
+                        self.assertFalse(footer_input._READ_ACTIVE)
+                        self.assertIsNone(broker._parked)
+                        self.assertEqual(list(broker._urgent), [])
+                        self.assertEqual(list(broker._pending), [("text", "old-y"), ("enter", "")])
+                        self.assertEqual(footer_input.read_line(lambda *_: None), "old-y")
+                    finally:
+                        broker.close()
+
+    def test_partial_decoder_state_is_shared_between_prompt_phases(self):
+        decoder = PosixKeyDecoder()
+        broker = footer_input._InputBroker()
+        self.put(broker, decoder.feed("\u754c".encode("utf8")[:1]))
+        self.assertEqual(list(broker._pending), [])
+        self.put(broker, decoder.feed("\u754c".encode("utf8")[1:] + b"\x1b[200~first\r"))
+        self.put(broker, decoder.feed(b"\nsecond\x1b[201~\r"))
+        self.assertEqual(list(broker._pending), [("text", "\u754cfirst\nsecond"), ("enter", "")])
+
+    def test_reader_callback_failure_restores_parked_input_and_ownership(self):
+        broker = footer_input._InputBroker()
+        broker._parked = (deque([("text", "old"), ("enter", "")]), deque())
+        self.put(broker, [("text", "new")])
+        with patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                patch.object(footer_input, "_BROKER", broker), \
+                patch.object(footer_input, "_reader_mode", return_value=nullcontext()):
+            def change(text, cursor):
+                if text:
+                    raise ValueError("render")
+            with self.assertRaisesRegex(ValueError, "render"):
+                footer_input.read_line(change)
+        self.assertFalse(footer_input._READ_ACTIVE)
+        self.assertIsNone(broker._parked)
+        self.assertEqual(list(broker._pending), [("text", "old"), ("enter", "")])
+
+    def test_close_stops_worker_and_clears_session_owned_queues(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "old"), ("enter", ""), ("scroll_up", 2)])
+        broker.close()
+        self.assertEqual(list(broker._pending), [])
+        self.assertEqual(broker.navigation(), [])
+        with self.assertRaises(EOFError):
+            broker.event()
 
 
 if __name__ == "__main__":

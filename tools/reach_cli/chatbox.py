@@ -35,6 +35,8 @@ def box_width(columns=None):
 
 def short_endpoint(base):
     text = re.sub(r"^[a-z]+://", "", str(base or "")).rstrip("/")
+    text = re.split(r"[?#]", text, maxsplit=1)[0]
+    text = re.sub(r"^[^/@]*@", "", text, count=1)
     return text or "local"
 
 
@@ -232,7 +234,7 @@ def read_inline_input(message=""):
         screen.write(message + "\n")
     try:
         answer = read_line(lambda text, cursor: screen.set_input(
-            text, cursor, label="allow"), on_scroll=screen.scroll)
+            text, cursor, label="allow"), on_scroll=screen.scroll, fresh=True)
         screen.finish_input(answer, echo=False)
         return answer
     except (KeyboardInterrupt, EOFError):
@@ -279,6 +281,47 @@ def read_boxed(client, reader=None, out=None):
         raise RuntimeError("Pinned editor requires an active footer session")
     if screen is not None:
         screen.refresh_metadata()
+    chat_draft = ["", 0]
+    terminal_focus = [False]
+
+    def on_change(text, cursor):
+        if terminal_focus[0]:
+            screen.mini_terminal.set_draft(text)
+            screen.set_input(text, cursor, chunks=tuple(chunks), label="mini-term")
+        else:
+            screen.set_input(text, cursor, chunks=tuple(chunks), label="you")
+
+    def on_key(key, editor):
+        if key == "terminal_toggle":
+            if terminal_focus[0]:
+                screen.mini_terminal.blur()
+                terminal_focus[0] = False
+                editor.text, editor.cursor = chat_draft
+            else:
+                chat_draft[:] = [editor.text, editor.cursor]
+                terminal_focus[0] = True
+                screen.mini_terminal.focus()
+                editor.text = screen.mini_terminal.snapshot().get("draft", "")
+                editor.cursor = len(editor.text)
+            screen.refresh_header()
+            return True
+        if key == "interrupt" and terminal_focus[0]:
+            screen.mini_terminal.cancel()
+            terminal_focus[0] = False
+            editor.text, editor.cursor = chat_draft
+            screen.refresh_header()
+            return True
+        if key == "enter" and terminal_focus[0]:
+            request = screen.mini_terminal.request_submit()
+            if request is None:
+                return True
+            terminal_focus[0] = False
+            screen.mini_terminal.blur()
+            editor.text, editor.cursor = chat_draft
+            return ("mini_terminal_submit", request["id"],
+                    editor.text, editor.cursor)
+        return False
+
     while True:
         if reader is None:
             from .footer_input import read_line
@@ -289,26 +332,37 @@ def read_boxed(client, reader=None, out=None):
             except (OSError, UnicodeError):
                 history = []
             try:
-                line = read_line(lambda text, cursor: screen.set_input(
-                    text, cursor, chunks=tuple(chunks)), history=history,
-                    on_scroll=screen.scroll)
+                line = read_line(on_change,
+                    history=history, initial=chat_draft[0],
+                    initial_cursor=chat_draft[1], on_scroll=screen.scroll,
+                    on_key=on_key)
             except (KeyboardInterrupt, EOFError):
                 screen.finish_input("", echo=False)
                 raise
+            if (isinstance(line, tuple) and len(line) == 4 and
+                    line[0] == "mini_terminal_submit"):
+                _tag, request_id, draft, cursor = line
+                chat_draft[:] = [draft, cursor]
+                screen.set_input(draft, cursor, chunks=tuple(chunks), label="you")
+                screen.run_mini_terminal(request_id)
+                continue
         else:
             line = reader(MARK if not chunks else "... ")
         line = "" if line is None else str(line)
         if line.endswith("\\") and not line.endswith("\\\\"):
             chunks.append(line[:-1])
+            chat_draft[:] = ["", 0]
             continue
         chunks.append(line[:-1] if line.endswith("\\\\") else line)
         break
     text = "\n".join(chunks)
+    from .input_privacy import sanitize_endpoint_command
+    visible = sanitize_endpoint_command(text)
     if screen is not None:
-        screen.finish_input(text, echo=bool(text.strip()))
+        screen.finish_input(visible, echo=bool(text.strip()))
     else:
         model, endpoint, details = client_meta(client)
-        for row in echo_box(text, box_width(), "you", model, endpoint,
+        for row in echo_box(visible, box_width(), "you", model, endpoint,
                             details, session_meta(client)):
             out.write(row + "\n")
         out.flush()

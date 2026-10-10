@@ -1,4 +1,4 @@
-"""Endpoint client: the OpenAI-compatible REACH relay.
+﻿"""Endpoint client: the OpenAI-compatible REACH relay.
 
 Talks to the local relay (or the public pointer gist) with
 streaming chat completions, model listing, and pointer fallback.
@@ -12,6 +12,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import unicodedata
 
 
 POINTER_GIST = (
@@ -107,7 +108,46 @@ def _auth_headers(key, extra=None):
 
 
 
-def _error_text(raw, base):
+def _safe_text(value, key="", limit=None):
+    value = str(value or "")
+    value = "".join(ch for ch in value if ch in "\n\r\t" or not unicodedata.category(ch) in ("Cc", "Cf", "Cs"))
+    if key:
+        value = value.replace(key, "[credential redacted]")
+    return value if limit is None else value[:limit]
+
+
+class _TextRedactor:
+    """Keep credential prefixes between deltas so split echoes stay private."""
+    def __init__(self, key):
+        self.key = key
+        self.pending = ""
+
+    def feed(self, value, final=False):
+        value = self.pending + _safe_text(value)
+        self.pending = ""
+        if self.key:
+            value = value.replace(self.key, "[credential redacted]")
+            if not final:
+                for length in range(min(len(value), len(self.key) - 1), 0, -1):
+                    if value.endswith(self.key[:length]):
+                        self.pending = value[-length:]
+                        value = value[:-length]
+                        break
+            elif value and self.key.startswith(value):
+                value = "[credential redacted]"
+        return _safe_text(value)
+
+
+def _request(url, key="", **kwargs):
+    # urllib intentionally excludes unredirected headers on redirected requests.
+    # Preserve ordinary urlopen hooks while preventing cross-host key forwarding.
+    request = urllib.request.Request(url, **kwargs)
+    if key:
+        request.add_unredirected_header("Authorization", "Bearer " + key)
+    return request
+
+
+def _error_text(raw, base, key=""):
     """Best-effort extraction of API error text."""
     if isinstance(raw, str):
         raw = raw.encode("utf-8", "replace")
@@ -119,20 +159,40 @@ def _error_text(raw, base):
         message = error.get("message") or json.dumps(payload)[:200]
         if error.get("reset_seconds"):
             message += " (retry in ~%ss)" % error["reset_seconds"]
-        return message.strip()
+        return _safe_text(message, key, 1000).strip()
     except Exception:
         text = raw.decode("utf-8", "replace").strip()
-        return text[:200] or "no response body from %s" % base
+        return _safe_text(text, key, 200) or "no response body from %s" % _safe_text(base, key, 200)
 
 
 
 
 class ReachClient:
-    def __init__(self, base, model=None, timeout=600, no_stream=False, key=None):
+    def __init__(self, base, model=None, timeout=600, no_stream=False, key=None, key_env=None):
         self.base = base.rstrip("/")
         # An sk-reach key, needed for a hosted relay that requires one. A relay
         # on this machine does not, so the default (no key) still works there.
-        self.key = (key or os.environ.get("REACH_KEY") or "").strip()
+        builtin = self.base.lower() in ("public", "subscription")
+        self._builtin_key = (os.environ.get("REACH_KEY") or "").strip()
+        self.endpoint_name = None
+        self.key_env = key_env
+        self.explicit_credential = key is not None
+        if key_env is not None:
+            import re
+            if not isinstance(key_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
+                raise ValueError("Use a valid environment variable name for --key-env.")
+            self.key = (os.environ.get(key_env) or "").strip()
+            self.key_ref = "env:" + key_env
+        elif key is not None:
+            self.key = str(key).strip()
+            self.key_ref = "explicit"
+            if builtin:
+                self._builtin_key = self.key
+        else:
+            self.key = self._builtin_key if builtin else ""
+            self.key_ref = "builtin:REACH_KEY" if builtin else "anonymous"
+        if len(self.key) > 8192 or any(not 32 <= ord(ch) <= 126 for ch in self.key):
+            raise ValueError("The configured credential is invalid; check its environment reference.")
         self.model = model
         self.timeout = timeout
         self.no_stream = no_stream
@@ -141,6 +201,10 @@ class ReachClient:
         # Footer hook contract (read by terminal.print_footer):
         # {"tokens": int|None, "rounds": int, "latency": float seconds}
         self.last_turn = {"tokens": None, "rounds": 0, "latency": 0.0}
+        # Whole-session counters (read by chatbox.session_meta); TurnMeter
+        # accumulates into this on every completed turn.
+        self.session_totals = {"turns": 0, "tokens": 0, "rounds": 0,
+                               "latency": 0.0}
         self.system = None
         self.agent = False
         self.workpath = os.getcwd()
@@ -159,17 +223,20 @@ class ReachClient:
         chosen and the pointer cannot be read.
         """
         name = (self.base or "").strip().lower()
-        if name == "public":
+        if name in ("public", "subscription"):
             url = discover_public_url()
             return url.rstrip("/") if url else None
         if name == "local":
             return "http://127.0.0.1:20777/v1"
-        return self.base
+        from .endpoints import normalize_url
+        try:
+            return normalize_url(self.base)
+        except (ValueError, TypeError):
+            raise ReachApiError("Choose a valid endpoint URL without credentials, query or fragment.") from None
     @staticmethod
     def _reachable(base, key=""):
         try:
-            request = urllib.request.Request(base.rstrip("/") + "/models",
-                                             headers=_auth_headers(key))
+            request = _request(base.rstrip("/") + "/models", key)
             with urllib.request.urlopen(request, timeout=5) as resp:
                 return resp.status == 200
         except urllib.error.HTTPError as exc:
@@ -181,11 +248,26 @@ class ReachClient:
             return False
 
     def models(self):
-        request = urllib.request.Request(self.base + "/models",
-                                         headers=self._headers())
-        with urllib.request.urlopen(request, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8", "replace"))
-        return [m.get("id") for m in data.get("data", []) if m.get("id")]
+        base = self.resolve_base()
+        if not base:
+            raise ReachApiError("The subscription endpoint pointer is unavailable.")
+        request = _request(base + "/models", self.key)
+        try:
+            with urllib.request.urlopen(request, timeout=15) as resp:
+                raw = resp.read(1024 * 1024 + 1)
+                if len(raw) > 1024 * 1024:
+                    raise ReachApiError("The endpoint's model list is too large.")
+                data = json.loads(raw.decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            raise ReachApiError("Model listing failed (HTTP %s); check the endpoint credential." % exc.code,
+                                status=exc.code) from None
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise ReachApiError("Model listing failed: %s" % _safe_text(exc, self.key, 300)) from None
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise ReachApiError("The endpoint returned an invalid model list.")
+        from .discovery import _safe_model_id
+        return [m["id"] for m in data.get("data", [])[:1000]
+                if isinstance(m, dict) and _safe_model_id(m.get("id"), self.key)]
 
     def complete(self, messages, tools=None, on_text=None, stream=True):
         """One request attempt. Returns {"content", "tool_calls"}.
@@ -203,18 +285,47 @@ class ReachClient:
             payload["tool_choice"] = "auto"
         payload["stream"] = bool(stream and not self.no_stream)
         started = time.time()
-        request = urllib.request.Request(
-            self.base + "/chat/completions",
+        base = self.resolve_base()
+        if not base:
+            raise ReachApiError("The subscription endpoint pointer is unavailable.")
+        request = _request(
+            base + "/chat/completions", self.key,
             data=json.dumps(payload).encode("utf-8"),
             method="POST",
-            headers=self._headers({"Content-Type": "application/json"}),
+            headers={"Content-Type": "application/json"},
         )
         text = []
         slots = {}
+        redactor = _TextRedactor(self.key)
+
+        def emit(content, final=False):
+            content = redactor.feed(content, final=final)
+            if content:
+                text.append(content)
+                if on_text:
+                    on_text(content)
 
         def partial():
-            return {"content": "".join(text),
-                    "tool_calls": _finish_tool_calls(slots)}
+            calls = _finish_tool_calls(slots)
+            for call in calls:
+                call["id"] = _safe_text(call.get("id"), self.key)
+                fn = call.get("function") or {}
+                fn["name"] = _safe_text(fn.get("name"), self.key)
+                args = fn.get("arguments") or ""
+                try:
+                    decoded = json.loads(args)
+                    def clean(value):
+                        if isinstance(value, str):
+                            return _safe_text(value, self.key)
+                        if isinstance(value, list):
+                            return [clean(item) for item in value]
+                        if isinstance(value, dict):
+                            return {_safe_text(k, self.key): clean(v) for k, v in value.items()}
+                        return value
+                    fn["arguments"] = json.dumps(clean(decoded))
+                except (ValueError, TypeError):
+                    fn["arguments"] = _safe_text(args, self.key)
+            return {"content": "".join(text), "tool_calls": calls}
 
         try:
             response = urllib.request.urlopen(request, timeout=self.timeout)
@@ -224,21 +335,21 @@ class ReachClient:
             except Exception:
                 body = b""
             message = "endpoint error (HTTP %s): %s" % (
-                exc.code, _error_text(body, self.base))
+                exc.code, _error_text(body, self.base, self.key))
             if exc.code in TRANSIENT_HTTP:
                 raise ReachTransientError(message, status=exc.code) from None
             raise ReachApiError(message, status=exc.code) from None
         except (socket.timeout, TimeoutError) as exc:
-            raise ReachTransientError("timed out: %s" % exc, status="timeout") from None
+            raise ReachTransientError("timed out: %s" % _safe_text(exc, self.key, 300), status="timeout") from None
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", None)
             if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(exc):
-                raise ReachTransientError("timed out: %s" % exc, status="timeout") from None
-            raise ReachTransientError("endpoint unreachable: %s" % exc,
+                raise ReachTransientError("timed out: %s" % _safe_text(exc, self.key, 300), status="timeout") from None
+            raise ReachTransientError("endpoint unreachable: %s" % _safe_text(exc, self.key, 300),
                                       status="unreachable") from None
         except ( socket.timeout, TimeoutError,
                 ConnectionError, http.client.HTTPException, OSError) as exc:
-            raise ReachTransientError("endpoint unreachable: %s" % exc,
+            raise ReachTransientError("endpoint unreachable: %s" % _safe_text(exc, self.key, 300),
                                       status="unreachable") from None
 
         try:
@@ -252,9 +363,7 @@ class ReachClient:
                     self.usage = _usage_dict(usage)
                     message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
                     content = message.get("content") or ""
-                    if content and on_text:
-                        on_text(content)
-                    text.append(content)
+                    emit(content, final=True)
                     for i, call in enumerate(message.get("tool_calls") or []):
                         frag = dict(call)
                         frag.setdefault("index", i)
@@ -288,9 +397,7 @@ class ReachClient:
                     delta = choice.get("delta") or {}
                     content = delta.get("content")
                     if content:
-                        text.append(content)
-                        if on_text:
-                            on_text(content)
+                        emit(content)
                     _merge_tool_delta(slots, delta.get("tool_calls"))
                     if choice.get("finish_reason"):
                         done = True
@@ -298,14 +405,16 @@ class ReachClient:
             raise
         except (socket.timeout, TimeoutError, ConnectionError,
                 http.client.HTTPException, OSError, ValueError) as exc:
+            emit("", final=True)
             kind = "timeout" if isinstance(exc, (socket.timeout, TimeoutError)) else "cut"
-            raise ReachTransientError("stream cut: %s" % exc, partial(), status=kind) from None
+            raise ReachTransientError("stream cut: %s" % _safe_text(exc, self.key, 300), partial(), status=kind) from None
+        emit("", final=True)
         self.last_latency_ms = (time.time() - started) * 1000
         self.usage = stream_usage or _usage_dict({})
         result = partial()
         if not saw_sse:
             raise ReachTransientError(
-                "endpoint error: " + _error_text(raw_rest, self.base), result)
+                "endpoint error: " + _error_text(raw_rest, self.base, self.key), result)
         if not done or (not result["content"] and not result["tool_calls"]):
             raise ReachTransientError("stream ended early", result, status="cut")
         return result
@@ -317,25 +426,29 @@ class ReachClient:
             payload["model"] = self.model
         payload["stream"] = stream and not self.no_stream
         started = time.time()
-        request = urllib.request.Request(
-            self.base + "/chat/completions",
+        base = self.resolve_base()
+        if not base:
+            raise ReachApiError("The subscription endpoint pointer is unavailable.")
+        request = _request(
+            base + "/chat/completions", self.key,
             data=json.dumps(payload).encode("utf-8"),
             method="POST",
-            headers=self._headers({"Content-Type": "application/json"}),
+            headers={"Content-Type": "application/json"},
         )
         if payload["stream"]:
             chunks = []
             saw_sse = False
             raw_rest = b""
+            redactor = _TextRedactor(self.key)
             try:
                 response = urllib.request.urlopen(request, timeout=self.timeout)
             except urllib.error.HTTPError as exc:
                 raise ReachApiError(
                     "endpoint error (HTTP %s): %s"
-                    % (exc.code, _error_text(exc.read(), self.base))
-                ) from exc
+                    % (exc.code, _error_text(exc.read(), self.base, self.key))
+                ) from None
             except urllib.error.URLError as exc:
-                raise ReachApiError("endpoint unreachable: %s" % exc) from exc
+                raise ReachApiError("endpoint unreachable: %s" % _safe_text(exc, self.key, 300)) from None
             with response:
                 for raw in response:
                     line = raw.decode("utf-8", "replace").strip()
@@ -355,12 +468,18 @@ class ReachClient:
                         continue
                     content = delta.get("content")
                     if content:
+                        content = redactor.feed(content)
                         chunks.append(content)
-                        yield content
+                        if content:
+                            yield content
+                tail = redactor.feed("", final=True)
+                if tail:
+                    chunks.append(tail)
+                    yield tail
             self.last_latency_ms = (time.time() - started) * 1000
             if not chunks and (raw_rest or not saw_sse):
                 raise ReachApiError(
-                    "endpoint error: " + _error_text(raw_rest, self.base)
+                    "endpoint error: " + _error_text(raw_rest, self.base, self.key)
                 )
             if not chunks and saw_sse:
                 raise ReachApiError(
@@ -375,12 +494,12 @@ class ReachClient:
         except urllib.error.HTTPError as exc:
             raise ReachApiError(
                 "endpoint error (HTTP %s): %s"
-                % (exc.code, _error_text(exc.read(), self.base))
-            ) from exc
+                % (exc.code, _error_text(exc.read(), self.base, self.key))
+            ) from None
         except urllib.error.URLError as exc:
-            raise ReachApiError("endpoint unreachable: %s" % exc) from exc
+            raise ReachApiError("endpoint unreachable: %s" % _safe_text(exc, self.key, 300)) from None
         except (ValueError, UnicodeDecodeError) as exc:
-            raise ReachApiError("malformed endpoint response: %s" % exc) from exc
+            raise ReachApiError("malformed endpoint response") from None
         self.last_latency_ms = (time.time() - started) * 1000
         usage = data.get("usage") or {}
         self.usage = {
@@ -388,14 +507,18 @@ class ReachClient:
             "completion": usage.get("completion_tokens"),
         }
         content = (data.get("choices") or [{}])[0].get("message", {}).get("content")
-        yield content or ""
+        yield _safe_text(content, self.key)
 
 
 
 
-def discover_public_url():
+def discover_public_url(timeout=8):
     try:
-        with urllib.request.urlopen(POINTER_GIST, timeout=8) as resp:
-            return resp.read().decode().strip()
+        with urllib.request.urlopen(POINTER_GIST, timeout=timeout) as resp:
+            raw = resp.read(4097)
+            if len(raw) > 4096:
+                return None
+            from .endpoints import normalize_url
+            return normalize_url(raw.decode("utf-8").strip())
     except Exception:
         return None

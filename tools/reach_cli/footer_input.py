@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import threading
+import time
 
 
 def _complete(text, before_cursor):
@@ -142,6 +143,7 @@ class EditBuffer:
 
 _CONTROL = {
     "\r": "enter", "\n": "enter", "\x03": "interrupt",
+    "\x14": "terminal_toggle",
     "\x04": "eof", "\x1a": "eof", "\x08": "backspace",
     "\x7f": "backspace", "\t": "tab", "\x01": "home",
     "\x05": "end", "\x02": "left", "\x06": "right",
@@ -349,9 +351,8 @@ class PosixKeyDecoder:
             self._escape = ""
 
 
-# Preserve repeated actions decoded from a native record. Read only one
-# native record/byte at a time so accepting a line does not consume the next
-# line's type-ahead from the terminal (including a command after /exit).
+# Standalone reader fallback retains repeated native actions. During a
+# footer session, the broker owns prefetch and keeps ordinary input FIFO.
 _READ_AHEAD = deque()
 # Retain partial UTF-16/UTF-8 state between reads and prompt boundaries.
 _WINDOWS_DECODER = WindowsKeyDecoder()
@@ -360,19 +361,292 @@ _WINDOWS_MOUSE = WindowsMouseDecoder()
 _INPUT_LOCK = threading.RLock()
 _READ_ACTIVE = False
 _SESSION_ACTIVE = False
+_BROKER = None
 _SCROLL_ACTIONS = {"scroll_page_up": "page_up", "scroll_page_down": "page_down",
                    "scroll_up": "up", "scroll_down": "down", "scroll_live": "live"}
 
 
-def _drive(editor, on_change, events, on_scroll=None):
+class _InputBroker:
+    """The sole native reader for one footer session.
+
+    Viewport navigation has its own queue, so a draft or Enter awaiting the
+    next chat prompt cannot hold up scrolling. Editing and acceptance remain
+    FIFO. Only Ctrl-C is urgent, and only while an editor owns the prompt;
+    processed console signals retain reply cancellation between prompts.
+    """
+
+    def __init__(self):
+        self._condition = threading.Condition(_INPUT_LOCK)
+        self._pending = deque()
+        self._urgent = deque()
+        self._navigation = deque()
+        self._parked = None
+        self._barriers = []
+        self._error = None
+        self._closed = False
+        self._stop = threading.Event()
+        self._thread = None
+        self._signal_pending = False
+        self._windows_decoder = WindowsKeyDecoder()
+        self._mouse_decoder = WindowsMouseDecoder()
+        self._posix_decoder = PosixKeyDecoder()
+        self._native = None
+        self._fd = None
+
+    def start(self):
+        if os.name == "nt":
+            self._native = _windows_record_api()
+        else:
+            self._fd = sys.stdin.fileno()
+        self._thread = threading.Thread(target=self._run,
+                                        name="reach-footer-input", daemon=True)
+        self._thread.start()
+
+    def _put(self, events):
+        """Route decoded events while holding the broker condition lock."""
+        for key, value in events:
+            if key in _SCROLL_ACTIONS:
+                action, amount = _SCROLL_ACTIONS[key], max(1, int(value or 1))
+                if self._navigation and self._navigation[-1][0] == action:
+                    previous = self._navigation.pop()
+                    self._navigation.append((action, previous[1] + amount))
+                else:
+                    self._navigation.append((action, amount))
+            elif key == "resize":
+                # The screen watcher checks geometry independently. One
+                # pending resize is enough to wake an active editor.
+                if not any(event[0] == "resize" for event in self._urgent):
+                    self._urgent.append((key, value))
+            elif key == "interrupt" and _READ_ACTIVE:
+                self._urgent.append((key, value))
+            elif (key == "interrupt" and os.name != "nt" and
+                  _SESSION_ACTIVE and _BROKER is self and
+                  not self._closed and not self._stop.is_set()):
+                # POSIX stays raw so bracketed-paste controls remain literal
+                # text. A decoded real Ctrl-C retains normal foreground
+                # cancellation, including an active owned shell command.
+                if not self._signal_pending:
+                    self._signal_pending = True
+                    self._interrupt_reply()
+            elif (key == "text" and self._pending and
+                  self._pending[-1][0] == "text" and
+                  len(self._pending[-1][1]) + len(value) <= 8192):
+                previous = self._pending.pop()
+                self._pending.append((key, previous[1] + value))
+            else:
+                self._pending.append((key, value))
+        self._condition.notify_all()
+
+    def _interrupt_reply(self):
+        """Match tty Ctrl-C semantics only for our verified foreground group."""
+        import signal
+        try:
+            group = os.getpgrp()
+            if group > 0 and self._fd is not None and os.tcgetpgrp(self._fd) == group:
+                os.killpg(group, signal.SIGINT)
+                return
+        except (OSError, AttributeError, TypeError):
+            pass
+        # A background/redirected or unavailable tty cannot authorize a
+        # signal to another group. Still allow Python to cancel its reply.
+        import _thread
+        _thread.interrupt_main()
+
+    def _windows_pump(self):
+        import ctypes
+        from ctypes import wintypes
+        k32, handle, _original, record_type = self._native
+        records, count = (record_type * 128)(), wintypes.DWORD()
+        deadline = time.monotonic() + 0.012
+        while not self._stop.is_set():
+            if not k32.PeekConsoleInputW(handle, records, len(records), ctypes.byref(count)):
+                raise OSError(ctypes.get_last_error(), "Cannot inspect console input")
+            if not count.value:
+                return True
+            if not k32.ReadConsoleInputW(handle, records, min(count.value, len(records)),
+                                         ctypes.byref(count)):
+                raise OSError(ctypes.get_last_error(), "Cannot read console input")
+            for record in records[:count.value]:
+                if record.kind == 0x0001:
+                    key = record.event.key
+                    self._put(self._windows_decoder.feed(bool(key.down), key.repeat,
+                                                          key.key, key.char, key.control))
+                elif record.kind == 0x0002:
+                    mouse = record.event.mouse
+                    self._put(self._mouse_decoder.feed(mouse.buttons, mouse.flags))
+                elif record.kind == 0x0004:
+                    self._put([("resize", "")])
+            if time.monotonic() >= deadline:
+                return False
+        return False
+
+    def _posix_pump(self):
+        import select
+        deadline = time.monotonic() + 0.012
+        while not self._stop.is_set():
+            readable, _, _ = select.select([self._fd], [], [], 0)
+            if not readable:
+                return True
+            data = os.read(self._fd, 4096)
+            if not data:
+                raise EOFError
+            self._put(self._posix_decoder.feed(data))
+            if time.monotonic() >= deadline:
+                return False
+        return False
+
+    def _run(self):
+        while not self._stop.is_set():
+            with self._condition:
+                try:
+                    if os.name == "nt":
+                        drained = self._windows_pump()
+                    else:
+                        drained = self._posix_pump()
+                except Exception as error:
+                    self._error = error
+                    self._stop.set()
+                    self._condition.notify_all()
+                    drained = True
+                cancel_boundary = (bool(self._barriers) and
+                                   any(key == "interrupt" for key, _value in self._urgent))
+                if drained or cancel_boundary:
+                    barriers, self._barriers = self._barriers, []
+                    for request in barriers:
+                        if request["cancelled"]:
+                            continue
+                        if any(key == "interrupt" for key, _value in self._urgent):
+                            # Ctrl-C after the fresh prompt becomes visible
+                            # cancels that prompt; never park it with older
+                            # chat type-ahead or replay it into a later phase.
+                            self._urgent = deque(event for event in self._urgent
+                                                 if event[0] != "interrupt")
+                            request["error"] = KeyboardInterrupt()
+                        elif self._error is not None:
+                            request["error"] = self._error
+                        elif not self._neutral_decoder():
+                            request["error"] = EOFError(
+                                "Incomplete terminal input; a fresh approval was not accepted")
+                        elif self._parked is not None:
+                            request["error"] = RuntimeError("A fresh footer reader is already active")
+                        else:
+                            # The empty native queue and parked logical
+                            # queue form one atomic approval boundary.
+                            self._parked = (self._pending, self._urgent)
+                            self._pending, self._urgent = deque(), deque()
+                        request["event"].set()
+            self._stop.wait(0.01)
+
+    def _neutral_decoder(self):
+        """An unfinished old input sequence cannot authorize a new action."""
+        decoder = self._posix_decoder
+        return (self._windows_decoder._high_surrogate is None and
+                not decoder._escape and not decoder._paste and
+                not decoder._paste_pending and decoder._legacy_mouse is None and
+                not decoder._utf8.getstate()[0])
+
+    def begin_reader(self, fresh=False):
+        with self._condition:
+            self._signal_pending = False
+        if fresh:
+            # Drain input already waiting in the OS before the approval
+            # reader's boundary. Such type-ahead belongs to the chat draft.
+            request = {"event": threading.Event(), "cancelled": False, "error": None}
+            with self._condition:
+                self._barriers.append(request)
+            ready = request["event"].wait(0.25)
+            with self._condition:
+                if not ready and not request["event"].is_set():
+                    request["cancelled"] = True
+                    if request in self._barriers:
+                        self._barriers.remove(request)
+                    raise EOFError("Footer input broker did not establish a prompt boundary")
+                if request["error"] is not None:
+                    raise request["error"]
+
+    def end_reader(self):
+        with self._condition:
+            if self._parked is not None:
+                pending, urgent = self._parked
+                pending.extend(self._pending)
+                urgent.extend(self._urgent)
+                self._pending, self._urgent = pending, urgent
+                self._parked = None
+            self._condition.notify_all()
+
+    def navigation(self):
+        with self._condition:
+            actions = list(self._navigation)
+            self._navigation.clear()
+            return actions
+
+    def event(self):
+        with self._condition:
+            while True:
+                if self._urgent:
+                    return self._urgent.popleft()
+                if self._pending:
+                    return self._pending.popleft()
+                if self._error is not None:
+                    raise self._error
+                if self._closed:
+                    raise EOFError
+                self._condition.wait(0.05)
+
+    def close(self):
+        self._stop.set()
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        if self._thread is not None and self._thread is not threading.current_thread():
+            self._thread.join(timeout=0.5)
+        with self._condition:
+            # Session-owned input must never become an approval or command
+            # in a later CLI invocation after this footer has closed.
+            self._pending.clear()
+            self._urgent.clear()
+            self._navigation.clear()
+            self._parked = None
+
+
+def _broker_events(broker, fresh=False):
+    try:
+        broker.begin_reader(fresh)
+        while True:
+            yield broker.event()
+    finally:
+        broker.end_reader()
+
+
+def _drive(editor, on_change, events, on_scroll=None, on_key=None):
     on_change(editor.text, editor.cursor)
     for key, text in events:
+        if key == "scroll_batch":
+            if on_scroll is not None:
+                owner = getattr(on_scroll, "__self__", None)
+                batch = getattr(owner, "scroll_events", None)
+                if callable(batch):
+                    batch(text)
+                else:
+                    for action, amount in text:
+                        on_scroll(action, amount)
+            continue
         if key in _SCROLL_ACTIONS:
             if on_scroll is not None:
                 on_scroll(_SCROLL_ACTIONS[key], max(1, int(text or 1)))
             continue
         if key == "enter":
+            result = on_key(key, editor) if on_key is not None else None
+            if result is True:
+                on_change(editor.text, editor.cursor)
+                continue
+            if result is not None and result is not False:
+                return result
             return editor.text
+        if key in ("interrupt", "terminal_toggle") and on_key is not None:
+            if on_key(key, editor) is True:
+                on_change(editor.text, editor.cursor)
+                continue
         if key == "interrupt":
             raise KeyboardInterrupt
         if key == "eof":
@@ -403,44 +677,83 @@ def _windows_console_mode():
 
 @contextmanager
 def session_input_mode():
-    """Keep native echo off while the footer owns the terminal.
+    """Own terminal input once, including while a reply is streaming.
 
-    Preserve processed Ctrl-C/ISIG between input calls so reply cancellation
-    keeps its existing signal behavior. read_line temporarily enters raw mode
-    and restores this non-echoing baseline. Restore the user's full mode when
-    the footer session ends, including failures and cancellation.
+    Windows keeps processed Ctrl-C between prompts. POSIX stays raw so
+    bracketed-paste controls are lossless; the broker forwards a decoded
+    real Ctrl-C to its verified foreground group. Editors and the watcher consume
+    broker queues and never compete for native input.
     """
-    global _SESSION_ACTIVE
+    global _SESSION_ACTIVE, _BROKER
     with _INPUT_LOCK:
-        was_active = _SESSION_ACTIVE
+        if _SESSION_ACTIVE:
+            raise RuntimeError("A footer input session is already active")
     if os.name == "nt":
-        import ctypes
         k32, handle, original = _windows_console_mode()
-        quiet = (original | 0x0008 | 0x0010 | 0x0080) & ~(0x0004 | 0x0040 | 0x0200)
+        quiet = (original | 0x0008 | 0x0010 | 0x0080) & ~(0x0002 | 0x0004 | 0x0040 | 0x0200)
         if not k32.SetConsoleMode(handle, quiet):
-            raise OSError(ctypes.get_last_error(), "Cannot disable console input echo")
-        try:
-            with _INPUT_LOCK:
-                _SESSION_ACTIVE = True
-            yield
-        finally:
-            with _INPUT_LOCK:
-                _SESSION_ACTIVE = was_active
-            k32.SetConsoleMode(handle, original)
+            raise OSError("Cannot disable console input echo")
+        restore = lambda: k32.SetConsoleMode(handle, original)
     else:
         import termios
         fd = sys.stdin.fileno()
         original = termios.tcgetattr(fd)
         quiet = list(original)
-        quiet[3] &= ~(termios.ECHO | getattr(termios, "ECHONL", 0))
+        quiet[6] = list(original[6])
+        for name in ("IGNBRK", "BRKINT", "PARMRK", "INPCK", "ICRNL", "INLCR",
+                     "IGNCR", "ISTRIP", "IXON", "IXOFF"):
+            quiet[0] &= ~getattr(termios, name, 0)
+        quiet[1] &= ~getattr(termios, "OPOST", 0)
+        quiet[2] &= ~(getattr(termios, "CSIZE", 0) | getattr(termios, "PARENB", 0))
+        quiet[2] |= getattr(termios, "CS8", 0)
+        quiet[3] &= ~(termios.ICANON | termios.ECHO | getattr(termios, "ECHONL", 0) |
+                      termios.ISIG | getattr(termios, "IEXTEN", 0))
+        quiet[6][termios.VMIN] = 1
+        quiet[6][termios.VTIME] = 0
         termios.tcsetattr(fd, termios.TCSANOW, quiet)
+        restore = lambda: termios.tcsetattr(fd, termios.TCSANOW, original)
+    broker = None
+    try:
+        broker = _InputBroker()
+        with _INPUT_LOCK:
+            _SESSION_ACTIVE = True
+            _BROKER = broker
+        broker.start()
+        yield
+    finally:
         try:
-            with _INPUT_LOCK:
-                _SESSION_ACTIVE = True
-            yield
+            if broker is not None:
+                broker.close()
         finally:
             with _INPUT_LOCK:
-                _SESSION_ACTIVE = was_active
+                _BROKER = None
+                _SESSION_ACTIVE = False
+                _READ_AHEAD.clear()
+            restore()
+
+
+@contextmanager
+def _reader_mode():
+    """Temporarily turn prompt Ctrl-C into a decoded urgent editor event."""
+    if os.name == "nt":
+        k32, handle, original = _windows_console_mode()
+        raw = (original | 0x0008 | 0x0010 | 0x0080) & ~(
+            0x0001 | 0x0002 | 0x0004 | 0x0040 | 0x0200)
+        if not k32.SetConsoleMode(handle, raw):
+            raise OSError("Cannot set console input mode")
+        try:
+            yield
+        finally:
+            k32.SetConsoleMode(handle, original)
+    else:
+        import termios
+        import tty
+        fd = sys.stdin.fileno()
+        original = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd, termios.TCSANOW)
+            yield
+        finally:
             termios.tcsetattr(fd, termios.TCSANOW, original)
 
 
@@ -491,51 +804,16 @@ def _decode_windows_record(record):
     return []
 
 
-def _poll_eligible(record):
-    if record.kind in (0x0002, 0x0004, 0x0010):  # mouse, resize, focus
-        return True
-    if record.kind != 0x0001:
-        return False
-    key = record.event.key
-    if not key.down:
-        # The editor ignores ordinary releases, including Enter's trailing
-        # carriage return. Alt Unicode input is delivered on VK_MENU's
-        # release and must stay queued for the next reader.
-        return key.key != 0x12 or not key.char
-    return key.key in (0x21, 0x22) and not key.char
-
-
 def poll_scroll_events():
-    """Poll leading Win32 scroll records while no editor is reading.
+    """Drain navigation independently of queued text, on both platforms.
 
-    Consume ordinary key releases that the editor ignores, while retaining
-    Alt Unicode releases and all ordinary text/control key presses. Typed
-    input at the head of the queue therefore blocks subsequent scrolling
-    until the next prompt. POSIX bytes remain untouched between prompts.
+    This function never reads the terminal. The single screen watcher is
+    the navigation consumer even while an editor is active, preserving
+    scroll order across clamped viewport boundaries. The broker owns input.
     """
-    if os.name != "nt" or not _INPUT_LOCK.acquire(blocking=False):
-        return []
-    try:
-        if _READ_ACTIVE or not _SESSION_ACTIVE:
-            return []
-        import ctypes
-        from ctypes import wintypes
-        k32, handle, _original, record_type = _windows_record_api()
-        records, count = (record_type * 1)(), wintypes.DWORD()
-        actions = []
-        for _ in range(64):
-            if not k32.PeekConsoleInputW(handle, records, 1, ctypes.byref(count)):
-                raise OSError(ctypes.get_last_error(), "Cannot inspect console input")
-            if not count.value or not _poll_eligible(records[0]):
-                break
-            if not k32.ReadConsoleInputW(handle, records, 1, ctypes.byref(count)):
-                raise OSError(ctypes.get_last_error(), "Cannot read console scroll input")
-            for key, amount in _decode_windows_record(records[0]):
-                if key in _SCROLL_ACTIONS:
-                    actions.append((_SCROLL_ACTIONS[key], max(1, int(amount or 1))))
-        return actions
-    finally:
-        _INPUT_LOCK.release()
+    with _INPUT_LOCK:
+        broker = _BROKER if _SESSION_ACTIVE else None
+    return broker.navigation() if broker is not None else []
 
 
 def _windows_events():
@@ -614,11 +892,14 @@ def _posix_events():
         termios.tcsetattr(fd, termios.TCSANOW, original)
 
 
-def read_line(on_change, history=(), initial="", on_scroll=None):
+def read_line(on_change, history=(), initial="", on_scroll=None, fresh=False,
+              on_key=None, initial_cursor=None):
     """Read a footer line; redraw through callback(text, cursor_index).
 
     Raises KeyboardInterrupt for Ctrl-C and EOFError for Ctrl-D/Ctrl-Z on an
-    empty draft. Console modes are restored on accept, interruption, errors,
+    empty draft. fresh=True parks earlier type-ahead for a later normal
+    reader, so a newly displayed approval requires newly typed input.
+    Console modes are restored on accept, interruption, errors,
     and callback failures. No native output is produced by this module.
     """
     global _READ_ACTIVE
@@ -629,8 +910,16 @@ def read_line(on_change, history=(), initial="", on_scroll=None):
     events = None
     try:
         editor = EditBuffer(initial, history)
+        if initial_cursor is not None:
+            editor.cursor = max(0, min(len(editor.text), int(initial_cursor)))
+        with _INPUT_LOCK:
+            broker = _BROKER if _SESSION_ACTIVE else None
+        if broker is not None:
+            with _reader_mode():
+                events = _broker_events(broker, fresh=fresh)
+                return _drive(editor, on_change, events, on_scroll, on_key)
         events = _windows_events() if os.name == "nt" else _posix_events()
-        return _drive(editor, on_change, events, on_scroll)
+        return _drive(editor, on_change, events, on_scroll, on_key)
     finally:
         try:
             if events is not None:

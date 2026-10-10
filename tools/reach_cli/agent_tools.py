@@ -10,18 +10,23 @@ exec/write-class tools prompt once per action unless the user chose "always".
 """
 
 import fnmatch
-import glob as _glob
+from functools import lru_cache
 import json
 import os
 import re
 import subprocess
 
 from .websearch import fetch_text, search_web
+from .agent_tools_extra import (
+    EXTRA_TOOLS, FILE_LIMIT, cleanup_owned_processes, resolve_path, safe_text,
+    _display_file,
+)
 
 # Output budget: tool results get truncated to this many characters.
 DEFAULT_BUDGET = 40000
 MATCH_LIMIT = 200
 LIST_ENTRY_LIMIT = 2000
+FILE_SCAN_LIMIT = 10000
 
 IGNORED_DIRS = {
     ".git", "node_modules", "__pycache__", ".pytest_cache", ".venv",
@@ -36,14 +41,14 @@ BINARY_EXTENSIONS = {
 
 
 def _truncate(text, budget=DEFAULT_BUDGET):
-    if len(text) > budget:
-        return text[:budget] + "\n... [truncated at %d chars]" % budget
-    return text
+    return safe_text(text, budget)
 
 
 def _safe_rel(path):
-    rel = (path or "").replace("\\", "/")
-    if not rel or rel.startswith("/") or re.match(r"^[a-zA-Z]:", rel):
+    if not isinstance(path, str):
+        return None
+    rel = path.replace("\\", "/")
+    if not rel or rel.startswith("/") or ":" in rel or any(ord(c) < 32 for c in rel):
         return None
     if any(part == ".." for part in rel.split("/")):
         return None
@@ -51,7 +56,7 @@ def _safe_rel(path):
 
 
 def _resolve(workpath, rel):
-    return os.path.join(workpath, *rel.split("/"))
+    return resolve_path(workpath, rel, root=True)
 
 
 # ---- individual tools ------------------------------------------------------
@@ -64,13 +69,15 @@ def tool_read(workpath, args, ctx):
     if not os.path.isfile(target):
         return "error: no such file: %s" % rel
     try:
+        if os.path.getsize(target) > FILE_LIMIT:
+            return "error: file exceeds the 2 MiB text limit; use an approved command for a larger file"
         with open(target, "r", encoding="utf-8", errors="replace") as handle:
             lines = handle.readlines()
     except OSError as exc:
         return "error: %s" % exc
     start = max(1, int(args.get("startLine") or 1))
     end = int(args.get("endLine") or len(lines))
-    chosen = lines[start - 1:end]
+    chosen = _display_file(target, "".join(lines[start - 1:end])).splitlines(True)
     numbered = "".join(
         "%5d | %s" % (start + i, line) for i, line in enumerate(chosen)
     )
@@ -79,15 +86,64 @@ def tool_read(workpath, args, ctx):
 
 def tool_glob(workpath, args, ctx):
     pattern = args.get("pattern") or "**/*"
+    if not isinstance(pattern, str) or pattern.startswith(("/", "\\")) or ":" in pattern or ".." in pattern.replace("\\", "/").split("/"):
+        return "error: glob pattern must stay within the workpath"
     scope = _safe_rel(args.get("path") or "")
+    if args.get("path") and scope is None:
+        return "error: invalid path"
     base = _resolve(workpath, scope) if scope else workpath
-    matches = _glob.glob(os.path.join(base, pattern), recursive=True)
+    pattern_parts = tuple(pattern.replace("\\", "/").split("/"))
+    if len(pattern_parts) > 128 or len(pattern) > 4096:
+        return "error: glob pattern exceeds the bounded search limit"
     rels = []
-    for match in sorted(matches)[:LIST_ENTRY_LIMIT]:
-        if not os.path.isfile(match):
-            continue
-        rels.append(os.path.relpath(match, workpath).replace("\\", "/"))
-    return _truncate("\n".join(rels) if rels else "no matches")
+    scanned, limited = 0, False
+    for root, dirs, files in os.walk(base, followlinks=False):
+        # Never descend a junction/reparse/symlink, even before filtering its
+        # results. stdlib recursive glob follows directory links by default.
+        dirs[:] = [name for name in sorted(dirs) if not _directory_link(os.path.join(root, name))]
+        for filename in sorted(files):
+            scanned += 1
+            if scanned > FILE_SCAN_LIMIT:
+                limited = True
+                break
+            match = os.path.join(root, filename)
+            rel = os.path.relpath(match, workpath).replace("\\", "/")
+            try:
+                _resolve(workpath, rel)
+            except ValueError:
+                continue
+            scoped = tuple(os.path.relpath(match, base).replace("\\", "/").split("/"))
+            if _glob_match(scoped, pattern_parts):
+                rels.append(rel)
+                if len(rels) >= LIST_ENTRY_LIMIT:
+                    limited = True
+                    break
+        if limited:
+            break
+    output = "\n".join(sorted(rels)) if rels else "no matches"
+    return _truncate(output + ("\n... [entry/search limit reached]" if limited else ""))
+
+
+def _directory_link(path):
+    try:
+        info = os.lstat(path)
+        return os.path.islink(path) or bool(getattr(info, "st_file_attributes", 0) & 0x400)
+    except OSError:
+        return True
+
+
+def _glob_match(parts, pattern):
+    @lru_cache(None)
+    def matches(index, at):
+        if at == len(pattern):
+            return index == len(parts)
+        if pattern[at] == "**":
+            return matches(index, at + 1) or (index < len(parts) and
+                not parts[index].startswith(".") and matches(index + 1, at))
+        if index == len(parts) or (parts[index].startswith(".") and not pattern[at].startswith(".")):
+            return False
+        return fnmatch.fnmatchcase(parts[index], pattern[at]) and matches(index + 1, at + 1)
+    return matches(0, 0)
 
 
 def _iter_files(base):
@@ -95,7 +151,8 @@ def _iter_files(base):
         yield base
         return
     for root, dirs, files in os.walk(base):
-        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
+        dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")
+                   and not _directory_link(os.path.join(root, d))]
         for name in files:
             yield os.path.join(root, name)
 
@@ -116,20 +173,28 @@ def tool_search(workpath, args, ctx):
     else:
         rx = re.compile(re.escape(pattern), flags)
     scope = _safe_rel(args.get("path") or "")
+    if args.get("path") and scope is None:
+        return "error: invalid path"
     base = _resolve(workpath, scope) if scope else workpath
     out = []
-    for filepath in _iter_files(base):
+    for scanned, filepath in enumerate(_iter_files(base), 1):
+        if scanned > FILE_SCAN_LIMIT:
+            return _truncate("\n".join(out) + "\n... [search limit reached]")
         ext = os.path.splitext(filepath)[1].lower()
         if ext in BINARY_EXTENSIONS or os.path.getsize(filepath) > 2_000_000:
             continue
         rel = os.path.relpath(filepath, workpath).replace("\\", "/")
+        try:
+            _resolve(workpath, rel)
+        except ValueError:
+            continue
         if include and not fnmatch.fnmatch(rel, include):
             continue
         try:
             with open(filepath, "r", encoding="utf-8", errors="replace") as handle:
                 for lineno, line in enumerate(handle, start=1):
                     if rx.search(line):
-                        out.append("%s:%d: %s" % (rel, lineno, line.rstrip()[:200]))
+                        out.append("%s:%d: %s" % (rel, lineno, _display_file(filepath, line.rstrip())[:200]))
                         if len(out) >= MATCH_LIMIT:
                             return _truncate("\n".join(out) + "\n... [match limit reached]")
         except OSError:
@@ -139,6 +204,8 @@ def tool_search(workpath, args, ctx):
 
 def tool_list(workpath, args, ctx):
     rel = _safe_rel(args.get("path") or "")
+    if args.get("path") and rel is None:
+        return "error: invalid path"
     base = _resolve(workpath, rel) if rel else workpath
     if not os.path.isdir(base):
         return "error: no such directory: %s" % (rel or ".")
@@ -155,9 +222,14 @@ def tool_list(workpath, args, ctx):
             if entry in IGNORED_DIRS:
                 continue
             full = os.path.join(directory, entry)
+            try:
+                _resolve(workpath, os.path.relpath(full, workpath).replace("\\", "/"))
+            except ValueError:
+                continue
             if os.path.isdir(full):
                 lines.append(prefix + entry + "/")
-                walk(full, prefix + "  ", depth + 1)
+                if not _directory_link(full):
+                    walk(full, prefix + "  ", depth + 1)
             else:
                 lines.append(prefix + entry)
             if len(lines) >= LIST_ENTRY_LIMIT:
@@ -172,12 +244,12 @@ def tool_shell(workpath, args, ctx):
     command = (args.get("command") or "").strip()
     if not command:
         return "error: shell needs a command"
-    if not ctx["approve"]("shell", command):
-        return "shell command denied by the user: %s" % command
+    if not ctx["approve"]("shell", safe_text(command, 500)):
+        return "shell command denied by the user: %s" % safe_text(command)
     try:
         done = subprocess.run(
             command, shell=True, cwd=workpath, capture_output=True,
-            text=True, timeout=180,
+            text=True, timeout=180, stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired:
         return "error: command timed out after 180s: %s" % command
@@ -189,33 +261,76 @@ def tool_shell(workpath, args, ctx):
     )
 
 
+def _raw_edit_span(text, search):
+    start = text.find(search)
+    while start != -1:
+        end = start + len(search)
+        # A lone CR or LF within CRLF is not a complete line ending.
+        if not ((start > 0 and text[start - 1:start + 1] == "\r\n")
+                or (end < len(text) and text[end - 1:end + 1] == "\r\n")):
+            return start, end
+        start = text.find(search, start + 1)
+    return None
+
+
+def _newline_tolerant_edit_span(text, search):
+    if "\r" not in search and "\n" not in search:
+        return None
+    pieces = re.split(r"\r\n|\r|\n", search)
+    pattern = r"(?:\r\n|\r(?!\n)|(?<!\r)\n)".join(re.escape(piece) for piece in pieces)
+    return re.search(pattern, text)
+
+
+def _edit_replacement_newlines(replacement, endings):
+    styles = list(dict.fromkeys(endings))
+    counts = [endings.count(style) for style in styles]
+    if counts.count(max(counts)) > 1 and len(re.findall(r"\r\n|\r|\n", replacement)) == len(endings):
+        # A mixed-style tie can retain each matched newline by position.
+        matched = iter(endings)
+        return re.sub(r"\r\n|\r|\n", lambda _match: next(matched), replacement)
+    style = styles[counts.index(max(counts))]
+    return re.sub(r"\r\n|\r|\n", lambda _match: style, replacement)
+
+
 def tool_edit(workpath, args, ctx):
     rel = _safe_rel(args.get("path"))
     if rel is None:
         return "error: invalid path %r" % args.get("path")
     search = str(args.get("search", ""))
     replace = str(args.get("replace", ""))
-    preview = replace[:80] if not search else "%s → %s" % (search[:80], replace[:80])
+    target = resolve_path(workpath, rel, write=True)
+    preview = "%d existing characters -> %d replacement characters" % (len(search), len(replace))
     if not ctx["approve"]("edit", "%s: %s" % (rel, preview)):
         return "edit denied by the user: %s" % rel
-    target = _resolve(workpath, rel)
+    target = resolve_path(workpath, rel, write=True)
     try:
         if not os.path.exists(target):
             if search:
                 return "error: %s does not exist (use empty search to create it)" % rel
             os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
-            with open(target, "w", encoding="utf-8") as handle:
+            with open(target, "w", encoding="utf-8", newline="") as handle:
                 handle.write(replace)
             return "created %s" % rel
         if not search:
             return "error: %s already exists (empty search only creates files)" % rel
-        with open(target, "r", encoding="utf-8") as handle:
+        with open(target, "r", encoding="utf-8", newline="") as handle:
             current = handle.read()
-        idx = current.find(search)
-        if idx == -1:
-            return "error: search text not found in %s — read the file again" % rel
-        with open(target, "w", encoding="utf-8") as handle:
-            handle.write(current[:idx] + replace + current[idx + len(search):])
+        span = _raw_edit_span(current, search)
+        if span is None:
+            match = _newline_tolerant_edit_span(current, search)
+            if match is None:
+                return "error: search text not found in %s — read the file again" % rel
+            span = match.span()
+        # Follow the matched line endings, or the nearest preceding/following
+        # line ending for a single-line match. Unmatched bytes stay verbatim.
+        endings = re.findall(r"\r\n|\r|\n", current[span[0]:span[1]])
+        if not endings:
+            preceding = re.findall(r"\r\n|\r|\n", current[:span[0]])
+            following = re.search(r"\r\n|\r|\n", current[span[1]:])
+            endings = preceding[-1:] or ([following.group()] if following else [])
+        replacement = _edit_replacement_newlines(replace, endings) if endings else replace
+        with open(target, "w", encoding="utf-8", newline="") as handle:
+            handle.write(current[:span[0]] + replacement + current[span[1]:])
         return "applied edit to %s" % rel
     except OSError as exc:
         return "error: %s" % exc
@@ -396,11 +511,27 @@ TOOLS = {
 }
 
 
-def tool_help_text():
+DEFAULT_TOOL_NAMES = tuple(TOOLS) + ("tool_discover",)
+MAX_SELECTED_TOOLS = 5
+for _name, _tool in TOOLS.items():
+    _tool["category"] = ("files" if _name in ("read", "glob", "search", "list", "edit") else
+                         "execution" if _name == "shell" else
+                         "web" if _name in ("websearch", "browse") else "planning")
+TOOLS.update(EXTRA_TOOLS)
+
+
+def tool_help_text(names=None):
+    """Compact fallback prompt help; discovery exposes the remaining catalog."""
     lines = []
-    for name, tool in TOOLS.items():
+    for name in DEFAULT_TOOL_NAMES if names is None else names:
+        tool = TOOLS.get(name)
+        if tool is None:
+            continue
         lines.append("- %s: %s" % (name, tool["help"]))
         lines.append("  %s" % json.dumps(tool["example"]))
+    if names is None:
+        lines.append("More tools: files, git, execution, processes, web, planning. "
+                     "Call tool_discover with a category/query or exact names to inspect and enable relevant schemas.")
     return "\n".join(lines)
 
 
@@ -424,12 +555,81 @@ TOOL_PARAMETERS = {
         "required": ["text"]}}}, ["todos"]),
     "todo_read": ({}, []),
 }
+for _name, _tool in EXTRA_TOOLS.items():
+    TOOL_PARAMETERS[_name] = _tool["parameters"]
 
 
-def tool_schemas():
+def tool_catalog(query="", category="", names=None):
+    """Search the full executable catalog without executing any tool."""
+    if not isinstance(query, str) or not isinstance(category, str):
+        raise ValueError("query and category must be strings")
+    if names is not None and (not isinstance(names, (list, tuple, set)) or
+                              not all(isinstance(name, str) for name in names)):
+        raise ValueError("names must be an array of tool names")
+    wanted = set(names) if names is not None else None
+    words = query.lower().split()
+    found = []
+    for name, tool in TOOLS.items():
+        if wanted is not None and name not in wanted:
+            continue
+        if category and tool["category"].lower() != category.lower():
+            continue
+        searchable = "%s %s %s" % (name, tool["category"], tool["help"])
+        if not all(word in searchable.lower() for word in words):
+            continue
+        props, required = TOOL_PARAMETERS.get(name, ({}, []))
+        params = {"type": "object", "properties": props, "required": required}
+        found.append({"name": name, "category": tool["category"], "approval": tool["approval"],
+                      "description": tool["help"], "parameters": params})
+    # Return independent objects; callers cannot mutate executable schema metadata.
+    return json.loads(json.dumps(found))
+
+
+def help_lines(query=""):
+    return ["%s  [%s; %s] %s" % (item["name"], item["category"],
+             "approval" if item["approval"] else "read/state", item["description"])
+            for item in tool_catalog(query=query)]
+
+
+def tool_discover(workpath, args, ctx):
+    query, category, names = args.get("query", ""), args.get("category", ""), args.get("names")
+    records = tool_catalog(query, category, names)
+    if names is not None:
+        unknown = sorted(set(names) - set(TOOLS))
+        if unknown:
+            return "error: unknown tool names: %s; call tool_discover without names to see the catalog" % ", ".join(unknown)
+    activated = []
+    if args.get("activate", True) and (query or category or names):
+        selected = ctx.setdefault("selected_tools", set())
+        if not isinstance(selected, set):
+            raise ValueError("selected_tools context must be a persistent set")
+        activated = [item["name"] for item in records if item["name"] not in DEFAULT_TOOL_NAMES][:MAX_SELECTED_TOOLS]
+        selected.clear()
+        selected.update(activated)
+    return json.dumps({"total_available": len(TOOLS), "matched": len(records), "activated": activated,
+                       "selection_limit": MAX_SELECTED_TOOLS,
+                       "note": "Discovery never runs tools; activated schemas are available on the next request. "
+                               "Select specific names when more than five tools match.",
+                       "tools": records}, ensure_ascii=False)
+
+
+TOOLS["tool_discover"] = {
+    "approval": False, "category": "discovery", "help": "Search the full tool catalog by query/category/exact names; enable up to five additional tool schemas for the next request. Discovery executes no actions.",
+    "example": {"action": "tool_discover", "category": "git"}, "run": tool_discover,
+}
+TOOL_PARAMETERS["tool_discover"] = ({"query": _S, "category": _S,
+    "names": {"type": "array", "items": _S, "maxItems": 36}, "activate": {"type": "boolean"}}, [])
+
+
+def tool_schemas(names=None):
     """The registry in OpenAI ``tools`` format (function schemas)."""
     schemas = []
-    for name, tool in TOOLS.items():
+    seen = set()
+    for name in DEFAULT_TOOL_NAMES if names is None else names:
+        if name in seen or name not in TOOLS:
+            continue
+        seen.add(name)
+        tool = TOOLS[name]
         props, required = TOOL_PARAMETERS.get(name, ({}, []))
         params = {"type": "object", "properties": dict(props)}
         if required:
@@ -440,6 +640,9 @@ def tool_schemas():
                          "parameters": params},
         })
     return schemas
+
+
+tool_specs = tool_schemas
 
 
 def parse_tool_arguments(raw):
@@ -464,8 +667,8 @@ def format_args(name, args, limit=72):
     args = args or {}
     if name == "todo_write" and isinstance(args.get("todos"), list):
         return "%d item(s)" % len(args["todos"])
-    if name == "edit":
-        return str(args.get("path", ""))
+    if name in ("edit", "write_file", "write_json", "append_file", "replace_all"):
+        return _clip(str(args.get("path", "")), limit)
     if name == "shell":
         return _clip(str(args.get("command", "")), limit)
     parts = []
@@ -485,7 +688,7 @@ def format_args(name, args, limit=72):
 
 
 def _clip(text, limit):
-    text = " ".join(str(text).split())
+    text = " ".join(safe_text(text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
@@ -495,6 +698,7 @@ def edit_diff(args, max_lines=3, width=72):
     for sign, key in (("-", "search"), ("+", "replace")):
         lines = str((args or {}).get(key, "")).splitlines()
         for line in lines[:max_lines]:
+            line = _display_file(str((args or {}).get("path", "")), line)
             out.append((sign, _clip(line, width) if line.strip() else line))
         if len(lines) > max_lines:
             out.append((sign, "… %d more line(s)" % (len(lines) - max_lines)))
@@ -544,6 +748,8 @@ def run_tool(name, args, workpath, ctx):
     if not tool:
         return "error: unknown tool %r (available: %s)" % (name, ", ".join(TOOLS))
     try:
-        return tool["run"](workpath, args or {}, ctx)
+        if args is not None and not isinstance(args, dict):
+            return "error: tool arguments must be an object"
+        return _truncate(tool["run"](workpath, args or {}, ctx))
     except Exception as exc:  # a tool must never kill the agent loop
-        return "error: %s" % exc
+        return safe_text("error: %s" % exc)

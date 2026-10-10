@@ -9,6 +9,7 @@ from .terminal import c_bold, c_cyan, c_dim, c_green, c_magenta, c_red, c_yellow
 
 _READLINE_READY = False
 _READLINE = None
+_UNSAFE_READLINE_HISTORY = False
 _INTERRUPT_ARMED = False
 
 
@@ -18,9 +19,10 @@ def reset_prompt_interrupt():
 
 
 def reset_readline_state():
-    global _READLINE_READY, _READLINE
+    global _READLINE_READY, _READLINE, _UNSAFE_READLINE_HISTORY
     _READLINE_READY = False
     _READLINE = None
+    _UNSAFE_READLINE_HISTORY = False
 
 
 def load_readline():
@@ -63,7 +65,7 @@ def _install_readline(readline_mod):
 
 
 def _persist_readline(readline_mod):
-    if readline_mod is None:
+    if readline_mod is None or _UNSAFE_READLINE_HISTORY:
         return
     try:
         path = history_file_path()
@@ -268,7 +270,28 @@ def _remember_history(text, readline_mod):
     """Persist the turn. Readline writes its own file; input() appends a line."""
     if not isinstance(text, str) or not text.strip():
         return
-    if readline_mod is not None and _READLINE_READY:
+    from .input_privacy import sanitize_endpoint_command
+    global _UNSAFE_READLINE_HISTORY
+    visible = sanitize_endpoint_command(text)
+    if visible != text and readline_mod is not None and _READLINE_READY:
+        try:
+            # input() has already added the submitted lines to GNU readline.
+            # Change only this submission, preserving older history entries.
+            raw_lines, safe_lines = text.splitlines(), visible.splitlines()
+            length = readline_mod.get_current_history_length()
+            if len(raw_lines) != len(safe_lines) or length < len(raw_lines):
+                raise ValueError("cannot safely replace submitted history")
+            for offset, (raw, safe) in enumerate(zip(reversed(raw_lines), reversed(safe_lines))):
+                index = length - offset
+                if readline_mod.get_history_item(index) != raw:
+                    raise ValueError("cannot identify submitted history")
+                readline_mod.replace_history_item(index - 1, safe)
+        except Exception:
+            # An embedding's readline shim may lack replacement operations.
+            # Never serialize its unsafe in-memory entry in this session.
+            _UNSAFE_READLINE_HISTORY = True
+    text = visible
+    if readline_mod is not None and _READLINE_READY and not _UNSAFE_READLINE_HISTORY:
         _persist_readline(readline_mod)
         return
     try:

@@ -10,6 +10,8 @@ import sys
 import threading
 import time
 
+from . import themes as app_themes
+
 VERSION = "1.0.0"
 
 
@@ -18,10 +20,18 @@ VERSION = "1.0.0"
 class Paint:
     def __init__(self, enabled):
         self.on = enabled
+        self.managed_screen = False
 
     def __call__(self, code, text):
         if not self.on:
             return text
+        role = app_themes.color_role(code)
+        if code == "2" and app_themes.current_theme().key != "default":
+            role = "muted"
+        if role:
+            return app_themes.paint_role(
+                role, text, enabled=True,
+                managed_screen=self.managed_screen)
         return "\x1b[%sm%s\x1b[0m" % (code, text)
 
 
@@ -211,11 +221,18 @@ def tprint(*args, sep=" "):
 def enable_ansi():
     if os.environ.get("NO_COLOR"):
         return False
+    if os.environ.get("TERM", "").casefold() == "dumb" and not COLOR_FORCED:
+        return False
     if not sys.stdout.isatty():
         return False
     if os.name == "nt":
         os.system("")  # enable VT processing on Windows consoles
     return True
+
+
+def set_theme(name):
+    """Choose an app-local terminal palette; persistence belongs to commands."""
+    return app_themes.select_theme(name)
 
 
 

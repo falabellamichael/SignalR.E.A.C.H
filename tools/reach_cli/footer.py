@@ -11,10 +11,15 @@ import shutil
 import threading
 import unicodedata
 
-from .terminal import c_bold, c_cyan, c_green
+from . import themes as app_themes
+from . import terminal as term
+from .terminal import VERSION, c_bold, c_cyan, c_green
 from .chatbox import (BL, BR, H, MARK, TL, TR, V, box_bottom, box_row, box_top,
                       client_meta, session_meta)
 from .splash import PAGE_WIDTH, char_width, display_width, layout_mode, strip_ansi
+from .hud import render_header
+from .mini_terminal import MiniTerminal
+from .system_telemetry import SystemTelemetry
 
 
 # Windows console cells count residual marks, joiners and regional indicators.
@@ -23,7 +28,8 @@ _WINDOWS_NATIVE_WIDTH = os.name == "nt"
 
 
 class _Line:
-    __slots__ = ("cells", "cursor", "source_margin", "prefix", "continuation")
+    __slots__ = ("cells", "cursor", "source_margin", "prefix", "continuation",
+                 "dirty_from", "wrapped", "wrapped_key")
 
     def __init__(self, source_margin=0, prefix="", continuation=""):
         self.cells = []  # pairs of (visible glyph, active SGR sequences)
@@ -31,6 +37,9 @@ class _Line:
         self.source_margin = source_margin
         self.prefix = prefix
         self.continuation = continuation
+        self.dirty_from = 0
+        self.wrapped = []
+        self.wrapped_key = None
 
 
 def _glyph_width(glyph):
@@ -205,9 +214,19 @@ class FooterScreen:
         self._geometry = {}
         self._meta_key = None
         self._meta_value = None
+        self.mini_terminal = MiniTerminal()
+        self._mini_runner = None
+        self._telemetry = SystemTelemetry()
+        self._telemetry_key = None
         self._follow_tail = True
         self._scroll_anchor = None
         self._visual_rows = []
+        self._visual_anchors = []
+        self._visual_line_starts = []
+        self._visual_key = None
+        self._visual_dirty = 0
+        self._last_display = None
+        self._paint_size = None
         self._scroll_state = {
             "following": True, "top": 0, "max_top": 0,
             "total_rows": 0, "visible_rows": 0, "anchor": None,
@@ -267,10 +286,15 @@ class FooterScreen:
                 return False
             self._last_size = self._size()
             self._lines = [_Line(self._layout(self._last_size[0])[1])]
+            self._visual_key = None
+            self._visual_dirty = 0
+            self._last_display = None
             self._follow_tail = True
             self._scroll_anchor = None
             self._stop.clear()
             self._active = True
+            term.PAINT.managed_screen = True
+            self._telemetry.start()
             modes = "\x1b[?1049h\x1b[?1000h\x1b[?1006h"
             if os.name != "nt":
                 modes += "\x1b[?2004h"
@@ -287,29 +311,38 @@ class FooterScreen:
                 return
             self._active = False
             self._stop.set()
+            self._telemetry.stop()
             modes = "\x1b[?25h\x1b[?1006l\x1b[?1000l"
             if os.name != "nt":
                 modes += "\x1b[?2004l"
-            self.out.write(modes + "\x1b[?1049l")
+            self.out.write(modes + "\x1b[0m\x1b[?1049l")
             self.out.flush()
+            term.PAINT.managed_screen = False
             watcher = self._watcher
         if watcher is not None and watcher is not threading.current_thread():
             watcher.join(timeout=0.2)
 
     def _watch(self):
-        while not self._stop.wait(0.05):
+        while not self._stop.wait(0.02):
             with self._lock:
                 if not self._active:
                     return
-                if self._size() != self._last_size:
+                sample = self._telemetry.snapshot()
+                sample_key = tuple(sample.get(key) for key in (
+                    "cpu_pct", "gpu_pct", "gpu_name", "gpu_status",
+                    "gpu_memory_used", "gpu_memory_total", "ram_used",
+                    "ram_total"))
+                resized = self._size() != self._last_size
+                changed = sample_key != self._telemetry_key
+                if resized or changed:
+                    self._telemetry_key = sample_key
                     self._draw()
             try:
                 from .footer_input import poll_scroll_events
                 events = poll_scroll_events() or ()
             except (ImportError, AttributeError, OSError, RuntimeError):
                 events = ()
-            for action, amount in events:
-                self.scroll(action, amount)
+            self.scroll_events(events)
 
     def write(self, text):
         text = str(text)
@@ -317,7 +350,7 @@ class FooterScreen:
             if not self._active:
                 return self.out.write(text)
             self._consume(text)
-            self._draw()
+            self._draw(incremental=True)
         return len(text)
 
     def flush(self):
@@ -373,20 +406,40 @@ class FooterScreen:
 
     def scroll(self, action, amount=1):
         """Dispatch normalized editor and mouse scroll events."""
-        action = str(action)
-        if action.startswith("scroll_"):
-            action = action[len("scroll_"):]
-        amount = max(1, int(amount))
-        if action == "live":
-            self.return_live()
-        elif action == "page_up":
-            self.scroll_pages(amount)
-        elif action == "page_down":
-            self.scroll_pages(-amount)
-        elif action == "up":
-            self.scroll_lines(amount)
-        elif action == "down":
-            self.scroll_lines(-amount)
+        self.scroll_events(((action, amount),))
+
+    def scroll_events(self, events):
+        """Apply a navigation burst in order, painting its final view once."""
+        if not events:
+            return
+        with self._lock:
+            if not self._active:
+                return
+            if self._size() != self._last_size:
+                self._draw()
+            state = self._scroll_state
+            top, maximum = state["top"], state["max_top"]
+            page = max(1, state["visible_rows"] - 1)
+            changed = False
+            for action, amount in events:
+                action = str(action)
+                if action.startswith("scroll_"):
+                    action = action[len("scroll_"):]
+                amount = max(1, int(amount))
+                if action == "live":
+                    top = maximum
+                elif action in ("up", "down", "page_up", "page_down"):
+                    delta = amount * (page if action.startswith("page_") else 1)
+                    top = max(0, min(maximum, top + (
+                        delta if action in ("down", "page_down") else -delta)))
+                else:
+                    continue
+                changed = True
+            if changed:
+                self._follow_tail = top >= maximum
+                self._scroll_anchor = (None if self._follow_tail else
+                                       self._visual_rows[top][:2])
+                self._draw()
 
     def refresh_metadata(self):
         """Refresh the workspace branch once when a new prompt begins."""
@@ -395,12 +448,62 @@ class FooterScreen:
             if self._active:
                 self._draw()
 
+    def refresh_header(self):
+        """Redraw the pinned HUD after a mini-terminal state change."""
+        with self._lock:
+            if self._active:
+                self._draw(incremental=True)
+
+    def refresh_theme(self):
+        """Repaint only the visual frame; logical text and scroll stay intact."""
+        with self._lock:
+            self._last_display = None
+            self._paint_size = None
+            if self._active:
+                self._draw()
+
+    def set_mini_runner(self, runner):
+        """Install the session's approved shell-tool callback."""
+        self._mini_runner = runner if callable(runner) else None
+
+    def run_mini_terminal(self, request_id):
+        """Execute only a current Enter-submitted request."""
+        runner = self._mini_runner
+        if runner is None:
+            return False
+        self.refresh_header()
+        result = self.mini_terminal.execute_submitted(request_id, runner)
+        self.refresh_header()
+        return result
+
+    def _header(self, cols, max_rows):
+        if max_rows <= 0:
+            return []
+        key = tuple(getattr(self.client, name, None)
+                    for name in ("model", "base", "agent", "workpath"))
+        if key != self._meta_key:
+            self._meta_key = key
+            self._meta_value = client_meta(self.client)
+        model, endpoint, details = self._meta_value
+        parts = str(details or "").split(" \u00b7 ")
+        workspace = parts[-1] if len(parts) > 1 else ""
+        cwd, separator, branch = workspace.rpartition("@")
+        if not separator:
+            cwd, branch = workspace, ""
+        return render_header(
+            cols, version=VERSION, model=model, endpoint=endpoint,
+            mode="agent" if getattr(self.client, "agent", False) else "chat",
+            cwd=cwd, branch=branch, telemetry=self._telemetry.snapshot(),
+            terminal=self.mini_terminal,
+            color=bool(self.isatty() and term.PAINT.on), max_rows=max_rows)
+
     def clear_banner_on_submit(self):
         with self._lock:
             if self._banner_cleared:
                 return
             self._banner_cleared = True
             self._lines = [_Line()]
+            self._visual_dirty = 0
             self._follow_tail = True
             self._scroll_anchor = None
             if self._active:
@@ -448,6 +551,8 @@ class FooterScreen:
             if ch == "\x1b":
                 self._escape = ch
             elif ch == "\n":
+                self._pending_up = 0
+                self._dirty_line()
                 self._lines.append(_Line(self._layout(self._size()[0])[1]))
             elif ch == "\r":
                 self._lines[-1].cursor = 0
@@ -464,10 +569,16 @@ class FooterScreen:
 
     def _put(self, ch):
         line = self._lines[-1]
+        if not line.cells and not line.prefix:
+            # A newline can precede a resize before response_indent creates
+            # the next line's padding. Record the margin with its first glyph.
+            line.source_margin = self._layout(self._size()[0])[1]
         if unicodedata.category(ch) in ("Mn", "Me", "Cf") and line.cursor:
+            self._dirty_line(line.cursor - 1)
             glyph, style = line.cells[line.cursor - 1]
             line.cells[line.cursor - 1] = (glyph + ch, style)
             return
+        self._dirty_line(line.cursor)
         if line.cursor < len(line.cells):
             line.cells[line.cursor] = (ch, self._style)
         else:
@@ -478,6 +589,20 @@ class FooterScreen:
         command = sequence[-1]
         params = sequence[2:-1]
         line = self._lines[-1]
+        if command in ("A", "F"):
+            self._pending_up = int(params) if params.isdigit() else 1
+            return
+        elif command == "J" and params in ("", "0"):
+            up = getattr(self, "_pending_up", 0)
+            self._pending_up = 0
+            if up > 0:
+                empty_tail = 1 if (self._lines and not self._lines[-1].cells) else 0
+                cut = max(0, len(self._lines) - up - empty_tail)
+                del self._lines[cut:]
+                self._lines.append(_Line(self._layout(self._size()[0])[1]))
+                self._visual_dirty = min(self._visual_dirty, len(self._lines) - 1)
+                self._dirty_line()
+                return
         if command == "m":
             codes = params.split(";") if params else ["0"]
             if codes == ["0"]:
@@ -487,6 +612,7 @@ class FooterScreen:
             else:
                 self._style += sequence
         elif command == "K":
+            self._dirty_line(0 if params in ("1", "2") else line.cursor)
             mode = params or "0"
             if mode == "0":
                 del line.cells[line.cursor:]
@@ -502,33 +628,65 @@ class FooterScreen:
             except ValueError:
                 pass
 
+    def _dirty_line(self, offset=0):
+        index = len(self._lines) - 1
+        self._visual_dirty = min(self._visual_dirty, index)
+        line = self._lines[index]
+        line.dirty_from = min(line.dirty_from, offset)
+
     def _visual_transcript(self, width, margin):
-        rows = []
-        for line_index, line in enumerate(self._lines):
+        """Reflow changed line tails; unchanged history remains indexed."""
+        key = (width, margin, _WINDOWS_NATIVE_WIDTH)
+        if key != self._visual_key:
+            self._visual_key = key
+            self._visual_dirty = 0
+        start_line = min(self._visual_dirty, len(self._lines))
+        start_row = (self._visual_line_starts[start_line]
+                     if start_line < len(self._visual_line_starts)
+                     else len(self._visual_rows))
+        del self._visual_rows[start_row:]
+        del self._visual_anchors[start_row:]
+        del self._visual_line_starts[start_line:]
+        for line_index in range(start_line, len(self._lines)):
+            line = self._lines[line_index]
+            self._visual_line_starts.append(len(self._visual_rows))
             cells = line.cells
             old = line.source_margin
             if old and len(cells) >= old and all(
                     glyph == " " for glyph, _ in cells[:old]):
                 cells = cells[old:]
-            raw = "".join(glyph for glyph, _ in cells)
+            skipped = len(line.cells) - len(cells)
             prefix = _clip(line.prefix, max(0, width - 1))
             continuation = _clip(line.continuation, max(0, width - 1))
-            if not prefix and raw.startswith("  \u2502 "):
+            if not prefix and "".join(g for g, _ in cells[:4]) == "  \u2502 ":
                 continuation = _clip("  \u2502 ", max(0, width - 1))
+            line_key = key + (prefix, continuation, skipped)
+            offset = 0
+            cached = []
+            if line.wrapped_key == line_key and line.wrapped:
+                dirty = max(0, line.dirty_from - skipped)
+                cut = max(0, bisect.bisect_right(
+                    [item[0] for item in line.wrapped], dirty) - 1)
+                offset = line.wrapped[cut][0]
+                cached = line.wrapped[:cut]
+            wrapped = cached
             segment = []
-            segment_start = 0
+            segment_start = offset
             used = 0
-            first = True
-            for cell_index, (glyph, style) in enumerate(cells):
-                room = max(1, width - display_width(
-                    prefix if first else continuation))
+            first = offset == 0
+            first_room = max(1, width - display_width(prefix))
+            continuation_room = max(1, width - display_width(continuation))
+            for cell_index in range(offset, len(cells)):
+                glyph, style = cells[cell_index]
+                room = first_room if first else continuation_room
                 size = _glyph_width(glyph)
                 if segment and used + size > room:
                     lead = prefix if first else continuation
-                    rows.append((line_index, segment_start,
-                                 " " * margin + lead + _styled(segment)))
+                    wrapped.append((segment_start,
+                                    " " * margin + lead + _styled(segment)))
                     segment, used, first = [], 0, False
                     segment_start = cell_index
+                    room = continuation_room
                 if size > room:
                     segment.append(("?", style))
                     used += 1
@@ -536,9 +694,16 @@ class FooterScreen:
                     segment.append((glyph, style))
                     used += size
             lead = prefix if first else continuation
-            rows.append((line_index, segment_start,
-                         " " * margin + lead + _styled(segment)))
-        return rows
+            wrapped.append((segment_start,
+                            " " * margin + lead + _styled(segment)))
+            line.wrapped, line.wrapped_key = wrapped, line_key
+            line.dirty_from = len(line.cells)
+            self._visual_rows.extend((line_index, offset, text)
+                                     for offset, text in wrapped)
+            self._visual_anchors.extend((line_index, offset)
+                                        for offset, _ in wrapped)
+        self._visual_dirty = len(self._lines)
+        return self._visual_rows
 
     def _footer(self, width, margin, height):
         if height == 1:
@@ -614,7 +779,7 @@ class FooterScreen:
                 line = BL + H * (width - 2) + BR
         return line
 
-    def _draw(self):
+    def _draw(self, incremental=False):
         cols, rows = self._size()
         width, margin = self._layout(cols)
         if rows >= 4:
@@ -624,7 +789,12 @@ class FooterScreen:
             footer_height = min(rows - 1, max(3, body_rows + 2))
         else:
             footer_height = 2 if rows == 3 else 1
-        transcript_height = rows - footer_height
+        header_budget = min(5, max(0, rows - footer_height - 1))
+        if header_budget == 2:
+            header_budget = 1
+        header = self._header(cols, header_budget)
+        header_height = len(header)
+        transcript_height = max(0, rows - footer_height - header_height)
         status_rows = 1 if transcript_height >= 2 else 0
         visible_rows = transcript_height - status_rows
         visual = self._visual_transcript(width, margin)
@@ -635,9 +805,9 @@ class FooterScreen:
         elif self._scroll_anchor is None or not visual:
             top = 0
         else:
-            anchors = [(line, offset) for line, offset, _ in visual]
             top = max(0, min(max_top,
-                             bisect.bisect_right(anchors, self._scroll_anchor) - 1))
+                             bisect.bisect_right(self._visual_anchors,
+                                                 self._scroll_anchor) - 1))
         anchor = visual[top][:2] if visual and visible_rows else None
         self._scroll_state = {
             "following": self._follow_tail, "top": top, "max_top": max_top,
@@ -645,7 +815,9 @@ class FooterScreen:
             "anchor": list(anchor) if anchor is not None else None,
         }
         transcript = [item[2] for item in visual[top:top + visible_rows]]
-        display = [""] * max(0, visible_rows - len(transcript)) + transcript
+        display = list(header)
+        display.extend([""] * max(0, visible_rows - len(transcript)))
+        display.extend(transcript)
         if status_rows:
             if self._follow_tail:
                 status = "live \u00b7 PgUp/PgDn / wheel"
@@ -656,19 +828,33 @@ class FooterScreen:
             width, margin, footer_height)
         display.extend(footer)
         display = display[:rows]
-        frame = ["\x1b[?25l\x1b[H"]
+        paint_size = (cols, rows, width, margin, header_height,
+                      transcript_height)
+        full = (not incremental or self._paint_size != paint_size or
+                self._last_display is None)
+        color_enabled = bool(term.PAINT.on and self.isatty())
+        frame = ["\x1b[?25l\x1b[H" if full else "\x1b[?25l"]
+        if full:
+            frame.append(app_themes.background_sequence(color_enabled) or "\x1b[0m")
         for index, line in enumerate(display, 1):
-            frame.append("\x1b[%d;1H%s\x1b[K" % (index, line))
-        screen_row = min(rows, transcript_height + cursor_row + 1)
+            if full or self._last_display[index - 1] != line:
+                rendered = app_themes.render_line(line, color_enabled)
+                frame.append("\x1b[%d;1H%s\x1b[K" % (index, rendered))
+        screen_row = min(rows, header_height + transcript_height + cursor_row + 1)
         screen_col = min(cols, margin + cursor_col + 1)
         frame.append("\x1b[%d;%dH\x1b[?25h" % (screen_row, screen_col))
         self._geometry = {
-            "columns": cols, "rows": rows, "footer_top": transcript_height,
+            "columns": cols, "rows": rows,
+            "header_rows": header_height, "transcript_top": header_height,
+            "footer_top": header_height + transcript_height,
             "footer_rows": footer_height, "footer_left": margin,
             "footer_width": width, "transcript_rows": transcript_height,
-            "scroll_status_row": transcript_height - 1 if status_rows else None,
+            "scroll_status_row": (header_height + transcript_height - 1
+                                   if status_rows else None),
             "cursor_row": screen_row - 1, "cursor_column": screen_col - 1,
         }
         self.out.write("".join(frame))
         self.out.flush()
+        self._last_display = display
+        self._paint_size = paint_size
         self._last_size = (cols, rows)
