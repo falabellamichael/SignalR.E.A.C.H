@@ -137,13 +137,28 @@ from .tunnel import start_tunnel, stop_tunnel
 # ----------------------------------------------------------------------
 
 
+def legacy_frontend_blocker(registry):
+    """Why the legacy frontend must not be (re)registered, or None."""
+    uninstalled = registry.get("uninstalled_extensions", [])
+    if isinstance(uninstalled, list) and PLUGIN_ID in uninstalled:
+        return "extension was uninstalled"
+    if any(isinstance(e, dict) and e.get("id") == "signal-reach-admin"
+           for e in registry.get("extensions", [])):
+        return "REACH Admin is registered"
+    return None
+
+
 def cmd_reassert(_args):
     """Rewrite the extension package + registry entry from the install stash."""
+    home = extension_home(None)
+    reason = legacy_frontend_blocker(read_registry(home))
+    if reason:
+        print("  " + reason + "; skipping legacy registry restore")
+        return
     if not (STASH_DIR / "entry.json").is_file():
         raise SystemExit("error: no extension stash — run `reach.py install` "
                          "once from a checkout first")
     entry = json.loads((STASH_DIR / "entry.json").read_text(encoding="utf-8"))
-    home = extension_home(None)
     pkg = package_dir(home, entry["version"])
     pkg.mkdir(parents=True, exist_ok=True)
     for path in STASH_DIR.iterdir():
@@ -172,12 +187,21 @@ def cmd_install(args):
                          "installation and its bundled Electron runtime; "
                          "run a full install first")
     # 1. plugin page -> local-extension registry (never touches SimpleRAG files)
+    home = extension_home(args.extension_home)
+    blocker = legacy_frontend_blocker(read_registry(home))
+    if blocker:
+        print("  " + blocker + "; leaving the extension registry unchanged")
+    else:
+        install_plugin_page(home)
+    install_runtime_files(args, extension_only, engine_src, installed_electron)
+
+
+def install_plugin_page(home):
     plugin = load_plugin_manifest()
     version = plugin["version"]
     assets = collect_assets(plugin)
     validate_assets(assets)
     manifest = build_extension_manifest(plugin, assets)
-    home = extension_home(args.extension_home)
     pkg = package_dir(home, version)
     pkg.mkdir(parents=True, exist_ok=True)
     for name, data in assets:
@@ -204,6 +228,8 @@ def cmd_install(args):
                 shutil.rmtree(entry, ignore_errors=True)
     print("  plugin page installed -> " + str(pkg))
 
+
+def install_runtime_files(args, extension_only, engine_src, installed_electron):
     # 2. runtime copy + config
     (CONFIG_DIR / "server").mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / "tools").mkdir(parents=True, exist_ok=True)
@@ -315,10 +341,26 @@ def cmd_uninstall(args):
     home = extension_home(None)
     registry = read_registry(home)
     plugin_ids = {PLUGIN_ID, "signal-reach-public", "signal-reach-admin"}
+    removed_ids = {e.get("id") for e in registry["extensions"]
+                   if e.get("id") in plugin_ids}
+    removed_ids.update(plugin_id for plugin_id in plugin_ids
+                       if (home / "packages" / plugin_id).is_dir())
+    # An older uninstall may already have removed the entry and package while
+    # leaving the logon restore stash behind. Persist that removal intent too.
+    if (STASH_DIR / "entry.json").is_file():
+        removed_ids.add(PLUGIN_ID)
     before = len(registry["extensions"])
     registry["extensions"] = [e for e in registry["extensions"]
                               if e.get("id") not in plugin_ids]
     changed = len(registry["extensions"]) != before
+    uninstalled = registry.get("uninstalled_extensions", [])
+    if not isinstance(uninstalled, list):
+        uninstalled = []
+    tombstones = set(plugin_id for plugin_id in uninstalled
+                     if isinstance(plugin_id, str))
+    if removed_ids - tombstones:
+        registry["uninstalled_extensions"] = sorted(tombstones | removed_ids)
+        changed = True
     if changed:
         write_registry(home, registry)
     removed_packages = False
