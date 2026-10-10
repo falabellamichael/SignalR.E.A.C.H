@@ -1440,7 +1440,7 @@ class StartupBaseTests(unittest.TestCase):
         text = out.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("no answer from 127.0.0.1:20777 yet", text)
-        self.assertIn("python %s start" % os.path.join("tools", "reach.py"), text)
+        self.assertIn("python tools/reach.py start", text)
         self.assertIn("/endpoint", text)
         self.assertNotIn("Traceback", text)
 
@@ -2181,7 +2181,7 @@ class StarterCompatTests(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             self.assertTrue(_REAL_ENDPOINT_NOTICE(client))
         self.assertIn("no answer from 127.0.0.1:20777 yet", out.getvalue())
-        self.assertIn("python %s start" % os.path.join("tools", "reach.py"), out.getvalue())
+        self.assertIn("python tools/reach.py start", out.getvalue())
         self.assertEqual(client.base, "http://127.0.0.1:20777/v1")  # never switched
 
     def test_no_notice_when_up(self):
