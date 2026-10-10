@@ -308,5 +308,889 @@ class AgentEditTests(unittest.TestCase):
         self.assertNotIn("workpath is", build_system(client))
 
 
+class SlashCommandTests(unittest.TestCase):
+    """REPL slash commands: one registry, no provider alias, no tracebacks."""
+
+    def setUp(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from reach_cli import terminal
+        from reach_cli.terminal import Paint
+
+        self.io = io
+        self.redirect_stdout = redirect_stdout
+        self.redirect_stderr = redirect_stderr
+        terminal.PAINT = Paint(False)
+        self.client = self.make_client()
+
+    def make_client(self):
+        client = type("FakeClient", (), {})()
+        client.base = "http://127.0.0.1:20777/v1"
+        client.model = "gpt-4o"
+        client.key = "sk-reach-" + ("UNIQUESECRET99" * 3)
+        client.agent = False
+        client.workpath = self.workpath()
+        client.system = None
+        client.usage = {"prompt": None, "completion": None}
+        client.last_latency_ms = 0.0
+        client._models = ["gpt-4o", "claude"]
+
+        def models():
+            return list(client._models)
+
+        client.models = models
+        return client
+
+    def workpath(self):
+        path = os.path.join(os.environ.get("TEMP") or "/tmp", "reach-cli-slash")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def invoke(self, line, history=None, session=None, client=None):
+        from reach_cli.terminal import handle_slash
+
+        if history is None:
+            history = []
+        out, err = self.io.StringIO(), self.io.StringIO()
+        with self.redirect_stdout(out), self.redirect_stderr(err):
+            result = handle_slash(line, self.client if client is None else client, history, session)
+        text, errors = out.getvalue(), err.getvalue()
+        self.assertNotIn("Traceback", text)
+        self.assertNotIn("Traceback", errors)
+        self.assertEqual(errors, "")
+        return result, text, history
+
+    def endpoint_patches(self, reachable=True, public="https://public.example/v1", boom=False):
+        def discover():
+            if boom:
+                raise RuntimeError("gist down")
+            return public
+
+        def is_up(url, key=""):
+            if callable(reachable):
+                return reachable(url, key)
+            return bool(reachable)
+
+        return (
+            unittest.mock.patch("reach_cli.client.discover_public_url", side_effect=discover),
+            unittest.mock.patch("reach_cli.client.ReachClient._reachable", side_effect=is_up),
+            unittest.mock.patch(
+                "reach_cli.client.ReachClient.resolve_base",
+                side_effect=AssertionError("fallback"),
+            ),
+        )
+
+    def test_registry_is_unique_and_has_no_provider_command(self):
+        from reach_cli.terminal import COMMANDS, HANDLERS, command_tokens
+
+        tokens = command_tokens()
+        self.assertEqual(tokens, [
+            "/help", "/status", "/endpoint", "/model", "/models", "/web",
+            "/agent", "/tools", "/workpath", "/system", "/clear", "/history",
+            "/retry", "/undo", "/compact", "/copy", "/save", "/exit",
+        ])
+        self.assertEqual(len(tokens), len(set(tokens)))
+        self.assertEqual(set(HANDLERS), set(tokens))
+        self.assertNotIn("/provider", HANDLERS)
+        self.assertNotIn("/quit", HANDLERS)
+        blob = " ".join(spec + " " + desc for spec, desc in COMMANDS).lower()
+        self.assertNotIn("provider", blob)
+        width = len("/web <question>")
+        for spec, desc in COMMANDS:
+            self.assertLessEqual(len(spec), width, spec)
+            self.assertTrue(desc)
+            self.assertNotIn("\n", desc)
+
+    def test_help_keeps_the_column_layout(self):
+        from reach_cli.terminal import COMMANDS, print_help
+
+        out = self.io.StringIO()
+        with self.redirect_stdout(out):
+            print_help()
+        lines = out.getvalue().splitlines()
+        self.assertEqual(len(lines), len(COMMANDS))
+        for line, (key, description) in zip(lines, COMMANDS):
+            self.assertEqual(line, "  %-16s %s" % (key, description))
+        self.assertNotIn("provider", out.getvalue().lower())
+
+    def test_unknown_command_suggests_the_closest(self):
+        from reach_cli.terminal import suggest_command
+
+        expected = {
+            "/hlep": "/help",
+            "/modle": "/model",
+            "/modles": "/models",
+            "/ednpoint": "/endpoint",
+            "/stat": "/status",
+            "/quit": "/exit",
+            "/provider": "/endpoint",
+            "/histroy": "/history",
+            "/wrkpath": "/workpath",
+            "/agnt": "/agent",
+            "/staus": "/status",
+            "/sytem": "/system",
+        }
+        for query, suggestion in expected.items():
+            self.assertEqual(suggest_command(query), suggestion, query)
+        _result, text, _history = self.invoke("/provider")
+        self.assertIn("did you mean /endpoint?", text)
+        self.assertNotIn("endpoint →", text)
+
+    def test_provider_never_switches_the_endpoint(self):
+        self.client.base = "http://original.example/v1"
+        patches = self.endpoint_patches(reachable=True, public="https://public.example/v1")
+        with patches[0], patches[1], patches[2] as resolve:
+            _result, text, _history = self.invoke("/provider local")
+        self.assertEqual(self.client.base, "http://original.example/v1")
+        self.assertIn("/endpoint", text)
+        self.assertNotIn("endpoint →", text)
+        self.assertFalse(resolve.called)
+
+    def test_endpoint_lists_and_marks_the_current_one(self):
+        patches = self.endpoint_patches()
+        with patches[0], patches[1], patches[2]:
+            _result, text, _history = self.invoke("/endpoint")
+        self.assertIn("http://127.0.0.1:20777/v1", text)
+        self.assertIn("https://public.example/v1", text)
+        self.assertIn("usage: /endpoint <local|public|url>", text)
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- local"):
+                self.assertIn("●", line)
+            if stripped.startswith("- public"):
+                self.assertNotIn("●", line)
+
+    def test_endpoint_switches_without_falling_back(self):
+        self.client.base = "https://public.example/v1"
+        self.client.model = "gpt-4o"
+
+        def reachable(url, key=""):
+            return "public" in url
+
+        patches = self.endpoint_patches(reachable=reachable, public="https://public.example/v1")
+        with patches[0], patches[1], patches[2] as resolve:
+            _result, text, _history = self.invoke("/endpoint local")
+        self.assertEqual(self.client.base, "https://public.example/v1")
+        self.assertIn("unreachable", text)
+        self.assertIn("stayed on https://public.example/v1", text)
+        self.assertFalse(resolve.called)
+
+        patches = self.endpoint_patches(reachable=True, public="https://public.example/v1")
+        with patches[0], patches[1], patches[2] as resolve:
+            _result, text, _history = self.invoke("/endpoint public")
+        self.assertEqual(self.client.base, "https://public.example/v1")
+        self.assertIn("endpoint →", text)
+        self.assertFalse(resolve.called)
+
+        patches = self.endpoint_patches(reachable=True, public=None)
+        self.client.base = "http://127.0.0.1:20777/v1"
+        with patches[0], patches[1], patches[2]:
+            _result, text, _history = self.invoke("/endpoint public")
+        self.assertEqual(self.client.base, "http://127.0.0.1:20777/v1")
+        self.assertIn("unavailable", text)
+        self.assertIn("stayed on", text)
+
+    def test_endpoint_rejects_bad_urls_and_a_dead_pointer(self):
+        original = self.client.base
+        patches = self.endpoint_patches(boom=True)
+        with patches[0], patches[1], patches[2]:
+            _result, text, _history = self.invoke("/endpoint")
+        self.assertIn("pointer unavailable", text)
+        self.assertIn(original, text)
+        for bad in ("file:///etc/passwd", "javascript:alert(1)", "ftp://files.example/v1", "nope"):
+            _result, text, _history = self.invoke("/endpoint " + bad)
+            self.assertEqual(self.client.base, original)
+            self.assertIn("unknown endpoint", text)
+
+    def test_endpoint_switch_to_an_explicit_url(self):
+        patches = self.endpoint_patches(reachable=True)
+        with patches[0], patches[1], patches[2] as resolve:
+            _result, text, _history = self.invoke("/endpoint http://relay.example/v1/")
+        self.assertEqual(self.client.base, "http://relay.example/v1")
+        self.assertIn("endpoint →", text)
+        self.assertFalse(resolve.called)
+
+    def test_status_masks_the_key_and_reports_session(self):
+        self.client.agent = True
+        _result, text, _history = self.invoke("/status")
+        self.assertIn("http://127.0.0.1:20777/v1", text)
+        self.assertIn("(local)", text)
+        self.assertIn("gpt-4o", text)
+        self.assertIn("on", text)
+        self.assertIn(self.client.workpath, text)
+        self.assertIn("sk-reach-…", text)
+        self.assertNotIn("UNIQUESECRET99", text)
+        self.client.key = ""
+        self.client.model = None
+        self.client.agent = False
+        _result, text, _history = self.invoke("/status")
+        self.assertIn("(none)", text)
+        self.assertIn("(auto)", text)
+        self.assertIn("off", text)
+
+    def test_models_marks_the_current_alias(self):
+        self.client.model = "claude"
+        _result, text, _history = self.invoke("/models")
+        self.assertIn("current: claude", text)
+        for line in text.splitlines():
+            if "claude" in line and line.strip().startswith("-"):
+                self.assertIn("●", line)
+                self.assertIn("current", line)
+            if "gpt-4o" in line and line.strip().startswith("-"):
+                self.assertNotIn("current", line)
+                self.assertNotIn("●", line)
+
+    def test_models_empty_unknown_and_errors(self):
+        self.client.model = None
+        self.client._models = []
+        _result, text, _history = self.invoke("/models")
+        self.assertIn("(auto)", text)
+        self.assertIn("(none served)", text)
+
+        self.client.model = "ghost"
+        self.client._models = ["gpt-4o"]
+        _result, text, _history = self.invoke("/models")
+        self.assertIn("not in the served list", text)
+
+        def boom():
+            raise RuntimeError("boom")
+
+        self.client.models = boom
+        _result, text, _history = self.invoke("/models")
+        self.assertIn("✗ models: boom", text)
+
+        self.client.models = lambda: ["gpt-4o", "claude"]
+        self.client.model = "gpt-4o"
+        _result, text, _history = self.invoke("/model")
+        self.assertIn("usage: /model <alias>", text)
+        _result, text, _history = self.invoke("/model missing")
+        self.assertIn("unknown model", text)
+        self.assertEqual(self.client.model, "gpt-4o")
+        _result, text, _history = self.invoke("/model claude")
+        self.assertEqual(self.client.model, "claude")
+        self.assertIn("model →", text)
+
+        def down():
+            raise RuntimeError("down")
+
+        self.client.models = down
+        _result, text, _history = self.invoke("/model gpt-4o")
+        self.assertEqual(self.client.model, "gpt-4o")
+        self.assertNotIn("Traceback", text)
+
+    def test_retry_undo_and_empty_states(self):
+        from reach_cli.terminal import ReplSession
+
+        session = ReplSession()
+        result, text, _history = self.invoke("/retry", session=session)
+        self.assertIsNone(result.prompt)
+        self.assertIn("nothing to retry", text)
+
+        session.remember("hello there")
+        history = [
+            {"role": "user", "content": "older"},
+            {"role": "assistant", "content": "old-answer"},
+        ]
+        result, text, _history = self.invoke("/retry", history=history, session=session)
+        self.assertEqual(result.prompt, "hello there")
+        self.assertIn("retrying:", text)
+
+        result, _text, _history = self.invoke("/retry", history=history, session=ReplSession())
+        self.assertEqual(result.prompt, "older")
+        tool_only = [{"role": "user", "content": "[tool result]\nnope"}]
+        result, text, _history = self.invoke("/retry", history=tool_only, session=ReplSession())
+        self.assertIsNone(result.prompt)
+        self.assertIn("nothing to retry", text)
+
+        history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "keep"},
+            {"role": "assistant", "content": "kept"},
+            {"role": "user", "content": "fix it"},
+            {"role": "assistant", "content": "tool"},
+            {"role": "user", "content": "[tool result]\nok"},
+            {"role": "assistant", "content": "done"},
+        ]
+        _result, text, history = self.invoke("/undo", history=history)
+        self.assertIn("dropped last exchange", text)
+        self.assertEqual(
+            [message["content"] for message in history],
+            ["sys", "keep", "kept"],
+        )
+        _result, _text, history = self.invoke("/undo", history=history)
+        self.assertEqual([message["role"] for message in history], ["system"])
+        _result, text, history = self.invoke("/undo", history=history)
+        self.assertIn("nothing to undo", text)
+        self.assertEqual(history, [{"role": "system", "content": "sys"}])
+
+    def test_compact_shrinks_and_handles_empty_history(self):
+        history = [{"role": "system", "content": "SYSKEEP"}]
+        _result, text, history = self.invoke("/compact", history=history)
+        self.assertIn("nothing to compact", text)
+        self.assertEqual(history, [{"role": "system", "content": "SYSKEEP"}])
+
+        short = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        snapshot = [dict(message) for message in short]
+        _result, text, short = self.invoke("/compact", history=short)
+        self.assertIn("already compact", text)
+        self.assertEqual(short, snapshot)
+
+        old = "OLDWORD " + ("x" * 3000)
+        mid = "MIDWORD " + ("y" * 200)
+        history = [
+            {"role": "system", "content": "SYSKEEP"},
+            {"role": "user", "content": old},
+            {"role": "assistant", "content": "old-answer " + ("z" * 2000)},
+            {"role": "user", "content": mid},
+            {"role": "assistant", "content": "mid-answer"},
+            {"role": "user", "content": "RECENTWORD"},
+            {"role": "assistant", "content": "recent-answer"},
+        ]
+        before = sum(len(message["content"]) for message in history)
+        _result, text, history = self.invoke("/compact", history=history)
+        after = sum(len(str(message.get("content") or "")) for message in history)
+        self.assertIn("compacted", text)
+        self.assertLess(after, before)
+        self.assertTrue(any(message.get("content") == "SYSKEEP" for message in history))
+        self.assertTrue(any(message.get("content") == "RECENTWORD" for message in history))
+        self.assertTrue(any(message.get("content") == mid for message in history))
+        self.assertFalse(any(message.get("content") == old for message in history))
+        self.assertTrue(any(
+            isinstance(message.get("content"), str)
+            and message["content"].startswith("[compacted history]")
+            and "OLDWORD" in message["content"]
+            for message in history
+        ))
+
+        huge = "H" * 5000
+        history = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": huge},
+            {"role": "assistant", "content": "short"},
+        ]
+        _result, text, history = self.invoke("/compact", history=history)
+        self.assertIn("compacted", text)
+        user = next(message for message in history if message.get("role") == "user")
+        self.assertLess(len(user["content"]), 5000)
+        self.assertIn("[truncated]", user["content"])
+        self.assertTrue(user["content"].startswith("H"))
+
+    def test_copy_succeeds_and_fails_without_a_clipboard(self):
+        result, text, _history = self.invoke("/copy", history=[])
+        self.assertIn("nothing to copy", text)
+        self.assertFalse(result.quit)
+
+        history = [
+            {"role": "assistant", "content": "first"},
+            {"role": "user", "content": "again"},
+            {"role": "assistant", "content": "second answer"},
+        ]
+        with unittest.mock.patch(
+            "reach_cli.terminal.copy_to_clipboard", return_value=(True, None)
+        ) as copied:
+            _result, text, _history = self.invoke("/copy", history=history)
+        copied.assert_called_once_with("second answer")
+        self.assertIn("copied last answer", text)
+
+        with unittest.mock.patch(
+            "reach_cli.terminal.copy_to_clipboard",
+            return_value=(False, "no clipboard available"),
+        ):
+            _result, text, _history = self.invoke("/copy", history=history)
+        self.assertIn("no clipboard available", text)
+        self.assertNotIn("copied last answer", text)
+
+        with unittest.mock.patch(
+            "reach_cli.terminal.copy_to_clipboard",
+            side_effect=RuntimeError("clipboard exploded"),
+        ):
+            _result, text, _history = self.invoke("/copy", history=history)
+        self.assertIn("could not copy", text)
+
+        from reach_cli.terminal import copy_to_clipboard
+        ok, detail = copy_to_clipboard("")
+        self.assertFalse(ok)
+        self.assertTrue(detail)
+        ok, detail = copy_to_clipboard("hello from reach")
+        self.assertIsInstance(ok, bool)
+        if not ok:
+            self.assertTrue(detail)
+
+    def test_save_history_clear_workpath_and_tools(self):
+        import tempfile
+        from reach_cli.terminal import ReplSession
+
+        history = [{"role": "user", "content": "saved-line"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "chat.jsonl")
+            _result, text, _history = self.invoke("/save " + path, history=history)
+            self.assertIn("saved →", text)
+            with open(path, encoding="utf-8") as handle:
+                rows = [json.loads(line) for line in handle if line.strip()]
+            self.assertEqual(rows, history)
+            fd, blocker = tempfile.mkstemp(dir=tmp)
+            os.close(fd)
+            _result, text, _history = self.invoke(
+                "/save " + os.path.join(blocker, "nope.jsonl"), history=history
+            )
+            self.assertIn("could not save", text)
+
+        _result, text, _history = self.invoke("/history", history=[])
+        self.assertIn("conversation is empty", text)
+        _result, text, _history = self.invoke("/history", history=history)
+        self.assertIn("saved-line", text)
+        self.assertIn("user:", text)
+
+        session = ReplSession()
+        session.remember("hello")
+        convo = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        _result, text, convo = self.invoke("/clear", history=convo, session=session)
+        self.assertIn("conversation cleared", text)
+        self.assertIsNone(session.last_prompt)
+        self.assertTrue(any(message.get("role") == "system" for message in convo))
+        self.assertFalse(any(message.get("role") == "user" for message in convo))
+
+        _result, text, _history = self.invoke("/workpath")
+        self.assertIn("usage: /workpath <dir>", text)
+        _result, text, _history = self.invoke("/workpath /no/such/reach-cli-dir")
+        self.assertIn("not a directory", text)
+        self.assertNotEqual(self.client.workpath, "/no/such/reach-cli-dir")
+        with tempfile.TemporaryDirectory() as tmp:
+            _result, text, _history = self.invoke("/workpath " + tmp)
+            self.assertEqual(self.client.workpath, os.path.abspath(tmp))
+            self.assertIn("workpath →", text)
+
+        _result, text, _history = self.invoke("/tools")
+        self.assertIn("shell", text)
+        self.assertIn("read", text)
+
+        _result, text, _history = self.invoke("/system be brief")
+        self.assertEqual(self.client.system, "be brief")
+        self.assertIn("set", text)
+        _result, text, _history = self.invoke("/system")
+        self.assertIsNone(self.client.system)
+        self.assertIn("cleared", text)
+
+        _result, text, _history = self.invoke("/agent")
+        self.assertTrue(self.client.agent)
+        self.assertIn("on", text)
+        _result, text, _history = self.invoke("/agent")
+        self.assertFalse(self.client.agent)
+        self.assertIn("off", text)
+
+    def test_web_usage_and_dispatch(self):
+        _result, text, history = self.invoke("/web")
+        self.assertIn("usage: /web <question>", text)
+        self.assertEqual(history, [])
+        with unittest.mock.patch("reach_cli.chat.run_web_answer", return_value=True) as web:
+            history = [{"role": "system", "content": "sys"}]
+            _result, _text, history = self.invoke("/web what is paris", history=history)
+        web.assert_called_once()
+        self.assertEqual(history[-1]["content"], "what is paris")
+
+    def test_bad_input_never_traces_back(self):
+        from reach_cli.terminal import ReplSession
+
+        patches = self.endpoint_patches(boom=True, reachable=False)
+        session = ReplSession()
+        lines = [
+            None, "", "   ", "/", "/nope", "/provider", "/provider local",
+            "/endpoint", "/endpoint nope", "/endpoint file:///etc/passwd",
+            "/model", "/model not-a-model", "/models", "/retry", "/copy",
+            "/undo", "/compact", "/workpath", "/workpath /no/such/dir",
+            "/history", "/clear", "/status", "/agent", "/tools", "/system",
+            "/web", "/HELP", "/exit now",
+        ]
+        with patches[0], patches[1], patches[2]:
+            for line in lines:
+                result, text, _history = self.invoke(line, history=[], session=session)
+                self.assertNotIn("Traceback", text)
+                if line == "/exit now":
+                    self.assertTrue(result.quit)
+
+    def test_repl_hook_retries_and_keeps_prompts(self):
+        from reach_cli.chat import run_chat
+        from reach_cli.client import ReachApiError, ReachClient
+
+        client = ReachClient("http://127.0.0.1:1", model="gpt-4o")
+        client.workpath = self.workpath()
+        seen = []
+
+        # chat mode now goes through request_reply -> client.complete
+        def fake_complete(messages, tools=None, on_text=None, stream=True):
+            seen.append([m.get("content") for m in messages if m.get("role") == "user"])
+            if on_text:
+                on_text("ok")
+            return {"content": "ok", "tool_calls": []}
+
+        client.complete = fake_complete
+        prompts = []
+        answers = iter(["hello", "/retry", "/exit"])
+
+        def fake_input(prompt=""):
+            prompts.append(prompt)
+            return next(answers)
+
+        out = self.io.StringIO()
+        with unittest.mock.patch("builtins.input", side_effect=fake_input), self.redirect_stdout(out):
+            run_chat(client, client.base)
+        self.assertEqual(seen, [["hello"], ["hello", "hello"]])
+        self.assertTrue(any("you ▸" in prompt for prompt in prompts))
+        self.assertIn("ai ▸", out.getvalue())
+        self.assertIn("bye.", out.getvalue())
+
+        seen[:] = []
+        calls = {"n": 0}
+
+        def failing_then_ok(messages, tools=None, on_text=None, stream=True):
+            calls["n"] += 1
+            seen.append([m.get("content") for m in messages if m.get("role") == "user"])
+            if calls["n"] == 1:
+                raise ReachApiError("nope", status=400)  # non-retryable: fails fast
+            if on_text:
+                on_text("recovered")
+            return {"content": "recovered", "tool_calls": []}
+
+        client.complete = failing_then_ok
+        answers = iter(["hello", "/retry", "/exit"])
+        with unittest.mock.patch("builtins.input", side_effect=lambda _prompt="": next(answers)), self.redirect_stdout(self.io.StringIO()):
+            run_chat(client, client.base)
+        self.assertEqual(seen, [["hello"], ["hello"]])
+
+        def refuse_send(*_args, **_kwargs):
+            raise AssertionError("slash commands must not be sent as prompts")
+
+        client.chat = refuse_send
+        client.complete = refuse_send
+        client.base = "http://stay.example/v1"
+        answers = iter(["/provider", "/no-such-command", "/exit"])
+        quiet = self.io.StringIO()
+        with unittest.mock.patch("builtins.input", side_effect=lambda _prompt="": next(answers)), self.redirect_stdout(quiet):
+            run_chat(client, client.base)
+        self.assertEqual(client.base, "http://stay.example/v1")
+        self.assertIn("did you mean /endpoint?", quiet.getvalue())
+        self.assertIn("bye.", quiet.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ---- agent loop robustness (native tool_calls, retries, partial streams) ----
+
+import io  # noqa: E402
+import contextlib  # noqa: E402
+import urllib.error  # noqa: E402
+
+from reach_cli import chat as chat_mod  # noqa: E402
+from reach_cli.agent_tools import tool_schemas, parse_tool_arguments  # noqa: E402
+from reach_cli.client import ReachClient, ReachTransientError  # noqa: E402
+
+
+class _Resp:
+    """Fake urlopen response: iterable SSE lines or a JSON body."""
+
+    def __init__(self, lines=None, body=None, cut_after=None):
+        self._lines = [l.encode() if isinstance(l, str) else l for l in (lines or [])]
+        self._body = body
+        self._cut = cut_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return json.dumps(self._body).encode()
+
+    def __iter__(self):
+        for i, line in enumerate(self._lines):
+            if self._cut is not None and i >= self._cut:
+                raise ConnectionResetError("reset by peer")
+            yield line
+
+
+def _sse(obj):
+    return "data: " + json.dumps(obj) + "\n"
+
+
+def _delta(**delta):
+    return _sse({"choices": [{"delta": delta}]})
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("http://x/chat/completions", code, "err", {},
+                                  io.BytesIO(b'{"error":{"message":"busy"}}'))
+
+
+class _Recorder:
+    """Patch urlopen with a scripted sequence; records every payload."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.payloads = []
+        self.urls = []
+
+    def __call__(self, request, timeout=None):
+        self.urls.append(request.full_url)
+        self.payloads.append(json.loads(request.data.decode()))
+        # the last step repeats (the loop may nudge a prose answer up to
+        # MAX_RECOVERY times after tool results)
+        step = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+class AgentLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = __import__("tempfile").mkdtemp()
+        with open(os.path.join(self.tmp, "hello.txt"), "w") as fh:
+            fh.write("hi there\n")
+        self.client = ReachClient("http://relay/v1", model="codegpt-eco")
+        self.client.agent = True
+        self.client.workpath = self.tmp
+        self.sleep = unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None)
+        self.sleep.start()
+
+    def tearDown(self):
+        self.sleep.stop()
+
+    def run_agent(self, script):
+        rec = _Recorder(script)
+        out = io.StringIO()
+        history = [{"role": "user", "content": "read hello.txt"}]
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok = chat_mod.run_agent_turn(self.client, history, chat_mod.AgentState())
+        return ok, history, rec, out.getvalue()
+
+    def test_tool_schemas_openai_format(self):
+        schemas = tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        self.assertIn("read", names)
+        for s in schemas:
+            self.assertEqual(s["type"], "function")
+            self.assertEqual(s["function"]["parameters"]["type"], "object")
+
+    def test_native_tool_calls_streamed(self):
+        first = _Resp([
+            _delta(tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                                "function": {"name": "read", "arguments": ""}}]),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": '{"pa'}}]),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": 'th": "hello.txt"}'}}]),
+            _sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]\n",
+        ])
+        second = _Resp([_delta(content="It says hi there."), "data: [DONE]\n"])
+        ok, history, rec, out = self.run_agent([first, second])
+        self.assertTrue(ok)
+        self.assertIn("tools", rec.payloads[0])
+        assistant = [m for m in history if m.get("tool_calls")][0]
+        self.assertEqual(assistant["tool_calls"][0]["function"]["name"], "read")
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg["tool_call_id"], "call_1")
+        self.assertIn("hi there", tool_msg["content"])
+        # the second request carries the tool exchange back to the model
+        roles = [m["role"] for m in rec.payloads[1]["messages"]]
+        self.assertIn("tool", roles)
+        self.assertNotIn("Traceback", out)
+
+    def test_native_tool_calls_non_streamed(self):
+        self.client.no_stream = True
+        first = _Resp(body={"choices": [{"message": {"content": None, "tool_calls": [
+            {"id": "c9", "type": "function",
+             "function": {"name": "read", "arguments": '{"path": "hello.txt"}'}}]}}]})
+        second = _Resp(body={"choices": [{"message": {"content": "done"}}]})
+        ok, history, rec, _ = self.run_agent([first, second])
+        self.assertTrue(ok)
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg["tool_call_id"], "c9")
+        self.assertIn("hi there", tool_msg["content"])
+
+    def test_malformed_tool_arguments_handled(self):
+        self.assertIsNotNone(parse_tool_arguments("{not json")[1])
+        self.client.no_stream = True
+        first = _Resp(body={"choices": [{"message": {"tool_calls": [
+            {"id": "c1", "function": {"name": "read", "arguments": "{bad"}}]}}]})
+        second = _Resp(body={"choices": [{"message": {"content": "ok"}}]})
+        ok, history, _, out = self.run_agent([first, second])
+        self.assertTrue(ok)
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertTrue(tool_msg["content"].startswith("error:"))
+        self.assertNotIn("Traceback", out)
+
+    def test_text_tool_block_path_still_works(self):
+        block = '```tool\n{"action": "read", "path": "hello.txt"}\n```'
+        first = _Resp([_delta(content=block), "data: [DONE]\n"])
+        second = _Resp([_delta(content="Read it."), "data: [DONE]\n"])
+        ok, history, _, _ = self.run_agent([first, second])
+        self.assertTrue(ok)
+        results = [m for m in history if m["role"] == "user"
+                   and m["content"].startswith("[tool result]")]
+        self.assertEqual(len(results), 1)
+        self.assertIn("hi there", results[0]["content"])
+
+    def test_retries_same_provider_and_model(self):
+        ok_resp = _Resp([_delta(content="hello"), "data: [DONE]\n"])
+        ok, _, rec, out = self.run_agent(
+            [_http_error(502), _http_error(503), TimeoutError("slow"), ok_resp])
+        self.assertTrue(ok)
+        self.assertEqual(len(rec.payloads), 4)
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertEqual(set(rec.urls), {"http://relay/v1/chat/completions"})
+        self.assertEqual(self.client.model, "codegpt-eco")
+        self.assertIn("retrying", out)
+        self.assertNotIn("✗", out)
+
+    def test_partial_stream_is_kept_and_continued(self):
+        cut = _Resp([_delta(content="Hello "), _delta(content="wor"),
+                     _delta(content="ld")], cut_after=2)
+        rest = _Resp([_delta(content="ld!"), "data: [DONE]\n"])
+        ok, history, rec, out = self.run_agent([cut, rest])
+        self.assertTrue(ok)
+        self.assertEqual(history[-1]["content"], "Hello world!")
+        retry_msgs = rec.payloads[1]["messages"]
+        self.assertEqual(retry_msgs[-2], {"role": "assistant", "content": "Hello wor"})
+        self.assertEqual(rec.payloads[1]["model"], "codegpt-eco")
+        self.assertNotIn("Traceback", out)
+
+    def test_cut_after_complete_tool_call_keeps_it(self):
+        cut = _Resp([
+            _delta(tool_calls=[{"index": 0, "id": "k1", "function": {
+                "name": "read", "arguments": '{"path": "hello.txt"}'}}]),
+            "data: never\n"], cut_after=1)
+        final = _Resp([_delta(content="fine"), "data: [DONE]\n"])
+        ok, history, rec, _ = self.run_agent([cut, final])
+        self.assertTrue(ok)
+        # no re-request of the cut turn: request 2 already carries the tool result
+        self.assertIn("tool", [m["role"] for m in rec.payloads[1]["messages"]])
+        self.assertTrue(any(m["role"] == "tool" for m in history))
+
+    def test_graceful_final_failure_no_traceback(self):
+        ok, _, rec, out = self.run_agent([_http_error(502)] * chat_mod.MAX_ATTEMPTS)
+        self.assertFalse(ok)
+        self.assertEqual(len(rec.payloads), chat_mod.MAX_ATTEMPTS)
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn("HTTP 502", out)
+        self.assertEqual(out.count("✗ the model didn't answer"), 1)
+        self.assertNotIn("⏸", out)
+        line = ("  ✗ the model didn't answer: endpoint unavailable (502), after 4 tries"
+                " — send your message again or /retry")
+        self.assertIn(chat_mod.c_red(line), out)  # same red helper as the old error line
+        self.assertIn("endpoint unavailable (502), after 4 tries", out)
+
+    def test_non_retryable_4xx_fails_fast_with_reason(self):
+        for code, reason in ((401, "auth rejected (401)"),
+                             (403, "auth rejected (403)"),
+                             (404, "model not available (404)"),
+                             (400, "request rejected (400)")):
+            ok, _, rec, out = self.run_agent([_http_error(code)])
+            self.assertFalse(ok)
+            self.assertEqual(len(rec.payloads), 1, code)
+            self.assertIn(reason + ", not retried", out)
+            self.assertNotIn("retrying", out)
+            self.assertNotIn("Traceback", out)
+
+    def test_rate_limit_and_timeout_reasons(self):
+        n = chat_mod.MAX_ATTEMPTS
+        _, _, rec, out = self.run_agent([_http_error(429)] * n)
+        self.assertEqual(len(rec.payloads), n)
+        self.assertIn("rate limited (429), after %d tries" % n, out)
+        _, _, _, out = self.run_agent([TimeoutError("slow")] * n)
+        self.assertIn("timed out, after %d tries" % n, out)
+        _, _, _, out = self.run_agent(
+            [urllib.error.URLError(ConnectionRefusedError("refused"))] * n)
+        self.assertIn("endpoint unreachable, after %d tries" % n, out)
+
+    def test_real_openai_tool_call_shapes_list_and_glob(self):
+        # exact shapes from the bridge: id, type function, arguments as JSON string
+        streamed = _Resp([
+            _sse({"id": "chatcmpl-1", "object": "chat.completion.chunk",
+                  "choices": [{"index": 0, "delta": {"role": "assistant", "content": None,
+                   "tool_calls": [{"index": 0, "id": "call_abc", "type": "function",
+                                   "function": {"name": "list", "arguments": ""}}]},
+                   "finish_reason": None}]}),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": "{\"path\": \"\"}"}}]),
+            _delta(tool_calls=[{"index": 1, "id": "call_def", "type": "function",
+                                "function": {"name": "glob",
+                                             "arguments": "{\"pattern\": \"*.txt\"}"}}]),
+            _sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]\n",
+        ])
+        final = _Resp([_delta(content="done"), "data: [DONE]\n"])
+        ok, history, rec, _ = self.run_agent([streamed, final])
+        self.assertTrue(ok)
+        call_msg = [m for m in history if m.get("tool_calls")][0]
+        self.assertEqual([c["id"] for c in call_msg["tool_calls"]], ["call_abc", "call_def"])
+        self.assertTrue(all(c["type"] == "function" for c in call_msg["tool_calls"]))
+        self.assertTrue(all(isinstance(c["function"]["arguments"], str)
+                            for c in call_msg["tool_calls"]))
+        tools = {m["tool_call_id"]: m["content"] for m in history if m["role"] == "tool"}
+        self.assertIn("hello.txt", tools["call_abc"])
+        self.assertIn("hello.txt", tools["call_def"])
+        # non-streamed, same shapes
+        self.client.no_stream = True
+        body = {"id": "chatcmpl-2", "object": "chat.completion", "choices": [{
+            "index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [
+                    {"id": "call_x", "type": "function",
+                     "function": {"name": "glob", "arguments": "{\"pattern\": \"**/*.txt\"}"}}]}}]}
+        ok, history, _, _ = self.run_agent(
+            [_Resp(body=body), _Resp(body={"choices": [{"message": {"content": "ok"}}]})])
+        self.assertTrue(ok)
+        tools = {m["tool_call_id"]: m["content"] for m in history if m["role"] == "tool"}
+        self.assertIn("hello.txt", tools["call_x"])
+
+    def test_unexpected_exception_never_escapes(self):
+        ok, _, _, out = self.run_agent([RuntimeError("boom")])
+        self.assertFalse(ok)
+        self.assertNotIn("Traceback", out)
+
+    def test_transient_error_carries_partial(self):
+        err = ReachTransientError("x", {"content": "ab", "tool_calls": []})
+        self.assertEqual(err.partial["content"], "ab")
+
+
+class RetryWiringTests(unittest.TestCase):
+    """/retry's prompt goes through request_reply in chat and /agent mode."""
+
+    def _run(self, agent):
+        client = ReachClient("http://relay/v1", model="codegpt-eco")
+        client.agent = agent
+        client.workpath = __import__("tempfile").mkdtemp()
+        inputs = iter(["hello", "/retry", "/exit"])
+        rec = _Recorder([_http_error(502), _http_error(502),
+                         _Resp([_delta(content="hi"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch("builtins.input", lambda *_: next(inputs)), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                unittest.mock.patch.object(chat_mod, "banner", lambda *a: None), \
+                unittest.mock.patch.object(chat_mod, "MAX_ATTEMPTS", 1), \
+                contextlib.redirect_stdout(out):
+            chat_mod.run_chat(client, "http://relay/v1")
+        return rec, out.getvalue()
+
+    def test_retry_in_chat_mode(self):
+        rec, out = self._run(agent=False)
+        self.assertGreaterEqual(len(rec.payloads), 2)
+        self.assertEqual(rec.payloads[-1]["messages"][-1]["content"], "hello")
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+
+    def test_retry_in_agent_mode(self):
+        rec, out = self._run(agent=True)
+        self.assertIn("tools", rec.payloads[-1])
+        self.assertIn("hello", [m.get("content") for m in rec.payloads[-1]["messages"]])
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)

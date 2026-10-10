@@ -334,6 +334,10 @@ def chat_execute(h):
                       "stream_options", "reasoning_effort", "verbosity",
                       "modalities", "audio", "prediction",
                       "web_search_options"):
+            # The tray's CodeGPT bridge honours OpenAI function tools natively.
+            if field in ("tools", "tool_choice", "parallel_tool_calls") \
+                    and upstream_model.startswith("bridge/codegpt-eco"):
+                continue
             payload.pop(field, None)
     # Publish what this request is doing while it runs (see /status in_flight).
     record = getattr(h, "_reach_request", None)
