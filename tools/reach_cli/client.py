@@ -23,7 +23,9 @@ POINTER_GIST = (
 
 
 class ReachApiError(RuntimeError):
-    pass
+    def __init__(self, message="", status=None):
+        super().__init__(message)
+        self.status = status
 
 
 # HTTP statuses worth retrying on the SAME provider and model.
@@ -38,9 +40,8 @@ class ReachTransientError(ReachApiError):
     """
 
     def __init__(self, message, partial=None, status=None):
-        super().__init__(message)
+        super().__init__(message, status=status)
         self.partial = partial or {"content": "", "tool_calls": []}
-        self.status = status
 
 
 def _merge_tool_delta(slots, fragments):
@@ -201,10 +202,19 @@ class ReachClient:
                 exc.code, _error_text(body, self.base))
             if exc.code in TRANSIENT_HTTP:
                 raise ReachTransientError(message, status=exc.code) from None
-            raise ReachApiError(message) from None
-        except (urllib.error.URLError, socket.timeout, TimeoutError,
+            raise ReachApiError(message, status=exc.code) from None
+        except (socket.timeout, TimeoutError) as exc:
+            raise ReachTransientError("timed out: %s" % exc, status="timeout") from None
+        except urllib.error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            if isinstance(reason, (socket.timeout, TimeoutError)) or "timed out" in str(exc):
+                raise ReachTransientError("timed out: %s" % exc, status="timeout") from None
+            raise ReachTransientError("endpoint unreachable: %s" % exc,
+                                      status="unreachable") from None
+        except ( socket.timeout, TimeoutError,
                 ConnectionError, http.client.HTTPException, OSError) as exc:
-            raise ReachTransientError("endpoint unreachable: %s" % exc) from None
+            raise ReachTransientError("endpoint unreachable: %s" % exc,
+                                      status="unreachable") from None
 
         try:
             with response:
@@ -260,7 +270,8 @@ class ReachClient:
             raise
         except (socket.timeout, TimeoutError, ConnectionError,
                 http.client.HTTPException, OSError, ValueError) as exc:
-            raise ReachTransientError("stream cut: %s" % exc, partial()) from None
+            kind = "timeout" if isinstance(exc, (socket.timeout, TimeoutError)) else "cut"
+            raise ReachTransientError("stream cut: %s" % exc, partial(), status=kind) from None
         self.last_latency_ms = (time.time() - started) * 1000
         self.usage = {"prompt": None, "completion": None}
         result = partial()
@@ -268,7 +279,7 @@ class ReachClient:
             raise ReachTransientError(
                 "endpoint error: " + _error_text(raw_rest, self.base), result)
         if not done or (not result["content"] and not result["tool_calls"]):
-            raise ReachTransientError("stream ended early", result)
+            raise ReachTransientError("stream ended early", result, status="cut")
         return result
 
     def chat(self, messages, stream=True):

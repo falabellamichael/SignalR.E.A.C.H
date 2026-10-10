@@ -823,11 +823,14 @@ class SlashCommandTests(unittest.TestCase):
         client.workpath = self.workpath()
         seen = []
 
-        def fake_chat(messages, stream=True):
+        # chat mode now goes through request_reply -> client.complete
+        def fake_complete(messages, tools=None, on_text=None, stream=True):
             seen.append([m.get("content") for m in messages if m.get("role") == "user"])
-            yield "ok"
+            if on_text:
+                on_text("ok")
+            return {"content": "ok", "tool_calls": []}
 
-        client.chat = fake_chat
+        client.complete = fake_complete
         prompts = []
         answers = iter(["hello", "/retry", "/exit"])
 
@@ -846,23 +849,26 @@ class SlashCommandTests(unittest.TestCase):
         seen[:] = []
         calls = {"n": 0}
 
-        def failing_then_ok(messages, stream=True):
+        def failing_then_ok(messages, tools=None, on_text=None, stream=True):
             calls["n"] += 1
             seen.append([m.get("content") for m in messages if m.get("role") == "user"])
             if calls["n"] == 1:
-                raise ReachApiError("nope")
-            yield "recovered"
+                raise ReachApiError("nope", status=400)  # non-retryable: fails fast
+            if on_text:
+                on_text("recovered")
+            return {"content": "recovered", "tool_calls": []}
 
-        client.chat = failing_then_ok
+        client.complete = failing_then_ok
         answers = iter(["hello", "/retry", "/exit"])
         with unittest.mock.patch("builtins.input", side_effect=lambda _prompt="": next(answers)), self.redirect_stdout(self.io.StringIO()):
             run_chat(client, client.base)
         self.assertEqual(seen, [["hello"], ["hello"]])
 
-        def refuse_send(_messages, stream=True):
+        def refuse_send(*_args, **_kwargs):
             raise AssertionError("slash commands must not be sent as prompts")
 
         client.chat = refuse_send
+        client.complete = refuse_send
         client.base = "http://stay.example/v1"
         answers = iter(["/provider", "/no-such-command", "/exit"])
         quiet = self.io.StringIO()
@@ -1077,6 +1083,69 @@ class AgentLoopTests(unittest.TestCase):
         self.assertNotIn("Traceback", out)
         self.assertNotIn("HTTP 502", out)
         self.assertEqual(out.count("⏸"), 1)
+        self.assertIn("endpoint unavailable (502), after 4 tries", out)
+
+    def test_non_retryable_4xx_fails_fast_with_reason(self):
+        for code, reason in ((401, "auth rejected (401)"),
+                             (403, "auth rejected (403)"),
+                             (404, "model not available (404)"),
+                             (400, "request rejected (400)")):
+            ok, _, rec, out = self.run_agent([_http_error(code)])
+            self.assertFalse(ok)
+            self.assertEqual(len(rec.payloads), 1, code)
+            self.assertIn(reason + ", not retried", out)
+            self.assertNotIn("retrying", out)
+            self.assertNotIn("Traceback", out)
+
+    def test_rate_limit_and_timeout_reasons(self):
+        n = chat_mod.MAX_ATTEMPTS
+        _, _, rec, out = self.run_agent([_http_error(429)] * n)
+        self.assertEqual(len(rec.payloads), n)
+        self.assertIn("rate limited (429), after %d tries" % n, out)
+        _, _, _, out = self.run_agent([TimeoutError("slow")] * n)
+        self.assertIn("timed out, after %d tries" % n, out)
+        _, _, _, out = self.run_agent(
+            [urllib.error.URLError(ConnectionRefusedError("refused"))] * n)
+        self.assertIn("endpoint unreachable, after %d tries" % n, out)
+
+    def test_real_openai_tool_call_shapes_list_and_glob(self):
+        # exact shapes from the bridge: id, type function, arguments as JSON string
+        streamed = _Resp([
+            _sse({"id": "chatcmpl-1", "object": "chat.completion.chunk",
+                  "choices": [{"index": 0, "delta": {"role": "assistant", "content": None,
+                   "tool_calls": [{"index": 0, "id": "call_abc", "type": "function",
+                                   "function": {"name": "list", "arguments": ""}}]},
+                   "finish_reason": None}]}),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": "{\"path\": \"\"}"}}]),
+            _delta(tool_calls=[{"index": 1, "id": "call_def", "type": "function",
+                                "function": {"name": "glob",
+                                             "arguments": "{\"pattern\": \"*.txt\"}"}}]),
+            _sse({"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]\n",
+        ])
+        final = _Resp([_delta(content="done"), "data: [DONE]\n"])
+        ok, history, rec, _ = self.run_agent([streamed, final])
+        self.assertTrue(ok)
+        call_msg = [m for m in history if m.get("tool_calls")][0]
+        self.assertEqual([c["id"] for c in call_msg["tool_calls"]], ["call_abc", "call_def"])
+        self.assertTrue(all(c["type"] == "function" for c in call_msg["tool_calls"]))
+        self.assertTrue(all(isinstance(c["function"]["arguments"], str)
+                            for c in call_msg["tool_calls"]))
+        tools = {m["tool_call_id"]: m["content"] for m in history if m["role"] == "tool"}
+        self.assertIn("hello.txt", tools["call_abc"])
+        self.assertIn("hello.txt", tools["call_def"])
+        # non-streamed, same shapes
+        self.client.no_stream = True
+        body = {"id": "chatcmpl-2", "object": "chat.completion", "choices": [{
+            "index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": None, "tool_calls": [
+                    {"id": "call_x", "type": "function",
+                     "function": {"name": "glob", "arguments": "{\"pattern\": \"**/*.txt\"}"}}]}}]}
+        ok, history, _, _ = self.run_agent(
+            [_Resp(body=body), _Resp(body={"choices": [{"message": {"content": "ok"}}]})])
+        self.assertTrue(ok)
+        tools = {m["tool_call_id"]: m["content"] for m in history if m["role"] == "tool"}
+        self.assertIn("hello.txt", tools["call_x"])
 
     def test_unexpected_exception_never_escapes(self):
         ok, _, _, out = self.run_agent([RuntimeError("boom")])
@@ -1086,3 +1155,38 @@ class AgentLoopTests(unittest.TestCase):
     def test_transient_error_carries_partial(self):
         err = ReachTransientError("x", {"content": "ab", "tool_calls": []})
         self.assertEqual(err.partial["content"], "ab")
+
+
+class RetryWiringTests(unittest.TestCase):
+    """/retry's prompt goes through request_reply in chat and /agent mode."""
+
+    def _run(self, agent):
+        client = ReachClient("http://relay/v1", model="codegpt-eco")
+        client.agent = agent
+        client.workpath = __import__("tempfile").mkdtemp()
+        inputs = iter(["hello", "/retry", "/exit"])
+        rec = _Recorder([_http_error(502), _http_error(502),
+                         _Resp([_delta(content="hi"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch("builtins.input", lambda *_: next(inputs)), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                unittest.mock.patch.object(chat_mod, "banner", lambda *a: None), \
+                unittest.mock.patch.object(chat_mod, "MAX_ATTEMPTS", 1), \
+                contextlib.redirect_stdout(out):
+            chat_mod.run_chat(client, "http://relay/v1")
+        return rec, out.getvalue()
+
+    def test_retry_in_chat_mode(self):
+        rec, out = self._run(agent=False)
+        self.assertGreaterEqual(len(rec.payloads), 2)
+        self.assertEqual(rec.payloads[-1]["messages"][-1]["content"], "hello")
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+
+    def test_retry_in_agent_mode(self):
+        rec, out = self._run(agent=True)
+        self.assertIn("tools", rec.payloads[-1])
+        self.assertIn("hello", [m.get("content") for m in rec.payloads[-1]["messages"]])
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)

@@ -241,11 +241,13 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None):
     """
     kept_text = ""
     last = None
+    attempts = 0
     for attempt in range(1, MAX_ATTEMPTS + 1):
         convo = list(messages)
         if kept_text:
             convo += [{"role": "assistant", "content": kept_text},
                       {"role": "user", "content": _CONTINUE_PROMPT}]
+        attempts = attempt
         try:
             result = client.complete(convo, tools=tools, on_text=on_text)
             return True, {"content": kept_text + (result.get("content") or ""),
@@ -270,12 +272,49 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None):
             break
     if kept_text:  # keep what arrived rather than discarding it
         return True, {"content": kept_text, "tool_calls": []}
-    return False, {"content": "", "tool_calls": [], "error": str(last or "")}
+    return False, {"content": "", "tool_calls": [], "error": str(last or ""),
+                   "reason": failure_reason(last), "attempts": attempts,
+                   "retryable": isinstance(last, ReachTransientError)}
 
 
-def _calm_failure():
-    print(c_yellow("  ⏸ the model didn't answer after %d tries — "
-                   "send your message again to retry" % MAX_ATTEMPTS))
+def failure_reason(exc):
+    """A short plain reason for a failed request, e.g. 'rate limited (429)'."""
+    status = getattr(exc, "status", None)
+    if status == "timeout":
+        return "timed out"
+    if status == "unreachable":
+        return "endpoint unreachable"
+    if status == "cut":
+        return "stream cut off"
+    if isinstance(status, int):
+        if status in (401, 403):
+            return "auth rejected (%d)" % status
+        if status == 404:
+            return "model not available (404)"
+        if status == 429:
+            return "rate limited (429)"
+        if status == 408:
+            return "timed out (408)"
+        if status >= 500:
+            return "endpoint unavailable (%d)" % status
+        return "request rejected (%d)" % status
+    if isinstance(exc, ReachTransientError):
+        return "endpoint unavailable"
+    return "unexpected client error"
+
+
+def _calm_failure(result=None):
+    result = result or {}
+    attempts = result.get("attempts") or 0
+    reason = result.get("reason") or "unexpected client error"
+    if attempts > 1:
+        reason += ", after %d tries" % attempts
+    elif attempts == 1 and not result.get("retryable"):
+        reason += ", not retried"
+    elif attempts == 1:
+        reason += ", after 1 try"
+    print(c_yellow("  ⏸ the model didn't answer: %s — "
+                   "send your message again or /retry" % reason))
 
 
 def stream_reply(client, messages, indent=None, tools=None, full=False):
@@ -332,7 +371,7 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
         state["indicator"].stop()
     print()
     if not ok:
-        _calm_failure()
+        _calm_failure(result)
     if full:
         return ok, result
     return ok, result.get("content", "")
