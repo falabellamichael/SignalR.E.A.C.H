@@ -880,6 +880,162 @@ class SlashCommandTests(unittest.TestCase):
         self.assertIn("bye.", quiet.getvalue())
 
 
+class TodoToolTests(unittest.TestCase):
+    """Agent mode: todo_write must tolerate the field spellings models
+    actually emit instead of silently dropping the plan."""
+
+    def setUp(self):
+        self.ctx = {"todos": []}
+
+    def _write(self, payload):
+        from reach_cli.agent_tools import tool_todo_write
+        return tool_todo_write(os.environ.get("TEMP") or "/tmp",
+                               payload, self.ctx)
+
+    def test_canonical_shape(self):
+        result = self._write({"todos": [
+            {"text": "Step 1", "status": "in_progress"},
+            {"text": "Step 2", "status": "completed"},
+        ]})
+        self.assertIn("Agent plan — 1/2 done", result)
+        self.assertIn("◐ Step 1", result)
+        self.assertIn("✓ Step 2", result)
+        self.assertEqual([t["status"] for t in self.ctx["todos"]],
+                         ["in_progress", "completed"])
+
+    def test_content_key_instead_of_text(self):
+        self._write({"todos": [{"content": "Do the thing",
+                                "status": "pending"}]})
+        self.assertEqual(self.ctx["todos"],
+                         [{"text": "Do the thing", "status": "pending"}])
+
+    def test_alternate_list_keys(self):
+        for key in ("items", "tasks", "plan", "steps", "list"):
+            self.ctx["todos"] = []
+            self._write({key: [{"text": "A step"}]})
+            self.assertEqual(len(self.ctx["todos"]), 1, key)
+            self.assertEqual(self.ctx["todos"][0]["text"], "A step")
+
+    def test_any_list_value_as_fallback(self):
+        self._write({"checklist": [{"text": "Loose step"}]})
+        self.assertEqual(self.ctx["todos"][0]["text"], "Loose step")
+
+    def test_status_aliases_normalised(self):
+        self._write({"todos": [
+            {"text": "a", "status": "done"},
+            {"text": "b", "status": "finished"},
+            {"text": "c", "status": "in-progress"},
+            {"text": "d", "status": "in progress"},
+            {"text": "e", "status": "In Progress"},
+            {"text": "f", "status": "active"},
+            {"text": "g", "status": "working"},
+            {"text": "h", "status": "nonsense"},
+            {"text": "i", "state": "DONE"},
+        ]})
+        statuses = [t["status"] for t in self.ctx["todos"]]
+        self.assertEqual(statuses,
+                         ["completed", "completed", "in_progress",
+                          "in_progress", "in_progress", "in_progress",
+                          "in_progress", "pending", "completed"])
+
+    def test_done_boolean_flag(self):
+        self._write({"todos": [
+            {"text": "a", "done": True},
+            {"text": "b", "done": "true"},
+            {"text": "c", "done": False},
+            {"text": "d", "completed": "yes"},
+        ]})
+        self.assertEqual([t["status"] for t in self.ctx["todos"]],
+                         ["completed", "completed", "pending", "completed"])
+
+    def test_string_items(self):
+        self._write({"todos": ["first", {"text": "second"}]})
+        self.assertEqual([t["text"] for t in self.ctx["todos"]],
+                         ["first", "second"])
+        self.assertEqual(self.ctx["todos"][0]["status"], "pending")
+
+    def test_textless_items_reported(self):
+        result = self._write({"todos": [{"status": "pending"},
+                                        {"text": "kept"},
+                                        42]})
+        self.assertEqual([t["text"] for t in self.ctx["todos"]], ["kept"])
+        self.assertIn("dropped 2", result)
+
+    def test_no_list_is_error(self):
+        result = self._write({"todos": "not a list"})
+        self.assertTrue(result.startswith("error:"), result)
+        self.assertEqual(self.ctx["todos"], [])
+
+    def test_aliases_satisfy_completion_gate(self):
+        """Statuses stored canonical so `!= "completed"` gate counts right."""
+        self._write({"todos": [{"task": "wrap up", "status": "done"}]})
+        open_items = [t for t in self.ctx["todos"]
+                      if t["status"] != "completed"]
+        self.assertEqual(open_items, [])
+
+    def test_todo_read_formats_current_plan(self):
+        from reach_cli.agent_tools import tool_todo_read
+        self._write({"todos": [{"text": "only step",
+                                "status": "in_progress"}]})
+        result = tool_todo_read(".", {}, self.ctx)
+        self.assertIn("◐ only step", result)
+
+
+class ToolBlockParseTests(unittest.TestCase):
+    """Agent mode: fenced tool/status blocks tolerate the key spellings
+    non-compliant models actually emit."""
+
+    def _parse(self, text):
+        from reach_cli.chat import parse_tool_blocks
+        return parse_tool_blocks(text)
+
+    def test_tool_key_instead_of_action(self):
+        actions, status, invalid = self._parse(
+            '```tool\n{"tool": "todo_write", "todos": []}\n```')
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action"], "todo_write")
+        self.assertFalse(invalid)
+
+    def test_function_call_shape_flattens_parameters(self):
+        actions, _, invalid = self._parse(
+            '```tool\n{"name": "todo_write", "parameters": '
+            '{"todos": [{"text": "s"}]}}\n```')
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action"], "todo_write")
+        self.assertEqual(actions[0]["todos"], [{"text": "s"}])
+        self.assertFalse(invalid)
+
+    def test_arguments_and_input_nesting(self):
+        for key in ("arguments", "input"):
+            actions, _, _ = self._parse(
+                '```tool\n{"action": "todo_write", "%s": '
+                '{"todos": []}}\n```' % key)
+            self.assertIn("todos", actions[0], key)
+
+    def test_status_alias_done_maps_to_complete(self):
+        _, status, _ = self._parse(
+            '```agent_status\n{"status": "done", "summary": "all good"}\n```')
+        self.assertIsNotNone(status)
+        self.assertEqual(status["status"], "complete")
+
+    def test_status_alias_stuck_maps_to_blocked(self):
+        _, status, _ = self._parse(
+            '```agent_status\n{"status": "Stuck", "reason": "no keys"}\n```')
+        self.assertIsNotNone(status)
+        self.assertEqual(status["status"], "blocked")
+
+    def test_canonical_status_still_parsed(self):
+        for value in ("complete", "blocked"):
+            _, status, _ = self._parse(
+                '```agent_status\n{"status": "%s"}\n```' % value)
+            self.assertEqual(status["status"], value)
+
+    def test_unrecognised_status_stays_unparsed(self):
+        _, status, _ = self._parse(
+            '```agent_status\n{"status": "pondering"}\n```')
+        self.assertIsNone(status)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

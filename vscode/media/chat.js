@@ -325,11 +325,11 @@
       let added = 0;
       while (pendingValues.length) {
         let parsed = pendingValues.shift();
-        if (parsed && !parsed.action && parsed.name) {
-          const args = parsed.arguments ?? parsed.parameters ?? {};
+        if (parsed && !parsed.action && (parsed.name || parsed.tool)) {
+          const args = parsed.arguments ?? parsed.parameters ?? parsed.input ?? {};
           parsed = Object.assign({}, typeof args === 'string'
             ? (() => { try { return JSON.parse(args); } catch (e) { return {}; } })()
-            : args, { action: parsed.name });
+            : args, { action: parsed.name || parsed.tool });
         }
         const it = parsed;
         if (it && allowed.includes(it.action)) {
@@ -368,11 +368,23 @@
             x: it.x, y: it.y,
             submit: it.submit === true,
             timeout: it.timeout,
-            // todo_write / tool_help
-            todos: Array.isArray(it.todos) ? it.todos.slice(0, 50).map(t => ({
-              text: String((t && t.text) || '').slice(0, 300),
-              status: String((t && t.status) || 'pending').slice(0, 20),
-            })) : undefined,
+            // todo_write / tool_help — accept the field spellings models
+            // actually emit; status synonyms are normalised host-side.
+            todos: (() => {
+              const list = ['todos', 'items', 'tasks', 'plan', 'steps', 'list']
+                .map((k) => it[k]).find(Array.isArray);
+              if (!Array.isArray(list)) return undefined;
+              return list.slice(0, 50).map((t) => {
+                const text = typeof t === 'string' ? t
+                  : ['text', 'content', 'task', 'description', 'title', 'item']
+                    .map((k) => String((t && t[k]) || '').trim()).find(Boolean) || '';
+                return {
+                  text: String(text).slice(0, 300),
+                  status: String((t && (t.status || t.state)) || 'pending').slice(0, 20),
+                  done: t && t.done, completed: t && t.completed,
+                };
+              });
+            })(),
             // edit_patch
             hunks: Array.isArray(it.hunks) ? it.hunks.slice(0, 40) : undefined,
           });

@@ -15,7 +15,7 @@ const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'vscode', 'extension.js'), 'utf8');
 
-function lift(name) {
+function sliceFunction(name) {
   const start = source.indexOf('function ' + name + '(');
   assert.ok(start >= 0, 'could not find ' + name + '() in extension.js');
   const open = source.indexOf('{', start);
@@ -28,14 +28,22 @@ function lift(name) {
       if (depth === 0) { end = i + 1; break; }
     }
   }
-  const fn = source.slice(start, end);
-  const ctx = { String, Array, Error, TODO_STATUSES: ['pending', 'in_progress', 'completed'] };
-  vm.runInNewContext(fn + '\nthis.' + name + '=' + name + ';', ctx);
-  return ctx[name];
+  return source.slice(start, end);
 }
 
-const normalizeTodos = lift('normalizeTodos');
-const renderTodos = lift('renderTodos');
+// The todo helpers live in one contiguous block in extension.js — lift the
+// whole region so consts and helper functions resolve each other.
+const todoRegion = source.slice(
+  source.indexOf('const TODO_STATUSES'),
+  source.indexOf('function renderTodos'),
+);
+assert.ok(todoRegion.includes('normalizeTodos'), 'todo helpers region incomplete');
+const ctx = { String, Array, Error, Object };
+vm.runInNewContext(
+  todoRegion + '\n' + sliceFunction('renderTodos')
+  + '\nthis._x = { normalizeTodos, renderTodos, todoListFrom };',
+  ctx);
+const { normalizeTodos, renderTodos, todoListFrom } = ctx._x;
 
 test('normalizeTodos accepts a well-formed list and preserves order', () => {
   const todos = normalizeTodos([
@@ -100,6 +108,46 @@ test('a normalized list round-trips through renderTodos (the resume path)', () =
   assert.ok(rendered.includes('Step A'));
   assert.ok(rendered.includes('Step B'));
   assert.ok(rendered.includes('1/2 completed'));
+});
+
+test('todoListFrom finds the plan under re-keyed field names', () => {
+  for (const key of ['todos', 'items', 'tasks', 'plan', 'steps', 'list']) {
+    const msg = { action: 'todo_write' };
+    msg[key] = [{ text: 'x' }];
+    assert.equal(todoListFrom(msg).length, 1, key);
+  }
+  // last resort: any list value is the plan
+  assert.equal(todoListFrom({ checklist: [{ text: 'y' }] })[0].text, 'y');
+  assert.equal(todoListFrom({ action: 'todo_write' }), null);
+});
+
+test('normalizeTodos accepts alternate text keys and string items', () => {
+  const todos = normalizeTodos([
+    { content: 'via content' },
+    { task: 'via task' },
+    { description: 'via description' },
+    'a bare string step',
+  ]);
+  assert.deepEqual(todos.map((t) => t.text),
+    ['via content', 'via task', 'via description', 'a bare string step']);
+});
+
+test('normalizeTodos maps status synonyms onto canonical statuses', () => {
+  const todos = normalizeTodos([
+    { text: 'a', status: 'done' },
+    { text: 'b', status: 'finished' },
+    { text: 'c', status: 'in-progress' },
+    { text: 'd', status: 'In Progress' },
+    { text: 'e', status: 'active' },
+    { text: 'f', status: 'blocked' },
+    { text: 'g', state: 'DONE' },
+    { text: 'h', done: true },
+    { text: 'i', completed: 'yes' },
+    { text: 'j', done: false },
+  ]);
+  assert.deepEqual(todos.map((t) => t.status),
+    ['completed', 'completed', 'in_progress', 'in_progress', 'in_progress',
+      'pending', 'completed', 'completed', 'completed', 'pending']);
 });
 
 /* The host posted a `todos` message that the webview had no handler for, so a
