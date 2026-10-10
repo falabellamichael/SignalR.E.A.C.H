@@ -45,11 +45,12 @@ export async function prepareSaleReplacement(provider, deployment, treasuryInput
   if (treasury === getAddress(oldTreasury)) fail('Replacement treasury is already active.');
   if (closed || issuancePaused || !role) fail('The current sale is closed or cannot mint RCH.');
   await oldSale.quote(1n);
+  const usdPriceE8PerRch = await currentSaleUsdPrice(oldSale);
 
   const nonce = await provider.getTransactionCount(payer, 'pending');
   const artifact = build.artifacts.ReachCreditsSale;
   const deployTx = await new ContractFactory(artifact.abi, artifact.bytecode).getDeployTransaction(
-    deployment.token, feed, treasury, admin, maxOracleAge, minPrice, maxPrice,
+    deployment.token, feed, treasury, admin, usdPriceE8PerRch, maxOracleAge, minPrice, maxPrice,
   );
   const estimatedGas = await provider.estimateGas({ from: payer, data: deployTx.data, value: 0n });
   const gasLimit = (estimatedGas * 120n + 99n) / 100n;
@@ -73,6 +74,7 @@ export async function prepareSaleReplacement(provider, deployment, treasuryInput
     admin,
     treasury,
     feed,
+    usdPriceE8PerRch: usdPriceE8PerRch.toString(),
     oracle: { maxAgeSeconds: maxOracleAge.toString(), minEthUsdE8: minPrice.toString(), maxEthUsdE8: maxPrice.toString() },
     expectedSale: getCreateAddress({ from: payer, nonce }),
     oldSaleState: { paused, closed, hasSaleMinterRole: role, tokenIssuancePaused: issuancePaused },
@@ -117,11 +119,13 @@ export async function readReplacementState(provider, plan, build) {
   if (state.deployed) {
     if (!sameRuntime(newCode, build.artifacts.ReachCreditsSale)) fail('Unexpected bytecode exists at the predicted replacement address.');
     const replacement = new Contract(plan.expectedSale, build.artifacts.ReachCreditsSale.abi, provider);
-    const [rch, feed, treasury, owner, newPaused, newClosed, newRole] = await Promise.all([
+    const [rch, feed, treasury, owner, newPaused, newClosed, newRole, newPrice] = await Promise.all([
       replacement.rch(), replacement.ethUsdFeed(), replacement.treasury(), replacement.owner(),
       replacement.paused(), replacement.saleClosed(), token.hasRole(await token.SALE_MINTER_ROLE(), plan.expectedSale),
+      replacement.usdPriceE8PerRch(),
     ]);
-    if (rch !== plan.token || feed !== plan.feed || treasury !== plan.treasury || owner !== plan.admin) {
+    if (rch !== plan.token || feed !== plan.feed || treasury !== plan.treasury || owner !== plan.admin
+      || newPrice.toString() !== plan.usdPriceE8PerRch) {
       fail('Replacement contract settings do not match the reviewed treasury and RCH token.');
     }
     if (newClosed) fail('The replacement sale is closed and cannot be activated.');
@@ -131,6 +135,19 @@ export async function readReplacementState(provider, plan, build) {
   }
   state.complete = state.deployed && state.oldClosed && !state.oldRole && !state.newPaused && state.newRole;
   return state;
+}
+
+// The replacement keeps the live sale's USD price per RCH. The pinned mainnet
+// sale predates the constructor argument and exposes it as the constant
+// USD_PRICE_E8_PER_RCH; newer sales expose usdPriceE8PerRch.
+async function currentSaleUsdPrice(sale) {
+  const getter = ['usdPriceE8PerRch', 'USD_PRICE_E8_PER_RCH'].find(name => {
+    try { return sale.interface.getFunction(name) !== null; } catch { return false; }
+  });
+  if (!getter) fail('The current sale does not expose its USD price per RCH.');
+  const price = await sale[getter]();
+  if (typeof price !== 'bigint' || price <= 0n) fail('The current sale reported an invalid USD price per RCH.');
+  return price;
 }
 
 export async function resumeSaleReplacement(provider, deployment, plan, build, { admin, treasury }) {
@@ -146,7 +163,7 @@ export async function resumeSaleReplacement(provider, deployment, plan, build, {
     && deployment.treasury === plan.treasury;
   if (!original && !activated) fail('Saved replacement plan does not match the active mainnet sale record.');
   const rebuilt = await new ContractFactory(build.artifacts.ReachCreditsSale.abi, build.artifacts.ReachCreditsSale.bytecode)
-    .getDeployTransaction(plan.token, plan.feed, plan.treasury, plan.admin,
+    .getDeployTransaction(plan.token, plan.feed, plan.treasury, plan.admin, BigInt(plan.usdPriceE8PerRch),
       BigInt(plan.oracle.maxAgeSeconds), BigInt(plan.oracle.minEthUsdE8), BigInt(plan.oracle.maxEthUsdE8));
   if (rebuilt.data !== plan.transaction.data
     || getCreateAddress({ from: plan.admin, nonce: plan.transaction.nonce }) !== plan.expectedSale) {

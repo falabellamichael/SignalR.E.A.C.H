@@ -15,13 +15,14 @@ const token = '0x2222222222222222222222222222222222222222';
 const oldSale = '0x3333333333333333333333333333333333333333';
 const feed = '0x4444444444444444444444444444444444444444';
 const expectedSale = ethers.getCreateAddress({ from: admin, nonce: 5 });
+const usdPriceE8PerRch = '1000000';
 const oracle = { maxAgeSeconds: '7200', minEthUsdE8: '10000000000', maxEthUsdE8: '10000000000000' };
 const saleArtifact = build.artifacts.ReachCreditsSale;
 const saleInterface = new ethers.Interface(saleArtifact.abi);
 const data = (await new ethers.ContractFactory(saleArtifact.abi, saleArtifact.bytecode).getDeployTransaction(
-  token, feed, treasury, admin, oracle.maxAgeSeconds, oracle.minEthUsdE8, oracle.maxEthUsdE8)).data;
+  token, feed, treasury, admin, usdPriceE8PerRch, oracle.maxAgeSeconds, oracle.minEthUsdE8, oracle.maxEthUsdE8)).data;
 const plan = { schema: 'rch-sale-replacement-plan-v1', chainId: 1, admin, treasury, token, oldSale,
-  feed, expectedSale, oracle, createdAt: new Date(Date.now() - 60000).toISOString(),
+  feed, expectedSale, usdPriceE8PerRch, oracle, createdAt: new Date(Date.now() - 60000).toISOString(),
   expiresAt: new Date(Date.now() + 60000).toISOString(), dataHash: sha256(data),
   deploymentFee: { maxCostEth: '0.0001' }, transaction: { from: admin, nonce: 5, data } };
 const activeManifest = { token, sale: expectedSale, initialSale: oldSale, treasury };

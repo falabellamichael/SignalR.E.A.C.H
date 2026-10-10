@@ -1875,7 +1875,14 @@ class ToolLineTests(unittest.TestCase):
 
     def setUp(self):
         from reach_cli import agent_tools
+        from reach_cli import chat as chat_mod
         self.at = agent_tools
+        # Glyphs depend on the host console (legacy conhost gets ●/└); pin the
+        # modern set so these lines are checked the same on every runner.
+        for name, glyph in (("TOOL_GLYPH", "\u23fa"), ("RESULT_GLYPH", "\u23bf")):
+            patcher = unittest.mock.patch.object(chat_mod, name, glyph)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def capture(self, fn, *a):
         out = io.StringIO()

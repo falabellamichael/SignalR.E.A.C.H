@@ -663,7 +663,7 @@ def _execute_native(client, tool_calls, state):
         args, error = parse_tool_arguments(fn.get("arguments"))
         if error:
             result = "error: " + error
-            print(c_dim("  ⏺ %s  (unreadable arguments, asking again)" % name))
+            print(c_dim("  %s %s  (unreadable arguments, asking again)" % (TOOL_GLYPH, name)))
         else:
             show_tool_call(name, args)
             result = run_tool(name, args, client.workpath, ctx)
@@ -827,7 +827,8 @@ def endpoint_notice(client):
         return False
     where = _host_port(base) or base
     if where.startswith(("127.0.0.1:", "localhost:")):
-        hint = "start SignalREACH (python %s start)" % os.path.join("tools", "reach.py")
+        # Forward slashes work in cmd, PowerShell and POSIX shells alike.
+        hint = "start SignalREACH (python tools/reach.py start)"
     else:
         hint = "check the endpoint"
     print(c_yellow("  ! no answer from %s yet — %s, or switch with /endpoint"

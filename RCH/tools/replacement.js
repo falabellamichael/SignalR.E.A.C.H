@@ -70,7 +70,7 @@ async function load() {
   if (dataHash.toLowerCase() !== `0x${plan.dataHash}`.toLowerCase()) throw new Error('Deployment data hash does not match the plan.');
   const factory = new eth.ContractFactory(saleArtifact.abi, saleArtifact.bytecode);
   const rebuilt = await factory.getDeployTransaction(plan.token, plan.feed, plan.treasury, plan.admin,
-    BigInt(plan.oracle.maxAgeSeconds), BigInt(plan.oracle.minEthUsdE8), BigInt(plan.oracle.maxEthUsdE8));
+    BigInt(plan.usdPriceE8PerRch), BigInt(plan.oracle.maxAgeSeconds), BigInt(plan.oracle.minEthUsdE8), BigInt(plan.oracle.maxEthUsdE8));
   if (rebuilt.data.toLowerCase() !== plan.transaction.data.toLowerCase()) throw new Error('Deployment data does not match the compiled sale artifact.');
   if (!same(plan.expectedSale, eth.getCreateAddress({ from: plan.admin, nonce: plan.transaction.nonce }))) {
     throw new Error('Predicted sale address does not match the reviewed wallet nonce.');
