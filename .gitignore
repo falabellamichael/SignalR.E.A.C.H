@@ -70,3 +70,11 @@ studio/_test-out*.txt
 .reach/smt-cache/
 /SimpleREACH/
 /SingalREACH/
+
+# Local scratch and agent worktrees (never commit)
+tools/_probe_*.py
+studio/scripts/_tmp-*.cjs
+.tmp/
+.context-recovery/
+.wt-*/
+.codex-worktrees/
