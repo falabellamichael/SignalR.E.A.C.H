@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Contract, ContractFactory, getAddress, keccak256 } from 'ethers';
 import { chain, send } from './helpers/chain.mjs';
-import { build } from './helpers/chain.mjs';
+import { build, saleUsdPriceE8 } from './helpers/chain.mjs';
 import { nextReplacementAction, prepareSaleReplacement, readReplacementState, resumeSaleReplacement } from '../scripts/sale-replacement.mjs';
 
 test('replacement plan targets a new treasury and safe state machine preserves the old sale until cutover', async (t) => {
@@ -29,12 +29,14 @@ test('replacement plan targets a new treasury and safe state machine preserves t
   assert.equal(plan.oldSale, oldSaleAddress);
   assert.equal(plan.treasury, newTreasury);
   assert.notEqual(plan.expectedSale, oldSaleAddress);
+  assert.equal(plan.usdPriceE8PerRch, (await f.sale.usdPriceE8PerRch()).toString());
+  assert.equal(plan.usdPriceE8PerRch, saleUsdPriceE8.toString());
 
   let state = await readReplacementState(f.provider, plan, build);
   assert.equal(nextReplacementAction(state), 'deploy');
   const artifact = build.artifacts.ReachCreditsSale;
   const replacement = await new ContractFactory(artifact.abi, artifact.bytecode, f.admin).deploy(
-    tokenAddress, await f.feed.getAddress(), newTreasury, admin, 3600, 100n * 10n ** 8n, 100000n * 10n ** 8n,
+    tokenAddress, await f.feed.getAddress(), newTreasury, admin, saleUsdPriceE8, 3600, 100n * 10n ** 8n, 100000n * 10n ** 8n,
   );
   await replacement.waitForDeployment();
   assert.equal(getAddress(await replacement.getAddress()), plan.expectedSale);
