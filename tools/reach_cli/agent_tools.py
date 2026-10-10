@@ -403,6 +403,87 @@ def parse_tool_arguments(raw):
     return data, None
 
 
+# ---- display helpers (compact, human-readable tool lines) -----------------
+
+def format_args(name, args, limit=72):
+    """Compact ``key=value`` args for a tool line instead of raw JSON."""
+    args = args or {}
+    if name == "todo_write" and isinstance(args.get("todos"), list):
+        return "%d item(s)" % len(args["todos"])
+    if name == "edit":
+        return str(args.get("path", ""))
+    if name == "shell":
+        return _clip(str(args.get("command", "")), limit)
+    parts = []
+    for key, value in args.items():
+        if value in (None, "", False):
+            continue
+        if isinstance(value, bool):
+            parts.append(key)
+            continue
+        if isinstance(value, (list, dict)):
+            value = "[%d]" % len(value)
+        text = str(value)
+        if any(ch.isspace() for ch in text) or text == "":
+            text = json.dumps(text, ensure_ascii=False)
+        parts.append("%s=%s" % (key, text))
+    return _clip(" ".join(parts), limit)
+
+
+def _clip(text, limit):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def edit_diff(args, max_lines=3, width=72):
+    """Short -/+ diff lines for an edit: [(sign, text), ...]."""
+    out = []
+    for sign, key in (("-", "search"), ("+", "replace")):
+        lines = str((args or {}).get(key, "")).splitlines()
+        for line in lines[:max_lines]:
+            out.append((sign, _clip(line, width) if line.strip() else line))
+        if len(lines) > max_lines:
+            out.append((sign, "… %d more line(s)" % (len(lines) - max_lines)))
+    return out
+
+
+def summarize_result(name, result):
+    """(ok, one-line summary) for a tool result."""
+    text = result or ""
+    first = text.splitlines()[0] if text else ""
+    if text.startswith("error:"):
+        return False, _clip(first[len("error:"):].strip(), 90)
+    if "denied by the user" in first:
+        return False, "denied"
+    if name == "read":
+        match = re.search(r"\((\d+) lines\)", first)
+        return True, ("%s lines" % match.group(1)) if match else _clip(first, 90)
+    if name in ("glob", "search"):
+        if text.strip() == "no matches":
+            return True, "no matches"
+        count = len([l for l in text.splitlines() if l and not l.startswith("...")])
+        return True, "%d match(es)" % count if name == "search" else "%d file(s)" % count
+    if name == "list":
+        if text.strip() == "(empty)":
+            return True, "empty"
+        return True, "%d entries" % len([l for l in text.splitlines() if not l.startswith("...")])
+    if name == "shell":
+        match = re.match(r"exit code (\S+)", first)
+        code = match.group(1) if match else "?"
+        body = [l for l in text.splitlines()[1:] if l.strip()]
+        tail = (" · " + _clip(body[-1], 60)) if body else ""
+        return code == "0", "exit %s%s" % (code, tail)
+    if name == "websearch":
+        return True, "%d result(s)" % len(re.findall(r"^\[\d+\]", text, re.M))
+    if name == "browse":
+        return True, "%d chars" % max(0, len(text) - len(first) - 1)
+    if name in ("todo_write", "todo_read"):
+        lines = [l for l in text.splitlines() if l.startswith("[")]
+        done = len([l for l in lines if l.startswith("[x]")])
+        return True, "plan %d/%d done" % (done, len(lines)) if lines else _clip(first, 90)
+    return True, _clip(first, 90)
+
+
 def run_tool(name, args, workpath, ctx):
     """Execute one tool action. Returns the plain-text result."""
     tool = TOOLS.get(name)

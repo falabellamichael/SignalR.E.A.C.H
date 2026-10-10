@@ -9,6 +9,9 @@ import urllib.parse
 
 from .agent_tools import (
     TOOLS,
+    edit_diff,
+    format_args,
+    summarize_result,
     parse_tool_arguments,
     run_tool,
     tool_help_text,
@@ -341,12 +344,17 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
     if indent is None:
         indent = response_indent()
     response_open()
-    state = {"at_start": True, "first": True, "wrote": False,
+    # "midline": the cursor sits after text (or the 'ai ▸' label) on a line
+    state = {"at_start": True, "first": True, "wrote": False, "midline": True,
+             "need_label": False,
              "indicator": WaitIndicator(prefix=response_label())}
     state["indicator"].start()
 
     def write(delta):
         state["indicator"].stop()
+        if state["need_label"]:  # text after a retry: reopen 'ai ▸' once
+            sys.stdout.write(response_label())
+            state["need_label"] = False
         state["wrote"] = True
         buf = delta
         while True:
@@ -365,25 +373,28 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
             sys.stdout.write(buf)
             state["at_start"] = False
             state["first"] = False
+        state["midline"] = not delta.endswith("\n")
         sys.stdout.flush()
 
     def retry(attempt):
+        # one dim status line per retry, no blank lines in between
         state["indicator"].stop()
-        if not state["at_start"] or not state["wrote"]:
-            print()
+        if state["midline"]:
+            sys.stdout.write("\n")
+            state["midline"] = False
         status_line("model busy — retrying %s (%d/%d)…"
                     % (client.model or "same model", attempt, MAX_ATTEMPTS))
         state["at_start"] = True
         if not state["wrote"]:
-            state["indicator"] = WaitIndicator(prefix=response_label())
-            state["indicator"].start()
+            state["need_label"] = True
 
     try:
         ok, result = request_reply(client, messages, tools=tools,
                                    on_text=write, on_retry=retry)
     finally:
         state["indicator"].stop()
-    print()
+    if state["midline"] or ok:
+        print()
     if not ok:
         _calm_failure(result)
     if full:
@@ -448,6 +459,31 @@ def parse_tool_blocks(text):
     return actions, status, invalid
 
 
+TOOL_GLYPH = "⏺"
+RESULT_GLYPH = "⎿"
+
+
+def show_tool_call(name, args):
+    """One compact line per tool call: '  ⏺ tool  key=value …'."""
+    summary = format_args(name, args)
+    if TOOLS.get(name, {}).get("approval"):
+        # exec/write tools keep the bold-yellow look; approval prompt unchanged
+        print(c_bold(c_yellow("  %s %s" % (TOOL_GLYPH, name))) + "  " + c_bold(summary))
+    else:
+        print(c_dim("  %s " % TOOL_GLYPH) + c_cyan(name) + c_dim("  " + summary))
+    if name == "edit":
+        for sign, text in edit_diff(args):
+            paint = c_red if sign == "-" else c_green
+            print("      " + paint("%s %s" % (sign, text)))
+
+
+def show_tool_result(name, result):
+    """'    ⎿ ✓ summary' (green) or '    ⎿ ✗ summary' (red)."""
+    ok, summary = summarize_result(name, result)
+    marker = c_green("✓") if ok else c_red("✗")
+    print(c_dim("    %s " % RESULT_GLYPH) + marker + c_dim(" " + summary))
+
+
 def _execute_actions(client, actions, state):
     """Run each tool action; return the [tool result] message text."""
     ctx = {"todos": state.todos, "approve": state.approve}
@@ -455,15 +491,9 @@ def _execute_actions(client, actions, state):
     for action in actions:
         name = str(action.get("action"))
         args = {k: v for k, v in action.items() if k != "action"}
-        if TOOLS.get(name, {}).get("approval"):
-            preview = args.get("command") or args.get("path") or name
-            print(c_bold(c_yellow("  agent %s → ")) % name, c_bold(str(preview)))  # noqa: E501
-        else:
-            print(c_dim("  agent %s → %s" % (name, json.dumps(args)[:90])))
+        show_tool_call(name, args)
         result = run_tool(name, args, client.workpath, ctx)
-        first = result.splitlines()[0][:100] if result else ""
-        marker = c_red("✗") if result.startswith("error:") else c_green("✓")
-        print(marker + c_dim("  " + first))
+        show_tool_result(name, result)
         parts.append("tool %s %s:\n%s" % (name, json.dumps(args), result))
     return "[tool result]\n" + "\n\n".join(parts)
 
@@ -478,17 +508,11 @@ def _execute_native(client, tool_calls, state):
         args, error = parse_tool_arguments(fn.get("arguments"))
         if error:
             result = "error: " + error
-            print(c_dim("  agent %s → (unreadable arguments, asking again)" % name))
+            print(c_dim("  ⏺ %s  (unreadable arguments, asking again)" % name))
         else:
-            if TOOLS.get(name, {}).get("approval"):
-                preview = args.get("command") or args.get("path") or name
-                print(c_bold(c_yellow("  agent %s → " % name)), c_bold(str(preview)))
-            else:
-                print(c_dim("  agent %s → %s" % (name, json.dumps(args)[:90])))
+            show_tool_call(name, args)
             result = run_tool(name, args, client.workpath, ctx)
-            first = result.splitlines()[0][:100] if result else ""
-            marker = c_red("✗") if result.startswith("error:") else c_green("✓")
-            print(marker + c_dim("  " + first))
+            show_tool_result(name, result)
         out.append({"role": "tool", "tool_call_id": call.get("id") or "",
                     "content": result})
     return out
