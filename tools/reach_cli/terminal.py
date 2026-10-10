@@ -3,10 +3,13 @@
 import difflib
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.parse
 
 VERSION = "1.0.0"
@@ -25,6 +28,8 @@ class Paint:
 
 
 PAINT = Paint(False)
+# Set when --color always forces paint, including over NO_COLOR.
+COLOR_FORCED = False
 
 
 
@@ -90,53 +95,34 @@ def spinner_char():
 
 
 def banner(client, base, mode):
-    width = 66
-    print(c_cyan("┌" + "─" * width + "┐"))
-    print(
-        c_cyan("│")
-        + c_bold(c_yellow("  ⚡ SignalR.E.A.C.H CLI"))
-        + c_dim("  v" + VERSION)
-        + (" " * (width - 32))
-        + c_cyan("│")
-    )
-    print(
-        c_cyan("│")
-        + c_dim("  REACH = RAG Endpoint & AI Chat Host — keyless gpt-4o/5, Claude")
-        + " " * (width - 72)
-        + c_cyan("│")
-    )
-    print(c_cyan("├") + "─" * width + "┤")
-    model = client.model or "(auto — set with /model)"
-    print(
-        c_cyan("│")
-        + "  "
-        + c_green("endpoint ")
-        + c_dim(base)
-        + (" " * max(1, width - 16 - len(base)))
-        + c_cyan("│")
-    )
-    print(
-        c_cyan("│")
-        + "  "
-        + c_green("model    ")
-        + c_bold(model)
-        + (" " * max(1, width - 15 - len(model)))
-        + c_cyan("│")
-    )
-    print(c_cyan("└") + "─" * width + "┘")
-    print(c_dim("  /help for commands · /web <question> for grounded search\n"))
+    """Startup splash. A TTY with colour gets the box; otherwise one plain line."""
+    try:
+        if _plain_chrome():
+            print(plain_header(client, base, mode))
+            return
+        for line in render_banner_lines(client, base, mode):
+            print(line)
+    except Exception:
+        try:
+            print(plain_header(client, base, mode))
+        except Exception:
+            print("REACH CLI v" + VERSION)
 
 
 
 
 def print_footer(client, cited=False):
-    parts = ["%s ms" % round(client.last_latency_ms)]
-    if client.usage.get("completion"):
-        parts.append("%s tok" % client.usage["completion"])
-    if cited:
-        parts.append("grounded")
-    print(c_cyan("  └─") + c_dim("  " + " · ".join(parts)))
-    print()
+    """Turn footer sized to the terminal.
+
+    Stats come from ``client.last_turn`` (tokens, rounds, latency in seconds).
+    Missing keys are left out. The signature stays ``(client, cited=False)``
+    so the chat loop can keep calling it.
+    """
+    try:
+        print(render_footer(client, cited=cited))
+        print()
+    except Exception as exc:
+        print(c_red("  ✗ %s" % exc))
 
 
 
@@ -288,7 +274,17 @@ COMMANDS = (
     ("/compact", "shrink the conversation history"),
     ("/copy", "copy the last answer to the clipboard"),
     ("/save [file]", "save the conversation as JSONL"),
-    ("/exit", "quit (also Ctrl+C or Ctrl+D)"),
+    ("/exit", "quit (Ctrl+D, or Ctrl+C twice)"),
+)
+
+
+# Help stays one column (`  %-16s %s`) and is grouped so the list is scannable.
+# Every token appears in exactly one section.
+HELP_SECTIONS = (
+    ("session", ("/help", "/status", "/exit")),
+    ("endpoint", ("/endpoint", "/model", "/models")),
+    ("chat", ("/web", "/retry", "/undo", "/compact", "/copy", "/clear", "/history", "/save")),
+    ("agent", ("/agent", "/tools", "/workpath", "/system")),
 )
 
 
@@ -325,8 +321,22 @@ def command_tokens():
 
 
 def print_help():
-    for key, description in repl_commands().items():
-        print("  %-16s %s" % (c_cyan(key), description))
+    """Grouped /help. Command lines keep the `  %-16s %s` column."""
+    by_token = {}
+    for spec, description in COMMANDS:
+        by_token[spec.split()[0]] = (spec, description)
+    shown = []
+    for title, tokens in HELP_SECTIONS:
+        print(c_dim("  " + title))
+        for token in tokens:
+            spec, description = by_token[token]
+            print("  %-16s %s" % (c_cyan(spec), description))
+            shown.append(token)
+        print()
+    for spec, description in COMMANDS:
+        token = spec.split()[0]
+        if token not in shown:
+            print("  %-16s %s" % (c_cyan(spec), description))
 
 
 def _command_similarity(query, candidate):
@@ -761,6 +771,7 @@ def _cmd_endpoint(client, _history, _session, argument):
         print(c_dim("  stayed on %s" % (_current_base(client) or "(none)")))
         return SlashResult()
     client.base = url
+    save_session_config(endpoint=url)
     print(c_green("  endpoint → ") + c_bold(url))
     _note_model_on_endpoint(client)
     return SlashResult()
@@ -787,6 +798,7 @@ def _cmd_model(client, _history, _session, argument):
         print(c_red("  ✗ model: %s" % exc))
         return SlashResult()
     print(c_green("  model → ") + c_bold(argument))
+    save_session_config(model=argument)
     return SlashResult()
 
 
@@ -897,6 +909,7 @@ def _cmd_workpath(client, history, _session, argument):
         print(c_red("  ✗ workpath: %s" % exc))
         return SlashResult()
     print(c_green("  workpath → ") + c_bold(target))
+    save_session_config(workpath=target)
     return SlashResult()
 
 
@@ -1055,3 +1068,674 @@ def handle_slash(line, client, history, session=None):
     except Exception as exc:
         print(c_red("  ✗ " + str(exc)))
         return SlashResult()
+
+
+# ---- display width, splash, footer, prompt --------------------------------
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+# 3-line block wordmark: SIGNAL, a dash, REACH. Each line is 47 columns
+# when ambiguous characters are narrow (the usual Western terminal).
+LOGO = (
+    "█▀▀  █  █▀▀ █▄█ █▀█ █       █▀█ █▀▀ █▀█ █▀▀ █ █",
+    "▀▀█  █  █ █ █▀█ █▀█ █   ─── █▀▄ █▀▀ █▀█ █   █▀█",
+    "▀▀▀  █  ▀▀▀ █ █ ▀ ▀ █▄▄     ▀ ▀ ▀▀▀ ▀ ▀ ▀▀▀ ▀ ▀",
+)
+
+TIPS = (
+    "/endpoint switches the relay. /help lists every command.",
+    "End a line with \\ to continue. Ctrl-R searches history.",
+    "Ctrl-C at an empty prompt warns once; press it again to quit.",
+    "Tab completes /commands, and paths after /workpath.",
+)
+
+FOOTER_HINT = "? help · ^C stop · ^D quit"
+BANNER_MAX_COLUMNS = 90
+
+_READLINE_READY = False
+_READLINE = None
+_INTERRUPT_ARMED = False
+
+
+def strip_ansi(text):
+    return _ANSI_RE.sub("", "" if text is None else str(text))
+
+
+def _ambiguous_is_wide():
+    """Ambiguous East Asian width is wide in CJK locales and narrow otherwise."""
+    lang = os.environ.get("LC_ALL") or os.environ.get("LC_CTYPE") or os.environ.get("LANG") or ""
+    lang = lang.upper().replace("-", "_")
+    return any(tag in lang for tag in ("ZH", "JA", "JP", "KO", "CN", "TW", "HK"))
+
+
+def char_width(ch):
+    """Columns for one character, using unicodedata.east_asian_width."""
+    if not ch:
+        return 0
+    code = ord(ch)
+    if code < 32 or code == 127:
+        return 0
+    if unicodedata.combining(ch):
+        return 0
+    kind = unicodedata.east_asian_width(ch)
+    if kind in ("W", "F"):
+        return 2
+    if kind == "A" and _ambiguous_is_wide():
+        return 2
+    return 1
+
+
+def display_width(text):
+    """Visible columns. ANSI colour codes do not count."""
+    return sum(char_width(ch) for ch in strip_ansi(text))
+
+
+def terminal_columns(default=80):
+    try:
+        cols = shutil.get_terminal_size(fallback=(default, 24)).columns
+    except Exception:
+        cols = default
+    if not isinstance(cols, int) or cols < 20:
+        return default if isinstance(default, int) and default >= 20 else 80
+    return cols
+
+
+def truncate_display(text, width):
+    if width <= 0:
+        return ""
+    if display_width(text) <= width:
+        return text
+    ellipsis = "…"
+    limit = width - char_width(ellipsis)
+    if limit < 1:
+        limit = width
+        ellipsis = ""
+    out = []
+    used = 0
+    for ch in text:
+        needed = char_width(ch)
+        if used + needed > limit:
+            break
+        out.append(ch)
+        used += needed
+    return "".join(out) + ellipsis
+
+
+def banner_columns():
+    cols = terminal_columns()
+    if cols > BANNER_MAX_COLUMNS:
+        return BANNER_MAX_COLUMNS
+    return cols
+
+
+def _plain_chrome():
+    """Plain header when stdout is not a terminal, or colour is off.
+
+    NO_COLOR flattens the splash too, unless ``--color always`` set
+    COLOR_FORCED. A non-TTY is always one line, even when paint is on.
+    """
+    try:
+        interactive = bool(sys.stdout.isatty())
+    except Exception:
+        interactive = False
+    if not interactive:
+        return True
+    if os.environ.get("NO_COLOR") and not COLOR_FORCED:
+        return True
+    return not PAINT.on
+
+
+def plain_header(client, base, mode):
+    """Single line used when colour or a TTY is unavailable."""
+    model = "(auto)"
+    if client is not None and getattr(client, "model", None):
+        model = str(client.model)
+    url = base or (_current_base(client) if client is not None else "") or "(none)"
+    mode_label = "agent" if client is not None and getattr(client, "agent", False) else (mode or "chat")
+    text = "REACH CLI v%s · RAG Endpoint & AI Chat Host · %s · %s · %s" % (
+        VERSION, model, url, mode_label)
+    cols = terminal_columns()
+    if display_width(text) > cols:
+        text = truncate_display(text, cols)
+    return text
+
+
+def git_branch(cwd=None):
+    """Current git branch, or None. Never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd or None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        name = proc.stdout.decode("utf-8", "replace").strip()
+    except Exception:
+        return None
+    if not name or name == "HEAD":
+        return name or None
+    return name
+
+
+def endpoint_label_for(url):
+    """Short label for an endpoint URL. Does not contact the network."""
+    norm = _normalize_endpoint_url(url or "") or ""
+    if not norm:
+        return "(none)"
+    if norm == LOCAL_ENDPOINT_URL:
+        return "local"
+    parsed = urllib.parse.urlparse(norm)
+    return parsed.netloc or "custom"
+
+
+def current_tip(index=None):
+    if index is None:
+        index = time.localtime().tm_yday
+    return TIPS[int(index) % len(TIPS)]
+
+
+def _horizontal(width, left, mid, right):
+    side = char_width(left) + char_width(right)
+    fill = max(0, width - side)
+    unit = char_width(mid) or 1
+    count = fill // unit
+    extra = fill - count * unit
+    return left + (mid * count) + (" " * extra) + right
+
+
+def _row_colored(content, width):
+    left, right = "│", "│"
+    inner = max(0, width - char_width(left) - char_width(right))
+    visible = display_width(content)
+    if visible > inner:
+        content = truncate_display(strip_ansi(content), inner)
+        visible = display_width(content)
+    pad = inner - visible
+    if pad < 0:
+        pad = 0
+    return c_cyan(left) + content + (" " * pad) + c_cyan(right)
+
+
+def _logo_lines(inner):
+    raw = list(LOGO)
+    if any(display_width(line) > max(0, inner - 2) for line in raw):
+        raw = ["SIGNAL", "───", "REACH"]
+    return ["  " + line for line in raw]
+
+
+def _version_content():
+    ident = "⚡ REACH CLI v%s" % VERSION
+    tag = " · RAG Endpoint & AI Chat Host"
+    return c_bold(c_yellow(ident)) + c_dim(tag)
+
+
+def _tip_content(index=None):
+    return c_yellow("● Tip") + c_dim("  " + current_tip(index))
+
+
+def _mode_label(client, mode):
+    if client is not None and getattr(client, "agent", False):
+        return "agent"
+    return mode or "chat"
+
+
+def session_facts(client, base, mode):
+    url = base or (_current_base(client) if client is not None else "") or "(none)"
+    if not isinstance(url, str):
+        url = str(url)
+    name = endpoint_label_for(url)
+    model = "(auto)"
+    if client is not None and getattr(client, "model", None):
+        model = str(client.model)
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = "(unknown)"
+    branch = git_branch(None if cwd == "(unknown)" else cwd) or "(none)"
+    if name in ("(none)",):
+        endpoint = url or "(none)"
+    else:
+        endpoint = "%s · %s" % (name, url)
+    return (
+        ("endpoint", endpoint),
+        ("model", model),
+        ("mode", _mode_label(client, mode)),
+        ("cwd", cwd),
+        ("git", branch),
+    )
+
+
+def render_banner_lines(client, base, mode, tip_index=None):
+    width = banner_columns()
+    inner = max(0, width - 2 * char_width("│"))
+    lines = [c_cyan(_horizontal(width, "┌", "─", "┐"))]
+    for logo in _logo_lines(inner):
+        lines.append(_row_colored(logo, width))
+    lines.append(_row_colored("", width))
+    lines.append(_row_colored("  " + _version_content(), width))
+    lines.append(_row_colored("  " + _tip_content(tip_index), width))
+    lines.append(c_cyan(_horizontal(width, "├", "─", "┤")))
+    for label, value in session_facts(client, base, mode):
+        text = "  " + label.ljust(8) + "  " + value
+        # Colour the label only; keep the value plain so padding stays honest.
+        colored = "  " + c_green(label.ljust(8)) + "  " + value
+        if display_width(text) > inner:
+            colored = "  " + c_green(label.ljust(8)) + "  " + truncate_display(
+                value, max(0, inner - display_width("  " + label.ljust(8) + "  ")))
+        lines.append(_row_colored(colored, width))
+    lines.append(c_cyan(_horizontal(width, "└", "─", "┘")))
+    return lines
+
+
+def _format_tokens(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    if count < 0:
+        return None
+    if count < 1000:
+        return "%d tok" % count
+    if count < 10000:
+        text = "%.1f" % (count / 1000.0)
+        if text.endswith(".0"):
+            text = text[:-2]
+        return text + "k tok"
+    if count < 1000000:
+        return "%dk tok" % (count // 1000)
+    text = "%.1f" % (count / 1000000.0)
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text + "M tok"
+
+
+def _format_rounds(value):
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return None
+    if count < 0:
+        return None
+    if count == 1:
+        return "1 round"
+    return "%d rounds" % count
+
+
+def _format_latency(value):
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    if seconds < 10:
+        return "%.1fs" % seconds
+    return "%.0fs" % seconds
+
+
+def render_footer(client, cited=False, columns=None):
+    """Plain-coloured footer line. Left stats, right hint, padded to ``columns``."""
+    model = "auto"
+    url = ""
+    if client is not None:
+        if getattr(client, "model", None):
+            model = str(client.model)
+        url = _current_base(client)
+    label = endpoint_label_for(url) if url else "(none)"
+    parts = [model, label]
+    turn = getattr(client, "last_turn", None) if client is not None else None
+    if isinstance(turn, dict):
+        if "tokens" in turn:
+            text = _format_tokens(turn.get("tokens"))
+            if text:
+                parts.append(text)
+        if "rounds" in turn:
+            text = _format_rounds(turn.get("rounds"))
+            if text:
+                parts.append(text)
+        if "latency" in turn:
+            text = _format_latency(turn.get("latency"))
+            if text:
+                parts.append(text)
+        elif "latency_ms" in turn:
+            try:
+                text = _format_latency(float(turn.get("latency_ms")) / 1000.0)
+            except (TypeError, ValueError):
+                text = None
+            if text:
+                parts.append(text)
+    if cited:
+        parts.append("grounded")
+    left = "  └─ " + " · ".join(parts)
+    right = FOOTER_HINT
+    cols = columns if isinstance(columns, int) and columns >= 20 else terminal_columns()
+    gap = cols - display_width(left) - display_width(right)
+    if gap >= 1:
+        return c_cyan(left) + (" " * gap) + c_dim(right)
+    room = cols - display_width(right) - 1
+    if room < 4:
+        return c_dim(truncate_display(right, cols))
+    left = truncate_display(left, room)
+    gap = cols - display_width(left) - display_width(right)
+    return c_cyan(left) + (" " * max(1, gap)) + c_dim(right)
+
+
+def session_config_path():
+    override = os.environ.get("REACH_CLI_CONFIG")
+    if override:
+        return override
+    return os.path.join(os.path.expanduser("~"), ".config", "reach-cli", "config.json")
+
+
+def history_file_path():
+    override = os.environ.get("REACH_CLI_HISTORY")
+    if override:
+        return override
+    return os.path.join(os.path.expanduser("~"), ".reach_cli_history")
+
+
+def load_session_config(path=None):
+    """Return saved endpoint/model/workpath. Corrupt files yield {}."""
+    path = path or session_config_path()
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    clean = {}
+    for key in ("endpoint", "model", "workpath"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            clean[key] = value.strip()
+    return clean
+
+
+def save_session_config(endpoint=None, model=None, workpath=None, path=None):
+    """Merge session fields and write them. Returns False instead of raising."""
+    path = path or session_config_path()
+    try:
+        current = load_session_config(path)
+        updates = {"endpoint": endpoint, "model": model, "workpath": workpath}
+        for key, value in updates.items():
+            if isinstance(value, str) and value.strip():
+                current[key] = value.strip()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(current, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary, path)
+        return True
+    except Exception:
+        return False
+
+
+def apply_saved_session(client, args, path=None):
+    """Apply ~/.config/reach-cli/config.json where flags were not passed."""
+    saved = load_session_config(path)
+    if not saved:
+        print(c_yellow("  no saved session — starting fresh"))
+        return saved
+    if client is None:
+        return saved
+    if not getattr(args, "base", None) and saved.get("endpoint"):
+        try:
+            client.base = saved["endpoint"].rstrip("/")
+        except Exception:
+            pass
+    if not getattr(args, "model", None) and saved.get("model"):
+        try:
+            client.model = saved["model"]
+        except Exception:
+            pass
+    if not getattr(args, "workpath", None) and saved.get("workpath"):
+        folder = os.path.abspath(os.path.expanduser(saved["workpath"]))
+        if os.path.isdir(folder):
+            try:
+                client.workpath = folder
+            except Exception:
+                pass
+        else:
+            print(c_yellow("  saved workpath is missing: %s" % folder))
+    return saved
+
+
+def reset_prompt_interrupt():
+    global _INTERRUPT_ARMED
+    _INTERRUPT_ARMED = False
+
+
+def reset_readline_state():
+    global _READLINE_READY, _READLINE
+    _READLINE_READY = False
+    _READLINE = None
+
+
+def load_readline():
+    """GNU readline, or pyreadline3 on Windows. None when neither imports."""
+    try:
+        import readline
+        return readline
+    except ImportError:
+        pass
+    if os.name == "nt":
+        try:
+            import pyreadline3 as readline
+            return readline
+        except ImportError:
+            return None
+    return None
+
+
+def _install_readline(readline_mod):
+    global _READLINE_READY, _READLINE
+    if readline_mod is None:
+        return False
+    if _READLINE_READY and _READLINE is readline_mod:
+        return True
+    try:
+        readline_mod.parse_and_bind("set editing-mode emacs")
+        readline_mod.parse_and_bind("tab: complete")
+        readline_mod.parse_and_bind('"\\C-r": reverse-search-history')
+        readline_mod.set_completer(_readline_complete)
+        readline_mod.set_completer_delims(" \t\n")
+        readline_mod.set_history_length(1000)
+        path = history_file_path()
+        if path and os.path.isfile(path):
+            readline_mod.read_history_file(path)
+        _READLINE = readline_mod
+        _READLINE_READY = True
+        return True
+    except Exception:
+        return False
+
+
+def _persist_readline(readline_mod):
+    if readline_mod is None:
+        return
+    try:
+        path = history_file_path()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        readline_mod.write_history_file(path)
+    except Exception:
+        pass
+
+
+def _readline_complete(text, state):
+    try:
+        mod = load_readline()
+        buffer = mod.get_line_buffer() if mod is not None else ""
+        matches = complete_token(text, buffer)
+    except Exception:
+        return None
+    if state < len(matches):
+        return matches[state]
+    return None
+
+
+def complete_token(text, buffer):
+    """Tab matches: /commands from the registry, or paths after /workpath."""
+    text = "" if text is None else str(text)
+    buffer = "" if buffer is None else str(buffer)
+    stripped = buffer.lstrip()
+    if stripped.startswith("/workpath ") or stripped.startswith("/workpath\t"):
+        return _complete_paths(text)
+    if text.startswith("/") or stripped.startswith("/"):
+        return [token for token in command_tokens() if token.startswith(text)]
+    return []
+
+
+def _complete_paths(text):
+    raw = "" if text is None else str(text)
+    try:
+        expanded = os.path.expanduser(raw)
+        if raw.endswith("/") or raw.endswith(os.sep):
+            directory = expanded or "."
+            stem = ""
+            typed_dir = raw
+        elif raw == "":
+            directory = "."
+            stem = ""
+            typed_dir = ""
+        else:
+            directory = os.path.dirname(expanded) or "."
+            stem = os.path.basename(expanded)
+            leaf = os.path.basename(raw)
+            typed_dir = raw[:len(raw) - len(leaf)]
+        names = os.listdir(directory)
+    except Exception:
+        return []
+    matches = []
+    for name in sorted(names):
+        if name.startswith(".") and not stem.startswith("."):
+            continue
+        if stem and not name.startswith(stem):
+            continue
+        full = os.path.join(directory, name)
+        try:
+            suffix = "/" if os.path.isdir(full) else ""
+        except OSError:
+            suffix = ""
+        matches.append(typed_dir + name + suffix)
+    return matches
+
+
+def prompt_rule(client):
+    """Top rule framing the input line: ``┌─ <model> ───┐``."""
+    model = "auto"
+    if client is not None and getattr(client, "model", None):
+        model = " ".join(str(client.model).split()) or "auto"
+    if display_width(model) > 40:
+        model = truncate_display(model, 40)
+    return c_cyan("┌─ %s ───┐" % model)
+
+
+def _interrupt_armed(session):
+    if session is not None and getattr(session, "interrupt_armed", None) is not None:
+        return bool(session.interrupt_armed)
+    return _INTERRUPT_ARMED
+
+
+def _set_interrupt(session, value):
+    global _INTERRUPT_ARMED
+    _INTERRUPT_ARMED = bool(value)
+    if session is not None:
+        try:
+            session.interrupt_armed = bool(value)
+        except Exception:
+            pass
+
+
+def read_prompt(client=None, session=None):
+    """Read the next user turn. The chat loop should call this instead of input().
+
+    Returns a string to handle (empty means ask again) or None to leave the
+    REPL. None means EOF or the second Ctrl-C, and ``bye.`` is already
+    printed — the caller should not print it again.
+
+    A trailing backslash continues onto the next line. Two trailing
+    backslashes are a literal backslash and do not continue. Readline, when
+    it imports, persists ``~/.reach_cli_history``, completes /commands and
+    /workpath paths on Tab, and binds Ctrl-R to reverse-search. pyreadline3
+    is the optional Windows module. With neither installed, input() is used.
+    """
+    try:
+        return _read_prompt(client, session)
+    except Exception as exc:
+        print(c_red("  ✗ %s" % exc))
+        return ""
+
+
+def _read_prompt(client, session):
+    readline_mod = load_readline()
+    _install_readline(readline_mod)
+    print(prompt_rule(client))
+    chunks = []
+    first = True
+    while True:
+        prompt = c_bold(c_green("you ▸ ")) if first else c_dim("... ")
+        try:
+            line = input(prompt)
+        except KeyboardInterrupt:
+            if _interrupt_armed(session):
+                _set_interrupt(session, False)
+                print(c_dim("\n  bye."))
+                return None
+            _set_interrupt(session, True)
+            print(c_yellow("\n  Ctrl-C again to quit · /exit or Ctrl-D also quits"))
+            return ""
+        except EOFError:
+            _set_interrupt(session, False)
+            if chunks:
+                break
+            print(c_dim("\n  bye."))
+            return None
+        if not isinstance(line, str):
+            line = "" if line is None else str(line)
+        _set_interrupt(session, False)
+        if line.endswith("\\\\"):
+            chunks.append(line[:-1])
+            break
+        if line.endswith("\\"):
+            chunks.append(line[:-1])
+            first = False
+            continue
+        chunks.append(line)
+        break
+    text = "\n".join(chunks)
+    _remember_history(text, readline_mod)
+    return text
+
+
+def _remember_history(text, readline_mod):
+    """Persist the turn. Readline writes its own file; input() appends a line."""
+    if not isinstance(text, str) or not text.strip():
+        return
+    if readline_mod is not None and _READLINE_READY:
+        _persist_readline(readline_mod)
+        return
+    try:
+        path = history_file_path()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        flat = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if not flat:
+            return
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(flat + "\n")
+    except Exception:
+        pass

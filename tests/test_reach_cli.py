@@ -313,6 +313,7 @@ class SlashCommandTests(unittest.TestCase):
 
     def setUp(self):
         import io
+        import tempfile
         from contextlib import redirect_stderr, redirect_stdout
         from reach_cli import terminal
         from reach_cli.terminal import Paint
@@ -321,7 +322,33 @@ class SlashCommandTests(unittest.TestCase):
         self.redirect_stdout = redirect_stdout
         self.redirect_stderr = redirect_stderr
         terminal.PAINT = Paint(False)
+        terminal.COLOR_FORCED = False
+        terminal.reset_prompt_interrupt()
+        terminal.reset_readline_state()
+        self._session_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._session_dir.cleanup)
+        self._prev_config = os.environ.get("REACH_CLI_CONFIG")
+        self._prev_history = os.environ.get("REACH_CLI_HISTORY")
+        os.environ["REACH_CLI_CONFIG"] = os.path.join(self._session_dir.name, "config.json")
+        os.environ["REACH_CLI_HISTORY"] = os.path.join(self._session_dir.name, "history")
+        self.addCleanup(self._restore_session_env)
         self.client = self.make_client()
+
+    def _restore_session_env(self):
+        from reach_cli import terminal
+
+        if self._prev_config is None:
+            os.environ.pop("REACH_CLI_CONFIG", None)
+        else:
+            os.environ["REACH_CLI_CONFIG"] = self._prev_config
+        if self._prev_history is None:
+            os.environ.pop("REACH_CLI_HISTORY", None)
+        else:
+            os.environ["REACH_CLI_HISTORY"] = self._prev_history
+        terminal.PAINT = terminal.Paint(False)
+        terminal.COLOR_FORCED = False
+        terminal.reset_prompt_interrupt()
+        terminal.reset_readline_state()
 
     def make_client(self):
         client = type("FakeClient", (), {})()
@@ -402,15 +429,28 @@ class SlashCommandTests(unittest.TestCase):
             self.assertNotIn("\n", desc)
 
     def test_help_keeps_the_column_layout(self):
-        from reach_cli.terminal import COMMANDS, print_help
+        from reach_cli.terminal import COMMANDS, HELP_SECTIONS, print_help
 
         out = self.io.StringIO()
         with self.redirect_stdout(out):
             print_help()
-        lines = out.getvalue().splitlines()
-        self.assertEqual(len(lines), len(COMMANDS))
-        for line, (key, description) in zip(lines, COMMANDS):
-            self.assertEqual(line, "  %-16s %s" % (key, description))
+        lines = [line for line in out.getvalue().splitlines() if line.strip()]
+        titles = [title for title, _tokens in HELP_SECTIONS]
+        self.assertEqual(
+            [line.strip() for line in lines if line.strip() in titles],
+            titles,
+        )
+        by_spec = dict(COMMANDS)
+        expected = []
+        for title, tokens in HELP_SECTIONS:
+            expected.append("  " + title)
+            for token in tokens:
+                spec = next(spec for spec, _desc in COMMANDS if spec.split()[0] == token)
+                expected.append("  %-16s %s" % (spec, by_spec[spec]))
+        self.assertEqual(lines, expected)
+        exit_desc = next(desc for spec, desc in COMMANDS if spec.split()[0] == "/exit")
+        self.assertNotIn("Ctrl+C or Ctrl+D", exit_desc)
+        self.assertIn("Ctrl+C twice", exit_desc)
         self.assertNotIn("provider", out.getvalue().lower())
 
     def test_unknown_command_suggests_the_closest(self):
@@ -871,6 +911,467 @@ class SlashCommandTests(unittest.TestCase):
         self.assertEqual(client.base, "http://stay.example/v1")
         self.assertIn("did you mean /endpoint?", quiet.getvalue())
         self.assertIn("bye.", quiet.getvalue())
+
+
+class CliUxTests(unittest.TestCase):
+    """Splash, footer, readline prompt, session file, and process flags."""
+
+    def setUp(self):
+        import io
+        import tempfile
+        from contextlib import redirect_stderr, redirect_stdout
+        from reach_cli import terminal
+
+        self.io = io
+        self.redirect_stdout = redirect_stdout
+        self.redirect_stderr = redirect_stderr
+        self._session_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._session_dir.cleanup)
+        self._prev = {
+            "REACH_CLI_CONFIG": os.environ.get("REACH_CLI_CONFIG"),
+            "REACH_CLI_HISTORY": os.environ.get("REACH_CLI_HISTORY"),
+            "NO_COLOR": os.environ.get("NO_COLOR"),
+            "LC_ALL": os.environ.get("LC_ALL"),
+            "LANG": os.environ.get("LANG"),
+        }
+        os.environ["REACH_CLI_CONFIG"] = os.path.join(self._session_dir.name, "config.json")
+        os.environ["REACH_CLI_HISTORY"] = os.path.join(self._session_dir.name, "history")
+        os.environ.pop("NO_COLOR", None)
+        os.environ["LC_ALL"] = "C"
+        os.environ["LANG"] = "C"
+        terminal.PAINT = terminal.Paint(False)
+        terminal.COLOR_FORCED = False
+        terminal.reset_prompt_interrupt()
+        terminal.reset_readline_state()
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        from reach_cli import terminal
+
+        for key, value in self._prev.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        terminal.PAINT = terminal.Paint(False)
+        terminal.COLOR_FORCED = False
+        terminal.reset_prompt_interrupt()
+        terminal.reset_readline_state()
+
+    def _client(self, **overrides):
+        client = type("FakeClient", (), {})()
+        client.base = "http://127.0.0.1:20777/v1"
+        client.model = "gpt-4o"
+        client.key = ""
+        client.agent = False
+        client.workpath = self._session_dir.name
+        client.system = None
+        for key, value in overrides.items():
+            setattr(client, key, value)
+        return client
+
+    def test_display_width_counts_wide_and_ignores_ansi(self):
+        from reach_cli.terminal import char_width, display_width
+
+        self.assertEqual(display_width("abc"), 3)
+        self.assertEqual(display_width("⚡"), 2)
+        self.assertEqual(char_width("⚡"), 2)
+        self.assertEqual(display_width("\x1b[31mabc\x1b[0m"), 3)
+        self.assertEqual(display_width("e\u0301"), 1)
+
+    def test_banner_borders_match_and_plain_modes_are_one_line(self):
+        from reach_cli import terminal
+
+        client = self._client()
+        size = os.terminal_size((80, 24))
+        with unittest.mock.patch("shutil.get_terminal_size", return_value=size), \
+                unittest.mock.patch("reach_cli.terminal.git_branch", return_value="feat/cli-ux"), \
+                unittest.mock.patch("sys.stdout.isatty", return_value=True):
+            terminal.PAINT = terminal.Paint(True)
+            lines = terminal.render_banner_lines(client, client.base, "chat", tip_index=0)
+            widths = [terminal.display_width(line) for line in lines]
+            self.assertEqual(len(set(widths)), 1)
+            self.assertEqual(widths[0], 80)
+            blob = "\n".join(terminal.strip_ansi(line) for line in lines)
+            self.assertIn("⚡ REACH CLI v1.0.0", blob)
+            self.assertIn("RAG Endpoint & AI Chat Host", blob)
+            self.assertIn("● Tip", blob)
+            self.assertIn("local", blob)
+            self.assertIn(client.base, blob)
+            self.assertIn("gpt-4o", blob)
+            self.assertIn("chat", blob)
+            self.assertIn(os.getcwd(), blob)
+            self.assertIn("feat/cli-ux", blob)
+            self.assertIn("█", blob)
+            tty = self.io.StringIO()
+            tty.isatty = lambda: True
+            with self.redirect_stdout(tty):
+                terminal.banner(client, client.base, "chat")
+            printed = tty.getvalue().splitlines()
+            self.assertGreater(len(printed), 1)
+            self.assertIn("┐", terminal.strip_ansi(printed[0]))
+
+            narrow = os.terminal_size((40, 24))
+            with unittest.mock.patch("shutil.get_terminal_size", return_value=narrow):
+                slim = terminal.render_banner_lines(client, client.base, "chat", tip_index=0)
+            slim_widths = [terminal.display_width(line) for line in slim]
+            self.assertEqual(set(slim_widths), {40})
+
+        terminal.PAINT = terminal.Paint(True)
+        plain_out = self.io.StringIO()
+        with self.redirect_stdout(plain_out):
+            terminal.banner(client, client.base, "chat")
+        plain = plain_out.getvalue().splitlines()
+        self.assertEqual(len(plain), 1)
+        self.assertNotIn("┌", plain[0])
+        self.assertIn("REACH CLI v1.0.0", plain[0])
+
+        os.environ["NO_COLOR"] = "1"
+        terminal.COLOR_FORCED = False
+        terminal.PAINT = terminal.Paint(True)
+        colored_tty = self.io.StringIO()
+        colored_tty.isatty = lambda: True
+        with self.redirect_stdout(colored_tty):
+            terminal.banner(client, client.base, "agent")
+        plain = colored_tty.getvalue().splitlines()
+        self.assertEqual(len(plain), 1)
+        self.assertNotIn("┌", plain[0])
+
+    def test_footer_reads_last_turn_and_omits_missing_fields(self):
+        from reach_cli.terminal import display_width, print_footer, render_footer
+
+        client = self._client()
+        client.last_turn = {"tokens": 1200, "rounds": 3, "latency": 2.1}
+        client.last_latency_ms = 99.0
+        line = render_footer(client, columns=80)
+        self.assertIn("gpt-4o", line)
+        self.assertIn("local", line)
+        self.assertIn("1.2k tok", line)
+        self.assertIn("3 rounds", line)
+        self.assertIn("2.1s", line)
+        self.assertTrue(line.rstrip().endswith("? help · ^C stop · ^D quit"))
+        self.assertLessEqual(display_width(line), 80)
+        self.assertEqual(display_width(line), 80)
+        self.assertNotIn("99", line)
+
+        client.last_turn = {"tokens": 999, "latency": 2.1}
+        line = render_footer(client, columns=80)
+        self.assertIn("999 tok", line)
+        self.assertNotIn("round", line)
+
+        client.last_turn = {"tokens": 12000, "rounds": 1, "latency": 12}
+        line = render_footer(client, columns=80)
+        self.assertIn("12k tok", line)
+        self.assertIn("1 round", line)
+        self.assertNotIn("1 rounds", line)
+        self.assertIn("12s", line)
+
+        client.last_turn = {"tokens": 1200, "rounds": 3, "latency": 2.1}
+        cited = render_footer(client, cited=True, columns=100)
+        self.assertIn("grounded", cited)
+
+        bare = self._client()
+        line = render_footer(bare, columns=80)
+        self.assertIn("gpt-4o", line)
+        self.assertIn("? help · ^C stop · ^D quit", line)
+        self.assertNotIn("tok", line)
+        self.assertNotIn("round", line)
+        out = self.io.StringIO()
+        with self.redirect_stdout(out):
+            print_footer(bare)
+        self.assertNotIn("Traceback", out.getvalue())
+
+    def test_read_prompt_multiline_interrupt_and_history(self):
+        from reach_cli import terminal
+
+        client = self._client()
+        answers = iter(["one \\", "two"])
+
+        prompts = []
+
+        def recording_input(prompt=""):
+            prompts.append(prompt)
+            return next(answers)
+
+        out = self.io.StringIO()
+        with unittest.mock.patch("reach_cli.terminal.load_readline", return_value=None), \
+                unittest.mock.patch("builtins.input", side_effect=recording_input), \
+                self.redirect_stdout(out):
+            text = terminal.read_prompt(client)
+        self.assertEqual(text, "one \ntwo")
+        self.assertIn("you ▸", prompts[0])
+        self.assertIn("┌─ gpt-4o ───┐", out.getvalue())
+        with open(os.environ["REACH_CLI_HISTORY"], encoding="utf-8") as handle:
+            saved = handle.read()
+        self.assertIn("one", saved)
+        self.assertIn("two", saved)
+
+        def interrupt(_prompt=""):
+            raise KeyboardInterrupt
+
+        terminal.reset_prompt_interrupt()
+        out = self.io.StringIO()
+        with unittest.mock.patch("reach_cli.terminal.load_readline", return_value=None), \
+                unittest.mock.patch("builtins.input", side_effect=interrupt), \
+                self.redirect_stdout(out):
+            first = terminal.read_prompt(client)
+            second = terminal.read_prompt(client)
+        self.assertEqual(first, "")
+        self.assertIsNone(second)
+        self.assertIn("again", out.getvalue())
+        self.assertIn("bye.", out.getvalue())
+
+        sequence = iter([KeyboardInterrupt, "hi", KeyboardInterrupt])
+
+        def mixed(_prompt=""):
+            item = next(sequence)
+            if item is KeyboardInterrupt:
+                raise KeyboardInterrupt
+            return item
+
+        terminal.reset_prompt_interrupt()
+        with unittest.mock.patch("reach_cli.terminal.load_readline", return_value=None), \
+                unittest.mock.patch("builtins.input", side_effect=mixed), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(terminal.read_prompt(client), "")
+            self.assertEqual(terminal.read_prompt(client), "hi")
+            self.assertEqual(terminal.read_prompt(client), "")
+
+        def eof(_prompt=""):
+            raise EOFError
+
+        terminal.reset_prompt_interrupt()
+        out = self.io.StringIO()
+        with unittest.mock.patch("reach_cli.terminal.load_readline", return_value=None), \
+                unittest.mock.patch("builtins.input", side_effect=eof), \
+                self.redirect_stdout(out):
+            self.assertIsNone(terminal.read_prompt(client))
+        self.assertIn("bye.", out.getvalue())
+
+    def test_completion_and_readline_bindings(self):
+        import tempfile
+        from reach_cli.terminal import complete_token, read_prompt, reset_readline_state
+
+        self.assertEqual(complete_token("/he", "/he"), ["/help"])
+        with tempfile.TemporaryDirectory() as tmp:
+            open(os.path.join(tmp, "notes.txt"), "w", encoding="utf-8").close()
+            os.mkdir(os.path.join(tmp, "src"))
+            open(os.path.join(tmp, ".secret"), "w", encoding="utf-8").close()
+            matches = complete_token(tmp + "/", "/workpath " + tmp + "/")
+            joined = "\n".join(matches)
+            self.assertIn("notes.txt", joined)
+            self.assertIn("src/", joined)
+            self.assertNotIn(".secret", joined)
+
+        class FakeReadline(object):
+            def __init__(self):
+                self.binds = []
+                self.completer = None
+                self.delims = None
+                self.read_path = None
+                self.wrote = None
+
+            def parse_and_bind(self, spec):
+                self.binds.append(spec)
+
+            def set_completer(self, fn):
+                self.completer = fn
+
+            def set_completer_delims(self, delim):
+                self.delims = delim
+
+            def set_history_length(self, _n):
+                return None
+
+            def read_history_file(self, path):
+                self.read_path = path
+
+            def write_history_file(self, path):
+                self.wrote = path
+
+            def get_line_buffer(self):
+                return ""
+
+        fake = FakeReadline()
+        history = os.environ["REACH_CLI_HISTORY"]
+        with open(history, "w", encoding="utf-8") as handle:
+            handle.write("prior\n")
+        reset_readline_state()
+        with unittest.mock.patch("reach_cli.terminal.load_readline", return_value=fake), \
+                unittest.mock.patch("builtins.input", return_value="hello"), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(read_prompt(self._client()), "hello")
+        blob = " ".join(fake.binds)
+        self.assertIn("reverse-search-history", blob)
+        self.assertIn("C-r", blob)
+        self.assertIn("tab: complete", blob)
+        self.assertTrue(callable(fake.completer))
+        self.assertEqual(fake.read_path, history)
+        self.assertEqual(fake.wrote, history)
+
+    def test_session_config_merges_and_model_persists(self):
+        from reach_cli.terminal import (
+            apply_saved_session,
+            handle_slash,
+            load_session_config,
+            save_session_config,
+        )
+
+        path = os.environ["REACH_CLI_CONFIG"]
+        self.assertTrue(save_session_config(endpoint="http://relay.example/v1", path=path))
+        self.assertTrue(save_session_config(model="claude", workpath=self._session_dir.name, path=path))
+        saved = load_session_config(path)
+        self.assertEqual(saved["endpoint"], "http://relay.example/v1")
+        self.assertEqual(saved["model"], "claude")
+        self.assertEqual(saved["workpath"], self._session_dir.name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("{not json")
+        self.assertEqual(load_session_config(path), {})
+
+        client = self._client()
+        client.models = lambda: ["gpt-4o", "claude"]
+        out = self.io.StringIO()
+        with self.redirect_stdout(out):
+            handle_slash("/model claude", client, [], None)
+        saved = load_session_config()
+        self.assertEqual(saved.get("model"), "claude")
+        self.assertNotIn("Traceback", out.getvalue())
+
+        save_session_config(
+            endpoint="http://saved.example/v1",
+            model="saved-model",
+            workpath=os.path.join(self._session_dir.name, "missing"),
+            path=path,
+        )
+        client = self._client(base="http://keep.example/v1", model=None)
+        args = type("Args", (), {"base": "http://keep.example/v1", "model": None, "workpath": None})()
+        out = self.io.StringIO()
+        with self.redirect_stdout(out):
+            apply_saved_session(client, args, path=path)
+        self.assertEqual(client.base, "http://keep.example/v1")
+        self.assertEqual(client.model, "saved-model")
+        self.assertIn("saved workpath is missing", out.getvalue())
+
+    def test_main_flags_exit_codes_and_continue(self):
+        from reach_cli.__main__ import main
+        from reach_cli import terminal
+
+        out = self.io.StringIO()
+        with unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                self.redirect_stdout(out):
+            self.assertEqual(main(["--version"]), 0)
+            self.assertEqual(main(["-V"]), 0)
+        self.assertIn("reach-cli 1.0.0", out.getvalue())
+
+        err = self.io.StringIO()
+        with self.redirect_stderr(err):
+            self.assertEqual(main(["ask"]), 2)
+            self.assertEqual(main(["web"]), 2)
+            self.assertEqual(main(["nope"]), 2)
+            self.assertEqual(main(["--color", "always", "--no-color"]), 2)
+        errors = err.getvalue()
+        self.assertIn("ask needs a question", errors)
+        self.assertIn("web needs a question", errors)
+        self.assertIn("✗", errors)
+        self.assertNotIn("Traceback", errors)
+
+        seen = {}
+
+        def fake_ask(client, question, web=False):
+            seen["question"] = question
+            seen["web"] = web
+            seen["client"] = client
+            return True
+
+        with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                unittest.mock.patch("reach_cli.__main__.run_ask", side_effect=fake_ask), \
+                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(main(["-p", "hello"]), 0)
+        self.assertEqual(seen["question"], "hello")
+        self.assertFalse(seen["web"])
+
+        folder = self._session_dir.name
+        terminal.save_session_config(
+            endpoint="http://saved.example/v1",
+            model="saved-model",
+            workpath=folder,
+        )
+        held = {}
+
+        def fake_chat(client, base):
+            held["client"] = client
+            held["base"] = base
+
+        with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=fake_chat), \
+                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(main(["--continue"]), 0)
+        self.assertEqual(held["client"].base, "http://saved.example/v1")
+        self.assertEqual(held["client"].model, "saved-model")
+        self.assertEqual(held["client"].workpath, os.path.abspath(folder))
+        self.assertEqual(held["base"], "http://saved.example/v1")
+
+        with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=fake_chat), \
+                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(main(["--continue", "--model", "gpt-4o"]), 0)
+        self.assertEqual(held["client"].model, "gpt-4o")
+        self.assertEqual(held["client"].base, "http://saved.example/v1")
+
+        with unittest.mock.patch("sys.stdout.isatty", return_value=False), \
+                unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=fake_chat), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(main(["--color", "never"]), 0)
+            self.assertFalse(terminal.PAINT.on)
+            self.assertEqual(main(["--color", "always"]), 0)
+            self.assertTrue(terminal.PAINT.on)
+        terminal.PAINT = terminal.Paint(False)
+
+        with unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=KeyboardInterrupt), \
+                unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                self.redirect_stdout(self.io.StringIO()) as out:
+            code = main(["chat"])
+        self.assertEqual(code, 130)
+
+        err = self.io.StringIO()
+        with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=False), \
+                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                self.redirect_stdout(err):
+            code = main(["--base", "http://down.example/v1"])
+        self.assertEqual(code, 1)
+        self.assertIn("unreachable", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
+        err = self.io.StringIO()
+        with self.redirect_stdout(err):
+            self.assertEqual(main(["--workpath", "/no/such/reach-cli-dir"]), 1)
+        self.assertIn("not a directory", err.getvalue())
+
+        help_out = self.io.StringIO()
+        with self.redirect_stdout(help_out):
+            self.assertEqual(main(["ask", "--help"]), 0)
+        help_text = help_out.getvalue()
+        self.assertIn("one question", help_text.lower())
+        self.assertIn("-p", help_text)
+        self.assertIn("what is REACH", help_text)
+
+        # Parent flags before the subcommand stay set (subparser defaults are suppressed).
+        parsed = {}
+
+        def capture(client, base):
+            parsed["model"] = client.model
+            parsed["agent"] = client.agent
+
+        with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=capture), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(main(["--model", "gpt-4o", "chat", "--agent"]), 0)
+        self.assertEqual(parsed["model"], "gpt-4o")
+        self.assertTrue(parsed["agent"])
 
 
 if __name__ == "__main__":
