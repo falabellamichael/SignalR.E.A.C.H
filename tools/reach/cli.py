@@ -82,6 +82,7 @@ from .http_admin import (
     set_dotted_patch,
 )
 from .keys import find_omniroute_key, mask_key
+from .command import install_shim
 from .publish import publish
 from .supervisor import (
     ACCOUNT_PORT,
@@ -222,6 +223,7 @@ def cmd_install(args):
     shutil.copytree(REPO_ROOT / "tools" / "reach",
                     CONFIG_DIR / "tools" / "reach",
                     dirs_exist_ok=True, ignore=ignore)
+    install_shim(REPO_ROOT / "tools")  # `signalreach` on PATH (idempotent)
     if not extension_only:
         cfg = load_config()
         if not cfg.get("omniroute_key"):
