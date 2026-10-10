@@ -198,10 +198,14 @@ async function readChatResponse(response, { stream = false, onText = () => {}, o
       probeTail();
       if (completed) { await reader.cancel().catch(() => {}); break; }
     }
-    const tail = decoder.decode();
-    if (tail || lineBuffer) { lineBuffer += tail; feedLine(lineBuffer); lineBuffer = ''; }
-    finishSseEvent(); // An unterminated event ends with the body.
-    if (!sawSse && jsonText.trim()) {
+    // Once the answer completed ([DONE], a balanced document or an error
+    // document), anything still buffered after it is not part of the answer.
+    if (!completed) {
+      const tail = decoder.decode();
+      if (tail || lineBuffer) { lineBuffer += tail; feedLine(lineBuffer); lineBuffer = ''; }
+      finishSseEvent(); // An unterminated event ends with the body.
+    }
+    if (!completed && !sawSse && jsonText.trim()) {
       let data;
       try { data = JSON.parse(jsonText); }
       catch { throw new Error('The endpoint returned an unreadable response instead of chat data.'); }
