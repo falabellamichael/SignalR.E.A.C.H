@@ -113,8 +113,14 @@ test('command completion comes from the execution registry', () => {
   );
 });
 
+function appSource() {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'index.html'), 'utf8');
+  const scripts = [...html.matchAll(/<script src="(app[^"]+)"><\/script>/g)].map(match => match[1]);
+  return scripts.map(file => fs.readFileSync(path.join(__dirname, '..', 'renderer', file), 'utf8')).join('\n');
+}
+
 test('every advertised command has a renderer execution branch', () => {
-  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const renderer = appSource();
   const start = renderer.indexOf('async function executeComposerCommand');
   const end = renderer.indexOf('async function executeMentionRouting', start);
   assert.ok(start >= 0 && end > start, 'composer dispatcher boundaries not found');
@@ -125,6 +131,6 @@ test('every advertised command has a renderer execution branch', () => {
 });
 
 test('renderer exposes the complete suggestion tooltip on every row', () => {
-  const renderer = fs.readFileSync(path.join(__dirname, '..', 'renderer', 'app.js'), 'utf8');
+  const renderer = appSource();
   assert.match(renderer, /option\.title\s*=\s*composerIntents\.suggestionTooltip\(item\)/);
 });

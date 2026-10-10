@@ -4,6 +4,7 @@ const { parse } = require('./agent-run.cjs');
 const { parseActionResponse, CONTROL_NAMES, canonicalToolName } = require('./agent-action.cjs');
 const { parseDsmlActions } = require('./agent-dsml.cjs');
 const { allowedNames } = require('./tool-registry.cjs');
+const { isMcpToolName } = require('./mcp.cjs');
 
 const nonEmpty = value => (typeof value === 'string' ? value.trim() : '');
 
@@ -65,7 +66,7 @@ function parseAgentResponse(content, nativeActions = []) {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error();
       if (block.kind === 'tool') {
         const { action, ...args } = value;
-        if (!allowedNames().includes(action)) throw Error();
+        if (!allowedNames().includes(action) && !isMcpToolName(action)) throw Error();
         actions.push({ name: action, arguments: args });
       } else if (block.kind === 'confirm') {
         if (confirm || typeof value.question !== 'string' || !value.question.trim()
@@ -86,7 +87,7 @@ function parseAgentResponse(content, nativeActions = []) {
     for (const call of nativeActions) {
       try {
         const wireName = call.function?.name;
-        const name = canonicalToolName(wireName);
+        const name = isMcpToolName(wireName) ? wireName : canonicalToolName(wireName);
         if (!name) throw Error();
         const args = typeof call.function?.arguments === 'string' ? JSON.parse(call.function.arguments || '{}') : call.function?.arguments;
         if (!args || Array.isArray(args) || typeof args !== 'object') throw Error();
@@ -98,7 +99,7 @@ function parseAgentResponse(content, nativeActions = []) {
           controlCall = { name, args };
           continue;
         }
-        if (!allowedNames().includes(name)) throw Error();
+        if (!allowedNames().includes(name) && !isMcpToolName(name)) throw Error();
         actions.push({ name, arguments: args });
       } catch { invalid = true; }
     }

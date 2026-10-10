@@ -9,6 +9,17 @@ function textContent(value) {
     .map(part => part.text).join('');
 }
 
+/* The body's BYTES decide the wire format — never the stream hint or the
+ * content-type header, which providers lie about. Three shapes are accepted:
+ *   SSE     `data:` events; consecutive data lines join into one record (a
+ *           malformed event must not swallow the next valid record, so the
+ *           joined parse falls back to line-by-line)
+ *   NDJSON  one JSON record per line (record-by-record until EOF)
+ *   JSON    an ordinary document, reassembled across newlines and resolved as
+ *           soon as its braces balance — without waiting for EOF
+ * A complete answer (balanced JSON, a [DONE], or a JSON error document)
+ * resolves and cancels the still-open body; Stop rejects with the signal's
+ * AbortError and flags whatever had already arrived. */
 async function readChatResponse(response, { stream = false, onText = () => {}, onReasoning = () => {}, signal } = {}) {
   const result = { content: '', reasoningChars: 0, finishReason: null, usage: null, error: null, toolCalls: false };
   const native = new Map();
@@ -54,62 +65,156 @@ async function readChatResponse(response, { stream = false, onText = () => {}, o
     if (text) { result.content += text; onText(text); }
   };
   signal?.throwIfAborted();
-  if (!stream && !/text\/event-stream/i.test(response.headers?.get('content-type') || '')) {
-    const data = await response.json();
+  if (!response.body) {
+    const data = await response.json(); // Legacy adapters expose only .json().
     signal?.throwIfAborted();
     accept(data);
     return result;
   }
-  if (!response.body) return result;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let buffer = '', raw = '', sawSse = false, completed = false;
-  const cancel = () => { reader.cancel().catch(() => {}); };
-  signal?.addEventListener('abort', cancel, {once:true});
-  const feed = line => {
-    line = line.trim();
-    if (!line.startsWith('data:')) return;
-    sawSse = true;
-    raw = '';
-    const payload = line.slice(5).trim();
-    if (payload === '[DONE]') { completed = true; return; }
-    if (!payload) return;
-    let data;
-    try { data = JSON.parse(payload); } catch { return; }
-    accept(data);
+  let lineBuffer = '', jsonText = '', jsonState = { depth: 0, inString: false, escaped: false };
+  let sawSse = false, sseLines = [], completed = false, firstChunk = true;
+  const scanJson = (text, state) => {
+    let { depth, inString, escaped } = state;
+    for (const ch of text) {
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{' || ch === '[') depth++;
+      else if (ch === '}' || ch === ']') depth--;
+    }
+    return { depth, inString, escaped };
+  };
+  const cancelBody = () => { reader.cancel().catch(() => {}); };
+  const onAbort = () => cancelBody();
+  signal?.addEventListener('abort', onAbort, {once:true});
+  const readChunk = () => new Promise((resolve, reject) => {
+    const onChunkAbort = () => reject(signal.reason);
+    signal?.addEventListener('abort', onChunkAbort, { once: true });
+    reader.read().then(
+      value => { signal?.removeEventListener('abort', onChunkAbort); resolve(value); },
+      error => { signal?.removeEventListener('abort', onChunkAbort); reject(error); },
+    );
+  });
+  const finishSseEvent = () => {
+    const lines = sseLines; sseLines = [];
+    if (!lines.length) return;
+    let data = null, parsed = false;
+    try { data = JSON.parse(lines.join('\n')); parsed = true; } catch { /* split event */ }
+    if (parsed) { accept(data); return; } // A guard rejection here must propagate.
+    for (const line of lines) {
+      let single = null, singleParsed = false;
+      try { single = JSON.parse(line); singleParsed = true; } catch { /* provider chatter */ }
+      if (singleParsed) accept(single);
+    }
+  };
+  const feedLine = line => {
+    line = line.replace(/^\uFEFF/, '').replace(/\r$/, '');
+    const trimmed = line.trim();
+    if (trimmed.startsWith('data:')) {
+      sawSse = true;
+      let payload = trimmed.slice(5);
+      if (payload.startsWith(' ')) payload = payload.slice(1);
+      if (payload === '[DONE]') { finishSseEvent(); completed = true; return; }
+      sseLines.push(payload);
+      return;
+    }
+    if (sawSse) {
+      if (!trimmed) finishSseEvent(); // A blank line ends the current event.
+      return; // event:/id:/retry: fields and comments carry no payload.
+    }
+    if (!trimmed) { jsonText += '\n'; return; }
+    if (jsonText === '' && (trimmed[0] === '{' || trimmed[0] === '[')) {
+      let data = null, parsed = false;
+      try { data = JSON.parse(trimmed); parsed = true; } catch { /* a document start: accumulate */ }
+      if (parsed) {
+        accept(data);
+        // A standalone error document ends the exchange; a record stream (NDJSON)
+        // keeps flowing until EOF.
+        if (data.error) completed = true;
+        return;
+      }
+    }
+    jsonText += (jsonText ? '\n' : '') + line;
+    jsonState = scanJson(line, jsonState);
+    if (jsonState.depth <= 0 && !jsonState.inString) {
+      let data;
+      try { data = JSON.parse(jsonText); } catch { return; }
+      jsonText = '';
+      jsonState = { depth: 0, inString: false, escaped: false };
+      accept(data);
+      completed = true; // A balanced document is complete without EOF.
+    }
+  };
+  /* A provider may deliver the final line of a JSON document without its
+   * trailing newline and leave the body open. Probe the pending tail: a
+   * genuinely partial line simply fails to parse and keeps waiting. */
+  const probeTail = () => {
+    if (completed || sawSse || lineBuffer.trim() === '') return;
+    if (jsonText !== '') {
+      const probe = scanJson('\n' + lineBuffer, jsonState);
+      if (probe.depth <= 0 && !probe.inString) {
+        let data = null;
+        try { data = JSON.parse(jsonText + '\n' + lineBuffer); } catch { /* still partial */ }
+        if (data !== null) {
+          jsonText = '';
+          jsonState = { depth: 0, inString: false, escaped: false };
+          lineBuffer = '';
+          accept(data);
+          completed = true;
+        }
+      }
+      return;
+    }
+    let data = null, parsed = false;
+    try { data = JSON.parse(lineBuffer.trim()); parsed = true; } catch { /* still writing */ }
+    if (parsed && data.error) { // A lone error document ends the exchange.
+      jsonState = { depth: 0, inString: false, escaped: false };
+      lineBuffer = '';
+      accept(data);
+      completed = true;
+    }
   };
   try {
     for (;;) {
       signal?.throwIfAborted();
-      const { done, value } = await reader.read();
+      const { done, value } = await readChunk();
       signal?.throwIfAborted();
       if (done) break;
-      const text = decoder.decode(value, { stream: true });
-      if (!sawSse) raw += text;
-      buffer += text;
+      let text = decoder.decode(value, { stream: true });
+      if (firstChunk) { firstChunk = false; text = text.replace(/^\uFEFF/, ''); }
+      lineBuffer += text;
       let cut;
-      while ((cut = buffer.indexOf('\n')) >= 0) {
-        feed(buffer.slice(0, cut));
-        buffer = buffer.slice(cut + 1);
+      while ((cut = lineBuffer.indexOf('\n')) >= 0) {
+        feedLine(lineBuffer.slice(0, cut));
+        lineBuffer = lineBuffer.slice(cut + 1);
         if (completed) break;
       }
-      if (completed) { await reader.cancel(); break; }
+      probeTail();
+      if (completed) { await reader.cancel().catch(() => {}); break; }
     }
     const tail = decoder.decode();
-    buffer += tail;
-    if (!sawSse) raw += tail;
-    if (buffer && !completed) feed(buffer); // An EOF without a final newline is still data.
-    if (!sawSse && raw.trim()) {
+    if (tail || lineBuffer) { lineBuffer += tail; feedLine(lineBuffer); lineBuffer = ''; }
+    finishSseEvent(); // An unterminated event ends with the body.
+    if (!sawSse && jsonText.trim()) {
       let data;
-      try { data = JSON.parse(raw); } catch { throw new Error('The endpoint returned an unreadable response instead of chat data.'); }
-      accept(data); // Some endpoints ignore stream:true and return ordinary JSON.
+      try { data = JSON.parse(jsonText); }
+      catch { throw new Error('The endpoint returned an unreadable response instead of chat data.'); }
+      accept(data); // Ordinary JSON that only completed at EOF.
     }
   } catch (error) {
     // A partial answer or tool call must never be automatically replayed.
+    if (signal?.aborted) error = signal.reason;
+    await reader.cancel().catch(() => {});
     error.partialResponse = !!result.content || result.toolCalls;
     throw error;
   } finally {
-    signal?.removeEventListener('abort', cancel);
+    signal?.removeEventListener('abort', onAbort);
     reader.releaseLock();
   }
   return result;

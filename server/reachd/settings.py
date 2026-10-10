@@ -1,10 +1,9 @@
-"""Settings schema, defaults, validation and config persistence."""
+"""Settings facade, config loading, repair and persistence."""
 
 import calendar
 import ipaddress
 import json
 import os
-import re
 import secrets
 import shutil
 import socket
@@ -14,304 +13,31 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 from reachd import hostid
-
-# ----------------------------------------------------------------------
-# Settings schema + defaults
-# ----------------------------------------------------------------------
-
-ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-UPSTREAM_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
-
-MODEL_SPEC_DEFAULTS = {
-    "upstream": "",                 # OmniRoute model id
-    "enabled": True,                # servable at all
-    "public": True,                 # listed in /v1/models + callable externally
-    "description": "",              # shown in the panel
-    "temperature": None,            # default temperature (null = passthrough)
-    "max_tokens": None,             # default max_tokens (null = passthrough)
-    "max_tokens_cap": 16384,        # hard cap on requested max_tokens (0 = off)
-    "min_output_tokens": 0,         # floor for upstream max_tokens (reasoning models need headroom)
-    "temperature_min": 0.0,         # clamp window
-    "temperature_max": 2.0,
-    "system_prompt": "",            # injected system message (model-level)
-    "fallback": None,               # alias to try when upstream fails
-    "allow_stream": True,
-    "allow_tools": True,
-    "context_window": 128000,       # informational + input guard
-    "strip_trailing_roles": False,  # truncate fake "User:" transcript continuations
-    "rate_limits": {"rpm": 0, "tokens_day": 0},   # 0 = inherit global
-}
-
-# Bump when load_config() gains another one-time security migration.
-SECURITY_REVISION = 1
-
-DEFAULT_SETTINGS = {
-    # ---- relay core / upstream ----
-    "omniroute_url": "http://127.0.0.1:20128/v1",
-    "omniroute_key": "",
-    # Local tray bridge. Serves the CodeGPT economy models through the host's
-    # own signed-in CodeGPT session — the only place CodeGPT's unlimited tier
-    # exists (its public API binds agents to legacy, credit-metered models
-    # only). An alias whose upstream starts with "bridge/" is sent here instead
-    # of OmniRoute and never carries the OmniRoute bearer token.
-    "bridge_url": "http://127.0.0.1:21302/v1",
-    "account_service_url": "",  # optional hosted accounts service, literal loopback origin
-    "port": 20777,
-    "host": "127.0.0.1",
-    "upstream_timeout_s": 600,
-    "stream_timeout_s": 300,       # hung keepalive streams free their slot sooner
-    "upstream_retries": 1,          # extra attempts on URLError/5xx (non-stream)
-    "retry_delay_ms": 1000,
-    "circuit_threshold": 5,         # consecutive failures before cool-down
-    "circuit_cooldown_s": 30,
-    "max_concurrency": 12,          # simultaneous upstream calls
-    "client_timeout_s": 30,         # idle/stalled client socket is dropped (restart to apply)
-    "max_connections": 64,          # open client connections / threads (restart to apply)
-    "health_check_interval_s": 60,
-    # ---- request handling ----
-    "request": {
-        "default_model": "gpt-4o",  # used when the client omits model
-        "default_stream": False,    # stream mode when the client omits stream
-        "max_messages": 100,
-        "max_input_chars": 400000,
-        "max_tokens_cap": 16384,    # global hard cap (0 = off)
-        "inject_system_prompt": "",  # global system message prepended
-        "allow_tools": True,
-        "allow_response_format": True,
-        "allow_logprobs": False,
-        "blocked_fields": [],       # request fields to reject/strip
-        "reject_blocked": False,    # True → 400 on blocked fields, else strip
-        "temperature_min": 0.0,
-        "temperature_max": 2.0,
-    },
-    # ---- model aliases (per-alias specs, see MODEL_SPEC_DEFAULTS) ----
-    "models": {
-        "gpt-4o": {
-            **MODEL_SPEC_DEFAULTS,
-            "upstream": "codegpt/codegpt-gpt-4o",
-            "description": "Flagship free gpt-4o (codegpt tier)",
-        },
-        "gpt-4o-mini": {
-            **MODEL_SPEC_DEFAULTS,
-            "upstream": "codegpt/codegpt-gpt-4o-mini",
-            "description": "Cheaper, faster gpt-4o-mini",
-        },
-        # NOTE: there is deliberately no `chatgpt-chat` alias here. That id is a
-        # TRAY BRIDGE model, served by the Electron tray on 127.0.0.1:21302 —
-        # not by OmniRoute. Routing it through the relay made /v1/models
-        # advertise a model the relay could never serve (the "copilot/" prefix
-        # is not an OmniRoute provider), so every call to it failed. Clients
-        # that want it must select the ChatGPT provider and talk to the bridge
-        # directly. Add one here by hand only against a real OmniRoute upstream.
-        "gemini-2.5-flash": {
-            **MODEL_SPEC_DEFAULTS,
-            "upstream": "codegpt/codegpt-gemini-2.5-flash",
-            "description": "Google Gemini 2.5 Flash (CodeGPT free tier)",
-            "min_output_tokens": 1024,
-        },
-        "gemini-3.7-flash": {
-            **MODEL_SPEC_DEFAULTS,
-            "upstream": "gemini/gemini-3.7-flash",
-            "description": "Google Gemini 3.7 Flash (via OmniRoute)",
-            "min_output_tokens": 1024,
-        },
-        # Gemini's consumer web UI is driven by the local tray. Keep this
-        # route dormant until that dedicated browser session is signed in and
-        # verified, then enable/public it in the saved relay settings.
-        "gemini-chat": {
-            **MODEL_SPEC_DEFAULTS,
-            "upstream": "bridge/gemini-chat",
-            "enabled": False,
-            "public": False,
-            "description": "Experimental Gemini web UI via local tray (sign in before enabling)",
-        },
-    },
-    # ---- rate limits ----
-    "rate_limits": {
-        "enabled": True,
-        "per_ip_rpm": 12,
-        "per_ip_tokens_day": 400000,   # 0 disables
-        "global_rpm": 60,
-        "global_tokens_day": 0,        # 0 disables
-        "burst": 4,
-        "max_prompt_tokens": 0,        # reject prompts over N tokens (0 = off)
-    },
-    # ---- access & security ----
-    "access": {
-        # False only in the raw schema default, because a config with no keys
-        # cannot validate as "required". load_config() turns it on for every new
-        # install and migrates old ones (system.security_revision).
-        "key_required": False,
-        "access_key": "",
-        # client API keys: {"id", "name", "key", "created_at", "last_used_at",
-        # "enabled", "rate_limit_rpm", "tokens_day", "expires_at"}.
-        # rate_limit_rpm / tokens_day are per-key caps (0 = no cap of its own,
-        # the shared rate_limits still apply); expires_at is an ISO-8601 UTC
-        # instant or None for a key that never expires.
-        "keys": [],
-        "ip_allowlist": [],            # empty = everyone (loopback always ok)
-        "ip_blocklist": [],
-        "cors_origins": "",            # empty = local tools only (loopback pages, null, vscode-webview); "*" or a comma-separated list opts others in
-        # A genuine same-machine client (loopback, no proxy headers, loopback
-        # Host, no foreign Origin) may skip the key. Turn off to make even the
-        # owner's local tools present one.
-        "local_bypass": True,
-        # Peers whose X-Forwarded-For / Cf-Connecting-Ip is believed. Loopback
-        # (the local tunnel process) is always trusted; add a reverse proxy's
-        # address here. Anyone else's forwarding headers are ignored, so they
-        # cannot forge a client IP to dodge the allow/block lists.
-        "trusted_proxies": [],
-        # Failed key / admin-token attempts per client IP before it is locked
-        # out for auth_lockout_s seconds. 0 disables the lockout.
-        "auth_fail_limit": 8,
-        "auth_lockout_s": 300,
-    },
-    # ---- response caching ----
-    "cache": {
-        "enabled": False,
-        "ttl_s": 300,
-        "max_entries": 1000,
-        "match_temperature": True,
-    },
-    # ---- observability ----
-    "data": {
-        "log_retention_days": 7,
-        "log_level": "normal",         # none | errors | normal | verbose
-        "log_bodies": False,           # store truncated body snippets
-    },
-    # ---- hosting ----
-    "tunnel": "ngrok",                 # ngrok | cloudflared | none
-    "public_url_override": None,
-    "publish": {"enabled": True, "interval_min": 0},   # 0 = on change only
-    # ---- system ----
-    "system": {
-        "allow_remote_admin": False,   # _reach/* beyond loopback (DANGER)
-        # Bumped when load_config() applies a one-time security migration, so
-        # each migration runs once per install and never fights a later choice.
-        "security_revision": 0,
-        "log_rotation_mb": 2,
-        # Per-install secret for the admin API. Minted on first load; a
-        # non-local /_reach/* request must present it as X-Reach-Admin.
-        "admin_token": "",
-        # Host binding: seal host secrets against THIS machine. "host_salt"
-        # is a per-install random value minted on first load; it is what makes
-        # the derived key unique per install rather than per machine.
-        "host_bind": True,
-        "host_salt": "",
-        # Non-secret "who owns this install" marker the tray compares against.
-        "host_machine_hint": "",
-    },
-}
-
-# ----------------------------------------------------------------------
-# CodeGPT economy models
-# ----------------------------------------------------------------------
-# The unlimited tier of the host's CodeGPT plan, mirroring the LIVE credits menu
-# CodeGPT itself serves (each entry with `pro: false`; see
-# copilot/tray/economy-models.js, which discovers that menu from the CodeGPT
-# sidecar and owns the matching bridge ids). These are served by the local tray
-# bridge because CodeGPT's public API refuses to bind these models: create and
-# patch both reject anything outside a legacy, credit-metered enum.
-CODEGPT_ECONOMY_MODELS = [
-    ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash"),
-    ("ox-alpha", "GLM 5.3 Flash"),
-    ("gemini-3.8-flash", "Gemini 3.8 Flash"),
-    ("gpt-5.6-luna", "GPT 5.6 Luna"),
-    ("glm-5.2", "GLM 5.2"),
-    ("MiniMax-M3", "MiniMax M3"),
-]
-
-DEFAULT_SETTINGS["models"].update({
-    alias: {
-        **MODEL_SPEC_DEFAULTS,
-        "upstream": "bridge/codegpt-eco-" + alias,
-        "description": label + " — CodeGPT economy (unlimited on the host's plan)",
-    }
-    for alias, label in CODEGPT_ECONOMY_MODELS
-    # Only fill in aliases that are not already routed. `gemini-3.7-flash` is
-    # defined above against OmniRoute, and silently re-pointing an existing
-    # alias at the bridge would change behaviour for everyone who uses it.
-    # The bridge still serves that model's economy variant, addressable as
-    # `codegpt-eco-gemini-3.7-flash` if you add an alias for it by hand.
-    if alias not in DEFAULT_SETTINGS["models"]
-})
-
-NUMERIC_FIELDS = {
-    "port": (1024, 65535),
-    "upstream_timeout_s": (10, 3600),
-    "stream_timeout_s": (10, 3600),
-    "upstream_retries": (0, 5),
-    "retry_delay_ms": (0, 30000),
-    "circuit_threshold": (1, 100),
-    "circuit_cooldown_s": (5, 3600),
-    "max_concurrency": (1, 64),
-    "client_timeout_s": (5, 600),
-    "max_connections": (4, 1024),
-    "health_check_interval_s": (10, 3600),
-}
-
-REQUEST_NUMERIC = {
-    "max_messages": (1, 1000),
-    "max_input_chars": (1, 20000000),
-    "max_tokens_cap": (0, 1000000),
-}
-
-RATE_LIMIT_FIELDS = {
-    "per_ip_rpm": (1, 10000),
-    "per_ip_tokens_day": (0, 100000000),
-    "global_rpm": (1, 100000),
-    "global_tokens_day": (0, 1000000000),
-    "burst": (0, 1000),
-    "max_prompt_tokens": (0, 1000000),
-}
-
-CACHE_FIELDS = {
-    "ttl_s": (1, 86400),
-    "max_entries": (1, 100000),
-}
-
-MODEL_NUMERIC = {
-    "max_tokens_cap": (0, 1000000),
-    "context_window": (1, 10000000),
-    "rate_limits.rpm": (0, 10000),
-    "rate_limits.tokens_day": (0, 100000000),
-}
-
-
-class SettingsError(ValueError):
-    pass
-
-
-def _expect(cond, message):
-    if not cond:
-        raise SettingsError(message)
-
-
-def _int(value, lo, hi, name):
-    _expect(isinstance(value, int) and not isinstance(value, bool),
-            name + " must be an integer")
-    _expect(lo <= value <= hi, "%s must be between %d and %d" % (name, lo, hi))
-
-
-def _float(value, lo, hi, name):
-    _expect(isinstance(value, (int, float)) and not isinstance(value, bool),
-            name + " must be a number")
-    _expect(lo <= float(value) <= hi,
-            "%s must be between %s and %s" % (name, lo, hi))
-
-
-def _bool(value, name):
-    _expect(type(value) is bool, name + " must be a boolean")
-
-
-def _str(value, name, lo=0, hi=2000):
-    _expect(isinstance(value, str) and lo <= len(value) <= hi,
-            "%s must be a string of %d..%d chars" % (name, lo, hi))
-
-
-def _opt_str(value, name, hi=2000):
-    _expect(value is None or (isinstance(value, str) and len(value) <= hi),
-            name + " must be null or a string (max %d)" % hi)
+from reachd.settings_schema import (
+    ALIAS_PATTERN,
+    CACHE_FIELDS,
+    CODEGPT_ECONOMY_MODELS,
+    DEFAULT_SETTINGS,
+    MODEL_NUMERIC,
+    MODEL_SPEC_DEFAULTS,
+    NUMERIC_FIELDS,
+    RATE_LIMIT_FIELDS,
+    REQUEST_NUMERIC,
+    SECURITY_REVISION,
+    UPSTREAM_PATTERN,
+)
+from reachd.settings_validation import (
+    SettingsError,
+    _bool,
+    _expect,
+    _float,
+    _int,
+    _opt_str,
+    _section_keys,
+    _str,
+    _validate_model_spec,
+    validate_settings as _validate_settings,
+)
 
 
 def _host_is_local(host):
@@ -352,66 +78,6 @@ def _require_local_url(value, name):
     _expect(bool(parts.hostname), name + " must include a host")
     _expect(_host_is_local(parts.hostname),
             name + " host must be loopback or a private address")
-
-
-def _section_keys(cfg, section, allowed, path):
-    sec = cfg.get(section)
-    _expect(isinstance(sec, dict), path + " must be an object")
-    _expect(set(sec) <= allowed, "%s: unknown keys: %s"
-            % (path, ", ".join(sorted(set(sec) - allowed))))
-
-
-def _validate_model_spec(alias, spec, all_aliases, errors):
-    path = "models." + alias
-    if not isinstance(spec, dict):
-        errors.append(path + " must be an object")
-        return
-    allowed = set(MODEL_SPEC_DEFAULTS)
-    unknown = sorted(set(spec) - allowed)
-    if unknown:
-        errors.append(path + ": unknown keys " + ", ".join(unknown))
-    _expect(UPSTREAM_PATTERN.fullmatch(spec.get("upstream", "")),
-            path + ".upstream is invalid")
-    _bool(spec.get("enabled", True), path + ".enabled")
-    _bool(spec.get("public", True), path + ".public")
-    _str(spec.get("description", ""), path + ".description", 0, 300)
-    temp = spec.get("temperature")
-    _expect(temp is None or (isinstance(temp, (int, float))
-                             and not isinstance(temp, bool)),
-            path + ".temperature must be null or a number")
-    if temp is not None:
-        _float(temp, 0, 2, path + ".temperature")
-    max_tokens = spec.get("max_tokens")
-    _expect(max_tokens is None or (isinstance(max_tokens, int)
-                                   and not isinstance(max_tokens, bool)),
-            path + ".max_tokens must be null or an integer")
-    if max_tokens is not None:
-        _int(max_tokens, 1, 1000000, path + ".max_tokens")
-    _int(spec.get("max_tokens_cap", 16384), *MODEL_NUMERIC["max_tokens_cap"],
-         path + ".max_tokens_cap")
-    _int(spec.get("min_output_tokens", 0), 0, 1000000,
-         path + ".min_output_tokens")
-    _float(spec.get("temperature_min", 0.0), 0, 2, path + ".temperature_min")
-    _float(spec.get("temperature_max", 2.0), 0, 2, path + ".temperature_max")
-    _expect(spec.get("temperature_min", 0) <= spec.get("temperature_max", 2),
-            path + ".temperature_min must be <= temperature_max")
-    _str(spec.get("system_prompt", ""), path + ".system_prompt", 0, 8000)
-    _opt_str(spec.get("fallback"), path + ".fallback", 64)
-    if spec.get("fallback"):
-        _expect(spec["fallback"] in all_aliases and spec["fallback"] != alias,
-                path + ".fallback must name a different alias")
-    _bool(spec.get("allow_stream", True), path + ".allow_stream")
-    _bool(spec.get("allow_tools", True), path + ".allow_tools")
-    _bool(spec.get("strip_trailing_roles", False), path + ".strip_trailing_roles")
-    _int(spec.get("context_window", 128000), *MODEL_NUMERIC["context_window"],
-         path + ".context_window")
-    rl = spec.get("rate_limits", {})
-    _expect(isinstance(rl, dict) and set(rl) <= {"rpm", "tokens_day"},
-            path + ".rate_limits: only rpm/tokens_day allowed")
-    _int(rl.get("rpm", 0), *MODEL_NUMERIC["rate_limits.rpm"],
-         path + ".rate_limits.rpm")
-    _int(rl.get("tokens_day", 0), *MODEL_NUMERIC["rate_limits.tokens_day"],
-         path + ".rate_limits.tokens_day")
 
 
 # ----------------------------------------------------------------------
@@ -554,186 +220,11 @@ def restore_masked_client_keys(existing_access, access_patch):
 
 def validate_settings(cfg):
     """Validate a FULL settings dict; raises SettingsError on the first issue."""
-    allowed = set(DEFAULT_SETTINGS)
-    unknown = sorted(set(cfg) - allowed - {k for k in cfg if str(k).startswith("_")})
-    _expect(not unknown, "unknown settings key(s): " + ", ".join(unknown))
-    _require_local_url(cfg.get("omniroute_url", ""), "omniroute_url")
-    _require_local_url(cfg.get("bridge_url", DEFAULT_SETTINGS["bridge_url"]),
-                       "bridge_url")
-    account_service_url = cfg.get("account_service_url", "")
-    _str(account_service_url, "account_service_url", 0, 500)
-    if account_service_url:
-        from reachd.account_proxy import account_service_target
-        try:
-            _scheme, _host, account_port = account_service_target(account_service_url)
-            _expect(account_port != cfg.get("port", DEFAULT_SETTINGS["port"]),
-                    "account_service_url must use a different port than the relay")
-        except ValueError as exc:
-            raise SettingsError(str(exc)) from exc
-    # A sealed value is a dict envelope, so accept either shape: validation
-    # may see plaintext (in memory) or ciphertext (straight off disk).
-    _omniroute_key = cfg.get("omniroute_key", "")
-    if not hostid.is_sealed(_omniroute_key):
-        _str(_omniroute_key, "omniroute_key", 0, 500)
-    _expect(cfg.get("host") in ("127.0.0.1", "localhost", "0.0.0.0"),
-            "host must be 127.0.0.1, localhost or 0.0.0.0")
-    _expect(cfg.get("tunnel") in ("ngrok", "cloudflared", "none"),
-            "tunnel must be ngrok, cloudflared or none")
-    for field, (lo, hi) in NUMERIC_FIELDS.items():
-        _int(cfg.get(field, DEFAULT_SETTINGS[field]), lo, hi, field)
-    override = cfg.get("public_url_override")
-    _expect(override is None or (isinstance(override, str)
-                                 and override.startswith("https://")),
-            "public_url_override must be null or an https URL")
-
-    # request
-    _section_keys(cfg, "request", set(DEFAULT_SETTINGS["request"]), "request")
-    req = cfg["request"]
-    for key in ("default_model", "inject_system_prompt"):
-        _str(req.get(key, ""), "request." + key, 0, 8000)
-    _bool(req.get("default_stream", False), "request.default_stream")
-    for field, (lo, hi) in REQUEST_NUMERIC.items():
-        _int(req.get(field, DEFAULT_SETTINGS["request"][field]), lo, hi,
-             "request." + field)
-    for key in ("allow_tools", "allow_response_format", "allow_logprobs",
-                "reject_blocked"):
-        _bool(req.get(key, False), "request." + key)
-    blocked = req.get("blocked_fields", [])
-    _expect(isinstance(blocked, list) and len(blocked) <= 64,
-            "request.blocked_fields must be a list of at most 64 names")
-    for item in blocked:
-        _expect(isinstance(item, str) and 1 <= len(item) <= 64,
-                "request.blocked_fields entries must be strings (max 64)")
-    _float(req.get("temperature_min", 0.0), 0, 2, "request.temperature_min")
-    _float(req.get("temperature_max", 2.0), 0, 2, "request.temperature_max")
-    _expect(req["temperature_min"] <= req["temperature_max"],
-            "request.temperature_min must be <= temperature_max")
-
-    # models
-    models = cfg.get("models")
-    _expect(isinstance(models, dict), "models must be an object")
-    _expect(0 < len(models) <= 32, "models must hold 1..32 aliases")
-    aliases = set(models)
-    errors = []
-    for alias, spec in models.items():
-        _expect(ALIAS_PATTERN.fullmatch(alias),
-                "invalid model alias %r (a-zA-Z0-9._-, max 64)" % alias)
-        try:
-            _validate_model_spec(alias, spec, aliases, errors)
-        except SettingsError as exc:
-            errors.append(str(exc))
-    _expect(not errors, "; ".join(errors))
-
-    # rate limits
-    _section_keys(cfg, "rate_limits", set(DEFAULT_SETTINGS["rate_limits"]),
-                  "rate_limits")
-    rl = cfg["rate_limits"]
-    _bool(rl.get("enabled", True), "rate_limits.enabled")
-    for field, (lo, hi) in RATE_LIMIT_FIELDS.items():
-        _int(rl.get(field, DEFAULT_SETTINGS["rate_limits"][field]), lo, hi,
-             "rate_limits." + field)
-
-    # access
-    _section_keys(cfg, "access", set(DEFAULT_SETTINGS["access"]), "access")
-    access = cfg["access"]
-    _bool(access.get("key_required", False), "access.key_required")
-    _str(access.get("access_key", ""), "access.access_key", 0, 128)
-    keys_list = access.get("keys", [])
-    _expect(isinstance(keys_list, list) and len(keys_list) <= 100,
-            "access.keys must be a list of at most 100 keys")
-    for k in keys_list:
-        _expect(isinstance(k, dict), "access.keys entries must be objects")
-        key_value = k.get("key")
-        # An empty key means "this entry's secret could not be recovered" (a
-        # host mismatch blanked it). It is kept as a visible placeholder so the
-        # operator can see and re-issue it, rather than silently vanishing.
-        _expect(key_value == "" or (isinstance(key_value, str)
-                                    and len(key_value) >= 6),
-                "access.keys key must be empty or at least 6 chars")
-        _expect(isinstance(k.get("name", "Key"), str), "access.keys name must be string")
-        _int(k.get("rate_limit_rpm", 0), 0, 100000, "access.keys rate_limit_rpm")
-        _int(k.get("tokens_day", 0), 0, 1000000000, "access.keys tokens_day")
-        expires = k.get("expires_at", None)
-        _expect(expires is None or isinstance(expires, str),
-                "access.keys expires_at must be an ISO-8601 string or null")
-        if isinstance(expires, str) and expires.strip():
-            try:
-                time.strptime(expires.strip(), "%Y-%m-%dT%H:%M:%SZ")
-            except ValueError:
-                raise SettingsError(
-                    "access.keys expires_at must look like 2026-12-31T23:59:59Z")
-    if access.get("key_required"):
-        has_key = len(access.get("access_key", "") or "") >= 6 \
-            or any(k.get("enabled", True) and k.get("key")
-                   for k in keys_list)
-        _expect(has_key,
-                "access_key or at least one active client key required when key_required is on")
-    for key in ("ip_allowlist", "ip_blocklist"):
-        value = access.get(key, [])
-        _expect(isinstance(value, list) and len(value) <= 256,
-                "access.%s must be a list of at most 256 IPs" % key)
-        for item in value:
-            _expect(isinstance(item, str) and 1 <= len(item) <= 64,
-                    "access.%s entries must be strings" % key)
-    _str(access.get("cors_origins", ""), "access.cors_origins", 0, 2000)
-    _bool(access.get("local_bypass", True), "access.local_bypass")
-    _int(access.get("auth_fail_limit", 8), 0, 1000, "access.auth_fail_limit")
-    _int(access.get("auth_lockout_s", 300), 1, 86400, "access.auth_lockout_s")
-    proxies = access.get("trusted_proxies", [])
-    _expect(isinstance(proxies, list) and len(proxies) <= 64,
-            "access.trusted_proxies must be a list of at most 64 addresses")
-    for item in proxies:
-        _expect(isinstance(item, str) and 1 <= len(item) <= 64,
-                "access.trusted_proxies entries must be strings")
-        try:
-            ipaddress.ip_network(item.strip(), strict=False)
-        except ValueError:
-            raise SettingsError(
-                "access.trusted_proxies entry %r is not an IP address or CIDR" % item)
-
-    # cache
-    _section_keys(cfg, "cache", set(DEFAULT_SETTINGS["cache"]), "cache")
-    cache = cfg["cache"]
-    _bool(cache.get("enabled", False), "cache.enabled")
-    for field, (lo, hi) in CACHE_FIELDS.items():
-        _int(cache.get(field, DEFAULT_SETTINGS["cache"][field]), lo, hi,
-             "cache." + field)
-    _bool(cache.get("match_temperature", True), "cache.match_temperature")
-
-    # data
-    _section_keys(cfg, "data", set(DEFAULT_SETTINGS["data"]), "data")
-    data = cfg["data"]
-    _int(data.get("log_retention_days", 7), 1, 365,
-         "data.log_retention_days")
-    _expect(data.get("log_level") in ("none", "errors", "normal", "verbose"),
-            "data.log_level must be none, errors, normal or verbose")
-    _bool(data.get("log_bodies", False), "data.log_bodies")
-
-    # publish + system
-    _section_keys(cfg, "publish", set(DEFAULT_SETTINGS["publish"]), "publish")
-    _bool(cfg["publish"].get("enabled", True), "publish.enabled")
-    _int(cfg["publish"].get("interval_min", 0), 0, 1440,
-         "publish.interval_min")
-    _section_keys(cfg, "system", set(DEFAULT_SETTINGS["system"]), "system")
-    _bool(cfg["system"].get("allow_remote_admin", False),
-          "system.allow_remote_admin")
-    _int(cfg["system"].get("log_rotation_mb", 2), 1, 100,
-         "system.log_rotation_mb")
-    _str(cfg["system"].get("admin_token", ""), "system.admin_token", 0, 128)
-    _int(cfg["system"].get("security_revision", 0), 0, 1000,
-         "system.security_revision")
-    _bool(cfg["system"].get("host_bind", True), "system.host_bind")
-    salt = cfg["system"].get("host_salt", "")
-    _str(salt, "system.host_salt", 0, 64)
-    if salt:
-        # hostid._derive_key() feeds the salt to bytes.fromhex(); a non-hex
-        # value would not fail here but crash inside hostid.seal on save.
-        try:
-            bytes.fromhex(salt)
-        except ValueError:
-            raise SettingsError("system.host_salt must be hex")
-    _str(cfg["system"].get("host_machine_hint", ""),
-         "system.host_machine_hint", 0, 200)
+    # Resolve facade dependencies at call time so existing callers can patch
+    # the active schema, URL policy, or model validator without changing imports.
+    return _validate_settings(
+        cfg, defaults=DEFAULT_SETTINGS, require_local_url=_require_local_url,
+        validate_model_spec=_validate_model_spec)
 
 
 def merged_settings(base, patch):

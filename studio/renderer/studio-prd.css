@@ -49,12 +49,10 @@
 
 .rail-item:hover { color: var(--text); background: var(--panel2); }
 
-/* Active = accent icon plus a leading indicator bar. The bar is an inset
-   box-shadow so switching views never reflows the row. */
+/* Active = accent icon on a muted surface. */
 .rail-item.active {
   color: var(--gold);
   background: var(--hover);
-  box-shadow: inset 2px 0 0 var(--gold);
 }
 
 .rail-icon { flex: 0 0 auto; width: 16px; height: 16px; display: grid; place-items: center; }
@@ -131,10 +129,7 @@
   justify-content: flex-start;
 }
 
-:root[data-rail="expanded"] .rail-item:hover,
-:root[data-rail="expanded"] .rail-item.active { box-shadow: inset 2px 0 0 var(--gold); }
-
-:root[data-rail="expanded"] .rail-item:not(.active) { box-shadow: none; }
+:root[data-rail="expanded"] .rail-item { box-shadow: none; }
 
 :root[data-rail="expanded"] .rail-toggle { margin: 0 0 4px; }
 
@@ -386,7 +381,7 @@
 .ws-warnings {
   font-size: 11px;
   color: var(--dim);
-  border-left: 2px solid var(--error-line);
+  border-left: 2px solid var(--line);
   padding-left: 8px;
   max-height: 130px;
   overflow-y: auto;
@@ -923,8 +918,6 @@
 /* --- quality gates --- */
 .rf-gates { display: flex; flex-direction: column; gap: 9px; }
 .rf-gate { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 9px 12px; }
-.rf-gate.rf-ok { border-left: 3px solid var(--ok); }
-.rf-gate.rf-bad { border-left: 3px solid var(--err); }
 .rf-gate-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 .rf-gate-head strong { font-size: 12.5px; color: var(--text); }
 .rf-gate-head .dim { font-size: 11px; }

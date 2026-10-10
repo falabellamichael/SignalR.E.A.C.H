@@ -202,6 +202,8 @@ class AgentNet {
     this.maxDepth = budgets ? cap(budgets.maxDepth) : Math.max(0, Number.isInteger(maxDepth) ? maxDepth : MAX_DEPTH);
     this.awaitTimeoutMs = budgets ? cap(budgets.awaitTimeoutMs) : Number(awaitTimeoutMs) || DEFAULT_AWAIT_TIMEOUT;
     this.agents = new Map();   // agentId -> record
+    this.mail = [];            // unified mailbox: every accepted crew message
+    this.notes = [];           // shared Notes board any member may cite
     this.awaiting = new Map(); // callerId -> targetId (cycle detection)
     this.spawnedEdits = new Map(); // agentId -> [edit] awaiting review
     this.tasks = [];           // background run promises
@@ -610,6 +612,7 @@ class AgentNet {
 Object.assign(AgentNet.prototype,
   require('./team-spawn.cjs')({ workerSoulKey, SUBAGENT_MAX_ROUNDS }),
   require('./team-message.cjs')({ FINISHED }),
+  require('./team-mailbox.cjs')(),
   require('./team-transcript.cjs')({ FINISHED, cleanOutput }));
 
 module.exports = {

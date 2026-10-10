@@ -1,0 +1,58 @@
+.account-bubble { position: relative; flex: 0 0 38px; width: 38px; height: 38px; display: grid; place-items: center; border: 1px solid var(--gold-dim); border-radius: 50%; color: var(--gold); background: var(--panel2); font: 700 15px/1 'Segoe UI', sans-serif; cursor: pointer; }
+.account-bubble:hover, .account-bubble[aria-expanded="true"] { background: var(--hover); border-color: var(--gold); }
+.account-bubble:focus-visible, .account-menu button:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+#account-menu-dot { position: absolute; right: -1px; bottom: 0; width: 10px; height: 10px; border-radius: 50%; background: var(--dim); border: 2px solid var(--header); }
+#account-menu-dot[data-state="connected"] { background: var(--ok); }
+#account-menu-dot[data-state="connecting"] { background: var(--gold); }
+.account-menu[hidden], .account-menu [hidden] { display: none !important; }
+.account-menu { position: fixed; z-index: 180; top: 66px; right: 14px; width: min(610px, calc(100vw - 28px)); display: flex; flex-direction: column; min-height: 0; overflow: hidden; background: var(--panel); color: var(--text); border: 1px solid var(--gold-dim); border-radius: 14px; box-shadow: 0 18px 60px var(--shadow); }
+.account-menu[data-panel="settings"] { width: min(820px, calc(100vw - 28px)); }
+#model-modal { z-index: 190; }
+.account-menu-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; padding: 18px 20px 14px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.account-menu-head > div { min-width: 0; }
+.account-menu-eyebrow { color: var(--gold); font-size: 10px; letter-spacing: .12em; margin-bottom: 5px; }
+.account-menu-head h2 { font: 600 18px/1.4 'Segoe UI', sans-serif; overflow-wrap: anywhere; }
+#account-menu-summary { color: var(--dim); font-size: 12px; line-height: 1.6; margin-top: 4px; }
+.account-menu-tabs { display: flex; gap: 5px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex: 0 0 auto; }
+.account-menu-tabs button { flex: 1; padding: 9px 10px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--dim); font-family: inherit; font-weight: 600; font-size: 12px; line-height: 1.4; cursor: pointer; }
+.account-menu-tabs button[aria-selected="true"] { color: var(--gold); border-color: var(--gold-dim); background: var(--hover); }
+.account-menu-panel { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 16px; }
+.account-menu .home-section { margin: 0; padding: 0; min-width: 0; }
+.account-menu .home-section-intro { display: none; }
+.account-menu .home-account-grid, .account-menu .home-value-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.account-menu .home-card { padding: 18px; }
+.account-menu .home-card h3 { font-size: 18px; }
+.account-menu .home-allowance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.account-menu .home-plan-card { min-width: 0; padding: 14px; }
+.account-menu .home-plan-card h3 { font-size: 22px; overflow-wrap: anywhere; }
+.account-menu .home-wallet-holdings { padding: 12px 0; border-top: 1px solid var(--line); }
+.account-menu .home-wallet-balance { margin: 5px 0; color: var(--text); font-size: 23px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.account-menu #page-settings { display: flex; flex-direction: column; min-width: 0; }
+.account-menu .settings-nav { flex: 0 0 auto; flex-direction: row; flex-wrap: wrap; gap: 6px; padding: 0 0 14px; border: 0; border-bottom: 1px solid var(--line); }
+.account-menu .settings-nav button { font-size: 12px; padding: 7px 10px; }
+.account-menu .settings-scroll { overflow: visible; padding: 16px 0 0; }
+.account-menu .settings-scroll .settings-panel { max-width: none; padding-bottom: 0; }
+.account-menu .settings-content h2 { font-size: 20px; }
+.account-menu .conn-toolbar { flex-wrap: wrap; }
+.account-menu .conn-toolbar h2 { flex: 1; }
+.account-menu input:not([type="checkbox"]), .account-menu select, .account-menu textarea { max-width: 100%; min-width: 0; }
+@media (max-width: 1050px) {
+  /* The persistent rail retains every page destination when header space is tight. */
+  body > header > .tabs { display: none; }
+}
+@media (max-width: 700px) {
+  body > header { padding: 12px; gap: 12px; }
+  body > header .statusbar { margin-left: auto; flex-shrink: 0; gap: 8px; }
+  body > header #wsl-status, body > header #activity-global { display: none; }
+  body > header .brand { gap: 8px; }
+  body > header .brand h1 { font-size: 18px; }
+  .account-menu { right: 8px; width: calc(100vw - 16px); }
+  .account-menu[data-panel="settings"] { width: calc(100vw - 16px); }
+  .account-menu-head { padding: 14px; }
+  .account-menu-panel { padding: 12px; }
+  .account-menu .home-card { padding: 14px; }
+  .account-menu .home-account-url-row { flex-wrap: wrap; }
+  .account-menu .home-account-url-row input { flex-basis: 100%; }
+  .account-menu .home-card-head { flex-wrap: wrap; }
+  .account-menu .settings-nav button { flex: 1 1 120px; }
+}

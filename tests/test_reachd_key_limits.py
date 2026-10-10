@@ -162,6 +162,9 @@ class RelayFixture(unittest.TestCase):
         tmp = Path(self._tmp.name)
         cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
         cfg["system"]["host_bind"] = False
+        # Pin the upstream at a dead port: a real OmniRoute on this machine
+        # would answer the dispatch and the "upstream failed" assertions flip.
+        cfg["omniroute_url"] = "http://127.0.0.1:9/v1"
         cfg["access"]["key_required"] = True
         self.key = reachd.generate_client_key("Subscriber")
         self.key.update(self.key_fields)

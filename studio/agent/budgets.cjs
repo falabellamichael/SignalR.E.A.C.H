@@ -94,4 +94,20 @@ function resolveBudgets(global = {}, settings = {}) {
   return { ...defaults, ...legacy, ...validateBudgets(global.budgets || {}), ...overrides };
 }
 const cap = value => value === 0 ? Infinity : value;
-module.exports = { fields, defaults, presets, validateBudgets, resolveBudgets, cap, GLOBAL_ONLY_KEYS };
+
+/* Browser chat routes — model ids of sites driven through the built-in browser.
+ * They reject Studio's generation controls, run at the site's own pace, and keep
+ * their page history intact:
+ *   maxRounds        0 — the page's task, not a round cap, bounds the run
+ *   maxTokens        0 — the site decides; a max_tokens hint is not honoured
+ *   requestTimeoutMs 0 — wait until the page answers or you press Stop
+ *   autoCompact      true — page transcripts flatten, keep context compression on
+ *   storedMessages   0 — browser chat history survives reloads in full
+ * Exact-id match: suffixed ids (e.g. chatgpt-chat-extra) are ordinary models and
+ * are returned by reference, never copied. */
+const BROWSER_CHAT_MODELS = new Set(['copilot-chat', 'chatgpt-chat', 'gemini-chat']);
+function budgetsForModel(budgets, model) {
+  if (!BROWSER_CHAT_MODELS.has(String(model || ''))) return budgets;
+  return { ...budgets, maxRounds: 0, maxTokens: 0, requestTimeoutMs: 0, autoCompact: true, storedMessages: 0 };
+}
+module.exports = { fields, defaults, presets, validateBudgets, resolveBudgets, cap, budgetsForModel, BROWSER_CHAT_MODELS, GLOBAL_ONLY_KEYS };

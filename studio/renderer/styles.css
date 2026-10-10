@@ -369,7 +369,7 @@ footer {
 .msg-fork:hover { color: var(--gold); border-color: var(--gold-dim); }
 
 /* per-message actions (Copy / Resend + side wings) */
-.chat-msg:is(.user, .assistant) { position: relative; transition: transform .16s ease; }
+.chat-msg:is(.user, .assistant) { position: relative; transition: left .16s ease; }
 .msg-actions {
   display: flex; align-items: center; gap: 2px; flex-wrap: nowrap;
   padding-top: 4px; margin-top: 6px;
@@ -436,7 +436,7 @@ footer {
   font-size: 11px; text-align: left;
 }
 .msg-translate-pop[hidden] { display: none; }
-/* The head is the drag grip — a parked popover keeps its spot across opens. */
+/* The head is the drag grip — a parked popover keeps its offset across opens. */
 .msg-translate-head {
   display: flex; align-items: center; gap: 6px;
   margin: -3px -4px 0; padding: 3px 4px;
@@ -868,7 +868,7 @@ button.editor-live-tool[hidden] { display: none; }
   white-space: pre-wrap; overflow-wrap: anywhere; cursor: text;
 }
 .thought-detail {
-  align-self: flex-start; max-width: 78%; padding: 7px 10px; border-left: 2px solid var(--gold-dim);
+  align-self: flex-start; max-width: 78%; padding: 7px 10px; border-left: 1px solid var(--line);
   border-radius: 5px; background: var(--panel); color: var(--muted); font-size: 11px;
   line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere;
 }
@@ -912,9 +912,6 @@ button.editor-live-tool[hidden] { display: none; }
   background: var(--card); font-size: 12px; flex-shrink: 0;
   font-family: Consolas, 'Cascadia Mono', ui-monospace, monospace;
 }
-.tool-card.ok { border-left: 3px solid var(--ok); }
-.tool-card.err { border-left: 3px solid var(--err); }
-.tool-card.pending { border-left: 3px solid var(--gold); }
 .tool-head {
   display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
   background: transparent; border: none; color: var(--text); padding: 6px 12px;
@@ -1480,7 +1477,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 #agent-view .project-actions button {
   height: 28px;
   padding: 0 14px;
-  border-radius: 999px;
+  border-radius: 6px;
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
@@ -1641,6 +1638,23 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
   .inline-editor .conn-status { flex-basis: auto; text-align: left; }
   .inline-editor .conn-editor .conn-body { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Settings → MCP servers. Reuses the conn-* card/editor grid; the pieces here
+   are only what MCP adds on top: status pills, per-transport field groups and
+   the textareas env/headers need. */
+.settings-scroll #settings-mcp { max-width: 1280px; container-type: inline-size; }
+.mcp-pill.ok { color: var(--ok); border-color: var(--ok); }
+.mcp-pill.bad { color: var(--err); border-color: var(--err); }
+.mcp-pill.checking { color: var(--gold); border-color: var(--gold-dim); }
+.mcp-pill.off { opacity: .7; }
+.mcp-transport-fields[hidden] { display: none; }
+.settings-panel textarea {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  color: var(--text); padding: 9px 12px; font-size: 12px; outline: none;
+  font-family: var(--mono, ui-monospace, Consolas, monospace); resize: vertical; min-height: 0;
+}
+.settings-panel textarea:focus { border-color: var(--gold-dim); }
+.conn-field textarea, .conn-field select { width: 100%; }
 
 /* The model picker now says which connection the list came from: with several
    providers configured, "Pick a Model" alone does not say whose models these

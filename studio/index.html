@@ -1,0 +1,1149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' blob: data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'" />
+  <title>Reach Studio</title>
+  <script src="boot.js"></script>
+  <script src="theme-data.js"></script>
+  <script src="theme.js"></script>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="workspace.css" />
+  <link rel="stylesheet" href="studio-prd.css" />
+  <link rel="stylesheet" href="team-deck.css" />
+  <link rel="stylesheet" href="activity-bar.css" />
+  <link rel="stylesheet" href="home.css" />
+  <link rel="stylesheet" href="create-page.css" />
+  <link rel="stylesheet" href="account-menu.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="mark">R</span>
+      <h1>Reach Studio</h1>
+    </div>
+    <nav class="tabs">
+      <button id="tab-home" class="tab active">Home</button>
+      <button id="tab-projects" class="tab">Projects</button>
+      <button id="tab-agents" class="tab">Agents</button>
+      <button id="tab-create" class="tab">Create</button>
+      <div class="settings-menu">
+        <button id="tab-settings" class="tab" aria-expanded="false" aria-controls="tab-settings-menu">Settings &#9662;</button>
+        <div id="tab-settings-menu" class="settings-dropdown hidden">
+          <button data-settings-panel="connection">Connection &amp; default model</button>
+          <button data-settings-panel="conversation">Conversation &amp; permissions</button>
+          <button data-settings-panel="budgeting">Budgeting</button>
+        </div>
+      </div>
+    </nav>
+    <div class="statusbar">
+      <div id="activity-global" class="chip" hidden><i class="activity-spinner" aria-hidden="true"></i><span></span></div>
+      <div class="theme-control">
+        <div class="theme-pill">
+          <select id="theme-select" aria-label="Theme"></select>
+          <span class="theme-pill-sep" aria-hidden="true">|</span>
+          <button id="theme-accent" class="theme-accent" type="button" aria-label="Accent color" aria-haspopup="dialog" aria-expanded="false" aria-controls="theme-accent-pop" title="Accent color">
+            <span class="theme-wheel" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div id="theme-accent-pop" class="theme-accent-pop" role="dialog" aria-label="Accent color" hidden>
+          <div id="theme-sv" class="theme-sv" role="application" aria-label="Saturation and brightness"><i></i></div>
+          <input id="theme-hue" class="theme-hue" type="range" min="0" max="360" value="90" aria-label="Hue" />
+          <label class="theme-tint">Tint
+            <input id="theme-tint" type="range" min="0" max="100" value="24" aria-label="Tint intensity" />
+            <span id="theme-tint-value">24</span>
+          </label>
+        </div>
+      </div>
+      <div class="settings-menu" id="drawer-menu-wrap">
+        <button id="btn-toggle-files" class="chip toggle" title="Choose Files or Browser" aria-expanded="false" aria-controls="drawer-menu">Files &#x25BE;</button>
+        <div id="drawer-menu" class="settings-dropdown hidden" role="menu">
+          <button id="btn-show-files" role="menuitem">Files</button>
+          <button id="btn-show-browser" role="menuitem">Browser</button>
+        </div>
+      </div>
+      <span id="wsl-status" class="chip pending">checking reach&hellip;</span>
+      <span id="reach-version" class="chip dim"></span>
+      <button id="account-menu-button" class="account-bubble" type="button" aria-label="Open account, usage and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-menu" title="Account, usage and settings">
+        <span id="account-menu-avatar" aria-hidden="true">R</span><i id="account-menu-dot" aria-hidden="true"></i>
+      </button>
+    </div>
+  </header>
+
+  <section id="account-menu" class="account-menu" role="dialog" aria-modal="false" aria-labelledby="account-menu-title" hidden>
+    <div class="account-menu-head">
+      <div><p class="account-menu-eyebrow">REACH ACCOUNT</p><h2 id="account-menu-title">Welcome to REACH</h2><p id="account-menu-summary">Sign in to see your shared usage.</p></div>
+      <button id="account-menu-close" class="ghost small" type="button" aria-label="Close account menu">×</button>
+    </div>
+    <div class="account-menu-tabs" role="tablist" aria-label="Account sections">
+      <button id="account-menu-tab-account" type="button" role="tab" aria-selected="true" aria-controls="account-menu-panel-account" data-account-panel="account">Account</button>
+      <button id="account-menu-tab-usage" type="button" role="tab" aria-selected="false" aria-controls="account-menu-panel-usage" data-account-panel="usage" tabindex="-1">Usage &amp; RCH</button>
+      <button id="account-menu-tab-settings" type="button" role="tab" aria-selected="false" aria-controls="account-menu-panel-settings" data-account-panel="settings" tabindex="-1">Settings</button>
+    </div>
+    <div id="account-menu-panel-account" class="account-menu-panel" role="tabpanel" aria-labelledby="account-menu-tab-account"></div>
+    <div id="account-menu-panel-usage" class="account-menu-panel" role="tabpanel" aria-labelledby="account-menu-tab-usage" hidden></div>
+    <div id="account-menu-panel-settings" class="account-menu-panel" role="tabpanel" aria-labelledby="account-menu-tab-settings" hidden></div>
+  </section>
+
+  <div class="app-body">
+  <!-- ========== PERSISTENT NAV RAIL (PRD: Sidebar Quick-Navigation Menu) ==========
+       Keyboard-first vertical navigation. The PRD specifies Cmd/Ctrl+1-6; those
+       routes are the relay-management screens (/aliases, /logs, /tray-settings,
+       /app-settings) which are out of scope here, so 1-6 map to the views this
+       build actually has: Workspace, Playground, Projects, Agents, Create,
+       Settings. Each button carries its own hotkey in data-hotkey and shows it
+       in a kbd hint. -->
+  <nav class="rail" id="nav-rail" aria-label="Views">
+    <button id="rail-toggle" class="rail-toggle" type="button" aria-expanded="false" aria-label="Expand the navigation rail" title="Expand the navigation rail">&#8250;</button>
+    <button class="rail-item" id="rail-workspace" data-view="workspace" data-hotkey="1" title="Workspace dashboard (Ctrl+1)">
+      <span class="rail-icon" aria-hidden="true">&#9636;</span><span class="rail-label">Workspace</span><kbd class="rail-key">1</kbd>
+    </button>
+    <button class="rail-item" id="rail-playground" data-view="playground" data-hotkey="2" title="Prompt console (Ctrl+2)">
+      <span class="rail-icon" aria-hidden="true">&#9655;</span><span class="rail-label">Playground</span><kbd class="rail-key">2</kbd>
+    </button>
+    <div class="rail-sep" role="separator"></div>
+    <button class="rail-item" id="rail-home" data-view="home" title="Home overview">
+      <span class="rail-icon" aria-hidden="true">&#8962;</span><span class="rail-label">Home</span>
+    </button>
+    <button class="rail-item" id="rail-projects" data-view="projects" data-hotkey="3" title="Projects (Ctrl+3)">
+      <span class="rail-icon" aria-hidden="true">&#128193;</span><span class="rail-label">Projects</span><kbd class="rail-key">3</kbd><i class="rail-badge" id="rail-projects-badge" hidden></i>
+    </button>
+    <button class="rail-item" id="rail-agents" data-view="agents" data-hotkey="4" title="Agents (Ctrl+4)">
+      <span class="rail-icon" aria-hidden="true">&#9673;</span><span class="rail-label">Agents</span><kbd class="rail-key">4</kbd><i class="rail-badge" id="rail-agents-badge" hidden></i>
+    </button>
+    <button class="rail-item" id="rail-create" data-view="create" data-hotkey="5" title="Create (Ctrl+5)">
+      <span class="rail-icon" aria-hidden="true">&#10010;</span><span class="rail-label">Create</span><kbd class="rail-key">5</kbd>
+    </button>
+    <button class="rail-item" id="rail-settings" data-view="settings" data-hotkey="6" title="Settings (Ctrl+6)">
+      <span class="rail-icon" aria-hidden="true">&#9881;</span><span class="rail-label">Settings</span><kbd class="rail-key">6</kbd>
+    </button>
+    <div class="rail-sep" role="separator"></div>
+    <!-- No numeric hotkey: PRD1 pins Ctrl/Cmd+1-6 to the six primary views, and
+         the smoke asserts exactly that mapping. Refactor joins About as an
+         unnumbered rail destination. -->
+    <button class="rail-item" id="rail-refactor" data-view="refactor" title="Refactor workbench">
+      <span class="rail-icon" aria-hidden="true">&#9998;</span><span class="rail-label">Refactor</span>
+    </button>
+    <button class="rail-item" id="rail-about" data-view="about" title="About REACH Studio">
+      <span class="rail-icon" aria-hidden="true">&#8505;</span><span class="rail-label">About</span>
+    </button>
+  </nav>
+  <main>
+    <!-- ========== HOME PAGE ========== -->
+    <section id="page-home" class="page active" aria-label="Home">
+      <div class="home-scroll">
+        <div class="home-content">
+          <section class="home-hero" aria-labelledby="home-title">
+            <div class="home-hero-copy">
+              <p class="home-eyebrow">REACH STUDIO <span aria-hidden="true">/</span> YOUR WORKSPACE</p>
+              <h2 id="home-title">A clearer place to build.</h2>
+              <p class="home-lead">Run project commands, check an AI endpoint, and move from an idea to working software in one focused workspace.</p>
+              <div class="home-hero-meta" aria-label="Workspace tools">
+                <span><b>01</b> Build</span><span><b>02</b> Test</span><span><b>03</b> Create</span>
+              </div>
+            </div>
+            <div class="home-hero-art" aria-hidden="true">
+              <div class="home-art-orbit home-art-orbit-one"></div>
+              <div class="home-art-orbit home-art-orbit-two"></div>
+              <div class="home-art-core">R</div>
+              <span class="home-art-caption">REACH / STUDIO</span>
+            </div>
+          </section>
+
+          <section class="home-tools" aria-label="Quick tools">
+            <div class="home-section-intro">
+              <div><p class="home-eyebrow">WORKSPACE TOOLS</p><h2>Pick up where you left off.</h2></div>
+              <p>Two everyday tools, ready when you are.</p>
+            </div>
+            <div class="home-tool-grid">
+              <section class="home-card home-tool-card" aria-labelledby="home-command-title">
+                <div class="home-card-head">
+                  <div class="home-card-title"><span class="home-card-icon" aria-hidden="true">&gt;_</span><div><p class="home-card-kicker">PROJECTS / QUICK RUN</p><h3 id="home-command-title">Project runner</h3></div></div>
+                  <button id="home-projects-link" class="home-text-link" type="button">Open Projects <span aria-hidden="true">&#8599;</span></button>
+                </div>
+                <p class="home-card-description">Run a command in one of your saved project folders.</p>
+                <div class="home-command-tab-bar">
+                  <div id="home-command-tabs" class="home-command-tabs" role="tablist" aria-label="Project command tabs"></div>
+                  <button id="home-command-new-tab" class="home-command-new-tab" type="button" aria-label="New command tab" title="New command tab">+</button>
+                </div>
+                <div class="home-field">
+                  <label for="home-project-select">Project</label>
+                  <select id="home-project-select"></select>
+                  <p id="home-project-path" class="home-field-note"></p>
+                </div>
+                <div class="home-command-row">
+                  <div class="home-field home-command-mode-field">
+                    <label for="home-command-mode">Mode</label>
+                    <select id="home-command-mode"><option value="project">Project command</option><option value="reach">Native Reach</option></select>
+                  </div>
+                  <div class="home-field home-command-entry">
+                    <label for="home-command-input">Command</label>
+                    <input id="home-command-input" type="text" spellcheck="false" placeholder="e.g. git status" />
+                  </div>
+                </div>
+                <p class="home-field-note">Native Reach: select a Reach DApp project or run init in this folder, then compile index.rsh. With Ganache on 127.0.0.1:8545, run index.rsh.</p>
+                <div class="home-action-row">
+                  <div class="home-run-split">
+                    <button id="home-command-run" class="gold small" type="button">Run command</button>
+                    <button id="home-command-run-more" class="gold small" type="button" aria-label="More run options" aria-haspopup="menu" aria-expanded="false" aria-controls="home-command-run-menu" title="More run options">&#9662;</button>
+                    <div id="home-command-run-menu" class="home-run-menu" role="menu" hidden>
+                      <button id="home-command-run-new-tab" type="button" role="menuitem">Run in new tab</button>
+                    </div>
+                  </div>
+                  <button id="home-command-stop" class="ghost small" type="button" disabled>Stop</button>
+                  <span id="home-command-status" class="home-inline-status" role="status">Ready</span>
+                </div>
+                <div id="home-command-log" class="home-command-log" role="log" aria-live="polite"><span class="home-log-empty">Command output will appear here.</span></div>
+                <p class="home-card-footnote">Project commands run without a shell. RCH commands: rch help after CLI installation. Native Reach uses the optional reachc compiler; --connector and --node override run defaults.</p>
+              </section>
+
+              <section class="home-card home-tool-card" aria-labelledby="home-chat-title">
+                <div class="home-card-head">
+                  <div class="home-card-title"><span class="home-card-icon home-chat-icon" aria-hidden="true">&#9672;</span><div><p class="home-card-kicker">ENDPOINTS / QUICK TEST</p><h3 id="home-chat-title">Endpoint chat</h3></div></div>
+                  <button id="home-playground-link" class="home-text-link" type="button">Open Console <span aria-hidden="true">&#8599;</span></button>
+                </div>
+                <p class="home-card-description">Ping a configured endpoint, then try one independent prompt.</p>
+                <div class="home-endpoint-row">
+                  <div class="home-field">
+                    <label for="home-connection">Connection</label>
+                    <select id="home-connection"></select>
+                  </div>
+                  <button id="home-endpoint-ping" class="ghost small" type="button">Ping</button>
+                </div>
+                <div class="home-endpoint-row home-model-row">
+                  <div class="home-field">
+                    <label for="home-model">Model</label>
+                    <input id="home-model" type="text" spellcheck="false" placeholder="Choose or type a model" list="home-model-list" />
+                    <datalist id="home-model-list"></datalist>
+                  </div>
+                  <button id="home-model-browse" class="ghost small" type="button">Browse</button>
+                </div>
+                <p id="home-endpoint-status" class="home-inline-status" role="status">Choose a connection to begin.</p>
+                <div id="home-chat-log" class="home-chat-log" role="log" aria-live="polite"><p class="home-log-empty">Your endpoint test appears here. Each prompt runs separately.</p></div>
+                <div class="home-chat-compose">
+                  <label class="sr-only" for="home-chat-prompt">Test prompt</label>
+                  <textarea id="home-chat-prompt" rows="2" spellcheck="false" placeholder="Ask a question to test this endpoint..."></textarea>
+                  <div class="home-action-row"><button id="home-chat-send" class="gold small" type="button">Send test</button><button id="home-chat-stop" class="ghost small" type="button" disabled>Stop</button><span class="home-card-footnote">Uses the selected provider.</span></div>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section class="home-section" aria-labelledby="home-subscription-title">
+            <div class="home-section-intro">
+              <div><p class="home-eyebrow">YOUR ACCOUNT / MODEL ACCESS</p><h2 id="home-subscription-title">One allowance. Every supplied model.</h2></div>
+              <p>CodeGPT and supplied free endpoints share your plan allowance across chats, agents, teams, and devices.</p>
+            </div>
+            <div class="home-account-grid">
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">↗</span><div><p class="home-card-kicker">WALLET SIGN-IN</p><h3>Connect to REACH</h3></div></div><span id="home-account-badge" class="home-preview-badge">NOT CONFIGURED</span></div>
+                <div class="home-field"><label for="home-account-service">Hosted REACH service</label><div class="home-account-url-row"><input id="home-account-service" type="url" placeholder="https://your-reach-service.example" autocomplete="off" spellcheck="false" /><button id="home-account-configure" class="ghost small" type="button">Save service</button></div></div>
+                <p id="home-account-wallet" class="home-wallet-address">Your wallet address will appear after sign-in.</p>
+                <div class="home-wallet-holdings">
+                  <p class="home-card-kicker">RCH wallet balance</p>
+                  <p id="home-wallet-balance" class="home-wallet-balance" role="status" aria-live="polite">—</p>
+                  <p id="home-wallet-balance-detail" class="home-card-footnote">Connect your wallet to see your RCH balance.</p>
+                </div>
+                <div class="home-action-row"><button id="home-account-connect" class="gold small" type="button" disabled>Connect wallet</button><button id="home-account-cancel" class="ghost small" type="button" hidden>Cancel sign-in</button><button id="home-account-refresh" class="ghost small" type="button" disabled>Refresh</button><button id="home-account-disconnect" class="ghost small" type="button" disabled>Disconnect</button></div>
+                <p id="home-account-status" class="home-inline-status" role="status" aria-live="polite">Configure the hosted service to connect your wallet.</p>
+                <p class="home-card-footnote">Sign a login message in your browser wallet. Sign-in does not spend RCH or approve a transaction.</p>
+              </article>
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">◎</span><div><p class="home-card-kicker">SUBSCRIPTION</p><h3 id="home-account-plan">No account connected</h3></div></div><span id="home-account-plan-status" class="home-preview-badge">—</span></div>
+                <p id="home-account-plan-detail" class="home-card-description">Connect your wallet to load your plan and permitted models.</p>
+                <div id="home-account-models" class="home-account-models" aria-label="Models included with this account"></div>
+                <button id="home-account-use" class="ghost small home-disabled-action" type="button" disabled>Use REACH models</button>
+                <p class="home-card-footnote">Select “REACH subscription” in any connection picker. Your own endpoints remain available separately.</p>
+              </article>
+            </div>
+            <div id="home-usd-credit" class="home-allowance-grid" aria-label="Prepaid US dollar credit" hidden>
+              <article class="home-plan-card"><p>AI credit available</p><h3 id="home-usd-credit-available">—</h3><span id="home-usd-credit-detail">From confirmed RCH redemptions</span></article>
+              <article class="home-plan-card"><p>Credit reserved by requests</p><h3 id="home-usd-credit-reserved">—</h3><span>Released or settled when each request finishes</span></article>
+            </div>
+            <div class="home-allowance-grid" aria-label="Shared account allowance">
+              <article class="home-plan-card"><p>Included remaining</p><h3 id="home-allowance-included">—</h3><span>AI usage tokens</span></article>
+              <article class="home-plan-card"><p>Prepaid remaining</p><h3 id="home-allowance-prepaid">—</h3><span>From confirmed RCH redemptions</span></article>
+              <article class="home-plan-card"><p>Reserved by requests</p><h3 id="home-allowance-reserved">—</h3><span>Pending usage settlement</span></article>
+              <article class="home-plan-card"><p>Available to use</p><h3 id="home-allowance-total">—</h3><span id="home-allowance-debt">Shared across supplied models</span></article>
+            </div>
+          </section>
+
+          <section class="home-section home-value-section" aria-labelledby="home-topup-title">
+            <div class="home-section-intro">
+              <div><p class="home-eyebrow">REACH CREDITS / RCH</p><h2 id="home-topup-title">Turn RCH into usage credit.</h2></div>
+              <p id="home-redemption-description">After confirmation, the service adds prepaid AI usage credit to your account. Review the redemption terms before signing.</p>
+            </div>
+            <div class="home-value-grid">
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">R</span><div><p class="home-card-kicker">REDEEM</p><h3>Fund your next session</h3></div></div><span id="home-redemption-badge" class="home-preview-badge">UNAVAILABLE</span></div>
+                <p id="home-redemption-rate" class="home-card-description">The hosted service supplies the confirmed conversion rate and network.</p>
+                <div class="home-field"><label for="home-redemption-amount">RCH to redeem</label><input id="home-redemption-amount" type="text" inputmode="decimal" placeholder="10" disabled /></div>
+                <button id="home-redemption-start" class="gold small home-disabled-action" type="button" disabled>Review redemption in browser</button>
+                <p id="home-redemption-status" class="home-inline-status" role="status" aria-live="polite">Connect your wallet to check whether redemption is enabled.</p>
+                <p class="home-card-footnote">Review the amount, network, contract, and gas fee in your wallet before signing. Refresh your account after confirmation.</p>
+              </article>
+              <article class="home-card home-value-card">
+                <div class="home-card-head"><div class="home-card-title"><span class="home-card-icon" aria-hidden="true">+</span><div><p class="home-card-kicker">PAY BY CARD OR PAYPAL</p><h3>Basic plan and credit</h3></div></div><span id="home-card-badge" class="home-preview-badge">UNAVAILABLE</span></div>
+                <p class="home-card-description">Subscribe to Basic or add US dollar credit on the Stripe checkout page or with PayPal.</p>
+                <button id="home-card-subscribe" class="gold small home-disabled-action" type="button" disabled>Subscribe to Basic</button>
+                <button id="home-card-subscribe-paypal" class="gold small home-disabled-action" type="button" hidden disabled>Subscribe with PayPal</button>
+                <button id="home-card-manage" class="gold small home-disabled-action" type="button" hidden disabled>Manage or cancel subscription</button>
+                <p id="home-card-paypal-note" class="home-card-footnote" hidden>A PayPal subscription is cancelled in your PayPal account, under Automatic payments.</p>
+                <div class="home-field"><label for="home-card-amount">US dollar credit to add</label><input id="home-card-amount" type="text" inputmode="decimal" placeholder="20" disabled /></div>
+                <button id="home-card-topup" class="gold small home-disabled-action" type="button" disabled>Add credit by card</button>
+                <button id="home-card-topup-paypal" class="gold small home-disabled-action" type="button" hidden disabled>Add credit with PayPal</button>
+                <p id="home-card-status" class="home-inline-status" role="status" aria-live="polite">Connect your wallet to pay by card.</p>
+                <p class="home-card-footnote">Your card details go to Stripe, and your PayPal details to PayPal, never to REACH. Refresh your account after paying. Refunds and disputes remove the credit or plan they paid for.</p>
+              </article>
+            </div>
+          </section>
+
+          <footer class="home-footer"><span><b>REACH STUDIO</b> &nbsp; Build with purpose.</span><span>Projects <span aria-hidden="true">/</span> Agents <span aria-hidden="true">/</span> Create</span><span>Home overview</span></footer>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== PROJECTS PAGE ========== -->
+    <section id="page-projects" class="page">
+      <aside>
+        <div class="side-title">Projects</div>
+        <ul id="project-list"></ul>
+        <div class="side-actions">
+          <button id="btn-new" class="gold">+ New Project</button>
+          <button id="btn-open" class="ghost">Open Folder&hellip;</button>
+        </div>
+      </aside>
+
+      <section class="work">
+        <div id="no-project" class="empty">
+          <div class="big-mark">R</div>
+          <p>Select a project or create a new one.</p>
+          <p class="sub">Manage projects, run project commands, and compile Reach DApps with a native compiler.</p>
+        </div>
+
+        <div id="project-view" class="hidden">
+          <div class="project-head">
+            <div>
+              <h2 id="project-name"></h2>
+              <div id="project-path" class="path"></div>
+            </div>
+            <div class="project-actions">
+              <button id="btn-compile" class="gold">Reach Compile</button>
+              <button id="btn-clean" class="ghost">Reach Clean</button>
+              <button id="btn-info" class="ghost">Reach Info</button>
+              <button id="btn-folder" class="ghost">Open Folder</button>
+            </div>
+          </div>
+
+          <div class="project-command-tabs-row">
+            <div id="project-command-tabs" class="project-command-tabs" role="tablist" aria-label="Project command tabs"></div>
+            <button id="project-tab-add" class="project-command-tab-add" type="button" aria-label="New command tab" title="New command tab">+</button>
+          </div>
+          <div class="cmdbar">
+            <label class="sr-only" for="cmd-mode">Command type</label>
+            <select id="cmd-mode" aria-label="Command type">
+              <option value="project">Project command</option>
+              <option value="reach">Native Reach</option>
+            </select>
+            <span class="prompt" id="cmd-prompt">$</span>
+            <input id="cmd-input" type="text" placeholder="e.g. npm --prefix studio test" spellcheck="false" />
+            <div class="project-run-split">
+              <button id="btn-run" class="gold small" type="button">Run</button>
+              <button id="btn-run-options" class="gold small" type="button" aria-label="Run options" aria-haspopup="menu" aria-expanded="false" aria-controls="project-run-menu" title="Run options">▾</button>
+              <div id="project-run-menu" class="project-run-menu hidden" role="menu" aria-label="Run options">
+                <button id="btn-run-new-tab" type="button" role="menuitem">Run in new tab</button>
+                <button id="btn-run-empty-tab" type="button" role="menuitem">Open empty tab</button>
+              </div>
+            </div>
+            <button id="btn-stop" class="ghost small hidden" type="button">Stop</button>
+          </div>
+          <p class="dim command-hint" id="cmd-hint">Runs a program in this project folder. RCH: rch help (install once with npm --prefix RCH run install:cli). No shell pipes or redirects.</p>
+          <div id="project-tab-status" class="project-tab-status" role="status" aria-live="polite"></div>
+          <div class="log" id="log" role="tabpanel" aria-live="polite"></div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ========== AGENTS PAGE ========== -->
+    <section id="page-agents" class="page">
+      <aside>
+        <div class="side-title">Conversations</div>
+        <select id="agent-project-select" title="Conversations stem from a project"></select>
+        <div id="background-agent-alerts" class="background-agent-alerts hidden" role="status" aria-live="polite"></div>
+        <!-- Explorer-style groups. app.js rebuilds the CONTENTS of #agent-tree
+             from scratch on every loadAgentTree() call (≈20 call sites), so
+             sectioning the rows themselves would be overwritten. Instead the
+             rows stay exactly where app.js puts them — .tree-node children of
+             #agent-tree — and activity-bar.js re-parents them into two stable
+             section bodies after each mutation. No row markup changes. -->
+        <div class="agent-tree-shell">
+          <section class="sidebar-section" id="agent-section-new" aria-expanded="true">
+            <button class="sidebar-section-head" type="button" aria-expanded="true" aria-controls="agent-body-new">
+              <span class="sidebar-section-caret" aria-hidden="true">&#9660;</span><span class="sidebar-section-title">Start</span>
+            </button>
+            <div class="sidebar-section-body" id="agent-body-new"></div>
+          </section>
+          <div id="agent-tree" class="agent-tree"></div>
+        </div>
+        <div class="side-actions">
+          <button id="btn-new-chat" class="gold">+ New Chat</button>
+          <button id="btn-branch-chat" class="ghost">⑂ Branch This Chat</button>
+          <button id="btn-clear-chat" class="ghost">Clear Chat</button>
+        </div>
+      </aside>
+
+      <section class="work workbench">
+        <div id="no-agent" class="empty">
+          <div class="big-mark">A</div>
+          <p>Pick a project, then start a conversation.</p>
+          <p class="sub">Chats stem from a project and can branch — hover any message and hit ⑂ to fork the history from that point.</p>
+        </div>
+
+        <div id="agent-view" class="hidden">
+          <details id="agent-model-info" class="model-info-disclosure" open>
+            <summary aria-label="Toggle conversation and model information">
+              <span class="model-info-summary-copy">
+                <strong id="agent-info-summary-name">Conversation</strong>
+                <span id="agent-info-summary-model">Default model</span>
+              </span>
+              <span id="agent-info-summary-status" class="model-info-summary-status">idle</span>
+              <span class="model-info-caret" aria-hidden="true"></span>
+            </summary>
+            <div class="model-info-content">
+              <div class="project-head">
+                <div>
+                  <h2 id="agent-name"></h2>
+                  <div id="agent-meta" class="path"></div>
+                </div>
+                <div class="project-actions">
+                  <span id="agent-status" class="chip dim">idle</span>
+                  <button id="btn-dispatch-team" class="ghost" title="Send a task to a team of custom agents">⚡ Team…</button>
+                  <button id="btn-agent-continue" class="ghost hidden">Continue</button>
+                  <button id="btn-agent-stop" class="ghost hidden">Stop</button>
+                  <div class="settings-menu">
+                    <button id="btn-agent-settings" class="ghost" aria-expanded="false" aria-controls="btn-agent-settings-menu">Settings &#9662;</button>
+                    <div id="btn-agent-settings-menu" class="settings-dropdown hidden">
+                      <button data-settings-panel="connection">Connection &amp; default model</button>
+                      <button data-settings-panel="conversation">Conversation &amp; permissions</button>
+                      <button data-settings-panel="budgeting">Budgeting</button>
+                    </div>
+                  </div>
+                  <button id="btn-agent-delete" class="ghost danger">Delete</button>
+                </div>
+              </div>
+
+              <div class="chat-status">
+                <div class="context-bar">
+                  <span id="agent-context" role="status" title="Estimate uses three characters per token. Actual provider token counts vary.">Conversation context</span>
+                  <button id="btn-agent-compact" class="ghost" title="Summarize older context while preserving your saved chat">Compress now</button>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <div class="chat-pane">
+            <div id="chat-scroll" class="chat-scroll" tabindex="0" aria-label="Conversation">
+              <section id="agent-activity" class="hidden" aria-label="Agent activity"></section>
+              <div id="team-deck-slot" aria-label="Team activity"></div>
+              <div id="agent-todos" class="todos hidden">
+                <div class="todos-title">Plan</div>
+                <ul id="agent-todo-list"></ul>
+              </div>
+              <div id="chat-log" class="chat-log"></div>
+            </div>
+            <div id="queued-indicator" class="queued hidden"></div>
+            <section id="team-message-queue" class="team-message-queue hidden" aria-label="Queued team messages" aria-live="polite"></section>
+            <div class="composer">
+              <button id="btn-attach" class="ghost" type="button" aria-label="Attach files" title="Attach files">+</button>
+              <textarea id="composer-input" aria-label="Message" placeholder="Start with @ to route, or / for commands&hellip; (Ctrl+Enter sends)" rows="1" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-expanded="false" aria-controls="composer-suggestions"></textarea>
+              <div id="composer-suggestions" class="composer-suggestions hidden" role="listbox" aria-label="Composer suggestions"></div>
+              <span id="composer-suggestion-status" class="sr-only" role="status" aria-live="polite"></span>
+              <div class="composer-actions">
+                <input id="composer-model-value" type="hidden" />
+                <button id="composer-model" class="ghost small" title="Choose a model for this conversation">Default model ▾</button>
+                <button id="btn-send" class="gold">Send</button>
+              </div>
+              <div id="composer-attachments" class="composer-attachments hidden" aria-live="polite"></div>
+              <div class="composer-footer" aria-label="Conversation controls">
+                <button id="jev-auto-toggle" class="ghost small feature-switch" type="button" role="switch" aria-checked="false" title="Let Jev choose a model, tools and context for each message">Auto</button>
+                <div class="team-composer-pill" role="group" aria-label="Team chat">
+                  <button id="team-chat-toggle" class="ghost small feature-switch" type="button" role="switch" aria-checked="false" title="Send normal messages to a team"><span>Teams</span></button>
+                  <button id="team-chat-menu-button" class="ghost small" type="button" aria-label="Team chat options" aria-haspopup="dialog" aria-expanded="false" aria-controls="team-chat-menu" title="Choose a team and conversation options">▾</button>
+                </div>
+                <div id="composer-tools" class="composer-tools"></div>
+                <div class="telemetry-control">
+                  <button id="telemetry-toggle" type="button" class="ghost small" aria-pressed="true">Telemetry</button>
+                  <select id="telemetry-view" aria-label="Telemetry view">
+                    <option value="overview">Overview</option>
+                    <option value="activity">Activity</option>
+                    <option value="models">Models &amp; Memory</option>
+                  </select>
+                </div>
+              </div>
+              <div id="jev-auto-status" class="jev-auto-status dim hidden" role="status" aria-live="polite"></div>
+              <div id="team-chat-menu" class="team-chat-menu hidden" role="dialog" aria-label="Team chat options">
+                <div class="team-chat-menu-head"><strong>Team chat</strong><button id="team-chat-close" class="ghost small" type="button" aria-label="Close team chat options">✕</button></div>
+                <label for="team-chat-select">Team</label>
+                <select id="team-chat-select" aria-describedby="team-chat-description"></select>
+                <p id="team-chat-description" class="dim"></p>
+                <label class="team-chat-check"><input id="team-chat-history" type="checkbox" checked /> Include recent conversation</label>
+                <p class="dim">Follow-ups include your earlier messages and team answers. Turn this off to send only the new message.</p>
+                <label for="team-chat-recipient">While the team is running, send to</label>
+                <select id="team-chat-recipient"><option value="coordinator">Coordinator (or working member)</option><option value="selected">Selected member tab</option></select>
+                <label for="team-chat-delivery">Messages during a run</label>
+                <select id="team-chat-delivery"><option value="auto">Auto · Jev decides what needs attention</option><option value="queue">Queue for the next team turn</option><option value="steer">Steer at the next safe opportunity</option></select>
+                <p class="dim">Auto checks the message and a short task description with Jev. Important guidance steers the recipient; other messages wait. Without a configured Jev key, messages stay queued.</p>
+                <p id="team-chat-live-status" class="dim" role="status"></p>
+                <div class="team-chat-menu-actions"><button id="team-chat-pause" class="ghost small" type="button">Pause team</button><button id="team-chat-edit" class="ghost small" type="button">Edit team…</button><button id="team-chat-manage" class="ghost small" type="button">Manage teams…</button></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
+    <!-- ========== CREATE PAGE ========== -->
+    <section id="page-create" class="page">
+      <div class="create-workbench">
+        <div class="create-heading">
+          <div><h1>Create</h1><p>Individual minds. A shared purpose.</p></div>
+          <div class="create-heading-actions">
+            <button id="btn-new-team" class="gold" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New team</button>
+            <button id="btn-new-persona" class="ghost" type="button"><i class="create-icon icon-plus" aria-hidden="true"></i>New agent</button>
+          </div>
+        </div>
+        <div class="create-workbench-body">
+          <aside class="create-library" aria-label="Saved teams and custom agents">
+            <div class="create-library-tabs" role="tablist" aria-label="Create library">
+              <button id="create-tab-teams" type="button" role="tab" aria-selected="true" aria-controls="create-teams-panel" tabindex="0">Teams</button>
+              <button id="create-tab-agents" type="button" role="tab" aria-selected="false" aria-controls="create-agents-panel" tabindex="-1">Custom Agents</button>
+            </div>
+            <div class="create-library-scroll">
+              <div id="create-teams-panel" role="tabpanel" aria-labelledby="create-tab-teams">
+                <div id="team-list" class="team-list"></div>
+              </div>
+              <div id="create-agents-panel" class="hidden" role="tabpanel" aria-labelledby="create-tab-agents">
+                <div id="persona-list" class="persona-list"></div>
+              </div>
+            </div>
+          </aside>
+          <div class="create-detail-scroll">
+            <section id="create-detail" aria-label="Selected library item"></section>
+            <section id="create-recovery" aria-label="Recoverable team runs">
+              <div id="team-recovery-list" class="team-list"></div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== SETTINGS PAGE ========== -->
+    <section id="page-settings" class="page">
+<nav class="settings-nav" aria-label="Settings sections">
+        <button data-settings-panel="connection" class="ghost">Connection</button>
+        <button data-settings-panel="conversation" class="ghost">Conversation &amp; permissions</button>
+        <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
+      </nav>
+      <div class="settings-scroll">      <div id="settings-connection" class="settings-panel settings-content">
+        <div class="conn-toolbar">
+          <h2>Connections</h2>
+          <div class="settings-actions">
+            <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
+            <button id="btn-add-connection" class="gold small" type="button">Add connection</button>
+          </div>
+        </div>
+        <p id="credential-storage-warning" class="settings-description hidden" role="alert"></p>
+        <p class="settings-description">
+          Each connection is one endpoint with its own access key and default model.
+          The selected connection is the one every conversation, the playground and
+          the refactor workbench use. Changes apply when you press
+          <strong>Save Settings</strong>.
+        </p>
+
+        <p id="conn-summary" class="settings-description conn-summary" role="status"></p>
+
+        <div id="conn-workspace" class="conn-workspace">
+          <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
+          <section id="conn-editor" class="conn-editor hidden" aria-labelledby="conn-editor-title"></section>
+        </div>
+        <span id="conn-count" class="dim"></span>
+
+        <label for="set-reach-cli">Native Reach compiler (reachc) executable (optional)</label>
+        <input id="set-reach-cli" type="text" placeholder="Auto-discover reachc" spellcheck="false" />
+        <p id="set-reach-cli-help" class="dim"></p>
+        <h3>TypeSafe Jev assistance</h3>
+        <label class="check"><input id="set-jev-enabled" type="checkbox" /> Use Jev for context selection and task compliance checks</label>
+        <label class="check"><input id="set-jev-auto-mode" type="checkbox" /> Auto mode by default: choose a configured model or team, tools and context for each prompt</label>
+        <p class="settings-description">Auto uses enabled connection models and saved teams. It keeps your permissions and falls back to your selected setup when uncertain. The Auto switch in each conversation overrides this default. Explicit @ routes, slash commands and a manually selected team take priority.</p>
+        <p class="settings-description">When either Jev option is enabled, the app automatically checks context relevance and proposed task completion. TypeSafe receives the task (up to 1,500 characters), proposed answer (up to 6,000 characters), and tool names with success or pending status; context selection also sends candidate symbol names and paths. Raw tool output is excluded, but the proposed answer may quote source text. Compliance alerts show fallbacks, uncertainty and failed checks. A failed task check gets one correction attempt, then pauses if it still fails. Jev calls use API tokens; identical checks are cached. Turn both options off to disable these checks.</p>
+        <label for="set-jev-key">TypeSafe API key</label>
+        <div class="row"><input id="set-jev-key" type="password" autocomplete="new-password" placeholder="Leave blank to keep the saved key" spellcheck="false" /><button id="btn-clear-jev-key" class="ghost small" type="button">Clear saved key</button></div>
+        <p id="set-jev-key-status" class="dim" role="status"></p>
+        <div class="settings-actions">
+          <button id="btn-save-settings" class="gold">Save Settings</button>
+          <span id="settings-status" class="dim"></span>
+        </div>
+      </div>
+<div id="settings-conversation" class="settings-panel settings-content hidden">      <h2>Conversation &amp; permissions</h2><p id="agent-settings-context" class="dim"></p>
+      <label>Name</label>
+      <input id="agent-set-name" type="text" spellcheck="false" />
+      <label>Model (blank = default)</label>
+      <div class="row">
+        <input id="agent-set-model" type="text" readonly spellcheck="false" />
+        <button id="btn-agent-set-browse" class="ghost small">Browse&hellip;</button>
+      </div>
+      <label>Approvals</label>
+      <select id="agent-set-approvals">
+        <option value="prompt">Prompt for every exec action</option>
+        <option value="auto-read">Auto-approve reads, prompt for exec</option>
+        <option value="auto-all">Auto-approve everything (dangerous)</option>
+      </select>
+      <label class="check"><input id="agent-set-review" type="checkbox" /> Review file edits before applying</label>
+      <div class="settings-actions">
+        <button id="btn-agent-set-cancel" class="ghost">Back to chat</button>
+        <button id="btn-agent-set-save" class="gold">Save</button>
+      </div>
+<p id="agent-settings-status" role="status" class="dim"></p></div><div id="settings-budgeting" class="settings-panel settings-content hidden">
+        <h2>Budgeting</h2>
+        <details id="engine-status"><summary>Local engines · active · no model calls</summary><p class="dim">Evidence ledger, file write checks, review scoring and secret redaction. Shell actions use the existing approval controls.</p><button id="btn-engine-report" class="ghost">Refresh engine report</button><pre id="engine-report" style="max-height:260px;overflow:auto;white-space:pre-wrap"></pre></details>
+        <p class="settings-description">Control how long agents can work, how much they can generate, and how teams share context. Saved changes apply to new runs.</p>
+        <label for="budget-scope">Apply to</label>
+        <select id="budget-scope"><option value="global">All conversations and teams (default)</option><option value="conversation">Selected conversation and its teams</option></select>
+        <label id="budget-inherit-label" class="check hidden"><input id="budget-inherit" type="checkbox" /> Use global budgets for this conversation</label>
+        <div id="budget-controls">
+          <div class="budget-presets" aria-label="Budget presets">
+            <button data-budget-preset="balanced" class="ghost">Balanced</button>
+            <button data-budget-preset="heavy" class="ghost">Heavy use · 32K output</button>
+            <button data-budget-preset="unrestricted" class="ghost">Unrestricted testing</button>
+          </div>
+          <p id="budget-preset-status" role="status" class="dim">Choose a preset or customize each value below, then save.</p>
+          <p class="settings-description">Zero means no REACH Studio cap where indicated. For output tokens, zero lets the provider choose its default; it does not guarantee maximum output. Set an explicit token budget for long reasoning answers. Provider context, output and rate limits still apply. These settings do not change approval or file-review permissions.</p>
+          <form id="budget-form"><div id="budget-fields"></div></form>
+        </div>
+        <div class="settings-actions"><button id="btn-save-budgets" class="gold">Save budgets</button><span id="budget-status" role="status" class="dim"></span></div>
+      </div></div>
+    </section>
+
+    <!-- ========== WORKSPACE PAGE (PRD: Studio Workspace Dashboard) ========== -->
+    <section id="page-workspace" class="page">
+      <div class="ws-wrap">
+        <header class="ws-head">
+          <h2>Workspace</h2>
+          <p class="dim" id="ws-stamp">Sampling local system telemetry&hellip;</p>
+          <div class="ws-head-actions">
+            <label class="check"><input type="checkbox" id="ws-live" checked /> Live</label>
+            <button id="ws-refresh" class="ghost small">Sample now</button>
+          </div>
+        </header>
+
+        <div class="ws-metrics" id="ws-metrics">
+          <div class="ws-metric"><span class="ws-metric-label">CPU</span><strong id="ws-cpu">&mdash;</strong><small id="ws-cpu-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">RAM</span><strong id="ws-ram">&mdash;</strong><small id="ws-ram-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">GPU</span><strong id="ws-gpu">&mdash;</strong><small id="ws-gpu-note" class="dim">waiting</small></div>
+          <div class="ws-metric"><span class="ws-metric-label">Uptime</span><strong id="ws-uptime">&mdash;</strong><small id="ws-uptime-note" class="dim">waiting</small></div>
+        </div>
+
+        <div class="ws-grid">
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>System activity</h3><span class="dim">last 60 samples</span></div>
+            <canvas id="ws-chart" height="150" role="img" aria-label="CPU and GPU activity history"></canvas>
+            <div class="ws-axis"><span>60 samples ago</span><span>now</span></div>
+          </section>
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Endpoint</h3><button id="ws-ping" class="ghost small">Ping</button></div>
+            <div id="ws-endpoint" class="ws-kv"><span class="dim">Not configured</span></div>
+            <div id="ws-ping-result" class="ws-ping-result" role="status"></div>
+            <p class="ws-note">Ping measures round-trip latency to the configured OpenAI-compatible endpoint. It calls <code>/models</code>; it does not modify anything.</p>
+          </section>
+        </div>
+
+        <div class="ws-grid">
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Codebase index</h3><button id="ws-index" class="ghost small">Index project</button></div>
+            <div id="ws-index-summary" class="ws-kv"><span class="dim">No project indexed</span></div>
+            <div id="ws-index-warnings" class="ws-warnings" hidden></div>
+            <div class="ws-search">
+              <input id="ws-symbol-query" type="text" placeholder="Search symbols&hellip;" spellcheck="false" aria-label="Search indexed symbols" />
+              <button id="ws-symbol-run" class="ghost small">Search</button>
+            </div>
+            <div id="ws-symbol-results" class="ws-symbols" role="list"></div>
+          </section>
+          <section class="ws-card">
+            <div class="ws-card-head"><h3>Top processes</h3><span class="dim">by working set</span></div>
+            <div id="ws-processes" class="ws-processes"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== PLAYGROUND PAGE (PRD: Interactive Prompt Console / US-2) ========== -->
+    <section id="page-playground" class="page">
+      <div class="pg-wrap">
+        <header class="pg-head">
+          <h2>Prompt Console</h2>
+          <p class="dim" id="pg-hint">Runs a completion against the configured endpoint. Nothing is saved to a conversation.</p>
+        </header>
+
+        <div class="pg-controls">
+          <div class="pg-field">
+            <label for="pg-conn">Connection</label>
+            <select id="pg-conn"></select>
+          </div>
+          <div class="pg-field">
+            <label for="pg-model">Model <span id="pg-model-src" class="dim"></span></label>
+            <div class="row">
+              <input id="pg-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
+              <button id="pg-browse" class="ghost small">Browse&hellip;</button>
+            </div>
+            <datalist id="pg-model-list"></datalist>
+          </div>
+          <div class="pg-field">
+            <label for="pg-temp">Temperature <span id="pg-temp-val" class="dim">0.7</span></label>
+            <input id="pg-temp" type="range" min="0" max="2" step="0.05" value="0.7" />
+          </div>
+          <div class="pg-field">
+            <label for="pg-max">Max tokens</label>
+            <input id="pg-max" type="number" min="0" max="2147483647" step="64" value="1024" />
+            <small class="dim">0 lets the provider choose.</small>
+          </div>
+          <div class="pg-field">
+            <label class="check"><input id="pg-stream" type="checkbox" checked /> Stream response</label>
+          </div>
+        </div>
+
+        <div class="pg-panes">
+          <div class="pg-pane">
+            <label for="pg-system">System prompt</label>
+            <textarea id="pg-system" rows="3" spellcheck="false" placeholder="Optional. Sets the model's behaviour for this test."></textarea>
+            <label for="pg-prompt">Prompt</label>
+            <textarea id="pg-prompt" rows="10" spellcheck="false" placeholder="Ask something&hellip;"></textarea>
+            <div class="pg-actions">
+              <button id="pg-run" class="gold">Execute Completion</button>
+              <button id="pg-stop" class="ghost" disabled>Stop</button>
+              <button id="pg-clear" class="ghost small">Clear</button>
+              <span id="pg-status" class="dim" role="status"></span>
+            </div>
+          </div>
+          <div class="pg-pane">
+            <div class="pg-response-head">
+              <label>Response</label>
+              <div class="pg-metrics" id="pg-metrics">
+                <span class="pg-metric" title="Time to first streamed token"><b id="pg-ttft">&mdash;</b><small>TTFT</small></span>
+                <span class="pg-metric" title="Total round-trip"><b id="pg-elapsed">&mdash;</b><small>total</small></span>
+                <span class="pg-metric" title="Tokens per second"><b id="pg-tps">&mdash;</b><small>tok/s</small></span>
+                <span class="pg-metric" title="Completion tokens"><b id="pg-tokens">&mdash;</b><small>tokens</small></span>
+              </div>
+            </div>
+            <pre id="pg-output" class="pg-output" role="log" aria-live="polite"></pre>
+            <details id="pg-raw-wrap" class="pg-raw" hidden>
+              <summary>Raw JSON</summary>
+              <pre id="pg-raw" class="pg-raw-body"></pre>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== ABOUT PAGE (PRD: About REACH Studio) ========== -->
+    <section id="page-about" class="page">
+      <div class="ab-wrap">
+        <div class="ab-mark" aria-hidden="true">R</div>
+        <h2>Reach Studio</h2>
+        <p class="dim" id="ab-tagline">Desktop workspace for local AI relays, agents, and prompt engineering.</p>
+        <dl class="ab-list" id="ab-list"></dl>
+        <section class="ab-card">
+          <h3>Build status</h3>
+          <dl class="ab-list" id="ab-build"></dl>
+        </section>
+        <section class="ab-card">
+          <h3>License</h3>
+          <p id="ab-license" class="dim">MIT &mdash; see the LICENSE file in the SignalR.E.A.C.H repository.</p>
+        </section>
+        <p class="ab-credit">Built by Michael Anthony Falabella.</p>
+      </div>
+    </section>
+
+    <!-- ========== REFACTOR WORKBENCH (PRD: /refactor) ==========
+         Multi-file refactoring workspace: describe a task, review a syntax-
+         highlighted side-by-side diff, stage individual chunks, then apply
+         atomically with an optional git checkpoint. -->
+    <section id="page-refactor" class="page">
+      <div class="rf-wrap">
+        <header class="pg-head">
+          <h2>Refactor Workbench</h2>
+          <p class="dim">Describe a change, review the proposed diff chunk by chunk, then apply it atomically. Nothing is written until you approve.</p>
+        </header>
+
+        <div id="rf-noproject" class="rf-empty">
+          <p>No project is selected. Pick a project on the <button type="button" class="linkish" id="rf-go-projects">Projects</button> page first.</p>
+        </div>
+
+        <div id="rf-body" hidden>
+          <div class="rf-task">
+            <label for="rf-task">Task</label>
+            <textarea id="rf-task" rows="3" spellcheck="false"
+              placeholder="e.g. Rename computeTotal to sumTotals everywhere it is used, and extract the duplicated formatting into a helper."></textarea>
+            <div class="rf-task-row">
+              <div class="rf-field">
+                <label for="rf-conn">Connection</label>
+                <select id="rf-conn"></select>
+              </div>
+              <div class="rf-field">
+                <label for="rf-model">Model <span id="rf-model-src" class="dim"></span></label>
+                <div class="row">
+                  <input id="rf-model" type="text" readonly placeholder="Browse&hellip;" spellcheck="false" />
+                  <button type="button" id="rf-browse" class="ghost small">Browse&hellip;</button>
+                </div>
+                <datalist id="rf-model-list"></datalist>
+              </div>
+              <div class="rf-field rf-scope">
+                <label for="rf-scope">Scope <span class="dim">(optional — one path per line)</span></label>
+                <textarea id="rf-scope" rows="2" spellcheck="false" placeholder="Leave empty to let the symbol index choose."></textarea>
+              </div>
+            </div>
+            <div class="rf-actions">
+              <button type="button" id="rf-generate" class="gold">Propose changes</button>
+              <button type="button" id="rf-stop" class="ghost" disabled>Stop</button>
+              <label class="check" title="Commit a checkpoint after a successful apply"><input id="rf-commit" type="checkbox" checked /> Git checkpoint</label>
+              <span id="rf-status" class="dim" role="status"></span>
+            </div>
+          </div>
+
+          <div id="rf-review" class="rf-review" hidden>
+            <div class="rf-review-head">
+              <div>
+                <strong id="rf-summary">Proposed changes</strong>
+                <div class="dim" id="rf-summary-detail"></div>
+              </div>
+              <div class="rf-review-actions">
+                <button type="button" id="rf-select-all" class="ghost small">Accept all</button>
+                <button type="button" id="rf-select-none" class="ghost small">Reject all</button>
+              </div>
+            </div>
+            <div id="rf-warnings" class="rf-warnings" hidden></div>
+            <div id="rf-files" class="rf-files"></div>
+            <div class="rf-apply-row">
+              <button type="button" id="rf-apply" class="gold">Apply selected</button>
+              <button type="button" id="rf-discard" class="ghost">Discard plan</button>
+              <span id="rf-apply-status" class="dim" role="status"></span>
+            </div>
+          </div>
+
+          <div id="rf-verify" class="rf-verify" hidden>
+            <div class="rf-review-head">
+              <strong>Quality gates</strong>
+              <div class="rf-review-actions">
+                <button type="button" id="rf-run-gates" class="ghost small">Run gates</button>
+                <button type="button" id="rf-fix-loop" class="ghost small" title="Run gates, ask the model to fix failures, retry — up to 10 attempts">Self-correct</button>
+              </div>
+            </div>
+            <div id="rf-gates" class="rf-gates"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Review Modal (PRD: on reaching 10 failing attempts, pause and offer
+       Revert / Adjust Scope / Manually Edit). Rendered as an overlay, not a page,
+       because it must interrupt whatever the user is doing. -->
+  <div id="rf-modal" class="rf-modal" hidden role="dialog" aria-modal="true" aria-labelledby="rf-modal-title">
+    <div class="rf-modal-card">
+      <h3 id="rf-modal-title">Self-correction stopped</h3>
+      <p class="dim" id="rf-modal-sub"></p>
+      <div id="rf-modal-traces" class="rf-modal-traces"></div>
+      <div class="rf-modal-actions">
+        <button type="button" id="rf-modal-revert" class="ghost">Revert changes</button>
+        <button type="button" id="rf-modal-scope" class="ghost">Adjust scope</button>
+        <button type="button" id="rf-modal-edit" class="gold">Manually edit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== FILE DRAWER (right side, toggleable) ========== -->
+  <aside id="file-drawer" class="file-drawer">
+    <div id="drawer-resizer-x" class="drawer-resizer-x" title="Resize file panel"></div>
+    <div class="drawer-head">
+      <span class="side-title" id="drawer-title">Files</span>
+      <div class="drawer-head-actions">
+        <button id="btn-refresh-tree" class="ghost tiny" title="Refresh">&#x21bb;</button>
+        <button id="btn-close-drawer" class="ghost tiny" title="Close">&#x2715;</button>
+      </div>
+    </div>
+    <div id="drawer-context" class="drawer-context dim">no project bound</div>
+    <div id="file-tree" class="file-tree"></div>
+    <div id="drawer-resizer-y" class="drawer-resizer-y" title="Resize split"></div>
+    <div class="editor-main">
+      <div id="editor-tabs" class="editor-tabs"></div>
+      <div id="editor-host" class="editor-host"></div>
+      <div id="editor-empty" class="empty"><p class="sub">Pick a file from the tree.</p></div>
+      <div class="editor-footer">
+        <span id="editor-status" class="dim"></span>
+        <button id="btn-save-file" class="ghost small hidden">Save (Ctrl+S)</button>
+      </div>
+    </div>
+    <section id="browser-panel" class="hidden" aria-label="Browser">
+      <div class="browser-tabstrip"><div id="browser-tabs" role="tablist" aria-label="Browser tabs"></div><button id="browser-new" class="ghost small" title="New browser tab (Ctrl+T)">+</button></div>
+      <form id="browser-navigation" class="browser-toolbar">
+        <button type="button" id="browser-back" class="ghost small" title="Back" aria-label="Back">←</button>
+        <button type="button" id="browser-forward" class="ghost small" title="Forward" aria-label="Forward">→</button>
+        <button type="button" id="browser-reload" class="ghost small" title="Reload" aria-label="Reload">↻</button>
+        <input id="browser-address" aria-label="Browser address or search" placeholder="Search or enter URL / localhost:3000" spellcheck="false" />
+        <button class="gold small" type="submit">Go</button>
+      </form>
+      <div class="browser-toolbar browser-actions">
+        <button id="browser-home" class="ghost small" title="Reach documentation">Home</button>
+        <button id="browser-bookmark" class="ghost small">☆ Bookmark</button>
+        <button id="browser-context" class="ghost small">Add page to chat</button>
+        <button id="browser-external" class="ghost small">Open externally</button>
+        <button id="browser-find-toggle" class="ghost small">Find</button>
+        <button id="browser-elements" class="ghost small" aria-pressed="false" title="Turn element selection on to use right-click for picking elements. Off keeps the page’s normal right-click behavior.">Elements</button>
+      </div>
+      <div id="browser-bookmarks" class="browser-bookmarks"></div>
+      <div id="browser-selection" class="browser-selection hidden" role="status">
+        <strong>Selected element</strong><code id="browser-selection-label"></code>
+        <span id="browser-selection-text"></span>
+        <div><button id="browser-selection-show" class="ghost small">Show selected tab</button><button id="browser-selection-clear" class="ghost small">Clear selection</button></div>
+      </div>
+      <div id="browser-find" class="browser-toolbar hidden"><input id="browser-find-text" placeholder="Find on page" aria-label="Find on page" /><button id="browser-find-next" class="ghost small">Next</button><button id="browser-find-close" class="ghost small" aria-label="Close find">×</button></div>
+      <div id="browser-viewport"><div class="browser-welcome"><h3>REACH Browser</h3><p>Open a website or local development server above.</p><p>Turn on Elements to right-click an element or selection and add it to your chat draft.</p></div></div>
+      <div id="browser-status" class="dim" role="status">Ready</div>
+    </section>
+  </aside>
+  </div>
+
+  <!-- ========== PERSISTENT BOTTOM STATUS BAR (PRD Navigation Design §3) ==========
+       Anchored across every route. The PRD's three indicators are the reachd
+       connectivity ping, the active model proxy badge, and a tray quick control.
+       Relay management is out of scope for this build, so the first indicator
+       reports the configured OpenAI-compatible endpoint instead of a reachd
+       daemon, and the tray control opens Settings rather than toggling a
+       background daemon. Both say what they actually are. -->
+  <footer class="statusbar-bottom" id="statusbar-bottom">
+    <!-- Quick connection switcher: opens UPWARD from the endpoint chip. Rows are
+         built in workspace-shell.js with createElement — connection names and
+         endpoints are user input, so they are never interpolated into markup. -->
+    <div id="sb-conn-popover" class="sb-popover hidden" role="menu" aria-label="Switch connection"></div>
+    <span id="conn-mode" class="dim"></span>
+    <div class="sb-group">
+      <button id="sb-endpoint" class="sb-item sb-chip sb-clickable" type="button" title="Configured endpoint" aria-haspopup="menu" aria-expanded="false" aria-controls="sb-conn-popover">
+        <span class="sb-dot" id="sb-endpoint-dot" aria-hidden="true"></span><span id="sb-endpoint-text">no endpoint</span>
+      </button>
+      <span id="sb-latency" class="sb-item sb-chip" title="Last measured round-trip latency" hidden>
+        latency <b id="sb-latency-val">&mdash;</b>
+      </span>
+      <button id="sb-model" class="sb-item sb-chip sb-clickable" type="button" title="Active model" hidden>
+        model <b id="sb-model-val">&mdash;</b>
+      </button>
+      <span id="sb-index" class="sb-item sb-chip" title="Codebase index" hidden>
+        index <b id="sb-index-val">&mdash;</b>
+      </span>
+      <span id="sb-sync" class="sb-item sb-chip" title="Cross-IDE sync" hidden>
+        sync <b id="sb-sync-val">&mdash;</b>
+      </span>
+    </div>
+    <div class="sb-group">
+      <span class="sb-item dim">Reach Studio &mdash; projects, agents, and browser</span>
+      <button id="sb-settings" class="sb-item sb-link" type="button" title="Open settings">Settings</button>
+    </div>
+  </footer>
+
+  <!-- New Project modal -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>New Project</h3>
+      <label>Name</label>
+      <input id="new-name" type="text" placeholder="my-dapp" spellcheck="false" />
+      <label>Location</label>
+      <div class="row">
+        <input id="new-parent" type="text" readonly />
+        <button id="btn-pick-parent" class="ghost small">Browse&hellip;</button>
+      </div>
+      <label for="new-kind">Project type</label>
+      <select id="new-kind">
+        <option value="general">General project</option>
+        <option value="reach">Reach DApp</option>
+      </select>
+      <p class="dim field-hint">General projects create a folder without a toolchain. Reach DApps use the configured native compiler.</p>
+      <div class="modal-actions">
+        <button id="btn-cancel" class="ghost">Cancel</button>
+        <button id="btn-create" class="gold">Create Project</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Approval modal -->
+  <div id="approval-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Approve Action</h3>
+      <div id="approval-detail" class="approval-detail"></div>
+      <div class="modal-actions">
+        <button id="btn-approval-no" class="ghost">Decline</button>
+        <button id="btn-approval-yes" class="gold">Approve</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Persona editor modal -->
+  <div id="persona-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="persona-modal-title">New Custom Agent</h3>
+      <div class="modal-body persona-modal-body">
+        <div class="persona-options-row">
+          <div class="persona-options-col">
+            <label for="persona-name">Name</label>
+            <input id="persona-name" type="text" placeholder="e.g. Security Auditor" spellcheck="false" />
+          </div>
+          <div class="persona-options-col">
+            <label for="persona-connection">Connection <span class="dim">(blank = team decides)</span></label>
+            <select id="persona-connection"></select>
+          </div>
+        </div>
+        <div class="persona-options-row">
+          <div class="persona-options-col">
+            <label for="persona-model">Model <span class="dim">(blank = connection default)</span></label>
+            <div class="row">
+              <input id="persona-model" type="text" readonly placeholder="click Browse to pick from connection" spellcheck="false" />
+              <button id="btn-persona-browse" class="ghost small">Browse&hellip;</button>
+            </div>
+          </div>
+          <div class="persona-options-col persona-conn-hint-col">
+            <label class="dim">Connection Policy</label>
+            <p class="dim field-hint persona-conn-hint">Pinning guarantees this agent runs on that provider; blank uses the team spread or active connection.</p>
+          </div>
+        </div>
+        <label for="persona-prompt">Instructions <span class="dim">(system prompt for this agent)</span></label>
+        <textarea id="persona-prompt" rows="4" placeholder="You are a meticulous security auditor. Review Reach contracts for reentrancy, participant-order bugs, and token-balance mistakes. Always compile before declaring work done."></textarea>
+        <!-- SOUL.md + MEMORY.md. These are the agent's own files on disk
+             (userData/agents/<id>/), not fields in the persona record, so the
+             operator can read, back up and hand-edit them outside the app. A new
+             agent has none yet: they are created when the persona is saved. -->
+        <details id="persona-files" class="agent-files">
+          <summary>SOUL.md &amp; MEMORY.md <span class="dim">&mdash; this agent's identity and memory</span></summary>
+          <p class="dim field-hint">Stored as plain markdown at <code>userData/agents/&lt;agent id&gt;/</code> &mdash; readable, diffable and hand-editable outside the app. SOUL.md is authoritative instructions; MEMORY.md is injected as untrusted data, so a note in it can never act like approval.</p>
+          <div class="agent-files-grid">
+            <div class="agent-file-editor">
+              <div class="agent-file-head">
+                <strong>SOUL.md</strong>
+                <span class="dim">who this agent is &mdash; loaded into system prompt</span>
+                <span id="persona-soul-count" class="dim file-count"></span>
+              </div>
+              <textarea id="persona-soul" rows="7" spellcheck="false" placeholder="# SOUL&#10;&#10;## Identity..."></textarea>
+            </div>
+            <div class="agent-file-editor">
+              <div class="agent-file-head">
+                <strong>MEMORY.md</strong>
+                <span class="dim">durable notes &mdash; injected as untrusted data</span>
+                <span id="persona-memory-count" class="dim file-count"></span>
+              </div>
+              <textarea id="persona-memory" rows="7" spellcheck="false" placeholder="# MEMORY &mdash; notes from earlier runs"></textarea>
+            </div>
+          </div>
+          <div class="modal-actions">
+            <button id="btn-persona-files-reset" class="ghost small">Restore scaffolds</button>
+            <span id="persona-files-status" class="dim file-status"></span>
+          </div>
+        </details>
+      </div>
+      <div class="modal-actions persona-modal-actions">
+        <button id="btn-persona-delete" class="ghost danger hidden">Delete</button>
+        <button id="btn-persona-cancel" class="ghost">Cancel</button>
+        <button id="btn-persona-save" class="gold">Save</button>
+      </div>
+    </div>
+  </div>
+  <!-- Team builder modal -->
+  <div id="team-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="team-modal-title">New Team</h3>
+      <label>Name</label>
+      <input id="team-name" type="text" placeholder="e.g. Contract Review Crew" spellcheck="false" />
+      <label>Mode</label>
+      <select id="team-mode">
+        <option value="parallel">Parallel — all members work the same task simultaneously</option>
+        <option value="chain">Chain — members work in order, passing results along</option>
+        <option value="links">Links — peer network: members message each other until the task is done (uses Teams message budget)</option>
+      </select>
+      <label>Tool protocol</label>
+      <select id="team-protocol" title="How the crew's members turn model output into tool calls">
+        <option value="native">OpenAI tool calls — the model calls tools natively and results come back directly (endpoint must support tools)</option>
+        <option value="json">JSON contract — universal prompt-enforced action object; use when an endpoint has no native tool support</option>
+      </select>
+      <p id="team-protocol-hint" class="dim field-hint"></p>
+      <label class="check team-spread-row">
+        <input id="team-spread" type="checkbox" />
+        <span>Spread members across the enabled connections</span>
+      </label>
+      <p id="team-spread-hint" class="dim field-hint"></p>
+      <label>Members (in order — for Chain, this is the pipeline)</label>
+      <div id="team-members" class="team-members"></div>
+      <div class="row">
+        <select id="team-member-pick"></select>
+        <select id="team-member-role-pick" title="Preset crew role — each of the 20 roles works differently and collaborates through the crew's agent links"></select>
+        <input id="team-member-role" type="text" placeholder="custom role (optional)" spellcheck="false" disabled />
+        <button id="btn-team-add-member" class="ghost small">Add</button>
+      </div>
+      <div class="modal-actions">
+        <button id="btn-team-delete" class="ghost danger hidden">Delete</button>
+        <button id="btn-team-cancel" class="ghost">Cancel</button>
+        <button id="btn-team-save" class="gold">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Team run modal -->
+  <div id="team-run-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Dispatch Team</h3>
+      <div id="team-run-info" class="dim"></div>
+      <label>Task</label>
+      <textarea id="team-run-task" rows="5" placeholder="What should the crew do?"></textarea>
+      <div class="modal-actions">
+        <button id="btn-team-run-cancel" class="ghost">Cancel</button>
+        <button id="btn-team-run-go" class="gold">Run</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model picker modal -->
+  <div id="model-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Pick a Model</h3>
+      <p id="model-source" class="dim model-source"></p>
+      <input id="model-search" type="text" placeholder="filter&hellip;" spellcheck="false" />
+      <div id="model-choices" class="model-choices"></div>
+      <div class="modal-actions">
+        <button id="btn-model-cancel" class="ghost">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="markdown.js"></script>
+  <script src="dialogs.js"></script>
+  <script src="editor.bundle.js"></script>
+  <script src="activity-state.js"></script>
+  <script src="activity.js"></script>
+  <script src="team-deck.js"></script>
+  <script src="composer-intents.js"></script>
+  <script src="create-page.js"></script>
+  <script src="command-line.js"></script>
+  <script src="app.js"></script>
+  <script src="scrollbar.js"></script>
+  <script src="settings.js"></script>
+  <script src="browser-overlay.js"></script>
+  <script src="browser.js"></script>
+  <script src="workspace.js"></script>
+  <script src="team-composer.js"></script>
+  <script src="telemetry.js"></script>
+  <script src="activity-bar.js"></script>
+  <script src="workspace-shell.js"></script>
+  <script src="connections-ui.js"></script>
+  <script src="home.js"></script>
+  <script src="account-view.js"></script>
+  <script src="account-menu.js"></script>
+  <script src="account.js"></script>
+  <script src="playground.js"></script>
+  <script src="about.js"></script>
+  <script src="refactor.js"></script>
+</body>
+</html>

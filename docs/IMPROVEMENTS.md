@@ -26,9 +26,9 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 
 | Status | Count | What it means |
 |--------|-------|---------------|
-| **DONE** | 25 | Implemented, tested, verified in working tree |
+| **DONE** | 26 | Implemented, tested, verified in working tree |
 | **PARTIAL** | 13 | Partially implemented; evidence or tests remain |
-| **TODO** | 26 | Not yet started; ordered by dependency and priority |
+| **TODO** | 25 | Not yet started; ordered by dependency and priority |
 
 > Counts are generated, not hand-written: `node tools/count-plan-status.cjs`
 > (64 item rows: 25 DONE / 13 PARTIAL / 26 TODO). Re-run it after flipping a status.
@@ -98,7 +98,7 @@ SignalR.E.A.C.H is a monorepo with four runtime surfaces — a Python relay serv
 | # | Item | Status | Impact |
 |---|------|--------|--------|
 | 3.1 | **Split `main.mjs`** (4,145 lines → domain modules, see BASELINE) | PARTIAL | Settings, endpoint, notifications extracted to independent modules; IPC/bootstrap/smoke extraction remains |
-| 3.2 | **Split `renderer/app.js`** (4,628 lines, see BASELINE) | TODO | Mixed chat, drawer, tree, composer, persona/crew logic — now the single largest file in Studio |
+| 3.2 | **Split `renderer/app.js`** (5,921 → 148 lines, see BASELINE) | DONE | Byte-exact extraction into a core shell + 12 concern chunks (`app-projects`…`app-team-events`) loaded in script order; full suite, smoke and UI harnesses green |
 | 3.3 | Extract `agent-loop.cjs` into smaller testable modules | PARTIAL | Many sub-modules exist; full loop still monolithic |
 | 3.4 | IPC TypeScript contracts (or equivalent runtime schema) | TODO | Stringly-typed IPC is the #0 source of bugs; depends on 3.1 |
 | 3.5 | Resolve code-index ownership (`code-context.cjs` → `code-index.cjs`) | DONE | Index cache, TTL and write invalidation are owned by `code-index.cjs`; context and tools consume its accessors. |
@@ -263,15 +263,15 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 <!-- BASELINE:START -->
 | Metric | Value |
 | --- | --- |
-| `studio/main.mjs lines` | 4,857 |
-| `studio/renderer/app.js lines` | 6,759 |
-| `studio/preload.cjs lines` | 230 |
-| `studio/agent modules` | 90 |
-| `studio/renderer scripts` | 32 |
-| `studio/test files` | 102 |
-| `static IPC handlers` | 106 |
-| `preload invoke channels` | 107 |
-| `IPC manifest entries` | 107 |
+| `studio/main.mjs lines` | 4,900 |
+| `studio/renderer/app.js lines` | 148 |
+| `studio/preload.cjs lines` | 240 |
+| `studio/agent modules` | 98 |
+| `studio/renderer scripts` | 47 |
+| `studio/test files` | 111 |
+| `static IPC handlers` | 108 |
+| `preload invoke channels` | 109 |
+| `IPC manifest entries` | 109 |
 | `SimpleRAG plugin files` | 21 |
 <!-- BASELINE:END -->
 

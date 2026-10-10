@@ -40,6 +40,7 @@ const PARAMS = {
   'agent.transcript': [s('agent', true, 200), n('limit', 1)],
   'agent.await': [s('agent', true, 200), n('timeoutMs')],
   'agent.reflect': [],
+  'agent.mail': [s('op', false, 20, 'read'), s('agent', false, 200), n('limit', 1), s('to', false, 200), s('message', false, 40000), s('entry', false, 8000)],
   'code.index': [b('refresh')],
   'code.search': [s('query', true, 4000), n('limit', 1)],
   'code.context': [s('query', true, 4000), n('maxSymbols', 1), n('maxChars', 1)],

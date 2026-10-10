@@ -22,7 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { resolveBudgets } = require('./budgets.cjs');
+const { resolveBudgets, budgetsForModel } = require('./budgets.cjs');
 const { atomicWriteJson } = require('./atomic-write.cjs');
 
 // Item 1.5: every conversation is serialized into agents.json on every save, so
@@ -421,7 +421,13 @@ class AgentStore {
     agent.messages.push(message);
     // Apply only the user-configured history retention cap. Compression keeps
     // a separate context checkpoint and never removes the audit transcript.
-    const retained = resolveBudgets(this.getSettings(), agent.settings).storedMessages;
+    // Browser chat routes (pinned, or inherited from the active connection)
+    // keep their full page history regardless of the cap.
+    const settings = this.getSettings();
+    const activeModel = String((Array.isArray(settings.connections) ? settings.connections : [])
+      .find(c => c && c.id === settings.activeConnection)?.model || '');
+    const retained = budgetsForModel(resolveBudgets(settings, agent.settings),
+      String(agent.model || '') || activeModel).storedMessages;
     if (retained > 0 && agent.messages.length > retained) {
       const keepSystem = agent.messages.filter(m => m.role === 'system' || m.role === 'developer').slice(0, 4);
       const rest = agent.messages.filter(m => !(m.role === 'system' || m.role === 'developer'));

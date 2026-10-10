@@ -64,6 +64,7 @@ const { auditEvent } = require('./agent/audit-event.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
 const { createSettingsStore } = require('./agent/settings-store.cjs');
+const { McpManager } = require('./agent/mcp.cjs');
 const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
 const { resolveEndpoint } = require('./agent/endpoint.cjs');
@@ -231,6 +232,11 @@ function attachmentMessage(text, staged) {
 // ---------- stores ----------
 const settingsFile = () => path.join(app.getPath('userData'), 'settings.json');
 const settingsStore = createSettingsStore({ file: settingsFile, safeStorage });
+/* MCP servers are configured in Settings → MCP and spawned on demand. The
+ * manager reads settings on every access so the panel and the agent loops
+ * always agree, and a dead or slow server can only time out — it can never
+ * crash main. */
+const mcpManager = new McpManager({ getSettings: loadSettings });
 /* Settings are normalized on READ so every consumer sees a consistent shape:
  * `connections` (the source of truth) plus the legacy endpoint/accessKey/model
  * projection of whichever connection is active. Normalizing here rather than at
@@ -499,6 +505,9 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     budgets,
     jev: jevConfig(settings, agent),
     featureMask: autoRoute?.features || null,
+    /* MCP servers configured in Settings → MCP. The loop lazily loads their
+     * tools once per run and routes `<server>__<tool>` calls to the manager. */
+    mcpManager,
     projectDir: agent.dir,
     reachExecutor: createReachToolExecutor(),
     browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
@@ -719,6 +728,38 @@ function registerIpc() {
     catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('settings:budgetSchema', () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }));
+  /* Settings → MCP panel. `list` returns the configured servers plus a
+   * non-blocking status row for each (a checking/ok/error pill, tool count,
+   * latency). `test` forces a fresh handshake for one server and returns its
+   * status row. Neither ever throws across IPC — errors travel in the row. */
+  ipcMain.handle('mcp:list', async () => {
+    try {
+      /* Error rows retry on a backoff, not on every list: kicking an error
+       * immediately would flip it back to 'checking' before the response is
+       * built, so the renderer would never see the failure — and every list
+       * call would hammer the dead endpoint with a fresh handshake. */
+      const ERROR_RETRY_MS = 15000;
+      const now = Date.now();
+      const rows = mcpManager.statusList();
+      for (const row of rows) {
+        const retry = row.status === 'error' && now - (row.checkedAt || 0) > ERROR_RETRY_MS;
+        if (row.enabled && (row.status === 'unknown' || row.stale || retry)) {
+          mcpManager.ensureLoaded(row.id).catch(() => {});
+        }
+      }
+      return { ok: true, servers: mcpManager.statusList() };
+    } catch (error) {
+      return { ok: false, err: error.message, servers: [] };
+    }
+  });
+  ipcMain.handle('mcp:test', async (_e, serverId) => {
+    try {
+      const status = await mcpManager.test(String(serverId || ''));
+      return { ok: true, status };
+    } catch (error) {
+      return { ok: false, err: error.message };
+    }
+  });
   ipcMain.handle('settings:save', (_e, s) => {
     const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
     const current = loadSettings();
@@ -4843,6 +4884,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   reachProcess.killAllRuns();
+  mcpManager.closeAll();
   for (const loop of agentLoops.values()) loop.stop();
   for (const runner of teamRuns.values()) runner.stop();
   if (process.platform !== 'darwin') app.quit();
@@ -4852,6 +4894,7 @@ app.on('activate', () => {
 });
 app.on('before-quit', () => {
   reachProcess.killAllRuns();
+  mcpManager.closeAll();
   for (const loop of agentLoops.values()) loop.stop();
   for (const runner of teamRuns.values()) runner.stop();
 });

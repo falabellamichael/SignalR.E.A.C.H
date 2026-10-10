@@ -271,6 +271,18 @@
     ],
     "returns": "See handler implementation; result shapes are not yet runtime-validated"
   },
+  "mcp:list": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, servers: [{ id, name, enabled, transport, status, error, tools, toolNames, latencyMs, ... }], err? }"
+  },
+  "mcp:test": {
+    "module": "main.mjs",
+    "args": [
+      "serverId"
+    ],
+    "returns": "{ ok, status?: { status, error, tools, toolNames, latencyMs, checkedAt, serverInfo }, err? }"
+  },
   "models:list": {
     "module": "main.mjs",
     "args": [

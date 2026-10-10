@@ -7,6 +7,7 @@
 
 const crypto = require('node:crypto');
 const { allowedNames, TOOLS } = require('./tool-registry.cjs');
+const { isMcpToolName } = require('./mcp.cjs');
 const names = allowedNames();
 
 const schema = {
@@ -17,7 +18,9 @@ const schema = {
     actions: { type: 'array', maxItems: 8, items: {
       type: 'object', additionalProperties: false,
       properties: {
-        name: { type: 'string', enum: names },
+        // MCP tool names are dynamic, so the wire schema keeps them open;
+        // validateStructured() enforces the registry-or-MCP rule below.
+        name: { type: 'string' },
         arguments: { type: 'object', additionalProperties: true, description: 'The tool arguments, without the action field.' },
       }, required: ['name', 'arguments'],
     } },
@@ -53,7 +56,8 @@ function actionInstruction({ includeCollab = false, disabled = [] } = {}) {
   };
   const crew = includeCollab
     ? 'You are one agent in a crew that can collaborate at runtime. Use agent.spawn to delegate parallel work to a background worker, '
-      + 'agent.send to coordinate with a peer, agent.status / agent.list to see what the crew is doing, agent.transcript to read a peer\'s reasoning, '
+      + 'agent.send to coordinate with a peer, agent.mail to read the crew\'s unified mailbox (all mail, broadcasts and shared Notes), '
+      + 'agent.status / agent.list to see what the crew is doing, agent.transcript to read a peer\'s reasoning, '
       + 'and agent.await when you need a peer\'s result before continuing. Prefer delegating genuinely parallel work over doing everything yourself, '
       + 'but stay accountable for the final answer. Do not spawn an agent for work you can finish in one or two tool calls.\n'
     : '';
@@ -121,7 +125,7 @@ function validateStructured(value) {
   for (let i = 0; i < actions.length; i++) {
     const a = actions[i];
     if (!a || typeof a !== 'object') return { error: `Action ${i + 1} is not an object.` };
-    if (!names.includes(a.name)) return { error: `Action ${i + 1} has an unknown tool name: ${a.name}` };
+    if (!names.includes(a.name) && !isMcpToolName(a.name)) return { error: `Action ${i + 1} has an unknown tool name: ${a.name}` };
     let args = a.arguments;
     if (typeof args === 'string') {
       try { args = JSON.parse(args); } catch { return { error: `Action ${i + 1} arguments must be an object.` }; }
@@ -262,7 +266,7 @@ function toolDefs({ includeCollab = false, disabled = [] } = {}) {
 function nativeInstruction({ includeCollab = false, disabled = [] } = {}) {
   const visible = toolDefs({ includeCollab, disabled }).map(d => d.function.name);
   const crew = includeCollab
-    ? `You are one agent in a crew with live collaboration tools (${['agent.spawn', 'agent.send', 'agent.status', 'agent.list', 'agent.transcript', 'agent.await', 'agent.reflect'].map(nativeToolName).join(', ')}): coordinate with peers directly, prefer delegating genuinely parallel work, and stay accountable for the final answer.\n`
+    ? `You are one agent in a crew with live collaboration tools (${['agent.spawn', 'agent.send', 'agent.mail', 'agent.status', 'agent.list', 'agent.transcript', 'agent.await', 'agent.reflect'].map(nativeToolName).join(', ')}): coordinate with peers directly, prefer delegating genuinely parallel work, and stay accountable for the final answer.\n`
     : '';
   return 'NATIVE TOOL CALLS: call the provided tools directly with real arguments — the endpoint executes them. '
   + 'Never emit fenced tool blocks or JSON action objects, and never report work you have not done. '
