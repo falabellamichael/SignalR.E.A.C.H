@@ -352,3 +352,69 @@ hardware behavior was not exercised on this Windows machine.
 - No P3 follow-up is required for this scoped change.
 
 final result: passed
+
+---
+
+# Create page design QA
+
+final result: passed
+
+Source visual truth: `C:/Users/Falab/.codex/generated_images/01a0fccd-5ac7-70d1-b7d4-4064f007b4a3/exec-3ad8785c-c5e6-44d3-b378-af82073e8529.png`.
+The user chose the third concept and requested the second concept's Teams / Custom agents toggle in the left library. The revised image implements that combination.
+
+Implementation screenshot: `C:/Users/Falab/AppData/Local/Temp/reach-create-ui-BU4UOn/create-teams-desktop.png`.
+Viewport: 1440 x 1024 CSS pixels; device scale factor 1; screenshot 1440 x 1024 pixels.
+Source image: 1487 x 1058 pixels. Normalized to 1440 x 1024 for comparison (less than 0.1 percent aspect-ratio difference).
+State: dark theme, Teams tab, Team1 selected, four members, Files drawer closed.
+
+Full-view comparison: `C:/Users/Falab/AppData/Local/Temp/reach-create-workbench-20261002/comparison-desktop.png` (normalized reference left, implementation right).
+Focused member/model/connection comparison: `C:/Users/Falab/AppData/Local/Temp/reach-create-workbench-20261002/comparison-roster.png` (reference left, implementation right).
+Both comparison images were opened and inspected together with the agent detail screenshot before this report.
+
+## Findings and comparison history
+
+- Resolved P2: generic `aside` styling gave the library a fixed 240px width, extra padding and a contrasting background. The first implementation capture `reach-create-ui-JB5iBh/create-teams-desktop.png` showed a large unused gap. Explicit width, padding, gap and background overrides restore the selected concept's library proportion and divider. `reach-create-ui-BU4UOn/create-teams-desktop.png` confirms the correction.
+- Resolved P2: the edit pencil mask referenced an icon present in the installed package but absent from the source checkout. Added the unmodified Phosphor 2.1.1 asset; offline icon existence checks and the focused/final screenshots confirm it renders.
+- Resolved P2: responsive rules based on window width did not cover a smaller Create area when the Files drawer was open. Named container queries now respond to available page width. Real Electron geometry checks and `reach-create-ui-BU4UOn/create-teams-with-files.png` confirm that both panels fit.
+- No actionable P0, P1 or P2 findings remain in the requested Create surface.
+
+## Required fidelity surfaces
+
+- Fonts and typography: retained the product's Bell MT / Georgia display headings and Segoe UI / system sans-serif controls. Page heading 46px, selected name 36px, action and model values 15px, library names 16px. Wrapped long names and models remain readable. Existing application shell typography is preserved. The generated concept's exact font shapes and brighter rendering are treated as illustrative; existing local fonts remain the implementation source.
+- Spacing and layout rhythm: 30px content padding, a 30-percent library track, 28px divider gap, 100px roster rows and 36px link connectors recreate the chosen hierarchy. Lists fill available panel height and scroll independently. The test fixture deliberately contains 16 teams and 32 agents to exercise longer lists than the concept; those additional rows are real fixture content, not extra UI.
+- Colors and tokens: all colors use existing theme variables, including warm ivory text, muted secondary labels, gold selected outlines/actions, green Parallel mode and shared light-theme overrides. No hardcoded dark-only panels or invented palette.
+- Image quality and assets: no decorative raster images are needed. Letter monograms are dynamic initials for saved entities, not substitute portraits. Action and relationship icons are unmodified local Phosphor SVGs with existing MIT attribution. No custom SVG or CSS drawings were introduced.
+- Copy and content: retained the selected heading/subtitle and team explanation. Real saved modes, roles, model IDs, pinned connections, protocol and routing policy drive the detail panel. Chain uses one-way connectors, Links uses bidirectional connectors, Parallel has no sequential connectors. Agent view shows the real instructions and edit action. Values in the generated mock are examples, not new stored data.
+
+## Functional and responsive verification
+
+- `studio/test/create-page-ui.cjs` passed against source and the staged installed application with disposable profiles. Verified list selection, selected-tab state, arrow-key tab navigation, remembered selection, team mode presentation, pinned connection names, existing New/Edit/Run dialogs, saving and selecting a new agent, existing team-definition preservation, long list scrolling, empty states, light theme and offline icons. No team was dispatched.
+- Create content fits at 1440, 1000, 680 and 480px, and at 1440px with Files open. The source application's unrelated persistent header exceeds its supported minimum below 1000px; Create itself does not overflow. The newer installed shell also passed the full-width check at narrow fixture sizes.
+- Existing persona-modal integration test passed at four sizes/zooms, including SOUL.md persistence and pinned save controls.
+- Recursive JavaScript syntax check passed; renderer console and captured unhandled-error arrays were empty in the focused suites.
+- Hidden-window captures now wait for animation frames with background throttling disabled, preventing stale modal/navigation images during QA.
+
+## Intentional constraints and follow-up polish
+
+- Existing header, navigation rail, status bar and native window chrome remain the installed product's shell. They are not replaced with the concept's simplified navigation.
+- Agent instructions and team rosters remain backed by the existing stores and editors. Recovery cards remain reachable below the team overview.
+- P3: exact generated-font rendering and ornamental arrow geometry differ from the established local font/icon libraries; these do not impair hierarchy or behavior.
+- Test scope is UI and existing editor persistence. Paid inference and real team dispatch were not rerun for a presentation change.
+
+## Implementation checklist
+
+- [x] Combined selected concept generated and inspected.
+- [x] Teams / Custom agents toggle uses one full-height library.
+- [x] Selected team/agent detail, existing editors and run dialog work.
+- [x] Responsive layout adapts to the actual available page width.
+- [x] Dark/light tokens and all local icon assets verified.
+- [x] P2 findings fixed and compared against revised captures.
+- [x] Installed package manifest restricted to Create changes; 134 existing files remain byte-identical.
+
+## Installed application verification
+
+- Applied a narrow ASAR update to the existing Studio installation and relaunched it. Native screenshot observation confirmed Create renders the two-tab library and real saved Team1 roster with its pinned connections.
+- Installed ASAR SHA-256: `a9f1132cf2e717a130ab0e829620e4ad2de82afaa797154e88f3cbdfaa09f2c7`, matching the verified staged archive.
+- Rollback backup: `C:/Users/Falab/AppData/Local/SignalREACH/backups/studio-create-workbench-20261002-173028`.
+- `agents.json`, `personas.json` and `projects.json` remain byte-identical. Settings encryption fields were re-encrypted by the existing startup behavior; a private comparison using the same encrypted Local State confirmed all decoded settings, including connection credentials, are semantically unchanged. Only a boolean verification result was emitted.
+- Native UI input stopped when user interaction was detected so the user can inspect the open page. Toggle, edit and task-dialog behavior was verified in the isolated Electron suites; no paid task was submitted in the live profile.

@@ -575,6 +575,33 @@ class AgentState:
         return answer in ("y", "yes")
 
 
+# The spec says {"status": "complete"} but models also write "done",
+# "finished", "stuck"… — normalise or the completion silently never lands.
+_STATUS_ALIASES = {
+    "complete": "complete", "completed": "complete", "done": "complete",
+    "finished": "complete", "success": "complete", "succeeded": "complete",
+    "blocked": "blocked", "stuck": "blocked", "waiting": "blocked",
+    "needs_help": "blocked", "failed": "blocked",
+}
+
+
+def _normalise_action(data):
+    """Accept action/tool/name keys and flatten function-call shaped args
+    nested under parameters/arguments/input. Returns the action or None."""
+    if not isinstance(data, dict):
+        return None
+    name = data.get("action") or data.get("tool") or data.get("name")
+    if not name:
+        return None
+    data["action"] = name
+    for src in ("parameters", "arguments", "input"):
+        nested = data.pop(src, None)
+        if isinstance(nested, dict):
+            for k, v in nested.items():
+                data.setdefault(k, v)
+    return data
+
+
 def parse_tool_blocks(text):
     """Split a reply into (actions, status, invalid)."""
     actions = []
@@ -583,16 +610,22 @@ def parse_tool_blocks(text):
             data = json.loads(raw.strip())
         except (ValueError, AttributeError):
             continue
-        if isinstance(data, dict) and data.get("action"):
-            actions.append(data)
+        action = _normalise_action(data)
+        if action:
+            actions.append(action)
     status = None
     for raw in _STATUS_FENCE.findall(text or ""):
         try:
             data = json.loads(raw.strip())
         except (ValueError, AttributeError):
             continue
-        if isinstance(data, dict) and data.get("status") in ("complete", "blocked"):
-            status = data
+        if isinstance(data, dict):
+            key = str(data.get("status", "")).strip().lower()
+            key = key.replace("-", "_").replace(" ", "_")
+            canon = _STATUS_ALIASES.get(key)
+            if canon:
+                data["status"] = canon
+                status = data
     invalid = bool(_TOOL_FENCE.search(text or "")) and not actions
     return actions, status, invalid
 
@@ -637,6 +670,14 @@ def show_tool_result(name, result):
     ok, summary = summarize_result(name, result)
     marker = c_green("✓") if ok else c_red("✗")
     print(c_dim("    %s " % RESULT_GLYPH) + marker + c_dim(" " + summary))
+    if name in ("todo_write", "todo_read") and ok and result:
+        # echo the whole checklist under the compact line — same card the
+        # VS Code panel paints (◐ row highlighted like its bold row)
+        for extra in result.splitlines()[1:]:
+            if extra.startswith("◐"):
+                print("      " + c_yellow(extra))
+            else:
+                print(c_dim("      " + extra))
 
 
 def _execute_actions(client, actions, state):

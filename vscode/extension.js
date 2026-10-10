@@ -656,17 +656,47 @@ function fileReadResult(rel, text, startLine, endLine, dirty = false) {
  * task.
  */
 const TODO_STATUSES = ['pending', 'in_progress', 'completed'];
+/* Models routinely re-key the plan fields — Claude-flavoured "content", task
+ * trackers' "task"/"description", "items"/"tasks" for the list itself. Accept
+ * the common spellings instead of failing the write outright. */
+const TODO_LIST_KEYS = ['todos', 'items', 'tasks', 'plan', 'steps', 'list'];
+const TODO_TEXT_KEYS = ['text', 'content', 'task', 'description', 'title', 'item'];
+const TODO_STATUS_ALIASES = {
+  completed: 'completed', complete: 'completed', done: 'completed',
+  finished: 'completed', closed: 'completed', resolved: 'completed', checked: 'completed',
+  in_progress: 'in_progress', inprogress: 'in_progress', active: 'in_progress',
+  started: 'in_progress', working: 'in_progress', doing: 'in_progress',
+  current: 'in_progress', ongoing: 'in_progress', wip: 'in_progress',
+  // Anything unrecognised lands on 'pending' — safer than a verbatim status
+  // the completion gate ("!== completed") would treat as open forever.
+};
 let todoState = [];
+
+function todoStatusOf(item) {
+  for (const flag of [item.done, item.completed]) {
+    if (flag === true || ['true', 'yes', '1'].includes(String(flag).trim().toLowerCase())) return 'completed';
+  }
+  for (const key of ['status', 'state', 'completed']) {
+    const raw = String(item[key] || '').trim().toLowerCase().replace(/[- ]/g, '_');
+    if (TODO_STATUS_ALIASES[raw]) return TODO_STATUS_ALIASES[raw];
+  }
+  return 'pending';
+}
+
+function todoListFrom(msg) {
+  for (const key of TODO_LIST_KEYS) if (Array.isArray(msg[key])) return msg[key];
+  return Object.values(msg).find((v) => Array.isArray(v)) || null;
+}
 
 function normalizeTodos(input) {
   if (!Array.isArray(input)) throw new Error('todo_write expects a "todos" array.');
   if (input.length > 50) throw new Error('Keep the todo list to 50 items or fewer.');
   return input.map((item, i) => {
+    if (typeof item === 'string') item = { text: item };
     if (!item || typeof item !== 'object') throw new Error('Todo ' + (i + 1) + ' is not an object.');
-    const text = String(item.text || '').trim();
+    const text = TODO_TEXT_KEYS.map((k) => String(item[k] || '').trim()).find(Boolean) || '';
     if (!text) throw new Error('Todo ' + (i + 1) + ' has no text.');
-    const status = TODO_STATUSES.includes(item.status) ? item.status : 'pending';
-    return { text: text.slice(0, 300), status };
+    return { text: text.slice(0, 300), status: todoStatusOf(item) };
   });
 }
 
@@ -1194,7 +1224,7 @@ class ReachChatViewProvider {
                   + '“Install browser engine” for full rendering and page snapshots.)';
               }
             } else if (action === 'todo_write') {
-              todoState = normalizeTodos(msg.todos);
+              todoState = normalizeTodos(todoListFrom(msg));
               result = renderTodos(todoState);
               this._post('todos', { uid, todos: todoState });
             } else if (action === 'todo_read') {

@@ -247,19 +247,69 @@ def tool_browse(workpath, args, ctx):
     return _truncate("%s\n%s" % (url, text))
 
 
+# Models routinely re-key the plan fields — Claude-flavoured "content",
+# task trackers' "task"/"description", "items"/"tasks" for the list itself.
+# Accept the common spellings instead of silently dropping every item.
+_TODO_LIST_KEYS = ("todos", "items", "tasks", "plan", "steps", "list")
+_TODO_TEXT_KEYS = ("text", "content", "task", "description", "title", "item")
+_TODO_STATUS = {
+    "completed": "completed", "complete": "completed", "done": "completed",
+    "finished": "completed", "closed": "completed", "resolved": "completed",
+    "checked": "completed",
+    "in_progress": "in_progress", "inprogress": "in_progress",
+    "active": "in_progress", "started": "in_progress", "working": "in_progress",
+    "doing": "in_progress", "current": "in_progress", "ongoing": "in_progress",
+    "wip": "in_progress",
+}
+# Anything not recognised lands on "pending" — safer than storing a verbatim
+# status the completion gate ("!= completed") would treat as open forever.
+
+
+def _todo_status(item):
+    for flag in (item.get("done"), item.get("completed")):
+        if flag is True or str(flag).strip().lower() in ("true", "yes", "1"):
+            return "completed"
+    for key in ("status", "state", "completed"):
+        raw = str(item.get(key, "")).strip().lower()
+        raw = raw.replace("-", "_").replace(" ", "_")
+        if raw in _TODO_STATUS:
+            return _TODO_STATUS[raw]
+    return "pending"
+
+
 def tool_todo_write(workpath, args, ctx):
     todos = args.get("todos")
     if not isinstance(todos, list):
+        for key in _TODO_LIST_KEYS:
+            if isinstance(args.get(key), list):
+                todos = args[key]
+                break
+    if not isinstance(todos, list):
+        todos = next((v for v in args.values() if isinstance(v, list)), None)
+    if not isinstance(todos, list):
         return "error: todo_write needs a todos list"
-    ctx["todos"][:] = [
-        {
-            "text": str(t.get("text", ""))[:200],
-            "status": str(t.get("status", "pending")),
-        }
-        for t in todos
-        if isinstance(t, dict) and str(t.get("text", "")).strip()
-    ]
-    return _format_todos(ctx["todos"])
+    out = []
+    dropped = 0
+    for item in todos:
+        if isinstance(item, str):
+            item = {"text": item}
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
+        text = next(
+            (str(item.get(k)) for k in _TODO_TEXT_KEYS
+             if str(item.get(k, "")).strip()),
+            "",
+        )
+        if not text.strip():
+            dropped += 1
+            continue
+        out.append({"text": text.strip()[:200], "status": _todo_status(item)})
+    ctx["todos"][:] = out
+    result = _format_todos(ctx["todos"])
+    if dropped:
+        result += "\n(dropped %d item(s) with no text)" % dropped
+    return result
 
 
 def tool_todo_read(workpath, args, ctx):
@@ -269,11 +319,15 @@ def tool_todo_read(workpath, args, ctx):
 def _format_todos(todos):
     if not todos:
         return "(empty plan)"
-    return "\n".join(
-        "%s %s"
-        % ({"completed": "[x]", "in_progress": "[~]"}.get(t["status"], "[ ]"), t["text"])
+    # Same checklist the VS Code panel renders: ○ ◐ ✓ + an "N/M done" head.
+    done = sum(1 for t in todos if t["status"] == "completed")
+    marks = {"completed": "✓", "in_progress": "◐"}
+    lines = ["Agent plan — %d/%d done" % (done, len(todos))]
+    lines += [
+        "%s %s" % (marks.get(t["status"], "○"), t["text"])
         for t in todos
-    )
+    ]
+    return "\n".join(lines)
 
 
 # ---- registry --------------------------------------------------------------
@@ -329,7 +383,7 @@ TOOLS = {
     },
     "todo_write": {
         "approval": False,
-        "help": "creates or updates the structured plan/checklist for multi-step tasks.",
+        "help": "creates or updates the structured plan/checklist for multi-step tasks. Each item needs a text field; status is pending, in_progress or completed.",
         "example": {"action": "todo_write", "todos": [{"text": "Step 1", "status": "in_progress"}]},
         "run": tool_todo_write,
     },

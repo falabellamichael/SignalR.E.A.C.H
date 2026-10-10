@@ -25,6 +25,16 @@
         ? previous.todos.map(t => ({ ...t })) : [] };
   }
 
+  // The spec says "complete"/"blocked" but models also write "done",
+  // "finished", "stuck"… — normalise before the strict check or a valid
+  // completion reads as an invalid block and the run never ends.
+  const STATUS_ALIASES = {
+    complete: 'complete', completed: 'complete', done: 'complete',
+    finished: 'complete', success: 'complete', succeeded: 'complete',
+    blocked: 'blocked', stuck: 'blocked', waiting: 'blocked',
+    needs_help: 'blocked', failed: 'blocked', continue: 'continue',
+  };
+
   // Closed, standalone top-level fences only. Never recover malformed JSON
   // into a terminal command or interpret markers inside quoted/code examples.
   function parse(text) {
@@ -41,6 +51,10 @@
         if (controlStart >= 0) {
           try {
             const value = JSON.parse(lines.slice(controlStart + 1, i).join('\n'));
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+              const canon = STATUS_ALIASES[String(value.status || '').trim().toLowerCase().replace(/[- ]/g, '_')];
+              if (canon) value.status = canon;
+            }
             if (!value || Array.isArray(value) || typeof value !== 'object'
                 || !['complete', 'blocked', 'continue'].includes(value.status)
                 || (value.status === 'complete' && !(typeof value.summary === 'string' && value.summary.trim()))
