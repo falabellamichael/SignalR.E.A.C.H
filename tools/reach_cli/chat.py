@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 from .agent_tools import (
     TOOLS,
@@ -273,17 +274,30 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None):
     if kept_text:  # keep what arrived rather than discarding it
         return True, {"content": kept_text, "tool_calls": []}
     return False, {"content": "", "tool_calls": [], "error": str(last or ""),
-                   "reason": failure_reason(last), "attempts": attempts,
+                   "reason": failure_reason(last, getattr(client, "base", "")),
+                   "attempts": attempts,
                    "retryable": isinstance(last, ReachTransientError)}
 
 
-def failure_reason(exc):
+def _host_port(base):
+    try:
+        parsed = urllib.parse.urlparse(base or "")
+    except ValueError:
+        return ""
+    if not parsed.hostname:
+        return ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return "%s:%s" % (parsed.hostname, port)
+
+
+def failure_reason(exc, base=""):
     """A short plain reason for a failed request, e.g. 'rate limited (429)'."""
     status = getattr(exc, "status", None)
     if status == "timeout":
         return "timed out"
     if status == "unreachable":
-        return "endpoint unreachable"
+        where = _host_port(base)
+        return "endpoint unreachable (%s)" % where if where else "endpoint unreachable"
     if status == "cut":
         return "stream cut off"
     if isinstance(status, int):

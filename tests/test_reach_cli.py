@@ -1110,7 +1110,7 @@ class AgentLoopTests(unittest.TestCase):
         self.assertIn("timed out, after %d tries" % n, out)
         _, _, _, out = self.run_agent(
             [urllib.error.URLError(ConnectionRefusedError("refused"))] * n)
-        self.assertIn("endpoint unreachable, after %d tries" % n, out)
+        self.assertIn("endpoint unreachable (relay:80), after %d tries" % n, out)
 
     def test_real_openai_tool_call_shapes_list_and_glob(self):
         # exact shapes from the bridge: id, type function, arguments as JSON string
@@ -1194,3 +1194,41 @@ class RetryWiringTests(unittest.TestCase):
         self.assertIn("hello", [m.get("content") for m in rec.payloads[-1]["messages"]])
         self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
         self.assertNotIn("Traceback", out)
+
+
+class NoEndpointFallbackTests(unittest.TestCase):
+    """resolve_base never swaps in the public pointer unless 'public' was picked."""
+
+    def test_explicit_or_preset_base_is_kept_even_when_down(self):
+        for base in ("http://127.0.0.1:1/v1", "http://127.0.0.1:20777/v1",
+                     "https://my.relay.example/v1"):
+            client = ReachClient(base)
+            with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                     side_effect=AssertionError("gist used")), \
+                    unittest.mock.patch("urllib.request.urlopen",
+                                        side_effect=AssertionError("probe/gist used")):
+                self.assertEqual(client.resolve_base(), base.rstrip("/"))
+
+    def test_public_uses_the_pointer_only_when_chosen(self):
+        client = ReachClient("public")
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 return_value="https://pub.example/v1/\n".strip()):
+            self.assertEqual(client.resolve_base(), "https://pub.example/v1")
+        with unittest.mock.patch("reach_cli.client.discover_public_url", return_value=None):
+            self.assertIsNone(client.resolve_base())
+
+    def test_unreachable_endpoint_red_line_names_host_port(self):
+        client = ReachClient("http://127.0.0.1:1/v1", model="m")
+        refused = urllib.error.URLError(ConnectionRefusedError("refused"))
+        rec = _Recorder([refused])
+        out = io.StringIO()
+        msgs = [{"role": "user", "content": "hi"}]
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                contextlib.redirect_stdout(out):
+            ok, _ = chat_mod.stream_reply(client, msgs)
+        self.assertFalse(ok)
+        self.assertIn(chat_mod.c_red(
+            "  ✗ the model didn't answer: endpoint unreachable (127.0.0.1:1), after 4 tries"
+            " — send your message again or /retry"), out.getvalue())
+        self.assertEqual(set(rec.urls), {"http://127.0.0.1:1/v1/chat/completions"})
