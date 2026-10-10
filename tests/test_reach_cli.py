@@ -1082,7 +1082,11 @@ class AgentLoopTests(unittest.TestCase):
         self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
         self.assertNotIn("Traceback", out)
         self.assertNotIn("HTTP 502", out)
-        self.assertEqual(out.count("⏸"), 1)
+        self.assertEqual(out.count("✗ the model didn't answer"), 1)
+        self.assertNotIn("⏸", out)
+        line = ("  ✗ the model didn't answer: endpoint unavailable (502), after 4 tries"
+                " — send your message again or /retry")
+        self.assertIn(chat_mod.c_red(line), out)  # same red helper as the old error line
         self.assertIn("endpoint unavailable (502), after 4 tries", out)
 
     def test_non_retryable_4xx_fails_fast_with_reason(self):
