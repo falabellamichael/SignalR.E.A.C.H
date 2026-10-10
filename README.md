@@ -572,7 +572,9 @@ python tools/reach.py uninstall --all        # remove panel + stop everything
 
 ### The chat CLI (`tools/reach-cli.py`)
 
-A terminal suite for using the endpoint — stdlib-only, streaming. Against a hosted relay pass your key with `--key` or `REACH_KEY`; a relay on the same machine needs none:
+A terminal suite for using the endpoint - stdlib-only, streaming. The protected
+subscription endpoint uses `REACH_KEY`; custom providers use an explicit
+`--key-env ENV_NAME` reference (or `--key`). A relay on the same machine needs none:
 
 ```bash
 python tools/reach-cli.py chat                # interactive REPL (/help for commands)
@@ -582,6 +584,63 @@ python tools/reach-cli.py web "question"      # search → read top pages → ci
 python tools/reach-cli.py models              # list served aliases
 # flags: --model gpt-4o | --base URL | --key sk-reach-… | --system "…" | --no-stream | --no-color
 ```
+
+Manage OpenAI-compatible providers in the REPL or through the source entry script:
+
+```text
+/endpoints add my-provider https://provider.example/v1 --key-env PROVIDER_KEY
+/endpoints list
+/endpoints test my-provider
+/endpoints select my-provider
+/endpoints edit my-provider https://provider.example/api/v1 --no-key
+/endpoints remove my-provider
+python tools/reach-cli.py endpoints list
+python tools/reach-cli.py endpoints test my-provider
+```
+
+Missing operation values prompt interactively. `/endpoint` is an alias;
+`ls`, `update`, `check`, `use`, `rm`, and `delete` name the same operations.
+The protected `local`, `subscription`, and `public` alias cannot be overwritten
+or removed. Removing the active custom endpoint selects local and clears its
+model. A selected named endpoint resumes on startup; `--continue` also restores
+the saved model and workpath. Registry records share the existing session config
+and store credential environment names only. Custom endpoints never inherit
+the subscription credential. Credential-bearing URLs are rejected.
+
+Every `/help`, `/settings`, and endpoint invocation schedules one model-metadata
+refresh. Concurrent refreshes for the same endpoint and credential coalesce.
+The three-second default discovery deadline leaves the editor responsive;
+cached, loading, stale, and failed states are shown explicitly. This only reads
+model IDs, with a bounded preview; no model weights or completions are downloaded.
+Direct endpoint commands wait for that same scheduled refresh before exiting.
+The installed `signalreach` launcher currently routes arguments to the runtime
+manager, so use the source script for direct endpoint commands; slash commands
+work in the bare `signalreach` chat after a normal restart.
+
+Agent mode exposes 36 executable tools. `/tools` lists the catalog and
+`/tools QUERY` searches it. The additions include structured file and JSON
+operations, Git inspection, argument-based commands, and owned-process start,
+list, output, wait, and stop. File writes and command/process execution retain
+approval gates; paths stay within the workpath. Native model requests start
+with 11 core schemas, and `tool_discover` enables up to five relevant additional
+schemas. Providers explicitly rejecting native tools receive one narrowly
+classified retry using the existing fenced tool protocol. Optional external
+app integrations are not part of this local catalog.
+
+Interactive chat keeps the new CLI's rectangular input box pinned below the
+transcript, including while the model streams. Its stdlib editor retains the
+draft and cursor in memory; one renderer reflows the transcript and footer on
+window resizing. Windows Unicode input, wrapped drafts, history, and command
+completion use native console events. Plain or piped terminals retain the
+line-oriented interface. `chat -p "question"` submits that initial turn and
+keeps the chat open; `-p "question"` alone is a one-shot request.
+
+Use **Page Up / Page Down** or the **mouse wheel** to scroll earlier output
+while the input footer stays pinned. The `scroll` indicator shows your place;
+scrolling to the bottom resumes live output. Your draft and cursor remain in
+place while browsing history. Scrolling also works while a response streams
+or an agent is working. Typed input stays in order for the next chat prompt;
+text typed before an approval prompt cannot approve that action.
 
 Web mode ports SimpleRAG's websearch: DuckDuckGo HTML scraping (lite
 fallback), rotating user agents, rich answer modules, page excerpt fetch,

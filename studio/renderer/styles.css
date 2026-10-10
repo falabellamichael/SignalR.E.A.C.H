@@ -1,4 +1,48 @@
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono/IBMPlexMono-Regular.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono/IBMPlexMono-Italic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono/IBMPlexMono-SemiBold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono/IBMPlexMono-SemiBoldItalic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono/IBMPlexMono-Bold.woff2') format('woff2');
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  src: url('fonts/ibm-plex-mono/IBMPlexMono-BoldItalic.woff2') format('woff2');
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+}
+
 :root {
+  --chat-font: 'IBM Plex Mono', 'Cascadia Mono', Consolas, monospace;
   --bg: #0a0a0a;
   --panel: #111111;
   --panel2: #161616;
@@ -560,6 +604,16 @@ footer {
   color: var(--text); font-family: inherit; font-size: 13.5px; line-height: 1.5;
 }
 .composer-actions { display: flex; gap: 8px; }
+
+/* Keep conversation text monospaced while headings and controls use UI type. */
+#page-agents :is(.chat-msg.user, .chat-msg.assistant, .member-body,
+  .thought-detail, .member-ask-q, .member-ask textarea, #composer-input),
+#page-agents :is(.chat-msg, .member-body) code {
+  font-family: var(--chat-font);
+}
+#page-agents :is(.chat-msg, .member-body) .md-h {
+  font-family: 'Segoe UI', system-ui, sans-serif;
+}
 
 /* todos */
 .todos {

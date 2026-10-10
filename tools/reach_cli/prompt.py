@@ -5,10 +5,11 @@ import os
 from .commands import command_tokens
 from .session import history_file_path
 from .splash import display_width, truncate_display
-from .terminal import c_bold, c_cyan, c_dim, c_green, c_red, c_yellow
+from .terminal import c_bold, c_cyan, c_dim, c_green, c_magenta, c_red, c_yellow
 
 _READLINE_READY = False
 _READLINE = None
+_UNSAFE_READLINE_HISTORY = False
 _INTERRUPT_ARMED = False
 
 
@@ -18,9 +19,10 @@ def reset_prompt_interrupt():
 
 
 def reset_readline_state():
-    global _READLINE_READY, _READLINE
+    global _READLINE_READY, _READLINE, _UNSAFE_READLINE_HISTORY
     _READLINE_READY = False
     _READLINE = None
+    _UNSAFE_READLINE_HISTORY = False
 
 
 def load_readline():
@@ -63,7 +65,7 @@ def _install_readline(readline_mod):
 
 
 def _persist_readline(readline_mod):
-    if readline_mod is None:
+    if readline_mod is None or _UNSAFE_READLINE_HISTORY:
         return
     try:
         path = history_file_path()
@@ -135,13 +137,19 @@ def _complete_paths(text):
 
 
 def prompt_rule(client):
-    """Top rule framing the input line: ``┌─ <model> ───┐``."""
-    model = "auto"
-    if client is not None and getattr(client, "model", None):
-        model = " ".join(str(client.model).split()) or "auto"
-    if display_width(model) > 40:
-        model = truncate_display(model, 40)
-    return c_cyan("┌─ %s ───┐" % model)
+    """Top rule framing the input line: ``┌─ model · endpoint · mode · dir@br ─┐``."""
+    from .chatbox import client_meta, session_meta  # lazy: prompt <- terminal <- chatbox
+    model, endpoint, details = client_meta(client)
+    text = " · ".join(p for p in (model, endpoint, details) if p)
+    if display_width(text) > 60:
+        text = truncate_display(text, 60)
+    line = c_cyan("┌─ ") + c_magenta(model) + c_dim(
+        text[len(model):]) + c_cyan(" ───┐")
+    stats = session_meta(client)
+    if stats:
+        line += c_dim("  " + stats)
+    from .splash import margin_pad
+    return margin_pad() + line
 
 
 def _interrupt_armed(session):
@@ -183,6 +191,8 @@ def read_prompt(client=None, session=None):
 def _read_prompt(client, session):
     from . import terminal as term
     readline_mod = term.load_readline()
+    if use_chatbox():
+        return _read_boxed(client, session, None)
     _install_readline(readline_mod)
     print(prompt_rule(client))
     chunks = []
@@ -222,11 +232,66 @@ def _read_prompt(client, session):
     return text
 
 
+def use_chatbox():
+    """Only one editor may own cursor movement and resizing on a TTY."""
+    import sys
+    from . import terminal as term
+    try:
+        from .chatbox import editor_available
+        return bool(term.PAINT.on and sys.stdin.isatty() and sys.stdout.isatty()
+                    and editor_available())
+    except Exception:
+        return False
+
+
+def _read_boxed(client, session, readline_mod):
+    from .chatbox import read_boxed
+    try:
+        chunks = read_boxed(client)
+    except KeyboardInterrupt:
+        if _interrupt_armed(session):
+            _set_interrupt(session, False)
+            print(c_dim("\n  bye."))
+            return None
+        _set_interrupt(session, True)
+        print(c_yellow("  Ctrl-C again to quit \u00b7 /exit or Ctrl-D also quits"))
+        return ""
+    except EOFError:
+        _set_interrupt(session, False)
+        print(c_dim("\n  bye."))
+        return None
+    _set_interrupt(session, False)
+    text = "\n".join(chunks)
+    _remember_history(text, readline_mod)
+    return text
+
+
 def _remember_history(text, readline_mod):
     """Persist the turn. Readline writes its own file; input() appends a line."""
     if not isinstance(text, str) or not text.strip():
         return
-    if readline_mod is not None and _READLINE_READY:
+    from .input_privacy import sanitize_endpoint_command
+    global _UNSAFE_READLINE_HISTORY
+    visible = sanitize_endpoint_command(text)
+    if visible != text and readline_mod is not None and _READLINE_READY:
+        try:
+            # input() has already added the submitted lines to GNU readline.
+            # Change only this submission, preserving older history entries.
+            raw_lines, safe_lines = text.splitlines(), visible.splitlines()
+            length = readline_mod.get_current_history_length()
+            if len(raw_lines) != len(safe_lines) or length < len(raw_lines):
+                raise ValueError("cannot safely replace submitted history")
+            for offset, (raw, safe) in enumerate(zip(reversed(raw_lines), reversed(safe_lines))):
+                index = length - offset
+                if readline_mod.get_history_item(index) != raw:
+                    raise ValueError("cannot identify submitted history")
+                readline_mod.replace_history_item(index - 1, safe)
+        except Exception:
+            # An embedding's readline shim may lack replacement operations.
+            # Never serialize its unsafe in-memory entry in this session.
+            _UNSAFE_READLINE_HISTORY = True
+    text = visible
+    if readline_mod is not None and _READLINE_READY and not _UNSAFE_READLINE_HISTORY:
         _persist_readline(readline_mod)
         return
     try:
