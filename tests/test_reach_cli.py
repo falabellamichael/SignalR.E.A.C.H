@@ -1285,7 +1285,7 @@ class CliUxTests(unittest.TestCase):
 
         with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
                 unittest.mock.patch("reach_cli.__main__.run_ask", side_effect=fake_ask), \
-                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                unittest.mock.patch("reach_cli.client.discover_public_url", side_effect=AssertionError("fallback")), \
                 self.redirect_stdout(self.io.StringIO()):
             self.assertEqual(main(["-p", "hello"]), 0)
         self.assertEqual(seen["question"], "hello")
@@ -1305,7 +1305,7 @@ class CliUxTests(unittest.TestCase):
 
         with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
                 unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=fake_chat), \
-                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                unittest.mock.patch("reach_cli.client.discover_public_url", side_effect=AssertionError("fallback")), \
                 self.redirect_stdout(self.io.StringIO()):
             self.assertEqual(main(["--continue"]), 0)
         self.assertEqual(held["client"].base, "http://saved.example/v1")
@@ -1315,7 +1315,7 @@ class CliUxTests(unittest.TestCase):
 
         with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
                 unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=fake_chat), \
-                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                unittest.mock.patch("reach_cli.client.discover_public_url", side_effect=AssertionError("fallback")), \
                 self.redirect_stdout(self.io.StringIO()):
             self.assertEqual(main(["--continue", "--model", "gpt-4o"]), 0)
         self.assertEqual(held["client"].model, "gpt-4o")
@@ -1338,11 +1338,14 @@ class CliUxTests(unittest.TestCase):
         self.assertEqual(code, 130)
 
         err = self.io.StringIO()
+        sent = []
         with unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=False), \
-                unittest.mock.patch("reach_cli.client.ReachClient.resolve_base", side_effect=AssertionError("fallback")), \
+                unittest.mock.patch("reach_cli.client.discover_public_url", side_effect=AssertionError("fallback")), \
+                unittest.mock.patch("reach_cli.__main__.run_ask", side_effect=lambda *a, **k: sent.append(True) or False), \
                 self.redirect_stdout(err):
-            code = main(["--base", "http://down.example/v1"])
+            code = main(["-p", "hi", "--base", "http://down.example/v1"])
         self.assertEqual(code, 1)
+        self.assertEqual(sent, [])
         self.assertIn("unreachable", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
 
@@ -1372,6 +1375,132 @@ class CliUxTests(unittest.TestCase):
             self.assertEqual(main(["--model", "gpt-4o", "chat", "--agent"]), 0)
         self.assertEqual(parsed["model"], "gpt-4o")
         self.assertTrue(parsed["agent"])
+
+
+class StartupBaseTests(unittest.TestCase):
+    """Named bases resolve, and chat opens when the relay is not up yet."""
+
+    def setUp(self):
+        import io
+        from contextlib import redirect_stdout
+        from reach_cli import terminal
+
+        self.io = io
+        self.redirect_stdout = redirect_stdout
+        terminal.PAINT = terminal.Paint(False)
+        terminal.COLOR_FORCED = False
+        self.addCleanup(lambda: setattr(terminal, "PAINT", terminal.Paint(False)))
+
+    def test_resolve_base_keeps_a_url_and_only_reads_the_pointer_for_public(self):
+        from reach_cli.client import ReachClient
+
+        for base in ("http://127.0.0.1:1/v1", "http://127.0.0.1:20777/v1",
+                     "https://my.relay.example/v1"):
+            client = ReachClient(base)
+            with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                     side_effect=AssertionError("gist used")):
+                self.assertEqual(client.resolve_base(), base.rstrip("/"))
+        local = ReachClient("local")
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 side_effect=AssertionError("gist used")):
+            self.assertEqual(local.resolve_base(), "http://127.0.0.1:20777/v1")
+        named = ReachClient("public")
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 return_value="https://pub.example/v1/"):
+            self.assertEqual(named.resolve_base(), "https://pub.example/v1")
+        with unittest.mock.patch("reach_cli.client.discover_public_url", return_value=None):
+            self.assertIsNone(named.resolve_base())
+
+    def test_chat_starts_when_the_relay_is_down_and_shows_the_notice(self):
+        from reach_cli.__main__ import main
+        from reach_cli.client import ReachClient
+
+        out = self.io.StringIO()
+
+        def eof(_prompt=""):
+            raise EOFError
+
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 side_effect=AssertionError("fallback")), \
+                unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": False)), \
+                unittest.mock.patch("builtins.input", side_effect=eof), \
+                self.redirect_stdout(out):
+            code = main(["chat"])
+        text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("no answer from 127.0.0.1:20777 yet", text)
+        self.assertIn("python tools/reach.py start", text)
+        self.assertIn("/endpoint", text)
+        self.assertNotIn("Traceback", text)
+
+        out = self.io.StringIO()
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 return_value="https://pub.example:8443/v1/"), \
+                unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": False)), \
+                unittest.mock.patch("builtins.input", side_effect=eof), \
+                self.redirect_stdout(out):
+            code = main(["--base", "public"])
+        text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("no answer from pub.example:8443 yet", text)
+        self.assertIn("check the endpoint", text)
+        self.assertNotIn("reach.py start", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_named_public_base_is_not_a_literal_url(self):
+        from reach_cli.__main__ import main
+
+        seen = {}
+
+        def grab(client, base):
+            seen["base"] = client.base
+            seen["arg"] = base
+
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 return_value="https://pub.example/v1/"), \
+                unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=True), \
+                unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=grab), \
+                self.redirect_stdout(self.io.StringIO()):
+            self.assertEqual(main(["--base", "public", "chat"]), 0)
+        self.assertEqual(seen["base"], "https://pub.example/v1")
+        self.assertEqual(seen["arg"], "https://pub.example/v1")
+
+        with unittest.mock.patch("reach_cli.client.discover_public_url", return_value=None), \
+                unittest.mock.patch("reach_cli.__main__.run_chat", side_effect=AssertionError("opened")), \
+                self.redirect_stdout(self.io.StringIO()) as out:
+            code = main(["--base", "public"])
+        self.assertEqual(code, 1)
+        self.assertIn("public pointer", out.getvalue())
+        self.assertNotIn("Traceback", out.getvalue())
+
+    def test_one_shot_commands_exit_when_the_endpoint_is_down(self):
+        from reach_cli.__main__ import main
+
+        out = self.io.StringIO()
+        sent = []
+
+        def refuse(*_args, **_kwargs):
+            sent.append(True)
+            return False
+
+        with unittest.mock.patch("reach_cli.client.discover_public_url",
+                                 side_effect=AssertionError("fallback")), \
+                unittest.mock.patch("reach_cli.__main__.ReachClient._reachable", return_value=False), \
+                unittest.mock.patch("reach_cli.__main__.run_ask", side_effect=refuse), \
+                unittest.mock.patch("reach_cli.__main__.run_web_answer", side_effect=refuse), \
+                unittest.mock.patch("reach_cli.__main__.ReachClient.models", side_effect=refuse), \
+                self.redirect_stdout(out):
+            self.assertEqual(main(["ask", "hi"]), 1)
+            self.assertEqual(main(["-p", "hi"]), 1)
+            self.assertEqual(main(["web", "hi"]), 1)
+            self.assertEqual(main(["models"]), 1)
+            self.assertEqual(main(["--base", "http://down.example:9/v1", "ask", "hi"]), 1)
+        self.assertEqual(sent, [])
+        text = out.getvalue()
+        self.assertIn("unreachable: http://127.0.0.1:20777/v1", text)
+        self.assertIn("unreachable: http://down.example:9/v1", text)
+        self.assertNotIn("Traceback", text)
+        self.assertNotIn("pub.example", text)
 
 
 if __name__ == "__main__":

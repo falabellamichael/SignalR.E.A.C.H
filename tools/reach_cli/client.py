@@ -72,17 +72,21 @@ class ReachClient:
         return _auth_headers(self.key, extra)
 
     def resolve_base(self):
-        """Fall back to the public pointer gist when the local relay is down."""
-        if self._reachable(self.base, self.key):
-            return self.base
-        try:
-            with urllib.request.urlopen(POINTER_GIST, timeout=8) as resp:
-                url = resp.read().decode().strip()
-            if url and self._reachable(url, self.key):
-                return url.rstrip("/")
-        except Exception:
-            pass
-        return None
+        """The endpoint to use. Never substitutes a different endpoint.
+
+        Named bases: ``public`` reads the public pointer gist, ``local`` is
+        the relay on this machine. A URL, or REACH_BASE_URL, is used as-is
+        even when it is down, so an unreachable endpoint is reported instead
+        of silently replaced. Returns None only when ``public`` was chosen
+        and the pointer cannot be read.
+        """
+        name = (self.base or "").strip().lower()
+        if name == "public":
+            url = discover_public_url()
+            return url.rstrip("/") if url else None
+        if name == "local":
+            return "http://127.0.0.1:20777/v1"
+        return self.base
 
     @staticmethod
     def _reachable(base, key=""):

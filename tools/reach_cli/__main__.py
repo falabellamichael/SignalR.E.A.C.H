@@ -53,8 +53,9 @@ def _add_common(parser, suppress):
     parser.add_argument(
         "--base",
         default=fallback(None),
-        help="endpoint base URL (default: REACH_BASE_URL or the local relay; "
-        "no fallback to another endpoint)",
+        help="endpoint base URL, or a name: 'local' or 'public' "
+        "(default: REACH_BASE_URL or the local relay; never falls back "
+        "to another endpoint)",
     )
     parser.add_argument(
         "--key",
@@ -296,12 +297,31 @@ def _main(argv=None):
     indicator = terminal.WaitIndicator(message="checking endpoint")
     indicator.start()
     try:
-        reachable = ReachClient._reachable(client.base, client.key)
-    except Exception:
-        reachable = False
+        try:
+            base = client.resolve_base()
+        except Exception:
+            base = None
+        if isinstance(base, str):
+            base = base.strip().rstrip("/") or None
+        else:
+            base = None
+        reachable = True
+        if base is not None:
+            client.base = base
+            # Chat opens either way so the relay-not-up notice can show.
+            # One-shot commands still need a live endpoint.
+            if command != "chat":
+                try:
+                    reachable = bool(ReachClient._reachable(client.base, client.key))
+                except Exception:
+                    reachable = False
     finally:
         indicator.stop()
-    if not reachable:
+    if not base:
+        print(c_red("✗ no endpoint — the public pointer is unavailable"))
+        print(c_dim("  pass --base with a URL, or choose local"))
+        return 1
+    if command != "chat" and not reachable:
         print(c_red("✗ endpoint unreachable: %s" % client.base))
         print(c_dim("  start the relay or set --base / REACH_BASE_URL"))
         return 1

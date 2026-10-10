@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import time
+import urllib.parse
 
 from .agent_tools import TOOLS, run_tool, tool_help_text
 from .client import ReachApiError
@@ -445,8 +446,42 @@ def run_web_answer(client, query, fetch_pages=True):
 
 
 
+def _host_port(base):
+    try:
+        parsed = urllib.parse.urlparse(base or "")
+    except ValueError:
+        return ""
+    if not parsed.hostname:
+        return ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return "%s:%s" % (parsed.hostname, port)
+
+
+def endpoint_notice(client):
+    """One-line heads-up when the chosen endpoint is down. Never switches."""
+    base = getattr(client, "base", "") or ""
+    try:
+        up = type(client)._reachable(base, getattr(client, "key", "") or "")
+    except Exception:
+        up = True
+    if up:
+        return False
+    where = _host_port(base) or base
+    if where.startswith(("127.0.0.1:", "localhost:")):
+        hint = "start SignalREACH (python %s start)" % os.path.join("tools", "reach.py")
+    else:
+        hint = "check the endpoint"
+    print(c_yellow("  ! no answer from %s yet — %s, or switch with /endpoint"
+                   % (where, hint)))
+    return True
+
+
 def run_chat(client, base):
     banner(client, base, "chat")
+    try:
+        endpoint_notice(client)
+    except Exception:
+        pass
     history = []
     agent_state = AgentState()
     session = ReplSession()

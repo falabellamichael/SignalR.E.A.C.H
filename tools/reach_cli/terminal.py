@@ -763,8 +763,8 @@ def _cmd_endpoint(client, _history, _session, argument):
         print(c_dim("  stayed on %s" % (_current_base(client) or "(none)")))
         return SlashResult()
     url = value
-    # Explicit switch only. Do not call resolve_base(), which would replace a
-    # dead target with a different endpoint.
+    # Explicit switch only. The target was already resolved; do not substitute
+    # a different endpoint when this one is down.
     status_line("checking endpoint…")
     if not _endpoint_reachable(client, url):
         print(c_red("  ✗ endpoint unreachable: %s" % url))
