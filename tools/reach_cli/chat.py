@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.parse
 
@@ -367,6 +368,31 @@ def read_user_line():
     return input(c_bold(c_green("you ▸ ")))
 
 
+def _interruptible(fn, poll=0.1):
+    """Run ``fn`` in a worker thread; the main thread waits in short slices.
+
+    On Windows a Ctrl-C does not interrupt a blocking socket read, so a
+    reply waiting on a slow upstream would ignore it until the read returns.
+    Waiting with Thread.join(timeout) keeps the main thread responsive on
+    every platform. A KeyboardInterrupt raised inside ``fn`` is re-raised here.
+    """
+    box = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # handed to the main thread
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        worker.join(poll)
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
 def stream_reply(client, messages, indent=None, tools=None, full=False):
     """Streams a reply under a styled left rule; returns (ok, full_text).
 
@@ -444,16 +470,26 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
             sys.stdout.write("\n")
             state["midline"] = False
         status_line("model busy — retrying %s (%d/%d)…"
-                    % (client.model or "same model", attempt, MAX_ATTEMPTS))
+                    % (client.model or "the auto model", attempt, MAX_ATTEMPTS))
         state["at_start"] = True
         if not state["wrote"]:
             state["need_label"] = True
 
     stopped = False
+    cancelled = threading.Event()
+
+    def guarded(fn):
+        def inner(*a):
+            if not cancelled.is_set():  # a stopped answer prints nothing more
+                fn(*a)
+        return inner
+
     try:
-        ok, result = request_reply(client, messages, tools=tools,
-                                   on_text=write, on_retry=retry)
+        ok, result = _interruptible(
+            lambda: request_reply(client, messages, tools=tools,
+                                  on_text=guarded(write), on_retry=guarded(retry)))
     except KeyboardInterrupt:
+        cancelled.set()
         stopped = True
         ok = True
         result = {"content": "".join(state["text"]), "tool_calls": [],
@@ -533,8 +569,24 @@ def parse_tool_blocks(text):
     return actions, status, invalid
 
 
-TOOL_GLYPH = "⏺"
-RESULT_GLYPH = "⎿"
+def _modern_console(env=None, platform=None):
+    """Windows Terminal / VS Code / non-Windows render ⏺ and ⎿; the legacy
+    conhost fonts (Consolas, Lucida Console) show them as boxes."""
+    env = os.environ if env is None else env
+    platform = os.name if platform is None else platform
+    if platform != "nt":
+        return True
+    return bool(env.get("WT_SESSION") or env.get("TERM_PROGRAM")
+                or env.get("ConEmuANSI") == "ON")
+
+
+def tool_glyphs(env=None, platform=None):
+    if _modern_console(env, platform):
+        return "⏺", "⎿"
+    return "●", "└"
+
+
+TOOL_GLYPH, RESULT_GLYPH = tool_glyphs()
 
 
 def show_tool_call(name, args):
@@ -732,8 +784,28 @@ def run_web_answer(client, query, fetch_pages=True):
 
 
 
+def endpoint_notice(client):
+    """One-line heads-up when the chosen endpoint is down. Never switches."""
+    base = getattr(client, "base", "") or ""
+    try:
+        up = type(client)._reachable(base, getattr(client, "key", "") or "")
+    except Exception:
+        up = True  # unknown: say nothing rather than guess
+    if up:
+        return False
+    where = _host_port(base) or base
+    if where.startswith(("127.0.0.1:", "localhost:")):
+        hint = "start SignalREACH (python %s start)" % os.path.join("tools", "reach.py")
+    else:
+        hint = "check the endpoint"
+    print(c_yellow("  ! no answer from %s yet — %s, or switch with /endpoint"
+                   % (where, hint)))
+    return True
+
+
 def run_chat(client, base):
     banner(client, base, "chat")
+    endpoint_notice(client)
     history = []
     agent_state = AgentState()
     session = ReplSession()
