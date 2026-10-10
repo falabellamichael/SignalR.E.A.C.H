@@ -63,3 +63,10 @@ RCH-Wallet-Backup/
 # Supabase CLI local project metadata; migrations remain tracked.
 supabase/.temp/
 supabase/.branches/
+
+# Scratch output that was committed by accident once: test logs and Reach
+# compiler build/SMT cache from local experiment projects.
+studio/_test-out*.txt
+.reach/smt-cache/
+/SimpleREACH/
+/SingalREACH/
