@@ -1,5 +1,36 @@
 # Changelog
 
+## [26.10.1](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.0...v26.10.1) (2026-10-10)
+
+
+### Features
+
+* **agent:** accept common todo/action/status spellings and show N/M plan checklist ([91ea8ad](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/91ea8ad551e91d545bb08d586a338b33759adda0))
+* **cli:** add opencode-style startup, prompt, and session flags ([#164](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/164)) ([5055b0c](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/5055b0cf999b599959f001b259f0956ef109a82a))
+* **cli:** keep removed or admin-replaced extension out of reassert and install ([62cd738](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/62cd7384f33d01d6d104128ccdcb690cb460c8a2))
+* **installer:** `signalreach` command starts the relay ([016b9b4](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/016b9b4dd28f58af58f82565174f300f9e55ea49))
+* REACH CLI endpoint commands, agent loop and CodeGPT native tools ([#163](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/163)) ([f481feb](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f481febd0f04fd6293430954cdfc9d247a169760))
+* **reach-cli:** compact agent tool lines and contiguous retry status ([a85bfe5](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/a85bfe5558597805f0855c1b277633f030cadcf7))
+* **reach-cli:** read_prompt and last_turn hooks for the CLI UX branch ([88f1cfa](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/88f1cfa4a028db9c60e445a5a50ac12a46575bed))
+* **reach-cli:** streaming markdown renderer and Ctrl-C stops only the answer ([1654794](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/165479458bf34ea49938cc578b5f0953e1d67d7a))
+* **studio:** add translation, prompt tools and adaptive layouts ([eb1e61e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/eb1e61eaaef2a45caf173cc92df9db8efb82ce47))
+* **studio:** paint agent file writes live in the file tree ([0557ef1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0557ef1f5471cbf9c6bfd1bf554d28185249f5cd))
+* **studio:** unified crew mailbox + accumulated workspace updates ([4375ffe](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/4375ffe3765ea088e61e103a35d3c70c4aac5325))
+
+
+### Bug Fixes
+
+* **chat:** ignore buffered data after a stream completes ([9a2fcf6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9a2fcf6675818bc2343bd8047359c33418350705))
+* **cli:** preserve footer, resizing, and transcript scrolling ([#165](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/165)) ([c5fb52d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c5fb52d49ad1f064e088c7bcfefbe2975f41fcb2))
+* **rch:** add currentEip1559Fees and keep the live sale price in replacement sales ([af5be0b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/af5be0b62630039644290dd51632c526bc545fd7))
+* **reach-cli:** adopt Main Chat's read_prompt(client, session) / footer contract ([7ba75c1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/7ba75c18f85f28698a4d0d08a8d570e47181a857))
+* **reach-cli:** make tool-line tests independent of the host console ([e15cec1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e15cec187124864c4f40d1bbac75f2b0c288a5f3))
+* **reach-cli:** never fall back to another endpoint; name unreachable host:port ([d8d7aae](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d8d7aae5aa6d6800c111fa9d2450a0fe15d05612))
+* **reach-cli:** render.py follows the live PAINT object; tidy footer spacing ([202a6fb](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/202a6fbbcdd88aefd1ef945cc95414ddd5dc720b))
+* **reach-cli:** starter compatibility and Windows-safe agent output ([75afbf2](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/75afbf28eb6319c39af5218746192e5337bc482f))
+* **reach:** harden budgets, streams, config repair, and upstream transport ([58baa46](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/58baa46d2f34f519a4c7d6c6e77796e8bb45f953))
+* **relay:** let the three browser-chat routes bypass relay chat caps ([bbd0e86](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/bbd0e86d46533f6a334e691f51f3ffbe55ce9e04))
+
 ## [26.10.0](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.9.14...v26.10.0) (2026-10-08)
 
 
