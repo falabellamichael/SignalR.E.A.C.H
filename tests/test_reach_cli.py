@@ -1290,3 +1290,110 @@ class ToolLineTests(unittest.TestCase):
         tail = [l for l in lines[start:] if l != ""]
         self.assertEqual(lines[start:start + len(tail)], tail)  # contiguous
         self.assertEqual(len([l for l in tail if "retrying" in l]), 3)
+
+
+class MarkdownRenderTests(unittest.TestCase):
+    def setUp(self):
+        from reach_cli import render, terminal
+        self.render, self.terminal = render, terminal
+
+    def lines(self, text, width=40):
+        m = self.render.MarkdownStream(width)
+        out = []
+        for i in range(0, len(text), 7):  # arbitrary delta boundaries
+            out += m.feed(text[i:i + 7])
+        return out + m.flush()
+
+    def test_blocks_plain_paint(self):
+        text = ("# Title\n\nSome **bold** and `code`.\n```python\nprint(1)\n```\n"
+                "- a bullet that is long enough to wrap around the width\n1. one\n")
+        out = self.lines(text)
+        self.assertEqual(out[0], "Title")
+        self.assertEqual(out[2], "Some bold and code.")
+        self.assertTrue(out[3].startswith("┌─ python "))
+        self.assertEqual(out[4], "│ print(1)")
+        self.assertTrue(out[5].startswith("└─"))
+        self.assertTrue(out[6].startswith("• a bullet"))
+        self.assertTrue(out[7].startswith("  "))  # hanging indent
+        self.assertIn("1. one", out)
+        self.assertTrue(all(len(l) <= 40 for l in out))
+
+    def test_styles_when_colour_on(self):
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", True):
+            out = self.lines("## Head\n**b** `c`\n```\nx\n")
+        self.assertIn("\x1b[1m", out[0])
+        self.assertIn("\x1b[1mb\x1b[0m", out[1])
+        self.assertIn("\x1b[36mc\x1b[0m", out[1])
+        self.assertIn("code", out[2])           # default fence label
+        self.assertTrue(out[-1].endswith("\x1b[0m"))  # unterminated fence closed
+
+    def test_stream_reply_renders_in_gutter_when_colour_on(self):
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([_Resp([_delta(content="# Hi\nline **two**\n"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", True), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok, text = chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
+            expected = self.terminal.c_cyan("  │ ") + "line " + self.terminal.c_bold("two")
+        self.assertTrue(ok)
+        self.assertEqual(text, "# Hi\nline **two**\n")  # history keeps raw markdown
+        shown = out.getvalue()
+        self.assertNotIn("# Hi", shown)
+        self.assertIn(expected, shown)
+
+    def test_no_color_prints_raw_text(self):
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([_Resp([_delta(content="# Hi **x**\n"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", False), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
+        self.assertIn("ai ▸ # Hi **x**", out.getvalue())
+
+
+class CtrlCTests(unittest.TestCase):
+    """Ctrl-C stops only the current answer, keeps partial text."""
+
+    def _interrupting_resp(self):
+        class R(_Resp):
+            def __iter__(self):
+                yield _delta(content="partial ").encode()
+                raise KeyboardInterrupt
+        return R()
+
+    def test_chat_mode_stop_keeps_partial_and_returns_to_prompt(self):
+        client = ReachClient("http://relay/v1", model="m")
+        client.workpath = __import__("tempfile").mkdtemp()
+        inputs = iter(["hello", "again", "/exit"])
+        rec = _Recorder([self._interrupting_resp(),
+                         _Resp([_delta(content="fine"), "data: [DONE]\n"])])
+        out = io.StringIO()
+        with unittest.mock.patch("builtins.input", lambda *_: next(inputs)), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "banner", lambda *a: None), \
+                contextlib.redirect_stdout(out):
+            chat_mod.run_chat(client, client.base)
+        text = out.getvalue()
+        self.assertIn(chat_mod.c_red("  ✗ stopped"), text)
+        self.assertIn("bye.", text)  # REPL kept running to /exit
+        second = rec.payloads[1]["messages"]
+        self.assertIn({"role": "assistant", "content": "partial "}, second)
+        self.assertEqual(second[-1]["content"], "again")
+        self.assertNotIn("Traceback", text)
+
+    def test_agent_mode_stop_ends_turn_keeps_partial(self):
+        client = ReachClient("http://relay/v1", model="m")
+        client.agent = True
+        client.workpath = __import__("tempfile").mkdtemp()
+        history = [{"role": "user", "content": "go"}]
+        rec = _Recorder([self._interrupting_resp()])
+        out = io.StringIO()
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok = chat_mod.run_agent_turn(client, history, chat_mod.AgentState())
+        self.assertFalse(ok)
+        self.assertEqual(history[-1], {"role": "assistant", "content": "partial "})
+        self.assertEqual(out.getvalue().count("✗ stopped"), 1)
+        self.assertEqual(len(rec.payloads), 1)  # no retry after a user stop

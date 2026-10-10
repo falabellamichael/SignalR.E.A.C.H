@@ -18,6 +18,7 @@ from .agent_tools import (
     tool_schemas,
 )
 from .client import ReachApiError, ReachTransientError
+from . import render
 from .grounding import build_grounded_messages
 from .terminal import (
     ReplSession,
@@ -338,24 +339,45 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
     """Streams a reply under a styled left rule; returns (ok, full_text).
 
     With ``full=True`` returns (ok, result) where result also carries native
-    ``tool_calls``. Shows an animated waiting line until the first token, and
-    a single dim status line while retrying the same model.
+    ``tool_calls`` and ``stopped`` (Ctrl-C). Shows an animated waiting line
+    until the first token, and one dim status line per retry of the same
+    model. With colour on, markdown is rendered line by line (render.py) and
+    wrapped inside the gutter; NO_COLOR / non-TTY output is the raw text.
+    Ctrl-C stops only this answer: partial text is kept and '✗ stopped' shown.
     """
     if indent is None:
         indent = response_indent()
     response_open()
+    md = render.MarkdownStream() if render.enabled() else None
     # "midline": the cursor sits after text (or the 'ai ▸' label) on a line
     state = {"at_start": True, "first": True, "wrote": False, "midline": True,
-             "need_label": False,
+             "need_label": False, "text": [],
              "indicator": WaitIndicator(prefix=response_label())}
     state["indicator"].start()
 
-    def write(delta):
+    def begin_output():
         state["indicator"].stop()
         if state["need_label"]:  # text after a retry: reopen 'ai ▸' once
             sys.stdout.write(response_label())
             state["need_label"] = False
+            state["first"] = True
         state["wrote"] = True
+
+    def emit_lines(lines):
+        if not lines:
+            return
+        begin_output()
+        for line in lines:
+            if not state["first"]:
+                sys.stdout.write(indent)
+            sys.stdout.write(line + "\n")
+            state["first"] = False
+        state["at_start"] = True
+        state["midline"] = False
+        sys.stdout.flush()
+
+    def write_raw(delta):
+        begin_output()
         buf = delta
         while True:
             newline = buf.find("\n")
@@ -376,6 +398,13 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
         state["midline"] = not delta.endswith("\n")
         sys.stdout.flush()
 
+    def write(delta):
+        state["text"].append(delta)
+        if md is None:
+            write_raw(delta)
+        else:
+            emit_lines(md.feed(delta))
+
     def retry(attempt):
         # one dim status line per retry, no blank lines in between
         state["indicator"].stop()
@@ -388,12 +417,25 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
         if not state["wrote"]:
             state["need_label"] = True
 
+    stopped = False
     try:
         ok, result = request_reply(client, messages, tools=tools,
                                    on_text=write, on_retry=retry)
+    except KeyboardInterrupt:
+        stopped = True
+        ok = True
+        result = {"content": "".join(state["text"]), "tool_calls": [],
+                  "stopped": True}
     finally:
         state["indicator"].stop()
-    if state["midline"] or ok:
+    if md is not None:
+        emit_lines(md.flush())
+    if stopped:
+        if state["midline"]:
+            sys.stdout.write("\n")
+        print(c_red("  ✗ stopped"))
+        state["midline"] = False
+    elif state["midline"] or ok:
         print()
     if not ok:
         _calm_failure(result)
@@ -559,6 +601,10 @@ def run_agent_turn(client, history, state, instruction=None):
             if not ok:
                 return False
             reply_text = result.get("content") or ""
+            if result.get("stopped"):  # Ctrl-C: keep the partial answer, end the turn
+                if reply_text:
+                    history.append({"role": "assistant", "content": reply_text})
+                return False
             native = result.get("tool_calls") or []
             if native:
                 recovery = 0
@@ -603,8 +649,9 @@ def run_agent_turn(client, history, state, instruction=None):
             return True  # plain prose answer — turn over
         print(c_yellow("  ⏸ agent round limit reached — send 'continue' to resume"))
         return True
-    except KeyboardInterrupt:
-        print(c_dim("\n  agent stopped."))
+    except KeyboardInterrupt:  # Ctrl-C during a tool or an approval 'q'
+        print()
+        print(c_red("  ✗ stopped"))
         return False
     except Exception:  # never surface a traceback from the agent loop
         _calm_failure()
@@ -682,7 +729,14 @@ def run_chat(client, base):
                     _calm_failure()
                 continue
             try:
-                ok, reply_text = stream_reply(client, history)
+                ok, result = stream_reply(client, history, full=True)
+                reply_text = result.get("content") or ""
+                if result.get("stopped"):  # Ctrl-C: keep partial text, back to you ▸
+                    if reply_text:
+                        history.append({"role": "assistant", "content": reply_text})
+                    else:
+                        history.pop()
+                    continue
                 if ok:
                     history.append({"role": "assistant", "content": reply_text})
                     print_footer(client)
