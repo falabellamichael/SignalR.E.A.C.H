@@ -29,7 +29,7 @@ class BrowserChatLimitsTests(unittest.TestCase):
         if max_tokens is not None:
             payload["max_tokens"] = max_tokens
         h._read_body.return_value = json.dumps(payload).encode()
-        with patch.object(core, "STATE", state), patch("urllib.request.urlopen") as send:
+        with patch.object(core, "STATE", state), patch("reachd.chat.net.urlopen") as send:
             result = chat_execute(h)
             if result:
                 state.gate.release()
@@ -49,6 +49,11 @@ class BrowserChatLimitsTests(unittest.TestCase):
                     self.assertEqual(body.get("max_tokens"), max_tokens)
                     self.assertIsNone(send.call_args.kwargs["timeout"])
                     self.assertNotIn("Authorization", request.headers)
+
+    def test_codegpt_bridge_still_strips_max_tokens(self):
+        _h, send = self.execute("bridge/codegpt-eco", [{"role": "user", "content": "x"}], 15)
+        send.assert_called_once()
+        self.assertNotIn("max_tokens", json.loads(send.call_args.args[0].data))
 
     def test_other_provider_routes_still_enforce_their_input_guards(self):
         for upstream in ["provider/gemini-3.8-flash", "bridge/codegpt-eco", "bridge/gemini-chat-extra"]:
