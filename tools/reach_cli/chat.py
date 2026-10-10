@@ -313,8 +313,8 @@ def _calm_failure(result=None):
         reason += ", not retried"
     elif attempts == 1:
         reason += ", after 1 try"
-    print(c_yellow("  ⏸ the model didn't answer: %s — "
-                   "send your message again or /retry" % reason))
+    print(c_red("  ✗ the model didn't answer: %s — "
+                "send your message again or /retry" % reason))
 
 
 def stream_reply(client, messages, indent=None, tools=None, full=False):
