@@ -5,12 +5,10 @@ import sys
 import types
 import unittest
 from unittest.mock import patch
-from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
 from reach_cli import footer_input
 from reach_cli.footer_input import EditBuffer, PosixKeyDecoder, WindowsKeyDecoder
-from reach_cli import footer_input
 
 
 class EditBufferTests(unittest.TestCase):
@@ -257,7 +255,8 @@ class DriverTests(unittest.TestCase):
 
             # Mode setup occurs only once the generator is entered. Initial
             # callback failure closes the unstarted reader without modes set.
-            with self.subTest(key=key), patch.object(footer_input.os, "name", "nt"), \
+            with self.subTest(key=key), \
+                    patch.object(footer_input, "os", types.SimpleNamespace(name="nt")), \
                     patch.object(footer_input, "_windows_events", events):
                 if error is None:
                     self.assertEqual(footer_input.read_line(callback), "")
@@ -335,16 +334,19 @@ class FooterReadDriverTests(unittest.TestCase):
 
 class SessionInputModeTests(unittest.TestCase):
     def test_windows_keeps_processed_input_and_restores_original(self):
+        original_platform = os.name
         for fail in (False, True):
             modes = []
             original = 0x0001 | 0x0002 | 0x0004 | 0x0040
             api = types.SimpleNamespace(SetConsoleMode=lambda handle, mode:
                                         modes.append((handle, mode)) or True)
-            with self.subTest(fail=fail), patch.object(footer_input.os, "name", "nt"), \
+            with self.subTest(fail=fail), \
+                    patch.object(footer_input, "os", types.SimpleNamespace(name="nt")), \
                     patch.object(footer_input, "_windows_console_mode",
                                  return_value=(api, 123, original)):
                 try:
                     with footer_input.session_input_mode():
+                        self.assertEqual(os.name, original_platform)
                         self.assertEqual(modes, [(123, original & ~0x0004)])
                         self.assertTrue(modes[-1][1] & 0x0001)
                         if fail:
@@ -354,6 +356,7 @@ class SessionInputModeTests(unittest.TestCase):
             self.assertEqual(modes, [(123, original & ~0x0004), (123, original)])
 
     def test_posix_keeps_isig_and_restores_original(self):
+        original_platform = os.name
         for fail in (False, True):
             modes = []
             original = [0, 0, 0, 0x01 | 0x08 | 0x40, 0, 0, []]
@@ -362,11 +365,13 @@ class SessionInputModeTests(unittest.TestCase):
                                         tcsetattr=lambda fd, when, mode:
                                         modes.append((fd, when, list(mode))))
             stdin = types.SimpleNamespace(fileno=lambda: 321)
-            with self.subTest(fail=fail), patch.object(footer_input.os, "name", "posix"), \
+            with self.subTest(fail=fail), \
+                    patch.object(footer_input, "os", types.SimpleNamespace(name="posix")), \
                     patch.object(footer_input.sys, "stdin", stdin), \
                     patch.dict(sys.modules, {"termios": api}):
                 try:
                     with footer_input.session_input_mode():
+                        self.assertEqual(os.name, original_platform)
                         self.assertEqual(modes[-1][2][3], 0x01)
                         if fail:
                             raise RuntimeError("session failed")
