@@ -1,0 +1,243 @@
+"""Readline prompt: history, completion, and multi-line input."""
+
+import os
+
+from .commands import command_tokens
+from .session import history_file_path
+from .splash import display_width, truncate_display
+from .terminal import c_bold, c_cyan, c_dim, c_green, c_red, c_yellow
+
+_READLINE_READY = False
+_READLINE = None
+_INTERRUPT_ARMED = False
+
+
+def reset_prompt_interrupt():
+    global _INTERRUPT_ARMED
+    _INTERRUPT_ARMED = False
+
+
+def reset_readline_state():
+    global _READLINE_READY, _READLINE
+    _READLINE_READY = False
+    _READLINE = None
+
+
+def load_readline():
+    """GNU readline, or pyreadline3 on Windows. None when neither imports."""
+    try:
+        import readline
+        return readline
+    except ImportError:
+        pass
+    if os.name == "nt":
+        try:
+            import pyreadline3 as readline
+            return readline
+        except ImportError:
+            return None
+    return None
+
+
+def _install_readline(readline_mod):
+    global _READLINE_READY, _READLINE
+    if readline_mod is None:
+        return False
+    if _READLINE_READY and _READLINE is readline_mod:
+        return True
+    try:
+        readline_mod.parse_and_bind("set editing-mode emacs")
+        readline_mod.parse_and_bind("tab: complete")
+        readline_mod.parse_and_bind('"\\C-r": reverse-search-history')
+        readline_mod.set_completer(_readline_complete)
+        readline_mod.set_completer_delims(" \t\n")
+        readline_mod.set_history_length(1000)
+        path = history_file_path()
+        if path and os.path.isfile(path):
+            readline_mod.read_history_file(path)
+        _READLINE = readline_mod
+        _READLINE_READY = True
+        return True
+    except Exception:
+        return False
+
+
+def _persist_readline(readline_mod):
+    if readline_mod is None:
+        return
+    try:
+        path = history_file_path()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        readline_mod.write_history_file(path)
+    except Exception:
+        pass
+
+
+def _readline_complete(text, state):
+    try:
+        mod = load_readline()
+        buffer = mod.get_line_buffer() if mod is not None else ""
+        matches = complete_token(text, buffer)
+    except Exception:
+        return None
+    if state < len(matches):
+        return matches[state]
+    return None
+
+
+def complete_token(text, buffer):
+    """Tab matches: /commands from the registry, or paths after /workpath."""
+    text = "" if text is None else str(text)
+    buffer = "" if buffer is None else str(buffer)
+    stripped = buffer.lstrip()
+    if stripped.startswith("/workpath ") or stripped.startswith("/workpath\t"):
+        return _complete_paths(text)
+    if text.startswith("/") or stripped.startswith("/"):
+        return [token for token in command_tokens() if token.startswith(text)]
+    return []
+
+
+def _complete_paths(text):
+    raw = "" if text is None else str(text)
+    try:
+        expanded = os.path.expanduser(raw)
+        if raw.endswith("/") or raw.endswith(os.sep):
+            directory = expanded or "."
+            stem = ""
+            typed_dir = raw
+        elif raw == "":
+            directory = "."
+            stem = ""
+            typed_dir = ""
+        else:
+            directory = os.path.dirname(expanded) or "."
+            stem = os.path.basename(expanded)
+            leaf = os.path.basename(raw)
+            typed_dir = raw[:len(raw) - len(leaf)]
+        names = os.listdir(directory)
+    except Exception:
+        return []
+    matches = []
+    for name in sorted(names):
+        if name.startswith(".") and not stem.startswith("."):
+            continue
+        if stem and not name.startswith(stem):
+            continue
+        full = os.path.join(directory, name)
+        try:
+            suffix = "/" if os.path.isdir(full) else ""
+        except OSError:
+            suffix = ""
+        matches.append(typed_dir + name + suffix)
+    return matches
+
+
+def prompt_rule(client):
+    """Top rule framing the input line: ``┌─ <model> ───┐``."""
+    model = "auto"
+    if client is not None and getattr(client, "model", None):
+        model = " ".join(str(client.model).split()) or "auto"
+    if display_width(model) > 40:
+        model = truncate_display(model, 40)
+    return c_cyan("┌─ %s ───┐" % model)
+
+
+def _interrupt_armed(session):
+    if session is not None and getattr(session, "interrupt_armed", None) is not None:
+        return bool(session.interrupt_armed)
+    return _INTERRUPT_ARMED
+
+
+def _set_interrupt(session, value):
+    global _INTERRUPT_ARMED
+    _INTERRUPT_ARMED = bool(value)
+    if session is not None:
+        try:
+            session.interrupt_armed = bool(value)
+        except Exception:
+            pass
+
+
+def read_prompt(client=None, session=None):
+    """Read the next user turn. The chat loop should call this instead of input().
+
+    Returns a string to handle (empty means ask again) or None to leave the
+    REPL. None means EOF or the second Ctrl-C, and ``bye.`` is already
+    printed — the caller should not print it again.
+
+    A trailing backslash continues onto the next line. Two trailing
+    backslashes are a literal backslash and do not continue. Readline, when
+    it imports, persists ``~/.reach_cli_history``, completes /commands and
+    /workpath paths on Tab, and binds Ctrl-R to reverse-search. pyreadline3
+    is the optional Windows module. With neither installed, input() is used.
+    """
+    try:
+        return _read_prompt(client, session)
+    except Exception as exc:
+        print(c_red("  ✗ %s" % exc))
+        return ""
+
+
+def _read_prompt(client, session):
+    from . import terminal as term
+    readline_mod = term.load_readline()
+    _install_readline(readline_mod)
+    print(prompt_rule(client))
+    chunks = []
+    first = True
+    while True:
+        prompt = c_bold(c_green("you ▸ ")) if first else c_dim("... ")
+        try:
+            line = input(prompt)
+        except KeyboardInterrupt:
+            if _interrupt_armed(session):
+                _set_interrupt(session, False)
+                print(c_dim("\n  bye."))
+                return None
+            _set_interrupt(session, True)
+            print(c_yellow("\n  Ctrl-C again to quit · /exit or Ctrl-D also quits"))
+            return ""
+        except EOFError:
+            _set_interrupt(session, False)
+            if chunks:
+                break
+            print(c_dim("\n  bye."))
+            return None
+        if not isinstance(line, str):
+            line = "" if line is None else str(line)
+        _set_interrupt(session, False)
+        if line.endswith("\\\\"):
+            chunks.append(line[:-1])
+            break
+        if line.endswith("\\"):
+            chunks.append(line[:-1])
+            first = False
+            continue
+        chunks.append(line)
+        break
+    text = "\n".join(chunks)
+    _remember_history(text, readline_mod)
+    return text
+
+
+def _remember_history(text, readline_mod):
+    """Persist the turn. Readline writes its own file; input() appends a line."""
+    if not isinstance(text, str) or not text.strip():
+        return
+    if readline_mod is not None and _READLINE_READY:
+        _persist_readline(readline_mod)
+        return
+    try:
+        path = history_file_path()
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        flat = " ".join(part.strip() for part in text.splitlines() if part.strip())
+        if not flat:
+            return
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(flat + "\n")
+    except Exception:
+        pass

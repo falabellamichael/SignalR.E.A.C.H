@@ -1440,7 +1440,7 @@ class StartupBaseTests(unittest.TestCase):
         text = out.getvalue()
         self.assertEqual(code, 0)
         self.assertIn("no answer from 127.0.0.1:20777 yet", text)
-        self.assertIn("python tools/reach.py start", text)
+        self.assertIn("python %s start" % os.path.join("tools", "reach.py"), text)
         self.assertIn("/endpoint", text)
         self.assertNotIn("Traceback", text)
 
@@ -1890,7 +1890,7 @@ class ToolLineTests(unittest.TestCase):
                          'pattern="def x" regex')
         self.assertEqual(self.at.format_args("todo_write", {"todos": [{}, {}]}), "2 item(s)")
         line = self.capture(chat_mod.show_tool_call, "list", {"path": "src"})
-        self.assertEqual(line, "  ⏺ list  path=src\n")
+        self.assertEqual(line, "  %s list  path=src\n" % chat_mod.TOOL_GLYPH)
         self.assertNotIn("{", line)
 
     def test_result_summaries(self):
@@ -1903,12 +1903,12 @@ class ToolLineTests(unittest.TestCase):
         self.assertEqual(s("read", "error: no such file: x"), (False, "no such file: x"))
         self.assertEqual(s("shell", "shell command denied by the user: rm"), (False, "denied"))
         out = self.capture(chat_mod.show_tool_result, "list", "a\nb")
-        self.assertEqual(out, "    ⎿ ✓ 2 entries\n")
+        self.assertEqual(out, "    %s ✓ 2 entries\n" % chat_mod.RESULT_GLYPH)
 
     def test_edit_shows_short_diff(self):
         args = {"path": "a.py", "search": "old = 1", "replace": "new = 2\nmore\nx\ny"}
         out = self.capture(chat_mod.show_tool_call, "edit", args)
-        self.assertIn("⏺ edit  a.py", out)
+        self.assertIn("%s edit  a.py" % chat_mod.TOOL_GLYPH, out)
         self.assertIn("      - old = 1", out)
         self.assertIn("      + new = 2", out)
         self.assertIn("+ … 1 more line(s)", out)
@@ -2174,7 +2174,7 @@ class StarterCompatTests(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             self.assertTrue(_REAL_ENDPOINT_NOTICE(client))
         self.assertIn("no answer from 127.0.0.1:20777 yet", out.getvalue())
-        self.assertIn("python tools/reach.py start", out.getvalue())
+        self.assertIn("python %s start" % os.path.join("tools", "reach.py"), out.getvalue())
         self.assertEqual(client.base, "http://127.0.0.1:20777/v1")  # never switched
 
     def test_no_notice_when_up(self):
