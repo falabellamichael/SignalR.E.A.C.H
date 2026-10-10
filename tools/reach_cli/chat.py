@@ -16,6 +16,7 @@ from .agent_tools import (
 from .client import ReachApiError, ReachTransientError
 from .grounding import build_grounded_messages
 from .terminal import (
+    ReplSession,
     WaitIndicator,
     banner,
     c_bold,
@@ -25,6 +26,7 @@ from .terminal import (
     c_magenta,
     c_red,
     c_yellow,
+    handle_slash,
     print_footer,
     response_indent,
     response_label,
@@ -568,29 +570,11 @@ def run_web_answer(client, query, fetch_pages=True):
 
 
 
-def repl_commands():
-    return {
-        "/help": "show this help",
-        "/model <alias>": "switch model (aliases below)",
-        "/models": "list models served by the endpoint",
-        "/web <question>": "grounded search-and-answer (SimpleRAG websearch)",
-        "/agent": "toggle agent mode (multi-round tool loop: read/search/shell/edit/web)",
-        "/tools": "list the tools the agent can use",
-        "/workpath <dir>": "set the directory the agent works in",
-        "/system <text>": "set/clear the session system prompt",
-        "/clear": "reset the conversation",
-        "/history": "show the conversation so far",
-        "/save [file]": "save the conversation as JSONL",
-        "/exit": "quit (also Ctrl+C or Ctrl+D)",
-    }
-
-
-
-
 def run_chat(client, base):
     banner(client, base, "chat")
     history = []
     agent_state = AgentState()
+    session = ReplSession()
     set_system_message(history, client)
     try:
         while True:
@@ -603,112 +587,16 @@ def run_chat(client, base):
             if not line:
                 continue
             if line.startswith("/"):
-                command, _, argument = line.partition(" ")
-                command = command.lower()
-                argument = argument.strip()
-                if command == "/exit" or command == "/quit":
+                # Command implementations live in terminal.py. This loop only
+                # quits or sends the prompt /retry asks to resend.
+                result = handle_slash(line, client, history, session)
+                if result.quit:
                     print(c_dim("  bye."))
                     return
-                if command == "/help":
-                    for key, description in repl_commands().items():
-                        print("  %-16s %s" % (c_cyan(key), description))
+                if not result.prompt:
                     continue
-                if command == "/models":
-                    try:
-                        status_line("fetching served models…")
-                        models = client.models()
-                        print(c_dim("  served models:"))
-                        for alias in models:
-                            marker = " ●" if alias == client.model else ""
-                            print("   - %s%s" % (alias, c_green(marker)))
-                    except Exception as exc:
-                        print(c_red("  ✗ models: %s" % exc))
-                    continue
-                if command == "/model":
-                    if not argument:
-                        print(c_yellow("  usage: /model <alias>"))
-                        continue
-                    try:
-                        status_line("checking served models…")
-                        served = client.models()
-                    except Exception:
-                        served = None
-                    if served is not None and argument not in served:
-                        print(c_red("  ✗ unknown model %r — try /models" % argument))
-                        continue
-                    client.model = argument
-                    print(c_green("  model → ") + c_bold(argument))
-                    continue
-                if command == "/web":
-                    if not argument:
-                        print(c_yellow("  usage: /web <question>"))
-                        continue
-                    query = argument
-                    if history:
-                        history.append({"role": "user", "content": query})
-                    run_web_answer(client, query)
-                    continue
-                if command == "/tools":
-                    print(c_dim("  agent tools:"))
-                    for name, tool in TOOLS.items():
-                        approval = c_yellow(" (approval)") if tool["approval"] else ""
-                        print("   - %s%s" % (c_cyan(name), approval))
-                        print(c_dim("     %s" % tool["help"]))
-                    continue
-                if command == "/system":
-                    client.system = argument or None
-                    set_system_message(history, client)
-                    print(
-                        c_green("  system prompt ")
-                        + ("set" if client.system else "cleared")
-                    )
-                    continue
-                if command == "/agent":
-                    client.agent = not client.agent
-                    set_system_message(history, client)
-                    print(
-                        c_green("  agent mode ")
-                        + c_bold("on" if client.agent else "off")
-                        + c_dim(" (workpath: " + client.workpath + ")")
-                    )
-                    continue
-                if command == "/workpath":
-                    if not argument:
-                        print(c_yellow("  usage: /workpath <dir>"))
-                        continue
-                    target = os.path.abspath(os.path.expanduser(argument))
-                    if not os.path.isdir(target):
-                        print(c_red("  ✗ not a directory: " + target))
-                        continue
-                    client.workpath = target
-                    set_system_message(history, client)
-                    print(c_green("  workpath → ") + c_bold(target))
-                    continue
-                if command == "/clear":
-                    history = []
-                    set_system_message(history, client)
-                    print(c_green("  conversation cleared"))
-                    continue
-                if command == "/history":
-                    for message in history:
-                        role = message["role"]
-                        color = c_cyan if role == "user" else c_magenta
-                        print(
-                            color("  %s:" % role),
-                            message["content"][:200].replace("\n", " "),
-                        )
-                    continue
-                if command == "/save":
-                    path = argument or (
-                        "reach-chat-%s.jsonl" % time.strftime("%Y%m%d-%H%M%S")
-                    )
-                    with open(path, "w", encoding="utf-8") as handle:
-                        for message in history:
-                            handle.write(json.dumps(message) + "\n")
-                    print(c_green("  saved → ") + path)
-                    continue
-                print(c_yellow("  unknown command %r — /help" % command))
-                continue
+                line = result.prompt
+            session.remember(line)
             history.append({"role": "user", "content": line})
             if client.agent:
                 try:
