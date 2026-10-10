@@ -435,7 +435,7 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
             sys.stdout.write("\n")
         print(c_red("  ✗ stopped"))
         state["midline"] = False
-    elif state["midline"] or ok:
+    elif state["midline"] or (ok and md is None):
         print()
     if not ok:
         _calm_failure(result)
@@ -512,7 +512,8 @@ def show_tool_call(name, args):
         # exec/write tools keep the bold-yellow look; approval prompt unchanged
         print(c_bold(c_yellow("  %s %s" % (TOOL_GLYPH, name))) + "  " + c_bold(summary))
     else:
-        print(c_dim("  %s " % TOOL_GLYPH) + c_cyan(name) + c_dim("  " + summary))
+        print(c_dim("  %s " % TOOL_GLYPH) + c_cyan(name)
+              + (c_dim("  " + summary) if summary else ""))
     if name == "edit":
         for sign, text in edit_diff(args):
             paint = c_red if sign == "-" else c_green

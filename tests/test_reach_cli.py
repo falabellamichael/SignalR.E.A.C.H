@@ -1397,3 +1397,16 @@ class CtrlCTests(unittest.TestCase):
         self.assertEqual(history[-1], {"role": "assistant", "content": "partial "})
         self.assertEqual(out.getvalue().count("✗ stopped"), 1)
         self.assertEqual(len(rec.payloads), 1)  # no retry after a user stop
+
+
+class RenderPaintBindingTests(unittest.TestCase):
+    def test_enabled_follows_replaced_paint_object(self):
+        from reach_cli import render, terminal
+        saved = terminal.PAINT
+        try:
+            terminal.PAINT = terminal.Paint(True)   # what __main__ does at startup
+            self.assertTrue(render.enabled())
+            terminal.PAINT = terminal.Paint(False)
+            self.assertFalse(render.enabled())
+        finally:
+            terminal.PAINT = saved
