@@ -29,8 +29,8 @@ def main(argv=None):
     parser.add_argument(
         "--base",
         default=None,
-        help="endpoint base URL (default: local relay, "
-        "falls back to the public pointer)",
+        help="endpoint base URL, or 'public' for the public pointer "
+        "(default: local relay; never falls back to another endpoint)",
     )
     parser.add_argument(
         "--key", default=None,
