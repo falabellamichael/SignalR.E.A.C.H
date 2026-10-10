@@ -44,6 +44,24 @@ class ReachTransientError(ReachApiError):
         self.partial = partial or {"content": "", "tool_calls": []}
 
 
+def _usage_dict(usage):
+    usage = usage if isinstance(usage, dict) else {}
+    return {"prompt": usage.get("prompt_tokens"),
+            "completion": usage.get("completion_tokens"),
+            "total": usage.get("total_tokens")}
+
+
+def usage_tokens(usage):
+    """Total tokens from a usage dict, or None when the endpoint sent none."""
+    usage = usage or {}
+    if isinstance(usage.get("total"), int):
+        return usage["total"]
+    parts = [usage.get(k) for k in ("prompt", "completion")]
+    if any(isinstance(p, int) for p in parts):
+        return sum(p for p in parts if isinstance(p, int))
+    return None
+
+
 def _merge_tool_delta(slots, fragments):
     """Accumulate streamed tool_call fragments by index into ``slots``."""
     for frag in fragments or []:
@@ -120,6 +138,9 @@ class ReachClient:
         self.no_stream = no_stream
         self.usage = {"prompt": None, "completion": None}
         self.last_latency_ms = 0.0
+        # Footer hook contract (read by terminal.print_footer):
+        # {"tokens": int|None, "rounds": int, "latency": float seconds}
+        self.last_turn = {"tokens": None, "rounds": 0, "latency": 0.0}
         self.system = None
         self.agent = False
         self.workpath = os.getcwd()
@@ -224,8 +245,7 @@ class ReachClient:
                     except ValueError:
                         raise ReachTransientError("malformed endpoint response") from None
                     usage = data.get("usage") or {}
-                    self.usage = {"prompt": usage.get("prompt_tokens"),
-                                  "completion": usage.get("completion_tokens")}
+                    self.usage = _usage_dict(usage)
                     message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
                     content = message.get("content") or ""
                     if content and on_text:
@@ -242,6 +262,7 @@ class ReachClient:
                     return result
                 saw_sse = False
                 done = False
+                stream_usage = None
                 raw_rest = b""
                 for raw in response:
                     line = raw.decode("utf-8", "replace").strip()
@@ -254,9 +275,12 @@ class ReachClient:
                         done = True
                         break
                     try:
-                        choice = (json.loads(chunk).get("choices") or [{}])[0] or {}
-                    except (ValueError, AttributeError):
+                        obj = json.loads(chunk)
+                        choice = (obj.get("choices") or [{}])[0] or {}
+                    except (ValueError, AttributeError, IndexError):
                         continue
+                    if isinstance(obj.get("usage"), dict):  # final usage chunk
+                        stream_usage = _usage_dict(obj["usage"])
                     delta = choice.get("delta") or {}
                     content = delta.get("content")
                     if content:
@@ -273,7 +297,7 @@ class ReachClient:
             kind = "timeout" if isinstance(exc, (socket.timeout, TimeoutError)) else "cut"
             raise ReachTransientError("stream cut: %s" % exc, partial(), status=kind) from None
         self.last_latency_ms = (time.time() - started) * 1000
-        self.usage = {"prompt": None, "completion": None}
+        self.usage = stream_usage or _usage_dict({})
         result = partial()
         if not saw_sse:
             raise ReachTransientError(

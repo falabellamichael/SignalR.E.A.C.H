@@ -17,8 +17,8 @@ from .agent_tools import (
     tool_help_text,
     tool_schemas,
 )
-from .client import ReachApiError, ReachTransientError
-from . import render
+from .client import ReachApiError, ReachTransientError, usage_tokens
+from . import render, terminal
 from .grounding import build_grounded_messages
 from .terminal import (
     ReplSession,
@@ -335,6 +335,38 @@ def _calm_failure(result=None):
                 "send your message again or /retry" % reason))
 
 
+class TurnMeter:
+    """Collects tokens/latency for one user turn and publishes client.last_turn."""
+
+    def __init__(self, client):
+        self.client = client
+        self.started = time.time()
+        self.tokens = None
+        self.rounds = 0
+
+    def add_round(self):
+        self.rounds += 1
+        got = usage_tokens(getattr(self.client, "usage", None))
+        if got is not None:
+            self.tokens = (self.tokens or 0) + got
+
+    def publish(self):
+        self.client.last_turn = {
+            "tokens": self.tokens,
+            "rounds": max(1, self.rounds),
+            "latency": round(time.time() - self.started, 3),
+        }
+        return self.client.last_turn
+
+
+def read_user_line():
+    """Hook: terminal.read_prompt() when Main Chat's UX lands, else input()."""
+    reader = getattr(terminal, "read_prompt", None)
+    if callable(reader):
+        return reader()
+    return input(c_bold(c_green("you ▸ ")))
+
+
 def stream_reply(client, messages, indent=None, tools=None, full=False):
     """Streams a reply under a styled left rule; returns (ok, full_text).
 
@@ -590,6 +622,7 @@ def run_agent_turn(client, history, state, instruction=None):
     """
     rounds = 0
     recovery = 0
+    meter = TurnMeter(client)
     if instruction:
         history.append({"role": "user", "content": instruction})
     try:
@@ -601,6 +634,7 @@ def run_agent_turn(client, history, state, instruction=None):
                                       full=True)
             if not ok:
                 return False
+            meter.add_round()
             reply_text = result.get("content") or ""
             if result.get("stopped"):  # Ctrl-C: keep the partial answer, end the turn
                 if reply_text:
@@ -646,6 +680,7 @@ def run_agent_turn(client, history, state, instruction=None):
                       "actual tool, or finish with an agent_status complete block.",
                 })
                 continue
+            meter.publish()
             print_footer(client)
             return True  # plain prose answer — turn over
         print(c_yellow("  ⏸ agent round limit reached — send 'continue' to resume"))
@@ -657,6 +692,8 @@ def run_agent_turn(client, history, state, instruction=None):
     except Exception:  # never surface a traceback from the agent loop
         _calm_failure()
         return False
+    finally:
+        meter.publish()  # client.last_turn after every agent turn
 
 
 
@@ -704,7 +741,7 @@ def run_chat(client, base):
     try:
         while True:
             try:
-                line = input(c_bold(c_green("you ▸ ")))
+                line = read_user_line()
             except (EOFError, KeyboardInterrupt):
                 print(c_dim("\n  bye."))
                 return
@@ -730,7 +767,11 @@ def run_chat(client, base):
                     _calm_failure()
                 continue
             try:
+                meter = TurnMeter(client)
                 ok, result = stream_reply(client, history, full=True)
+                if ok:
+                    meter.add_round()
+                meter.publish()
                 reply_text = result.get("content") or ""
                 if result.get("stopped"):  # Ctrl-C: keep partial text, back to you ▸
                     if reply_text:
@@ -766,7 +807,11 @@ def run_ask(client, question, web=False):
     messages.append({"role": "user", "content": question})
     if client.agent:
         return run_agent_turn(client, messages, AgentState())
+    meter = TurnMeter(client)
     ok, reply_text = stream_reply(client, messages)
+    if ok:
+        meter.add_round()
+    meter.publish()
     if not ok:
         return False
     print_footer(client)
