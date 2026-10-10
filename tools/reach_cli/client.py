@@ -4,8 +4,10 @@ Talks to the local relay (or the public pointer gist) with
 streaming chat completions, model listing, and pointer fallback.
 """
 
+import http.client
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.parse
@@ -22,6 +24,59 @@ POINTER_GIST = (
 
 class ReachApiError(RuntimeError):
     pass
+
+
+# HTTP statuses worth retrying on the SAME provider and model.
+TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
+
+
+class ReachTransientError(ReachApiError):
+    """A retryable failure (busy upstream, timeout, reset, cut stream).
+
+    ``partial`` carries whatever was received before the failure:
+    {"content": str, "tool_calls": [...]} so the caller can keep it.
+    """
+
+    def __init__(self, message, partial=None, status=None):
+        super().__init__(message)
+        self.partial = partial or {"content": "", "tool_calls": []}
+        self.status = status
+
+
+def _merge_tool_delta(slots, fragments):
+    """Accumulate streamed tool_call fragments by index into ``slots``."""
+    for frag in fragments or []:
+        if not isinstance(frag, dict):
+            continue
+        index = frag.get("index")
+        if not isinstance(index, int):
+            index = len(slots) if frag.get("id") else max(len(slots) - 1, 0)
+        slot = slots.setdefault(index, {
+            "id": "", "type": "function",
+            "function": {"name": "", "arguments": ""},
+        })
+        if frag.get("id"):
+            slot["id"] = frag["id"]
+        fn = frag.get("function") or {}
+        if fn.get("name"):
+            slot["function"]["name"] += fn["name"]
+        if fn.get("arguments"):
+            args = fn["arguments"]
+            if not isinstance(args, str):
+                args = json.dumps(args)
+            slot["function"]["arguments"] += args
+
+
+def _finish_tool_calls(slots):
+    calls = []
+    for index in sorted(slots):
+        call = slots[index]
+        if not call["function"]["name"]:
+            continue
+        if not call["id"]:
+            call["id"] = "call_%d" % index
+        calls.append(call)
+    return calls
 
 
 def _auth_headers(key, extra=None):
@@ -105,6 +160,116 @@ class ReachClient:
         with urllib.request.urlopen(request, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8", "replace"))
         return [m.get("id") for m in data.get("data", []) if m.get("id")]
+
+    def complete(self, messages, tools=None, on_text=None, stream=True):
+        """One request attempt. Returns {"content", "tool_calls"}.
+
+        Streams text deltas to ``on_text`` as they arrive and accumulates
+        native tool_call fragments by index. Retryable failures raise
+        ReachTransientError carrying the partial result; never changes
+        ``self.model`` or ``self.base``.
+        """
+        payload = {"messages": messages}
+        if self.model:
+            payload["model"] = self.model
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        payload["stream"] = bool(stream and not self.no_stream)
+        started = time.time()
+        request = urllib.request.Request(
+            self.base + "/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers=self._headers({"Content-Type": "application/json"}),
+        )
+        text = []
+        slots = {}
+
+        def partial():
+            return {"content": "".join(text),
+                    "tool_calls": _finish_tool_calls(slots)}
+
+        try:
+            response = urllib.request.urlopen(request, timeout=self.timeout)
+        except urllib.error.HTTPError as exc:
+            try:
+                body = exc.read()
+            except Exception:
+                body = b""
+            message = "endpoint error (HTTP %s): %s" % (
+                exc.code, _error_text(body, self.base))
+            if exc.code in TRANSIENT_HTTP:
+                raise ReachTransientError(message, status=exc.code) from None
+            raise ReachApiError(message) from None
+        except (urllib.error.URLError, socket.timeout, TimeoutError,
+                ConnectionError, http.client.HTTPException, OSError) as exc:
+            raise ReachTransientError("endpoint unreachable: %s" % exc) from None
+
+        try:
+            with response:
+                if not payload["stream"]:
+                    try:
+                        data = json.loads(response.read().decode("utf-8", "replace"))
+                    except ValueError:
+                        raise ReachTransientError("malformed endpoint response") from None
+                    usage = data.get("usage") or {}
+                    self.usage = {"prompt": usage.get("prompt_tokens"),
+                                  "completion": usage.get("completion_tokens")}
+                    message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+                    content = message.get("content") or ""
+                    if content and on_text:
+                        on_text(content)
+                    text.append(content)
+                    for i, call in enumerate(message.get("tool_calls") or []):
+                        frag = dict(call)
+                        frag.setdefault("index", i)
+                        _merge_tool_delta(slots, [frag])
+                    self.last_latency_ms = (time.time() - started) * 1000
+                    result = partial()
+                    if not result["content"] and not result["tool_calls"]:
+                        raise ReachTransientError("empty endpoint response")
+                    return result
+                saw_sse = False
+                done = False
+                raw_rest = b""
+                for raw in response:
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data:"):
+                        raw_rest += raw
+                        continue
+                    saw_sse = True
+                    chunk = line[5:].strip()
+                    if chunk == "[DONE]":
+                        done = True
+                        break
+                    try:
+                        choice = (json.loads(chunk).get("choices") or [{}])[0] or {}
+                    except (ValueError, AttributeError):
+                        continue
+                    delta = choice.get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        text.append(content)
+                        if on_text:
+                            on_text(content)
+                    _merge_tool_delta(slots, delta.get("tool_calls"))
+                    if choice.get("finish_reason"):
+                        done = True
+        except ReachTransientError:
+            raise
+        except (socket.timeout, TimeoutError, ConnectionError,
+                http.client.HTTPException, OSError, ValueError) as exc:
+            raise ReachTransientError("stream cut: %s" % exc, partial()) from None
+        self.last_latency_ms = (time.time() - started) * 1000
+        self.usage = {"prompt": None, "completion": None}
+        result = partial()
+        if not saw_sse:
+            raise ReachTransientError(
+                "endpoint error: " + _error_text(raw_rest, self.base), result)
+        if not done or (not result["content"] and not result["tool_calls"]):
+            raise ReachTransientError("stream ended early", result)
+        return result
 
     def chat(self, messages, stream=True):
         """Yields text deltas; sets usage/last_latency_ms at the end."""

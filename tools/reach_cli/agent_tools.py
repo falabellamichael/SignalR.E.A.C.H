@@ -350,6 +350,59 @@ def tool_help_text():
     return "\n".join(lines)
 
 
+# JSON-schema parameters for each tool, for OpenAI-style native tool calling.
+_S = {"type": "string"}
+TOOL_PARAMETERS = {
+    "read": ({"path": _S, "startLine": {"type": "integer"},
+              "endLine": {"type": "integer"}}, ["path"]),
+    "glob": ({"pattern": _S, "path": _S}, ["pattern"]),
+    "search": ({"pattern": _S, "regex": {"type": "boolean"}, "include": _S,
+                "caseSensitive": {"type": "boolean"}, "path": _S}, ["pattern"]),
+    "list": ({"path": _S}, []),
+    "shell": ({"command": _S}, ["command"]),
+    "edit": ({"path": _S, "search": _S, "replace": _S}, ["path", "replace"]),
+    "websearch": ({"query": _S}, ["query"]),
+    "browse": ({"url": _S}, ["url"]),
+    "todo_write": ({"todos": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"text": _S, "status": {
+            "type": "string", "enum": ["pending", "in_progress", "completed"]}},
+        "required": ["text"]}}}, ["todos"]),
+    "todo_read": ({}, []),
+}
+
+
+def tool_schemas():
+    """The registry in OpenAI ``tools`` format (function schemas)."""
+    schemas = []
+    for name, tool in TOOLS.items():
+        props, required = TOOL_PARAMETERS.get(name, ({}, []))
+        params = {"type": "object", "properties": dict(props)}
+        if required:
+            params["required"] = list(required)
+        schemas.append({
+            "type": "function",
+            "function": {"name": name, "description": tool["help"],
+                         "parameters": params},
+        })
+    return schemas
+
+
+def parse_tool_arguments(raw):
+    """Decode native tool-call arguments. Returns (args, error)."""
+    if isinstance(raw, dict):
+        return raw, None
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return {}, None
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        return None, "arguments were not valid JSON (%s); resend the call" % exc
+    if not isinstance(data, dict):
+        return None, "arguments must be a JSON object; resend the call"
+    return data, None
+
+
 def run_tool(name, args, workpath, ctx):
     """Execute one tool action. Returns the plain-text result."""
     tool = TOOLS.get(name)

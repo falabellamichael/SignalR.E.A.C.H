@@ -310,3 +310,214 @@ class AgentEditTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+# ---- agent loop robustness (native tool_calls, retries, partial streams) ----
+
+import io  # noqa: E402
+import contextlib  # noqa: E402
+import urllib.error  # noqa: E402
+
+from reach_cli import chat as chat_mod  # noqa: E402
+from reach_cli.agent_tools import tool_schemas, parse_tool_arguments  # noqa: E402
+from reach_cli.client import ReachClient, ReachTransientError  # noqa: E402
+
+
+class _Resp:
+    """Fake urlopen response: iterable SSE lines or a JSON body."""
+
+    def __init__(self, lines=None, body=None, cut_after=None):
+        self._lines = [l.encode() if isinstance(l, str) else l for l in (lines or [])]
+        self._body = body
+        self._cut = cut_after
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return json.dumps(self._body).encode()
+
+    def __iter__(self):
+        for i, line in enumerate(self._lines):
+            if self._cut is not None and i >= self._cut:
+                raise ConnectionResetError("reset by peer")
+            yield line
+
+
+def _sse(obj):
+    return "data: " + json.dumps(obj) + "\n"
+
+
+def _delta(**delta):
+    return _sse({"choices": [{"delta": delta}]})
+
+
+def _http_error(code):
+    return urllib.error.HTTPError("http://x/chat/completions", code, "err", {},
+                                  io.BytesIO(b'{"error":{"message":"busy"}}'))
+
+
+class _Recorder:
+    """Patch urlopen with a scripted sequence; records every payload."""
+
+    def __init__(self, script):
+        self.script = list(script)
+        self.payloads = []
+        self.urls = []
+
+    def __call__(self, request, timeout=None):
+        self.urls.append(request.full_url)
+        self.payloads.append(json.loads(request.data.decode()))
+        # the last step repeats (the loop may nudge a prose answer up to
+        # MAX_RECOVERY times after tool results)
+        step = self.script.pop(0) if len(self.script) > 1 else self.script[0]
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+class AgentLoopTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = __import__("tempfile").mkdtemp()
+        with open(os.path.join(self.tmp, "hello.txt"), "w") as fh:
+            fh.write("hi there\n")
+        self.client = ReachClient("http://relay/v1", model="codegpt-eco")
+        self.client.agent = True
+        self.client.workpath = self.tmp
+        self.sleep = unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None)
+        self.sleep.start()
+
+    def tearDown(self):
+        self.sleep.stop()
+
+    def run_agent(self, script):
+        rec = _Recorder(script)
+        out = io.StringIO()
+        history = [{"role": "user", "content": "read hello.txt"}]
+        with unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok = chat_mod.run_agent_turn(self.client, history, chat_mod.AgentState())
+        return ok, history, rec, out.getvalue()
+
+    def test_tool_schemas_openai_format(self):
+        schemas = tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        self.assertIn("read", names)
+        for s in schemas:
+            self.assertEqual(s["type"], "function")
+            self.assertEqual(s["function"]["parameters"]["type"], "object")
+
+    def test_native_tool_calls_streamed(self):
+        first = _Resp([
+            _delta(tool_calls=[{"index": 0, "id": "call_1", "type": "function",
+                                "function": {"name": "read", "arguments": ""}}]),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": '{"pa'}}]),
+            _delta(tool_calls=[{"index": 0, "function": {"arguments": 'th": "hello.txt"}'}}]),
+            _sse({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            "data: [DONE]\n",
+        ])
+        second = _Resp([_delta(content="It says hi there."), "data: [DONE]\n"])
+        ok, history, rec, out = self.run_agent([first, second])
+        self.assertTrue(ok)
+        self.assertIn("tools", rec.payloads[0])
+        assistant = [m for m in history if m.get("tool_calls")][0]
+        self.assertEqual(assistant["tool_calls"][0]["function"]["name"], "read")
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg["tool_call_id"], "call_1")
+        self.assertIn("hi there", tool_msg["content"])
+        # the second request carries the tool exchange back to the model
+        roles = [m["role"] for m in rec.payloads[1]["messages"]]
+        self.assertIn("tool", roles)
+        self.assertNotIn("Traceback", out)
+
+    def test_native_tool_calls_non_streamed(self):
+        self.client.no_stream = True
+        first = _Resp(body={"choices": [{"message": {"content": None, "tool_calls": [
+            {"id": "c9", "type": "function",
+             "function": {"name": "read", "arguments": '{"path": "hello.txt"}'}}]}}]})
+        second = _Resp(body={"choices": [{"message": {"content": "done"}}]})
+        ok, history, rec, _ = self.run_agent([first, second])
+        self.assertTrue(ok)
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertEqual(tool_msg["tool_call_id"], "c9")
+        self.assertIn("hi there", tool_msg["content"])
+
+    def test_malformed_tool_arguments_handled(self):
+        self.assertIsNotNone(parse_tool_arguments("{not json")[1])
+        self.client.no_stream = True
+        first = _Resp(body={"choices": [{"message": {"tool_calls": [
+            {"id": "c1", "function": {"name": "read", "arguments": "{bad"}}]}}]})
+        second = _Resp(body={"choices": [{"message": {"content": "ok"}}]})
+        ok, history, _, out = self.run_agent([first, second])
+        self.assertTrue(ok)
+        tool_msg = [m for m in history if m["role"] == "tool"][0]
+        self.assertTrue(tool_msg["content"].startswith("error:"))
+        self.assertNotIn("Traceback", out)
+
+    def test_text_tool_block_path_still_works(self):
+        block = '```tool\n{"action": "read", "path": "hello.txt"}\n```'
+        first = _Resp([_delta(content=block), "data: [DONE]\n"])
+        second = _Resp([_delta(content="Read it."), "data: [DONE]\n"])
+        ok, history, _, _ = self.run_agent([first, second])
+        self.assertTrue(ok)
+        results = [m for m in history if m["role"] == "user"
+                   and m["content"].startswith("[tool result]")]
+        self.assertEqual(len(results), 1)
+        self.assertIn("hi there", results[0]["content"])
+
+    def test_retries_same_provider_and_model(self):
+        ok_resp = _Resp([_delta(content="hello"), "data: [DONE]\n"])
+        ok, _, rec, out = self.run_agent(
+            [_http_error(502), _http_error(503), TimeoutError("slow"), ok_resp])
+        self.assertTrue(ok)
+        self.assertEqual(len(rec.payloads), 4)
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertEqual(set(rec.urls), {"http://relay/v1/chat/completions"})
+        self.assertEqual(self.client.model, "codegpt-eco")
+        self.assertIn("retrying", out)
+        self.assertNotIn("✗", out)
+
+    def test_partial_stream_is_kept_and_continued(self):
+        cut = _Resp([_delta(content="Hello "), _delta(content="wor"),
+                     _delta(content="ld")], cut_after=2)
+        rest = _Resp([_delta(content="ld!"), "data: [DONE]\n"])
+        ok, history, rec, out = self.run_agent([cut, rest])
+        self.assertTrue(ok)
+        self.assertEqual(history[-1]["content"], "Hello world!")
+        retry_msgs = rec.payloads[1]["messages"]
+        self.assertEqual(retry_msgs[-2], {"role": "assistant", "content": "Hello wor"})
+        self.assertEqual(rec.payloads[1]["model"], "codegpt-eco")
+        self.assertNotIn("Traceback", out)
+
+    def test_cut_after_complete_tool_call_keeps_it(self):
+        cut = _Resp([
+            _delta(tool_calls=[{"index": 0, "id": "k1", "function": {
+                "name": "read", "arguments": '{"path": "hello.txt"}'}}]),
+            "data: never\n"], cut_after=1)
+        final = _Resp([_delta(content="fine"), "data: [DONE]\n"])
+        ok, history, rec, _ = self.run_agent([cut, final])
+        self.assertTrue(ok)
+        # no re-request of the cut turn: request 2 already carries the tool result
+        self.assertIn("tool", [m["role"] for m in rec.payloads[1]["messages"]])
+        self.assertTrue(any(m["role"] == "tool" for m in history))
+
+    def test_graceful_final_failure_no_traceback(self):
+        ok, _, rec, out = self.run_agent([_http_error(502)] * chat_mod.MAX_ATTEMPTS)
+        self.assertFalse(ok)
+        self.assertEqual(len(rec.payloads), chat_mod.MAX_ATTEMPTS)
+        self.assertEqual({p["model"] for p in rec.payloads}, {"codegpt-eco"})
+        self.assertNotIn("Traceback", out)
+        self.assertNotIn("HTTP 502", out)
+        self.assertEqual(out.count("⏸"), 1)
+
+    def test_unexpected_exception_never_escapes(self):
+        ok, _, _, out = self.run_agent([RuntimeError("boom")])
+        self.assertFalse(ok)
+        self.assertNotIn("Traceback", out)
+
+    def test_transient_error_carries_partial(self):
+        err = ReachTransientError("x", {"content": "ab", "tool_calls": []})
+        self.assertEqual(err.partial["content"], "ab")

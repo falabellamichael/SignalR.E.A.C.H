@@ -6,8 +6,14 @@ import re
 import sys
 import time
 
-from .agent_tools import TOOLS, run_tool, tool_help_text
-from .client import ReachApiError
+from .agent_tools import (
+    TOOLS,
+    parse_tool_arguments,
+    run_tool,
+    tool_help_text,
+    tool_schemas,
+)
+from .client import ReachApiError, ReachTransientError
 from .grounding import build_grounded_messages
 from .terminal import (
     WaitIndicator,
@@ -201,54 +207,133 @@ def set_system_message(history, client):
         history.insert(0, {"role": "system", "content": prompt})
 
 
-def stream_reply(client, messages, indent=None):
+# ---- resilient requests ----------------------------------------------------
+
+MAX_ATTEMPTS = 4
+BACKOFF_BASE = 1.0
+BACKOFF_CAP = 8.0
+_sleep = time.sleep  # patched in tests
+
+_CONTINUE_PROMPT = (
+    "[run control] Your previous reply was cut off by a connection drop. "
+    "Continue exactly where it stopped; do not repeat earlier text."
+)
+
+
+def _backoff(attempt):
+    return min(BACKOFF_CAP, BACKOFF_BASE * (2 ** (attempt - 1)))
+
+
+def _complete_tool_calls(calls):
+    """Tool calls whose arguments decode cleanly (safe to keep after a cut)."""
+    return [c for c in calls or []
+            if parse_tool_arguments(c["function"].get("arguments"))[1] is None]
+
+
+def request_reply(client, messages, tools=None, on_text=None, on_retry=None):
+    """Ask the endpoint with retries on the SAME provider and model.
+
+    Returns (ok, {"content", "tool_calls"}). Transient failures back off and
+    retry; text already streamed is kept and the model is asked to continue,
+    so a cut stream never loses work. Never touches client.model/base.
+    """
+    kept_text = ""
+    last = None
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        convo = list(messages)
+        if kept_text:
+            convo += [{"role": "assistant", "content": kept_text},
+                      {"role": "user", "content": _CONTINUE_PROMPT}]
+        try:
+            result = client.complete(convo, tools=tools, on_text=on_text)
+            return True, {"content": kept_text + (result.get("content") or ""),
+                          "tool_calls": result.get("tool_calls") or []}
+        except ReachTransientError as exc:
+            last = exc
+            got = exc.partial or {}
+            kept_text += got.get("content") or ""
+            calls = _complete_tool_calls(got.get("tool_calls"))
+            if calls:  # the call(s) arrived whole before the cut: use them
+                return True, {"content": kept_text, "tool_calls": calls}
+            if attempt < MAX_ATTEMPTS:
+                if on_retry:
+                    on_retry(attempt + 1)
+                _sleep(_backoff(attempt))
+                continue
+        except ReachApiError as exc:
+            last = exc
+            break
+        except Exception as exc:  # never let an unexpected error escape
+            last = exc
+            break
+    if kept_text:  # keep what arrived rather than discarding it
+        return True, {"content": kept_text, "tool_calls": []}
+    return False, {"content": "", "tool_calls": [], "error": str(last or "")}
+
+
+def _calm_failure():
+    print(c_yellow("  ⏸ the model didn't answer after %d tries — "
+                   "send your message again to retry" % MAX_ATTEMPTS))
+
+
+def stream_reply(client, messages, indent=None, tools=None, full=False):
     """Streams a reply under a styled left rule; returns (ok, full_text).
 
-    Shows an animated waiting line until the first token arrives, so a
-    long upstream wait (reasoning models, slow aliases, cold relays) is
-    never silent.
+    With ``full=True`` returns (ok, result) where result also carries native
+    ``tool_calls``. Shows an animated waiting line until the first token, and
+    a single dim status line while retrying the same model.
     """
     if indent is None:
         indent = response_indent()
     response_open()
-    indicator = WaitIndicator(prefix=response_label())
-    indicator.start()
-    text_parts = []
-    buf = ""
-    at_start = True  # next write begins a fresh line
-    first = True     # first line continues after the 'ai ▸' label
+    state = {"at_start": True, "first": True, "wrote": False,
+             "indicator": WaitIndicator(prefix=response_label())}
+    state["indicator"].start()
+
+    def write(delta):
+        state["indicator"].stop()
+        state["wrote"] = True
+        buf = delta
+        while True:
+            newline = buf.find("\n")
+            if newline == -1:
+                break
+            line, buf = buf[:newline], buf[newline + 1:]
+            if not state["first"] and state["at_start"]:
+                sys.stdout.write(indent)
+            sys.stdout.write(line + "\n")
+            state["at_start"] = True
+            state["first"] = False
+        if buf:
+            if not state["first"] and state["at_start"]:
+                sys.stdout.write(indent)
+            sys.stdout.write(buf)
+            state["at_start"] = False
+            state["first"] = False
+        sys.stdout.flush()
+
+    def retry(attempt):
+        state["indicator"].stop()
+        if not state["at_start"] or not state["wrote"]:
+            print()
+        status_line("model busy — retrying %s (%d/%d)…"
+                    % (client.model or "same model", attempt, MAX_ATTEMPTS))
+        state["at_start"] = True
+        if not state["wrote"]:
+            state["indicator"] = WaitIndicator(prefix=response_label())
+            state["indicator"].start()
+
     try:
-        for delta in client.chat(messages):
-            indicator.stop()
-            text_parts.append(delta)
-            buf += delta
-            while True:
-                newline = buf.find("\n")
-                if newline == -1:
-                    break
-                line, buf = buf[:newline], buf[newline + 1:]
-                if not first and at_start:
-                    sys.stdout.write(indent)
-                sys.stdout.write(line + "\n")
-                at_start = True
-                first = False
-            if buf:
-                if not first and at_start:
-                    sys.stdout.write(indent)
-                sys.stdout.write(buf)
-                buf = ""  # consumed — never re-emit this chunk on the next delta
-                at_start = False
-                first = False
-            sys.stdout.flush()
-    except ReachApiError as exc:
-        indicator.stop()
-        print()
-        print(c_red("  ✗ " + str(exc)))
-        return False, ""
+        ok, result = request_reply(client, messages, tools=tools,
+                                   on_text=write, on_retry=retry)
     finally:
-        indicator.stop()
+        state["indicator"].stop()
     print()
-    return True, "".join(text_parts)
+    if not ok:
+        _calm_failure()
+    if full:
+        return ok, result
+    return ok, result.get("content", "")
 
 
 # ---- agent loop ------------------------------------------------------------
@@ -328,6 +413,32 @@ def _execute_actions(client, actions, state):
     return "[tool result]\n" + "\n\n".join(parts)
 
 
+def _execute_native(client, tool_calls, state):
+    """Run native tool_calls; return the role:tool messages for history."""
+    ctx = {"todos": state.todos, "approve": state.approve}
+    out = []
+    for call in tool_calls:
+        fn = call.get("function") or {}
+        name = str(fn.get("name") or "")
+        args, error = parse_tool_arguments(fn.get("arguments"))
+        if error:
+            result = "error: " + error
+            print(c_dim("  agent %s → (unreadable arguments, asking again)" % name))
+        else:
+            if TOOLS.get(name, {}).get("approval"):
+                preview = args.get("command") or args.get("path") or name
+                print(c_bold(c_yellow("  agent %s → " % name)), c_bold(str(preview)))
+            else:
+                print(c_dim("  agent %s → %s" % (name, json.dumps(args)[:90])))
+            result = run_tool(name, args, client.workpath, ctx)
+            first = result.splitlines()[0][:100] if result else ""
+            marker = c_red("✗") if result.startswith("error:") else c_green("✓")
+            print(marker + c_dim("  " + first))
+        out.append({"role": "tool", "tool_call_id": call.get("id") or "",
+                    "content": result})
+    return out
+
+
 def _apply_status(history, reply_text, status, state):
     """Handle a run-control block. Returns True when the turn is over."""
     if status.get("status") == "blocked":
@@ -364,9 +475,18 @@ def run_agent_turn(client, history, state, instruction=None):
             rounds += 1
             set_system_message(history, client)
             print(c_dim("  ── agent round %d ──" % rounds))
-            ok, reply_text = stream_reply(client, history)
+            ok, result = stream_reply(client, history, tools=tool_schemas(),
+                                      full=True)
             if not ok:
                 return False
+            reply_text = result.get("content") or ""
+            native = result.get("tool_calls") or []
+            if native:
+                recovery = 0
+                history.append({"role": "assistant", "content": reply_text,
+                                "tool_calls": native})
+                history.extend(_execute_native(client, native, state))
+                continue
             actions, status, invalid = parse_tool_blocks(reply_text)
             history.append({"role": "assistant", "content": reply_text})
 
@@ -383,7 +503,9 @@ def run_agent_turn(client, history, state, instruction=None):
                 continue
             # no action, no completion: recover or treat as the final answer
             had_results = any(
-                m.get("role") == "user" and m.get("content", "").startswith("[tool result]")
+                m.get("role") == "tool"
+                or (m.get("role") == "user"
+                    and str(m.get("content") or "").startswith("[tool result]"))
                 for m in history
             )
             if had_results and recovery < MAX_RECOVERY:
@@ -404,6 +526,9 @@ def run_agent_turn(client, history, state, instruction=None):
         return True
     except KeyboardInterrupt:
         print(c_dim("\n  agent stopped."))
+        return False
+    except Exception:  # never surface a traceback from the agent loop
+        _calm_failure()
         return False
 
 
@@ -588,8 +713,8 @@ def run_chat(client, base):
             if client.agent:
                 try:
                     run_agent_turn(client, history, agent_state)
-                except Exception as exc:
-                    print(c_red("  ✗ %s" % exc))
+                except Exception:
+                    _calm_failure()
                 continue
             try:
                 ok, reply_text = stream_reply(client, history)
