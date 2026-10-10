@@ -91,7 +91,10 @@ def tool_glob(workpath, args, ctx):
     scope = _safe_rel(args.get("path") or "")
     if args.get("path") and scope is None:
         return "error: invalid path"
-    base = _resolve(workpath, scope) if scope else workpath
+    # Use one canonical root for walking and relative paths. On Windows the
+    # resolved workpath spelling can differ from the caller's spelling.
+    work_root = os.path.realpath(os.path.abspath(workpath))
+    base = _resolve(work_root, scope) if scope else work_root
     pattern_parts = tuple(pattern.replace("\\", "/").split("/"))
     if len(pattern_parts) > 128 or len(pattern) > 4096:
         return "error: glob pattern exceeds the bounded search limit"
@@ -107,9 +110,9 @@ def tool_glob(workpath, args, ctx):
                 limited = True
                 break
             match = os.path.join(root, filename)
-            rel = os.path.relpath(match, workpath).replace("\\", "/")
+            rel = os.path.relpath(match, work_root).replace("\\", "/")
             try:
-                _resolve(workpath, rel)
+                _resolve(work_root, rel)
             except ValueError:
                 continue
             scoped = tuple(os.path.relpath(match, base).replace("\\", "/").split("/"))
