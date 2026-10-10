@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sys
+import time
 import unittest
 import unittest.mock
 
@@ -1515,3 +1516,75 @@ class FooterAndPromptHookTests(unittest.TestCase):
                                     chat_mod.AgentState())
         self.assertEqual(client.last_turn["rounds"], 1)
         self.assertIsNone(client.last_turn["tokens"])
+
+
+# run_chat probes the endpoint once at startup; keep REPL tests off the network
+_REAL_ENDPOINT_NOTICE = chat_mod.endpoint_notice
+_NOTICE_PATCH = unittest.mock.patch.object(chat_mod, "endpoint_notice", lambda c: False)
+
+
+def setUpModule():
+    _NOTICE_PATCH.start()
+
+
+def tearDownModule():
+    _NOTICE_PATCH.stop()
+
+
+class StarterCompatTests(unittest.TestCase):
+    def test_notice_when_local_relay_down_no_switch(self):
+        client = ReachClient("http://127.0.0.1:20777/v1")
+        out = io.StringIO()
+        with unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": False)), \
+                contextlib.redirect_stdout(out):
+            self.assertTrue(_REAL_ENDPOINT_NOTICE(client))
+        self.assertIn("no answer from 127.0.0.1:20777 yet", out.getvalue())
+        self.assertIn("python tools/reach.py start", out.getvalue())
+        self.assertEqual(client.base, "http://127.0.0.1:20777/v1")  # never switched
+
+    def test_no_notice_when_up(self):
+        client = ReachClient("http://127.0.0.1:20777/v1")
+        out = io.StringIO()
+        with unittest.mock.patch.object(ReachClient, "_reachable", staticmethod(lambda b, k="": True)), \
+                contextlib.redirect_stdout(out):
+            self.assertFalse(_REAL_ENDPOINT_NOTICE(client))
+        self.assertEqual(out.getvalue(), "")
+
+    def test_windows_legacy_console_glyph_fallback(self):
+        self.assertEqual(chat_mod.tool_glyphs({}, "nt"), ("●", "└"))
+        self.assertEqual(chat_mod.tool_glyphs({"WT_SESSION": "x"}, "nt"), ("⏺", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({"TERM_PROGRAM": "vscode"}, "nt"), ("⏺", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({}, "posix"), ("⏺", "⎿"))
+
+    def test_ctrl_c_is_immediate_while_request_blocks(self):
+        # the request sits in a blocking read (as on Windows, where SIGINT
+        # cannot interrupt it); the main thread must still see Ctrl-C at once
+        import threading
+        release = threading.Event()
+
+        def blocking():
+            release.wait(5)
+            return "late"
+
+        def interrupter():
+            raise KeyboardInterrupt
+
+        calls = {"n": 0}
+        real_join = threading.Thread.join
+
+        def join(self, timeout=None):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                interrupter()
+            return real_join(self, 0.01)
+        started = time.time()
+        with unittest.mock.patch.object(threading.Thread, "join", join):
+            with self.assertRaises(KeyboardInterrupt):
+                chat_mod._interruptible(blocking)
+        release.set()
+        self.assertLess(time.time() - started, 1.0)
+
+    def test_worker_exceptions_propagate(self):
+        with self.assertRaises(ValueError):
+            chat_mod._interruptible(lambda: (_ for _ in ()).throw(ValueError("x")))
+        self.assertEqual(chat_mod._interruptible(lambda: 5), 5)
