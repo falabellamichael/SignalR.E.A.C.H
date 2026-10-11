@@ -20,6 +20,9 @@ const MAX_MCP_SERVERS = 20;
 const NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const MCP_PROTOCOL_VERSION = '2025-03-26';
+/* Newest first. A server that rejects the current revision is retried on
+ * the previous one before the handshake is reported as a failure. */
+const PROTOCOL_VERSIONS = ['2025-03-26', '2024-11-05'];
 const CLIENT_INFO = { name: 'reach-studio', version: '1.0.0' };
 const DEFAULT_HANDSHAKE_MS = 10000;
 const DEFAULT_CALL_MS = 60000;
@@ -139,12 +142,20 @@ function parseSseResponse(text, id) {
     if (!line.startsWith('data:')) continue;
     let message;
     try { message = JSON.parse(line.slice(5).trim()); } catch { continue; }
-    if (message && typeof message === 'object' && message.id === id) {
+    if (message && typeof message === 'object' && String(message.id) === String(id)) {
       if (message.error) throw new Error(mcpErrorText(message.error));
       return message.result;
     }
   }
   return undefined;
+}
+
+function isProtocolMismatch(error) {
+  return /protocol version|unsupported protocol|invalid protocol/i.test(String(error?.message || error));
+}
+
+function initParams(version) {
+  return { protocolVersion: version, capabilities: {}, clientInfo: CLIENT_INFO };
 }
 
 function combineSignal(timeoutMs, signal) {
@@ -163,10 +174,9 @@ function createFramedChannel(readable, write) {
   const pending = new Map();
   let nextId = 1;
   let mode = null;       // null until the first non-blank byte decides
-  let buf = '';
+  let buf = Buffer.alloc(0);
   let headers = null;    // lsp mode: header block being assembled
   let wantBody = 0;
-  let body = '';
   let settled = false;
 
   function failAll(error) {
@@ -175,67 +185,66 @@ function createFramedChannel(readable, write) {
     for (const [, entry] of pending) entry.reject(error);
     pending.clear();
   }
-  function findHeaderEnd(text) {
-    const crlf = text.indexOf('\r\n\r\n');
+  function findHeaderEnd(buffer) {
+    const crlf = buffer.indexOf('\r\n\r\n');
     if (crlf !== -1) return crlf + 4;
-    const lf = text.indexOf('\n\n');
+    const lf = buffer.indexOf('\n\n');
     if (lf !== -1) return lf + 2;
     return -1;
   }
   function handleMessage(text) {
     let message;
     try { message = JSON.parse(text); } catch { return; }
-    if (message && typeof message === 'object' && 'id' in message && message.id !== null && pending.has(message.id)) {
-      const entry = pending.get(message.id);
-      pending.delete(message.id);
-      if (message.error) entry.reject(new Error(mcpErrorText(message.error)));
-      else entry.resolve(message.result);
-    }
-    // Notifications (no id) are ignored: the settings flow only issues
-    // requests that must be answered.
+    // Ids are matched as strings: some servers echo a numeric id as a
+    // string, and a strict === would drop the answer and hang the call.
+    const key = message && typeof message === 'object' && message.id != null ? String(message.id) : '';
+    if (!key || !pending.has(key)) return;
+    const entry = pending.get(key);
+    pending.delete(key);
+    if (message.error) entry.reject(new Error(mcpErrorText(message.error)));
+    else entry.resolve(message.result);
   }
   function feed(chunk) {
     if (settled) return;
-    buf += chunk;
+    const next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), 'utf8');
+    buf = buf.length ? Buffer.concat([buf, next]) : next;
     for (;;) {
       if (mode === null) {
-        const at = buf.search(/[^\s]/);
-        if (at === -1) return;
-        buf = buf.slice(at);
-        if (!buf.length) return;
-        if (buf.startsWith('{')) mode = 'line';
-        else if (/^content-length:/i.test(buf)) mode = 'lsp';
+        let at = 0;
+        while (at < buf.length && (buf[at] === 0x20 || buf[at] === 0x09 || buf[at] === 0x0a || buf[at] === 0x0d)) at++;
+        if (at >= buf.length) { buf = Buffer.alloc(0); return; }
+        if (at) buf = buf.subarray(at);
+        if (buf[0] === 0x7b) mode = 'line';
+        else if (buf.subarray(0, 15).toString('ascii').toLowerCase().startsWith('content-length:')) mode = 'lsp';
         else { failAll(new Error('MCP server speaks an unsupported frame format.')); return; }
       }
       if (mode === 'line') {
-        const idx = buf.indexOf('\n');
+        const idx = buf.indexOf(0x0a);
         if (idx === -1) return;
-        const line = buf.slice(0, idx).trim();
-        buf = buf.slice(idx + 1);
+        const line = buf.subarray(0, idx).toString('utf8').trim();
+        buf = buf.subarray(idx + 1);
         if (line) handleMessage(line);
         continue;
       }
-      // lsp
+      // lsp — Content-Length is a byte count. Slicing a JS string here
+      // splits multibyte characters and desynchronises every later frame.
       if (!headers) {
         const end = findHeaderEnd(buf);
         if (end === -1) return;
         headers = {};
-        for (const line of buf.slice(0, end).split(/\r?\n/)) {
+        for (const line of buf.subarray(0, end).toString('ascii').split(/\r?\n/)) {
           const at = line.indexOf(':');
           if (at > 0) headers[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
         }
         wantBody = Number(headers['content-length'] || 0);
-        body = '';
-        buf = buf.slice(end);
+        buf = buf.subarray(end);
       }
-      const need = wantBody - body.length;
-      if (buf.length >= need) {
-        body += buf.slice(0, need);
-        buf = buf.slice(need);
-        if (wantBody > 0) handleMessage(body);
+      if (buf.length >= wantBody) {
+        const message = buf.subarray(0, wantBody).toString('utf8');
+        buf = buf.subarray(wantBody);
+        if (wantBody > 0) handleMessage(message);
         headers = null;
         wantBody = 0;
-        body = '';
       } else return;
     }
   }
@@ -246,20 +255,21 @@ function createFramedChannel(readable, write) {
   function send(method, params, timeoutMs) {
     if (settled) return Promise.reject(new Error('MCP server connection closed.'));
     const id = nextId++;
+    const key = String(id);
     const entry = {};
     const promise = new Promise((resolve, reject) => {
       entry.timer = setTimeout(() => {
-        pending.delete(id);
+        pending.delete(key);
         reject(new Error(`MCP request timed out after ${timeoutMs} ms.`));
       }, timeoutMs);
       entry.resolve = value => { clearTimeout(entry.timer); resolve(value); };
       entry.reject = error => { clearTimeout(entry.timer); reject(error); };
     });
-    pending.set(id, entry);
+    pending.set(key, entry);
     try {
       write(frame(JSON.stringify({ jsonrpc: '2.0', id, method, params: params || {} })));
     } catch (error) {
-      pending.delete(id);
+      pending.delete(key);
       entry.reject(error);
     }
     return promise;
@@ -268,7 +278,7 @@ function createFramedChannel(readable, write) {
     if (settled) return;
     try { write(frame(JSON.stringify({ jsonrpc: '2.0', method, params: params || {} }))); } catch { /* best effort */ }
   }
-  readable.on('data', chunk => feed(chunk.toString('utf8')));
+  readable.on('data', chunk => feed(chunk));
   readable.on('close', () => failAll(new Error('MCP server connection closed.')));
   readable.on('end', () => failAll(new Error('MCP server connection closed.')));
   readable.on('error', error => failAll(error));
@@ -293,39 +303,106 @@ function withSignal(promise, signal) {
   });
 }
 
-const INIT_PARAMS = { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO };
+function spawnErrorText(command, error) {
+  const detail = error?.code === 'ENOENT' ? 'command not found' : (error?.message || error);
+  return `Cannot start MCP server "${command}": ${detail}`;
+}
 
 function createStdioClient(server, deps = {}) {
   const spawnImpl = deps.spawn || spawn;
   const handshakeMs = deps.handshakeMs || DEFAULT_HANDSHAKE_MS;
   const callMs = deps.callMs || DEFAULT_CALL_MS;
   let serverInfo = null;
-  let child;
-  try {
+  let child = null;
+  let channel = null;
+  let stderrTail = '';
+  let usedShell = false;
+  let launchError = null;
+  let spawnError = null;
+  let spawned = false;
+
+  function launch(useShell) {
+    usedShell = useShell;
+    stderrTail = '';
+    spawnError = null;
+    spawned = false;
     child = spawnImpl(server.command, server.args, {
       cwd: server.cwd || undefined,
       env: { ...process.env, ...server.env },
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: useShell,
     });
-  } catch (error) {
-    return { kind: 'stdio', serverInfo: () => null, close: () => {}, _failed: String(error?.message || error) };
+    /* Stderr is a pipe. If nobody reads it, a chatty server fills the OS
+     * buffer and blocks before it can answer initialize — the handshake
+     * then times out with no explanation. Keep a short tail for the error. */
+    child.once('error', error => { spawnError = error; });
+    child.once('spawn', () => { spawned = true; });
+    child.stderr?.on('data', chunk => {
+      stderrTail += chunk.toString('utf8');
+      if (stderrTail.length > 8000) stderrTail = stderrTail.slice(-4000);
+    });
+    channel = createFramedChannel(child.stdout, text => {
+      try { child.stdin.write(text); } catch { /* process is dying; pending requests time out */ }
+    });
+    child.stdout.on('error', () => {}); // a write failure must not crash main
+    child.unref?.();
   }
-  const startError = {};
-  child.once('error', error => { startError.error = error; });
-  const channel = createFramedChannel(child.stdout, text => {
-    try { child.stdin.write(text); } catch { /* process is dying; pending requests time out */ }
-  });
-  child.stdout.on('error', () => {}); // a write failure must not crash main
-  child.unref?.();
+  function annotate(error) {
+    const extra = stderrTail.trim().slice(-400);
+    if (!extra) return error instanceof Error ? error : new Error(String(error));
+    return new Error(`${error?.message || error}\n${extra}`);
+  }
+  try { launch(false); }
+  catch (error) {
+    if (process.platform === 'win32') {
+      try { launch(true); }
+      catch (again) { launchError = again; }
+    } else launchError = error;
+  }
+
+  function whenStarted() {
+    if (spawnError || spawned || child?.pid) return Promise.resolve();
+    return new Promise(resolve => {
+      child.once('error', () => resolve());
+      child.once('spawn', () => resolve());
+    });
+  }
+
   return {
     kind: 'stdio',
     serverInfo: () => serverInfo,
     async initialize(signal) {
-      if (startError.error) throw new Error(`Cannot start MCP server "${server.command}": ${startError.error.code === 'ENOENT' ? 'command not found' : startError.error.message}`);
-      const result = await withSignal(channel.send('initialize', INIT_PARAMS, handshakeMs), signal);
-      serverInfo = result?.serverInfo || null;
-      channel.notify('notifications/initialized', {});
-      return result;
+      if (launchError) throw new Error(spawnErrorText(server.command, launchError));
+      await whenStarted();
+      /* Windows cannot spawn npx/npm .cmd shims without a shell. Retry
+       * once that way; Unix stays shell-free. */
+      if (spawnError && process.platform === 'win32' && !usedShell && (spawnError.code === 'ENOENT' || spawnError.code === 'EINVAL')) {
+        try { child.kill?.(); } catch { /* ignore */ }
+        try { channel.close(); } catch { /* ignore */ }
+        try { launch(true); }
+        catch (error) { throw new Error(spawnErrorText(server.command, error)); }
+        await whenStarted();
+      }
+      if (spawnError) throw new Error(spawnErrorText(server.command, spawnError));
+      let lastError;
+      for (const version of PROTOCOL_VERSIONS) {
+        try {
+          const result = await withSignal(channel.send('initialize', initParams(version), handshakeMs), signal);
+          const agreed = result?.protocolVersion;
+          if (agreed && !PROTOCOL_VERSIONS.includes(agreed)) {
+            lastError = new Error(`MCP server speaks protocol ${agreed}, which this client does not.`);
+            continue;
+          }
+          channel.notify('notifications/initialized', {});
+          serverInfo = result?.serverInfo || null;
+          return result;
+        } catch (error) {
+          lastError = annotate(error);
+          if (!isProtocolMismatch(error)) throw lastError;
+        }
+      }
+      throw annotate(lastError);
     },
     async tools(signal) {
       return await withSignal(channel.send('tools/list', {}, callMs), signal);
@@ -334,9 +411,9 @@ function createStdioClient(server, deps = {}) {
       return await withSignal(channel.send('tools/call', { name, arguments: args || {} }, callMs), signal);
     },
     close() {
-      try { child.stdin?.end?.(); } catch { /* ignore */ }
-      try { child.kill?.(); } catch { /* ignore */ }
-      channel.close();
+      try { child?.stdin?.end?.(); } catch { /* ignore */ }
+      try { child?.kill?.(); } catch { /* ignore */ }
+      try { channel?.close(); } catch { /* ignore */ }
     },
   };
 }
@@ -381,21 +458,63 @@ function createHttpClient(server, deps = {}) {
     } else {
       const parsed = JSON.parse(text);
       const list = Array.isArray(parsed) ? parsed : [parsed];
-      const match = list.find(m => m && typeof m === 'object' && m.id === body.id);
+      const match = list.find(m => m && typeof m === 'object' && String(m.id) === String(body.id));
       if (match && match.error) throw new Error(mcpErrorText(match.error));
       result = match ? match.result : undefined;
     }
     return { result, headers: response.headers };
   };
+  /* A notification has no id. Streamable HTTP answers it with 202, and a
+   * server that never receives notifications/initialized rejects every
+   * later request as "before initialization". */
+  const notify = async (method, params, timeoutMs, signal) => {
+    let response;
+    try {
+      response = await fetchImpl(server.url, {
+        method: 'POST',
+        signal: combineSignal(timeoutMs, signal),
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          ...server.headers,
+          ...sessionHeader,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method, params: params || {} }),
+      });
+    } catch (error) {
+      if (signal?.aborted) throw new Error('Cancelled.');
+      throw new Error(`MCP endpoint unreachable: ${error?.cause?.code || error?.message || error}`);
+    }
+    if (response.status === 202 || response.status === 204 || response.ok) return;
+    const text = await response.text().catch(() => '');
+    throw new Error(`MCP endpoint returned HTTP ${response.status}${text ? ': ' + text.slice(0, 300) : ''}`);
+  };
   return {
     kind: 'http',
     serverInfo: () => serverInfo,
     async initialize(signal) {
-      const { result, headers } = await post('initialize', INIT_PARAMS, handshakeMs, signal);
-      const sessionId = headers.get?.('mcp-session-id');
-      if (sessionId) sessionHeader['mcp-session-id'] = sessionId;
-      serverInfo = result?.serverInfo || null;
-      return result;
+      let lastError;
+      for (const version of PROTOCOL_VERSIONS) {
+        try {
+          const { result, headers } = await post('initialize', initParams(version), handshakeMs, signal);
+          const sessionId = headers.get?.('mcp-session-id');
+          if (sessionId) sessionHeader['mcp-session-id'] = sessionId;
+          const agreed = result?.protocolVersion;
+          if (agreed && !PROTOCOL_VERSIONS.includes(agreed)) {
+            delete sessionHeader['mcp-session-id'];
+            lastError = new Error(`MCP server speaks protocol ${agreed}, which this client does not.`);
+            continue;
+          }
+          await notify('notifications/initialized', {}, handshakeMs, signal);
+          serverInfo = result?.serverInfo || null;
+          return result;
+        } catch (error) {
+          delete sessionHeader['mcp-session-id'];
+          lastError = error;
+          if (!isProtocolMismatch(error)) throw error;
+        }
+      }
+      throw lastError;
     },
     async tools(signal) {
       return (await post('tools/list', {}, callMs, signal)).result;
@@ -546,9 +665,11 @@ class McpManager {
       let status;
       try { status = await this.ensureLoaded(server.id); } catch { continue; }
       if (status.status !== 'ok') continue;
+      const seen = new Set();
       for (const tool of status.tools || []) {
         const exposed = mcpToolName(server.id, tool?.name);
-        if (!exposed) continue;
+        if (!exposed || seen.has(exposed)) continue;
+        seen.add(exposed);
         out.push({
           name: exposed,
           description: String(tool?.description || `MCP tool ${tool?.name} (server ${server.name})`).slice(0, 1024),
@@ -576,7 +697,11 @@ class McpManager {
       if (status.status === 'error') return { ok: false, error: `MCP server "${server.name}" is unavailable: ${status.error}` };
       const client = this.clients.get(server.id);
       if (!client) return { ok: false, error: `MCP server "${server.name}" is not connected.` };
-      const result = await client.callTool(tool, args || {}, signal);
+      /* The exposed name replaces characters the model protocol cannot
+       * carry. The server still expects the name it advertised. */
+      const listed = (status.tools || []).find(t => mcpToolName(server.id, t?.name) === name);
+      const remoteName = listed?.name || tool;
+      const result = await client.callTool(remoteName, args || {}, signal);
       const text = textContent(result);
       if (result && result.isError) return { ok: false, error: text || 'MCP tool returned an error.' };
       return { ok: true, text: text || '(no output)' };
@@ -603,6 +728,7 @@ class McpManager {
 module.exports = {
   MAX_MCP_SERVERS,
   MCP_PROTOCOL_VERSION,
+  PROTOCOL_VERSIONS,
   DEFAULT_HANDSHAKE_MS,
   DEFAULT_CALL_MS,
   slugify,
