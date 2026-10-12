@@ -1,5 +1,23 @@
 # Changelog
 
+## [26.10.1](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.0...reach-studio-v26.10.1) (2026-10-12)
+
+
+### Features
+
+* improve CLI companions and Studio integration ([26ff25f](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/26ff25f8a1f1a3dfdf9f7aee9dff40701e72f558))
+* **studio:** add translation, prompt tools and adaptive layouts ([eb1e61e](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/eb1e61eaaef2a45caf173cc92df9db8efb82ce47))
+* **studio:** paint agent file writes live in the file tree ([0557ef1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0557ef1f5471cbf9c6bfd1bf554d28185249f5cd))
+* **studio:** unified crew mailbox + accumulated workspace updates ([4375ffe](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/4375ffe3765ea088e61e103a35d3c70c4aac5325))
+
+
+### Bug Fixes
+
+* **chat:** ignore buffered data after a stream completes ([9a2fcf6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9a2fcf6675818bc2343bd8047359c33418350705))
+* **cli:** preserve footer, resizing, and transcript scrolling ([#165](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/165)) ([c5fb52d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c5fb52d49ad1f064e088c7bcfefbe2975f41fcb2))
+* restore cross-platform CI checks ([0cc3eae](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/0cc3eae1fc6fd328ec94fc34c2134d62ef499b63))
+* **studio:** keep MCP server handshakes from dying quietly ([#166](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/166)) ([2134b5d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/2134b5d7767b7b34df615cfc342c5a59b0e2b7a5))
+
 ## [26.10.0](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.9.14...reach-studio-v26.10.0) (2026-10-08)
 
 
