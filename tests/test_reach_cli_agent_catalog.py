@@ -10,11 +10,11 @@ from reach_cli import agent_tools as tools
 
 
 class AgentCatalogTests(unittest.TestCase):
-    def test_all_36_tools_have_callable_implementation_and_native_schema(self):
-        self.assertEqual(len(tools.TOOLS), 36)
+    def test_all_tools_have_callable_implementation_and_native_schema(self):
+        self.assertEqual(len(tools.TOOLS), 38)
         self.assertEqual(set(tools.TOOL_PARAMETERS), set(tools.TOOLS))
         schemas = tools.tool_schemas(tools.TOOLS)
-        self.assertEqual(len(schemas), 36)
+        self.assertEqual(len(schemas), 38)
         for schema in schemas:
             function = schema["function"]
             self.assertTrue(callable(tools.TOOLS[function["name"]]["run"]))
@@ -33,7 +33,7 @@ class AgentCatalogTests(unittest.TestCase):
     def test_full_catalog_categories_and_approvals_are_honest(self):
         records = tools.tool_catalog()
         self.assertEqual({item["category"] for item in records},
-                         {"files", "git", "execution", "processes", "web", "planning", "discovery"})
+                         {"files", "git", "execution", "processes", "web", "planning", "discovery", "studio"})
         self.assertEqual(sum(item["approval"] for item in records), 13)
         self.assertEqual(len(tools.tool_catalog(category="git")), 6)
         self.assertTrue(all(not item["approval"] for item in tools.tool_catalog(category="git")))
@@ -58,7 +58,7 @@ class AgentCatalogTests(unittest.TestCase):
     def test_empty_discovery_only_lists_without_replacing_selection(self):
         ctx = {"selected_tools": {"git_status"}}
         result = json.loads(tools.run_tool("tool_discover", {}, ".", ctx))
-        self.assertEqual(result["total_available"], 36)
+        self.assertEqual(result["total_available"], 38)
         self.assertEqual(result["activated"], [])
         self.assertEqual(ctx["selected_tools"], {"git_status"})
 

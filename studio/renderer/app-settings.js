@@ -7,6 +7,7 @@ let connDraft = [];        // working copy; only written to disk on Save
 let connActiveId = '';
 let connEditingId = '';    // Editing a tile never changes the active connection.
 let jevClearRequested = false;
+let connDirty = false, connSettingsRevision = '';
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
 /* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
  * a re-render (pool toggle, activation, Settings save) does not wipe the last
@@ -19,6 +20,8 @@ const connTestsRunning = new Set(); // Survives opening/closing an editor during
 
 async function loadSettings() {
   const s = await reachApi.getSettings();
+  connSettingsRevision = s.settingsRevisions?.connection || '';
+  connDirty = false;
   document.documentElement.dataset.pageLayout = s.pageLayout === 'full-width' ? 'full-width' : 'page-sized';
   $('#set-page-sized').checked = document.documentElement.dataset.pageLayout === 'page-sized';
   $('#set-page-sized').disabled = s.credentialStorage?.locked === true;
@@ -68,8 +71,11 @@ async function loadSettings() {
   }
 }
 $('#set-jev-key').oninput = () => { jevClearRequested = false; };
+$('#settings-connection').addEventListener('input', markUnsaved);
+$('#settings-connection').addEventListener('change', markUnsaved);
 $('#btn-clear-jev-key').onclick = () => {
   jevClearRequested = true;
+  markUnsaved();
   $('#set-jev-key').value = '';
   $('#set-jev-key-status').textContent = 'Saved key will be removed when you save Settings.';
 };
@@ -537,6 +543,7 @@ new ResizeObserver(() => {
 }).observe($('#settings-connection'));
 
 function markUnsaved() {
+  connDirty = true;
   const el = $('#settings-status');
   if (el && !el.dataset.savedRecently) el.textContent = 'Unsaved changes.';
 }
@@ -624,6 +631,7 @@ $('#btn-save-settings').onclick = async () => {
   if (!connDraft.some(c => c.id === connActiveId)) connActiveId = connDraft[0]?.id || '';
 
   const payload = {
+    ...(connSettingsRevision ? { settingsScope: 'connection', settingsRevision: connSettingsRevision } : {}),
     reachCli: $('#set-reach-cli').value.trim(),
     jevEnabled: $('#set-jev-enabled').checked,
     jevAutoMode: $('#set-jev-auto-mode').checked,
@@ -641,7 +649,9 @@ $('#btn-save-settings').onclick = async () => {
     })),
     activeConnection: connActiveId,
   };
-  const res = await reachApi.saveSettings(payload);
+  let res;
+  try { res = await reachApi.saveSettings(payload); }
+  catch (error) { showSettingsSaveError(status, error, loadSettings); return; }
   if (res && res.ok === false) { status.textContent = res.err || 'Could not save.'; return; }
   composerModelsCache = { key: '', at: 0, items: [] };
   invalidateComposerCatalog();

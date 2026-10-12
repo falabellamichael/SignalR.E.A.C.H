@@ -213,29 +213,23 @@ def safe_endpoint(endpoint):
         return "(invalid endpoint)"
 
 
-def _terminal_snapshot(terminal):
-    if hasattr(terminal, "snapshot"):
-        terminal = terminal.snapshot()
-    return terminal if isinstance(terminal, dict) else {}
-
-
-def _terminal_lines(terminal):
-    terminal = _terminal_snapshot(terminal)
-    status = _clip(terminal.get("status") or "idle", 20)
-    command = _clip(terminal.get("display_draft") or "", 32)
-    output = _clip((terminal.get("output") or "").splitlines()[-1]
-                   if terminal.get("output") else "", 40)
-    if terminal.get("focused"):
-        command = "> " + command if command else "> type command"
-    else:
-        command = "Ctrl+T to open"
-    return ("MINI-TERM", status + ": " + command, output)
-
-
 def render_header(columns, *, version="1.0.0", model="auto", endpoint="",
                   mode="chat", cwd="", branch="", telemetry=None,
-                  terminal=None, streaming=False, color=False, max_rows=5):
-    """Return centered, clipped rows for a pinned top panel."""
+                  terminal=None, pet=None, streaming=False, color=False, max_rows=5):
+    """Return centered rows with a pet habitat in the pinned title box.
+
+    ``terminal`` remains an ignored compatibility argument for older callers.
+    Packed pixel glyphs keep detailed artwork within single-width console
+    cells; very small layouts fall back to compact ASCII faces.
+    """
+    from .pets import activity_status, render_pet
+    from .pet_pixels import render_pixel_pet
+
+    def pet_art(state, width, height=3):
+        if width >= 13 and height >= 2:
+            return render_pixel_pet(state, width, height)
+        return render_pet(state, width, height)
+
     geometry = panel_geometry(columns)
     width, left = geometry["width"], geometry["left"]
     max_rows = max(0, min(5, int(max_rows)))
@@ -257,54 +251,93 @@ def render_header(columns, *, version="1.0.0", model="auto", endpoint="",
     ]
     if safe_branch and safe_branch not in ("(none)", "HEAD"):
         center[2] += " · " + safe_branch
-    right = _terminal_lines(terminal)
+    state = pet.snapshot() if hasattr(pet, "snapshot") else pet
+    state = state if isinstance(state, dict) else {}
+    pet_name = _safe_text(state.get("name") or "Cat")
+    status_text = activity_status(state.get("activity"))
+    pet_status = pet_name + " · " + status_text
+    if state.get("motion") is False:
+        pet_status += " · paused"
+
+    def pet_caption(available, controls=""):
+        # Keep the action readable before spending scarce cells on the name
+        # or shortcuts, especially for the micro bulldog's longer label.
+        label = pet_status if display_width(pet_status) <= available else status_text
+        if controls and display_width(label + " · " + controls) <= available:
+            label += " · " + controls
+        return _clip(label, available)
+
+    pet_color = {"cat": "33", "owl": "35", "bulldog": "32"}.get(
+        state.get("kind"), "33")
 
     summary = "CPU " + cpu + " · " + gpu + " · RAM " + ram
     if max_rows <= 2:
-        rows = [_colored(_clip("SIGNAL-REACH · " + summary, width),
-                         color, "36")]
+        face = render_pet(state, 7, 1)[0].strip()
+        label = "REACH " + face + " · " + status_text
+        if display_width(label) > width:
+            label = status_text
+        rows = [_colored(_clip(label + " · " + summary, width), color, "36")]
     elif max_rows <= 3:
         rows = [_border(width, "SIGNAL-REACH", True, color)]
         if max_rows >= 2:
-            rows.append(_colored(
-                _VERTICAL + _pad(summary + " · " + right[1], width - 2)
-                + _VERTICAL, color, "36"))
+            rows.append(_colored(_VERTICAL + _pad(pet_caption(width - 2)
+                                                  + " · " + summary, width - 2)
+                                 + _VERTICAL, color, "36"))
         if max_rows >= 3:
             rows.append(_border(width, "LIVE", False, color))
-    elif geometry["compact"] or max_rows < 5:
+    elif max_rows < 5 or width < 30:
         content_width = max(0, width - 2)
         if content_width < 18:
-            middle = summary
+            middle = render_pet(state, content_width, 1)[0]
             rows = [_border(width, "REACH", True, color),
                     _colored(_VERTICAL + _pad(middle, content_width) + _VERTICAL,
                              color, "36"),
-                    _border(width, "LIVE", False, color)]
+                    _border(width, pet_caption(width - 4), False, color)]
         else:
             rows = [_border(width, "SIGNAL-REACH", True, color)]
-            first = "CPU " + cpu + " · " + gpu
-            second = "RAM " + ram + " · " + right[1]
+            first = summary
+            second = render_pet(state, 7, 1)[0].strip() + " " + pet_status
+            if display_width(second) > content_width:
+                second = pet_caption(content_width)
             if max_rows >= 4:
                 rows.append(_colored(_VERTICAL + _pad(first, content_width) + _VERTICAL,
                                      color, "36"))
                 rows.append(_colored(_VERTICAL + _pad(second, content_width) + _VERTICAL,
                                      color, "36"))
-                rows.append(_border(width, "LIVE · Ctrl+T", False, color))
+                rows.append(_border(width, pet_caption(width - 4, "Ctrl+T"), False, color))
             else:
                 rows.append(_colored(
-                    _VERTICAL + _pad(summary + " · " + right[1], content_width)
+                    _VERTICAL + _pad(render_pet(state, 7, 1)[0].strip()
+                                     + " " + pet_name + " · " + summary, content_width)
                     + _VERTICAL, color, "36"))
                 rows.append(_border(width, "LIVE", False, color))
+    elif geometry["compact"]:
+        # Keep all three sprite rows at narrower widths; combine metadata
+        # and telemetry into the left column instead of clipping the pet.
+        right_width = min(20, max(12, (width - 3) // 2))
+        left_width = width - 3 - right_width
+        sprites = pet_art(state, right_width)
+        info = ["CPU " + cpu + " · RAM " + ram, gpu,
+                safe_mode + " · " + safe_model]
+        rows = [_border(width, "SIGNAL-REACH", True, color)]
+        for text, sprite in zip(info, sprites):
+            rows.append(_colored(_VERTICAL + _pad(text, left_width) + _VERTICAL,
+                                 color, "36") + _colored(sprite, color, pet_color)
+                        + _colored(_VERTICAL, color, "36"))
+        rows.append(_border(width, pet_caption(width - 4, "Ctrl+T"), False, color))
     else:
         usable = width - 4
-        left_width = usable // 3
-        right_width = usable // 3
+        left_width = max(14, usable // 4)
+        right_width = min(32, max(22, usable // 3))
         center_width = usable - left_width - right_width
+        right = pet_art(state, right_width)
 
         def content_row(a, b, c):
             line = (_VERTICAL + _pad(a, left_width) + _VERTICAL
-                    + _pad(b, center_width) + _VERTICAL
-                    + _pad(c, right_width) + _VERTICAL)
-            return _colored(line, color, "36")
+                    + _pad(b, center_width) + _VERTICAL)
+            return (_colored(line, color, "36")
+                    + _colored(_pad(c, right_width), color, pet_color)
+                    + _colored(_VERTICAL, color, "36"))
 
         rows = [_border(width, "SIGNAL-REACH", True, color)]
         content = [
@@ -312,12 +345,8 @@ def render_header(columns, *, version="1.0.0", model="auto", endpoint="",
             (gpu, center[1], right[1]),
             ("RAM " + ram, center[2], right[2]),
         ]
-        if max_rows == 4:
-            content = [content[0], (content[1][0], content[2][1], content[2][2])]
         for a, b, c in content:
             rows.append(content_row(a, b, c))
-        state = _terminal_snapshot(terminal)
-        status = "STREAMING" if streaming else (
-            "MINI-TERM FOCUSED" if state.get("focused") else "LIVE")
+        status = pet_caption(width - 4, "Ctrl+T /pet")
         rows.append(_border(width, status, False, color))
     return [" " * left + row for row in rows[:max_rows]]

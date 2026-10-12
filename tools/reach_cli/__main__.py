@@ -422,6 +422,8 @@ def _main(argv=None):
             return 1
 
     _restore_endpoint_selection(client, args)
+    from .settings import apply_client_settings
+    apply_client_settings(client, args=args)
 
     if command in ("endpoint", "endpoints"):
         return _run_endpoint_command(args, client)
@@ -468,6 +470,11 @@ def _main(argv=None):
         )
 
     try:
+        if command in ("chat", "ask", "web"):
+            from .studio_context import StudioContextManager
+            # Lazy detection belongs to actual CLI startup; library callers
+            # and unrelated endpoint commands never open a Studio profile.
+            client.studio_context = StudioContextManager(client.workpath)
         if command == "models":
             indicator = terminal.WaitIndicator(message="fetching served models")
             indicator.start()

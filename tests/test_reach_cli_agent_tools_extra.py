@@ -310,7 +310,11 @@ class OwnedExecutionTests(_WorkspaceFixture):
         started = json.loads(self.run_tool("process_start", argv=self.command("import time; print('ready', flush=True); print('x'*100000, flush=True); time.sleep(10)")))
         handle = started["handle"]
         self.assertTrue(handle.startswith("proc-"))
-        for _ in range(100):
+        # Windows child startup/output scheduling can exceed one second,
+        # especially under the CLI launcher's Python runtime.
+        deadline = time.monotonic() + 5
+        enough = False
+        while time.monotonic() < deadline:
             item = self.ctx["processes"][handle]
             with item.lock:
                 enough = item.dropped > 0

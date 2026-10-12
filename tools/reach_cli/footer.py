@@ -7,18 +7,22 @@ back to recover a draft. The transcript is retained and reflowed on resize.
 
 import os
 import bisect
+import re
 import shutil
 import threading
+import time
 import unicodedata
+
+from collections import deque
 
 from . import themes as app_themes
 from . import terminal as term
-from .terminal import VERSION, c_bold, c_cyan, c_green
+from .terminal import VERSION, c_bold, c_cyan, c_dim, c_green
 from .chatbox import (BL, BR, H, MARK, TL, TR, V, box_bottom, box_row, box_top,
                       client_meta, session_meta)
 from .splash import PAGE_WIDTH, char_width, display_width, layout_mode, strip_ansi
 from .hud import render_header
-from .mini_terminal import MiniTerminal
+from .pets import PET_NAMES, TerminalPet
 from .system_telemetry import SystemTelemetry
 
 
@@ -29,7 +33,7 @@ _WINDOWS_NATIVE_WIDTH = os.name == "nt"
 
 class _Line:
     __slots__ = ("cells", "cursor", "source_margin", "prefix", "continuation",
-                 "dirty_from", "wrapped", "wrapped_key")
+                 "dirty_from", "wrapped", "wrapped_key", "tool", "markdown")
 
     def __init__(self, source_margin=0, prefix="", continuation=""):
         self.cells = []  # pairs of (visible glyph, active SGR sequences)
@@ -40,6 +44,8 @@ class _Line:
         self.dirty_from = 0
         self.wrapped = []
         self.wrapped_key = None
+        self.tool = None
+        self.markdown = None
 
 
 def _glyph_width(glyph):
@@ -214,11 +220,15 @@ class FooterScreen:
         self._geometry = {}
         self._meta_key = None
         self._meta_value = None
-        self.mini_terminal = MiniTerminal()
-        self._mini_runner = None
+        self.pet = TerminalPet(getattr(client, "pet", "cat"),
+                               motion=getattr(client, "pet_motion", True))
+        self._pet_tick = 0.0
+        self._header_budget = 0
         self._telemetry = SystemTelemetry()
         self._telemetry_key = None
+        self._telemetry_value = {}
         self._follow_tail = True
+        self._reading_padding = None
         self._scroll_anchor = None
         self._visual_rows = []
         self._visual_anchors = []
@@ -231,6 +241,16 @@ class FooterScreen:
             "following": True, "top": 0, "max_top": 0,
             "total_rows": 0, "visible_rows": 0, "anchor": None,
         }
+        self._thought_regions = []
+        self._pointer = None
+        self._hover = None
+        self._dismissed_thought = None
+        self._covered = set()
+        self._bubble_geometry = None
+        self._thought_layout = None
+        self._interaction_boxes = ()
+        self._followups = deque()
+        self._draft_carry = None
 
     def isatty(self):
         method = getattr(self.out, "isatty", None)
@@ -290,16 +310,31 @@ class FooterScreen:
             self._visual_dirty = 0
             self._last_display = None
             self._follow_tail = True
+            self._reading_padding = None
             self._scroll_anchor = None
+            self._thought_regions = []
+            self._hover = None
+            self._pointer = None
+            self._dismissed_thought = None
+            self._covered = set()
+            self._bubble_geometry = None
+            self._thought_layout = None
+            self._interaction_boxes = ()
+            self._followups.clear()
+            self._draft_carry = None
             self._stop.clear()
             self._active = True
             term.PAINT.managed_screen = True
             self._telemetry.start()
-            modes = "\x1b[?1049h\x1b[?1000h\x1b[?1006h"
+            # 1003 any-event tracking feeds pointer motion; terminals that do
+            # not report movement simply never produce a hover event.
+            modes = "\x1b[?1049h\x1b[?1000h\x1b[?1003h\x1b[?1006h"
             if os.name != "nt":
                 modes += "\x1b[?2004h"
             self.out.write(modes)
             self._draw()
+            from .footer_input import set_ui_resolver
+            set_ui_resolver(self.capture_click)
             self._watcher = threading.Thread(
                 target=self._watch, name="reach-footer-resize", daemon=True)
             self._watcher.start()
@@ -312,37 +347,63 @@ class FooterScreen:
             self._active = False
             self._stop.set()
             self._telemetry.stop()
-            modes = "\x1b[?25h\x1b[?1006l\x1b[?1000l"
+            modes = "\x1b[?25h\x1b[?1006l\x1b[?1003l\x1b[?1000l"
             if os.name != "nt":
                 modes += "\x1b[?2004l"
             self.out.write(modes + "\x1b[0m\x1b[?1049l")
             self.out.flush()
             term.PAINT.managed_screen = False
+            from .footer_input import set_ui_resolver
+            set_ui_resolver(None)
             watcher = self._watcher
         if watcher is not None and watcher is not threading.current_thread():
             watcher.join(timeout=0.2)
 
     def _watch(self):
         while not self._stop.wait(0.02):
-            with self._lock:
-                if not self._active:
-                    return
-                sample = self._telemetry.snapshot()
-                sample_key = tuple(sample.get(key) for key in (
-                    "cpu_pct", "gpu_pct", "gpu_name", "gpu_status",
-                    "gpu_memory_used", "gpu_memory_total", "ram_used",
-                    "ram_total"))
-                resized = self._size() != self._last_size
-                changed = sample_key != self._telemetry_key
-                if resized or changed:
-                    self._telemetry_key = sample_key
-                    self._draw()
             try:
-                from .footer_input import poll_scroll_events
-                events = poll_scroll_events() or ()
-            except (ImportError, AttributeError, OSError, RuntimeError):
-                events = ()
-            self.scroll_events(events)
+                self._watch_tick()
+            except Exception:
+                # This thread owns scrolling, resize, clicks and hover for
+                # the whole session. One bad poll or draw must never kill
+                # it — a dead watcher is scrolling that silently stops.
+                continue
+
+    def _watch_tick(self):
+        # Input is serviced before optional telemetry/animation work. A
+        # recurring header failure must never starve scroll or click events.
+        from .footer_input import poll_ui_events, poll_pointer
+        for kind, payload in poll_ui_events() or ():
+            try:
+                if kind == "hover":
+                    self.hover(payload)
+                elif kind == "click":
+                    self.click(payload)
+                elif kind == "scroll":
+                    self.scroll_ui(*payload)
+            except Exception:
+                continue
+        self.hover(poll_pointer())
+        with self._lock:
+            if not self._active:
+                return
+            sample = self._telemetry_snapshot()
+            sample_key = tuple(sample.get(key) for key in (
+                "cpu_pct", "gpu_pct", "gpu_name", "gpu_status",
+                "gpu_memory_used", "gpu_memory_total", "ram_used",
+                "ram_total"))
+            resized = self._size() != self._last_size
+            changed = sample_key != self._telemetry_key
+            now = time.monotonic()
+            animate = (self.pet.snapshot()["motion"] and
+                       now - self._pet_tick >= 0.1)
+            if resized or changed or animate:
+                self._telemetry_key = sample_key
+                self._pet_tick = now
+                if resized:
+                    self._draw()
+                else:
+                    self._draw_header()
 
     def write(self, text):
         text = str(text)
@@ -359,17 +420,81 @@ class FooterScreen:
                 self._draw()
             self.out.flush()
 
+    def write_markdown_source(self, source, continuation):
+        """Retain one source line so resize can rebuild prose and code rows."""
+        with self._lock:
+            if not self._active:
+                return False
+            margin = self._layout(self._size()[0])[1]
+            continued = strip_ansi(continuation)
+            if margin and continued.startswith(" " * margin):
+                continued = continued[margin:]
+            # A fence following an AI label/thought starts on its own row;
+            # every code border and body then share the same gutter budget.
+            leading = "".join(g for g, _ in self._lines[-1].cells)
+            if source.kind == "code_top" and leading.strip() != continued.strip():
+                self._consume("\n" + continuation)
+            index = len(self._lines) - 1
+            line = self._lines[index]
+            leading = tuple(line.cells)
+            plain = source.plain()
+            self._consume(plain + "\n")
+            line.markdown = {"source": source, "leading": leading,
+                             "continuation": continued}
+            if source.kind == "prose":
+                body = strip_ansi(plain)
+                hanging = re.match(r"^(\s*)(?:• |\d+[.)] )", body)
+                if hanging:
+                    continued += " " * _glyph_width(hanging.group(0))
+                elif body.startswith("▎ "):
+                    continued += "▎ "
+                line.continuation = continued
+            self._visual_dirty = min(self._visual_dirty, index)
+            self._draw(incremental=True)
+            return True
+
     def set_input(self, text, cursor, chunks=(), label="you"):
         with self._lock:
-            self._draft = str(text)
+            text = str(text)
+            if text != self._draft and label == "you":
+                self.pet.note_input(text)
+            self._draft = text
             self._cursor = max(0, min(len(self._draft), int(cursor)))
             self._chunks = tuple(str(item) for item in chunks)
             self._label = str(label)
             if self._active:
-                self._draw()
+                self._draw(incremental=True)
 
     def reset_input(self):
         self.set_input("", 0)
+
+    def queue_followup(self, text):
+        """A prompt submitted while a reply streams — fires once it ends."""
+        with self._lock:
+            self._followups.append(str(text))
+
+    def take_followup(self):
+        """Oldest queued follow-up prompt, or None when the queue is empty."""
+        with self._lock:
+            return self._followups.popleft() if self._followups else None
+
+    def has_followups(self):
+        """Whether queued follow-ups wait — Enter on an empty draft releases."""
+        with self._lock:
+            return bool(self._followups)
+
+    def carry_draft(self, text, cursor):
+        """Preserve an unsubmitted composer draft across reader handoffs."""
+        text = str(text or "")
+        with self._lock:
+            self._draft_carry = (text, max(0, min(len(text), int(cursor or 0)))) \
+                if text else None
+
+    def take_draft_carry(self):
+        """Consume the carried draft; the next prompt opens with it."""
+        with self._lock:
+            carry, self._draft_carry = self._draft_carry, None
+            return carry or ("", 0)
 
     def scroll_lines(self, delta):
         """Scroll transcript rows; positive goes up, negative goes down."""
@@ -378,6 +503,9 @@ class FooterScreen:
                 return
             if self._size() != self._last_size:
                 self._draw()
+            if self._reading_padding is not None:
+                self._reading_padding = None
+                self._draw(incremental=True)
             state = self._scroll_state
             top = max(0, min(state["max_top"], state["top"] - int(delta)))
             if top >= state["max_top"]:
@@ -385,7 +513,8 @@ class FooterScreen:
                 self._scroll_anchor = None
             else:
                 self._follow_tail = False
-                self._scroll_anchor = self._visual_rows[top][:2]
+                self._scroll_anchor = (self._visual_rows[top][:2]
+                                       if top < len(self._visual_rows) else None)
             self._draw()
 
     def scroll_pages(self, delta):
@@ -400,6 +529,7 @@ class FooterScreen:
         """Follow the newest output again."""
         with self._lock:
             self._follow_tail = True
+            self._reading_padding = None
             self._scroll_anchor = None
             if self._active:
                 self._draw()
@@ -407,6 +537,27 @@ class FooterScreen:
     def scroll(self, action, amount=1):
         """Dispatch normalized editor and mouse scroll events."""
         self.scroll_events(((action, amount),))
+
+    def scroll_ui(self, action, amount=1, pointer=None):
+        """Wheel scrolls the surface under it; page keys follow pinned focus."""
+        with self._lock:
+            if not self._active:
+                return
+            if self._size() != self._last_size:
+                self._draw()
+            if pointer is not None:
+                self.hover(pointer)
+            thought = self._hover
+            target = thought is not None and self._bubble_geometry is not None and (
+                (pointer is None and thought.get("pinned")) or
+                (pointer is not None and (self._inside_bubble(pointer) or
+                    (self._thought_at(*pointer) or (None,))[0] is thought.get("region"))))
+            if target:
+                self._scroll_thought(action, amount)
+            else:
+                if thought is not None and not thought.get("pinned"):
+                    self._hide_thought()
+                self.scroll_events(((action, amount),))
 
     def scroll_events(self, events):
         """Apply a navigation burst in order, painting its final view once."""
@@ -417,6 +568,9 @@ class FooterScreen:
                 return
             if self._size() != self._last_size:
                 self._draw()
+            if self._reading_padding is not None:
+                self._reading_padding = None
+                self._draw(incremental=True)
             state = self._scroll_state
             top, maximum = state["top"], state["max_top"]
             page = max(1, state["visible_rows"] - 1)
@@ -437,9 +591,419 @@ class FooterScreen:
                 changed = True
             if changed:
                 self._follow_tail = top >= maximum
-                self._scroll_anchor = (None if self._follow_tail else
-                                       self._visual_rows[top][:2])
+                self._scroll_anchor = (
+                    None if self._follow_tail or top >= len(self._visual_rows)
+                    else self._visual_rows[top][:2])
                 self._draw()
+
+    def note_thought(self, parts, length):
+        """Bind the thought mark just written to its reasoning text source.
+
+        ``parts`` is the reply's live list of reasoning fragments, read when
+        the bubble is drawn so a still-streaming thought keeps growing.
+        """
+        with self._lock:
+            index = len(self._lines) - 1
+            while index > 0 and not self._lines[index].cells:
+                index -= 1
+            line = self._lines[index]
+            self._thought_regions.append({
+                "line": index,
+                "start": max(0, line.cursor - max(1, int(length))),
+                "end": line.cursor,
+                "parts": parts,
+            })
+
+    @staticmethod
+    def _tool_details(parts):
+        """Keep styled details as safe logical lines, outside the output stream."""
+        lines = []
+        style = ""
+        for part in parts:
+            for raw in str(part).split("\n"):
+                line = _Line(prefix="    ", continuation="    ")
+                for piece in re.split(r"(\x1b\[[0-9;]*m)", raw):
+                    if re.fullmatch(r"\x1b\[[0-9;]*m", piece):
+                        codes = piece[2:-1].split(";") if piece[2:-1] else ["0"]
+                        style = "" if codes == ["0"] else (
+                            piece if "0" in codes else style + piece)
+                    else:
+                        for glyph in _project_text(piece, newline="\u21b5"):
+                            if unicodedata.category(glyph) in ("Mn", "Me", "Cf") and line.cells:
+                                previous, active = line.cells[-1]
+                                line.cells[-1] = (previous + glyph, active)
+                            else:
+                                line.cells.append((glyph, style))
+                line.cursor = len(line.cells)
+                lines.append(line)
+        return lines
+
+    def begin_tool_call(self, summary, details):
+        """Add a collapsed call; return its opaque line token for later results."""
+        with self._lock:
+            if not self._active:
+                return None
+            if self._lines[-1].cells:
+                self._consume("\n")
+            index = len(self._lines) - 1
+            self._consume(str(summary).replace("\n", " ") + "\n")
+            line = self._lines[index]
+            # The summary supplies its own indentation, without a painted
+            # page margin. Keep those spaces when centered chat is reflowed.
+            line.source_margin = 0
+            arrow = next((i for i, (glyph, _style) in enumerate(line.cells)
+                          if glyph == ">"), None)
+            if arrow is None:
+                arrow = 0
+                line.cells.insert(0, (">", ""))
+            line.tool = {"index": index, "arrow": arrow, "expanded": False,
+                         "details": self._tool_details(details)}
+            self._visual_dirty = min(self._visual_dirty, index)
+            self._draw(incremental=True)
+            return line
+
+    def finish_tool_call(self, token, details):
+        """Append results to this call, preserving its disclosure state."""
+        with self._lock:
+            if not self._active or not isinstance(token, _Line) or token.tool is None:
+                return False
+            index = token.tool["index"]
+            if index >= len(self._lines) or self._lines[index] is not token:
+                return False
+            token.tool["details"].extend(self._tool_details(details))
+            if token.tool["expanded"]:
+                self._visual_dirty = min(self._visual_dirty, index)
+                self._draw(incremental=True)
+            return True
+
+    def _inside_bubble(self, pointer):
+        box = self._bubble_geometry
+        if box is None or pointer is None:
+            return False
+        x, y = pointer
+        return box["left"] <= x < box["left"] + box["width"] and \
+            box["row"] <= y < box["row"] + box["height"]
+
+    def capture_click(self, pointer):
+        """Resolve against an immutable completed frame; never block input."""
+        if not self._active or pointer is None:
+            return None
+        x, y = pointer
+        for left, top, right, bottom, target in self._interaction_boxes:
+            if left <= x < right and top <= y < bottom:
+                return target
+        return None
+
+    def _hold_view(self):
+        if self._follow_tail:
+            state = self._scroll_state
+            self._follow_tail = False
+            top = state["top"]
+            self._scroll_anchor = self._visual_rows[top][:2] if self._visual_rows else None
+            self._reading_padding = state.get("padding", max(0,
+                state["visible_rows"] - min(state["visible_rows"], state["total_rows"]-top)))
+
+    def click(self, pointer):
+        """Open tools or pin thoughts using the clicked frame's logical target."""
+        with self._lock:
+            if not self._active or pointer is None:
+                return False
+            if self._size() != self._last_size:
+                self._draw()
+            target = pointer.target if hasattr(pointer, "target") else self.capture_click(pointer)
+            if target is None:
+                if self._hover is not None and self._hover.get("pinned"):
+                    self._dismiss_thought()
+                    self._draw(incremental=True)
+                return False
+            kind, identity = target
+            if kind == "thought_close":
+                if self._hover is None or self._hover["parts"] is not identity:
+                    return False
+                self._dismiss_thought()
+                self._pointer = None
+                self._draw(incremental=True)
+                return True
+            if kind == "thought_body":
+                if self._hover is None or self._hover["parts"] is not identity:
+                    return False
+                self._hover.update(pinned=True, following=False)
+                self._hold_view()
+                self._draw(incremental=True)
+                return True
+            if kind == "thought":
+                if not any(region is identity for region in self._thought_regions):
+                    return False
+                if self._hover is not None and self._hover["parts"] is identity["parts"] and self._hover.get("pinned"):
+                    self._dismiss_thought()
+                elif self._hover is not None and self._hover["parts"] is identity["parts"]:
+                    self._hover.update(pinned=True, following=False)
+                else:
+                    self._open_thought(identity, pinned=True)
+                    self._hold_view()
+                self._draw(incremental=True)
+                return True
+            if kind != "tool":
+                return False
+            line = identity
+            line_index = line.tool["index"] if line.tool is not None else -1
+            if not 0 <= line_index < len(self._lines) or self._lines[line_index] is not line:
+                return False
+            arrow = line.tool["arrow"]
+            line.tool["expanded"] = not line.tool["expanded"]
+            _, style = line.cells[arrow]
+            line.cells[arrow] = ("v" if line.tool["expanded"] else ">", style)
+            line.dirty_from = min(line.dirty_from, arrow)
+            self._visual_dirty = min(self._visual_dirty, line_index)
+            # A user opening details is browsing. Anchor the call so long
+            # results remain reachable and incoming tokens do not displace it.
+            self._follow_tail = False
+            self._reading_padding = None
+            self._scroll_anchor = (line_index, 0)
+            self._pointer = None
+            self._hide_thought()
+            self._draw(incremental=True, hold_view=True)
+            return True
+
+    def _transcript_at(self, x, y):
+        """Resolve a visible terminal cell to its indexed transcript row."""
+        state = self._scroll_state
+        top = int(state.get("top") or 0)
+        visible = int(state.get("visible_rows") or 0)
+        shown = max(0, min(visible, int(state.get("total_rows") or 0) - top))
+        row = y - int(self._geometry.get("transcript_top") or 0) - state.get("padding", visible - shown)
+        index = top + row
+        if row < 0 or row >= shown or index >= len(self._visual_rows):
+            return None
+        return index
+
+    def hover(self, pointer):
+        """Track the pointer and toggle the thought bubble on transitions."""
+        with self._lock:
+            if not self._active:
+                return
+            if self._size() != self._last_size:
+                self._draw()
+            self._pointer = pointer
+            if self._hover is not None and (self._hover.get("pinned") or self._inside_bubble(pointer)):
+                if self._hover.get("revision") != len(self._hover["parts"]):
+                    self._hover["revision"] = len(self._hover["parts"])
+                    self._draw(incremental=True)
+                return
+            hit = self._thought_at(*pointer) if pointer is not None else None
+            if self._dismissed_thought is not None:
+                if hit is not None and hit[0]["parts"] is self._dismissed_thought:
+                    return
+                self._dismissed_thought = None
+            if hit is None:
+                changed = self._hover is not None
+                self._hide_thought()
+                target = self.capture_click(pointer)
+                if target is not None and target[0] == "tool" and self._follow_tail:
+                    self._hold_view()
+                    changed = True
+            else:
+                region, visual = hit
+                changed = (self._hover is None or
+                           self._hover["parts"] is not region["parts"] or
+                           self._hover.get("revision") != len(region["parts"]))
+                if self._hover is None or self._hover["parts"] is not region["parts"]:
+                    self._open_thought(region, visual=visual)
+                else:
+                    self._hover.update(visual=visual, revision=len(region["parts"]))
+                if self._follow_tail:
+                    self._hold_view()
+                    changed = True
+            if changed:
+                self._draw(incremental=True)
+
+    def _hide_thought(self):
+        self._hover = None
+        self._thought_layout = None
+        self._bubble_geometry = None
+
+    def _dismiss_thought(self):
+        # A stationary pointer must not reopen a box explicitly closed by
+        # click. Hover becomes available again once it leaves this mark.
+        self._dismissed_thought = self._hover["parts"] if self._hover is not None else None
+        self._hide_thought()
+
+    def _open_thought(self, region, visual=None, pinned=False):
+        self._dismissed_thought = None
+        self._hover = {"parts": region["parts"], "region": region,
+                       "visual": visual, "revision": len(region["parts"]),
+                       "pinned": pinned, "following": not pinned,
+                       "top": 0, "anchor": (0, 0)}
+        self._thought_layout = None
+
+    def thought_snapshot(self):
+        """Copy popup navigation state without exposing private reasoning."""
+        with self._lock:
+            if self._hover is None:
+                return None
+            return {key: self._hover.get(key) for key in
+                    ("pinned", "following", "top", "max_top", "total", "visible")}
+
+    def _thought_at(self, x, y):
+        """(region, visual index) under a zero-based pointer cell, or None."""
+        if x is None or y is None:
+            return None
+        if not self._thought_regions or not self._visual_rows:
+            return None
+        geometry = self._geometry
+        index = self._transcript_at(x, y)
+        if index is None:
+            return None
+        line_index, offset, _text = self._visual_rows[index]
+        if line_index >= len(self._lines):
+            return None
+        line = self._lines[line_index]
+        old = line.source_margin
+        cells = line.cells
+        stripped = (cells[old:] if old and len(cells) >= old
+                    and all(glyph == " " for glyph, _style in cells[:old])
+                    else cells)
+        skipped = len(line.cells) - len(stripped)
+        width = (int(geometry.get("footer_width") or 0) or
+                 self._layout(self._size()[0])[0])
+        margin = int(geometry.get("footer_left") or 0)
+        prefix = _clip(line.prefix, max(0, width - 1))
+        if offset == 0:
+            lead = prefix
+        else:
+            lead = _clip(line.continuation, max(0, width - 1))
+            if not lead and not prefix and "".join(
+                    glyph for glyph, _style in stripped[:4]) == "  \u2502 ":
+                lead = _clip("  \u2502 ", max(0, width - 1))
+        column = x - margin - display_width(lead)
+        if column < 0:
+            return None
+        used = 0
+        for cell_index in range(offset, len(stripped)):
+            size = _glyph_width(stripped[cell_index][0])
+            if used <= column < used + size:
+                logical = skipped + cell_index
+                for region in self._thought_regions:
+                    if (region["line"] == line_index and
+                            region["start"] <= logical < region["end"]):
+                        return region, index
+                return None
+            used += size
+        return None
+
+    def _thought_rows(self, width):
+        """Incrementally wrap reasoning; long streams do not rebuild old text."""
+        parts = self._hover["parts"]
+        cache = self._thought_layout
+        if cache is None or cache["parts"] is not parts or cache["seen"] > len(parts):
+            cache = {"parts": parts, "seen": 0, "lines": [_Line()], "rows": [],
+                     "starts": [], "dirty": 0, "width": None}
+            self._thought_layout = cache
+        end_seen = len(parts)
+        for part in parts[cache["seen"]:end_seen]:
+            for glyph in _project_text(part):
+                line = cache["lines"][-1]
+                cache["dirty"] = min(cache["dirty"], len(cache["lines"]) - 1)
+                line.dirty_from = min(line.dirty_from, len(line.cells))
+                if glyph == "\n":
+                    cache["lines"].append(_Line())
+                elif unicodedata.category(glyph) in ("Mn", "Me", "Cf") and line.cells:
+                    previous, style = line.cells[-1]
+                    line.dirty_from = min(line.dirty_from, len(line.cells)-1)
+                    line.cells[-1] = (previous + glyph, style)
+                else:
+                    line.cells.append((glyph, ""))
+        cache["seen"] = end_seen
+        if cache["width"] != width:
+            cache["dirty"] = 0
+            cache["width"] = width
+        dirty = cache["dirty"]
+        start = cache["starts"][dirty] if dirty < len(cache["starts"]) else len(cache["rows"])
+        del cache["rows"][start:]
+        del cache["starts"][dirty:]
+        for index in range(dirty, len(cache["lines"])):
+            cache["starts"].append(len(cache["rows"]))
+            for offset, row in self._wrap_transcript_line(cache["lines"][index], width, 0,
+                                                         (width, 0, _WINDOWS_NATIVE_WIDTH)):
+                cache["rows"].append((index, offset, strip_ansi(row)))
+        cache["dirty"] = len(cache["lines"])
+        return cache["rows"]
+
+    def _scroll_thought(self, action, amount=1):
+        view = self._hover
+        if view is None:
+            return
+        rows = self._thought_rows(max(1, min(52, self._geometry["footer_width"] - 4)))
+        maximum = max(0, len(rows) - max(1, view.get("visible", 1)))
+        top = min(maximum, max(0, view.get("top", 0)))
+        action = str(action).removeprefix("scroll_")
+        page = max(1, view.get("visible", 1) - 1)
+        if action == "live":
+            top = maximum
+        elif action in ("up", "down", "page_up", "page_down"):
+            step = max(1, int(amount)) * (page if action.startswith("page_") else 1)
+            top = max(0, min(maximum, top + (-step if action in ("up", "page_up") else step)))
+        else:
+            return
+        view["top"] = top
+        view["anchor"] = rows[top][:2] if rows else (0, 0)
+        view["following"] = top >= maximum and action not in ("up", "page_up")
+        self._draw(incremental=True)
+
+    def _hover_overlay(self, top, transcript_top, visible_rows, width, margin):
+        """Absolute (row, column, lines) for the bubble, or None off-screen."""
+        if self._hover is None or not visible_rows or width < 6 or visible_rows < 3:
+            self._bubble_geometry = None
+            return None
+        view = self._hover
+        state = self._scroll_state
+        inner = max(1, min(52, width - 4))
+        rows = self._thought_rows(inner)
+        capacity = min(visible_rows - 2, 10)
+        maximum = max(0, len(rows) - capacity)
+        if view["following"]:
+            thought_top = maximum
+        else:
+            anchors = [item[:2] for item in rows]
+            thought_top = max(0, min(maximum, bisect.bisect_right(anchors, view["anchor"])-1))
+        selected = rows[thought_top:thought_top + capacity]
+        view.update(top=thought_top, max_top=maximum, total=len(rows), visible=capacity,
+                    anchor=rows[thought_top][:2] if rows else (0, 0))
+        title = " thought" + (" · pinned" if view["pinned"] else "")
+        box_width = inner + 4
+        head = TL + _clip(title, box_width - 4).ljust(box_width - 4, H) + " x" + TR
+        body = [V + " " + item[2] + " " * max(0, inner - _glyph_width(item[2])) + " " + V
+                for item in selected]
+        label = "%d–%d/%d%s" % (thought_top + 1, thought_top + len(selected), len(rows),
+                                  " · live" if view["following"] else "")
+        tail = BL + _clip(" " + label + " ", box_width - 2).center(box_width - 2, H) + BR
+        lines = [c_dim(line) for line in [head] + body + [tail]]
+        height = len(lines)
+        area_bottom = transcript_top + visible_rows
+        previous = self._bubble_geometry
+        mark_row = None
+        region = view["region"]
+        for index in range(top, min(len(self._visual_rows), top + state["visible_rows"])):
+            line_index, offset, _text = self._visual_rows[index]
+            if line_index == region["line"] and offset <= region["start"] < (
+                    self._visual_rows[index+1][1] if index+1 < len(self._visual_rows) and
+                    self._visual_rows[index+1][0] == line_index else len(self._lines[line_index].cells)):
+                mark_row = transcript_top + state.get("padding", 0) + index - top
+                view["visual"] = index
+                break
+        if previous is not None and (view["pinned"] or self._inside_bubble(self._pointer) or mark_row is None):
+            row, left = previous["row"], previous["left"]
+        elif mark_row is not None:
+            row = mark_row + 1
+            if row + height > area_bottom:
+                row = mark_row - height
+            left = (self._pointer or (margin, mark_row))[0]
+        else:
+            row, left = transcript_top, margin
+        row = max(transcript_top, min(row, area_bottom - height))
+        left = max(margin, min(left, margin + width - box_width))
+        self._bubble_geometry = {"row": row, "left": left, "height": height, "width": box_width}
+        return row, left, lines
 
     def refresh_metadata(self):
         """Refresh the workspace branch once when a new prompt begins."""
@@ -449,10 +1013,41 @@ class FooterScreen:
                 self._draw()
 
     def refresh_header(self):
-        """Redraw the pinned HUD after a mini-terminal state change."""
+        """Redraw the pinned HUD after a pet or activity change."""
         with self._lock:
             if self._active:
-                self._draw(incremental=True)
+                self._draw_header()
+
+    def _draw_header(self):
+        """Paint the reserved header band without laying out or painting chat.
+
+        The screen lock serializes this with transcript writes. DECSC/DECRC
+        preserve the physical cursor and its rendition; header ticks leave
+        cursor visibility alone and never lay out chat or redraw an overlay.
+        """
+        cols, rows = self._size()
+        width, margin = self._layout(cols)
+        if (self._last_display is None or self._paint_size is None or
+                self._paint_size[:4] != (cols, rows, width, margin)):
+            self._draw()
+            return
+        height = self._geometry.get("header_rows", 0)
+        if not height:
+            return
+        header = self._header(cols, self._header_budget)
+        if len(header) != height:
+            self._draw()
+            return
+        color_enabled = bool(term.PAINT.on and self.isatty())
+        patches = []
+        for index, line in enumerate(header):
+            if self._last_display[index] != line:
+                patches.append("\x1b[%d;1H%s\x1b[K" % (
+                    index + 1, app_themes.render_line(line, color_enabled)))
+        if patches:
+            self.out.write("\x1b7" + "".join(patches) + "\x1b8")
+            self.out.flush()
+            self._last_display[:height] = header
 
     def refresh_theme(self):
         """Repaint only the visual frame; logical text and scroll stay intact."""
@@ -462,19 +1057,46 @@ class FooterScreen:
             if self._active:
                 self._draw()
 
-    def set_mini_runner(self, runner):
-        """Install the session's approved shell-tool callback."""
-        self._mini_runner = runner if callable(runner) else None
+    def select_pet(self, kind):
+        with self._lock:
+            if not self.pet.select(kind):
+                return False
+            if self.client is not None:
+                self.client.pet = self.pet.snapshot()["kind"]
+            self.refresh_header()
+            return True
 
-    def run_mini_terminal(self, request_id):
-        """Execute only a current Enter-submitted request."""
-        runner = self._mini_runner
-        if runner is None:
-            return False
-        self.refresh_header()
-        result = self.mini_terminal.execute_submitted(request_id, runner)
-        self.refresh_header()
-        return result
+    def cycle_pet(self):
+        """Change companions without changing the editor or its cursor."""
+        with self._lock:
+            kind = self.pet.snapshot()["kind"]
+            next_kind = PET_NAMES[(PET_NAMES.index(kind) + 1) % len(PET_NAMES)]
+            self.select_pet(next_kind)
+            from .session import save_session_config
+            save_session_config(pet=next_kind,
+                                pet_motion=self.pet.snapshot()["motion"])
+            return next_kind
+
+    def set_pet_motion(self, enabled):
+        with self._lock:
+            self.pet.set_motion(enabled)
+            if self.client is not None:
+                self.client.pet_motion = bool(enabled)
+            self.refresh_header()
+
+    def set_pet_activity(self, activity):
+        with self._lock:
+            self.pet.set_activity(activity)
+            self.refresh_header()
+
+    def _telemetry_snapshot(self):
+        try:
+            sample = self._telemetry.snapshot()
+            if isinstance(sample, dict):
+                self._telemetry_value = dict(sample)
+        except Exception:
+            pass
+        return self._telemetry_value
 
     def _header(self, cols, max_rows):
         if max_rows <= 0:
@@ -493,8 +1115,8 @@ class FooterScreen:
         return render_header(
             cols, version=VERSION, model=model, endpoint=endpoint,
             mode="agent" if getattr(self.client, "agent", False) else "chat",
-            cwd=cwd, branch=branch, telemetry=self._telemetry.snapshot(),
-            terminal=self.mini_terminal,
+            cwd=cwd, branch=branch, telemetry=self._telemetry_snapshot(),
+            pet=self.pet,
             color=bool(self.isatty() and term.PAINT.on), max_rows=max_rows)
 
     def clear_banner_on_submit(self):
@@ -503,8 +1125,12 @@ class FooterScreen:
                 return
             self._banner_cleared = True
             self._lines = [_Line()]
+            self._thought_regions = []
+            self._hide_thought()
+            self._dismissed_thought = None
             self._visual_dirty = 0
             self._follow_tail = True
+            self._reading_padding = None
             self._scroll_anchor = None
             if self._active:
                 self._draw()
@@ -514,6 +1140,7 @@ class FooterScreen:
             if echo:
                 self.clear_banner_on_submit()
                 self._follow_tail = True
+                self._reading_padding = None
                 self._scroll_anchor = None
             self._draft = ""
             self._cursor = 0
@@ -650,60 +1277,155 @@ class FooterScreen:
         for line_index in range(start_line, len(self._lines)):
             line = self._lines[line_index]
             self._visual_line_starts.append(len(self._visual_rows))
-            cells = line.cells
-            old = line.source_margin
-            if old and len(cells) >= old and all(
-                    glyph == " " for glyph, _ in cells[:old]):
-                cells = cells[old:]
-            skipped = len(line.cells) - len(cells)
-            prefix = _clip(line.prefix, max(0, width - 1))
-            continuation = _clip(line.continuation, max(0, width - 1))
-            if not prefix and "".join(g for g, _ in cells[:4]) == "  \u2502 ":
-                continuation = _clip("  \u2502 ", max(0, width - 1))
-            line_key = key + (prefix, continuation, skipped)
-            offset = 0
-            cached = []
-            if line.wrapped_key == line_key and line.wrapped:
-                dirty = max(0, line.dirty_from - skipped)
-                cut = max(0, bisect.bisect_right(
-                    [item[0] for item in line.wrapped], dirty) - 1)
-                offset = line.wrapped[cut][0]
-                cached = line.wrapped[:cut]
-            wrapped = cached
-            segment = []
-            segment_start = offset
-            used = 0
-            first = offset == 0
-            first_room = max(1, width - display_width(prefix))
-            continuation_room = max(1, width - display_width(continuation))
-            for cell_index in range(offset, len(cells)):
-                glyph, style = cells[cell_index]
-                room = first_room if first else continuation_room
-                size = _glyph_width(glyph)
-                if segment and used + size > room:
-                    lead = prefix if first else continuation
-                    wrapped.append((segment_start,
-                                    " " * margin + lead + _styled(segment)))
-                    segment, used, first = [], 0, False
-                    segment_start = cell_index
-                    room = continuation_room
-                if size > room:
-                    segment.append(("?", style))
-                    used += 1
-                else:
-                    segment.append((glyph, style))
-                    used += size
-            lead = prefix if first else continuation
-            wrapped.append((segment_start,
-                            " " * margin + lead + _styled(segment)))
-            line.wrapped, line.wrapped_key = wrapped, line_key
-            line.dirty_from = len(line.cells)
+            wrapped = self._wrap_transcript_line(line, width, margin, key)
             self._visual_rows.extend((line_index, offset, text)
                                      for offset, text in wrapped)
             self._visual_anchors.extend((line_index, offset)
                                         for offset, _ in wrapped)
+            if line.tool is not None and line.tool["expanded"]:
+                # Synthetic detail offsets follow the header's cells and
+                # remain sorted with ordinary transcript anchors on resize.
+                detail_start = len(line.cells) + 1
+                for detail in line.tool["details"]:
+                    details = self._wrap_transcript_line(detail, width, margin, key)
+                    self._visual_rows.extend((line_index, detail_start + offset, text)
+                                             for offset, text in details)
+                    self._visual_anchors.extend((line_index, detail_start + offset)
+                                                for offset, _ in details)
+                    detail_start += len(detail.cells) + 1
         self._visual_dirty = len(self._lines)
         return self._visual_rows
+
+    @staticmethod
+    def _wrap_transcript_line(line, width, margin, key):
+        """Wrap an ordinary line or a tool's detail using the same cell model."""
+        if line.markdown is not None and line.markdown["source"].kind != "prose":
+            return FooterScreen._wrap_markdown_code(line, width, margin, key)
+        cells = line.cells
+        old = line.source_margin
+        if old and len(cells) >= old and all(
+                glyph == " " for glyph, _ in cells[:old]):
+            cells = cells[old:]
+        skipped = len(line.cells) - len(cells)
+        prefix = _clip(line.prefix, max(0, width - 1))
+        continuation = _clip(line.continuation, max(0, width - 1))
+        if not continuation and not prefix and "".join(g for g, _ in cells[:4]) == "  \u2502 ":
+            continuation = _clip("  \u2502 ", max(0, width - 1))
+        line_key = key + (prefix, continuation, skipped)
+        offset = 0
+        cached = []
+        if line.wrapped_key == line_key and line.wrapped:
+            dirty = max(0, line.dirty_from - skipped)
+            cut = max(0, bisect.bisect_right(
+                [item[0] for item in line.wrapped], dirty) - 1)
+            # A growing last word can move back across the previous soft
+            # boundary. Reflow one earlier row while retaining older history.
+            cut = max(0, cut - 1)
+            offset = line.wrapped[cut][0]
+            cached = line.wrapped[:cut]
+        wrapped = cached
+        segment = []
+        segment_start = offset
+        used = 0
+        first = offset == 0
+        first_room = max(1, width - display_width(prefix))
+        continuation_room = max(1, width - display_width(continuation))
+        cell_index = offset
+        last_break = None
+        has_word = False
+        soft_start = False
+        while cell_index < len(cells):
+            glyph, style = cells[cell_index]
+            room = first_room if first else continuation_room
+            size = _glyph_width(glyph)
+            if soft_start and not segment and glyph.isspace():
+                cell_index += 1
+                segment_start = cell_index
+                continue
+            if segment and used + size > room:
+                lead = prefix if first else continuation
+                boundary = last_break if last_break is not None else len(segment)
+                end = boundary
+                while end and segment[end - 1][0].isspace():
+                    end -= 1
+                wrapped.append((segment_start, " " * margin + lead + _styled(segment[:end])))
+                segment_start += boundary
+                segment = segment[boundary:]
+                used = sum(_glyph_width(item[0]) for item in segment)
+                first = False
+                last_break = None
+                has_word = bool(segment)
+                soft_start = not segment
+                if not segment:
+                    segment_start = cell_index
+                # Reconsider the glyph with the continuation's own budget.
+                continue
+            if size > room:
+                segment.append(("?", style))
+                used += 1
+            else:
+                segment.append((glyph, style))
+                used += size
+            if glyph.isspace():
+                if has_word:
+                    last_break = len(segment)
+            else:
+                has_word = True
+                soft_start = False
+            cell_index += 1
+        lead = prefix if first else continuation
+        wrapped.append((segment_start,
+                        " " * margin + lead + _styled(segment)))
+        line.wrapped, line.wrapped_key = wrapped, line_key
+        line.dirty_from = len(line.cells)
+        return wrapped
+
+    @staticmethod
+    def _wrap_markdown_code(line, width, margin, key):
+        """Rebuild a code source line and its box at the current cell budget."""
+        data = line.markdown
+        leading = list(data["leading"])
+        old = line.source_margin
+        if old and len(leading) >= old and all(g == " " for g, _ in leading[:old]):
+            leading = leading[old:]
+        removed = len(data["leading"]) - len(leading)
+        first = _styled(leading)
+        continued = data["continuation"]
+        line_key = key + ("markdown", first, continued)
+        if line.wrapped_key == line_key and line.dirty_from >= len(line.cells):
+            return line.wrapped
+        room = max(1, width - max(_glyph_width(strip_ansi(first)), _glyph_width(continued)))
+        source = data["source"]
+        rendered = source.render_rows(room)
+        semantic = strip_ansi(source.plain())
+        # Renderer offsets refer to characters in the undecorated source.
+        # Translate once to our glyph-cell indices for stable scroll anchors.
+        cell_offsets = [0]
+        for glyph in semantic:
+            previous = cell_offsets[-1]
+            joins_previous = previous and unicodedata.category(glyph) in ("Mn", "Me", "Cf")
+            cell_offsets.append(previous + (0 if joins_previous else 1))
+        rows = []
+        for index, (source_offset, body) in enumerate(rendered):
+            lead = first if index == 0 else continued
+            # Native Windows cell widths remain the final authority, including
+            # flag/combining glyphs whose Markdown width may be smaller.
+            projected = FooterScreen._tool_details([lead + body])[0]
+            projected.prefix = ""
+            projected.continuation = continued
+            wrapped = FooterScreen._wrap_transcript_line(projected, width, margin, key)
+            offset = (0 if index == 0 else len(leading) +
+                      cell_offsets[min(source_offset, len(semantic))])
+            for start, text in wrapped:
+                anchored = offset + start
+                if index and start:
+                    # Extra native-width fallback rows must not count the
+                    # repeated outer gutter a second time.
+                    anchored -= len(FooterScreen._tool_details([lead])[0].cells)
+                rows.append((min(anchored, len(line.cells) - removed), text))
+        line.wrapped, line.wrapped_key = rows, line_key
+        line.dirty_from = len(line.cells)
+        return rows
 
     def _footer(self, width, margin, height):
         if height == 1:
@@ -779,27 +1501,36 @@ class FooterScreen:
                 line = BL + H * (width - 2) + BR
         return line
 
-    def _draw(self, incremental=False):
+    def _draw(self, incremental=False, hold_view=False):
         cols, rows = self._size()
         width, margin = self._layout(cols)
+        minimum_footer = 3 if rows >= 4 else (2 if rows == 3 else 1)
+        # The header owns its rows before the draft is measured. Its height
+        # changes only on terminal resize, never as the composer grows.
+        self._header_budget = min(5, max(0, rows - minimum_footer - 1))
+        if self._header_budget == 2:
+            self._header_budget = 1
+        header = self._header(cols, self._header_budget)
+        header_height = len(header)
+        header_gap = int(bool(header_height and
+                              rows - header_height - minimum_footer >= 5))
+        transcript_top = header_height + header_gap
         if rows >= 4:
             room = max(1, width - 6)
             body_rows = sum(len(_wrap_plain(chunk, room)) for chunk in self._chunks)
             body_rows += len(_wrap_plain(self._draft, room))
-            footer_height = min(rows - 1, max(3, body_rows + 2))
+            footer_height = min(rows - transcript_top - 1, max(3, body_rows + 2))
         else:
             footer_height = 2 if rows == 3 else 1
-        header_budget = min(5, max(0, rows - footer_height - 1))
-        if header_budget == 2:
-            header_budget = 1
-        header = self._header(cols, header_budget)
-        header_height = len(header)
-        transcript_height = max(0, rows - footer_height - header_height)
+        transcript_height = max(0, rows - footer_height - transcript_top)
         status_rows = 1 if transcript_height >= 2 else 0
         visible_rows = transcript_height - status_rows
         visual = self._visual_transcript(width, margin)
         self._visual_rows = visual
-        max_top = max(0, len(visual) - visible_rows) if visible_rows else 0
+        held_padding = (min(self._reading_padding, max(0, visible_rows - 1))
+                        if not self._follow_tail and self._reading_padding is not None else None)
+        view_rows = visible_rows - (held_padding or 0)
+        max_top = max(0, len(visual) - view_rows) if view_rows else 0
         if self._follow_tail:
             top = max_top
         elif self._scroll_anchor is None or not visual:
@@ -808,16 +1539,29 @@ class FooterScreen:
             top = max(0, min(max_top,
                              bisect.bisect_right(self._visual_anchors,
                                                  self._scroll_anchor) - 1))
-        anchor = visual[top][:2] if visual and visible_rows else None
+        anchor = visual[top][:2] if visual and view_rows else None
+        transcript = [item[2] for item in visual[top:top + view_rows]]
+        padding = (held_padding if held_padding is not None else
+                   max(0, visible_rows - len(transcript)))
+        if hold_view and not self._follow_tail:
+            # A near-tail call's requested anchor can be clamped. Freeze
+            # the view actually painted, so later tokens cannot migrate it
+            # toward that requested anchor or consume its leading padding.
+            self._scroll_anchor = anchor
+            self._reading_padding = padding
+            view_rows = visible_rows - padding
+            max_top = max(0, len(visual) - view_rows) if view_rows else 0
         self._scroll_state = {
             "following": self._follow_tail, "top": top, "max_top": max_top,
-            "total_rows": len(visual), "visible_rows": visible_rows,
+            "total_rows": len(visual), "visible_rows": view_rows,
+            "padding": padding, "shown_rows": len(transcript),
             "anchor": list(anchor) if anchor is not None else None,
         }
-        transcript = [item[2] for item in visual[top:top + visible_rows]]
         display = list(header)
-        display.extend([""] * max(0, visible_rows - len(transcript)))
+        display.extend([""] * header_gap)
+        display.extend([""] * padding)
         display.extend(transcript)
+        display.extend([""] * max(0, visible_rows - padding - len(transcript)))
         if status_rows:
             if self._follow_tail:
                 status = "live \u00b7 PgUp/PgDn / wheel"
@@ -828,28 +1572,43 @@ class FooterScreen:
             width, margin, footer_height)
         display.extend(footer)
         display = display[:rows]
-        paint_size = (cols, rows, width, margin, header_height,
+        paint_size = (cols, rows, width, margin, transcript_top,
                       transcript_height)
         full = (not incremental or self._paint_size != paint_size or
                 self._last_display is None)
         color_enabled = bool(term.PAINT.on and self.isatty())
+        overlay = self._hover_overlay(top, transcript_top, visible_rows,
+                                      width, margin)
+        # Rows a previous bubble covered must repaint once it moves or hides.
+        stale = self._covered
+        covered = set()
         frame = ["\x1b[?25l\x1b[H" if full else "\x1b[?25l"]
         if full:
             frame.append(app_themes.background_sequence(color_enabled) or "\x1b[0m")
         for index, line in enumerate(display, 1):
-            if full or self._last_display[index - 1] != line:
+            if (full or index - 1 in stale or
+                    self._last_display[index - 1] != line):
                 rendered = app_themes.render_line(line, color_enabled)
                 frame.append("\x1b[%d;1H%s\x1b[K" % (index, rendered))
-        screen_row = min(rows, header_height + transcript_height + cursor_row + 1)
+        if overlay is not None:
+            overlay_row, overlay_left, overlay_lines = overlay
+            for row_offset, text in enumerate(overlay_lines):
+                frame.append("\x1b[%d;%dH%s" % (
+                    overlay_row + row_offset + 1, overlay_left + 1,
+                    app_themes.render_line(text, color_enabled)))
+                covered.add(overlay_row + row_offset)
+        self._covered = covered
+        screen_row = min(rows, transcript_top + transcript_height + cursor_row + 1)
         screen_col = min(cols, margin + cursor_col + 1)
         frame.append("\x1b[%d;%dH\x1b[?25h" % (screen_row, screen_col))
         self._geometry = {
             "columns": cols, "rows": rows,
-            "header_rows": header_height, "transcript_top": header_height,
-            "footer_top": header_height + transcript_height,
+            "header_rows": header_height, "header_gap": header_gap,
+            "header_region_rows": transcript_top, "transcript_top": transcript_top,
+            "footer_top": transcript_top + transcript_height,
             "footer_rows": footer_height, "footer_left": margin,
             "footer_width": width, "transcript_rows": transcript_height,
-            "scroll_status_row": (header_height + transcript_height - 1
+            "scroll_status_row": (transcript_top + transcript_height - 1
                                    if status_rows else None),
             "cursor_row": screen_row - 1, "cursor_column": screen_col - 1,
         }
@@ -858,3 +1617,49 @@ class FooterScreen:
         self._last_display = display
         self._paint_size = paint_size
         self._last_size = (cols, rows)
+        self._publish_interactions()
+
+    def _publish_interactions(self):
+        """Publish only visible logical hit targets after a frame is painted."""
+        boxes = []
+        geometry, state = self._geometry, self._scroll_state
+        margin = geometry["footer_left"]
+        top = state["top"]
+        for visual in range(top, min(len(self._visual_rows), top + state["visible_rows"])):
+            line_index, offset, text = self._visual_rows[visual]
+            if line_index >= len(self._lines):
+                continue
+            line = self._lines[line_index]
+            y = geometry["transcript_top"] + state["padding"] + visual - top
+            if y in self._covered:
+                continue
+            if line.tool is not None and offset == 0:
+                arrow = margin + sum(_glyph_width(g) for g, _ in line.cells[:line.tool["arrow"]])
+                boxes.append((arrow, y, _glyph_width(strip_ansi(text)), y+1, ("tool", line)))
+            regions = [r for r in self._thought_regions if r["line"] == line_index]
+            if not regions:
+                continue
+            cells = line.cells
+            old = line.source_margin
+            skipped = old if old and len(cells) >= old and all(g == " " for g, _ in cells[:old]) else 0
+            cells = cells[skipped:]
+            lead = _clip(line.prefix if offset == 0 else line.continuation, max(0, geometry["footer_width"]-1))
+            if offset and not lead and not line.prefix and "".join(g for g, _ in cells[:4]) == "  │ ":
+                lead = "  │ "
+            x = margin + _glyph_width(lead)
+            right = _glyph_width(strip_ansi(text))
+            for cell in range(offset, len(cells)):
+                size = _glyph_width(cells[cell][0])
+                if x >= right:
+                    break
+                for region in regions:
+                    if region["start"] <= skipped + cell < region["end"]:
+                        boxes.append((x, y, min(right, x+size), y+1, ("thought", region)))
+                x += size
+        if self._hover is not None and self._bubble_geometry is not None:
+            box = self._bubble_geometry
+            left, row, width, height = (box[k] for k in ("left", "row", "width", "height"))
+            parts = self._hover["parts"]
+            boxes.insert(0, (left, row, left+width, row+height, ("thought_body", parts)))
+            boxes.insert(0, (left+width-3, row, left+width-1, row+1, ("thought_close", parts)))
+        self._interaction_boxes = tuple(boxes)

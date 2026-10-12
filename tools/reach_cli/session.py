@@ -1,4 +1,4 @@
-"""Saved CLI session: endpoint, model, workpath, layout, and theme."""
+"""Saved CLI session: endpoint, model, workpath, layout, theme, and pet."""
 
 import json
 import os
@@ -75,7 +75,7 @@ def history_file_path():
 
 
 def load_session_config(path=None):
-    """Return saved endpoint/model/workpath. Corrupt files yield {}."""
+    """Return recognized saved preferences. Corrupt files yield {}."""
     path = path or session_config_path()
     with _CONFIG_LOCK:
         data = _read_config(path)
@@ -86,19 +86,35 @@ def load_session_config(path=None):
             clean[key] = value.strip()
     if isinstance(data.get("custom_endpoints"), dict):
         clean["custom_endpoints"] = data["custom_endpoints"]
+    if isinstance(data.get("pet"), str):
+        from .pets import normalize_pet
+        pet = normalize_pet(data["pet"])
+        if pet is not None:
+            clean["pet"] = pet
+    if isinstance(data.get("pet_motion"), bool):
+        clean["pet_motion"] = data["pet_motion"]
     return clean
 
 
 def save_session_config(endpoint=None, model=None, workpath=None, path=None,
                         layout=None, theme=None, endpoint_name=_UNSET,
-                        clear_model=False):
+                        clear_model=False, pet=None, pet_motion=None):
     """Merge session fields and write them. Returns False instead of raising."""
     path = path or session_config_path()
     try:
+        if pet is not None:
+            if not isinstance(pet, str):
+                return False
+            from .pets import normalize_pet
+            pet = normalize_pet(pet)
+            if pet is None:
+                return False
+        if pet_motion is not None and not isinstance(pet_motion, bool):
+            return False
         with _CONFIG_LOCK:
             current = _read_config(path, strict=True)
             updates = {"endpoint": endpoint, "model": model, "workpath": workpath,
-                       "layout": layout, "theme": theme}
+                       "layout": layout, "theme": theme, "pet": pet}
             for key, value in updates.items():
                 if isinstance(value, str) and value.strip():
                     current[key] = value.strip()
@@ -108,6 +124,8 @@ def save_session_config(endpoint=None, model=None, workpath=None, path=None,
                 current.pop("endpoint_name", None)
             if clear_model:
                 current.pop("model", None)
+            if pet_motion is not None:
+                current["pet_motion"] = pet_motion
             _write_config(path, current)
         return True
     except Exception:
@@ -118,11 +136,20 @@ def apply_saved_session(client, args, path=None):
     """Apply ~/.config/reach-cli/config.json where flags were not passed."""
     from .terminal import c_yellow
     saved = load_session_config(path)
+    if client is not None:
+        if not hasattr(client, "pet"):
+            client.pet = "cat"
+        if not hasattr(client, "pet_motion"):
+            client.pet_motion = True
     if not saved:
         print(c_yellow("  no saved session — starting fresh"))
         return saved
     if client is None:
         return saved
+    if "pet" in saved:
+        client.pet = saved["pet"]
+    if "pet_motion" in saved:
+        client.pet_motion = saved["pet_motion"]
     explicit_key = getattr(args, "key", None) is not None
     explicit_env = getattr(args, "key_env", None)
     endpoint_failed = False

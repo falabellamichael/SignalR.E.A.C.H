@@ -36,7 +36,8 @@ COMMANDS = (
     ("/status", "show endpoint, model, agent, workpath, and key"),
     ("/endpoint [arg]", "manage saved endpoints (add/edit/test/select/remove)"),
     ("/endpoints", "list endpoints; alias for /endpoint"),
-    ("/settings", "show saved settings and endpoint model discovery"),
+    ("/settings [section]", "edit CLI preferences or all REACH Studio settings"),
+    ("/studio [list|refresh]", "list Studio agents for explicit @agent messages"),
     ("/model <alias>", "switch model (aliases below)"),
     ("/models", "list models served by the endpoint"),
     ("/web <question>", "grounded search-and-answer (SimpleRAG websearch)"),
@@ -50,10 +51,12 @@ COMMANDS = (
     ("/undo", "drop the last exchange"),
     ("/compact", "shrink the conversation history"),
     ("/copy", "copy the last answer to the clipboard"),
+    ("/thought", "expand the last reply's 💭 thought process"),
     ("/save [file]", "save the conversation as JSONL"),
     ("/layout <mode>", "centred page column or full-width UI"),
     ("/theme [name|preview|current|reset]", "list, preview, or select an app-local terminal theme"),
     ("/themes", "list available app-local terminal themes"),
+    ("/pet [name|next|pause|resume]", "choose cat, owl, or micro bulldog; control animation"),
     ("/exit", "quit (Ctrl+D, or Ctrl+C twice)"),
 )
 
@@ -61,10 +64,10 @@ COMMANDS = (
 # Help stays one column (`  %-16s %s`) and is grouped so the list is scannable.
 # Every token appears in exactly one section.
 HELP_SECTIONS = (
-    ("session", ("/help", "/status", "/settings", "/layout", "/theme", "/themes", "/exit")),
+    ("session", ("/help", "/status", "/settings", "/layout", "/theme", "/themes", "/pet", "/exit")),
     ("endpoint", ("/endpoint", "/endpoints", "/model", "/models")),
-    ("chat", ("/web", "/retry", "/undo", "/compact", "/copy", "/clear", "/history", "/save")),
-    ("agent", ("/agent", "/tools", "/workpath", "/system")),
+    ("chat", ("/web", "/retry", "/undo", "/compact", "/copy", "/thought", "/clear", "/history", "/save")),
+    ("agent", ("/agent", "/tools", "/workpath", "/system", "/studio")),
 )
 
 
@@ -860,15 +863,21 @@ def _cmd_endpoint(client, _history, _session, argument):
 
 
 def _cmd_settings(client, _history, _session, argument):
-    if argument:
-        tprint(c_yellow("  usage: /settings"))
-        return SlashResult(success=False)
-    from .session import session_config_path
+    from .settings import handle_settings, print_overview
     output = _Presentation()
+    if argument:
+        result = handle_settings(client, _history, _session, argument, output)
+        output.flush()
+        return result
+    from .session import session_config_path
     _cmd_status(client, _history, _session, "", output=output)
     output.line(c_dim("  config       " + session_config_path()))
+    from .pets import normalize_pet
+    pet = normalize_pet(getattr(client, "pet", "cat")) or "cat"
+    motion = "animated" if getattr(client, "pet_motion", True) else "paused"
+    output.line(c_dim("  pet          %s · %s · /pet changes companion" % (pet, motion)))
     _print_discovery(_current_refresh_target(client), output=output)
-    output.line(c_dim("  /endpoints lists options; /endpoint help shows add/edit/test/select/remove"))
+    print_overview(output)
     output.flush()
     return SlashResult()
 
@@ -1112,7 +1121,13 @@ def _cmd_web(client, history, _session, argument):
         if history:
             history.append({"role": "user", "content": argument})
         from . import chat as chat_mod
-        chat_mod.run_web_answer(client, argument)
+        context = getattr(client, "studio_context", None)
+        if context is not None and context.snapshot()["selected"] is not None:
+            # This slash command is already inside an explicit @agent turn.
+            # Preserve that scope rather than parsing its query as fresh chat.
+            chat_mod._run_web_answer(client, argument)
+        else:
+            chat_mod.run_web_answer(client, argument)
     except Exception as exc:
         tprint(c_red("  ✗ %s" % exc))
     return SlashResult()
@@ -1134,6 +1149,47 @@ def _cmd_tools(_client, _history, _session, argument):
     for line in lines:
         tprint("  " + line)
     return SlashResult()
+
+
+def _cmd_studio(client, history, _session, argument):
+    from .agent_tools import safe_text
+    from .studio_context import StudioContextManager
+    from .studio_settings import SettingsError
+    context = getattr(client, "studio_context", None)
+    if context is None:
+        context = StudioContextManager(client.workpath)
+        client.studio_context = context
+    context.set_workpath(client.workpath)
+    action, _, value = argument.partition(" ")
+    action = action.lower() or "status"
+    output = _Presentation()
+    try:
+        if action in ("status", "list", "refresh") and not value.strip():
+            context.detect(refresh=True)
+        else:
+            raise SettingsError('Use @agents to list agents, then @Name message or @"Agent Name" message. Normal messages use fresh CLI context.')
+        state = context.snapshot()
+        if state["status"] == "unavailable":
+            output.line(c_dim("  No readable Studio agent files detected in this profile."))
+        else:
+            output.line(c_cyan("  Studio agents · direct file access · %d available" % len(state["sources"])))
+        if action in ("list", "refresh"):
+            from .studio_mentions import format_agent_alias
+            for source in state["sources"]:
+                capabilities = [name for flag, name in (("hasMemory", "memory"), ("hasSoul", "soul"),
+                                ("hasInstructions", "instructions")) if source.get(flag)]
+                output.line("  " + format_agent_alias(source, state["sources"]) + "  " +
+                            safe_text(source["name"], 80) + "  [" + ", ".join(capabilities) + "]")
+                if source.get("dir"):
+                    output.line(c_dim("    " + safe_text(source["dir"], 240)))
+        output.line(c_dim('  @agents · @Name message · @"Agent Name" message · @persona:ID message'))
+        output.line(c_dim("  Normal chat starts fresh; Studio instructions, SOUL and memory load only for an @agent message."))
+        return SlashResult()
+    except SettingsError as error:
+        output.line(c_yellow("  " + str(error)))
+        return SlashResult(success=False)
+    finally:
+        output.flush()
 
 
 def _cmd_system(client, history, _session, argument):
@@ -1196,6 +1252,10 @@ def _cmd_workpath(client, history, _session, argument):
             tprint(c_red("  ✗ not a directory: " + target))
             return SlashResult()
         client.workpath = target
+        context = getattr(client, "studio_context", None)
+        if context is not None:
+            context.set_workpath(target)
+            context.detect(refresh=True)
         _refresh_system(history, client)
     except Exception as exc:
         tprint(c_red("  ✗ workpath: %s" % exc))
@@ -1288,6 +1348,22 @@ def _cmd_copy(_client, history, _session, _argument):
     return SlashResult()
 
 
+def _cmd_thought(client, _history, _session, _argument):
+    """Open the last reply's thought bubble — what '💭...' marked."""
+    text = str(getattr(client, "last_thought", "") or "").strip()
+    if not text:
+        tprint(c_dim("  the last reply had no thought process"))
+        return SlashResult()
+    from . import chat as chat_mod
+    from . import render
+    tprint(c_dim("  %s thought:" % chat_mod.THOUGHT_GLYPH))
+    width = render.text_width()
+    for raw_line in text.splitlines():
+        for part in render.wrap_inline(raw_line, width):
+            tprint(c_dim(part) if part.strip() else part)
+    return SlashResult()
+
+
 def _cmd_save(_client, history, _session, argument):
     path = argument or ("reach-chat-%s.jsonl" % time.strftime("%Y%m%d-%H%M%S"))
     try:
@@ -1377,6 +1453,47 @@ def _cmd_theme(_client, _history, _session, argument):
     return SlashResult()
 
 
+def _cmd_pet(client, _history, _session, argument):
+    """Choose a title-box companion and save its animation preference."""
+    from .pets import PET_NAMES, normalize_pet
+
+    argument = (argument or "").strip().casefold()
+    pet = normalize_pet(getattr(client, "pet", "cat")) or "cat"
+    motion = bool(getattr(client, "pet_motion", True))
+    if not argument:
+        tprint(c_dim("  pet: %s · %s" % (pet, "animated" if motion else "paused")))
+        tprint(c_dim("  /pet cat|owl|bulldog · /pet next · /pet pause|resume"))
+        tprint(c_dim("  Ctrl+T cycles companions in the title box"))
+        return SlashResult()
+
+    if argument == "next":
+        pet = PET_NAMES[(PET_NAMES.index(pet) + 1) % len(PET_NAMES)]
+    elif argument in ("pause", "resume"):
+        motion = argument == "resume"
+    else:
+        requested = normalize_pet(argument)
+        if requested is None:
+            tprint(c_yellow("  usage: /pet cat|owl|bulldog|next|pause|resume"))
+            return SlashResult(success=False)
+        pet = requested
+
+    client.pet = pet
+    client.pet_motion = motion
+    try:
+        from .chatbox import active_footer
+        screen = active_footer()
+        if screen is not None:
+            screen.select_pet(pet)
+            screen.set_pet_motion(motion)
+    except (ImportError, AttributeError, RuntimeError):
+        pass
+    saved = save_session_config(pet=pet, pet_motion=motion)
+    tprint(c_green("  pet → %s · %s" % (pet, "animated" if motion else "paused")))
+    if not saved:
+        tprint(c_yellow("  applied for this session; could not save the pet in the config file"))
+    return SlashResult()
+
+
 def _cmd_exit(_client, _history, _session, _argument):
     return SlashResult(quit=True)
 
@@ -1387,6 +1504,7 @@ HANDLERS = {
     "/endpoint": _cmd_endpoint,
     "/endpoints": _cmd_endpoint,
     "/settings": _cmd_settings,
+    "/studio": _cmd_studio,
     "/model": _cmd_model,
     "/models": _cmd_models,
     "/web": _cmd_web,
@@ -1400,10 +1518,12 @@ HANDLERS = {
     "/undo": _cmd_undo,
     "/compact": _cmd_compact,
     "/copy": _cmd_copy,
+    "/thought": _cmd_thought,
     "/save": _cmd_save,
     "/layout": _cmd_layout,
     "/theme": _cmd_theme,
     "/themes": _cmd_theme,
+    "/pet": _cmd_pet,
     "/exit": _cmd_exit,
 }
 

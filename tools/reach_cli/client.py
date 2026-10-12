@@ -5,6 +5,7 @@ streaming chat completions, model listing, and pointer fallback.
 """
 
 import http.client
+import email.utils
 import json
 import os
 import socket
@@ -37,12 +38,26 @@ class ReachTransientError(ReachApiError):
     """A retryable failure (busy upstream, timeout, reset, cut stream).
 
     ``partial`` carries whatever was received before the failure:
-    {"content": str, "tool_calls": [...]} so the caller can keep it.
+    {"content": str, "tool_calls": [...], "thought": str} so the caller
+    can keep it.
     """
 
-    def __init__(self, message, partial=None, status=None):
+    def __init__(self, message, partial=None, status=None, retry_after=None):
         super().__init__(message, status=status)
-        self.partial = partial or {"content": "", "tool_calls": []}
+        self.partial = partial or {"content": "", "tool_calls": [], "thought": ""}
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(value):
+    """Parse a provider Retry-After without trusting malformed header text."""
+    try:
+        seconds = float(value)
+        return seconds if 0 <= seconds < float("inf") else None
+    except (ValueError, TypeError):
+        try:
+            return max(0, email.utils.parsedate_to_datetime(value).timestamp() - time.time())
+        except (ValueError, TypeError, OverflowError, AttributeError):
+            return None
 
 
 def _usage_dict(usage):
@@ -201,6 +216,8 @@ class ReachClient:
         # Footer hook contract (read by terminal.print_footer):
         # {"tokens": int|None, "rounds": int, "latency": float seconds}
         self.last_turn = {"tokens": None, "rounds": 0, "latency": 0.0}
+        # The last reply's provider reasoning (/thought); not part of history.
+        self.last_thought = ""
         # Whole-session counters (read by chatbox.session_meta); TurnMeter
         # accumulates into this on every completed turn.
         self.session_totals = {"turns": 0, "tokens": 0, "rounds": 0,
@@ -269,15 +286,26 @@ class ReachClient:
         return [m["id"] for m in data.get("data", [])[:1000]
                 if isinstance(m, dict) and _safe_model_id(m.get("id"), self.key)]
 
-    def complete(self, messages, tools=None, on_text=None, stream=True):
-        """One request attempt. Returns {"content", "tool_calls"}.
+    def complete(self, messages, tools=None, on_text=None, on_thought=None,
+                 stream=True, cancelled=None):
+        """One request attempt. Returns {"content", "tool_calls", "thought"}.
 
         Streams text deltas to ``on_text`` as they arrive and accumulates
-        native tool_call fragments by index. Retryable failures raise
-        ReachTransientError carrying the partial result; never changes
-        ``self.model`` or ``self.base``.
+        native tool_call fragments by index. Provider reasoning
+        (``reasoning_content``/``reasoning``/``thought`` deltas) streams to
+        ``on_thought`` and collects under ``"thought"`` — kept out of
+        ``content`` so it never becomes history text or a fenced block.
+        Retryable failures raise ReachTransientError carrying the partial
+        result; never changes ``self.model`` or ``self.base``. A set
+        ``cancelled`` event ends the stream at the current chunk — the
+        partial reply is kept as if it had completed (queued follow-up
+        release uses this to accept the streamed-so-far answer).
         """
+        from .settings import effective_budgets
+        budgets = effective_budgets(self)
         payload = {"messages": messages}
+        if budgets.get("maxTokens", 0):
+            payload["max_tokens"] = budgets["maxTokens"]
         if self.model:
             payload["model"] = self.model
         if tools:
@@ -295,8 +323,10 @@ class ReachClient:
             headers={"Content-Type": "application/json"},
         )
         text = []
+        thought = []
         slots = {}
         redactor = _TextRedactor(self.key)
+        thought_redactor = _TextRedactor(self.key)
 
         def emit(content, final=False):
             content = redactor.feed(content, final=final)
@@ -304,6 +334,13 @@ class ReachClient:
                 text.append(content)
                 if on_text:
                     on_text(content)
+
+        def emit_thought(value, final=False):
+            value = thought_redactor.feed(value, final=final)
+            if value:
+                thought.append(value)
+                if on_thought:
+                    on_thought(value)
 
         def partial():
             calls = _finish_tool_calls(slots)
@@ -325,10 +362,14 @@ class ReachClient:
                     fn["arguments"] = json.dumps(clean(decoded))
                 except (ValueError, TypeError):
                     fn["arguments"] = _safe_text(args, self.key)
-            return {"content": "".join(text), "tool_calls": calls}
+            return {"content": "".join(text), "tool_calls": calls,
+                    "thought": "".join(thought)}
 
         try:
-            response = urllib.request.urlopen(request, timeout=self.timeout)
+            timeout = self.timeout
+            if "requestTimeoutMs" in budgets:
+                timeout = budgets["requestTimeoutMs"] / 1000 or None
+            response = urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as exc:
             try:
                 body = exc.read()
@@ -337,7 +378,9 @@ class ReachClient:
             message = "endpoint error (HTTP %s): %s" % (
                 exc.code, _error_text(body, self.base, self.key))
             if exc.code in TRANSIENT_HTTP:
-                raise ReachTransientError(message, status=exc.code) from None
+                raise ReachTransientError(message, status=exc.code,
+                                          retry_after=_retry_after_seconds(exc.headers.get("Retry-After"))
+                                          if exc.headers else None) from None
             raise ReachApiError(message, status=exc.code) from None
         except (socket.timeout, TimeoutError) as exc:
             raise ReachTransientError("timed out: %s" % _safe_text(exc, self.key, 300), status="timeout") from None
@@ -354,6 +397,8 @@ class ReachClient:
 
         try:
             with response:
+                if cancelled is not None and cancelled.is_set():
+                    return partial()
                 if not payload["stream"]:
                     try:
                         data = json.loads(response.read().decode("utf-8", "replace"))
@@ -362,6 +407,10 @@ class ReachClient:
                     usage = data.get("usage") or {}
                     self.usage = _usage_dict(usage)
                     message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+                    reasoning = (message.get("reasoning_content")
+                                 or message.get("reasoning") or message.get("thought"))
+                    if isinstance(reasoning, str) and reasoning:
+                        emit_thought(reasoning, final=True)
                     content = message.get("content") or ""
                     emit(content, final=True)
                     for i, call in enumerate(message.get("tool_calls") or []):
@@ -378,6 +427,11 @@ class ReachClient:
                 stream_usage = None
                 raw_rest = b""
                 for raw in response:
+                    if cancelled is not None and cancelled.is_set():
+                        # Keep the streamed-so-far reply; the next queued
+                        # follow-up takes the turn from here.
+                        done = True
+                        break
                     line = raw.decode("utf-8", "replace").strip()
                     if not line.startswith("data:"):
                         raw_rest += raw
@@ -395,6 +449,10 @@ class ReachClient:
                     if isinstance(obj.get("usage"), dict):  # final usage chunk
                         stream_usage = _usage_dict(obj["usage"])
                     delta = choice.get("delta") or {}
+                    reasoning = (delta.get("reasoning_content")
+                                 or delta.get("reasoning") or delta.get("thought"))
+                    if isinstance(reasoning, str) and reasoning:
+                        emit_thought(reasoning)
                     content = delta.get("content")
                     if content:
                         emit(content)
@@ -406,9 +464,11 @@ class ReachClient:
         except (socket.timeout, TimeoutError, ConnectionError,
                 http.client.HTTPException, OSError, ValueError) as exc:
             emit("", final=True)
+            emit_thought("", final=True)
             kind = "timeout" if isinstance(exc, (socket.timeout, TimeoutError)) else "cut"
             raise ReachTransientError("stream cut: %s" % _safe_text(exc, self.key, 300), partial(), status=kind) from None
         emit("", final=True)
+        emit_thought("", final=True)
         self.last_latency_ms = (time.time() - started) * 1000
         self.usage = stream_usage or _usage_dict({})
         result = partial()

@@ -409,7 +409,7 @@ class FooterScreenTests(unittest.TestCase):
         self.assertEqual(row_after, row_before)
         self.assertEqual(column_after - column_before, 2)
 
-        shown = "\n".join(frame_rows(output).values())
+        shown = "\n".join(frame_rows(self.tty.getvalue()).values())
         self.assertIn("x^[[2Jy", shown)
         self.assertNotIn("\x1b[2J", output)
 
@@ -426,7 +426,7 @@ class FooterScreenTests(unittest.TestCase):
         screen.set_input(draft, cursor=2)
         output = self.tty.getvalue()[before:]
         row_after, column_after = last_cursor(output)
-        body = frame_rows(output)[23]
+        body = frame_rows(self.tty.getvalue())[23]
         self.assertIn("\u00e9", body)
         self.assertNotIn("\u0301", body)
         self.assertEqual(row_after, row_before)
@@ -642,6 +642,49 @@ class FooterScreenTests(unittest.TestCase):
                          (after["geometry"]["cursor_row"] + 1,
                           after["geometry"]["cursor_column"] + 1))
 
+    def test_watcher_survives_a_bad_tick_and_keeps_scrolling(self):
+        # One failed draw or poll must never kill the thread that owns
+        # scroll, resize, click and hover for the whole session.
+        import time
+        from reach_cli import footer_input
+        tty = MutableTTY(columns=40, rows=12)
+        screen = FooterScreen(self.client, tty, size=tty.get_size)
+        self.addCleanup(screen.close)
+        screen.start()
+        screen.write("".join("row-%03d\n" % i for i in range(80)))
+
+        original = screen._draw
+        calls = []
+
+        def flaky(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("boom")
+            return original(*args, **kwargs)
+
+        tty.rows = 11  # force a resize tick through the failing draw
+        with patch.object(screen, "_draw", flaky):
+            deadline = time.time() + 2
+            while len(calls) < 2 and time.time() < deadline:
+                time.sleep(0.02)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(screen._last_size, (40, 11))
+
+        # The same thread still applies navigation afterwards.
+        broker = footer_input._InputBroker()
+        with broker._condition:
+            broker._put([("scroll_up", 3)])
+        saved = footer_input._BROKER, footer_input._SESSION_ACTIVE
+        footer_input._BROKER, footer_input._SESSION_ACTIVE = broker, True
+        try:
+            deadline = time.time() + 2
+            while screen.snapshot()["scroll"]["following"] and \
+                    time.time() < deadline:
+                time.sleep(0.02)
+            self.assertFalse(screen.snapshot()["scroll"]["following"])
+        finally:
+            footer_input._BROKER, footer_input._SESSION_ACTIVE = saved
+
     def test_navigation_burst_preserves_event_order_and_draws_once(self):
         def ready_screen():
             tty = MutableTTY(columns=40, rows=12)
@@ -753,6 +796,67 @@ class FooterScreenTests(unittest.TestCase):
         rows = [splash.strip_ansi(text) for _, _, text in screen._visual_rows]
         self.assertIn(" " * 2 + "  \u2502     model indented", rows)
         self.assertIn(" " * 2 + "you \u25b8     user indented", rows)
+
+    def test_thought_mark_hover_shows_and_hides_bubble(self):
+        screen = self.screen()
+        screen.start()
+        parts = ["first I checked the files"]
+        screen.write("ai \u25b8 ")
+        screen.write("o... ")
+        screen.note_thought(parts, 5)
+        screen.write("the answer\n")
+        geometry = screen.snapshot()["geometry"]
+        scroll = screen.snapshot()["scroll"]
+        visible = scroll["visible_rows"]
+        # A short transcript is bottom-aligned; padding fills the top rows.
+        row = (geometry["transcript_top"] + visible -
+               min(visible, scroll["total_rows"]))
+        # The mark cells sit right after 'ai ▸ ' on the first transcript row.
+        self.assertIsNone(screen._thought_at(0, row))
+        self.assertIsNotNone(screen._thought_at(6, row))
+        self.assertIsNone(screen._thought_at(6, row + 1))
+        self.assertIsNone(screen._thought_at(6, row + visible))
+        before = len(self.tty.getvalue())
+        screen.hover((6, row))
+        chunk = self.tty.getvalue()[before:]
+        self.assertIsNotNone(screen._hover)
+        self.assertIn(TL, chunk)
+        self.assertIn("first I checked the files", chunk)
+        # Reading holds the mark's visible position while late reasoning
+        # and answer lines arrive, keeping the popup accessible.
+        parts.append(" plus second-guessing")
+        screen.write("extra line\n")
+        self.assertIsNotNone(screen._hover)
+        before = len(self.tty.getvalue())
+        screen.hover((6, row))
+        self.assertIn("plus second-guessing", self.tty.getvalue()[before:])
+        before = len(self.tty.getvalue())
+        # Moving into the thought surface keeps it readable; leaving both
+        # the mark and popup dismisses the transient hover.
+        screen.hover((0, 0))
+        chunk = self.tty.getvalue()[before:]
+        self.assertIsNone(screen._hover)
+        # Rows the bubble covered repaint once it hides.
+        covered_rows = range(row - 4, row + 4)
+        self.assertTrue(any("\x1b[%d;1H" % (r + 1) in chunk
+                            for r in covered_rows))
+
+    def test_followup_queue_is_fifo_and_draft_carry_is_one_shot(self):
+        screen = self.screen()
+        self.assertIsNone(screen.take_followup())
+        screen.queue_followup("first")
+        self.assertTrue(screen.has_followups())
+        screen.queue_followup("second")
+        self.assertEqual(screen.take_followup(), "first")
+        self.assertEqual(screen.take_followup(), "second")
+        self.assertIsNone(screen.take_followup())
+        self.assertFalse(screen.has_followups())
+        self.assertEqual(screen.take_draft_carry(), ("", 0))
+        screen.carry_draft("half typed", 99)  # cursor clamps to the text end
+        self.assertEqual(screen.take_draft_carry(), ("half typed", 10))
+        self.assertEqual(screen.take_draft_carry(), ("", 0))  # consumed once
+        screen.carry_draft("", 3)
+        self.assertEqual(screen.take_draft_carry(), ("", 0))  # empty never carries
 
 
 if __name__ == "__main__":

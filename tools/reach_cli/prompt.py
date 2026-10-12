@@ -81,6 +81,8 @@ def _readline_complete(text, state):
     try:
         mod = load_readline()
         buffer = mod.get_line_buffer() if mod is not None else ""
+        if buffer.lstrip().startswith("@") and callable(getattr(mod, "get_endidx", None)):
+            buffer = buffer[:mod.get_endidx()]
         matches = complete_token(text, buffer)
     except Exception:
         return None
@@ -90,7 +92,7 @@ def _readline_complete(text, state):
 
 
 def complete_token(text, buffer):
-    """Tab matches: /commands from the registry, or paths after /workpath."""
+    """Tab matches: /commands, /workpath paths, or explicit @agent metadata."""
     text = "" if text is None else str(text)
     buffer = "" if buffer is None else str(buffer)
     stripped = buffer.lstrip()
@@ -98,6 +100,9 @@ def complete_token(text, buffer):
         return _complete_paths(text)
     if text.startswith("/") or stripped.startswith("/"):
         return [token for token in command_tokens() if token.startswith(text)]
+    if stripped.startswith("@"):
+        from .studio_mentions import detected_agent_completions
+        return detected_agent_completions(text, buffer)
     return []
 
 

@@ -434,6 +434,32 @@ def tool_todo_read(workpath, args, ctx):
     return _format_todos(ctx["todos"]) or "(no plan yet)"
 
 
+def _studio_context(workpath, args, ctx, allowed=()):
+    from .studio_context import StudioContextManager, _workpath
+    if set(args) - set(allowed):
+        raise ValueError("Studio context tools use the selected agent only; arbitrary ids and paths are not accepted")
+    manager = ctx.get("studio_context")
+    if not isinstance(manager, StudioContextManager) or manager.workpath != _workpath(workpath):
+        raise ValueError("No Studio context is attached to this CLI workpath; address an agent with @agent NAME or ID")
+    return manager
+
+
+def tool_studio_context_list(workpath, args, ctx):
+    manager = _studio_context(workpath, args, ctx)
+    return json.dumps(manager.detect(refresh=True), ensure_ascii=False)
+
+
+def tool_studio_context_read(workpath, args, ctx):
+    manager = _studio_context(workpath, args, ctx, ("field",))
+    field = args.get("field", "all")
+    if field not in ("all", "instructions", "soul", "memory"):
+        raise ValueError("field must be all, instructions, soul or memory")
+    data = manager.read(refresh=True)
+    if field == "all":
+        return json.dumps(data, ensure_ascii=False)
+    return "%s — %s (%s)\n%s" % (field, data["name"], data["id"], data[field])
+
+
 def _format_todos(todos):
     if not todos:
         return "(empty plan)"
@@ -521,6 +547,18 @@ for _name, _tool in TOOLS.items():
                          "execution" if _name == "shell" else
                          "web" if _name in ("websearch", "browse") else "planning")
 TOOLS.update(EXTRA_TOOLS)
+TOOLS.update({
+    "studio_context_list": {
+        "approval": False, "category": "studio",
+        "help": "List existing Studio agent metadata from its local profile. It never selects an agent or loads SOUL.md/MEMORY.md contents.",
+        "example": {"action": "studio_context_list"}, "run": tool_studio_context_list,
+    },
+    "studio_context_read": {
+        "approval": False, "category": "studio",
+        "help": "Read the explicitly addressed Studio agent's existing instructions, SOUL.md and MEMORY.md directly from its profile. Requires @agent selection. Optional field: all, instructions, soul or memory. No arbitrary ids or paths; read only.",
+        "example": {"action": "studio_context_read", "field": "memory"}, "run": tool_studio_context_read,
+    },
+})
 
 
 def tool_help_text(names=None):
@@ -533,7 +571,7 @@ def tool_help_text(names=None):
         lines.append("- %s: %s" % (name, tool["help"]))
         lines.append("  %s" % json.dumps(tool["example"]))
     if names is None:
-        lines.append("More tools: files, git, execution, processes, web, planning. "
+        lines.append("More tools: files, git, execution, processes, web, planning, studio. "
                      "Call tool_discover with a category/query or exact names to inspect and enable relevant schemas.")
     return "\n".join(lines)
 
@@ -560,6 +598,10 @@ TOOL_PARAMETERS = {
 }
 for _name, _tool in EXTRA_TOOLS.items():
     TOOL_PARAMETERS[_name] = _tool["parameters"]
+TOOL_PARAMETERS.update({
+    "studio_context_list": ({}, []),
+    "studio_context_read": ({"field": {"type": "string", "enum": ["all", "instructions", "soul", "memory"]}}, []),
+})
 
 
 def tool_catalog(query="", category="", names=None):
@@ -621,7 +663,7 @@ TOOLS["tool_discover"] = {
     "example": {"action": "tool_discover", "category": "git"}, "run": tool_discover,
 }
 TOOL_PARAMETERS["tool_discover"] = ({"query": _S, "category": _S,
-    "names": {"type": "array", "items": _S, "maxItems": 36}, "activate": {"type": "boolean"}}, [])
+    "names": {"type": "array", "items": _S, "maxItems": len(TOOLS)}, "activate": {"type": "boolean"}}, [])
 
 
 def tool_schemas(names=None):

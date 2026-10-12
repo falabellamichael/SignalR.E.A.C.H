@@ -111,8 +111,35 @@ function appendMessageActions(bubble, role, text, msgIndex = null, provisional =
 }
 
 
+function isTeamsChatNewestFirst() {
+  return currentAgent?.settings?.teamChat?.enabled === true;
+}
+
+function syncChatOrder() {
+  const newestFirst = isTeamsChatNewestFirst();
+  if (chatLog.classList.contains('team-newest-first') === newestFirst) return;
+  const pinned = [], entries = [];
+  for (const child of [...chatLog.children]) {
+    if (child.matches('.team-deck, .chat-branch-note')) pinned.push(child);
+    else if (child.classList.contains('thought-detail') && entries.length) entries.at(-1).push(child);
+    else entries.push([child]);
+  }
+  // Move existing nodes so actions, translations and live streams keep their state.
+  chatLog.append(...pinned, ...entries.reverse().flat());
+  chatLog.classList.toggle('team-newest-first', newestFirst);
+}
+
+function appendChatEntry(entry) {
+  syncChatOrder();
+  if (isTeamsChatNewestFirst()) {
+    const first = [...chatLog.children].find(child => !child.matches('.team-deck, .chat-branch-note'));
+    chatLog.insertBefore(entry, first || null);
+  } else chatLog.appendChild(entry);
+}
+
 function appendChatMessage(role, text, msgIndex = null, thought = '', messageKey = '') {
   const follow = role === 'user' || shouldFollowChat();
+  const readingPosition = captureChatReadingPosition(follow);
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
   if (role === 'assistant') {
@@ -133,15 +160,16 @@ function appendChatMessage(role, text, msgIndex = null, thought = '', messageKey
     fork.onclick = (e) => { e.stopPropagation(); branchFromMessage(msgIndex); };
     div.appendChild(fork);
   }
-  chatLog.appendChild(div);
+  appendChatEntry(div);
   if (role === 'assistant') appendThoughtIndicator(div, thought);
   appendMessageActions(div, role, text, msgIndex, false, messageKey);
-  followChatTail(follow);
+  followChatTail(follow, readingPosition);
   return div;
 }
 
 function appendToolCallMessage(tool, args) {
   const follow = shouldFollowChat();
+  const readingPosition = captureChatReadingPosition(follow);
   const div = document.createElement('div');
   div.className = 'chat-msg system tool-call-message';
   const content = document.createElement('span');
@@ -152,7 +180,7 @@ function appendToolCallMessage(tool, args) {
   ts.className = 'msg-ts';
   ts.textContent = timeStamp();
   div.appendChild(ts);
-  chatLog.appendChild(div);
+  appendChatEntry(div);
 
   const lineHeight = Number.parseFloat(getComputedStyle(content).lineHeight) || 18;
   if (content.scrollHeight > lineHeight * 3 + 1) {
@@ -164,13 +192,14 @@ function appendToolCallMessage(tool, args) {
     details.appendChild(summary);
     div.insertBefore(details, ts);
   }
-  followChatTail(follow);
+  followChatTail(follow, readingPosition);
   return div;
 }
 
 function appendQuestion(question) {
   if (!question) return;
   const follow = shouldFollowChat();
+  const readingPosition = captureChatReadingPosition(follow);
   const card = document.createElement('div');
   card.className = 'chat-msg system';
   const label = document.createElement('p');
@@ -183,8 +212,8 @@ function appendQuestion(question) {
     button.onclick = () => { composerInput.value = option; composerInput.dispatchEvent(new Event('input')); composerInput.focus(); };
     card.appendChild(button);
   }
-  chatLog.appendChild(card);
-  followChatTail(follow);
+  appendChatEntry(card);
+  followChatTail(follow, readingPosition);
 }
 
 function formatElapsed(ms) {
@@ -213,6 +242,7 @@ function toolBodyText(result) {
 
 function appendToolCard(tool, ok, pending, error, result, meta = {}) {
   const follow = shouldFollowChat();
+  const readingPosition = captureChatReadingPosition(follow);
   const card = document.createElement('div');
   card.className = 'tool-card ' + (ok ? (pending ? 'pending' : 'ok') : 'err');
   const head = document.createElement('button');
@@ -247,8 +277,8 @@ function appendToolCard(tool, ok, pending, error, result, meta = {}) {
   body.textContent = toolBodyText(result);
   card.appendChild(body);
   head.onclick = () => body.classList.toggle('hidden');
-  chatLog.appendChild(card);
-  followChatTail(follow);
+  appendChatEntry(card);
+  followChatTail(follow, readingPosition);
 }
 
 const activeEditReviewGroups = new Map();
@@ -425,7 +455,8 @@ function createEditReviewGroup({ key, host, title, actor, resolve }) {
   guidance.setAttribute('aria-live', 'polite');
   content.append(toolbar, guidance, files);
   element.appendChild(content);
-  host.appendChild(element);
+  if (host === chatLog) appendChatEntry(element);
+  else host.appendChild(element);
 
   const group = {
     key, element, files, cards: new Map(), resolve, actor, count, added, removed,
@@ -531,6 +562,7 @@ function appendEditCardToGroup(group, edit) {
 function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
   if (!agent) return null;
   const follow = shouldFollowChat();
+  const readingPosition = captureChatReadingPosition(follow);
   const group = ensureEditReviewGroup({
     key: `agent:${agent.id}`,
     host,
@@ -539,7 +571,7 @@ function appendEditCard(edit, { agent = currentAgent, host = chatLog } = {}) {
     resolve: (editId, accepted) => reachApi.agents.resolveEdit(agent.id, editId, accepted),
   });
   const card = appendEditCardToGroup(group, edit);
-  followChatTail(follow);
+  followChatTail(follow, readingPosition);
   return card;
 }
 
@@ -551,6 +583,7 @@ function renderChatHistory() {
   }
   teamDeckSlot.replaceChildren();
   chatLog.innerHTML = '';
+  syncChatOrder();
   if (!currentAgent || !currentAgent.messages) { window.ReachActivity.setTeamVisible(false); return; }
   currentAgent.messages.forEach((m, idx) => {
     if (m.role === 'system' || m.role === 'developer') return;
@@ -571,7 +604,7 @@ function renderChatHistory() {
   // A branch shows where it stems from.
   if (currentAgent.parentChatId && currentAgent.forkIndex !== null) {
     const note = document.createElement('div');
-    note.className = 'chat-msg system';
+    note.className = 'chat-msg system chat-branch-note';
     note.textContent = `⑂ branched from "${currentAgent.name.replace(/ \(branch \d+\)$/, '')}" at message ${currentAgent.forkIndex}`;
     chatLog.insertBefore(note, chatLog.firstChild);
   }
@@ -982,6 +1015,7 @@ let recoveryBubble = null;
 let lastRateLimitNote = null;
 function handleAgentEvent(ev) {
   const follow = shouldFollowChat();
+  const readingPosition = captureChatReadingPosition(follow);
   window.ReachActivity.ingest(ev);
   if (ev.type === 'run-state') {
     if (ev.status === 'running') runningAgentIds.add(ev.agentId);
@@ -1019,7 +1053,7 @@ function handleAgentEvent(ev) {
         // would hold fragments of the old message — forget it with the nodes.
         streamBubble._translate = null;
         streamBubble.className = 'chat-msg assistant streaming';
-        chatLog.appendChild(streamBubble);
+        appendChatEntry(streamBubble);
       }
       break;
     case 'delta':
@@ -1118,7 +1152,7 @@ function handleAgentEvent(ev) {
       break;
     }
   }
-  followChatTail(follow);
+  followChatTail(follow, readingPosition);
 }
 reachApi.agents.onEvent(handleAgentEvent);
 

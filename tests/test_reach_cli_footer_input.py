@@ -207,10 +207,42 @@ class WindowsMouseDecoderTests(unittest.TestCase):
         self.assertEqual(decoder.feed(((-60) & 0xffff) << 16, 4), [])
         self.assertEqual(decoder.feed(((-60) & 0xffff) << 16, 4), [("scroll_down", 1)])
 
+    def test_wheel_reports_its_pointer_without_a_prior_motion_record(self):
+        decoder = WindowsMouseDecoder()
+        self.assertEqual(decoder.feed(240 << 16, 4, 12, 7),
+                         [("hover", (12, 7)), ("scroll_up", 2)])
+        self.assertEqual(decoder.feed(((-120) & 0xffff) << 16, 4, 3, 9),
+                         [("hover", (3, 9)), ("scroll_down", 1)])
+
     def test_click_motion_and_horizontal_wheel_do_not_scroll(self):
         decoder = WindowsMouseDecoder()
         for flags in (0, 1, 2, 8):
             self.assertEqual(decoder.feed(120 << 16, flags), [])
+
+    def test_move_reports_pointer_cell(self):
+        decoder = WindowsMouseDecoder()
+        self.assertEqual(decoder.feed(0, 0x0001, 12, 7), [("hover", (12, 7))])
+        self.assertEqual(decoder.feed(0, 0x0001), [])  # position is required
+        self.assertEqual(decoder.feed(0, 0, 5, 5), [])
+        self.assertEqual(decoder.feed(0, 0x0008, 5, 5), [])
+
+    def test_left_press_emits_once_until_release(self):
+        decoder = WindowsMouseDecoder()
+        self.assertEqual(decoder.feed(1, 0, 12, 7), [("click", (12, 7))])
+        self.assertEqual(decoder.feed(1, 0, 12, 7), [])
+        self.assertEqual(decoder.feed(1, 1, 13, 7), [("hover", (13, 7))])
+        self.assertEqual(decoder.feed(1, 2, 12, 7), [])  # DOUBLE_CLICK
+        self.assertEqual(decoder.feed(0, 0, 12, 7), [])
+        self.assertEqual(decoder.feed(1, 0, 12, 7), [("click", (12, 7))])
+
+    def test_right_middle_and_drag_records_do_not_click(self):
+        decoder = WindowsMouseDecoder()
+        for button in (2, 4):
+            self.assertEqual(decoder.feed(button, 0, 9, 3), [])
+        self.assertEqual(decoder.feed(1, 1, 9, 3), [("hover", (9, 3))])
+        self.assertEqual(decoder.feed(1, 0, 9, 3), [])
+        self.assertEqual(decoder.feed(0, 0, 9, 3), [])
+        self.assertEqual(decoder.feed(1, 0, -1, 3), [])
 
 
 class PosixKeyDecoderTests(unittest.TestCase):
@@ -262,35 +294,156 @@ class PosixKeyDecoderTests(unittest.TestCase):
         for byte in b"\x1b[<64;10;3M\x1b[<65;10;3Mtext":
             events.extend(decoder.feed(bytes([byte])))
             decoder.flush_escape() if decoder._escape != "\x1b" else None
-        self.assertEqual(events[:2], [("scroll_up", 1), ("scroll_down", 1)])
-        self.assertEqual("".join(text for key, text in events[2:]), "text")
+        self.assertEqual(events[:4], [("hover", (9, 2)), ("scroll_up", 1),
+                                      ("hover", (9, 2)), ("scroll_down", 1)])
+        self.assertEqual("".join(text for key, text in events[4:]), "text")
 
     def test_sgr_modifiers_scroll_but_other_or_invalid_mouse_reports_do_not(self):
         decoder = PosixKeyDecoder()
-        self.assertEqual(decoder.feed(b"\x1b[<84;10;3M"), [("scroll_up", 1)])
-        for report in (b"\x1b[<64;0;3M", b"\x1b[<66;10;3M", b"\x1b[<0;10;3M",
+        self.assertEqual(decoder.feed(b"\x1b[<84;10;3M"),
+                         [("hover", (9, 2)), ("scroll_up", 1)])
+        for report in (b"\x1b[<64;0;3M", b"\x1b[<66;10;3M",
                        b"\x1b[<64;10;3m", b"\x1b[<bad;10;3M", b"\x1b[<96;10;3M"):
             self.assertEqual(decoder.feed(report), [])
+        self.assertEqual(decoder.feed(b"ok"), [("text", "o"), ("text", "k")])
+
+    def test_sgr_click_fragments_emit_once_and_keep_following_draft(self):
+        decoder = PosixKeyDecoder()
+        events = []
+        for byte in (b"\x1b[<0;10;3M\x1b[<0;10;3M\x1b[<0;10;3m"
+                     b"\x1b[<0;11;4Mdraft\r"):
+            events.extend(decoder.feed(bytes([byte])))
+        self.assertEqual(events[:2], [("click", (9, 2)), ("click", (10, 3))])
+        self.assertEqual("".join(value for key, value in events if key == "text"),
+                         "draft")
+        self.assertEqual(events[-1], ("enter", ""))
+
+    def test_sgr_right_middle_release_drag_and_invalid_reports_do_not_click(self):
+        decoder = PosixKeyDecoder()
+        for report in (b"\x1b[<1;5;4M", b"\x1b[<2;5;4M", b"\x1b[<0;5;4m",
+                       b"\x1b[<0;0;4M", b"\x1b[<0;5;1000001M",
+                       b"\x1b[<128;5;4M"):
+            self.assertEqual(decoder.feed(report), [])
+        self.assertEqual(decoder.feed(b"\x1b[<32;5;4M"), [("hover", (4, 3))])
+        self.assertEqual(decoder.feed(b"\x1b[<0;5;4M"), [])
+        self.assertEqual(decoder.feed(b"\x1b[<35;5;4M"), [("hover", (4, 3))])
+        self.assertEqual(decoder.feed(b"\x1b[<0;5;4M"), [("click", (4, 3))])
+
+    def test_legacy_x10_left_press_release_and_repeat_are_deduplicated(self):
+        decoder = PosixKeyDecoder()
+        press = b"\x1b[M" + bytes([32, 37, 40])
+        release = b"\x1b[M" + bytes([35, 37, 40])
+        self.assertEqual(decoder.feed(press), [("click", (4, 7))])
+        self.assertEqual(decoder.feed(press), [])
+        self.assertEqual(decoder.feed(release), [])
+        self.assertEqual(decoder.feed(press), [("click", (4, 7))])
+
+    def test_sgr_motion_reports_pointer_cell(self):
+        decoder = PosixKeyDecoder()
+        self.assertEqual(decoder.feed(b"\x1b[<35;10;5M"), [("hover", (9, 4))])
+        # Motion bit stays set while a button is held; wheel bits do not move.
+        self.assertEqual(decoder.feed(b"\x1b[<32;10;5M"), [("hover", (9, 4))])
+        self.assertEqual(decoder.feed(b"\x1b[<35;10;5m"), [])
         self.assertEqual(decoder.feed(b"ok"), [("text", "o"), ("text", "k")])
 
     def test_legacy_x10_mouse_fragments_do_not_become_draft_text(self):
         decoder = PosixKeyDecoder()
         self.assertEqual(decoder.feed(b"\x1b[M"), [])
         self.assertEqual(decoder.feed(bytes([96, 37])), [])
-        self.assertEqual(decoder.feed(bytes([37])), [("scroll_up", 1)])
+        self.assertEqual(decoder.feed(bytes([37])),
+                         [("hover", (4, 4)), ("scroll_up", 1)])
         self.assertEqual(decoder.feed(b"\x1b[M" + bytes([97, 37, 37])),
-                         [("scroll_down", 1)])
+                         [("hover", (4, 4)), ("scroll_down", 1)])
 
     def test_legacy_high_coordinate_bytes_do_not_steal_following_utf8_text(self):
         decoder = PosixKeyDecoder()
         events = []
         for byte in b"\x1b[M" + bytes([96, 194, 160]) + "X\u754c\r".encode("utf-8"):
             events.extend(decoder.feed(bytes([byte])))
-        self.assertEqual(events, [("scroll_up", 1), ("text", "X"),
+        self.assertEqual(events, [("hover", (161, 127)), ("scroll_up", 1), ("text", "X"),
                                   ("text", "\u754c"), ("enter", "")])
 
 
 class DriverTests(unittest.TestCase):
+    def test_standalone_click_captures_the_screen_target_before_dispatch(self):
+        target = object()
+        captured = []
+
+        class Screen:
+            def scroll(self, *_):
+                raise AssertionError("a click became scrolling")
+            def capture_click(self, pointer):
+                self.pointer = pointer
+                return ("tool", target)
+            def click(self, pointer):
+                captured.append(pointer)
+
+        screen = Screen()
+        editor = EditBuffer("draft")
+        editor.cursor = 2
+        result = footer_input._drive(editor, lambda *_: None,
+                                     [("click", (8, 6)), ("enter", "")], screen.scroll)
+        self.assertEqual(result, "draft")
+        self.assertEqual(editor.cursor, 2)
+        self.assertEqual(screen.pointer, (8, 6))
+        self.assertEqual(captured, [(8, 6)])
+        self.assertIsInstance(captured[0], tuple)
+        self.assertEqual(captured[0].target, ("tool", target))
+
+    def test_standalone_wheel_uses_event_pointer_and_pages_use_keyboard_focus(self):
+        class Screen:
+            def __init__(self):
+                self.actions = []
+            def scroll(self, *_):
+                raise AssertionError("pointer-aware screen fell back to plain scrolling")
+            def hover(self, pointer):
+                self.actions.append(("hover", pointer))
+            def click(self, pointer):
+                self.actions.append(("click", pointer))
+            def scroll_ui(self, action, amount, pointer):
+                self.actions.append(("scroll", (action, amount, pointer)))
+
+        screen = Screen()
+        editor = EditBuffer("draft")
+        editor.cursor = 2
+        events = [("hover", (8, 6)), ("scroll_up", 1), ("scroll_page_down", ""),
+                  ("click", (9, 7)), ("scroll_down", 2), ("enter", "")]
+        self.assertEqual(footer_input._drive(editor, lambda *_: None, events, screen.scroll),
+                         "draft")
+        self.assertEqual(editor.cursor, 2)
+        self.assertEqual(screen.actions, [("hover", (8, 6)),
+                                          ("scroll", ("up", 1, (8, 6))),
+                                          ("scroll", ("page_down", 1, None)),
+                                          ("click", (9, 7)),
+                                          ("scroll", ("down", 2, (9, 7)))])
+
+    def test_standalone_click_dispatch_preserves_draft_cursor_and_completion(self):
+        class Screen:
+            def __init__(self):
+                self.clicks = []
+            def scroll(self, *_):
+                raise AssertionError("click became scroll")
+            def click(self, pointer):
+                self.clicks.append(pointer)
+        screen = Screen()
+        editor = EditBuffer("draft", history=("older",))
+        editor.cursor = 2
+        editor._completion = (0, "", ["draft"], 0)
+        changes = []
+        result = footer_input._drive(editor, lambda *args: changes.append(args),
+                                     [("click", (8, 6)), ("enter", "")], screen.scroll)
+        self.assertEqual(result, "draft")
+        self.assertEqual(editor.cursor, 2)
+        self.assertIsNotNone(editor._completion)
+        self.assertIsNone(editor._history_index)
+        self.assertEqual(changes, [("draft", 2)])
+        self.assertEqual(screen.clicks, [(8, 6)])
+
+    def test_click_without_screen_callback_does_not_edit_or_accept_input(self):
+        result = footer_input._drive(EditBuffer("draft"), lambda *_: None,
+                                     [("click", (8, 6)), ("text", "!"), ("enter", "")])
+        self.assertEqual(result, "draft!")
+
     def test_scroll_callbacks_preserve_draft_cursor_and_editor_history(self):
         editor = EditBuffer("  draft  ", history=("older",))
         editor.cursor = 3
@@ -553,6 +706,8 @@ class ScrollPollTests(unittest.TestCase):
             elif record.kind == 2:
                 record.event.mouse.buttons = description.get("delta", 120) << 16 & 0xffffffff
                 record.event.mouse.flags = description.get("flags", 4)
+                record.event.mouse.position.x = description.get("x", 0)
+                record.event.mouse.position.y = description.get("y", 0)
             records.append(record)
         read_count = []
 
@@ -650,6 +805,188 @@ class InputBrokerTests(unittest.TestCase):
         with broker._condition:
             broker._put(events)
 
+    def test_click_keeps_logical_target_when_streaming_moves_rows_before_poll(self):
+        broker = footer_input._InputBroker()
+        first, later = object(), object()
+        published = {"target": ("tool", first)}
+        with patch.object(footer_input, "_UI_RESOLVER", None):
+            footer_input.set_ui_resolver(lambda pointer: published["target"])
+            self.put(broker, [("text", "draft"), ("click", (8, 6))])
+            published["target"] = ("tool", later)
+            events = broker.ui_events()
+            self.assertEqual(events, [("click", (8, 6))])
+            self.assertIsInstance(events[0][1], tuple)
+            self.assertEqual(events[0][1].target, ("tool", first))
+            self.assertEqual(broker.event(), ("text", "draft"))
+            self.put(broker, [("click", (8, 6))])
+            legacy_click = broker.clicks()[0]
+            self.assertEqual(legacy_click, (8, 6))
+            self.assertEqual(legacy_click.target, ("tool", later))
+
+    def test_resolved_miss_and_resolver_failure_have_distinct_coordinate_fallbacks(self):
+        broker = footer_input._InputBroker()
+        with patch.object(footer_input, "_UI_RESOLVER", None):
+            footer_input.set_ui_resolver(lambda pointer: None)
+            self.put(broker, [("click", (8, 6))])
+            miss = broker.ui_events()[0][1]
+            self.assertEqual(miss, (8, 6))
+            self.assertTrue(hasattr(miss, "target"))
+            self.assertIsNone(miss.target)
+
+            def failed(pointer):
+                raise RuntimeError("the screen adapter is unavailable")
+
+            footer_input.set_ui_resolver(failed)
+            self.put(broker, [("click", (9, 7)), ("text", "n"), ("enter", "")])
+            fallback = broker.ui_events()[0][1]
+            self.assertEqual(fallback, (9, 7))
+            self.assertFalse(hasattr(fallback, "target"))
+            self.assertEqual(broker.event(), ("text", "n"))
+            self.assertEqual(broker.event(), ("enter", ""))
+
+    def test_cleared_resolver_and_closed_broker_release_captured_targets(self):
+        broker = footer_input._InputBroker()
+        target = object()
+        with patch.object(footer_input, "_UI_RESOLVER", None):
+            footer_input.set_ui_resolver(lambda pointer: ("thought", target))
+            self.put(broker, [("click", (8, 6))])
+            self.assertEqual(broker._ui_events[0][1].target, ("thought", target))
+            footer_input.set_ui_resolver(None)
+            broker.close()
+            self.assertEqual(broker.ui_events(), [])
+            self.assertEqual(broker.clicks(), [])
+            self.assertIsNone(footer_input._UI_RESOLVER)
+            with self.assertRaises(TypeError):
+                footer_input.set_ui_resolver(123)
+
+    def test_ordered_ui_events_keep_each_wheel_target_while_reply_or_reader_is_active(self):
+        for reading in (False, True):
+            broker = footer_input._InputBroker()
+            with self.subTest(reading=reading), \
+                    patch.object(footer_input, "_READ_ACTIVE", reading), \
+                    patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                    patch.object(footer_input, "_BROKER", broker), \
+                    patch.object(footer_input, "_windows_record_api") as native:
+                self.put(broker, [("text", "draft"), ("hover", (8, 6)),
+                                  ("scroll_up", 2), ("click", (9, 7)),
+                                  ("scroll_page_down", ""), ("hover", (3, 4)),
+                                  ("scroll_down", 1), ("enter", "")])
+                self.assertEqual(footer_input.poll_ui_events(), [
+                    ("hover", (8, 6)), ("scroll", ("up", 2, (8, 6))),
+                    ("click", (9, 7)), ("scroll", ("page_down", 1, None)),
+                    ("hover", (3, 4)), ("scroll", ("down", 1, (3, 4)))])
+                self.assertEqual(footer_input.poll_ui_events(), [])
+                self.assertEqual(footer_input.poll_scroll_events(), [])
+                self.assertEqual(footer_input.poll_click_events(), [])
+                self.assertEqual(footer_input.poll_pointer(), (3, 4))
+                self.assertEqual(broker.event(), ("text", "draft"))
+                self.assertEqual(broker.event(), ("enter", ""))
+                native.assert_not_called()
+
+    def test_hover_bursts_coalesce_without_reordering_click_or_scroll(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("hover", (i, 4)) for i in range(2000)])
+        self.put(broker, [("scroll_up", 1)] * 100)
+        self.put(broker, [("click", (8, 7)), ("scroll_down", 1),
+                          ("hover", (8, 8)), ("scroll_down", 1),
+                          ("hover", (8, 9))])
+        self.assertEqual(broker.ui_events(), [
+            ("hover", (1999, 4)), ("scroll", ("up", 100, (1999, 4))),
+            ("click", (8, 7)), ("scroll", ("down", 1, (8, 7))),
+            ("hover", (8, 8)), ("scroll", ("down", 1, (8, 8))),
+            ("hover", (8, 9))])
+
+    def test_decoded_wheel_burst_coalesces_only_same_action_and_pointer(self):
+        broker = footer_input._InputBroker()
+        decoder = PosixKeyDecoder()
+        for _ in range(100):
+            self.put(broker, decoder.feed(b"\x1b[<64;10;3M"))
+        self.put(broker, decoder.feed(b"\x1b[<65;10;3M\x1b[<65;11;3M"))
+        self.assertEqual(broker.ui_events(), [
+            ("hover", (9, 2)), ("scroll", ("up", 100, (9, 2))),
+            ("scroll", ("down", 1, (9, 2))), ("hover", (10, 2)),
+            ("scroll", ("down", 1, (10, 2)))])
+
+    def test_legacy_and_unified_polling_do_not_replay_consumed_events(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("hover", (3, 4)), ("scroll_up", 1),
+                          ("click", (5, 6)), ("scroll_down", 2)])
+        self.assertEqual(broker.navigation(), [("up", 1), ("down", 2)])
+        self.assertEqual(broker.clicks(), [(5, 6)])
+        self.assertEqual(broker.ui_events(), [("hover", (3, 4))])
+        self.put(broker, [("click", (6, 7)), ("scroll_up", 1)])
+        self.assertEqual(broker.ui_events(), [("click", (6, 7)),
+                                             ("scroll", ("up", 1, (6, 7)))])
+        self.assertEqual(broker.navigation(), [])
+        self.assertEqual(broker.clicks(), [])
+
+    def test_ui_events_stay_outside_fresh_approval_and_clear_on_session_close(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "old draft"), ("hover", (5, 8)), ("scroll_up", 1)])
+        with broker._condition:
+            broker._parked = (broker._pending, broker._urgent)
+            broker._pending, broker._urgent = footer_input.deque(), footer_input.deque()
+        self.put(broker, [("click", (6, 8)), ("scroll_page_down", ""),
+                          ("text", "n"), ("enter", "")])
+        self.assertEqual(broker.ui_events(), [("hover", (5, 8)),
+                                             ("scroll", ("up", 1, (5, 8))),
+                                             ("click", (6, 8)),
+                                             ("scroll", ("page_down", 1, None))])
+        self.assertEqual(broker.event(), ("text", "n"))
+        self.assertEqual(broker.event(), ("enter", ""))
+        broker.end_reader()
+        self.assertEqual(list(broker._pending), [("text", "old draft")])
+        self.put(broker, [("click", (8, 9)), ("scroll_down", 1)])
+        broker.close()
+        self.assertEqual(broker.ui_events(), [])
+        with patch.object(footer_input, "_SESSION_ACTIVE", False), \
+                patch.object(footer_input, "_BROKER") as hidden:
+            self.assertEqual(footer_input.poll_ui_events(), [])
+            hidden.ui_events.assert_not_called()
+
+    def test_click_queue_is_independent_from_background_draft_and_reader(self):
+        broker = footer_input._InputBroker()
+        for reading in (False, True):
+            with self.subTest(reading=reading), \
+                    patch.object(footer_input, "_READ_ACTIVE", reading), \
+                    patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                    patch.object(footer_input, "_BROKER", broker), \
+                    patch.object(footer_input, "_windows_record_api") as native:
+                self.put(broker, [("text", "draft"), ("click", (3, 7)),
+                                  ("hover", (9, 4)), ("click", (4, 8)), ("enter", "")])
+                self.assertEqual(footer_input.poll_click_events(), [(3, 7), (4, 8)])
+                self.assertEqual(footer_input.poll_click_events(), [])
+                self.assertEqual(footer_input.poll_pointer(), (4, 8))
+                self.assertEqual(broker.event(), ("text", "draft"))
+                self.assertEqual(broker.event(), ("enter", ""))
+                native.assert_not_called()
+
+    def test_click_during_fresh_approval_never_enters_parked_or_current_input(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "old draft"), ("click", (5, 8))])
+        # The native-drain barrier parks keyboard queues, not screen events.
+        with broker._condition:
+            broker._parked = (broker._pending, broker._urgent)
+            broker._pending, broker._urgent = footer_input.deque(), footer_input.deque()
+        self.put(broker, [("click", (6, 8)), ("text", "n"), ("enter", "")])
+        self.assertEqual(broker.clicks(), [(5, 8), (6, 8)])
+        self.assertEqual(broker.event(), ("text", "n"))
+        self.assertEqual(broker.event(), ("enter", ""))
+        broker.end_reader()
+        self.assertEqual(list(broker._pending), [("text", "old draft")])
+        self.assertEqual(broker.clicks(), [])
+
+    def test_click_queue_is_cleared_on_close_and_hidden_outside_session(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("click", (5, 8))])
+        with patch.object(footer_input, "_SESSION_ACTIVE", False), \
+                patch.object(footer_input, "_BROKER", broker):
+            self.assertEqual(footer_input.poll_click_events(), [])
+        self.assertEqual(broker.clicks(), [(5, 8)])
+        self.put(broker, [("click", (6, 8))])
+        broker.close()
+        self.assertEqual(broker.clicks(), [])
+
     def test_control_priority_does_not_reorder_text_edit_enter_or_eof(self):
         broker = footer_input._InputBroker()
         with patch.object(footer_input, "_READ_ACTIVE", True):
@@ -704,6 +1041,17 @@ class InputBrokerTests(unittest.TestCase):
         self.assertEqual(editor.cursor, 2)
         self.assertEqual(screen.batches, [[("page_up", 1), ("down", 2), ("up", 3)]])
         self.assertFalse(hasattr(screen, "fail"))
+
+    def test_pointer_keeps_latest_position_out_of_editing_queues(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("hover", (3, 4))])
+        self.put(broker, [("hover", (8, 9)), ("text", "d"), ("scroll_up", 1)])
+        self.assertEqual(broker.pointer(), (8, 9))
+        self.assertEqual(list(broker._navigation), [("up", 1)])
+        self.assertEqual(broker.event(), ("text", "d"))
+        broker.close()
+        self.assertIsNone(broker.pointer())
+        self.assertIsNone(footer_input.poll_pointer())
 
     def test_urgent_posix_cancel_is_guarded_and_deduplicated(self):
         broker = footer_input._InputBroker()
@@ -946,6 +1294,50 @@ class InputBrokerTests(unittest.TestCase):
         self.assertEqual(broker.navigation(), [])
         with self.assertRaises(EOFError):
             broker.event()
+
+    def test_collect_event_drains_pending_fifo_until_stopped_or_closed(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "draft"), ("enter", "")])
+        stop = threading.Event()
+        self.assertEqual(broker.collect_event(stop), ("text", "draft"))
+        self.assertEqual(broker.collect_event(stop), ("enter", ""))
+        stop.set()
+        with self.assertRaises(EOFError):
+            broker.collect_event(stop)
+        closed = footer_input._InputBroker()
+        self.put(closed, [("text", "x")])
+        closed.close()
+        with self.assertRaises(EOFError):
+            closed.collect_event(threading.Event())
+
+    def test_collect_event_never_steals_from_an_active_reader(self):
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "kept")])
+        stop = threading.Event()
+        got = []
+        with patch.object(footer_input, "_READ_ACTIVE", True):
+            worker = threading.Thread(
+                target=lambda: got.append(broker.collect_event(stop)),
+                daemon=True)
+            worker.start()
+            time.sleep(0.15)
+            self.assertEqual(got, [])  # a real reader owns the pending queue
+            footer_input._READ_ACTIVE = False
+            worker.join(timeout=2)
+        self.assertEqual(got, [("text", "kept")])
+
+    def test_collect_event_and_requeue_require_a_session(self):
+        with self.assertRaises(EOFError):
+            footer_input.collect_event(threading.Event())
+        broker = footer_input._InputBroker()
+        self.put(broker, [("text", "later")])
+        with patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                patch.object(footer_input, "_BROKER", broker):
+            footer_input.requeue_event("eof")
+            self.assertEqual(footer_input.collect_event(threading.Event()),
+                             ("eof", ""))
+            self.assertEqual(footer_input.collect_event(threading.Event()),
+                             ("text", "later"))
 
 
 if __name__ == "__main__":

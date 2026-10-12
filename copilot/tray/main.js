@@ -18,7 +18,7 @@
 
 const {
     app, BrowserWindow, Menu, Notification, Tray,
-    ipcMain, nativeImage, screen, session, shell
+    ipcMain, nativeImage, screen, session, shell, safeStorage, dialog, powerMonitor
 } = require('electron');
 const http = require('node:http');
 const https = require('node:https');
@@ -30,7 +30,24 @@ app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-t
 const { createEndpointClient } = require('./endpoint');
 const { createGeminiBrowser } = require('./gemini');
 const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX, discoverCodegptApiPort } = require('./economy-models');
-const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'));
+const { createModelCredentialStore } = require('./model-credentials');
+const { promptForModelKey } = require('./native-model-key');
+const modelCredentials = createModelCredentialStore({
+    file: path.join(app.getPath('userData'), 'model-discovery-key.json'), safeStorage, prompt: promptForModelKey
+});
+const endpoints = createEndpointClient(path.join(app.getPath('userData'), 'tray-settings.json'), { modelCredentials });
+const resumeModelPolling = () => endpoints.resumePolling();
+async function configureModelDiscoveryKey() {
+    try {
+        const origin = await endpoints.modelOrigin();
+        if (await modelCredentials.promptForOrigin(origin)) {
+            endpoints.invalidateDiscovery();
+            dialog.showMessageBoxSync({ type: 'info', title: 'SignalREACH', message: 'Model-discovery key encrypted and saved locally.' });
+        }
+    } catch (_) {
+        dialog.showErrorBox('SignalREACH', 'Secure model key entry could not complete. No plaintext key was saved.');
+    }
+}
 let clickTimer = null;
 let isQuitting = false;
 
@@ -2441,6 +2458,7 @@ function startBridge() {
         const gemini = geminiBrowser.health();
         return {
             ok: true, service: 'signalreach-tray', bridge: BRIDGE_PORT,
+            modelDiscoveryCredential: modelCredentials.status(), modelDiscovery: endpoints.discoveryStatus(),
             codeVer: 'cg-bridge-12',
             provider: prov,
             copilotVisible: cVis,
@@ -2553,6 +2571,8 @@ function buildTrayMenu() {
     const codegptVisible = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
     const geminiVisible = geminiBrowser.health().visible;
     return Menu.buildFromTemplate([
+        { label: 'Set model discovery key...', click: () => { void configureModelDiscoveryKey(); } },
+        { type: 'separator' },
         { label: 'Free model endpoints', type: 'radio', checked: endpoints.getSettings().provider === 'endpoint',
           click: () => { saveTraySettings({ provider: 'endpoint' }); openPanel(); } },
         { label: 'Microsoft 365 Copilot', type: 'radio', checked: endpoints.getSettings().provider === 'copilot',
@@ -3136,6 +3156,8 @@ if (hostBlock) {
         log('=== Copilot tray starting (pid ' + process.pid + ') ===');
         installIpc();
         startBridge();
+        endpoints.startPolling();
+        powerMonitor.on('resume', resumeModelPolling);
         createTray();
         openPanel();
         // The economy list is CodeGPT's own live credits menu, so it is read
@@ -3220,6 +3242,8 @@ if (hostBlock) {
 
     app.on('before-quit', () => {
         isQuitting = true;
+        endpoints.stopPolling();
+        powerMonitor.removeListener('resume', resumeModelPolling);
         clearTimeout(clickTimer);
         clearTimeout(autoHideTimer);
         clearTimeout(chatgptAutoHideTimer);

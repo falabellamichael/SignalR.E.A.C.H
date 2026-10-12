@@ -50,6 +50,9 @@ dist/
 # pre-change snapshots. Untracked but NOT ignored, so `git add -A` swept it in.
 .files-work/
 
+# Local verification output, profile fixtures, screenshots and build proofs.
+/build/
+
 # Installed JavaScript dependencies at any project level.
 node_modules/
 

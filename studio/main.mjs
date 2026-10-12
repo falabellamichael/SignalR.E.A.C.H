@@ -2,7 +2,7 @@ import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell, safeStorage, N
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { randomUUID, createHash } from 'crypto';
+import { randomUUID, randomBytes, createHash, createHmac } from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -64,6 +64,7 @@ const { auditEvent } = require('./agent/audit-event.cjs');
 const { atomicWriteJson } = require('./agent/atomic-write.cjs');
 const connections = require('./agent/connections.cjs');
 const { createSettingsStore } = require('./agent/settings-store.cjs');
+const { createCliSettingsBridge, SCOPE_FIELDS: settingsScopeFields } = require('./agent/cli-settings-bridge.cjs');
 const { McpManager } = require('./agent/mcp.cjs');
 const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
@@ -72,6 +73,7 @@ const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
+let cliSettingsBridge = null;
 
 /* The security audit log (PRD, Terminal & Tool Execution Sandbox: "All terminal
  * commands ... are logged to an immutable security audit log").
@@ -227,6 +229,228 @@ function attachmentMessage(text, staged) {
     display,
     meta: { source: 'user', attachments: files.map(({ name, path: filePath, size, mime }) => ({ name, path: filePath, size, mime })) },
   };
+}
+
+// Shared by the renderer IPC and the authenticated CLI settings bridge.
+const settingsRevisionKey = randomBytes(32);
+function settingsRevision(settings = loadSettings(), scope = '') {
+  // Keyed so a revision cannot be used to guess a low-entropy saved credential.
+  const snapshot = settingsScopeFields[scope]
+    ? Object.fromEntries(settingsScopeFields[scope].filter(key => Object.hasOwn(settings, key)).map(key => [key, settings[key]])) : settings;
+  return createHmac('sha256', settingsRevisionKey).update(JSON.stringify([scope, snapshot])).digest('hex');
+}
+function settingsRevisions(settings = loadSettings()) {
+  return Object.fromEntries(Object.keys(settingsScopeFields).map(scope => [scope, settingsRevision(settings, scope)]));
+}
+function settingsSavedResult(scope = '') {
+  const settings = loadSettings();
+  return { ok: true, settingsRevision: settingsRevision(settings, scope), settingsRevisions: settingsRevisions(settings) };
+}
+function conversationRevision(agent) {
+  const settings = agent.settings || {};
+  const snapshot = { name: agent.name, model: agent.model, approvals: settings.approvals,
+    reviewEdits: settings.reviewEdits, budgetOverrides: settings.budgetOverrides };
+  return createHmac('sha256', settingsRevisionKey).update(JSON.stringify(['conversation', snapshot])).digest('hex');
+}
+function applySettingsPatch(s) {
+  const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
+  const current = loadSettings();
+  const scope = patch.settingsScope || '';
+  if (scope && (!Object.hasOwn(settingsScopeFields, scope) || Object.keys(patch).some(key => !['settingsScope', 'settingsRevision', ...settingsScopeFields[scope]].includes(key)))) {
+    const error = new Error('This Settings panel can only save its own fields. Reload the panel before saving.');
+    error.bridgeValidation = true;
+    throw error;
+  }
+  if (patch.settingsRevision !== undefined && patch.settingsRevision !== settingsRevision(current, scope)) {
+    const error = new Error('Settings changed in another window or the CLI. Reload this Settings panel before saving.');
+    error.bridgeValidation = true;
+    throw error;
+  }
+  const next = { ...current, ...patch };
+  delete next.settingsRevision;
+  delete next.settingsRevisions;
+  delete next.settingsScope;
+  if (Object.hasOwn(patch, 'pageLayout')) next.pageLayout = patch.pageLayout === 'full-width' ? 'full-width' : 'page-sized';
+  if (Object.hasOwn(patch, 'jevEnabled')) next.jevEnabled = patch.jevEnabled === true;
+  if (Object.hasOwn(patch, 'jevAutoMode')) next.jevAutoMode = patch.jevAutoMode === true;
+  if (patch.jevApiKeyAction === 'clear') next.jevApiKey = '';
+  else if (typeof patch.jevApiKey === 'string' && patch.jevApiKey.trim()) next.jevApiKey = patch.jevApiKey.trim();
+  else next.jevApiKey = current.jevApiKey || '';
+  delete next.jevApiKeyAction;
+  delete next.jevKeyConfigured;
+  delete next.jevKeySource;
+  if (patch.budgets !== undefined) next.budgets = { ...budgetDefaults, ...validateBudgets(patch.budgets) };
+  /* Fold a legacy single-endpoint write into the active connection.
+   *
+   * The merged `next` always carries a `connections` array (loadSettings
+   * normalizes it in), so presence cannot mean "the caller manages
+   * connections" — only the PATCH can say that. Without this, a
+   * saveSettings({endpoint, accessKey, model}) call would report success and
+   * then be silently reverted on the next read, because those three fields are
+   * derived from the active connection. The smoke suite relies on exactly that
+   * call shape in several places.
+   */
+  const connectionsAuthoritative = Array.isArray(patch.connections);
+  saveSettings(connections.preserveCapabilities(current,
+    connections.applyLegacyWrite(next, { connectionsAuthoritative })));
+  if (Object.keys(patch).filter(key => !['settingsRevision', 'settingsScope'].includes(key)).length === 1 && Object.hasOwn(patch, 'pageLayout')) return settingsSavedResult(scope);
+  // Settings drive every agent loop's endpoint + default model — drop the
+  // cache so the next message builds a fresh loop with the new values.
+  for (const [id, loop] of agentLoops) {
+    if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
+    else agentLoops.delete(id);
+  }
+  return settingsSavedResult(scope);
+}
+
+function setThemeChoice(input) {
+  const current = loadSettings();
+  const painted = paintTheme(input && typeof input === 'object' ? input : { theme: input }, {
+    theme: current.theme, accent: current.accent, tint: current.tint,
+  });
+  // Appearance changes must not invalidate an active agent's settings.
+  saveSettings({ ...current, theme: painted.theme, accent: painted.accent, tint: painted.tint });
+  nativeTheme.themeSource = painted.scheme;
+  if (win && !win.isDestroyed()) win.setBackgroundColor(painted.bg);
+  return { theme: painted.theme, accent: painted.accent, tint: painted.tint, scheme: painted.scheme };
+}
+
+async function listMcpStatus() {
+  try {
+    /* Error rows retry on a backoff, not on every list: kicking an error
+     * immediately would flip it back to 'checking' before the response is
+     * built, so the renderer would never see the failure — and every list
+     * call would hammer the dead endpoint with a fresh handshake. */
+    const ERROR_RETRY_MS = 15000;
+    const now = Date.now();
+    const rows = mcpManager.statusList();
+    for (const row of rows) {
+      const retry = row.status === 'error' && now - (row.checkedAt || 0) > ERROR_RETRY_MS;
+      if (row.enabled && (row.status === 'unknown' || row.stale || retry)) {
+        mcpManager.ensureLoaded(row.id).catch(() => {});
+      }
+    }
+    return { ok: true, servers: mcpManager.statusList() };
+  } catch (error) {
+    return { ok: false, err: error.message, servers: [] };
+  }
+}
+
+async function testMcpServer(serverId) {
+  try {
+    const status = await mcpManager.test(String(serverId || ''));
+    return { ok: true, status };
+  } catch (error) {
+    return { ok: false, err: error.message };
+  }
+}
+
+function updateAgentConversation(id, patch) {
+  const current = getAgentStore().get(id);
+  if (patch.conversationRevision !== undefined && current && patch.conversationRevision !== conversationRevision(current)) {
+    const error = new Error('Conversation settings changed in another window or the CLI. Reload this Settings panel before saving.');
+    error.bridgeValidation = true;
+    throw error;
+  }
+  const { conversationRevision: revision, ...changes } = patch;
+  patch = changes;
+  if (patch.settings) validatePolicy(patch.settings, TOOLS);
+  if (patch.settings?.jevAutoMode !== undefined && typeof patch.settings.jevAutoMode !== 'boolean') throw new Error('Auto mode must be on or off.');
+  if (patch.settings?.budgetOverrides != null) patch.settings.budgetOverrides = validateBudgets(patch.settings.budgetOverrides);
+  const agent = getAgentStore().update(id, patch);
+  if (agent) for (const runner of teamRuns.values()) if (runner.conversationId === id) {
+    runner.agentSettings = structuredClone(agent.settings);
+    if (runner.net) runner.net.agentSettings = structuredClone(agent.settings);
+    for (const [key, store] of runner.memberStores) Object.assign(store.get(key).settings, structuredClone(agent.settings));
+    for (const member of runner.net?.agents.values() || []) if (member.store) Object.assign(member.store.get(member.id).settings, structuredClone(agent.settings));
+  }
+  // A settings save must not orphan an active loop or break Stop.
+  const loop = agentLoops.get(id);
+  if (loop?.running || loop?.autoRoute && agent?.runState?.status === 'waiting_edits') loop.settingsStale = true;
+  else agentLoops.delete(id);
+  return agent ? { ok: true, agent: { ...agent, conversationRevision: conversationRevision(agent) } } : { ok: false, err: 'Agent not found' };
+}
+
+async function listProviderModels(payload = {}) {
+  /* Three ways to pick the provider to list, in priority order:
+   *
+   *  1. `endpoint` (+ optional `accessKey`) — an AD-HOC lookup. Needed because
+   *     the Connection page edits rows in place: while the user is typing a new
+   *     URL there is nothing saved to resolve an id against, so Browse must be
+   *     able to list from the URL on screen. Without this, Browse only works
+   *     after saving, which reads as a broken button.
+   *  2. `connectionId` — a saved connection that is NOT the active one, so a
+   *     row's Browse does not have to activate that provider first.
+   *  3. neither — the active connection. This is what playground, refactor and
+   *     the agent settings form pass, so those callers are unchanged.
+   *
+   * An ad-hoc endpoint is validated exactly like a stored one (resolveEndpoint
+   * rejects non-HTTP and embedded credentials) and is never persisted.
+   */
+  const settings = loadSettings();
+  let endpoint = '';
+  let accessKey = '';
+  let label = '';
+  let connectionId = null;
+
+  const adHoc = payload && typeof payload.endpoint === 'string' && payload.endpoint.trim();
+  if (adHoc) {
+    endpoint = connections.normalizeEndpoint(payload.endpoint);
+    accessKey = String(payload.accessKey == null ? '' : payload.accessKey);
+    label = connections.defaultName(endpoint) || endpoint;
+  } else {
+    const requested = payload && typeof payload === 'object' ? payload.connectionId : null;
+    const connection = (requested && connections.findConnection(settings, requested))
+      || connections.activeConnection(settings);
+    if (!connection || !connection.endpoint) {
+      return { ok: false, err: 'No endpoint configured in Settings.' };
+    }
+    endpoint = connection.endpoint;
+    accessKey = connection.accessKey || '';
+    label = connection.name;
+    connectionId = connection.id;
+  }
+
+  try {
+    const base = await resolveEndpoint(endpoint);
+    const headers = {};
+    if (accessKey) headers.Authorization = 'Bearer ' + accessKey;
+    const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) return { ok: false, err: `HTTP ${res.status}` };
+    const data = await res.json();
+    capabilityStore.recordCatalog(connectionId, base, data);
+    const ids = (data.data || []).map(m => m.id).filter(Boolean).sort();
+    // Tell the caller which connection these models came from, so the UI can
+    // say so instead of implying they came from the active one.
+    return { ok: true, models: ids, connectionId, connectionName: label, endpoint };
+  } catch (e) {
+    return { ok: false, err: e.message };
+  }
+}
+
+async function pingConnection(payload = {}) {
+  const settings = loadSettings();
+  const requested = payload && typeof payload === 'object' ? payload.connectionId : null;
+  const connection = (requested && connections.findConnection(settings, requested))
+    || connections.activeConnection(settings);
+  if (!connection || !connection.endpoint) return { ok: false, err: 'No endpoint configured.' };
+  const started = Date.now();
+  try {
+    const base = await resolveEndpoint(connection.endpoint);
+    const headers = {};
+    if (connection.accessKey) headers.Authorization = 'Bearer ' + connection.accessKey;
+    const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+    const latencyMs = Date.now() - started;
+    if (!res.ok) return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}` };
+    let modelCount = null;
+    try {
+      const data = await res.json();
+      modelCount = Array.isArray(data.data) ? data.data.length : null;
+    } catch { /* a non-JSON body still proved reachability */ }
+    return { ok: true, status: res.status, latencyMs, models: modelCount, connectionId: connection.id, connectionName: connection.name };
+  } catch (e) {
+    return { ok: false, err: e.message, latencyMs: Date.now() - started };
+  }
 }
 
 // ---------- stores ----------
@@ -658,17 +882,7 @@ function registerIpc() {
     const painted = themeChoice();
     event.returnValue = { theme: painted.theme, accent: painted.accent, tint: painted.tint };
   });
-  ipcMain.handle('theme:set', (_event, input) => {
-    const current = loadSettings();
-    const painted = paintTheme(input && typeof input === 'object' ? input : { theme: input }, {
-      theme: current.theme, accent: current.accent, tint: current.tint,
-    });
-    // Appearance changes must not invalidate an active agent's settings.
-    saveSettings({ ...current, theme: painted.theme, accent: painted.accent, tint: painted.tint });
-    nativeTheme.themeSource = painted.scheme;
-    if (win && !win.isDestroyed()) win.setBackgroundColor(painted.bg);
-    return { theme: painted.theme, accent: painted.accent, tint: painted.tint, scheme: painted.scheme };
-  });
+  ipcMain.handle('theme:set', (_event, input) => setThemeChoice(input));
   ipcMain.handle('reach:version', () => reachProcess.reachVersion());
   ipcMain.handle('reach:run', (_e, { cwd, args }) => reachProcess.runReach({ cwd, args }));
   ipcMain.handle('project:run', (_e, { cwd, args }) => reachProcess.runProject({ cwd, args }));
@@ -689,7 +903,7 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => {
     const settings = loadSettings();
     const { jevApiKey, ...publicSettings } = hostedAccount.sanitize(settings);
-    return { ...publicSettings, jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
+    return { ...publicSettings, settingsRevision: settingsRevision(settings), settingsRevisions: settingsRevisions(settings), jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
       jevKeySource: jevApiKey ? 'saved' : process.env.TYPESAFE_API_KEY ? 'environment' : '' };
   });
   ipcMain.handle('engines:report', () => engines.getLedger().report());
@@ -732,70 +946,9 @@ function registerIpc() {
    * non-blocking status row for each (a checking/ok/error pill, tool count,
    * latency). `test` forces a fresh handshake for one server and returns its
    * status row. Neither ever throws across IPC — errors travel in the row. */
-  ipcMain.handle('mcp:list', async () => {
-    try {
-      /* Error rows retry on a backoff, not on every list: kicking an error
-       * immediately would flip it back to 'checking' before the response is
-       * built, so the renderer would never see the failure — and every list
-       * call would hammer the dead endpoint with a fresh handshake. */
-      const ERROR_RETRY_MS = 15000;
-      const now = Date.now();
-      const rows = mcpManager.statusList();
-      for (const row of rows) {
-        const retry = row.status === 'error' && now - (row.checkedAt || 0) > ERROR_RETRY_MS;
-        if (row.enabled && (row.status === 'unknown' || row.stale || retry)) {
-          mcpManager.ensureLoaded(row.id).catch(() => {});
-        }
-      }
-      return { ok: true, servers: mcpManager.statusList() };
-    } catch (error) {
-      return { ok: false, err: error.message, servers: [] };
-    }
-  });
-  ipcMain.handle('mcp:test', async (_e, serverId) => {
-    try {
-      const status = await mcpManager.test(String(serverId || ''));
-      return { ok: true, status };
-    } catch (error) {
-      return { ok: false, err: error.message };
-    }
-  });
-  ipcMain.handle('settings:save', (_e, s) => {
-    const patch = s && typeof s === 'object' && !Array.isArray(s) ? s : {};
-    const current = loadSettings();
-    const next = { ...current, ...patch };
-    if (Object.hasOwn(patch, 'pageLayout')) next.pageLayout = patch.pageLayout === 'full-width' ? 'full-width' : 'page-sized';
-    if (Object.hasOwn(patch, 'jevEnabled')) next.jevEnabled = patch.jevEnabled === true;
-    if (Object.hasOwn(patch, 'jevAutoMode')) next.jevAutoMode = patch.jevAutoMode === true;
-    if (patch.jevApiKeyAction === 'clear') next.jevApiKey = '';
-    else if (typeof patch.jevApiKey === 'string' && patch.jevApiKey.trim()) next.jevApiKey = patch.jevApiKey.trim();
-    else next.jevApiKey = current.jevApiKey || '';
-    delete next.jevApiKeyAction;
-    delete next.jevKeyConfigured;
-    delete next.jevKeySource;
-    if (patch.budgets !== undefined) next.budgets = { ...budgetDefaults, ...validateBudgets(patch.budgets) };
-    /* Fold a legacy single-endpoint write into the active connection.
-     *
-     * The merged `next` always carries a `connections` array (loadSettings
-     * normalizes it in), so presence cannot mean "the caller manages
-     * connections" — only the PATCH can say that. Without this, a
-     * saveSettings({endpoint, accessKey, model}) call would report success and
-     * then be silently reverted on the next read, because those three fields are
-     * derived from the active connection. The smoke suite relies on exactly that
-     * call shape in several places.
-     */
-    const connectionsAuthoritative = Array.isArray(patch.connections);
-    saveSettings(connections.preserveCapabilities(current,
-      connections.applyLegacyWrite(next, { connectionsAuthoritative })));
-    if (Object.keys(patch).length === 1 && Object.hasOwn(patch, 'pageLayout')) return { ok: true };
-    // Settings drive every agent loop's endpoint + default model — drop the
-    // cache so the next message builds a fresh loop with the new values.
-    for (const [id, loop] of agentLoops) {
-      if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
-      else agentLoops.delete(id);
-    }
-    return { ok: true };
-  });
+  ipcMain.handle('mcp:list', async () => listMcpStatus());
+  ipcMain.handle('mcp:test', async (_e, serverId) => testMcpServer(serverId));
+  ipcMain.handle('settings:save', (_e, s) => applySettingsPatch(s));
 
   ipcMain.handle('dialog:pickDir', async () => {
     const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] });
@@ -875,7 +1028,7 @@ function registerIpc() {
     const agent = getAgentStore().get(id);
     if (!agent) return null;
     // Format older saved conversations without rewriting their original history.
-    return { ...agent, messages: agent.messages.map((m, index) => {
+    return { ...agent, conversationRevision: conversationRevision(agent), messages: agent.messages.map((m, index) => {
       const projected = { ...m, _reachMessageKey: messageKey(agent.messages, index) };
       // Older saved retries remain in the audit history, but are one UI reply.
       if (m.role === 'assistant' && agent.messages[index + 1]?._reachMeta?.source === 'recovery') {
@@ -965,23 +1118,7 @@ function registerIpc() {
       return { ok: false, err: e.message };
     }
   });
-  ipcMain.handle('agents:update', (_e, { id, ...patch }) => {
-    if (patch.settings) validatePolicy(patch.settings, TOOLS);
-    if (patch.settings?.jevAutoMode !== undefined && typeof patch.settings.jevAutoMode !== 'boolean') throw new Error('Auto mode must be on or off.');
-    if (patch.settings?.budgetOverrides != null) patch.settings.budgetOverrides = validateBudgets(patch.settings.budgetOverrides);
-    const agent = getAgentStore().update(id, patch);
-    if (agent) for (const runner of teamRuns.values()) if (runner.conversationId === id) {
-      runner.agentSettings = structuredClone(agent.settings);
-      if (runner.net) runner.net.agentSettings = structuredClone(agent.settings);
-      for (const [key, store] of runner.memberStores) Object.assign(store.get(key).settings, structuredClone(agent.settings));
-      for (const member of runner.net?.agents.values() || []) if (member.store) Object.assign(member.store.get(member.id).settings, structuredClone(agent.settings));
-    }
-    // A settings save must not orphan an active loop or break Stop.
-    const loop = agentLoops.get(id);
-    if (loop?.running || loop?.autoRoute && agent?.runState?.status === 'waiting_edits') loop.settingsStale = true;
-    else agentLoops.delete(id);
-    return agent ? { ok: true, agent } : { ok: false, err: 'Agent not found' };
-  });
+  ipcMain.handle('agents:update', (_e, { id, ...patch }) => updateAgentConversation(id, patch));
   ipcMain.handle('agents:delete', (_e, id) => {
     cancelAutoPlan(id);
     const loop = agentLoops.get(id);
@@ -1738,62 +1875,7 @@ function registerIpc() {
   });
 
   // ---------- models ----------
-  ipcMain.handle('models:list', async (_e, payload = {}) => {
-    /* Three ways to pick the provider to list, in priority order:
-     *
-     *  1. `endpoint` (+ optional `accessKey`) — an AD-HOC lookup. Needed because
-     *     the Connection page edits rows in place: while the user is typing a new
-     *     URL there is nothing saved to resolve an id against, so Browse must be
-     *     able to list from the URL on screen. Without this, Browse only works
-     *     after saving, which reads as a broken button.
-     *  2. `connectionId` — a saved connection that is NOT the active one, so a
-     *     row's Browse does not have to activate that provider first.
-     *  3. neither — the active connection. This is what playground, refactor and
-     *     the agent settings form pass, so those callers are unchanged.
-     *
-     * An ad-hoc endpoint is validated exactly like a stored one (resolveEndpoint
-     * rejects non-HTTP and embedded credentials) and is never persisted.
-     */
-    const settings = loadSettings();
-    let endpoint = '';
-    let accessKey = '';
-    let label = '';
-    let connectionId = null;
-
-    const adHoc = payload && typeof payload.endpoint === 'string' && payload.endpoint.trim();
-    if (adHoc) {
-      endpoint = connections.normalizeEndpoint(payload.endpoint);
-      accessKey = String(payload.accessKey == null ? '' : payload.accessKey);
-      label = connections.defaultName(endpoint) || endpoint;
-    } else {
-      const requested = payload && typeof payload === 'object' ? payload.connectionId : null;
-      const connection = (requested && connections.findConnection(settings, requested))
-        || connections.activeConnection(settings);
-      if (!connection || !connection.endpoint) {
-        return { ok: false, err: 'No endpoint configured in Settings.' };
-      }
-      endpoint = connection.endpoint;
-      accessKey = connection.accessKey || '';
-      label = connection.name;
-      connectionId = connection.id;
-    }
-
-    try {
-      const base = await resolveEndpoint(endpoint);
-      const headers = {};
-      if (accessKey) headers.Authorization = 'Bearer ' + accessKey;
-      const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
-      if (!res.ok) return { ok: false, err: `HTTP ${res.status}` };
-      const data = await res.json();
-      capabilityStore.recordCatalog(connectionId, base, data);
-      const ids = (data.data || []).map(m => m.id).filter(Boolean).sort();
-      // Tell the caller which connection these models came from, so the UI can
-      // say so instead of implying they came from the active one.
-      return { ok: true, models: ids, connectionId, connectionName: label, endpoint };
-    } catch (e) {
-      return { ok: false, err: e.message };
-    }
-  });
+  ipcMain.handle('models:list', async (_e, payload = {}) => listProviderModels(payload));
 
   /* ---------------- multiple endpoint connections (VS Code parity) --------------
    * Personal provider keys retain the existing settings editing behavior. The
@@ -1881,30 +1963,7 @@ function registerIpc() {
   /* Ping one specific connection (default: the active one) so the Connection
    * page can verify a row before the user switches to it. Read-only: it calls
    * GET /models, never a completion, so it cannot cost tokens. */
-  ipcMain.handle('connections:ping', async (_e, payload = {}) => {
-    const settings = loadSettings();
-    const requested = payload && typeof payload === 'object' ? payload.connectionId : null;
-    const connection = (requested && connections.findConnection(settings, requested))
-      || connections.activeConnection(settings);
-    if (!connection || !connection.endpoint) return { ok: false, err: 'No endpoint configured.' };
-    const started = Date.now();
-    try {
-      const base = await resolveEndpoint(connection.endpoint);
-      const headers = {};
-      if (connection.accessKey) headers.Authorization = 'Bearer ' + connection.accessKey;
-      const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
-      const latencyMs = Date.now() - started;
-      if (!res.ok) return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}` };
-      let modelCount = null;
-      try {
-        const data = await res.json();
-        modelCount = Array.isArray(data.data) ? data.data.length : null;
-      } catch { /* a non-JSON body still proved reachability */ }
-      return { ok: true, status: res.status, latencyMs, models: modelCount, connectionId: connection.id, connectionName: connection.name };
-    } catch (e) {
-      return { ok: false, err: e.message, latencyMs: Date.now() - started };
-    }
-  });
+  ipcMain.handle('connections:ping', async (_e, payload = {}) => pingConnection(payload));
 
   // ---------- workspace dashboard (PRD: Studio Workspace Dashboard) ----------
 
@@ -2980,6 +3039,30 @@ app.whenReady().then(() => {
   nativeTheme.themeSource = themeChoice().scheme;
   reachProcess.configure(loadSettings);
   registerIpc();
+  // Use Studio's live services and system vault; the terminal never writes the
+  // encrypted profile directly. Smoke runs keep discovery out of the real home.
+  if (!process.argv.includes('--smoke')) {
+    cliSettingsBridge = createCliSettingsBridge({ getSettings: loadSettings, getRevision: settingsRevision, getRevisions: settingsRevisions, handlers: {
+      'settings.save': ({ patch }) => applySettingsPatch(patch),
+      'budget.schema': () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }),
+      'connections.models': params => listProviderModels(params),
+      'connections.test': params => pingConnection(params),
+      'mcp.status': () => listMcpStatus(),
+      'mcp.test': async ({ id }) => {
+        const result = await testMcpServer(id);
+        return { ...result, status: mcpManager.statusList().find(row => row.id === id) || result.status };
+      },
+      'conversations.list': () => getAgentStore().list(),
+      'conversations.get': ({ id }) => {
+        const agent = getAgentStore().get(id);
+        return agent ? { ...agent, conversationRevision: conversationRevision(agent) } : null;
+      },
+      'conversations.update': ({ id, patch }) => updateAgentConversation(id, patch),
+      'engines.report': () => engines.getLedger().report(),
+      'theme.set': params => setThemeChoice(params),
+    } });
+    cliSettingsBridge.start().catch(() => console.error('CLI settings bridge could not start; restart Studio to retry.'));
+  }
   const accountTimer = setInterval(() => { void hostedAccount.poll().catch(() => {}); }, 2000);
   accountTimer.unref();
   app.once('before-quit', () => clearInterval(accountTimer));
@@ -4893,6 +4976,7 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: !process.argv.includes('--smoke') });
 });
 app.on('before-quit', () => {
+  cliSettingsBridge?.stop();
   reachProcess.killAllRuns();
   mcpManager.closeAll();
   for (const loop of agentLoops.values()) loop.stop();

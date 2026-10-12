@@ -206,24 +206,38 @@ class WindowsKeyDecoder:
 
 
 class WindowsMouseDecoder:
-    """Retain high-resolution vertical wheel deltas until a full notch."""
+    """Retain wheel deltas and forward motion or one left press per click."""
 
     def __init__(self):
         self._wheel_delta = 0
+        self._left_down = False
 
-    def feed(self, button_state, event_flags):
-        if not event_flags & 0x0004 or event_flags & 0x0008:
-            return []
-        delta = (int(button_state) >> 16) & 0xffff
-        if delta >= 0x8000:
-            delta -= 0x10000
-        self._wheel_delta += delta
-        steps = abs(self._wheel_delta) // 120
-        if not steps:
-            return []
-        direction = 1 if self._wheel_delta > 0 else -1
-        self._wheel_delta -= direction * steps * 120
-        return [("scroll_up" if direction > 0 else "scroll_down", steps)]
+    def feed(self, button_state, event_flags, x=None, y=None):
+        left_down = bool(int(button_state) & 0x0001)
+        pressed = left_down and not self._left_down
+        self._left_down = left_down
+        if event_flags & 0x0004 and not event_flags & 0x0008:
+            delta = (int(button_state) >> 16) & 0xffff
+            if delta >= 0x8000:
+                delta -= 0x10000
+            self._wheel_delta += delta
+            steps = abs(self._wheel_delta) // 120
+            if steps:
+                direction = 1 if self._wheel_delta > 0 else -1
+                self._wheel_delta -= direction * steps * 120
+                events = []
+                if x is not None and y is not None and x >= 0 and y >= 0:
+                    events.append(("hover", (int(x), int(y))))
+                events.append(("scroll_up" if direction > 0 else "scroll_down", steps))
+                return events
+        if event_flags & 0x0001 and x is not None and y is not None:
+            return [("hover", (int(x), int(y)))]
+        # Native movement, held-button repeats, release and DOUBLE_CLICK
+        # records must not toggle a disclosure a second time.
+        if event_flags == 0 and pressed and x is not None and y is not None:
+            if x >= 0 and y >= 0:
+                return [("click", (int(x), int(y)))]
+        return []
 
 
 class PosixKeyDecoder:
@@ -248,15 +262,32 @@ class PosixKeyDecoder:
         self._paste_pending = ""
         self._paste_cr = False
         self._legacy_mouse = None
+        self._left_down = False
 
-    @staticmethod
-    def _mouse_action(button, x, y, release=False):
-        if release or x <= 0 or y <= 0 or x > 1000000 or y > 1000000:
+    def _mouse_action(self, button, x, y, release=False):
+        if (button < 0 or button > 127 or x <= 0 or y <= 0 or
+                x > 1000000 or y > 1000000):
             return []
+        base = button & 3
+        if release or (not button & (32 | 64) and base == 3):
+            # SGR identifies the released button; X10 uses 3 for any release.
+            if base in (0, 3):
+                self._left_down = False
+            return []
+        # Motion reports add 32 to the button code, wheels add 64. Forward
+        # movement as a pointer cell without turning a drag into a click.
+        if button & 32 and not button & 64:
+            if base in (0, 3):
+                self._left_down = base == 0
+            return [("hover", (x - 1, y - 1))]
         # The high wheel bit plus button 0/1 means vertical up/down.
-        # Ignore modifier bits, horizontal wheels, releases and motion.
         if button & 64 and not button & 32 and (button & 3) in (0, 1):
-            return [("scroll_up" if (button & 3) == 0 else "scroll_down", 1)]
+            return [("hover", (x - 1, y - 1)),
+                    ("scroll_up" if (button & 3) == 0 else "scroll_down", 1)]
+        if not button & (32 | 64) and base == 0:
+            pressed = not self._left_down
+            self._left_down = True
+            return [("click", (x - 1, y - 1))] if pressed else []
         return []
 
     def feed(self, data):
@@ -362,8 +393,45 @@ _INPUT_LOCK = threading.RLock()
 _READ_ACTIVE = False
 _SESSION_ACTIVE = False
 _BROKER = None
+_UI_RESOLVER = None
 _SCROLL_ACTIONS = {"scroll_page_up": "page_up", "scroll_page_down": "page_down",
                    "scroll_up": "up", "scroll_down": "down", "scroll_live": "live"}
+
+
+class _CapturedClick(tuple):
+    """A coordinate-compatible left press with its original logical target."""
+
+    def __new__(cls, pointer, target):
+        event = super().__new__(cls, pointer)
+        event.target = target
+        return event
+
+
+def set_ui_resolver(resolver):
+    """Register the screen's quick, lock-free hit-test for incoming clicks.
+
+    The resolver receives a pointer tuple and reads an immutable published
+    hit map. It must not render, wait, or acquire the screen lock; the native
+    input owner calls it while holding its own broker lock.
+    """
+    if resolver is not None and not callable(resolver):
+        raise TypeError("The screen click resolver must be callable or None")
+    global _UI_RESOLVER
+    with _INPUT_LOCK:
+        _UI_RESOLVER = resolver
+
+
+def _capture_click(pointer, resolver):
+    if isinstance(pointer, _CapturedClick):
+        return pointer
+    if not callable(resolver):
+        return pointer
+    try:
+        return _CapturedClick(pointer, resolver(pointer))
+    except Exception:
+        # UI hit-testing must never stop the sole keyboard reader. An old
+        # screen adapter can still handle an ordinary coordinate tuple.
+        return pointer
 
 
 class _InputBroker:
@@ -380,7 +448,10 @@ class _InputBroker:
         self._pending = deque()
         self._urgent = deque()
         self._navigation = deque()
+        self._clicks = deque()
+        self._ui_events = deque()
         self._parked = None
+        self._pointer = None
         self._barriers = []
         self._error = None
         self._closed = False
@@ -407,11 +478,44 @@ class _InputBroker:
         for key, value in events:
             if key in _SCROLL_ACTIONS:
                 action, amount = _SCROLL_ACTIONS[key], max(1, int(value or 1))
+                pointer = self._pointer if key in ("scroll_up", "scroll_down") else None
+                event = ("scroll", (action, amount, pointer))
+                if (self._ui_events and self._ui_events[-1][0] == "scroll" and
+                        self._ui_events[-1][1][0] == action and
+                        self._ui_events[-1][1][2] == pointer):
+                    previous = self._ui_events.pop()[1]
+                    self._ui_events.append(("scroll", (action, previous[1] + amount, pointer)))
+                else:
+                    self._ui_events.append(event)
                 if self._navigation and self._navigation[-1][0] == action:
                     previous = self._navigation.pop()
                     self._navigation.append((action, previous[1] + amount))
                 else:
                     self._navigation.append((action, amount))
+            elif key == "hover":
+                # Coalesce adjacent motion, retaining the pointer before each
+                # click or wheel event so a later move cannot change its target.
+                if isinstance(value, tuple) and len(value) == 2:
+                    pointer = (int(value[0]), int(value[1]))
+                    repeated_wheel_pointer = (
+                        self._pointer == pointer and self._ui_events and
+                        self._ui_events[-1][0] == "scroll" and
+                        self._ui_events[-1][1][2] == pointer)
+                    self._pointer = pointer
+                    if repeated_wheel_pointer:
+                        continue
+                    if self._ui_events and self._ui_events[-1][0] == "hover":
+                        self._ui_events.pop()
+                    self._ui_events.append(("hover", self._pointer))
+            elif key == "click":
+                # Clicks belong to the screen watcher in both prompt and
+                # response phases. They never become draft/approval input.
+                if isinstance(value, tuple) and len(value) == 2:
+                    pointer = (int(value[0]), int(value[1]))
+                    self._pointer = pointer
+                    pointer = _capture_click(pointer, _UI_RESOLVER)
+                    self._clicks.append(pointer)
+                    self._ui_events.append(("click", pointer))
             elif key == "resize":
                 # The screen watcher checks geometry independently. One
                 # pending resize is enough to wake an active editor.
@@ -435,7 +539,8 @@ class _InputBroker:
                 self._pending.append((key, previous[1] + value))
             else:
                 self._pending.append((key, value))
-        self._condition.notify_all()
+        if any(key != "hover" for key, _value in events):
+            self._condition.notify_all()
 
     def _interrupt_reply(self):
         """Match tty Ctrl-C semantics only for our verified foreground group."""
@@ -473,7 +578,9 @@ class _InputBroker:
                                                           key.key, key.char, key.control))
                 elif record.kind == 0x0002:
                     mouse = record.event.mouse
-                    self._put(self._mouse_decoder.feed(mouse.buttons, mouse.flags))
+                    self._put(self._mouse_decoder.feed(
+                        mouse.buttons, mouse.flags, mouse.position.x,
+                        mouse.position.y))
                 elif record.kind == 0x0004:
                     self._put([("resize", "")])
             if time.monotonic() >= deadline:
@@ -578,7 +685,32 @@ class _InputBroker:
         with self._condition:
             actions = list(self._navigation)
             self._navigation.clear()
+            self._ui_events = deque(event for event in self._ui_events
+                                    if event[0] != "scroll")
             return actions
+
+    def pointer(self):
+        """Latest pointer cell (column, row), or None when never reported."""
+        with self._condition:
+            return self._pointer
+
+    def clicks(self):
+        """Drain left presses in order; only the screen watcher consumes them."""
+        with self._condition:
+            events = list(self._clicks)
+            self._clicks.clear()
+            self._ui_events = deque(event for event in self._ui_events
+                                    if event[0] != "click")
+            return events
+
+    def ui_events(self):
+        """Drain ordered screen events, independently of all keyboard readers."""
+        with self._condition:
+            events = list(self._ui_events)
+            self._ui_events.clear()
+            self._navigation.clear()
+            self._clicks.clear()
+            return events
 
     def event(self):
         with self._condition:
@@ -593,6 +725,33 @@ class _InputBroker:
                     raise EOFError
                 self._condition.wait(0.05)
 
+    def collect_event(self, stop):
+        """One queued editing event for a passive collector, or EOFError.
+
+        A primary reader (prompt, approval) owns the input stream while it
+        is active; the collector waits it out rather than stealing its
+        keystrokes. Urgent events are left for real readers. ``stop``, a
+        closed broker, or a pump failure ends collection.
+        """
+        with self._condition:
+            while True:
+                if stop.is_set() or self._closed:
+                    raise EOFError
+                if self._error is not None:
+                    raise self._error
+                if _READ_ACTIVE:
+                    self._condition.wait(0.05)
+                    continue
+                if self._pending:
+                    return self._pending.popleft()
+                self._condition.wait(0.05)
+
+    def requeue(self, event):
+        """Return an event to the front of the pending queue in one shot."""
+        with self._condition:
+            self._pending.appendleft(event)
+            self._condition.notify_all()
+
     def close(self):
         self._stop.set()
         with self._condition:
@@ -606,7 +765,10 @@ class _InputBroker:
             self._pending.clear()
             self._urgent.clear()
             self._navigation.clear()
+            self._clicks.clear()
+            self._ui_events.clear()
             self._parked = None
+            self._pointer = None
 
 
 def _broker_events(broker, fresh=False):
@@ -620,7 +782,15 @@ def _broker_events(broker, fresh=False):
 
 def _drive(editor, on_change, events, on_scroll=None, on_key=None):
     on_change(editor.text, editor.cursor)
+    pointer = None
     for key, text in events:
+        if key == "hover":
+            pointer = text
+            owner = getattr(on_scroll, "__self__", None)
+            hover = getattr(owner, "hover", None)
+            if callable(hover):
+                hover(pointer)
+            continue
         if key == "scroll_batch":
             if on_scroll is not None:
                 owner = getattr(on_scroll, "__self__", None)
@@ -633,7 +803,24 @@ def _drive(editor, on_change, events, on_scroll=None, on_key=None):
             continue
         if key in _SCROLL_ACTIONS:
             if on_scroll is not None:
-                on_scroll(_SCROLL_ACTIONS[key], max(1, int(text or 1)))
+                owner = getattr(on_scroll, "__self__", None)
+                scroll_ui = getattr(owner, "scroll_ui", None)
+                action, amount = _SCROLL_ACTIONS[key], max(1, int(text or 1))
+                if callable(scroll_ui):
+                    scroll_ui(action, amount,
+                              pointer if key in ("scroll_up", "scroll_down") else None)
+                else:
+                    on_scroll(action, amount)
+            continue
+        if key == "click":
+            # Standalone readers have no watcher/broker. Their existing
+            # bound scroll callback identifies the same screen owner.
+            owner = getattr(on_scroll, "__self__", None)
+            click = getattr(owner, "click", None)
+            if callable(click):
+                capture = getattr(owner, "capture_click", None)
+                click(_capture_click(text, capture))
+            pointer = text
             continue
         if key == "enter":
             result = on_key(key, editor) if on_key is not None else None
@@ -684,7 +871,7 @@ def session_input_mode():
     real Ctrl-C to its verified foreground group. Editors and the watcher consume
     broker queues and never compete for native input.
     """
-    global _SESSION_ACTIVE, _BROKER
+    global _SESSION_ACTIVE, _BROKER, _UI_RESOLVER
     with _INPUT_LOCK:
         if _SESSION_ACTIVE:
             raise RuntimeError("A footer input session is already active")
@@ -728,6 +915,7 @@ def session_input_mode():
             with _INPUT_LOCK:
                 _BROKER = None
                 _SESSION_ACTIVE = False
+                _UI_RESOLVER = None
                 _READ_AHEAD.clear()
             restore()
 
@@ -800,7 +988,8 @@ def _decode_windows_record(record):
                                      key.char, key.control)
     if record.kind == 0x0002:
         mouse = record.event.mouse
-        return _WINDOWS_MOUSE.feed(mouse.buttons, mouse.flags)
+        return _WINDOWS_MOUSE.feed(mouse.buttons, mouse.flags,
+                                   mouse.position.x, mouse.position.y)
     return []
 
 
@@ -814,6 +1003,69 @@ def poll_scroll_events():
     with _INPUT_LOCK:
         broker = _BROKER if _SESSION_ACTIVE else None
     return broker.navigation() if broker is not None else []
+
+
+def poll_ui_events():
+    """Drain screen navigation, clicks and motion in their original order.
+
+    Wheel events include their pointer cell; page keys include ``None``.
+    This only reads broker queues and cannot consume draft or approval input.
+    The footer watcher is its sole consumer during both prompts and responses.
+    """
+    with _INPUT_LOCK:
+        broker = _BROKER if _SESSION_ACTIVE else None
+    return broker.ui_events() if broker is not None else []
+
+
+def poll_pointer():
+    """Latest pointer cell (column, row), or None without an active session.
+
+    Like scroll polling, this never reads the terminal. The screen watcher
+    coalesces motion reports to the newest position for hover hit-testing.
+    """
+    with _INPUT_LOCK:
+        broker = _BROKER if _SESSION_ACTIVE else None
+        if broker is None:
+            return None
+        return broker.pointer()
+
+
+def poll_click_events():
+    """Drain screen clicks without reading input or consuming editor events.
+
+    The watcher calls this while a prompt or an AI response is active.
+    Fresh approval boundaries only park keyboard queues, so disclosure
+    clicks cannot accept or alter an approval or a queued chat draft.
+    """
+    with _INPUT_LOCK:
+        broker = _BROKER if _SESSION_ACTIVE else None
+    return broker.clicks() if broker is not None else []
+
+
+def collect_event(stop):
+    """Next buffered editing event for the passive follow-up collector.
+
+    Never reads the terminal and never consumes while a real reader is
+    active, so approvals and prompts always get their keystrokes. Raises
+    EOFError when ``stop`` is set, the broker closes, or no session runs.
+    """
+    with _INPUT_LOCK:
+        broker = _BROKER if _SESSION_ACTIVE else None
+    if broker is None:
+        raise EOFError
+    return broker.collect_event(stop)
+
+
+def requeue_event(key, text=""):
+    """Hand an event the collector cannot honour back to the next reader.
+
+    The event lands ahead of later type-ahead so an eof/interrupt typed
+    mid-reply still reaches the next prompt as a quit or cancel.
+    """
+    with _INPUT_LOCK:
+        broker = _BROKER if _SESSION_ACTIVE else None
+    if broker is not None:
+        broker.requeue((key, text))
 
 
 def _windows_events():

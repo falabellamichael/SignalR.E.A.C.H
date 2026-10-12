@@ -19,7 +19,7 @@ from .terminal import c_bold, c_cyan, c_dim, c_green, c_magenta
 TL, TR, BL, BR, H, V = "\u250c", "\u2510", "\u2514", "\u2518", "\u2500", "\u2502"
 MARK = "\u203a "
 DOT = " \u00b7 "
-HINTS = ("/help", "/endpoint", "\\ newline", "ctrl+c stop", "ctrl+d quit")
+HINTS = ("/help", "/pet", "/endpoint", "\\ newline", "ctrl+c stop", "ctrl+d quit")
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
@@ -282,44 +282,23 @@ def read_boxed(client, reader=None, out=None):
     if screen is not None:
         screen.refresh_metadata()
     chat_draft = ["", 0]
-    terminal_focus = [False]
-
+    if screen is not None:
+        take_carry = getattr(screen, "take_draft_carry", None)
+        if callable(take_carry):
+            # A follow-up draft still being typed when the reply finished
+            # reopens as this prompt's initial text.
+            try:
+                text, cursor = take_carry()
+                chat_draft[:] = [str(text), int(cursor)]
+            except (TypeError, ValueError):
+                pass
     def on_change(text, cursor):
-        if terminal_focus[0]:
-            screen.mini_terminal.set_draft(text)
-            screen.set_input(text, cursor, chunks=tuple(chunks), label="mini-term")
-        else:
-            screen.set_input(text, cursor, chunks=tuple(chunks), label="you")
+        screen.set_input(text, cursor, chunks=tuple(chunks), label="you")
 
     def on_key(key, editor):
         if key == "terminal_toggle":
-            if terminal_focus[0]:
-                screen.mini_terminal.blur()
-                terminal_focus[0] = False
-                editor.text, editor.cursor = chat_draft
-            else:
-                chat_draft[:] = [editor.text, editor.cursor]
-                terminal_focus[0] = True
-                screen.mini_terminal.focus()
-                editor.text = screen.mini_terminal.snapshot().get("draft", "")
-                editor.cursor = len(editor.text)
-            screen.refresh_header()
+            screen.cycle_pet()
             return True
-        if key == "interrupt" and terminal_focus[0]:
-            screen.mini_terminal.cancel()
-            terminal_focus[0] = False
-            editor.text, editor.cursor = chat_draft
-            screen.refresh_header()
-            return True
-        if key == "enter" and terminal_focus[0]:
-            request = screen.mini_terminal.request_submit()
-            if request is None:
-                return True
-            terminal_focus[0] = False
-            screen.mini_terminal.blur()
-            editor.text, editor.cursor = chat_draft
-            return ("mini_terminal_submit", request["id"],
-                    editor.text, editor.cursor)
         return False
 
     while True:
@@ -339,13 +318,6 @@ def read_boxed(client, reader=None, out=None):
             except (KeyboardInterrupt, EOFError):
                 screen.finish_input("", echo=False)
                 raise
-            if (isinstance(line, tuple) and len(line) == 4 and
-                    line[0] == "mini_terminal_submit"):
-                _tag, request_id, draft, cursor = line
-                chat_draft[:] = [draft, cursor]
-                screen.set_input(draft, cursor, chunks=tuple(chunks), label="you")
-                screen.run_mini_terminal(request_id)
-                continue
         else:
             line = reader(MARK if not chunks else "... ")
         line = "" if line is None else str(line)

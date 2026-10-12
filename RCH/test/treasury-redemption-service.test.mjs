@@ -34,6 +34,7 @@ async function fixture(t, options = {}) {
   const provider = new Proxy(f.provider, { get(target, property) {
     if (property === 'getTransactionReceipt' && options.receiptTransform) return async hash => options.receiptTransform(await target.getTransactionReceipt(hash));
     if (property === 'getTransaction' && options.transactionTransform) return async hash => options.transactionTransform(await target.getTransaction(hash));
+    if (property === 'getBlock' && options.blockTransform) return async tag => options.blockTransform(await target.getBlock(tag), tag);
     if (property === 'getCode' && options.walletCode) return async (address,blockTag) => {
       if(String(address).toLowerCase()!==wallet.toLowerCase())return target.getCode(address,blockTag);
       walletCodeReads.push(blockTag);
@@ -233,4 +234,87 @@ test('a config ceiling looser than the deployed contract is refused rather than 
   const stricter = build(1_000);
   t.after(() => stricter.close());
   await stricter.start(f.account, '2');
+});
+
+
+test('ordinary wallets never gain credit without the exact RCH treasury transfer, then settle once', async t => {
+  let mutate = log => null;
+  const f = await fixture(t, { receiptTransform: receipt => receipt ? { ...receipt, logs: receipt.logs.map(log => {
+    let event; try { event = treasuryTokenInterface.parseLog(log); } catch {}
+    return event?.name === 'Transfer' ? mutate(log, event) : log;
+  }).filter(Boolean) } : receipt });
+  const intent = await f.start(); await f.approve(intent); const receipt = await f.redeem(intent);
+  const mutations = [
+    log => null,
+    log => ({ ...log, removed: true }),
+    log => ({ ...log, transactionHash: '0x' + '11'.repeat(32) }),
+    log => ({ ...log, index: 999999 }),
+    (log,event) => ({ ...log, ...treasuryTokenInterface.encodeEventLog('Transfer', [event.args.from, relay, event.args.value]) }),
+    (log,event) => ({ ...log, ...treasuryTokenInterface.encodeEventLog('Transfer', [event.args.from, event.args.to, event.args.value + 1n]) }),
+  ];
+  for (const change of mutations) {
+    mutate = change;
+    const result = await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash);
+    assert.equal(result.reason, 'redemption_transfer_mismatch');
+    assert.equal(result.settlementStatus, 'failed');
+    assert.equal(f.store.account(f.account.id).credit.balanceMicros, 0);
+    assert.deepEqual(f.store.account(f.account.id).allowedModels, []);
+  }
+  mutate = log => log;
+  assert.equal((await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash)).settlementStatus, 'received');
+  await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash);
+  assert.equal(f.store.account(f.account.id).credit.balanceMicros, 300);
+});
+
+test('missing, unverified and finalized failed receipts grant nothing and preserve unrelated paid access', async t => {
+  let mode = 'missing';
+  const f = await fixture(t, { transactionTransform: tx => mode === 'transactionMissing' ? null : tx, receiptTransform: receipt => {
+    if (mode === 'missing') return null;
+    if (mode === 'rpc') throw new Error('Synthetic RPC outage');
+    if (mode === 'unknown') return { ...receipt, status: undefined };
+    if (mode === 'wrongHash') return { ...receipt, hash: '0x' + '12'.repeat(32) };
+    if (mode === 'failed') return { ...receipt, status: 0 };
+    return receipt;
+  } });
+  f.store.grantPlan({ accountId: f.account.id, grantId: 'paid-fixture-existing', planId: 'paid', name: 'Existing paid plan',
+    models: ['priced/test'], tokens: 1000, expiresAt: f.store.now() + 3600000 });
+  const before = f.store.account(f.account.id);
+  const intent = await f.start(); await f.approve(intent); const receipt = await f.redeem(intent);
+  for (const [state,settlement,reason] of [
+    ['missing','pending','transaction_pending'], ['rpc','unverified','redemption_rpc_unavailable'],
+    ['unknown','unverified','transaction_unverified'], ['transactionMissing','unverified','transaction_unverified'],
+    ['wrongHash','unverified','transaction_receipt_mismatch'],
+    ['failed','failed','transaction_failed'],
+  ]) {
+    mode = state;
+    const result = await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash);
+    assert.equal(result.settlementStatus, settlement); assert.equal(result.reason, reason);
+    assert.deepEqual(f.store.account(f.account.id), before);
+  }
+  mode = 'received';
+  assert.equal((await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash)).settlementStatus, 'received');
+  const credited = f.store.account(f.account.id);
+  assert.equal(credited.credit.balanceMicros, 300);
+  assert.deepEqual(credited.plan, before.plan);
+  assert.deepEqual(credited.allowance, before.allowance);
+});
+
+test('a receipt stays pending until canonical finality, including a reported revert', async t => {
+  let final = false, reverted = false;
+  const f = await fixture(t, {
+    blockTransform: block => final ? block : block ? { ...block, hash: '0x' + '99'.repeat(32) } : block,
+    receiptTransform: receipt => reverted && receipt ? { ...receipt, status: 0 } : receipt,
+  });
+  const intent = await f.start(); await f.approve(intent); const receipt = await f.redeem(intent);
+  for (const failed of [false,true]) {
+    reverted = failed;
+    const pending = await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash);
+    assert.equal(pending.settlementStatus, 'pending'); assert.equal(pending.reason, 'awaiting_finality');
+    assert.equal(f.store.account(f.account.id).credit.balanceMicros, 0);
+  }
+  final = true;
+  assert.equal((await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash)).settlementStatus, 'failed');
+  reverted = false;
+  assert.equal((await f.service.submit(intent.redemptionId, intent.ticket, receipt.hash)).settlementStatus, 'received');
+  assert.equal(f.store.account(f.account.id).credit.balanceMicros, 300);
 });

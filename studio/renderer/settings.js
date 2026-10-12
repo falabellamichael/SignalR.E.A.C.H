@@ -7,8 +7,26 @@ document.getElementById('btn-engine-report').onclick = async () => {
 let budgetGlobal = {};
 let settingsAgent = null;
 let conversationDraftAgent = undefined, budgetDraftAgent = undefined;
+let conversationDraftRevision = '', budgetDraftRevision = '';
 let conversationDirty = false, budgetDirty = false;
 let settingsOpenSequence = 0;
+
+function showSettingsSaveError(status, error, reload) {
+  status.textContent = error.message;
+  if (!/(?:conversation )?settings changed in another window or the CLI\./i.test(error.message)) return;
+  const id = status.id + '-reload';
+  if (document.getElementById(id)) return;
+  const button = document.createElement('button');
+  button.id = id; button.type = 'button'; button.className = 'ghost small';
+  button.textContent = 'Reload saved settings';
+  button.title = 'Discard this unsaved settings draft and load the latest saved values.';
+  button.onclick = async () => {
+    button.disabled = true;
+    try { await reload(); button.remove(); status.textContent = 'Loaded the latest saved settings.'; }
+    catch (failure) { status.textContent = failure.message; button.disabled = false; }
+  };
+  status.insertAdjacentElement('afterend', button);
+}
 
 function closeSettingsMenus() {
   document.querySelectorAll('.settings-dropdown').forEach(el => el.classList.add('hidden'));
@@ -49,6 +67,7 @@ async function openSettingsPanel(panel) {
     el.setAttribute('aria-current', el.dataset.settingsPanel === panel ? 'page' : 'false');
   });
   if (panel === 'connection') {
+    if (!connDirty) await loadSettings();
     // Live status, not a page that looks identical whether or not a provider is
     // reachable: test every row that has no result yet (read-only GET /models;
     // results persist per row until it is edited, so reopening does not re-ping).
@@ -66,6 +85,7 @@ async function openSettingsPanel(panel) {
   if (panel === 'conversation') {
     if (conversationDirty && conversationDraftAgent === agentId) return;
     conversationDraftAgent = agentId;
+    conversationDraftRevision = settingsAgent?.conversationRevision || '';
     conversationDirty = false;
     $('#agent-settings-context').textContent = settingsAgent ? `${settingsAgent.name} · ${settingsAgent.dir}` : 'Select a conversation in Agents to change its settings.';
     $('#agent-set-name').value = settingsAgent?.name || '';
@@ -81,6 +101,7 @@ async function openSettingsPanel(panel) {
     budgetGlobal = await reachApi.getSettings();
     if (sequence !== settingsOpenSequence) return;
     budgetDraftAgent = agentId;
+    budgetDraftRevision = settingsAgent?.conversationRevision || '';
     $('#budget-scope option[value="conversation"]').disabled = !settingsAgent;
     $('#budget-scope option[value="conversation"]').textContent = settingsAgent ? `${settingsAgent.name} and its teams` : 'Select a conversation first';
     if (!settingsAgent) $('#budget-scope').value = 'global';
@@ -171,18 +192,22 @@ $('#btn-save-budgets').onclick = async () => {
     if ($('#budget-scope').value === 'conversation') {
       if (!settingsAgent) throw new Error('Select a conversation first.');
       for (const field of budgetSchema.fields.filter(f => f.globalOnly)) delete budgets[field.key];
-      const result = await reachApi.agents.update(settingsAgent.id, { settings: { budgetOverrides: $('#budget-inherit').checked ? null : budgets } });
+      const result = await reachApi.agents.update(settingsAgent.id, {
+        ...(budgetDraftRevision ? { conversationRevision: budgetDraftRevision } : {}),
+        settings: { budgetOverrides: $('#budget-inherit').checked ? null : budgets } });
       if (!result.ok) throw new Error(result.err);
       settingsAgent = result.agent;
+      budgetDraftRevision = settingsAgent.conversationRevision || '';
       if (currentAgent?.id === settingsAgent.id) currentAgent = settingsAgent;
     } else {
-      const result = await reachApi.saveSettings({ budgets });
+      const result = await reachApi.saveSettings({ budgets,
+        ...(budgetGlobal.settingsRevisions?.budgeting ? { settingsScope: 'budgeting', settingsRevision: budgetGlobal.settingsRevisions.budgeting } : {}) });
       if (!result.ok) throw new Error(result.err);
-      budgetGlobal = { ...budgetGlobal, budgets };
+      budgetGlobal = { ...budgetGlobal, budgets, settingsRevisions: result.settingsRevisions || budgetGlobal.settingsRevisions };
     }
     $('#budget-status').textContent = 'Saved. Applies to new runs; current runs keep their starting budgets.';
     budgetDirty = false;
-  } catch (e) { $('#budget-status').textContent = e.message; }
+  } catch (e) { showSettingsSaveError($('#budget-status'), e, async () => { budgetDirty = false; await openSettingsPanel('budgeting'); }); }
   finally { button.disabled = false; }
 };
 $('#settings-conversation').addEventListener('input', () => { conversationDirty = true; });
@@ -192,11 +217,13 @@ $('#btn-agent-set-save').onclick = async () => {
   if (!settingsAgent) return;
   try {
     const result = await reachApi.agents.update(settingsAgent.id, {
+      ...(conversationDraftRevision ? { conversationRevision: conversationDraftRevision } : {}),
       name: $('#agent-set-name').value.trim(), model: $('#agent-set-model').value.trim(),
       settings: { approvals: $('#agent-set-approvals').value, reviewEdits: $('#agent-set-review').checked },
     });
     if (!result.ok) throw new Error(result.err);
     settingsAgent = result.agent;
+    conversationDraftRevision = settingsAgent.conversationRevision || '';
     if (currentAgent?.id === settingsAgent.id) {
       currentAgent = settingsAgent;
       agentNameEl.textContent = settingsAgent.name;
@@ -205,5 +232,5 @@ $('#btn-agent-set-save').onclick = async () => {
     await loadAgentTree();
     $('#agent-settings-status').textContent = 'Saved. Model changes apply to the next run.';
     conversationDirty = false;
-  } catch (e) { $('#agent-settings-status').textContent = e.message; }
+  } catch (e) { showSettingsSaveError($('#agent-settings-status'), e, async () => { conversationDirty = false; await openSettingsPanel('conversation'); }); }
 };

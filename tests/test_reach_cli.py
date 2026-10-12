@@ -417,10 +417,10 @@ class SlashCommandTests(unittest.TestCase):
 
         tokens = command_tokens()
         self.assertEqual(tokens, [
-            "/help", "/status", "/endpoint", "/endpoints", "/settings", "/model", "/models", "/web",
+            "/help", "/status", "/endpoint", "/endpoints", "/settings", "/studio", "/model", "/models", "/web",
             "/agent", "/tools", "/workpath", "/system", "/clear", "/history",
-            "/retry", "/undo", "/compact", "/copy", "/save", "/layout",
-            "/theme", "/themes", "/exit",
+            "/retry", "/undo", "/compact", "/copy", "/thought", "/save", "/layout",
+            "/theme", "/themes", "/pet", "/exit",
         ])
         self.assertEqual(len(tokens), len(set(tokens)))
         self.assertEqual(set(HANDLERS), set(tokens))
@@ -2358,8 +2358,13 @@ class ToolLineTests(unittest.TestCase):
 
 class MarkdownRenderTests(unittest.TestCase):
     def setUp(self):
-        from reach_cli import render, terminal
+        from reach_cli import render, terminal, themes
         self.render, self.terminal = render, terminal
+        # Raw-ANSI assertions need the default palette; a saved user theme
+        # (run_chat applies it) would otherwise leak into the paints.
+        previous = themes.current_key()
+        themes.select_theme("default")
+        self.addCleanup(themes.select_theme, previous)
 
     def lines(self, text, width=40):
         m = self.render.MarkdownStream(width)
@@ -2415,6 +2420,424 @@ class MarkdownRenderTests(unittest.TestCase):
                 contextlib.redirect_stdout(out):
             chat_mod.stream_reply(client, [{"role": "user", "content": "x"}])
         self.assertIn("ai ▸ # Hi **x**", out.getvalue())
+
+
+class ThoughtMarkTests(unittest.TestCase):
+    """The '💭...' thought mark mirrors Studio's bubble on reasoning replies."""
+
+    def setUp(self):
+        from reach_cli import terminal
+        self.terminal = terminal
+        # Pin the modern glyph so the marks are checked the same on every host.
+        patcher = unittest.mock.patch.object(chat_mod, "THOUGHT_GLYPH", "💭")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def reply(self, script, no_stream=False, paint=True):
+        client = ReachClient("http://relay/v1", model="m")
+        client.no_stream = no_stream
+        rec = _Recorder(script)
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", paint), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                contextlib.redirect_stdout(out):
+            ok, result = chat_mod.stream_reply(
+                client, [{"role": "user", "content": "x"}], full=True)
+        return ok, result, client, out.getvalue()
+
+    def test_reasoning_reply_gets_lead_and_trail_marks(self):
+        ok, result, client, shown = self.reply([_Resp([
+            _delta(reasoning_content="weighing options"),
+            _delta(content="the answer\n"),
+            "data: [DONE]\n"])])
+        self.assertTrue(ok)
+        self.assertEqual(result["thought"], "weighing options")
+        self.assertEqual(result["content"], "the answer\n")  # stays out of history text
+        self.assertEqual(client.last_thought, "weighing options")
+        self.assertIn("💭... ", shown)
+        self.assertLess(shown.index("💭..."), shown.index("the answer"))
+        self.assertIn("...💭", shown[shown.index("the answer"):])
+
+    def test_reasoning_aliases_and_nonstream(self):
+        client_result = self.reply([_Resp(body={"choices": [{"message": {
+            "reasoning": "silent think", "content": "done"}}]})], no_stream=True)
+        ok, result, client, shown = client_result
+        self.assertTrue(ok)
+        self.assertEqual(result["thought"], "silent think")
+        self.assertLess(shown.index("💭..."), shown.index("done"))
+        stream_result = self.reply([_Resp([
+            _delta(reasoning="also thinking"), _delta(thought="more"),
+            _delta(content="ok\n"), "data: [DONE]\n"])])
+        self.assertEqual(stream_result[1]["thought"], "also thinkingmore")
+
+    def test_late_reasoning_gets_trail_only(self):
+        ok, result, client, shown = self.reply([_Resp([
+            _delta(content="answer line\n"),
+            _delta(reasoning_content="after the fact"),
+            "data: [DONE]\n"])])
+        self.assertTrue(ok)
+        self.assertEqual(client.last_thought, "after the fact")
+        self.assertNotIn("💭...", shown)
+        self.assertIn("...💭", shown[shown.index("answer line"):])
+
+    def test_no_reasoning_no_marks(self):
+        ok, result, client, shown = self.reply([_Resp([
+            _delta(content="plain\n"), "data: [DONE]\n"])])
+        self.assertTrue(ok)
+        self.assertNotIn("💭", shown)
+        self.assertEqual(result["thought"], "")
+        self.assertEqual(client.last_thought, "")
+
+    def test_raw_output_stays_clean_without_colour(self):
+        ok, result, client, shown = self.reply([_Resp([
+            _delta(reasoning_content="hidden chain"),
+            _delta(content="the answer\n"),
+            "data: [DONE]\n"])], paint=False)
+        self.assertTrue(ok)
+        self.assertNotIn("💭", shown)         # piped output is the model's text
+        self.assertIn("ai ▸ the answer", shown)
+        self.assertEqual(client.last_thought, "hidden chain")
+
+    def test_cut_reply_keeps_thought_across_retry(self):
+        cut = _Resp([_delta(reasoning_content="half "),
+                     _delta(content="Hel"),
+                     _delta(content="lo\n")], cut_after=2)
+        rest = _Resp([_delta(reasoning_content="rest"),
+                      _delta(content="lo!\n"), "data: [DONE]\n"])
+        client = ReachClient("http://relay/v1", model="m")
+        rec = _Recorder([cut, rest])
+        with unittest.mock.patch.object(self.terminal.PAINT, "on", True), \
+                unittest.mock.patch("urllib.request.urlopen", rec), \
+                unittest.mock.patch.object(chat_mod, "_sleep", lambda s: None), \
+                contextlib.redirect_stdout(io.StringIO()):
+            ok, result = chat_mod.stream_reply(
+                client, [{"role": "user", "content": "x"}], full=True)
+        self.assertTrue(ok)
+        self.assertEqual(result["content"], "Hello!\n")
+        self.assertEqual(result["thought"], "half rest")
+        self.assertEqual(client.last_thought, "half rest")
+
+    def test_thought_glyph_legacy_fallback(self):
+        self.assertEqual(chat_mod.thought_glyph({"WT_SESSION": "1"}, "nt"), "💭")
+        self.assertEqual(chat_mod.thought_glyph({}, "nt"), "o")
+        self.assertEqual(chat_mod.thought_glyph({}, "posix"), "💭")
+
+    def test_thought_command_expands_last_reply(self):
+        from reach_cli import commands
+        client = ReachClient("http://relay/v1", model="m")
+        client.last_thought = "first I checked the files\nthen answered"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            result = commands.handle_slash("/thought", client, [])
+        self.assertTrue(result.success)
+        self.assertIn("thought:", out.getvalue())
+        self.assertIn("first I checked the files", out.getvalue())
+        self.assertIn("then answered", out.getvalue())
+
+    def test_thought_command_without_reasoning(self):
+        from reach_cli import commands
+        client = ReachClient("http://relay/v1", model="m")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            commands.handle_slash("/thought", client, [])
+        self.assertIn("no thought process", out.getvalue())
+
+    def test_thought_marks_register_with_footer_screen(self):
+        # The footer turns each mark into a hover target; a plain console
+        # without an active screen skips registration entirely.
+        from reach_cli import chatbox
+
+        class Spy:
+            def __init__(self):
+                self.notes = []
+
+            def note_thought(self, parts, length):
+                self.notes.append((parts, length))
+
+        spy = Spy()
+        old = chatbox._SCREEN
+        chatbox._SCREEN = spy
+        try:
+            self.reply([_Resp([
+                _delta(reasoning_content="weighing options"),
+                _delta(content="the answer\n"),
+                "data: [DONE]\n"])])
+        finally:
+            chatbox._SCREEN = old
+        self.assertEqual([length for _parts, length in spy.notes], [5, 4])
+        self.assertIs(spy.notes[0][0], spy.notes[1][0])
+        self.assertEqual("".join(spy.notes[0][0]), "weighing options")
+
+
+class _FollowUpScreen:
+    """Footer double recording the collector's composer and queue calls."""
+
+    def __init__(self):
+        self.queued = []
+        self.echoed = []
+        self.inputs = []
+        self.carried = []
+        self.transcript = []
+        self.pet_cycles = 0
+
+    def queue_followup(self, text):
+        self.queued.append(text)
+
+    def take_followup(self):
+        return self.queued.pop(0) if self.queued else None
+
+    def has_followups(self):
+        return bool(self.queued)
+
+    def carry_draft(self, text, cursor):
+        self.carried.append((text, cursor))
+
+    def take_draft_carry(self):
+        return self.carried.pop(0) if self.carried else ("", 0)
+
+    def finish_input(self, text, echo=True):
+        if echo:
+            self.echoed.append(text)
+
+    def set_input(self, text, cursor, chunks=(), label="you"):
+        self.inputs.append((text, label))
+
+    def refresh_metadata(self):
+        pass
+
+    def write(self, text):
+        self.transcript.append(str(text))
+        return len(str(text))
+
+    def scroll(self, action, amount=1):
+        pass
+
+    def cycle_pet(self):
+        self.pet_cycles += 1
+
+
+class FollowUpTests(unittest.TestCase):
+    """Prompts submitted mid-reply queue and fire once it completes —
+    the terminal counterpart of the VS Code chat's followUpQueue."""
+
+    def _run_loop(self, screen, inputs, stream):
+        """Drive _run_chat_loop with a scripted prompt reader and stream."""
+        import tempfile
+        from reach_cli import chatbox, terminal
+        client = ReachClient("http://relay/v1", model="m")
+        client.workpath = tempfile.mkdtemp()
+        it = iter(inputs)
+        old = chatbox._SCREEN
+        chatbox._SCREEN = screen
+        try:
+            with unittest.mock.patch.object(chat_mod, "stream_reply", stream), \
+                    unittest.mock.patch.object(terminal, "read_prompt",
+                                               lambda c, s: next(it), create=True), \
+                    unittest.mock.patch.object(chat_mod, "banner", lambda *a: None), \
+                    unittest.mock.patch.object(chat_mod, "endpoint_notice", lambda c: False), \
+                    unittest.mock.patch.object(chat_mod, "print_footer", lambda *a, **k: None), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                chat_mod._run_chat_loop(client, client.base)
+        finally:
+            chatbox._SCREEN = old
+        return client
+
+    def test_collector_enter_queues_and_echoes_each_prompt(self):
+        screen = _FollowUpScreen()
+        chat_mod._FollowUpCollector(screen)._run(events=[
+            ("text", "hi "), ("text", "next"), ("enter", ""),
+            ("text", "second"), ("enter", "")])
+        self.assertEqual(screen.queued, ["hi next", "second"])
+        self.assertEqual(screen.echoed, ["hi next", "second"])
+        self.assertEqual(screen.carried, [("", 0)])  # both enters submitted
+        self.assertTrue(any("queued" in part for part in screen.transcript))
+        self.assertEqual(screen.inputs[-1], ("", "next"))
+
+    def test_collector_carries_an_unsubmitted_draft(self):
+        screen = _FollowUpScreen()
+        chat_mod._FollowUpCollector(screen)._run(events=[("text", "still typing")])
+        self.assertEqual(screen.queued, [])
+        self.assertEqual(screen.carried, [("still typing", len("still typing"))])
+
+    def test_collector_resumes_the_previous_collector_draft(self):
+        # Between agent rounds the same in-progress draft stays editable.
+        screen = _FollowUpScreen()
+        chat_mod._FollowUpCollector(screen)._run(events=[("text", "half")])
+        chat_mod._FollowUpCollector(screen)._run(events=[("text", " done")])
+        self.assertEqual(screen.carried, [("half done", len("half done"))])
+
+    def test_empty_enter_releases_a_ready_queue(self):
+        # Devin-style: a second Enter on an empty composer sends the queued
+        # follow-up now instead of waiting for the reply to finish.
+        screen = _FollowUpScreen()
+        releases = []
+        collector = chat_mod._FollowUpCollector(
+            screen, release=lambda: releases.append(True))
+        collector._run(events=[("text", "queued"), ("enter", ""), ("enter", "")])
+        self.assertEqual(releases, [True])
+        self.assertEqual(screen.queued, ["queued"])
+
+    def test_empty_enter_without_a_queue_is_a_noop(self):
+        screen = _FollowUpScreen()
+        releases = []
+        collector = chat_mod._FollowUpCollector(
+            screen, release=lambda: releases.append(True))
+        collector._run(events=[("enter", ""), ("enter", "")])
+        self.assertEqual(releases, [])
+        self.assertEqual(screen.queued, [])
+        self.assertEqual(screen.echoed, [])
+
+    def test_collector_returns_quit_intents_to_the_next_reader(self):
+        from reach_cli import footer_input
+        broker = footer_input._InputBroker()
+        with broker._condition:
+            broker._put([("eof", ""), ("text", "x")])
+        screen = _FollowUpScreen()
+        with unittest.mock.patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                unittest.mock.patch.object(footer_input, "_BROKER", broker):
+            chat_mod._FollowUpCollector(screen)._run()
+        self.assertEqual(screen.queued, [])
+        self.assertEqual(list(broker._pending), [("eof", ""), ("text", "x")])
+
+    def test_stream_reply_queues_a_prompt_typed_during_the_reply(self):
+        from reach_cli import chatbox, footer_input
+        client = ReachClient("http://relay/v1", model="m")
+        broker = footer_input._InputBroker()
+        with broker._condition:
+            broker._put([("text", "queued follow-up"), ("enter", "")])
+        screen = _FollowUpScreen()
+        rec = _Recorder([_Resp([_delta(content="reply\n"), "data: [DONE]\n"])])
+        old = chatbox._SCREEN
+        chatbox._SCREEN = screen
+        try:
+            with unittest.mock.patch("urllib.request.urlopen", rec), \
+                    unittest.mock.patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                    unittest.mock.patch.object(footer_input, "_BROKER", broker), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                ok, result = chat_mod.stream_reply(
+                    client, [{"role": "user", "content": "x"}], full=True)
+        finally:
+            chatbox._SCREEN = old
+        self.assertTrue(ok)
+        self.assertEqual(result["content"], "reply\n")
+        self.assertEqual(screen.queued, ["queued follow-up"])
+        self.assertEqual(screen.echoed, ["queued follow-up"])
+        self.assertEqual(list(broker._pending), [])
+
+    def test_empty_enter_mid_reply_releases_the_queue(self):
+        from reach_cli import chatbox, footer_input
+        client = ReachClient("http://relay/v1", model="m")
+        broker = footer_input._InputBroker()
+        with broker._condition:
+            broker._put([("text", "send now"), ("enter", ""), ("enter", "")])
+        screen = _FollowUpScreen()
+        rec = _Recorder([_Resp([_delta(content="a\n"), _delta(content="b\n"),
+                                _delta(content="c\n"), "data: [DONE]\n"])])
+        old = chatbox._SCREEN
+        chatbox._SCREEN = screen
+        try:
+            with unittest.mock.patch("urllib.request.urlopen", rec), \
+                    unittest.mock.patch.object(footer_input, "_SESSION_ACTIVE", True), \
+                    unittest.mock.patch.object(footer_input, "_BROKER", broker), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                _ok, result = chat_mod.stream_reply(
+                    client, [{"role": "user", "content": "x"}], full=True)
+        finally:
+            chatbox._SCREEN = old
+        self.assertTrue(result.get("released"))
+        self.assertEqual(screen.queued, ["send now"])
+        self.assertEqual(list(broker._pending), [])
+
+    def test_queued_followup_fires_after_completion_with_full_context(self):
+        screen = _FollowUpScreen()
+        calls = []
+
+        def stream(client, messages, **kw):
+            calls.append(list(messages))
+            if len(calls) == 1:
+                screen.queue_followup("queued second")
+            return True, {"content": "reply %d" % len(calls), "stopped": False}
+
+        self._run_loop(screen, ["first", "/exit"], stream)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][-1], {"role": "user", "content": "first"})
+        self.assertEqual(calls[1][-3], {"role": "user", "content": "first"})
+        self.assertEqual(calls[1][-2], {"role": "assistant", "content": "reply 1"})
+        self.assertEqual(calls[1][-1], {"role": "user", "content": "queued second"})
+        self.assertEqual(screen.queued, [])
+
+    def test_stopped_reply_holds_queued_followups(self):
+        screen = _FollowUpScreen()
+        calls = []
+
+        def stream(client, messages, **kw):
+            calls.append(list(messages))
+            screen.queue_followup("queued mid-stop")
+            return True, {"content": "partial", "stopped": True}
+
+        self._run_loop(screen, ["first", "/exit"], stream)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(screen.queued, ["queued mid-stop"])
+
+    def test_held_followups_fire_after_the_next_completed_turn(self):
+        screen = _FollowUpScreen()
+        calls = []
+        replies = iter([
+            (True, {"content": "partial", "stopped": True}),
+            (True, {"content": "back", "stopped": False}),
+            (True, {"content": "done", "stopped": False}),
+        ])
+
+        def stream(client, messages, **kw):
+            calls.append(list(messages))
+            if len(calls) == 1:
+                screen.queue_followup("queued mid-stop")
+            return next(replies)
+
+        self._run_loop(screen, ["first", "manual", "/exit"], stream)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1][-1], {"role": "user", "content": "manual"})
+        self.assertEqual(calls[2][-1], {"role": "user", "content": "queued mid-stop"})
+        self.assertEqual(screen.queued, [])
+
+    def test_released_reply_still_fires_the_queue(self):
+        # A released turn may come back stopped (cut before content); the
+        # release itself is the signal that the queue should run.
+        screen = _FollowUpScreen()
+        calls = []
+
+        def stream(client, messages, **kw):
+            calls.append(list(messages))
+            if len(calls) == 1:
+                screen.queue_followup("released one")
+                return False, {"content": "", "stopped": True, "released": True}
+            return True, {"content": "done", "stopped": False}
+
+        self._run_loop(screen, ["first", "/exit"], stream)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][-1], {"role": "user", "content": "released one"})
+        self.assertEqual(screen.queued, [])
+
+    def test_carried_draft_opens_the_next_prompt(self):
+        from reach_cli import chatbox, footer_input
+        client = ReachClient("http://relay/v1", model="m")
+        screen = _FollowUpScreen()
+        screen.carried.append(("carried text", 7))
+
+        def events():
+            yield "enter", ""
+
+        old = chatbox._SCREEN
+        chatbox._SCREEN = screen
+        try:
+            with unittest.mock.patch.object(footer_input, "_windows_events", events), \
+                    unittest.mock.patch.object(footer_input, "_posix_events", events), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                chunks = chatbox.read_boxed(client)
+        finally:
+            chatbox._SCREEN = old
+        self.assertEqual(chunks, ["carried text"])
+        self.assertEqual(screen.carried, [])
 
 
 class CtrlCTests(unittest.TestCase):
@@ -2639,10 +3062,10 @@ class StarterCompatTests(unittest.TestCase):
         self.assertEqual(out.getvalue(), "")
 
     def test_windows_legacy_console_glyph_fallback(self):
-        self.assertEqual(chat_mod.tool_glyphs({}, "nt"), ("●", "└"))
-        self.assertEqual(chat_mod.tool_glyphs({"WT_SESSION": "x"}, "nt"), ("⏺", "⎿"))
-        self.assertEqual(chat_mod.tool_glyphs({"TERM_PROGRAM": "vscode"}, "nt"), ("⏺", "⎿"))
-        self.assertEqual(chat_mod.tool_glyphs({}, "posix"), ("⏺", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({}, "nt"), (">", "└"))
+        self.assertEqual(chat_mod.tool_glyphs({"WT_SESSION": "x"}, "nt"), (">", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({"TERM_PROGRAM": "vscode"}, "nt"), (">", "⎿"))
+        self.assertEqual(chat_mod.tool_glyphs({}, "posix"), (">", "⎿"))
 
     def test_ctrl_c_is_immediate_while_request_blocks(self):
         # the request sits in a blocking read (as on Windows, where SIGINT

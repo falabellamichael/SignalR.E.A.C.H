@@ -94,7 +94,8 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
   });
   const status = row => ({ redemptionId:row.id, mode:'treasury',
     status:row.status==='credited'?'credited':row.tx_hash?'pending':row.expires<=store.now()?'expired':'created',
-    txHash:row.tx_hash||null, creditUsdMicros:row.usd_micros });
+    txHash:row.tx_hash||null, creditUsdMicros:row.usd_micros,
+    settlementStatus:row.status==='credited'?'received':row.tx_hash?'unverified':'pending' });
   const signedTransaction = async (row,quote) => {
     const signature = await signer.signTypedData(domain,quoteTypes,{wallet:row.wallet,amount:row.amount,
       creditUsdMicros:row.usd_micros,redemptionId:row.id,issuedAt:quote.issuedAt,deadline:quote.deadline});
@@ -176,10 +177,14 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
     await checkContract();
     const receipt=await provider.getTransactionReceipt(row.tx_hash);
     if(!receipt)return 'transaction_pending';
-    if(!same(receipt.hash??receipt.transactionHash,row.tx_hash))return 'transaction_mismatch';
-    if(receipt.status!==1)return 'transaction_failed';
+    if(!same(receipt.hash??receipt.transactionHash,row.tx_hash))return 'transaction_receipt_mismatch';
+    if(receipt.status!==0&&receipt.status!==1)return 'transaction_unverified';
+    // A reverted or mismatched transaction is definitive only after canonical finality.
+    if(!await finalizedReceipt(provider,config.chainId,settings.confirmations,receipt))return 'awaiting_finality';
+    if(receipt.status===0)return 'transaction_failed';
     const tx=await provider.getTransaction(row.tx_hash);
-    if(!tx||!same(tx.hash,row.tx_hash)||tx.chainId!==BigInt(config.chainId)
+    if(!tx)return 'transaction_unverified';
+    if(!same(tx.hash,row.tx_hash)||tx.chainId!==BigInt(config.chainId)
        ||!same(tx.from,receipt.from)||!same(tx.to,receipt.to)
        ||!same(tx.blockHash,receipt.blockHash)||tx.blockNumber!==receipt.blockNumber)return 'transaction_mismatch';
     const walletCode=await provider.getCode(row.wallet,receipt.blockNumber),delegated=isDelegatedEoaCode(walletCode);
@@ -192,15 +197,11 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
     if(matches.length!==1)return 'redemption_event_mismatch';
     const log=matches[0],index=receiptLogIndex(log,row,receipt);
     if(index===null)return 'redemption_event_mismatch';
-    if(delegated){
-      // A sponsored/batched wallet call has a different outer sender and target.
-      // The pinned immutable redemption runtime verifies the wallet-bound quote
-      // itself. Require its exact event plus the exact token transfer preceding
-      // it in this same canonical receipt, rather than trusting a relay wrapper.
-      const transferred=(receipt.logs||[]).some(entry=>matchingTransfer(entry,row,quote)
-        &&receiptLogIndex(entry,row,receipt)!==null&&receiptLogIndex(entry,row,receipt)<index);
-      if(!transferred)return 'redemption_transfer_mismatch';
-    }
+    // Every wallet must prove that the exact RCH reached the bound treasury.
+    // An adapter event or a client success claim alone cannot grant account credit.
+    const transferred=(receipt.logs||[]).some(entry=>matchingTransfer(entry,row,quote)
+      &&receiptLogIndex(entry,row,receipt)!==null&&receiptLogIndex(entry,row,receipt)<index);
+    if(!transferred)return 'redemption_transfer_mismatch';
     if(!await finalizedReceipt(provider,config.chainId,settings.confirmations,receipt))return 'awaiting_finality';
     await store.creditRedemption(row.id,`${config.chainId}:${row.tx_hash.toLowerCase()}:${index}`);
     return null;
@@ -208,7 +209,11 @@ export function createTreasuryRedemptionService({ store, config, provider: suppl
   async function reconcileOne(row,quote) {
     if(row.status==='credited')return status(row);
     let reason;try{reason=await safely(()=>verify(row,quote));}catch(error){reason=error.code||'redemption_verification_unavailable';}
-    return {...status(row),status:reason?'pending':'credited',...(reason?{reason}:{})};
+    // The durable intent remains recoverable; this describes its submitted receipt.
+    const failed=['transaction_failed','transaction_mismatch','redemption_event_mismatch','redemption_transfer_mismatch'].includes(reason);
+    const waiting=['transaction_pending','awaiting_finality'].includes(reason);
+    return {...status(row),status:reason?'pending':'credited',
+      settlementStatus:!reason?'received':failed?'failed':waiting?'pending':'unverified',...(reason?{reason}:{})};
   }
   async function submit(id,ticket,txHash) {
     requireEnabled();if(!hash(txHash))fail(400,'invalid_transaction','Enter a valid Ethereum transaction hash.');

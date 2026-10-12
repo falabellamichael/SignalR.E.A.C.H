@@ -342,11 +342,44 @@ $('#btn-agent-continue').onclick = async () => {
 
 // ---------- chat rendering ----------
 // Capture this BEFORE changing content. Streaming must follow a reader at the
-// bottom, but never drag someone away from a message or edit they are reading.
+// newest edge, but never drag someone away from a message or edit they are reading.
+function chatNewestScrollTop() {
+  const top = chatLog.getBoundingClientRect().top - chatScroll.getBoundingClientRect().top
+    - chatScroll.clientTop + chatScroll.scrollTop;
+  // The existing Teams rail can float over the viewport when returning to
+  // the newest response. Leave room for it without moving the workstation.
+  const rail = teamDeckSlot.querySelector('.team-deck-nav');
+  const covered = rail?.getClientRects().length ? rail.offsetHeight : 0;
+  return Math.max(0, Math.min(top - covered, chatScroll.scrollHeight - chatScroll.clientHeight));
+}
 function shouldFollowChat() {
+  if (isTeamsChatNewestFirst()) return Math.abs(chatScroll.scrollTop - chatNewestScrollTop()) <= 24;
   return chatScroll.scrollHeight - chatScroll.clientHeight - chatScroll.scrollTop <= 24;
 }
-function followChatTail(follow) {
-  if (follow) chatScroll.scrollTop = chatScroll.scrollHeight;
+function captureChatReadingPosition(follow) {
+  if (follow || !isTeamsChatNewestFirst()) return null;
+  const viewport = chatScroll.getBoundingClientRect();
+  const anchor = [...chatLog.children].find(child => {
+    const rect = child.getBoundingClientRect();
+    return rect.height > 0 && rect.bottom > viewport.top && rect.top < viewport.bottom;
+  });
+  return anchor ? { anchor, top: anchor.getBoundingClientRect().top - viewport.top } : null;
+}
+let chatReadingScrollRemainder = 0;
+function followChatTail(follow, readingPosition = null) {
+  if (follow) {
+    chatReadingScrollRemainder = 0;
+    chatScroll.scrollTop = isTeamsChatNewestFirst() ? chatNewestScrollTop() : chatScroll.scrollHeight;
+  }
+  else if (readingPosition?.anchor.isConnected) {
+    const delta = readingPosition.anchor.getBoundingClientRect().top
+      - chatScroll.getBoundingClientRect().top - readingPosition.top;
+    if (Math.abs(delta) < 0.01) return;
+    const requested = Math.max(0, Math.min(chatScroll.scrollTop + delta + chatReadingScrollRemainder,
+      chatScroll.scrollHeight - chatScroll.clientHeight));
+    chatScroll.scrollTop = requested;
+    // Chromium may round scrollTop; retain fractions across streamed chunks.
+    chatReadingScrollRemainder = requested - chatScroll.scrollTop;
+  }
 }
 

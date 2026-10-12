@@ -4,9 +4,11 @@ const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
 const path = require('node:path');
+const { credentialOrigin, validKey } = require('./model-credentials');
 
 const DEFAULT_POINTER = 'https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt';
 const DEFAULTS = { provider: 'endpoint', endpoint: DEFAULT_POINTER, model: '' };
+const MODEL_POLL_INTERVAL_MS = 300000;
 
 function endpointUrl(value) {
     const url = new URL(String(value).trim());
@@ -17,18 +19,26 @@ function endpointUrl(value) {
     return url;
 }
 
-function request(url, { body, timeout = 0, redirects = 3 } = {}) {
+function request(url, { body, timeout = 0, redirects = 3, authorization = null, authOrigin = null, onResponse = null } = {}) {
     url = endpointUrl(url);
+    if (authorization && (!validKey(authorization) || url.protocol !== 'https:'
+            || url.origin !== credentialOrigin(authOrigin) || body !== undefined
+            || !url.pathname.endsWith('/v1/models') || url.search)) {
+        throw new Error('Model credentials can only authenticate HTTPS model discovery at their bound origin.');
+    }
     return new Promise((resolve, reject) => {
         const payload = body === undefined ? null : JSON.stringify(body);
         const transport = url.protocol === 'https:' ? https : http;
         const req = transport.request(url, {
             method: payload === null ? 'GET' : 'POST',
             headers: { Accept: 'application/json, text/plain', 'ngrok-skip-browser-warning': 'true',
+                ...(authorization ? { Authorization: 'Bearer ' + authorization } : {}),
                 ...(payload === null ? {} : { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }) }
         }, res => {
+            if (onResponse) onResponse(res.statusCode);
             if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
                 res.resume();
+                if (authorization) return reject(new Error('Authenticated model discovery redirects are blocked.'));
                 if (payload !== null || redirects <= 0) return reject(new Error('Unexpected endpoint redirect.'));
                 resolve(request(new URL(res.headers.location, url), { timeout, redirects: redirects - 1 }));
                 return;
@@ -45,8 +55,10 @@ function request(url, { body, timeout = 0, redirects = 3 } = {}) {
                 const text = Buffer.concat(chunks).toString('utf8');
                 if (res.statusCode < 200 || res.statusCode >= 300) {
                     let detail = '';
-                    try { const data = JSON.parse(text); detail = data.error?.message || data.detail || ''; } catch (_) {}
-                    reject(new Error(`Endpoint returned HTTP ${res.statusCode}${detail ? ': ' + String(detail).slice(0, 240) : ''}`));
+                    if (!authorization) { try { const data = JSON.parse(text); detail = data.error?.message || data.detail || ''; } catch (_) {} }
+                    const error = new Error(`Endpoint returned HTTP ${res.statusCode}${detail ? ': ' + String(detail).slice(0, 240) : ''}`);
+                    error.statusCode = res.statusCode;
+                    reject(error);
                 } else resolve(text);
             });
         });
@@ -56,7 +68,7 @@ function request(url, { body, timeout = 0, redirects = 3 } = {}) {
             ? setTimeout(() => req.destroy(new Error('Endpoint request timed out.')), timeout)
             : null;
         req.on('close', () => { if (timer) clearTimeout(timer); });
-        req.on('error', reject);
+        req.on('error', error => reject(authorization ? new Error('Authenticated model discovery transport failed.') : error));
         req.end(payload);
     });
 }
@@ -172,14 +184,97 @@ function normalizeSystemMessages(messages) {
         : rest;
 }
 
-function createEndpointClient(settingsPath) {
+function createEndpointClient(settingsPath, { modelCredentials = null,
+        clock = { now: () => Date.now(), setTimeout, clearTimeout } } = {}) {
     let settings = { ...DEFAULTS };
     try {
         const saved = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
         settings = validate({ ...settings, ...saved });
     } catch (_) { /* first run or invalid old settings */ }
-    let cached = null;
-    let inFlight = null;
+    const cached = new Map();
+    const inFlight = new Map();
+    let generation = 0;
+    let latestProbe = null;
+    let attempts = 0;
+    let lastSuccessAt = null;
+    let pollingEnabled = false;
+    let pollingRunning = false;
+    let pollingTimer = null;
+    let pollingDueAt = null;
+    let pollingToken = 0;
+
+    const discoveryKey = config => generation + '\0' + endpointUrl(config.endpoint).toString();
+    function cancelPollingTimer() {
+        pollingToken += 1;
+        if (pollingTimer !== null) clock.clearTimeout(pollingTimer);
+        pollingTimer = null;
+        pollingDueAt = null;
+    }
+    function schedulePolling() {
+        if (!pollingEnabled || pollingRunning) return;
+        cancelPollingTimer();
+        const config = getSettings();
+        if (config.provider !== 'endpoint') return;
+        const previous = cached.get(discoveryKey(config));
+        const delay = previous ? Math.max(0, previous.at + MODEL_POLL_INTERVAL_MS - clock.now()) : 0;
+        pollingDueAt = clock.now() + delay;
+        const token = pollingToken;
+        pollingTimer = clock.setTimeout(() => {
+            if (!pollingEnabled || token !== pollingToken) return;
+            pollingTimer = null;
+            pollingDueAt = null;
+            void pollOnce();
+        }, delay);
+        pollingTimer?.unref?.();
+    }
+    async function pollOnce() {
+        if (!pollingEnabled || pollingRunning) return;
+        pollingRunning = true;
+        try {
+            const config = getSettings();
+            if (config.provider === 'endpoint') await discover(config, false, 'background');
+        } catch (_) {
+            // Discovery records sanitized errors and caches failures for five minutes.
+        } finally {
+            pollingRunning = false;
+            schedulePolling();
+        }
+    }
+    function startPolling() {
+        if (pollingEnabled) return false;
+        pollingEnabled = true;
+        schedulePolling();
+        return true;
+    }
+    function stopPolling() {
+        pollingEnabled = false;
+        cancelPollingTimer();
+    }
+    function resumePolling() {
+        // An overdue poll runs once after wake, without replaying missed intervals.
+        schedulePolling();
+    }
+
+    async function modelUrl(config = getSettings()) {
+        let url = endpointUrl(config.endpoint);
+        // Pointer/redirect discovery is always anonymous, before any vault read.
+        if (url.hostname === 'gist.githubusercontent.com' || url.pathname.endsWith('.txt')) {
+            url = endpointUrl((await request(url, { timeout: 15000 })).trim());
+        }
+        url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
+        url.search = '';
+        return url;
+    }
+    async function modelOrigin(config = getSettings()) { return (await modelUrl(config)).origin; }
+    function invalidateDiscovery() { generation += 1; cached.clear(); schedulePolling(); }
+    function discoveryStatus() {
+        return { intervalMs: MODEL_POLL_INTERVAL_MS, attempts, lastAttemptAt: latestProbe?.startedAt || null,
+            lastCompletedAt: latestProbe?.completedAt || null, lastSuccessAt,
+            httpStatus: latestProbe?.httpStatus || null, errorCode: latestProbe?.errorCode || '',
+            lastTrigger: latestProbe?.trigger || null,
+            nextEligibleAt: latestProbe?.completedAt ? latestProbe.completedAt + MODEL_POLL_INTERVAL_MS : null,
+            backgroundPolling: { enabled: pollingEnabled, inFlight: pollingRunning, nextDueAt: pollingDueAt } };
+    }
 
     function validate(value) {
         if (!['endpoint', 'copilot', 'chatgpt', 'codegpt', 'gemini'].includes(value.provider)) throw new Error('Choose Free endpoints, Microsoft 365 Copilot, ChatGPT, CodeGPT economy models, or Gemini.');
@@ -194,33 +289,57 @@ function createEndpointClient(settingsPath) {
         fs.writeFileSync(temp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
         fs.renameSync(temp, settingsPath);
         settings = next;
-        cached = null;
+        // Provider/model edits must not reset the discovery retry interval.
+        // Endpoint URLs have separate cache entries; explicit refresh remains available.
+        schedulePolling();
         return getSettings();
     }
-    async function discover(config = getSettings(), force = false) {
-        const key = config.endpoint;
-        if (!force && cached?.key === key && Date.now() - cached.at < 15000) return cached.value;
-        if (inFlight?.key === key) return inFlight.promise;
+    async function discover(config = getSettings(), force = false, trigger = 'demand') {
+        const key = discoveryKey(config);
+        if (inFlight.has(key)) return inFlight.get(key);
+        const previous = cached.get(key);
+        if (previous && clock.now() - previous.at < MODEL_POLL_INTERVAL_MS
+                && (!force || previous.error)) {
+            // Cache failures too: status/UI refreshes must not hammer a broken
+            // or unauthenticated endpoint. Even forced refresh respects this backoff.
+            if (previous.error) throw previous.error;
+            return previous.value;
+        }
+        const probe = { startedAt: clock.now(), completedAt: null, httpStatus: null, errorCode: '',
+            trigger: trigger === 'background' ? 'background' : 'demand' };
+        latestProbe = probe;
+        attempts += 1;
         const promise = (async () => {
-            let url = endpointUrl(config.endpoint);
-            // The published pointer follows tunnel changes without manual edits.
-            // Discovery is a metadata probe, so it keeps a bounded wait — only
-            // model generation runs without a timeout.
-            if (url.hostname === 'gist.githubusercontent.com' || url.pathname.endsWith('.txt')) {
-                url = endpointUrl((await request(url, { timeout: 15000 })).trim());
-            }
-            url.pathname = url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
-            url.search = '';
+            const url = await modelUrl(config);
             const base = url.toString().replace(/\/$/, '');
-            const data = JSON.parse(await request(base + '/models', { timeout: 15000 }));
+            let authorization = modelCredentials ? await modelCredentials.forOrigin(url.origin) : null;
+            let data;
+            try {
+                const response = await request(base + '/models', { timeout: 15000,
+                    authorization, authOrigin: url.origin, onResponse: status => { probe.httpStatus = status; } });
+                try { data = JSON.parse(response); }
+                catch (_) { throw new Error('The endpoint returned invalid model metadata.'); }
+                // An upstream must not reflect a supplied credential into UI metadata.
+                if (authorization && (response.includes(authorization) || JSON.stringify(data).includes(JSON.stringify(authorization).slice(1, -1)))) throw new Error('The endpoint returned unsafe model metadata.');
+            } finally { authorization = null; }
             const models = [...new Set((data.data || []).map(m => m?.id).filter(id => typeof id === 'string' && id))];
             if (!models.length) throw new Error('This endpoint returned no models.');
             const value = { base, models };
-            cached = { key, at: Date.now(), value };
+            probe.completedAt = clock.now();
+            lastSuccessAt = probe.completedAt;
+            cached.set(key, { at: probe.completedAt, value });
             return value;
-        })();
-        inFlight = { key, promise };
-        try { return await promise; } finally { if (inFlight?.promise === promise) inFlight = null; }
+        })().catch(error => {
+            probe.completedAt = clock.now();
+            probe.errorCode = error.statusCode === 401 || error.statusCode === 403 ? 'auth_refused' : 'discovery_failed';
+            cached.set(key, { at: probe.completedAt, error });
+            throw error;
+        });
+        inFlight.set(key, promise);
+        try { return await promise; } finally {
+            if (inFlight.get(key) === promise) inFlight.delete(key);
+            schedulePolling();
+        }
     }
     async function chat(config, messages, onDelta) {
         const { base, models } = await discover(config);
@@ -245,7 +364,8 @@ function createEndpointClient(settingsPath) {
         if (typeof content !== 'string' || !content.trim()) throw new Error('The endpoint returned an empty reply.');
         return content;
     }
-    return { getSettings, saveSettings, discover, chat };
+    return { getSettings, saveSettings, discover, chat, modelOrigin, invalidateDiscovery, discoveryStatus,
+        startPolling, stopPolling, resumePolling };
 }
 
-module.exports = { createEndpointClient, endpointUrl, request, DEFAULT_POINTER, normalizeSystemMessages };
+module.exports = { createEndpointClient, endpointUrl, request, DEFAULT_POINTER, normalizeSystemMessages, MODEL_POLL_INTERVAL_MS };

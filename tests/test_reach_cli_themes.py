@@ -105,6 +105,7 @@ class ThemeCommandTests(unittest.TestCase):
     def setUp(self):
         self.old = themes.current_key()
         self.addCleanup(themes.select_theme, self.old)
+        themes.select_theme("default")
         self.temp = tempfile.TemporaryDirectory(prefix="reach-theme-", dir=ROOT)
         self.addCleanup(self.temp.cleanup)
         self.config = os.path.join(self.temp.name, "config.json")

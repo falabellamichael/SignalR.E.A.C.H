@@ -14,6 +14,7 @@ const MCP_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 let mcpDraft = [];           // [{ key, savedId, name, enabled, transport, ...text fields }]
 let mcpEditingKey = '';
 let mcpDirty = false;
+let mcpSettingsRevision = '';
 let mcpRows = new Map();     // saved id -> status row from mcp:list
 const mcpTestsRunning = new Set();
 let mcpPollTimer = 0, mcpPollsLeft = 0;
@@ -522,8 +523,10 @@ function pollMcpStatus() {
  * a reopened panel shows live state, not the handshake from last visit. */
 window.ReachMcpPanel = {
   async open() {
+    const settings = !mcpDirty ? await reachApi.getSettings() : null;
     await refreshMcpStatus();
     if (!mcpDirty) {
+      mcpSettingsRevision = settings?.settingsRevisions?.mcp || '';
       mcpDraft = [...mcpRows.values()].map(mcpDraftFromRow);
       if (!mcpDraft.some(r => r.key === mcpEditingKey)) mcpEditingKey = '';
       renderMcp();
@@ -584,6 +587,7 @@ $('#btn-save-mcp').onclick = async () => {
   button.disabled = true;
   try {
     const payload = {
+      ...(mcpSettingsRevision ? { settingsScope: 'mcp', settingsRevision: mcpSettingsRevision } : {}),
       mcpServers: mcpDraft.map(row => {
         if (row.transport === 'http') {
           return { name: row.name.trim(), enabled: row.enabled !== false, transport: 'http',
@@ -597,6 +601,7 @@ $('#btn-save-mcp').onclick = async () => {
     const res = await reachApi.saveSettings(payload);
     if (res && res.ok === false) throw new Error(res.err || 'Could not save.');
     mcpDirty = false;
+    mcpSettingsRevision = res?.settingsRevisions?.mcp || '';
     // Re-list: names re-slug into ids in main, and changed configs come back
     // marked stale — the poll below reconnects them and repaints the result.
     await refreshMcpStatus();
@@ -607,7 +612,7 @@ $('#btn-save-mcp').onclick = async () => {
     status.textContent = 'Saved.';
     setTimeout(() => { status.textContent = ''; delete status.dataset.savedRecently; }, 2000);
   } catch (e) {
-    status.textContent = e.message;
+    showSettingsSaveError(status, e, async () => { mcpDirty = false; await window.ReachMcpPanel.open(); });
   } finally {
     button.disabled = false;
   }

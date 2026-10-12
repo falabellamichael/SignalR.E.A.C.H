@@ -33,6 +33,7 @@ function syncSelectedTeamRun() {
 }
 
 function placeSelectedTeamDeck() {
+  syncChatOrder();
   const selected = currentAgent ? teamConversationViews.get(currentAgent.id) : null;
   const inSlot = !!selected && (selected === activeTeamRun || currentAgent.settings?.teamChat?.enabled === true);
   for (const deck of teamDeckSlot.querySelectorAll(':scope > .team-deck')) {

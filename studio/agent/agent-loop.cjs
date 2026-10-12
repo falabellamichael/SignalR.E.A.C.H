@@ -228,9 +228,9 @@ class AgentLoop {
       + 'Keep the user informed with short, concrete status lines.\n\n'
       + (controls.think ? '' : 'Thinking preference is off: keep reasoning brief and respond directly.\n')
       + (this.nativeTools
-        ? nativeInstruction({ includeCollab: this._inCrew(), disabled })
+        ? nativeInstruction({ includeCollab: this._inCrew(), disabled, mcpTools: this.mcpTools || [] })
         : structured
-          ? actionInstruction({ includeCollab: this._inCrew(), disabled })
+          ? actionInstruction({ includeCollab: this._inCrew(), disabled, mcpTools: this.mcpTools || [] })
           // Advertise the codebase tools only when bound to a project: indexing,
           // impact analysis and refactoring have nothing to act on otherwise, and
           // offering them would invite calls that can only fail.
@@ -327,9 +327,9 @@ class AgentLoop {
    * instance; the manager's own cache makes that cheap when servers are
    * already connected. A server that fails is skipped, never fatal — the
    * model simply does not see its tools. */
-  async _mcpDescriptors() {
+  async _mcpDescriptors({ force = false } = {}) {
     if (!this.mcpManager) return [];
-    if (this._mcpLoaded) return this.mcpTools || [];
+    if (this._mcpLoaded && !force && (this.mcpTools || []).length > 0) return this.mcpTools || [];
     let descriptors = [];
     try { descriptors = await this.mcpManager.toolDescriptors(); } catch { descriptors = []; }
     this.mcpTools = descriptors;
@@ -909,7 +909,7 @@ class AgentLoop {
         if (this._receivePeerMessages()) runState.noActionRounds = 0;
         this.requestRound = round + 1;
         this._emit('round', { round: round + 1 });
-        const mcpDescriptors = await this._mcpDescriptors();
+        const mcpDescriptors = await this._mcpDescriptors({ force: round === 0 });
         if (mcpDescriptors.length) this.mcpTools = mcpDescriptors;
         let requestMessages = await this._maybeCompact(this._messagesForRequest());
         if (this.steering.length) {

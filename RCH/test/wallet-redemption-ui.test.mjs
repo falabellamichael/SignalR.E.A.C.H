@@ -47,10 +47,10 @@ async function fixture(changes = {}, options = {}) {
     sessionStorage: { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) },
     URLSearchParams, TextEncoder, Date, console, crypto:webcrypto,
     setTimeout: callback => { timers.set(++timerId,callback);return timerId; }, clearTimeout:id => timers.delete(id),
-    fetch: async (path, options) => {
+    fetch: async (path, requestOptions) => {
       if (path.endsWith('/config')) return { ok: true, json: async () => ({ chainId: 1, redemptionMode: 'treasury' }) };
       if (path.endsWith('/details')) return { ok: true, json: async () => ({ ...details }) };
-      if (path.endsWith('/submit')) { submitted.push(JSON.parse(options.body)); return { ok: true, json: async () => ({ status: 'pending', reason: 'awaiting_finality' }) }; }
+      if (path.endsWith('/submit')) { submitted.push(JSON.parse(requestOptions.body)); return { ok: true, json: async () => (options.submitResult || { status: 'pending', reason: 'awaiting_finality' }) }; }
       throw new Error('Unexpected API ' + path);
     } });
   vm.runInContext(source, context);
@@ -212,4 +212,16 @@ test('known pre-submission call rejection permits review again while duplicate o
     await f.click();await f.click();assert.equal(f.calls.length,1);assert.equal(f.sent.length,0);
     assert(f.saved.has('reach-redemption-wallet-request:fixture'),'unknown code '+code);
   }
+});
+
+
+test('missing treasury receipt explains the withheld credit and preserves the recovery hash', async () => {
+  const f = await fixture({ status: 'pending', txHash: redemptionHash, approvalTransaction: null, transaction: null },
+    { submitResult: { status: 'pending', settlementStatus: 'failed', reason: 'redemption_transfer_mismatch' } });
+  await f.recover();
+  assert.match(f.element('status').textContent, /RCH receipt by the treasury could not be verified\. No credit was issued/);
+  assert.equal(f.element('txHash').value, redemptionHash);
+  assert.equal(f.saved.get('reach-redemption-transaction:fixture'), redemptionHash);
+  assert.equal(f.element('primary').disabled, true);
+  assert.equal(f.sent.length, 0); assert.equal(f.calls.length, 0);
 });

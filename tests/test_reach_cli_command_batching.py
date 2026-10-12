@@ -158,6 +158,9 @@ class CommandBatchingTests(unittest.TestCase):
         # Newer footers have a live HUD. Freeze its input, retaining real paint.
         if hasattr(screen, "_telemetry"):
             screen._telemetry = _FrozenTelemetry()
+        # Compare formatting at the same animation time in both runs.
+        from reach_cli.pets import TerminalPet
+        screen.pet = TerminalPet(clock=lambda: 0.0)
         # The sink is real; only its background native-input poll is unnecessary.
         screen._watch = lambda: None
         try:

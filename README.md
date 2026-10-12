@@ -56,7 +56,7 @@ The plugin installs a full **control panel** into SimpleRAG's app bar — a menu
 | | |
 |---|---|
 | **Endpoint pointer (always current URL)** | <https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt> |
-| **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`, fully tunable per alias) |
+| **Models** | `gpt-4o`, `gpt-4o-mini` (aliases → `codegpt/codegpt-gpt-4o[-mini]`), plus `gemini-2.5-flash` and `gemini-3.7-flash` — all fully tunable per alias |
 | **CodeGPT economy models** | `deepseek-v4.1-flash`, `ox-alpha`, `gemini-3.8-flash`, `gpt-5.6-luna`, `glm-5.2`, `MiniMax-M3` — see [CodeGPT economy models](#codegpt-economy-models) |
 | **Auth** | API key required by default (`sk-reach-…`), constant-time check, failed-attempt lockout, optional IP allow/block lists — see [Security](#security) |
 | **Streaming** | SSE, OpenAI wire format |
@@ -434,9 +434,10 @@ registered tool has no executor branch, or the parser accepts an unregistered on
   re-painted in place, and it is what "continue" resumes from after the 40-round
   pause. It is deliberately not persisted across a reload, so a stale checklist
   cannot outlive its task.
-- **Browser.** Twelve stateful verbs — `browser_open`, `browser_snapshot`,
-  `browser_click`, `browser_type`, `browser_press`, `browser_scroll`,
-  `browser_wait`, `browser_back`, `browser_console`, `browser_network`,
+- **Browser.** Sixteen stateful verbs — `browser_open`, `browser_navigate`,
+  `browser_snapshot`, `browser_click`, `browser_type`, `browser_press`,
+  `browser_scroll`, `browser_wait`, `browser_find`, `browser_forward`,
+  `browser_reload`, `browser_back`, `browser_console`, `browser_network`,
   `browser_screenshot`, `browser_close` — drive the *same* Electron session the
   REACH Browser panel shows, so you can watch what the agent does. Snapshots list
   interactive elements as numbered refs. Console and network rings let the agent
@@ -585,6 +586,52 @@ python tools/reach-cli.py models              # list served aliases
 # flags: --model gpt-4o | --base URL | --key sk-reach-… | --system "…" | --no-stream | --no-color
 ```
 
+Replies from reasoning models carry the same thought mark REACH Studio paints
+on its bubble — `ai ▸ 💭... answer ...💭` — and `/thought` expands the hidden
+reasoning. In the managed-screen chat UI, hovering the mark with the mouse
+opens a scrollable `thought` box, including while the reply is streaming. Move
+the mouse into the box to read it, or click the mark or box to pin it open.
+The mouse wheel scrolls the box under the pointer; PageUp/PageDown scroll a
+pinned box. Scrolling up holds your reading position as new reasoning arrives,
+and scrolling to the bottom resumes following it. Click `x`, click the pinned
+mark again, or click outside to close it. Terminals without pointer reporting
+can still use `/thought` to expand the reasoning. The mark is
+transcript chrome only: piped (`--no-color` / non-TTY) output stays exactly
+what the model sent.
+
+Chat navigation stays active during a reply. Use the wheel over chat or
+PageUp/PageDown to browse earlier output; reaching the bottom resumes following
+the answer. Tool calls use a clickable `>` that expands arguments and results
+beneath the call and becomes `v`; click again to collapse it. These controls
+preserve the follow-up draft and its cursor while the model keeps answering.
+
+CLI chats start fresh: Studio conversation history, agent instructions,
+SOUL.md, and MEMORY.md are not imported into ordinary chat. Address a Studio
+agent explicitly to use its instructions and durable files for that message:
+
+```text
+@agents
+@Atlas review this project
+@"Agent Name" explain the next step
+@persona:PERSONA_ID check the implementation
+@conversation:CONVERSATION_ID continue our CLI discussion
+```
+
+`@agents` (or `/studio list`) lists detected agents, and Tab completes an
+initial `@` address. Names with spaces use quotes; duplicate names use the
+listed kind and ID. The Windows CLI reads the existing `%APPDATA%\Reach Studio`
+profile files directly, so Studio can be closed. Access is read-only. It does
+not create memory files or change Studio's saved agents.
+
+Each addressed agent has its own fresh CLI conversation, plan, and retry state
+for this session. Repeating the same address continues that agent's CLI
+conversation. A message without an address returns to ordinary chat. Include
+the address again on follow-ups to keep speaking to the same agent. The
+selected instructions and SOUL keep their first 4,000 characters in the prompt;
+memory keeps its newest 4,000 as historical data. The selected-context tool can
+read the full bounded files when needed. Prior Studio chat messages remain
+outside the CLI conversation.
+
 Manage OpenAI-compatible providers in the REPL or through the source entry script:
 
 ```text
@@ -617,7 +664,70 @@ The installed `signalreach` launcher currently routes arguments to the runtime
 manager, so use the source script for direct endpoint commands; slash commands
 work in the bare `signalreach` chat after a normal restart.
 
-Agent mode exposes 36 executable tools. `/tools` lists the catalog and
+`/settings` shows the settings sections and cached endpoint/model status.
+`/settings edit` opens a command editor; enter section commands there and type
+`back` to return to chat. CLI preferences are saved in the existing config file
+and restored on startup. Existing endpoint, model, workpath, layout, theme, and
+companion commands remain available through the settings sections.
+
+```text
+/settings connection
+/settings appearance
+/settings conversation set approvals auto-all
+/settings conversation set reviewEdits true
+/settings budgeting set maxTokens 32768
+/settings budgeting set maxRounds 100
+/settings budgeting reset
+```
+
+The CLI's generation, timeout, retry, agent-round, and workpath-context budgets
+affect its next requests and runs. Approval modes are `prompt`, `auto-read`, and
+`auto-all`; file review is an independent preference. An untouched config keeps
+the previous runtime behavior. CLI context controls apply to its workpath file
+listing. Studio's symbol retrieval, context compression, teams, Jev, and MCP
+tools are configured through the Studio settings scope.
+
+`/settings studio` exposes every REACH Studio settings section through an
+authenticated connection to the running Studio app. It edits that Studio
+profile using the same validation and credential store as the desktop forms.
+Start Studio from this updated source or a build containing these changes;
+an older installed Studio does not expose the settings connection. CLI-local
+settings remain usable when Studio is closed.
+
+```text
+/settings studio connection
+/settings studio connection set CONNECTION_ID model MODEL_ID
+/settings studio connection select CONNECTION_ID
+/settings studio connection test all
+/settings studio set jevEnabled true
+/settings studio key jev TYPESAFE_API_KEY
+/settings studio appearance set pageLayout full-width
+/settings studio mcp
+/settings studio mcp add docs stdio node server.js
+/settings studio mcp set docs args ["server.js", "--port", "8080"]
+/settings studio mcp test docs
+/settings studio conversation list
+/settings studio conversation set CONVERSATION_ID reviewEdits true
+/settings studio budgeting global
+/settings studio budgeting global preset heavy
+/settings studio budgeting CONVERSATION_ID set maxRounds 100
+/settings studio budgeting CONVERSATION_ID inherit
+/settings studio budgeting global help maxTokens
+/settings studio engines
+```
+
+Studio budgeting reads the desktop's shared schema: all 42 fields, the Balanced,
+Heavy, and Unrestricted presets, global/conversation scope, inheritance, and
+field-specific zero semantics. `requestPacing`, `requestPacingRpm`, and
+`maxConversations` are global-only. Keys are set using an existing environment
+variable name, or explicitly removed with `clear`; saved secrets are never
+displayed. MCP `add-file PATH` and `edit-file NAME PATH` accept a JSON server
+object, including environment variables or headers; values such as
+`"@env:DOCS_API_KEY"` resolve from the CLI process environment. Connection/MCP
+edits preserve omitted secret fields. Stale desktop forms refuse to overwrite
+newer CLI edits and provide a button to reload the saved values.
+
+Agent mode exposes 38 executable tools. `/tools` lists the catalog and
 `/tools QUERY` searches it. The additions include structured file and JSON
 operations, Git inspection, argument-based commands, and owned-process start,
 list, output, wait, and stop. File writes and command/process execution retain
@@ -627,6 +737,14 @@ schemas. Providers explicitly rejecting native tools receive one narrowly
 classified retry using the existing fenced tool protocol. Optional external
 app integrations are not part of this local catalog.
 
+Greetings and direct conversational answers finish without a plan or tool
+call. Tool tasks finish with an explicit completion or blocked status. Repeated
+plan updates, failed tools, and rejected completion pause after three rounds
+without progress; advancing plan items and successful task tools keep running.
+Send `continue` to resume a paused task with its plan and tool evidence,
+including after a provider error or cancellation. A new request starts its own
+recovery state and does not inherit old tool results.
+
 Interactive chat keeps the new CLI's rectangular input box pinned below the
 transcript, including while the model streams. Its stdlib editor retains the
 draft and cursor in memory; one renderer reflows the transcript and footer on
@@ -634,6 +752,48 @@ window resizing. Windows Unicode input, wrapped drafts, history, and command
 completion use native console events. Plain or piped terminals retain the
 line-oriented interface. `chat -p "question"` submits that initial turn and
 keeps the chat open; `-p "question"` alone is a one-shot request.
+
+The composer also stays live while a reply streams: press **Enter** to queue
+a follow-up — it echoes as `you ▸ …` immediately and fires the moment the
+reply completes, in order. Pressing **Enter** again on an empty composer
+sends the queued follow-up now, ending the current reply early. Stopping a
+reply holds the queue until the next completed turn, and a half-typed draft
+carries into the next prompt.
+
+The stationary title box has an animated companion in place of the mini
+terminal. Choose `/pet cat`, `/pet owl`, or `/pet bulldog` (a micro bulldog),
+or press **Ctrl+T** to cycle through them without disturbing your draft.
+They blink, groom, stretch, and nap while idle; tap a keyboard as you type;
+walk over to their bowl and snack while waiting for the model; and celebrate
+a completed response. Agent tool rounds keep them busy until the final
+answer. `/pet pause` freezes motion and `/pet resume` restores it. The pet
+and motion preference are saved locally and restored on the next chat launch.
+Your pet also acts as the AI's avatar: it ponders during reasoning, talks and
+gestures while answering, reads or searches with the tools, and works at its
+keyboard during file edits and commands. Its status speaks in first person
+("I'm thinking...", "I'm answering...", "I'm searching...") and follows the
+actual request and tool lifecycle. Pausing motion keeps this status live.
+Sprites shrink with the terminal and do not appear in piped output.
+The header owns a reserved top band, with a blank separator when the window
+has room. Pet and telemetry updates repaint that band independently, preserving
+the chat cursor, transcript, scroll position, and open thought bubble. Long
+drafts scroll inside the composer instead of shrinking the header. Detailed
+pet artwork packs eight tiny pixels into each terminal cell; the chat's font
+size stays unchanged.
+
+Tool calls start collapsed with a plain `>` arrow. Click the arrow or its
+summary row to expand the arguments, edit preview, and result underneath;
+the arrow becomes `v`, and clicking it again collapses the details. Long
+results use the transcript's normal scrolling and wrapping. Disclosures
+also work during a response and leave the draft and cursor in place.
+Plain or piped output keeps the compact call and result lines.
+
+Transcript prose wraps at word boundaries, including summaries and expanded
+tool details. A word moves to the next row when it fits there; only tokens
+wider than an entire row require splitting. Fenced code uses the available
+reply width, preserves indentation, marks visual continuations with `↳`, and
+colors common labelled languages. The managed transcript retains source lines
+so existing paragraphs, commands, and code borders reflow on window resize.
 
 Use **Page Up / Page Down** or the **mouse wheel** to scroll earlier output
 while the input footer stays pinned. The `scroll` indicator shows your place;

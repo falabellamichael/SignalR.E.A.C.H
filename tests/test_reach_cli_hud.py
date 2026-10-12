@@ -1,4 +1,4 @@
-"""Top HUD, live telemetry, and explicit mini-terminal interaction tests."""
+"""Pinned pets, live telemetry, and retained command-state utility tests."""
 
 import io
 import os
@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "too
 from reach_cli import terminal, splash, footer, footer_input, hud, chatbox  # noqa: E402
 from reach_cli.footer_input import EditBuffer  # noqa: E402
 from reach_cli.mini_terminal import MiniTerminal, safe_output  # noqa: E402
+from reach_cli.pets import PET_NAMES, TerminalPet  # noqa: E402
 from reach_cli.system_telemetry import SystemTelemetry  # noqa: E402
 
 
@@ -64,6 +65,41 @@ class FixedTelemetry:
 
 
 class HudRenderTests(unittest.TestCase):
+    def test_pet_status_speaks_for_ai_and_remains_live_when_motion_paused(self):
+        pet = TerminalPet("cat", clock=lambda: 0)
+        pet.set_activity("responding")
+        rows = hud.render_header(120, pet=pet, streaming=True)
+        self.assertIn("Cat · I'm answering...", rows[-1])
+        self.assertNotIn("watching AI", "\n".join(rows))
+        self.assertNotIn("STREAMING", rows[-1])
+        pet.set_motion(False)
+        pet.set_activity("searching")
+        rows = hud.render_header(120, pet=pet)
+        self.assertIn("Cat · I'm searching... · paused", rows[-1])
+        for budget in (1, 3, 4, 5):
+            with self.subTest(budget=budget):
+                rows = hud.render_header(80, pet=pet, max_rows=budget)
+                self.assertIn("I'm searching...", "\n".join(rows))
+                self.assertTrue(all(hud.display_width(row) <= 80 for row in rows))
+
+    def test_status_uses_known_activity_instead_of_arbitrary_snapshot_text(self):
+        rows = hud.render_header(120, pet={
+            "kind": "cat", "name": "Cat", "activity": "reading",
+            "status": "secret private content", "behavior": "secret private content",
+        })
+        self.assertIn("I'm reading...", rows[-1])
+        self.assertNotIn("secret private content", "\n".join(rows))
+
+    def test_narrow_header_prioritizes_ai_action_over_long_pet_name(self):
+        pet = TerminalPet("bulldog", clock=lambda: 0)
+        pet.set_activity("running")
+        for columns in (30, 40, 50):
+            for budget in (1, 3, 4, 5):
+                with self.subTest(columns=columns, budget=budget):
+                    rows = hud.render_header(columns, pet=pet, max_rows=budget)
+                    self.assertIn("I'm running a command...", "\n".join(rows))
+                    self.assertTrue(all(hud.display_width(row) <= columns for row in rows))
+
     def test_panel_is_centered_compact_and_gpu_unavailability_is_truthful(self):
         metrics = {"cpu_pct": 21, "gpu_pct": None,
                    "ram_used": 75, "ram_total": 100}
@@ -92,6 +128,29 @@ class HudRenderTests(unittest.TestCase):
                 self.assertLessEqual(len(rows), 3)
                 for row in rows:
                     self.assertLessEqual(hud.display_width(row), columns)
+
+    def test_all_companions_fit_header_budgets_and_native_cell_widths(self):
+        for kind in PET_NAMES:
+            pet = TerminalPet(kind, clock=lambda: 0.0)
+            for activity in ("idle", "typing", "waiting", "responding", "complete"):
+                pet.set_activity(activity)
+                for columns in (1, 2, 12, 20, 29, 40, 55, 60, 80, 120, 190):
+                    for budget in (0, 1, 2, 3, 4, 5):
+                        with self.subTest(kind=kind, activity=activity,
+                                          columns=columns, budget=budget):
+                            rows = hud.render_header(columns, pet=pet, max_rows=budget)
+                            self.assertLessEqual(len(rows), budget)
+                            self.assertTrue(all(hud.display_width(row) <= columns
+                                                for row in rows))
+                            self.assertNotIn("MINI-TERM", "\n".join(rows))
+
+    def test_pet_box_packs_finer_detail_into_the_existing_header_cells(self):
+        for kind in PET_NAMES:
+            rows = hud.render_header(120, pet=TerminalPet(kind, clock=lambda: 0.0))
+            self.assertEqual(len(rows), 5)
+            self.assertTrue(any(0x2801 <= ord(char) <= 0x28ff
+                                for row in rows[1:4] for char in row))
+            self.assertTrue(all(hud.display_width(row) == 90 for row in rows))
 
     def test_windows_gpu_engine_sample_has_truthful_label(self):
         rows = hud.render_header(
@@ -269,7 +328,7 @@ class PinnedHudTests(unittest.TestCase):
             self.assertGreaterEqual(geometry["footer_top"], header_height)
             self.assertLessEqual(geometry["footer_top"] + geometry["footer_rows"], size[1])
 
-    def test_chatbox_only_runs_a_deliberately_submitted_command(self):
+    def test_pet_shortcut_keeps_the_draft_cursor_and_chat_submission(self):
         tty = MutableTTY(columns=100, rows=24)
         with patch.object(footer, "SystemTelemetry", FixedTelemetry):
             screen = footer.FooterScreen(self.client, tty, size=tty.get_size)
@@ -278,15 +337,10 @@ class PinnedHudTests(unittest.TestCase):
         chatbox._SCREEN = screen
         self.addCleanup(setattr, chatbox, "_SCREEN", old_screen)
         self.addCleanup(screen.close)
-        ran = []
-        screen.set_mini_runner(lambda command: ran.append(command) or "done")
-
         batches = [
             [("text", "chat draft"), ("left", ""), ("left", ""),
-             ("terminal_toggle", ""), ("text", "echo abandoned"),
-             ("interrupt", ""), ("terminal_toggle", ""),
-             ("text", "echo deliberate"), ("enter", "")],
-            [("enter", "")],
+             ("terminal_toggle", ""), ("terminal_toggle", ""),
+             ("text", "!"), ("enter", "")],
         ]
 
         def fake_read_line(on_change, history=(), initial="", on_scroll=None,
@@ -297,13 +351,66 @@ class PinnedHudTests(unittest.TestCase):
             return footer_input._drive(
                 editor, on_change, batches.pop(0), on_scroll, on_key)
 
-        with patch.object(footer_input, "read_line", fake_read_line):
+        with patch.object(footer_input, "read_line", fake_read_line), \
+                patch("reach_cli.session.save_session_config", return_value=True) as save:
             submitted = chatbox.read_boxed(self.client)
 
-        self.assertEqual(submitted, ["chat draft"])
-        self.assertEqual(ran, ["echo deliberate"])
-        self.assertNotIn("echo deliberate", screen.snapshot()["transcript"])
-        self.assertEqual(screen.mini_terminal.snapshot()["status"], "complete")
+        self.assertEqual(submitted, ["chat dra!ft"])
+        self.assertEqual(screen.pet.snapshot()["kind"], "bulldog")
+        self.assertEqual(self.client.pet, "bulldog")
+        self.assertEqual(save.call_count, 2)
+        self.assertIn("chat dra!ft", screen.snapshot()["transcript"])
+        self.assertNotIn("MINI-TERM", tty.getvalue())
+
+    def test_animation_patches_only_header_and_preserves_scroll_draft_and_cursor(self):
+        clock = [0.0]
+        screen = self.make_screen()
+        screen.pet = TerminalPet(clock=lambda: clock[0])
+        screen.start()
+        # Drive frames explicitly to make this viewport regression deterministic.
+        screen._stop.set()
+        screen._watcher.join(timeout=1)
+        screen.write("".join("history %d\n" % index for index in range(60)))
+        screen.set_input("draft stays here", cursor=7)
+        screen.scroll_lines(10)
+        screen.set_pet_activity("waiting")
+        original = screen.snapshot()
+        before = len(self.tty.getvalue())
+        clock[0] = 3.0
+        screen.refresh_header()
+        painted = self.tty.getvalue()[before:]
+        after = screen.snapshot()
+        changed_rows = [int(row) for row in re.findall(r"\x1b\[(\d+);1H", painted)]
+        self.assertTrue(changed_rows)
+        self.assertTrue(all(row <= original["geometry"]["header_rows"]
+                            for row in changed_rows))
+        self.assertNotIn("\x1b[H", painted)
+        self.assertEqual(after["scroll"], original["scroll"])
+        self.assertEqual(after["geometry"], original["geometry"])
+        self.assertEqual(after["transcript"], original["transcript"])
+        self.assertEqual(after["text"], original["text"])
+        self.assertEqual(after["cursor"], original["cursor"])
+        self.assertEqual(screen.pet.snapshot()["activity"], "waiting")
+
+    def test_cursor_movement_does_not_extend_typing_animation(self):
+        clock = [0.0]
+        screen = self.make_screen()
+        screen.pet = TerminalPet(clock=lambda: clock[0])
+        screen.set_input("hello", cursor=5)
+        self.assertEqual(screen.pet.snapshot()["activity"], "typing")
+        clock[0] = 1.0
+        screen.set_input("hello", cursor=2)
+        clock[0] = 1.3
+        self.assertEqual(screen.pet.snapshot()["activity"], "idle")
+
+    def test_non_terminal_output_has_no_pet_frames_or_escape_sequences(self):
+        out = io.StringIO()
+        screen = footer.FooterScreen(self.client, out)
+        self.assertFalse(screen.start())
+        screen.set_pet_activity("complete")
+        screen.write("plain response\n")
+        screen.close()
+        self.assertEqual(out.getvalue(), "plain response\n")
 
 
 if __name__ == "__main__":

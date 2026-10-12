@@ -24,6 +24,10 @@
     "files": [
       "main.js",
       "endpoint.js",
+      "model-credentials.js",
+      "native-model-key.js",
+      "native-model-key.ps1",
+      "native-model-key-entry.js",
       "bridge.js",
       "economy-models.js",
       "codegpt-inference.js",
