@@ -132,6 +132,23 @@ class StudioContextTests(unittest.TestCase):
             self.assertEqual(manager.detect()["status"], "detected")
             self.assertIsNone(manager.snapshot()["selected"])
 
+    @unittest.skipUnless(os.name == "nt", "Windows short profile paths")
+    def test_native_short_profile_path_is_readable_without_link_bypass(self):
+        import ctypes
+        short_path = ctypes.WinDLL("kernel32", use_last_error=True).GetShortPathNameW
+        short_path.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32)
+        short_path.restype = ctypes.c_uint32
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = short_path(str(self.profile), buffer, len(buffer))
+        if not length or length >= len(buffer) or os.path.normcase(buffer.value) == os.path.normcase(str(self.profile)):
+            self.skipTest("Windows short names are unavailable for this test profile")
+        self.assertEqual(os.path.normcase(os.path.realpath(buffer.value)),
+                         os.path.normcase(os.path.realpath(self.profile)))
+        manager = StudioContextManager(self.workpath, profile_path=buffer.value)
+        self.assertEqual(manager.detect()["status"], "detected")
+        manager.select("Ada")
+        self.assertEqual(manager.read()["soul"], "I am Ada.")
+
     def test_missing_profile_and_metadata_never_create_files(self):
         missing = self.profile / "missing"
         manager = StudioContextManager(self.workpath, profile_path=missing)
@@ -255,15 +272,14 @@ class StudioContextTests(unittest.TestCase):
     def test_reparse_path_is_rejected_without_opening_body(self):
         real_stat = studio_context.os.lstat
         memory = self.profile / "agents" / "persona-one" / "MEMORY.md"
-
-        def reparse_stat(path):
-            info = real_stat(path)
-            if os.path.normcase(os.fspath(path)) == os.path.normcase(str(memory)):
-                return types.SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
-            return info
-
-        with mock.patch.object(studio_context.os, "lstat", side_effect=reparse_stat):
-            self.assertEqual(self.manager.detect(refresh=True)["status"], "unavailable")
+        for linked in (memory, self.profile, self.profile.parent):
+            def reparse_stat(path):
+                info = real_stat(path)
+                if os.path.normcase(os.fspath(path)) == os.path.normcase(str(linked)):
+                    return types.SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
+                return info
+            with self.subTest(linked=linked), mock.patch.object(studio_context.os, "lstat", side_effect=reparse_stat):
+                self.assertEqual(self.manager.detect(refresh=True)["status"], "unavailable")
 
     @unittest.skipUnless(os.name == "nt", "Windows directory junction")
     def test_native_junction_cannot_redirect_an_agent_folder(self):

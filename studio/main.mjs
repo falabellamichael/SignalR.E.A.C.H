@@ -40,7 +40,7 @@ const { rememberPayload, clearRemembered } = require('./agent/live-context.cjs')
 const { fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets, validateBudgets, resolveBudgets } = require('./agent/budgets.cjs');
 const { listDirectory } = require('./agent/file-browser.cjs');
 const { StudioBrowser } = require('./browser/host.cjs');
-const { paint: paintTheme } = require('./renderer/theme-data.js');
+const { paint: paintTheme, themes } = require('./renderer/theme-data.js');
 const { Telemetry, defaults: telemetryDefaults, validateSources } = require('./agent/telemetry.cjs');
 const { validatePolicy } = require('./agent/tool-policy.cjs');
 const { TOOLS } = require('./agent/tool-registry.cjs');
@@ -3042,7 +3042,8 @@ app.whenReady().then(() => {
   // Use Studio's live services and system vault; the terminal never writes the
   // encrypted profile directly. Smoke runs keep discovery out of the real home.
   if (!process.argv.includes('--smoke')) {
-    cliSettingsBridge = createCliSettingsBridge({ getSettings: loadSettings, getRevision: settingsRevision, getRevisions: settingsRevisions, handlers: {
+    cliSettingsBridge = createCliSettingsBridge({ getSettings: loadSettings, getRevision: settingsRevision, getRevisions: settingsRevisions,
+      themeOptions: themes.map(({ id, name }) => ({ id, name })), handlers: {
       'settings.save': ({ patch }) => applySettingsPatch(patch),
       'budget.schema': () => ({ fields: budgetFields, defaults: budgetDefaults, presets: budgetPresets }),
       'connections.models': params => listProviderModels(params),

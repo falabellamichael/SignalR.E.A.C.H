@@ -74,17 +74,25 @@ class StudioContextManager:
         root = self.profile_path
         if not root:
             raise SettingsError("The existing Studio profile is unavailable.")
-        # No root junction, symlink ancestor, or nested reparse path may turn a
-        # known profile-relative file into access to another directory.
-        if os.path.normcase(os.path.realpath(root)) != os.path.normcase(root):
-            raise SettingsError("Linked Studio profile paths are not supported.")
+        # realpath also expands legitimate Windows 8.3 names. Inspect each
+        # ancestor's link attributes instead of treating that expansion as a
+        # redirect, then check every component inside the profile as well.
         target = os.path.join(root, *parts)
         if os.path.commonpath((root, target)) != root:
             raise SettingsError("Invalid Studio profile-relative path.")
+        paths, cursor = [], root
+        while True:
+            paths.append(cursor)
+            parent = os.path.dirname(cursor)
+            if parent == cursor:
+                break
+            cursor = parent
+        paths.reverse()
         cursor = root
-        for component in (None,) + parts:
-            if component is not None:
-                cursor = os.path.join(cursor, component)
+        for component in parts:
+            cursor = os.path.join(cursor, component)
+            paths.append(cursor)
+        for cursor in paths:
             try:
                 info = os.lstat(cursor)
             except FileNotFoundError:

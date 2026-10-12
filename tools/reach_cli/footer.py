@@ -936,7 +936,9 @@ class FooterScreen:
         rows = self._thought_rows(max(1, min(52, self._geometry["footer_width"] - 4)))
         maximum = max(0, len(rows) - max(1, view.get("visible", 1)))
         top = min(maximum, max(0, view.get("top", 0)))
-        action = str(action).removeprefix("scroll_")
+        action = str(action)
+        if action.startswith("scroll_"):
+            action = action[len("scroll_"):]
         page = max(1, view.get("visible", 1) - 1)
         if action == "live":
             top = maximum

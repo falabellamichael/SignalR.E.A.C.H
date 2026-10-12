@@ -8,6 +8,7 @@ const path = require('node:path');
 const http = require('node:http');
 const { createHmac } = require('node:crypto');
 const { createCliSettingsBridge, MAX_BODY_BYTES, SCOPE_FIELDS } = require('../agent/cli-settings-bridge.cjs');
+const { themes } = require('../renderer/theme-data.js');
 
 async function fixture(overrides = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-cli-settings-test-'));
@@ -36,7 +37,8 @@ async function fixture(overrides = {}) {
     return createHmac('sha256', 'isolated-test-fixture').update(JSON.stringify([scope, snapshot])).digest('hex');
   };
   const getRevisions = settings => Object.fromEntries(Object.keys(SCOPE_FIELDS).map(scope => [scope, getRevision(settings, scope)]));
-  const bridge = createCliSettingsBridge({ getSettings: () => state.settings, getRevision, getRevisions, handlers, discoveryFile, env: {} });
+  const bridge = createCliSettingsBridge({ getSettings: () => state.settings, getRevision, getRevisions, handlers,
+    themeOptions: themes, discoveryFile, env: {} });
   const descriptor = await bridge.start();
   function request(method, params = {}, options = {}) {
     const data = options.raw || JSON.stringify({ method, params });

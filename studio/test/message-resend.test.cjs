@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const vm = require('node:vm');
-const { createHash } = require('node:crypto');
+const { createHash, createHmac } = require('node:crypto');
 const { AgentStore } = require('../agent/agent-store.cjs');
 
 const main = fs.readFileSync(path.join(__dirname, '../main.mjs'), 'utf8');
@@ -33,7 +33,8 @@ function fixture(messages, options = {}) {
     return Promise.resolve();
   } };
   const handlers = new Map();
-  const context = { structuredClone, createHash, getAgentStore: () => store, agentLoops: new Map([[agent.id, loop]]), autoPlanning: new Map(),
+  const context = { structuredClone, createHash, createHmac, settingsRevisionKey: Buffer.from('message-resend-test-fixture'),
+    getAgentStore: () => store, agentLoops: new Map([[agent.id, loop]]), autoPlanning: new Map(),
     startingTeamConversations: new Set(), teamRuns: new Map(), win: null,
     consumeAutoPlan: (token, request) => { autoPlans.push({ token, request }); return null; }, validateAutoDispatch: () => {},
     finishAutoDispatch: value => finished.push(value),
@@ -42,6 +43,10 @@ function fixture(messages, options = {}) {
     attachmentMessage: () => options.attachmentMessage, ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     parseAgentResponse: () => ({ invalid: true }) };
   vm.createContext(context);
+  const revisionStart = main.indexOf('function conversationRevision(');
+  const revisionEnd = main.indexOf('\n}', revisionStart) + 2;
+  assert.ok(revisionStart >= 0 && revisionEnd > revisionStart);
+  vm.runInContext(main.slice(revisionStart, revisionEnd), context);
   vm.runInContext(main.slice(start, end) + '\nthis.dispatch = dispatchAgentMessage; this.key = messageKey;', context);
   vm.runInContext(main.slice(main.indexOf("  ipcMain.handle('agents:get',"), main.indexOf("  ipcMain.handle('agents:tree',")), context);
   return { agent, loop, calls, stages, loops, autoPlans, finished, context, send: payload => context.dispatch(payload),

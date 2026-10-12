@@ -10,7 +10,6 @@ const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { atomicWriteJson } = require('./atomic-write.cjs');
 const { sanitizeMcpServers } = require('./mcp.cjs');
 const { validateBudgets } = require('./budgets.cjs');
-const { themes } = require('../renderer/theme-data.js');
 
 const MAX_BODY_BYTES = 256 * 1024;
 const METHODS = new Set(['settings.get', 'settings.save', 'budget.schema', 'connections.models',
@@ -124,9 +123,9 @@ function validatePatch(patch, savedSettings) {
     }
   }
 }
-function hydratePatch(patch, settings, { env = process.env, token = '' } = {}) {
+function hydratePatch(patch, settings, { env = process.env, token = '', themeOptions = [] } = {}) {
   const secretSettings = { ...settings, jevApiKey: settings.jevApiKey || env.TYPESAFE_API_KEY || '' };
-  const projected = redact(publicSettings(settings, env), secretSettings, {}, token);
+  const projected = redact(publicSettings(settings, env, themeOptions), secretSettings, {}, token);
   const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   function restore(row, previous, display, fields) {
     const out = { ...row };
@@ -198,13 +197,13 @@ function publicConversation(row) {
       jevAutoMode: settings.jevAutoMode, budgetOverrides: settings.budgetOverrides || null,
       ...Object.fromEntries(['maxTokens', 'maxRounds'].filter(key => Number.isSafeInteger(settings[key]) && settings[key] >= 0).map(key => [key, settings[key]])) } };
 }
-function publicSettings(settings, env = process.env) {
+function publicSettings(settings, env = process.env, themeOptions = []) {
   const out = {};
   for (const key of ['schemaVersion', 'pageLayout', 'reachCli', 'jevEnabled', 'jevAutoMode', 'budgets', 'theme', 'accent', 'tint', 'credentialStorage', 'activeConnection', 'model']) if (own(settings, key)) out[key] = settings[key];
   out.connections = (settings.connections || []).map(row => ({ id: row.id, name: row.name,
     endpoint: safeUrl(row.endpoint), model: row.model || '', enabled: row.enabled !== false, hasAccessKey: !!row.accessKey }));
   out.mcpServers = sanitizeMcpServers(settings.mcpServers).map(publicMcp);
-  out.themeOptions = themes.map(theme => ({ id: theme.id, name: theme.name }));
+  out.themeOptions = themeOptions.map(theme => ({ id: theme.id, name: theme.name }));
   out.jevKeyConfigured = !!(settings.jevApiKey || env.TYPESAFE_API_KEY);
   out.jevKeySource = settings.jevApiKey ? 'saved' : env.TYPESAFE_API_KEY ? 'environment' : '';
   return out;
@@ -234,7 +233,7 @@ function redact(value, settings, params = {}, token = '') {
   }
   return walk(value);
 }
-function validateParams(method, params) {
+function validateParams(method, params, themeOptions) {
   if (!object(params)) fail('Method parameters must be an object.');
   if (method === 'settings.save') { keys(params, ['patch']); validatePatch(params.patch); }
   else if (['connections.models', 'connections.test'].includes(method)) { keys(params, ['connectionId']); if (own(params, 'connectionId')) id(params.connectionId); }
@@ -253,21 +252,21 @@ function validateParams(method, params) {
     }
   } else if (method === 'theme.set') {
     keys(params, ['theme', 'accent', 'tint']);
-    if (own(params, 'theme') && !themes.some(theme => theme.id === params.theme)) fail('Invalid theme.');
+    if (own(params, 'theme') && !themeOptions.some(theme => theme.id === params.theme)) fail('Invalid theme.');
     if (own(params, 'accent') && params.accent !== '' && !/^#[0-9a-fA-F]{6}$/.test(params.accent)) fail('Invalid accent color.');
     if (own(params, 'tint') && (!Number.isInteger(params.tint) || params.tint < 0 || params.tint > 100)) fail('Tint must be a whole number from 0 to 100.');
   } else keys(params, []);
 }
 
-function createCliSettingsBridge({ getSettings, getRevision, getRevisions, handlers, discoveryFile = path.join(os.homedir(), '.config', 'reach-cli', 'studio-bridge.json'), env = process.env }) {
+function createCliSettingsBridge({ getSettings, getRevision, getRevisions, handlers, themeOptions = [], discoveryFile = path.join(os.homedir(), '.config', 'reach-cli', 'studio-bridge.json'), env = process.env }) {
   const token = randomBytes(32).toString('hex');
   let server = null, descriptor = null;
   async function dispatch(method, params) {
     if (!METHODS.has(method)) fail('Unsupported settings method.');
-    validateParams(method, params);
+    validateParams(method, params, themeOptions);
     const settings = getSettings();
     const secretSettings = { ...settings, jevApiKey: settings.jevApiKey || env.TYPESAFE_API_KEY || '' };
-    if (method === 'settings.get') return redact({ ...publicSettings(settings, env),
+    if (method === 'settings.get') return redact({ ...publicSettings(settings, env, themeOptions),
       ...(getRevision ? { settingsRevision: getRevision(settings) } : {}),
       ...(getRevisions ? { settingsRevisions: getRevisions(settings) } : {}) }, secretSettings, params, token);
     if (method === 'settings.save' && params.patch.settingsRevision && getRevision && params.patch.settingsRevision !== getRevision(settings, params.patch.settingsScope || '')) fail('Settings changed in another window or the CLI. Reload this Settings panel before saving.');
@@ -279,7 +278,7 @@ function createCliSettingsBridge({ getSettings, getRevision, getRevisions, handl
     if (typeof handlers[method] !== 'function') fail('This Studio version does not support that settings action. Restart an updated Studio.');
     let result;
     if (method === 'settings.save') {
-      const patch = hydratePatch(params.patch, settings, { env, token });
+      const patch = hydratePatch(params.patch, settings, { env, token, themeOptions });
       validatePatch(patch, settings);
       // MCP ids select the saved source during hydration/validation, while the
       // canonical persisted id remains derived from its configured name.

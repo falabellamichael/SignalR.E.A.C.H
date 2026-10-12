@@ -11,6 +11,7 @@
   "studio/main.mjs": 5300,
   "studio/preload.cjs": 250,
   "studio/renderer/app.js": 6200,
+  "tools/reach_cli/chat.py": 2100,
   "vscode/extension.js": 3500,
   "vscode/media/chat.js": 3900
 }
