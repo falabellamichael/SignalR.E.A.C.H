@@ -143,6 +143,44 @@ class HeaderIsolationTests(unittest.TestCase):
                 for key in ("text", "cursor", "chunks", "transcript", "geometry", "scroll"):
                     self.assertEqual(state[key], before[key], key)
 
+    def test_care_and_rejection_only_repaint_header_during_response(self):
+        screen = self.screen()
+        self.add_thought(screen)
+        screen.write("".join("history %d\n" % index for index in range(60)))
+        screen.set_input("keep this draft", cursor=4)
+        screen.scroll_lines(1000)
+        screen.hover(self.thought_pointer(screen))
+        screen.set_pet_activity("responding")
+        before = screen.snapshot()
+        covered, hovered = set(screen._covered), copy.deepcopy(screen._hover)
+        for now, action, accepted in ((0, "feed", True), (600, "pet", False),
+                                      (600, "treat", True)):
+            with self.subTest(action=action):
+                self.clock[0] = now
+                output_start = len(self.tty.getvalue())
+                with self.protected_chat_render(screen):
+                    result = screen.care_pet(action)
+                self.assertEqual(result["accepted"], accepted)
+                self.assert_header_frame(self.tty.getvalue()[output_start:],
+                                         before["geometry"]["header_rows"])
+                state = screen.snapshot()
+                for key in ("text", "cursor", "chunks", "transcript", "geometry", "scroll"):
+                    self.assertEqual(state[key], before[key], key)
+                self.assertEqual(screen._covered, covered)
+                self.assertEqual(screen._hover, hovered)
+                self.assertEqual(screen.pet.snapshot()["activity"], "responding")
+
+    def test_paused_pet_neglect_status_updates_from_watcher(self):
+        screen = self.screen()
+        screen.set_pet_motion(False)
+        screen._watch_tick()
+        for now, expected in ((300, "I miss you"), (600, "I'm angry")):
+            self.clock[0] = now
+            with mock.patch.object(screen, "_draw_header", wraps=screen._draw_header) as draw:
+                screen._watch_tick()
+                draw.assert_called_once()
+            self.assertIn(expected, "\n".join(screen._last_display[:5]))
+
     def test_long_draft_keeps_the_reserved_header_and_a_visible_editor_cursor(self):
         screen = self.screen()
         original = screen.snapshot()["geometry"]

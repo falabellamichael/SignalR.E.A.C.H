@@ -7,6 +7,8 @@ import math
 import threading
 import time
 
+from .pet_care import PetCare, care_animation, care_status
+
 
 PET_NAMES = ("cat", "owl", "bulldog")
 _NAMES = {"cat": "Cat", "owl": "Owl", "bulldog": "Micro bulldog"}
@@ -49,6 +51,17 @@ def normalize_pet(value):
 def activity_status(activity):
     """First-person, fixed UI labels; never use model text or tool arguments."""
     return _STATUS.get(str(activity or "idle"), _STATUS["idle"])
+
+
+def pet_status(state):
+    """Compose known care labels while keeping the current AI action visible."""
+    activity = state.get("activity", "idle")
+    care = care_status(state)
+    if not care:
+        return activity_status(activity)
+    if activity in ("idle", "typing"):
+        return care
+    return activity_status(activity) + " · " + care
 
 
 def _ease(value):
@@ -113,6 +126,7 @@ class TerminalPet:
         self._changed = float(self._clock())
         self._last_typed = None
         self._draft_length = 0
+        self._care = PetCare(self._kind, self._changed)
 
     def select(self, kind):
         selected = normalize_pet(kind)
@@ -120,7 +134,13 @@ class TerminalPet:
             return False
         with self._lock:
             self._kind = selected
+            self._care.select(selected, float(self._clock()))
         return True
+
+    def care(self, action):
+        """Care changes only the companion, never the underlying AI activity."""
+        with self._lock:
+            return self._care.perform(action, float(self._clock()))
 
     def set_motion(self, enabled):
         with self._lock:
@@ -148,6 +168,8 @@ class TerminalPet:
         # Keep animation phase across frequent keystrokes or stream updates.
         # An explicit new event after a transient expires starts a fresh phase.
         if activity != self._activity or current != activity:
+            if activity in ("complete", "error", "cancelled", "blocked"):
+                self._care.dismiss_reactions()
             self._activity = activity
             self._changed = now
         if activity == "typing":
@@ -168,23 +190,49 @@ class TerminalPet:
 
     def snapshot(self):
         with self._lock:
-            activity, elapsed = self._state_at(float(self._clock()))
+            now = float(self._clock())
+            activity, elapsed = self._state_at(now)
+            care = self._care.snapshot(now)
             behavior, position, direction = _animation(activity, elapsed)
+            food = (max(1, 3 - int((elapsed % 14.0 - 5.0) / 1.0))
+                    if behavior == "snacking" else 3)
+            reaction = care_animation(care["care_reaction"], care["care_elapsed"])
+            if reaction is not None:
+                behavior, position, direction, food = reaction
+                elapsed = care["care_elapsed"]
+            elif care["mood"] == "angry" and activity in ("idle", "waiting"):
+                # An angry companion refuses its autonomous bowl snacks too.
+                behavior, position, direction = "sulking", 0.12, -1
             frame = int((elapsed + 1e-9) / 0.16) % 8
             if not self._motion:
                 behavior, position, direction, frame = "looking", 0.12, 1, 0
-            food = (max(1, 3 - int((elapsed % 14.0 - 5.0) / 1.0))
-                    if behavior == "snacking" else 3)
-            return {
+            state = {
                 "kind": self._kind, "name": _NAMES[self._kind],
                 "activity": activity, "behavior": behavior,
-                "status": activity_status(activity),
                 "motion": self._motion, "frame": frame,
                 "position": position, "direction": direction, "food": food,
             }
+            state.update(care)
+            state["care_status"] = care_status(state)
+            state["status"] = pet_status(state)
+            return state
 
     def render(self, width, height=3):
         return render_pet(self.snapshot(), width=width, height=height)
+
+
+def get_client_pet(client):
+    """Share the same session companion between plain commands and the HUD."""
+    pet = getattr(client, "_terminal_pet", None)
+    if not isinstance(pet, TerminalPet):
+        pet = TerminalPet(getattr(client, "pet", "cat"),
+                          motion=getattr(client, "pet_motion", True))
+        if client is not None:
+            client._terminal_pet = pet
+    else:
+        pet.select(getattr(client, "pet", "cat"))
+        pet.set_motion(getattr(client, "pet_motion", True))
+    return pet
 
 
 def _sprite(kind, behavior, frame, direction):
@@ -259,6 +307,30 @@ def _sprite(kind, behavior, frame, direction):
         if behavior == "settling":
             rows[2] = {"cat": " /|_|\\ ", "owl": " /)___(\\",
                        "bulldog": " /[w]_\\ "}[kind]
+    elif behavior in ("petting", "treating", "forgiving"):
+        rows[0] = rows[0].rstrip() + ("<3" if frame % 4 < 2 else " +")
+        rows[1] = {"cat": "( ^.^ )", "owl": "( ^ V ^)",
+                   "bulldog": "( ^ w ^ )"}[kind]
+        if behavior == "treating":
+            rows[1] = {"cat": "( ^w^ )", "owl": "( ^ v ^)",
+                       "bulldog": "( ^ U ^ )"}[kind] if frame % 2 else rows[1]
+            rows[2] = " o[*]o" if frame % 2 else " o[.]o"
+        elif behavior == "petting":
+            rows[2] = {"cat": " o|_|/~", "owl": "<)___(>",
+                       "bulldog": " o[w]/~"}[kind]
+            if frame % 2:
+                rows[1] = rows[1].rjust(_SPRITE_WIDTH)
+        else:
+            rows[2] = " \\o_o/" if frame % 2 else "  v v"
+    elif behavior in ("sulking", "refusing"):
+        rows[1] = {"cat": "( >.< )", "owl": "( > V <)",
+                   "bulldog": "( > _ < )"}[kind]
+        rows[2] = {"cat": " /|X|\\!", "owl": " /)X_(\\",
+                   "bulldog": " /[X]_\\!"}[kind]
+        if behavior == "refusing":
+            rows[1] = "<(-.-)" if frame % 4 < 2 else "(-.-)>"
+        elif frame % 4 >= 2:
+            rows[0] = rows[0].rstrip() + " !"
     elif behavior == "celebrating":
         rows[1] = {"cat": "( ^.^ )", "owl": "( ^ V ^)",
                    "bulldog": "( ^ _ ^ )"}[kind]
@@ -299,6 +371,8 @@ def render_pet(pet=None, width=20, height=3):
     kind = normalize_pet(state.get("kind")) or "cat"
     motion = bool(state.get("motion", True))
     behavior = str(state.get("behavior", "looking")) if motion else "looking"
+    if not motion and state.get("mood") == "angry":
+        behavior = "sulking"
     frame = int(_number(state.get("frame"), 0)) % 8 if motion else 0
     direction = -1 if _number(state.get("direction"), 1) < 0 else 1
     position = _number(state.get("position"), 0.12) if motion else 0.12
@@ -309,6 +383,14 @@ def render_pet(pet=None, width=20, height=3):
             face = face.replace("o", "-").replace("O", "-")
         if behavior == "celebrating":
             face = face.replace("o", "^").replace("O", "^")
+        elif behavior in ("petting", "treating", "forgiving"):
+            face = {"cat": "(^w^)" if frame % 2 else "(^.^)",
+                    "owl": "(^v^)" if frame % 2 else "(^V^)",
+                    "bulldog": "(^_U_^)" if frame % 2 else "(^_w_^)"}[kind]
+        elif behavior in ("sulking", "refusing"):
+            face = {"cat": "(>.<)", "owl": "(>v<)", "bulldog": "(>_w_<)"}[kind]
+            if behavior == "refusing":
+                face = "<(-.-)" if frame % 4 < 2 else "(-.-)>"
         elif behavior == "speaking":
             mouth = (".", "o", "O", "o")[frame % 4]
             face = {"cat": "(o%so)", "owl": "(O%sO)",

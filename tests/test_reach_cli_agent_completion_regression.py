@@ -87,7 +87,7 @@ class DedicatedCompletionTurnTests(unittest.TestCase):
 
     def assert_single(self):
         visible = self.output.getvalue()
-        self.assertEqual(visible.count("agent complete:"), 1, visible)
+        self.assertEqual(visible.count("agent complete"), 1, visible)
         self.assertNotIn("```json", visible)
         self.assertNotIn('"agent_status"', visible)
         return visible
@@ -98,7 +98,9 @@ class DedicatedCompletionTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 2)
         self.assertEqual(history[-1]["content"], dedicated())
-        self.assertIn("agent complete: Sure! How can I assist you today?", self.assert_single())
+        visible = self.assert_single()
+        self.assertEqual(visible.count("Sure! How can I assist you today?"), 1)
+        self.assertNotIn("agent complete:", visible)
 
     def test_native_tool_then_descriptionless_completion_does_not_repeat_or_invent_work(self):
         client = self.client(reply(calls=[native_read()]), reply(dedicated()))
@@ -106,7 +108,7 @@ class DedicatedCompletionTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 2)
         visible = self.assert_single()
-        self.assertIn("The model reported completion without a description.", visible)
+        self.assertNotIn("The model reported completion without a description.", visible)
         self.assertNotIn("verified", visible.lower())
 
     def test_canonical_descriptionless_completion_uses_current_run_answer(self):
@@ -114,7 +116,9 @@ class DedicatedCompletionTurnTests(unittest.TestCase):
                              reply('```agent_status\n{"status":"complete"}\n```'))
         history = self.history() + [{"role": "user", "content": "[tool result]\nCurrent task"}]
         self.assertTrue(chat.run_agent_turn(client, history, chat.AgentState()))
-        self.assertIn("agent complete: Read note.txt and confirmed its fixture content.", self.assert_single())
+        visible = self.assert_single()
+        self.assertEqual(visible.count("Read note.txt and confirmed its fixture content."), 1)
+        self.assertNotIn("agent complete:", visible)
 
     def test_previous_turn_answer_is_not_reused_as_current_completion_description(self):
         client = self.client(reply(dedicated()))
@@ -129,7 +133,7 @@ class DedicatedCompletionTurnTests(unittest.TestCase):
         history = self.history()
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 2)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertIn("Completion rejected", client.messages[1][-1]["content"])
         self.assertIn("Approval is needed.", self.output.getvalue())
 
@@ -139,13 +143,15 @@ class DedicatedCompletionTurnTests(unittest.TestCase):
             raise KeyboardInterrupt
         client = self.client(cancel)
         self.assertFalse(chat.run_agent_turn(client, self.history(), chat.AgentState()))
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertNotIn('"agent_status"', self.output.getvalue())
 
-    def test_description_is_retained_and_existing_banner_format_is_unchanged(self):
+    def test_completion_banner_omits_the_status_summary(self):
         client = self.client(reply(dedicated(summary="Read and checked note.txt.")))
         self.assertTrue(chat.run_agent_turn(client, self.history(), chat.AgentState()))
-        self.assertIn("  \u23f9 agent complete: Read and checked note.txt.", self.assert_single())
+        visible = self.assert_single()
+        self.assertIn("  \u23f9 agent complete", visible)
+        self.assertNotIn("Read and checked note.txt.", visible)
 
 
 if __name__ == "__main__":

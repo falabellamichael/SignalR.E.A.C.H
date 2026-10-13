@@ -456,8 +456,8 @@ class EndpointCommandTests(unittest.TestCase):
         self.assertNotIn("explicit-override-fixture-secret", text)
         self.assertEqual(self.config(), before)
         self.invoke("/endpoint select office")
-        self.assertEqual(self.client.key, "fixture-custom-secret-never-show")
-        self.assertFalse(self.client.explicit_credential)
+        self.assertEqual(self.client.key, "explicit-override-fixture-secret")
+        self.assertTrue(self.client.explicit_credential)
 
     def test_named_active_endpoint_honors_explicit_environment_override(self):
         self.add(key=True)

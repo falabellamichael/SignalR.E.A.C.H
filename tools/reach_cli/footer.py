@@ -22,7 +22,7 @@ from .chatbox import (BL, BR, H, MARK, TL, TR, V, box_bottom, box_row, box_top,
                       client_meta, session_meta)
 from .splash import PAGE_WIDTH, char_width, display_width, layout_mode, strip_ansi
 from .hud import render_header
-from .pets import PET_NAMES, TerminalPet
+from .pets import PET_NAMES, get_client_pet
 from .system_telemetry import SystemTelemetry
 
 
@@ -220,9 +220,9 @@ class FooterScreen:
         self._geometry = {}
         self._meta_key = None
         self._meta_value = None
-        self.pet = TerminalPet(getattr(client, "pet", "cat"),
-                               motion=getattr(client, "pet_motion", True))
+        self.pet = get_client_pet(client)
         self._pet_tick = 0.0
+        self._pet_status = None
         self._header_budget = 0
         self._telemetry = SystemTelemetry()
         self._telemetry_key = None
@@ -251,6 +251,8 @@ class FooterScreen:
         self._interaction_boxes = ()
         self._followups = deque()
         self._draft_carry = None
+        self._menu = None
+        self._menu_geometry = None
 
     def isatty(self):
         method = getattr(self.out, "isatty", None)
@@ -272,6 +274,8 @@ class FooterScreen:
                 "geometry": dict(self._geometry),
                 "scroll": dict(self._scroll_state),
                 "active": self._active,
+                "menu": dict(self._menu) if self._menu is not None else None,
+                "menu_geometry": dict(self._menu_geometry) if self._menu_geometry is not None else None,
             }
 
     def _size(self):
@@ -322,6 +326,8 @@ class FooterScreen:
             self._interaction_boxes = ()
             self._followups.clear()
             self._draft_carry = None
+            self._menu = None
+            self._menu_geometry = None
             self._stop.clear()
             self._active = True
             term.PAINT.managed_screen = True
@@ -395,11 +401,15 @@ class FooterScreen:
             resized = self._size() != self._last_size
             changed = sample_key != self._telemetry_key
             now = time.monotonic()
-            animate = (self.pet.snapshot()["motion"] and
+            pet_state = self.pet.snapshot()
+            pet_status = pet_state.get("status")
+            status_changed = pet_status != self._pet_status
+            animate = (pet_state["motion"] and
                        now - self._pet_tick >= 0.1)
-            if resized or changed or animate:
+            if resized or changed or animate or status_changed:
                 self._telemetry_key = sample_key
                 self._pet_tick = now
+                self._pet_status = pet_status
                 if resized:
                     self._draw()
                 else:
@@ -468,6 +478,32 @@ class FooterScreen:
     def reset_input(self):
         self.set_input("", 0)
 
+    def set_menu(self, title, choices, selected=0, current=None):
+        """Paint a keyboard menu without putting it in the chat transcript."""
+        choices = tuple(tuple(str(part) for part in choice) for choice in choices)
+        if not choices:
+            self.clear_menu()
+            return
+        if any(len(choice) != 3 for choice in choices):
+            raise ValueError("Menu choices require value, label and detail.")
+        with self._lock:
+            self._menu = {
+                "title": str(title), "choices": choices,
+                "selected": max(0, min(len(choices) - 1, int(selected))),
+                "current": current,
+            }
+            self._interaction_boxes = ()
+            if self._active:
+                self._draw(incremental=True)
+
+    def clear_menu(self):
+        """Reveal the retained transcript and restore the editor cursor."""
+        with self._lock:
+            self._menu = None
+            self._menu_geometry = None
+            if self._active:
+                self._draw(incremental=True)
+
     def queue_followup(self, text):
         """A prompt submitted while a reply streams — fires once it ends."""
         with self._lock:
@@ -499,7 +535,7 @@ class FooterScreen:
     def scroll_lines(self, delta):
         """Scroll transcript rows; positive goes up, negative goes down."""
         with self._lock:
-            if not self._active:
+            if not self._active or self._menu is not None:
                 return
             if self._size() != self._last_size:
                 self._draw()
@@ -528,6 +564,8 @@ class FooterScreen:
     def return_live(self):
         """Follow the newest output again."""
         with self._lock:
+            if self._menu is not None:
+                return
             self._follow_tail = True
             self._reading_padding = None
             self._scroll_anchor = None
@@ -541,7 +579,7 @@ class FooterScreen:
     def scroll_ui(self, action, amount=1, pointer=None):
         """Wheel scrolls the surface under it; page keys follow pinned focus."""
         with self._lock:
-            if not self._active:
+            if not self._active or self._menu is not None:
                 return
             if self._size() != self._last_size:
                 self._draw()
@@ -564,7 +602,7 @@ class FooterScreen:
         if not events:
             return
         with self._lock:
-            if not self._active:
+            if not self._active or self._menu is not None:
                 return
             if self._size() != self._last_size:
                 self._draw()
@@ -620,6 +658,13 @@ class FooterScreen:
         lines = []
         style = ""
         for part in parts:
+            if isinstance(part, dict) and "summary" in part:
+                header = FooterScreen._tool_details([part["summary"]])[0]
+                arrow = next(i for i, (glyph, _) in enumerate(header.cells) if glyph == ">")
+                header.tool = {"arrow": arrow, "expanded": False,
+                               "details": FooterScreen._tool_details(part["details"])}
+                lines.append(header)
+                continue
             for raw in str(part).split("\n"):
                 line = _Line(prefix="    ", continuation="    ")
                 for piece in re.split(r"(\x1b\[[0-9;]*m)", raw):
@@ -686,7 +731,7 @@ class FooterScreen:
 
     def capture_click(self, pointer):
         """Resolve against an immutable completed frame; never block input."""
-        if not self._active or pointer is None:
+        if not self._active or self._menu is not None or pointer is None:
             return None
         x, y = pointer
         for left, top, right, bottom, target in self._interaction_boxes:
@@ -706,7 +751,7 @@ class FooterScreen:
     def click(self, pointer):
         """Open tools or pin thoughts using the clicked frame's logical target."""
         with self._lock:
-            if not self._active or pointer is None:
+            if not self._active or self._menu is not None or pointer is None:
                 return False
             if self._size() != self._last_size:
                 self._draw()
@@ -742,6 +787,26 @@ class FooterScreen:
                     self._open_thought(identity, pinned=True)
                     self._hold_view()
                 self._draw(incremental=True)
+                return True
+            if kind == "tool_detail":
+                parent, detail = identity
+                index = parent.tool["index"] if parent.tool is not None else -1
+                if not 0 <= index < len(self._lines) or self._lines[index] is not parent:
+                    return False
+                offset = next((offset for offset, item in self._detail_rows(parent)
+                               if item is detail), None)
+                if offset is None:
+                    return False
+                arrow = detail.tool["arrow"]
+                detail.tool["expanded"] = not detail.tool["expanded"]
+                _, style = detail.cells[arrow]
+                detail.cells[arrow] = ("v" if detail.tool["expanded"] else ">", style)
+                detail.dirty_from = min(detail.dirty_from, arrow)
+                self._visual_dirty = min(self._visual_dirty, index)
+                self._hold_view()
+                self._pointer = None
+                self._hide_thought()
+                self._draw(incremental=True, hold_view=True)
                 return True
             if kind != "tool":
                 return False
@@ -780,7 +845,7 @@ class FooterScreen:
     def hover(self, pointer):
         """Track the pointer and toggle the thought bubble on transitions."""
         with self._lock:
-            if not self._active:
+            if not self._active or self._menu is not None:
                 return
             if self._size() != self._last_size:
                 self._draw()
@@ -1091,6 +1156,13 @@ class FooterScreen:
             self.pet.set_activity(activity)
             self.refresh_header()
 
+    def care_pet(self, action):
+        """Apply care and repaint only the companion's reserved header."""
+        with self._lock:
+            result = self.pet.care(action)
+            self.refresh_header()
+            return result
+
     def _telemetry_snapshot(self):
         try:
             sample = self._telemetry.snapshot()
@@ -1263,6 +1335,22 @@ class FooterScreen:
         line = self._lines[index]
         line.dirty_from = min(line.dirty_from, offset)
 
+    @staticmethod
+    def _detail_rows(line):
+        """Reserve offsets even for hidden children so resize anchors stay stable."""
+        offset = len(line.cells) + 1
+        def walk(details, visible):
+            nonlocal offset
+            for detail in details:
+                start = offset
+                offset += len(detail.cells) + 1
+                if visible:
+                    yield start, detail
+                if detail.tool is not None:
+                    yield from walk(detail.tool["details"],
+                                    visible and detail.tool["expanded"])
+        yield from walk(line.tool["details"], line.tool["expanded"])
+
     def _visual_transcript(self, width, margin):
         """Reflow changed line tails; unchanged history remains indexed."""
         key = (width, margin, _WINDOWS_NATIVE_WIDTH)
@@ -1287,14 +1375,12 @@ class FooterScreen:
             if line.tool is not None and line.tool["expanded"]:
                 # Synthetic detail offsets follow the header's cells and
                 # remain sorted with ordinary transcript anchors on resize.
-                detail_start = len(line.cells) + 1
-                for detail in line.tool["details"]:
+                for detail_start, detail in self._detail_rows(line):
                     details = self._wrap_transcript_line(detail, width, margin, key)
                     self._visual_rows.extend((line_index, detail_start + offset, text)
                                              for offset, text in details)
                     self._visual_anchors.extend((line_index, detail_start + offset)
                                                 for offset, _ in details)
-                    detail_start += len(detail.cells) + 1
         self._visual_dirty = len(self._lines)
         return self._visual_rows
 
@@ -1503,6 +1589,69 @@ class FooterScreen:
                 line = BL + H * (width - 2) + BR
         return line
 
+    def _menu_overlay(self, transcript_top, transcript_height, width, margin, rows):
+        """Fit the menu to the available transcript cells and keep focus visible."""
+        if self._menu is None:
+            self._menu_geometry = None
+            return None
+        menu = self._menu
+        choices, selected = menu["choices"], menu["selected"]
+        available = max(1, transcript_height)
+        box_width = min(width, PAGE_WIDTH)
+        selected_detail = _chrome_text(choices[selected][2])
+        boxed = box_width >= 8 and available >= 4
+        detail_rows = int(boxed and available >= 6 and bool(selected_detail))
+        chrome_rows = 2 if boxed else (2 if available >= 3 else int(available >= 2))
+        capacity = max(1, min(10, available - chrome_rows - detail_rows))
+        start = max(0, min(selected - capacity // 2, len(choices) - capacity))
+        end = min(len(choices), start + capacity)
+        lines = []
+        hint = "↑/↓ move · Enter select · Esc cancel · %d/%d" % (selected + 1, len(choices))
+
+        def entry(index):
+            value, label, _detail = choices[index]
+            marker = "> " if index == selected else "  "
+            if box_width < 5:
+                marker = ""
+            current = " (current)" if value == menu["current"] else ""
+            return marker + _chrome_text(label) + current
+
+        if boxed:
+            inner = box_width - 4
+
+            def box_row(text, paint=c_dim):
+                body = _clip(text, inner)
+                return c_cyan(V) + " " + paint(body) + " " * (
+                    inner - _glyph_width(body)) + " " + c_cyan(V)
+
+            title = _clip(" " + _chrome_text(menu["title"]) + " ", box_width - 2)
+            lines.append(c_cyan(TL + title + H * (
+                box_width - 2 - _glyph_width(title)) + TR))
+            for index in range(start, end):
+                paint = (lambda text: c_bold(c_green(text))) if index == selected else (lambda text: text)
+                lines.append(box_row(entry(index), paint))
+            if detail_rows:
+                lines.append(box_row(selected_detail))
+            hint = _clip(" " + hint + " ", box_width - 2)
+            lines.append(c_dim(BL + hint + H * (
+                box_width - 2 - _glyph_width(hint)) + BR))
+        else:
+            if available >= 2:
+                lines.append(c_cyan(_clip(_chrome_text(menu["title"]), box_width)))
+            for index in range(start, end):
+                text = _clip(entry(index), box_width)
+                lines.append(c_bold(c_green(text)) if index == selected else text)
+            if available >= 3:
+                lines.append(c_dim(_clip(hint, box_width)))
+        height = len(lines)
+        row = min(rows - height, transcript_top + max(0, (transcript_height - height) // 2))
+        left = margin + max(0, (width - box_width) // 2)
+        self._menu_geometry = {
+            "row": row, "left": left, "height": height, "width": box_width,
+            "start": start, "end": end, "selected": selected,
+        }
+        return row, left, lines
+
     def _draw(self, incremental=False, hold_view=False):
         cols, rows = self._size()
         width, margin = self._layout(cols)
@@ -1579,8 +1728,12 @@ class FooterScreen:
         full = (not incremental or self._paint_size != paint_size or
                 self._last_display is None)
         color_enabled = bool(term.PAINT.on and self.isatty())
-        overlay = self._hover_overlay(top, transcript_top, visible_rows,
-                                      width, margin)
+        if self._menu is not None:
+            overlay = self._menu_overlay(transcript_top, transcript_height,
+                                         width, margin, rows)
+        else:
+            overlay = self._hover_overlay(top, transcript_top, visible_rows,
+                                          width, margin)
         # Rows a previous bubble covered must repaint once it moves or hides.
         stale = self._covered
         covered = set()
@@ -1595,14 +1748,24 @@ class FooterScreen:
         if overlay is not None:
             overlay_row, overlay_left, overlay_lines = overlay
             for row_offset, text in enumerate(overlay_lines):
-                frame.append("\x1b[%d;%dH%s" % (
-                    overlay_row + row_offset + 1, overlay_left + 1,
-                    app_themes.render_line(text, color_enabled)))
+                if self._menu is not None:
+                    # Clear the menu's row margins so transcript fragments
+                    # do not compete with its labels. Covered rows restore
+                    # from the retained display when the menu closes.
+                    frame.append("\x1b[%d;1H%s\x1b[K" % (
+                        overlay_row + row_offset + 1,
+                        app_themes.render_line(" " * overlay_left + text, color_enabled)))
+                else:
+                    frame.append("\x1b[%d;%dH%s" % (
+                        overlay_row + row_offset + 1, overlay_left + 1,
+                        app_themes.render_line(text, color_enabled)))
                 covered.add(overlay_row + row_offset)
         self._covered = covered
         screen_row = min(rows, transcript_top + transcript_height + cursor_row + 1)
         screen_col = min(cols, margin + cursor_col + 1)
-        frame.append("\x1b[%d;%dH\x1b[?25h" % (screen_row, screen_col))
+        frame.append("\x1b[%d;%dH" % (screen_row, screen_col))
+        if self._menu is None:
+            frame.append("\x1b[?25h")
         self._geometry = {
             "columns": cols, "rows": rows,
             "header_rows": header_height, "header_gap": header_gap,
@@ -1623,6 +1786,9 @@ class FooterScreen:
 
     def _publish_interactions(self):
         """Publish only visible logical hit targets after a frame is painted."""
+        if self._menu is not None:
+            self._interaction_boxes = ()
+            return
         boxes = []
         geometry, state = self._geometry, self._scroll_state
         margin = geometry["footer_left"]
@@ -1638,6 +1804,14 @@ class FooterScreen:
             if line.tool is not None and offset == 0:
                 arrow = margin + sum(_glyph_width(g) for g, _ in line.cells[:line.tool["arrow"]])
                 boxes.append((arrow, y, _glyph_width(strip_ansi(text)), y+1, ("tool", line)))
+            if line.tool is not None and offset:
+                for start, detail in self._detail_rows(line):
+                    if start == offset and detail.tool is not None:
+                        arrow = margin + _glyph_width(detail.prefix) + sum(
+                            _glyph_width(g) for g, _ in detail.cells[:detail.tool["arrow"]])
+                        boxes.append((arrow, y, _glyph_width(strip_ansi(text)), y+1,
+                                      ("tool_detail", (line, detail))))
+                        break
             regions = [r for r in self._thought_regions if r["line"] == line_index]
             if not regions:
                 continue

@@ -222,7 +222,7 @@ def render_header(columns, *, version="1.0.0", model="auto", endpoint="",
     Packed pixel glyphs keep detailed artwork within single-width console
     cells; very small layouts fall back to compact ASCII faces.
     """
-    from .pets import activity_status, render_pet
+    from .pets import pet_status as companion_status, render_pet
     from .pet_pixels import render_pixel_pet
 
     def pet_art(state, width, height=3):
@@ -254,7 +254,7 @@ def render_header(columns, *, version="1.0.0", model="auto", endpoint="",
     state = pet.snapshot() if hasattr(pet, "snapshot") else pet
     state = state if isinstance(state, dict) else {}
     pet_name = _safe_text(state.get("name") or "Cat")
-    status_text = activity_status(state.get("activity"))
+    status_text = _safe_text(companion_status(state))
     pet_status = pet_name + " · " + status_text
     if state.get("motion") is False:
         pet_status += " · paused"

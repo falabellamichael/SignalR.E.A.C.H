@@ -65,7 +65,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         visible = self.output.getvalue()
         self.assertLessEqual(len(client.messages), 5, visible)
         self.assertEqual(visible.count("agent paused:"), 1, visible)
-        self.assertNotIn("agent complete:", visible)
+        self.assertNotIn("agent complete", visible)
         self.assertNotIn("round limit reached", visible)
         self.assertTrue(any(m.get("role") == "user" and
                             str(m.get("content", "")).startswith("[run control]")
@@ -95,7 +95,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 1)
         self.assertNotIn("agent paused:", self.output.getvalue())
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertEqual(self.output.getvalue().count("Let me know what you'd like me to do."), 1)
         self.assert_native_results_paired(history)
 
@@ -154,7 +154,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 1)
         self.assertEqual(state.todos[0]["status"], "completed")
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
         self.assert_native_results_paired(history)
 
     def test_fenced_final_todo_is_executed_before_status_checks_the_plan(self):
@@ -167,7 +167,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 1)
         self.assertEqual(state.todos[0]["status"], "completed")
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
         self.assertTrue(any(m.get("role") == "user" and
                             str(m.get("content", "")).startswith("[tool result]") for m in history))
 
@@ -186,7 +186,7 @@ class AgentProgressTurnTests(unittest.TestCase):
                 history = self.history()
                 self.assertTrue(chat.run_agent_turn(client, history, chat.AgentState()))
                 self.assertEqual(len(client.messages), 2)
-                self.assertNotIn("agent complete:", self.output.getvalue())
+                self.assertNotIn("agent complete", self.output.getvalue())
                 self.assertEqual(self.output.getvalue().count("agent blocked:"), 1)
                 self.assertTrue(any("error:" in str(m.get("content")) for m in history))
                 self.assert_native_results_paired(history)
@@ -202,7 +202,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertIn("local fixture", results[0]["content"])
         self.assertIn(results[0], client.messages[1])
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
         self.assertNotIn("Unobserved result must not complete.", self.output.getvalue())
 
     def test_blocked_status_prevents_unsafe_native_batch_and_closes_pairs(self):
@@ -216,7 +216,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertFalse((self.fixture.work / "must-not-exist.txt").exists())
         self.assertEqual(len(client.messages), 1)
         self.assertEqual(self.output.getvalue().count("agent blocked:"), 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assert_native_results_paired(history)
 
     def test_repeated_rejected_completion_on_open_plan_pauses_honestly(self):
@@ -284,7 +284,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 3)
         self.assertNotIn("agent paused:", self.output.getvalue())
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
         self.assert_native_results_paired(history)
 
     def test_fresh_user_turn_can_repeat_an_action_after_a_pause(self):
@@ -300,7 +300,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages) - prior_count, 2)
         self.assertNotIn("agent paused:", self.output.getvalue())
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
         self.assert_native_results_paired(history)
 
     def test_continue_after_substantive_pause_keeps_completion_evidence(self):
@@ -324,7 +324,7 @@ class AgentProgressTurnTests(unittest.TestCase):
                 self.assertTrue(chat.run_agent_turn(client, history, state))
                 self.assertEqual(len(client.messages) - prior_count, 3)
                 self.assertEqual(self.output.getvalue().count("agent paused:"), 1)
-                self.assertNotIn("agent complete:", self.output.getvalue())
+                self.assertNotIn("agent complete", self.output.getvalue())
                 self.assert_native_results_paired(history)
 
     def test_fresh_hello_after_substantive_pause_clears_resume_evidence(self):
@@ -366,7 +366,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 3)
         self.assertIn("without an action", client.messages[-1][-1]["content"])
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
         self.assertNotIn("agent paused:", self.output.getvalue())
         self.assert_native_results_paired(history)
 
@@ -376,7 +376,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         client.steps = iter([ReachApiError("auth failed", status=401)])
         self.assertFalse(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 5)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.output.seek(0)
         self.output.truncate(0)
         history.append({"role": "user", "content": "continue"})
@@ -384,7 +384,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 8)
         self.assertEqual(self.output.getvalue().count("agent paused:"), 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assert_native_results_paired(history)
 
     def test_cancelled_continue_preserves_substantive_evidence_for_next_continue(self):
@@ -393,7 +393,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         client.steps = iter([KeyboardInterrupt()])
         self.assertFalse(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 5)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.output.seek(0)
         self.output.truncate(0)
         history.append({"role": "user", "content": "continue"})
@@ -401,7 +401,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, history, state))
         self.assertEqual(len(client.messages), 8)
         self.assertEqual(self.output.getvalue().count("agent paused:"), 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assert_native_results_paired(history)
 
     def test_fresh_hello_after_failed_or_cancelled_continue_clears_old_evidence(self):
@@ -465,7 +465,7 @@ class AgentProgressTurnTests(unittest.TestCase):
         self.assertTrue(chat.run_agent_turn(client, self.history("Verify several changes"), chat.AgentState()))
         self.assertEqual(len(client.messages), len(steps))
         self.assertNotIn("agent paused:", self.output.getvalue())
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
 
     def test_changed_read_observations_are_real_progress(self):
         steps = [reply(calls=[native_read("read_%d" % i)]) for i in range(6)]
@@ -476,7 +476,7 @@ class AgentProgressTurnTests(unittest.TestCase):
             self.assertTrue(chat.run_agent_turn(client, self.history("Observe fixture changes"), chat.AgentState()))
         self.assertEqual(len(client.messages), len(steps))
         self.assertNotIn("agent paused:", self.output.getvalue())
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 1)
 
     def test_cancelled_repeated_tool_preserves_cancel_and_never_pauses_or_completes(self):
         client = self.client(todo_reply(0), todo_reply(1), reply(envelope("Must not be consumed.")))
@@ -495,7 +495,7 @@ class AgentProgressTurnTests(unittest.TestCase):
             self.assertFalse(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 2)
         self.assertEqual(self.output.getvalue().count("stopped"), 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertNotIn("agent paused:", self.output.getvalue())
         self.assert_native_results_paired(history)
 
@@ -511,7 +511,7 @@ class AgentProgressTurnTests(unittest.TestCase):
             self.assertFalse(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 3)
         self.assertEqual(tools.call_count, 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertNotIn("agent paused:", self.output.getvalue())
 
 

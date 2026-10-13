@@ -89,6 +89,8 @@ def _paint(style, text):
         return c_green(text)
     if style == "number":
         return c_magenta(text)
+    if style == "diff_sign":
+        return terminal.c_diff_sign(text)
     if style == "comment":
         return c_dim(text)
     return text
@@ -178,8 +180,25 @@ def wrap_inline(text, width, first_prefix="", next_prefix=""):
     return lines
 
 
+def _diff_sign(text, language):
+    if str(language).lower() not in ("diff", "patch"):
+        return ""
+    if text.startswith(("+++", "---")):
+        return ""
+    return text[:1] if text[:1] in ("+", "-") else ""
+
+
+def _code_prefix(prefix, sign):
+    if sign and prefix.startswith("│"):
+        paint = terminal.c_green if sign == "+" else terminal.c_red
+        return paint("│") + c_dim(prefix[1:])
+    return c_dim(prefix)
+
+
 def _code_segments(text, language):
     """Conservative single-line colour hints for common labelled languages."""
+    if _diff_sign(text, language):
+        return [("diff_sign", text[0]), ("plain", text[1:])]
     language = _CODE_LANGUAGES.get(str(language).lower())
     if not language:
         return [("plain", text)]
@@ -232,7 +251,9 @@ def _wrap_verbatim(text, width, language="", with_offsets=False):
     if not source:
         row = c_dim(prefix)
         return [(0, row)] if with_offsets else [row]
-    indent = source[:len(source) - len(source.lstrip(" "))]
+    sign = _diff_sign(source, language)
+    indent_source = source[1:] if sign else source
+    indent = indent_source[:len(indent_source) - len(indent_source.lstrip(" "))]
     continuation = _fit_prefix("│ ↳ " + indent, width)
     # Break only at source whitespace outside quoted strings. A token wider
     # than the available row still needs a bounded split on tiny terminals.
@@ -255,7 +276,7 @@ def _wrap_verbatim(text, width, language="", with_offsets=False):
         # one-cell terminal; do not restore that glyph through the painter.
         body = (part if part == "?" and source[start:end] != "?"
                 else _code_slice(segments, start, end))
-        row = c_dim(prefix) + body
+        row = _code_prefix(prefix, sign) + body
         lines.append((0 if start == 0 else 2 + start, row)
                      if with_offsets else row)
         start = end
@@ -293,7 +314,7 @@ class MarkdownSource:
         """Unwrapped styled text used for source anchors and plain snapshots."""
         if self.kind == "code":
             source = self.text.expandtabs(4)
-            return c_dim("│ ") + _code_slice(
+            return _code_prefix("│ ", _diff_sign(source, self.language)) + _code_slice(
                 _code_segments(source, self.language), 0, len(source))
         if self.kind == "code_top":
             return c_dim("┌─ " + (self.language or "code") + " ")

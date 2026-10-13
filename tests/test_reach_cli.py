@@ -418,9 +418,9 @@ class SlashCommandTests(unittest.TestCase):
         tokens = command_tokens()
         self.assertEqual(tokens, [
             "/help", "/status", "/endpoint", "/endpoints", "/settings", "/studio", "/model", "/models", "/web",
-            "/agent", "/tools", "/workpath", "/system", "/clear", "/history",
+            "/agent", "/permission", "/tools", "/workpath", "/system", "/clear", "/history",
             "/retry", "/undo", "/compact", "/copy", "/thought", "/save", "/layout",
-            "/theme", "/themes", "/pet", "/exit",
+            "/theme", "/themes", "/pet", "/feed", "/pat", "/treat", "/exit",
         ])
         self.assertEqual(len(tokens), len(set(tokens)))
         self.assertEqual(set(HANDLERS), set(tokens))
@@ -1331,7 +1331,7 @@ class CliUxTests(unittest.TestCase):
         with self.redirect_stdout(out):
             apply_saved_session(client, args, path=path)
         self.assertEqual(client.base, "http://keep.example/v1")
-        self.assertEqual(client.model, "saved-model")
+        self.assertIsNone(client.model)  # An explicit different endpoint owns its model choice.
         self.assertIn("saved workpath is missing", out.getvalue())
 
     def test_main_flags_exit_codes_and_continue(self):

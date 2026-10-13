@@ -139,7 +139,8 @@ class SettingsRuntimeTests(unittest.TestCase):
 
     def test_zero_round_limit_continues_past_the_legacy_round_cap(self):
         self.assertEqual(self.run_round_fixture(0, builtin_limit=2), 4)
-        self.assertIn("agent complete: Done", self.output.getvalue())
+        self.assertIn("agent complete", self.output.getvalue())
+        self.assertNotIn("Done", self.output.getvalue())
 
     def test_auto_all_approves_execution_but_keeps_edit_review_independent(self):
         state = chat.AgentState()

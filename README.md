@@ -2,6 +2,106 @@
 
 **REACH** = **R**AG **E**ndpoint & **A**I **C**hat **H**ost
 
+## Workspace overview
+
+SignalREACH is a multi-product repository for OpenAI-compatible AI access and
+agent workspaces. It combines a standalone Electron desktop app, editor and
+SimpleRAG integrations, Python hosting and terminal tools, and a local desktop
+bridge. Supporting projects provide the public website, account and credit
+services, and a Reach smart-contract example.
+
+### At a glance
+
+- **Clients:** Electron/JavaScript Studio, a VS Code extension, SimpleRAG panels,
+  and a Python terminal chat/coding agent.
+- **Hosting:** a Python relay with an OpenAI-compatible API, plus an Electron
+  tray bridge for supported local provider sessions.
+- **Accounts and credits:** Node.js services, Solidity contracts, and Supabase
+  migrations under separate deployment and security boundaries.
+- **Supporting projects:** the static SignalREACH website and an independent
+  Reach-language DApp example. Reach the smart-contract language is distinct from
+  REACH the AI workspace.
+
+Use the repository map to find source, the development and validation sections to
+run a component, and [Choose your workspace](#choose-your-workspace) for setup
+instructions. Local worktrees, virtual environments, browser profiles, caches,
+and build output are development artifacts, not additional product components.
+
+### Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| [`studio/`](studio/README.md) | Electron desktop workspace: project editing, AI conversations, agent teams, browser tools, and optional Reach compiler integration. |
+| `server/reachd/` | Python relay: model routing, access controls, rate limits, caching, usage analytics, and account-service integration. `server/reachd.py` is the entry point. |
+| `server/browser-engine/` | Interactive browser process used by the relay-backed research browser. |
+| `src/` | SimpleRAG operator panel and shared frontend assets; `src/public/` contains the public provider-connection edition. |
+| `vscode/` | VS Code chat and coding-agent extension, workspace context, edit tools, and browser integration. |
+| `copilot/` | Electron tray and local provider bridge in `copilot/tray/`, plus the optional Python Copilot shim. |
+| `tools/reach/` | Operator CLI implementation for installation, runtime management, keys, tunnels, publishing, and integrations; launched through `tools/reach.py`. |
+| `tools/reach_cli/` | Interactive terminal chat and coding-agent implementation; launched through `tools/reach-cli.py`. |
+| [`SignalREACH-website/`](SignalREACH-website/README.md) | Static product website, local demo chat, page generators, and website tests; not a running Studio instance. |
+| [`RCH/`](RCH/README.md) | Solidity REACH Credits contracts, Node.js account and payment services, wallet tools, and contract/service tests. |
+| `supabase/migrations/` | Database migrations for shared accounts, prepaid credit, request billing, payments, and email sign-in. |
+| [`SimpleDAPP/`](SimpleDAPP/README.md) | Separate Reach-language agreement example with a Node.js frontend; it does not mint RCH or transfer funds. |
+| `tests/` | Root Python and Node.js regression suites for the relay, CLIs, extensions, and tray integrations. |
+| `docker/`, `installer/` | Container definitions and platform-specific installation helpers. |
+| [`docs/`](docs/README.md), `specs/`, `.github/workflows/` | Technical guides, implementation plans, and CI/release automation. |
+
+### How the pieces fit
+
+- Studio, VS Code, and terminal clients connect to a configured AI endpoint; they
+  do not all require a locally hosted relay.
+- The public SimpleRAG edition uses the user's provider settings. The Admin
+  edition manages an operator's relay. Installing the public frontend is distinct
+  from installing the hosting runtime.
+- The relay exposes an OpenAI-compatible API and routes configured model aliases
+  to upstream providers or the local tray bridge. Hosting and credentials remain
+  operator responsibilities.
+- RCH account, payment, and redemption services are a separate integration with
+  their own deployment and security requirements. Building the repository does
+  not activate paid access or on-chain redemption; consult the RCH guide before
+  using live funds. The contracts have not been independently audited.
+
+### Development entry points
+
+Dependencies and commands are component-specific. The root `package.json` is not
+an npm workspace or a unified build/test runner; installing its dependencies does
+not install Studio, the tray, or RCH.
+
+For Studio, use Node.js 24 LTS and run from the repository root:
+
+```bash
+npm --prefix studio ci
+npm --prefix studio start
+```
+
+### Validation by component
+
+Run these commands from the repository root. Install each component's dependencies
+before running its checks; there is no root `npm test` command.
+
+| Scope | Command | Notes |
+| --- | --- | --- |
+| Relay and terminal CLI smoke tests | `python -m unittest tests.test_reachd tests.test_reach_cli -v` | Focused Python checks. |
+| Full root Python suite | `python -m unittest discover -s tests -v` | Relay, installation, CLI, and integration regressions. |
+| Root JavaScript suite | `node --test tests/*.test.cjs` | Tray, VS Code, browser, and shared integration regressions. |
+| JavaScript syntax | `node tools/check-javascript.cjs` | Repository JavaScript parse checks used by CI. |
+| Studio | `npm --prefix studio test` | Syntax checks and Node.js tests; requires Node.js 24+. |
+| Website | `npm --prefix SignalREACH-website test` | Static-site and demo chat-engine tests; requires Node.js 18+. |
+| RCH | `npm --prefix RCH test` | Separate contract/service suite; install with `npm --prefix RCH ci` and use Node.js 22.13+. |
+
+Studio's GUI smoke check is separate: `npm --prefix studio run smoke` builds the
+editor and launches Electron, so it needs a graphical environment. The commands
+above describe available checks, not a claim that every suite passes in a given
+working tree.
+
+See the [Studio contributor guide](studio/CONTRIBUTING.md) for broader desktop
+checks, the [website guide](SignalREACH-website/README.md) for its dependency-free
+local preview, and the [RCH guide](RCH/README.md) for its separate prerequisites
+and local-chain tests. The terminal chat CLI is documented in
+[The chat CLI](#the-chat-cli-toolsreach-clipy); relay setup and operational commands
+remain in the sections below.
+
 ## Choose your workspace
 
 This repository ships these user-facing products:
@@ -635,6 +735,8 @@ outside the CLI conversation.
 Manage OpenAI-compatible providers in the REPL or through the source entry script:
 
 ```text
+/endpoint
+/endpoint select
 /endpoints add my-provider https://provider.example/v1 --key-env PROVIDER_KEY
 /endpoints list
 /endpoints test my-provider
@@ -645,14 +747,38 @@ python tools/reach-cli.py endpoints list
 python tools/reach-cli.py endpoints test my-provider
 ```
 
-Missing operation values prompt interactively. `/endpoint` is an alias;
+In a terminal, `/endpoint`, `/endpoints`, and `/settings connection` open a
+keyboard picker with the current connection highlighted. Use **↑/↓** (or
+**←/→**) to move, **Enter** to select, and **Esc** or **Ctrl+C** to cancel.
+**Home/End** jump to the first or last row; **PgUp/PgDn** page through long
+lists. Choose **Add endpoint** to save a new connection, or **Manage endpoints**
+to test, edit, remove, or view details. Edit/remove offer only custom connections;
+removal asks you to choose Keep or Remove, with Keep selected first.
+
+Missing saved endpoint names use the same picker. Authentication offers
+Keep current, No API key, or Use an environment variable; typing is needed only
+for new names, URLs, and environment-variable references. Menus preserve the
+chat transcript, composer, and scroll position, including through resize.
+Explicit `list` and direct named commands remain available, and redirected
+input/output keeps the plain text flow. `/endpoint` is an alias;
 `ls`, `update`, `check`, `use`, `rm`, and `delete` name the same operations.
 The protected `local`, `subscription`, and `public` alias cannot be overwritten
 or removed. Removing the active custom endpoint selects local and clears its
-model. A selected named endpoint resumes on startup; `--continue` also restores
-the saved model and workpath. Registry records share the existing session config
+model. A selected named endpoint resumes on startup; a custom connection also
+restores its saved model, since some providers require an explicit model on
+every request. Selecting a custom connection offers the model picker using its
+model-discovery result. Chat automatically restores the saved workpath and model;
+explicit flags take precedence. `--continue` also restores choices for one-shot
+commands. Registry records share the existing session config
 and store credential environment names only. Custom endpoints never inherit
 the subscription credential. Credential-bearing URLs are rejected.
+
+Credential references use the current process environment. On Windows, if a
+variable is absent from the process, the CLI also checks its saved User then
+Machine environment value. This lets a terminal use a key saved after its
+parent app started. An explicitly empty process variable stays empty; resolved
+key values are never copied into the CLI config. Reselecting the current
+endpoint preserves an explicit `--key` or `--key-env` override.
 
 Every `/help`, `/settings`, and endpoint invocation schedules one model-metadata
 refresh. Concurrent refreshes for the same endpoint and credential coalesce.
@@ -663,6 +789,42 @@ Direct endpoint commands wait for that same scheduled refresh before exiting.
 The installed `signalreach` launcher currently routes arguments to the runtime
 manager, so use the source script for direct endpoint commands; slash commands
 work in the bare `signalreach` chat after a normal restart.
+
+Chat remembers the last conversation in each working directory, including isolated
+`@agent` conversations, `/retry` text, agent mode, streaming choice and custom
+system text. Theme, layout, companion and connection choices continue to use
+`~/.config/reach-cli/config.json`. Versioned conversation checkpoints live in its
+`sessions/` subdirectory (`REACH_CLI_STATE_DIR` overrides that location); each
+CLI window writes its own atomic file. The most recently active window wins on
+reopening; an older idle window closing does not overwrite it. `/clear` clears
+the current conversation and its retry text immediately. `--new-session` starts
+an empty conversation while keeping connection and appearance preferences.
+Because this Windows `signalreach` wrapper routes arguments to the runtime manager,
+use `python tools/reach-cli.py --new-session` for that flag, or `/clear` in chat.
+The bare wrapper explicitly chooses the folder it is launched in; `/workpath`
+chooses another folder for that session. Explicit workpaths select their own saved
+conversation rather than importing another folder's chat.
+
+Checkpoints contain user/assistant text only, with known credentials and common
+secret fields redacted. Tool output, tool controls, private Studio/system context,
+reasoning, queued commands, drafts, processes and approval grants are omitted.
+Reopening restores text without issuing a completion or executing anything;
+unfinished activity is marked interrupted and permissions start with fresh prompts.
+Explicit `/settings conversation` permission choices still apply during the current
+session. Partial responses are checkpointed at most once a second and flushed on
+reply boundaries. Missing, malformed and unsupported checkpoints are skipped
+without changing the original files; version-0 text checkpoints are supported.
+If model metadata confirms a saved model is gone, built-in connections use their
+auto model and custom connections use the first served model, with a notice;
+an empty custom catalog requires `/model`. Offline discovery retains the saved
+choice. Model metadata is checked on the next explicit user turn, never by sending
+a completion during restoration. Transient menus, tool-detail expansion and scroll
+positions start fresh. Checkpoints are capped at 8 MiB and 2,000 messages per scope;
+save failures show a warning. Older per-window files remain available on disk.
+Credential filtering is best effort for known values and recognizable secret
+patterns; arbitrary secrets in ordinary prose can remain. Checkpoints are local
+plain-text JSON. `/clear` resets restoration but does not erase older per-window
+files or the existing readline command history.
 
 `/settings` shows the settings sections and cached endpoint/model status.
 `/settings edit` opens a command editor; enter section commands there and type
@@ -738,7 +900,13 @@ classified retry using the existing fenced tool protocol. Optional external
 app integrations are not part of this local catalog.
 
 Greetings and direct conversational answers finish without a plan or tool
-call. Tool tasks finish with an explicit completion or blocked status. Repeated
+call. After tool results, a final answer with the provider's normal `stop`
+signal also ends the turn when no plan items or tool calls remain. The CLI
+does not request extra plan updates just to obtain a completion marker. If
+the answer arrived before the last plan update, one successful update that
+closes the plan can finish the turn. Explicit completion and blocked statuses
+remain supported, including for endpoints without finish metadata. Truncated
+or filtered responses pause without executing their tools. Repeated
 plan updates, failed tools, and rejected completion pause after three rounds
 without progress; advancing plan items and successful task tools keep running.
 Send `continue` to resume a paused task with its plan and tool evidence,
@@ -780,6 +948,23 @@ the chat cursor, transcript, scroll position, and open thought bubble. Long
 drafts scroll inside the composer instead of shrinking the header. Detailed
 pet artwork packs eight tiny pixels into each terminal cell; the chat's font
 size stays unchanged.
+
+Use `/feed` to fill the bowl, `/pat` to pet your companion, and `/treat` to
+offer a biscuit. The same actions are available as `/pet feed`, `/pet pet`,
+and `/pet treat`; `/pet status` shows its mood and care instructions. These
+care commands run immediately even while a response streams, with feedback
+and animations confined to the header. Feeding sends the pet to its bowl;
+pats bring affectionate gestures and hearts; treats get nibbled with delight.
+After five minutes without care the pet asks for attention. After ten it
+gets angry, refuses food and pats, and accepts only treats. Three treats earn
+forgiveness, with the remaining count shown in the header. Any accepted care
+keeps a content pet happy; typing and automatic snack animations do not count.
+Each companion starts content when first selected and keeps its own mood for
+the current CLI session, including when you switch away and back. A fresh
+CLI session starts content again, with no penalty for time spent away.
+Pausing animation still allows care and keeps mood updates visible. Care
+never changes the model's response, and its current activity stays in the
+header while the pet reacts.
 
 Tool calls start collapsed with a plain `>` arrow. Click the arrow or its
 summary row to expand the arguments, edit preview, and result underneath;

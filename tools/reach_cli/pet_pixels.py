@@ -446,8 +446,98 @@ def _reading(grid, frame, kind):
         _dot(grid, 17, 7)
 
 
+def _angry_face(grid, kind):
+    eyes = {'cat': (6, 12), 'owl': (6, 15), 'bulldog': (7, 13)}[kind]
+    for side, x in enumerate(eyes):
+        _clear(grid, x - 1, 2, x + 1, 3)
+        _line(grid, x - 1, 2 if side == 0 else 3,
+              x + 1, 3 if side == 0 else 2)
+        _dot(grid, x, 4)
+
+
+def _care_pose(grid, frame, kind, behavior):
+    """Small gestures stay inside each animal's silhouette and clear face."""
+    eyes = {'cat': (6, 12), 'owl': (6, 15), 'bulldog': (7, 13)}[kind]
+    happy = behavior in ('petting', 'treating', 'forgiving')
+    if happy:
+        for x in eyes:
+            _clear(grid, x - 1, 2, x + 1, 3)
+            _dot(grid, x - 1, 3)
+            _dot(grid, x, 2)
+            _dot(grid, x + 1, 3)
+    else:
+        _angry_face(grid, kind)
+    pulse = frame // 2 % 2
+    if behavior == 'petting':
+        if kind == 'cat':
+            # A cheek rub, tucked paw, and upright tail tip.
+            _line(grid, 6, 8, 4, 6 - pulse)
+            _dot(grid, 3, 5 - pulse)
+            _line(grid, 12, 8, 10, 8)
+            _dot(grid, 20, 6 - pulse)
+        elif kind == 'owl':
+            # Wings wrap inward as the owl nestles into a head scratch.
+            _line(grid, 4, 6, 8, 7 + pulse)
+            _line(grid, 17, 6, 13, 7 + pulse)
+            _line(grid, 8, 8, 13, 8)
+        else:
+            # The pup rolls its chin upward and offers one little paw.
+            _line(grid, 5, 8, 3, 6 - pulse)
+            _line(grid, 9, 7, 11, 7)
+            _dot(grid, 10, 8 - pulse)
+            _line(grid, 17, 8, 20, 7 - pulse)
+    elif behavior == 'treating':
+        # Paws hold a biscuit; the owl pecks it with its small beak.
+        mouth_x = 9 if kind == 'cat' else 10
+        bite_y = 7 if kind == 'owl' else 8
+        _clear(grid, mouth_x - 2, 6, mouth_x + 3, 9)
+        _line(grid, mouth_x - 3, 7, mouth_x - 2, bite_y)
+        _line(grid, mouth_x + 4, 7, mouth_x + 3, bite_y)
+        _line(grid, mouth_x - 1, bite_y, mouth_x + 2, bite_y)
+        _dot(grid, mouth_x - 1, bite_y - 1)
+        _dot(grid, mouth_x + 2, bite_y - 1, not pulse)
+        _dot(grid, mouth_x, bite_y + 1)
+        _dot(grid, mouth_x + 1, bite_y + 1)
+        _dot(grid, mouth_x + pulse, bite_y - 2)
+        if kind == 'owl':
+            _line(grid, 9, 5, 11, 5)
+            _dot(grid, 10, 6 + pulse)
+        elif kind == 'bulldog':
+            _line(grid, 17, 8, 20, 7 - pulse)
+    elif behavior in ('sulking', 'refusing'):
+        # Folded front paws/wings, with a species-specific irritated outline.
+        _clear(grid, 5, 7, 15, 8)
+        _line(grid, 5, 7, 13, 8)
+        _line(grid, 15, 7, 7, 8)
+        if kind == 'cat':
+            _clear(grid, 17, 6, 21, 9)
+            _line(grid, 16, 9, 19, 8 - pulse)
+            _line(grid, 19, 8 - pulse, (19, 20, 21, 20)[frame // 2], 6 - pulse)
+        elif kind == 'owl':
+            _line(grid, 3, 0, 5, 1)
+            _line(grid, 16, 1, 18, 0)
+            _dot(grid, 1, 6 + pulse)
+            _dot(grid, 20, 6 + pulse)
+        else:
+            _clear(grid, 2, 1, 3, 3)
+            _clear(grid, 17, 1, 18, 3)
+            _line(grid, 1, 3, 4, 2)
+            _line(grid, 16, 2, 19, 3)
+            _line(grid, 9, 7, 11, 7)
+        if behavior == 'refusing':
+            # A side-to-side head shake and an outstretched stop paw/wing.
+            shift = (0, -1, 0, 1)[frame // 2]
+            for y in range(7):
+                row = grid[y][:]
+                grid[y] = [row[x - shift] if 0 <= x - shift < len(row)
+                           else False for x in range(len(row))]
+            _line(grid, 15, 7, 19, 6)
+            _line(grid, 19, 5, 19, 7)
+
+
 def _sprite(kind, behavior, frame):
-    drawing = {'cat': _cat, 'owl': _owl, 'bulldog': _bulldog}[kind](frame, behavior)
+    pose = 'celebrating' if behavior == 'forgiving' else behavior
+    drawing = {'cat': _cat, 'owl': _owl, 'bulldog': _bulldog}[kind](frame, pose)
     if behavior == 'typing':
         _keyboard(drawing, frame, kind)
     elif behavior == 'working':
@@ -458,6 +548,8 @@ def _sprite(kind, behavior, frame):
         _pondering(drawing, frame, kind)
     elif behavior == 'reading':
         _reading(drawing, frame, kind)
+    elif behavior in ('petting', 'treating', 'forgiving', 'sulking', 'refusing'):
+        _care_pose(drawing, frame, kind, behavior)
     elif behavior == 'searching':
         # Brow shading reads as peering into the distance at this tiny scale.
         side = -1 if frame < 4 else 1
@@ -524,6 +616,27 @@ def _activity_mark(canvas, behavior, frame, left, right):
         for row in range(3):
             length = 2 + (frame + row * 2) % 5
             _line(canvas, x, y + row * 2, x + length, y + row * 2)
+    elif behavior in ('petting', 'forgiving'):
+        # A five-pixel heart rises without crossing the bowl's clear gutter.
+        y += (frame // 2) % 2
+        for dx, dy in ((0, 1), (1, 0), (2, 1), (3, 0), (4, 1),
+                       (0, 2), (4, 2), (1, 3), (3, 3), (2, 4)):
+            _dot(canvas, x + dx, y + dy)
+        if behavior == 'forgiving':
+            _dot(canvas, x + 6, y + frame % 3)
+    elif behavior == 'treating':
+        # Three crumbs pop in a short arc as the biscuit gets nibbled.
+        for index in range(1 + frame % 3):
+            _dot(canvas, x + index * 2, y + 3 - index % 2)
+    elif behavior == 'refusing':
+        _line(canvas, x + 1, y + 1, x + 5, y + 5)
+        _line(canvas, x + 5, y + 1, x + 1, y + 5)
+    elif behavior == 'sulking':
+        # A tiny puff of steam keeps anger readable beside the small face.
+        y = 2 - frame // 2 % 3
+        _line(canvas, x, y + 4, x + 2, y + 3)
+        _line(canvas, x + 2, y + 3, x + 1, y + 1)
+        _line(canvas, x + 1, y + 1, x + 3, y)
 
 
 def _pack(canvas, width, height):
@@ -564,11 +677,17 @@ def render_pixel_pet(pet_or_snapshot=None, width=22, height=3):
     canvas = _grid(pixel_width, pixel_height)
     bowl_x = pixel_width - _BOWL_WIDTH if pixel_width >= 34 and pixel_height >= 8 else None
     right_limit = bowl_x - 2 if bowl_x is not None else pixel_width
-    drawing = _fit(_sprite(kind, behavior, frame), right_limit, pixel_height)
+    drawing = _sprite(kind, behavior, frame)
+    if state.get("mood") == "angry" and behavior not in (
+            "treating", "forgiving", "sulking", "refusing"):
+        # The pet may grumble while working, but its keyboard/book survives.
+        _angry_face(drawing, kind)
+    drawing = _fit(drawing, right_limit, pixel_height)
     animal_width, animal_height = len(drawing[0]), len(drawing)
     animal_x = round(position * max(0, right_limit - animal_width))
     spare_height = pixel_height - animal_height
-    hop = min(spare_height, (0, 2, 1, 0)[frame % 4]) if behavior == "celebrating" else 0
+    hop = min(spare_height, (0, 2, 1, 0)[frame % 4]) if behavior in (
+        "celebrating", "forgiving") else 0
     if behavior in ("walking_to_bowl", "walking_back", "strolling"):
         hop = min(spare_height, frame % 2)
     animal_y = spare_height - hop

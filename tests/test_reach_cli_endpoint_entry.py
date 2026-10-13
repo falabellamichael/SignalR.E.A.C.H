@@ -188,7 +188,7 @@ class EndpointEntrypointTests(unittest.TestCase):
         self.assertFalse(os.path.exists(self.config))
         self.assertEqual(self.discovery.refreshes, [])
 
-    def test_named_only_auto_resume_does_not_restore_model_or_workpath(self):
+    def test_named_custom_auto_resume_restores_model_and_saved_workpath(self):
         self.saved_custom()
         held = {}
         with mock.patch.object(entry, "run_chat", side_effect=lambda client, base: held.update(client=client, base=base)):
@@ -199,8 +199,37 @@ class EndpointEntrypointTests(unittest.TestCase):
         self.assertEqual(client.endpoint_name, "lab")
         self.assertEqual(client.key, "owned-custom-credential")
         self.assertEqual(client.key_ref, "env:OWNED_CUSTOM_KEY")
-        self.assertIsNone(client.model)
-        self.assertEqual(client.workpath, os.getcwd())
+        self.assertEqual(client.model, "saved-model")
+        self.assertEqual(client.workpath, self.temp.name)
+
+    def test_named_custom_startup_honors_explicit_model_over_saved_model(self):
+        self.saved_custom()
+        held = {}
+        with mock.patch.object(entry, "run_chat", side_effect=lambda client, base: held.update(client=client)):
+            code, _text = self.invoke(["chat", "--model", "explicit-model"])
+        self.assertEqual(code, 0)
+        self.assertEqual(held["client"].model, "explicit-model")
+        self.assertEqual(held["client"].workpath, self.temp.name)
+
+    def test_interactive_custom_startup_without_model_opens_model_picker(self):
+        self.saved_custom()
+        with open(self.config, encoding="utf-8") as handle:
+            saved = json.load(handle)
+        saved.pop("model")
+        self.write_config(saved)
+        held = {}
+
+        def pick(line, client, history):
+            self.assertEqual(line, "/model")
+            client.model = "picked-model"
+
+        with mock.patch("reach_cli.picker.available", return_value=True), \
+                mock.patch.object(terminal, "handle_slash", side_effect=pick) as choose, \
+                mock.patch.object(entry, "run_chat", side_effect=lambda client, base: held.update(client=client)):
+            code, _text = self.invoke(["chat"])
+        self.assertEqual(code, 0)
+        choose.assert_called_once()
+        self.assertEqual(held["client"].model, "picked-model")
 
     def test_continue_restores_full_saved_session(self):
         self.saved_custom()
@@ -210,13 +239,14 @@ class EndpointEntrypointTests(unittest.TestCase):
         self.assertEqual(held["client"].model, "saved-model")
         self.assertEqual(held["client"].workpath, self.temp.name)
 
-    def test_legacy_url_only_session_requires_continue_and_never_inherits_builtin_key(self):
+    def test_legacy_url_only_session_auto_restores_and_never_inherits_builtin_key(self):
         self.write_config({"endpoint": "http://legacy.example/v1", "model": "saved-model"})
         clients = []
         with mock.patch.object(entry, "run_chat", side_effect=lambda client, base: clients.append(client)):
             self.assertEqual(self.invoke(["chat"])[0], 0)
             self.assertEqual(self.invoke(["--continue"])[0], 0)
-        self.assertEqual(clients[0].base, LOCAL_ENDPOINT_URL)
+        self.assertEqual(clients[0].base, "http://legacy.example/v1")
+        self.assertEqual(clients[0].key, "")
         self.assertEqual(clients[1].base, "http://legacy.example/v1")
         self.assertEqual(clients[1].key, "")
         self.assertEqual(clients[1]._builtin_key, "owned-builtin-credential")
@@ -295,7 +325,7 @@ class EndpointEntrypointTests(unittest.TestCase):
                 mock.patch.object(entry, "run_chat") as chat:
             self.assertEqual(self.invoke(["chat"])[0], 0)
         self.assertEqual(chat.call_args.args[0].key, "owned-builtin-credential")
-        self.assertIsNone(chat.call_args.args[0].model)
+        self.assertEqual(chat.call_args.args[0].model, "saved-model")
 
     def test_missing_saved_custom_falls_back_local_without_restoring_old_model(self):
         self.write_config({"endpoint_name": "removed", "endpoint": "http://removed.example/v1",

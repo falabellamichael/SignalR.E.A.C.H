@@ -15,6 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 
 from reach_cli import terminal, commands, session  # noqa: E402
+from reach_cli.pets import TerminalPet  # noqa: E402
 
 
 class PetCommandTests(unittest.TestCase):
@@ -126,6 +127,66 @@ class PetCommandTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(self.client.pet, "owl")
         self.assertTrue(self.client.pet_motion)
+
+    def test_care_aliases_are_in_help_and_completion_registry(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            commands.print_help()
+        for token in ("/feed", "/pat", "/treat"):
+            self.assertIn(token, commands.command_tokens())
+            self.assertIn(token, output.getvalue())
+            self.assertIn(token, commands.HANDLERS)
+
+    def test_plain_care_and_forgiveness_do_not_write_config_or_change_history(self):
+        now = [0.0]
+        self.client._terminal_pet = TerminalPet(clock=lambda: now[0])
+        history = [{"role": "user", "content": "preserve this conversation"}]
+        before = self.config_data()
+        with mock.patch.object(commands, "save_session_config") as save:
+            for line in ("/feed", "/pat", "/treat", "/pet feed", "/pet pet", "/pet treat"):
+                result, output = self.invoke(line)
+                self.assertTrue(result.success, (line, output))
+                self.assertTrue(output.strip())
+                self.assertIsNone(result.prompt)
+            now[0] = 600
+            for line in ("/feed", "/pat"):
+                result, output = self.invoke(line)
+                self.assertFalse(result.success)
+                self.assertIn("/treat", output)
+            with redirect_stdout(io.StringIO()), \
+                    mock.patch("reach_cli.chatbox.active_footer", return_value=None):
+                for _ in range(3):
+                    result = commands.handle_slash("/treat", self.client, history)
+                    self.assertTrue(result.success)
+            save.assert_not_called()
+        self.assertEqual(history, [{"role": "user", "content": "preserve this conversation"}])
+        self.assertEqual(self.config_data(), before)
+        self.assertEqual(self.client._terminal_pet.snapshot()["mood"], "content")
+        self.assertTrue(self.invoke("/feed")[0].success)
+
+    def test_live_care_uses_only_footer_feedback_and_reports_rejection(self):
+        footer = mock.Mock()
+        footer.care_pet.return_value = {"accepted": False, "message": "No food!"}
+        before = self.config_data()
+        result, output = self.invoke("/feed", footer)
+        self.assertFalse(result.success)
+        self.assertEqual(output, "")
+        footer.care_pet.assert_called_once_with("feed")
+        footer.select_pet.assert_not_called()
+        footer.set_pet_motion.assert_not_called()
+        self.assertEqual(self.config_data(), before)
+
+    def test_care_rejects_extra_arguments_and_status_explains_rules(self):
+        footer = mock.Mock()
+        for command in ("/feed now", "/pat cat", "/treat twice", "/pet feed more"):
+            result, output = self.invoke(command, footer)
+            self.assertFalse(result.success)
+            self.assertIn("usage:", output)
+        footer.care_pet.assert_not_called()
+        result, output = self.invoke("/pet status")
+        self.assertTrue(result.success)
+        for text in ("content", "5 minutes", "10", "3 treats", "session"):
+            self.assertIn(text, output)
 
 
 class PetSessionTests(unittest.TestCase):

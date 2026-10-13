@@ -394,8 +394,8 @@ class AgentCompletionTurnTests(unittest.TestCase):
 
     def assert_single_completion(self, summary):
         visible = self.output.getvalue()
-        self.assertEqual(visible.count("agent complete:"), 1, visible)
-        self.assertEqual(visible.count(summary), 1, visible)
+        self.assertEqual(visible.count("agent complete"), 1, visible)
+        self.assertNotIn(summary, visible)
         self.assertNotIn("```json", visible)
         self.assertNotIn("```agent_status", visible)
         self.assertNotIn('"status"', visible)
@@ -573,7 +573,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
                     self.assertEqual(len(results), 1)
                     self.assertIn("local fixture", results[0])
                     self.assertEqual(history[-1]["content"], text)
-                    self.assertEqual(self.output.getvalue()[start:].count("agent complete:"), 1)
+                    self.assertEqual(self.output.getvalue()[start:].count("agent complete"), 1)
                     self.assertEqual(client.session_totals["turns"], 1)
 
     def test_screenshot_reply_after_prior_native_result_does_not_request_recovery(self):
@@ -672,7 +672,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
         self.assertFalse(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 2)
         self.assertEqual(history[-1]["content"], text)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
 
     def test_cancelled_request_with_complete_metadata_never_reports_success(self):
         text = envelope("The user cancelled this response.")
@@ -686,7 +686,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
         self.assertFalse(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 1)
         self.assertEqual(history[-1]["content"], text)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertEqual(self.output.getvalue().count("stopped"), 1)
 
     def test_cancelled_tool_never_consumes_a_queued_completion(self):
@@ -696,7 +696,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
             self.assertFalse(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 1)
         self.assertIn("stopped", history[-1]["content"])
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
 
     def test_tool_failure_never_consumes_a_queued_completion(self):
         client = self.client(reply(calls=[native_read()]), reply(envelope("Must never be consumed.")))
@@ -704,7 +704,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
         with mock.patch.object(chat, "run_tool", side_effect=RuntimeError("fixture failure")):
             self.assertFalse(chat.run_agent_turn(client, history, chat.AgentState()))
         self.assertEqual(len(client.messages), 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
 
     def test_open_plan_rejects_json_completion_without_success_then_blocks(self):
         premature = envelope("Premature completion must not be shown.")
@@ -719,7 +719,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
         self.assertEqual(history[-1]["content"], blocked)
         self.assertEqual(sum(m.get("content") == premature for m in history), 1)
         self.assertEqual(sum(m.get("content") == blocked for m in history), 1)
-        self.assertNotIn("agent complete:", self.output.getvalue())
+        self.assertNotIn("agent complete", self.output.getvalue())
         self.assertEqual(self.output.getvalue().count("agent blocked:"), 1)
         self.assertEqual(self.output.getvalue().count("Need permission before the remaining item."), 1)
 
@@ -789,9 +789,9 @@ class AgentCompletionTurnTests(unittest.TestCase):
         self.assertEqual(len(client.messages), 2)
         self.assertIn({"role": "assistant", "content": first}, client.messages[1])
         self.assertEqual(history[-1]["content"], second)
-        self.assertEqual(self.output.getvalue().count("agent complete:"), 2)
-        self.assertEqual(self.output.getvalue().count("First request verified."), 1)
-        self.assertEqual(self.output.getvalue().count("Followup request verified."), 1)
+        self.assertEqual(self.output.getvalue().count("agent complete"), 2)
+        self.assertNotIn("First request verified.", self.output.getvalue())
+        self.assertNotIn("Followup request verified.", self.output.getvalue())
         self.assertEqual(client.session_totals["turns"], 2)
 
     def test_late_protocol_chunks_after_cancel_do_not_render_or_restart(self):
@@ -828,7 +828,7 @@ class AgentCompletionTurnTests(unittest.TestCase):
             self.assertFalse(workers[0].is_alive())
             self.assertEqual(len(client.messages), 1)
             self.assertNotIn("Late completion", self.output.getvalue())
-            self.assertNotIn("agent complete:", self.output.getvalue())
+            self.assertNotIn("agent complete", self.output.getvalue())
         finally:
             release.set()
             for worker in workers:

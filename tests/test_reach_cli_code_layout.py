@@ -24,6 +24,49 @@ class CodeLayoutTests(unittest.TestCase):
                 out.extend(stream.feed(text[index:index + 3]))
             return out + stream.flush()
 
+    def test_diff_stems_and_subtle_signs_across_themes(self):
+        for theme in themes.all_themes():
+            themes.select_theme(theme.key)
+            for managed in (False, True):
+                paint = terminal.Paint(True)
+                paint.managed_screen = managed
+                with self.subTest(theme=theme.key, managed=managed), mock.patch.object(terminal, "PAINT", paint):
+                    for sign, color in (("+", terminal.c_green), ("-", terminal.c_red)):
+                        source = sign + "    alpha beta gamma delta epsilon"
+                        record = render.MarkdownSource(source, "code", "diff")
+                        rows = record.render_rows(22)
+                        self.assertGreater(len(rows), 1)
+                        for _, row in rows:
+                            self.assertTrue(row.startswith(color("│")))
+                            self.assertLessEqual(splash.display_width(row), 22)
+                        self.assertIn(terminal.c_diff_sign(sign), rows[0][1])
+                        self.assertNotIn("\x1b[2m", terminal.c_diff_sign(sign))
+                        self.assertEqual(splash.strip_ansi(record.plain()), "│ " + source)
+                        for offset, row in rows[1:]:
+                            body = splash.strip_ansi(row)[8:]
+                            self.assertTrue(("│ " + source)[offset:].startswith(body))
+                        preview = terminal.diff_preview(sign, "value")
+                        self.assertTrue(preview.startswith(color("│")))
+                        self.assertEqual(splash.strip_ansi(preview), "│ " + sign + " value")
+
+    def test_diff_headers_and_ordinary_code_remain_neutral(self):
+        with mock.patch.object(terminal, "PAINT", terminal.Paint(True)):
+            for language, source in (("diff", "+++ b/file.py"), ("patch", "--- a/file.py"),
+                                     ("diff", "@@ -1 +1 @@"), ("python", "-value"),
+                                     ("javascript", "+value")):
+                row = render.MarkdownSource(source, "code", language).render(60)[0]
+                self.assertTrue(row.startswith(terminal.c_dim("│ ")))
+                self.assertEqual(splash.strip_ansi(row), "│ " + source)
+
+    def test_diff_tiny_widths_and_no_color_preserve_signs(self):
+        for language in ("diff", "patch"):
+            for width in range(1, 35):
+                lines = self.lines("```" + language + "\n+    some long source value\n-old\n```", width)
+                self.assertTrue(all(splash.display_width(row) <= width for row in lines))
+                self.assertIn("+", "".join(lines))
+                self.assertIn("-", "".join(lines))
+                self.assertNotIn("\x1b", "".join(lines))
+
     def test_code_box_uses_available_width_and_language(self):
         for width in (1, 2, 5, 40, 61, 96):
             with self.subTest(width=width):

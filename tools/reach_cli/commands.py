@@ -10,6 +10,7 @@ import time
 import urllib.parse
 
 from .session import save_session_config
+from .credentials import environment_value
 from .terminal import (
     c_bold,
     c_cyan,
@@ -34,14 +35,15 @@ COMPACT_SNIPPET = 120
 COMMANDS = (
     ("/help", "show this help"),
     ("/status", "show endpoint, model, agent, workpath, and key"),
-    ("/endpoint [arg]", "manage saved endpoints (add/edit/test/select/remove)"),
-    ("/endpoints", "list endpoints; alias for /endpoint"),
+    ("/endpoint [arg]", "choose an endpoint with arrow keys; manage saved connections"),
+    ("/endpoints", "open the endpoint picker; alias for /endpoint"),
     ("/settings [section]", "edit CLI preferences or all REACH Studio settings"),
     ("/studio [list|refresh]", "list Studio agents for explicit @agent messages"),
     ("/model <alias>", "switch model (aliases below)"),
     ("/models", "list models served by the endpoint"),
     ("/web <question>", "grounded search-and-answer (SimpleRAG websearch)"),
     ("/agent", "toggle agent mode (multi-round tool loop: read/search/shell/edit/web)"),
+    ("/permission [autopilot|prompt]", "show permissions or enable/disable approval prompts"),
     ("/tools [query]", "list agent tools or search by name/category"),
     ("/workpath <dir>", "set the directory the agent works in"),
     ("/system [text]", "show prompt; set text or clear/reset to default"),
@@ -56,7 +58,10 @@ COMMANDS = (
     ("/layout <mode>", "centred page column or full-width UI"),
     ("/theme [name|preview|current|reset]", "list, preview, or select an app-local terminal theme"),
     ("/themes", "list available app-local terminal themes"),
-    ("/pet [name|next|pause|resume]", "choose cat, owl, or micro bulldog; control animation"),
+    ("/pet [name|next|pause|resume]", "choose a companion; /pet status|feed|pet|treat"),
+    ("/feed", "feed your companion"),
+    ("/pat", "pet your companion"),
+    ("/treat", "give your companion a treat; earn forgiveness when angry"),
     ("/exit", "quit (Ctrl+D, or Ctrl+C twice)"),
 )
 
@@ -64,10 +69,11 @@ COMMANDS = (
 # Help stays one column (`  %-16s %s`) and is grouped so the list is scannable.
 # Every token appears in exactly one section.
 HELP_SECTIONS = (
-    ("session", ("/help", "/status", "/settings", "/layout", "/theme", "/themes", "/pet", "/exit")),
+    ("session", ("/help", "/status", "/settings", "/layout", "/theme", "/themes", "/exit")),
+    ("companion", ("/pet", "/feed", "/pat", "/treat")),
     ("endpoint", ("/endpoint", "/endpoints", "/model", "/models")),
     ("chat", ("/web", "/retry", "/undo", "/compact", "/copy", "/thought", "/clear", "/history", "/save")),
-    ("agent", ("/agent", "/tools", "/workpath", "/system", "/studio")),
+    ("agent", ("/agent", "/permission", "/tools", "/workpath", "/system", "/studio")),
 )
 
 
@@ -77,12 +83,14 @@ class SlashResult(object):
     ``quit`` ends the REPL. ``prompt`` is a user message to send (``/retry``).
     """
 
-    def __init__(self, quit=False, prompt=None, success=True, refresh_target=None):
+    def __init__(self, quit=False, prompt=None, success=True, refresh_target=None,
+                 select_model=False):
         self.quit = bool(quit)
         self.prompt = prompt
         self.success = bool(success)
         self.refresh_target = refresh_target
         self.discovery = None
+        self.select_model = bool(select_model)
 
 
 class ReplSession(object):
@@ -464,6 +472,36 @@ def copy_to_clipboard(text):
         return False, str(exc) or "no clipboard available"
 
 
+def _cmd_permission(client, history, _session, argument):
+    from .settings import SettingsError, save_cli_settings
+    mode = argument.strip().lower()
+    if mode not in ("", "autopilot", "prompt"):
+        tprint(c_yellow("  usage: /permission [autopilot|prompt]"))
+        return SlashResult(success=False)
+    if mode:
+        try:
+            save_cli_settings(client, "conversation", {
+                "approvals": "auto-all" if mode == "autopilot" else "prompt",
+                "reviewEdits": mode != "autopilot",
+            })
+        except SettingsError as exc:
+            tprint(c_red("  " + str(exc)))
+            return SlashResult(success=False)
+        _refresh_system(history, client)
+    preferences = getattr(client, "cli_settings", {}).get("conversation", {})
+    autopilot = (preferences.get("approvals") == "auto-all"
+                 and preferences.get("reviewEdits") is False)
+    tprint(c_bold("  permissions: " + ("autopilot" if autopilot else "prompt/custom")))
+    tprint(c_dim("  approvals: %s; edit review: %s" % (
+        preferences.get("approvals", "prompt"),
+        "on" if preferences.get("reviewEdits", True) else "off")))
+    if autopilot:
+        tprint(c_yellow("  All agent tools are approved without y/n prompts, including shell commands and file changes."))
+    tprint(c_dim("  /permission autopilot grants all tool approvals; /permission prompt restores confirmations."))
+    tprint(c_dim("  Tool validation and operating-system restrictions still apply."))
+    return SlashResult()
+
+
 def _cmd_help(_client, _history, _session, _argument):
     output = _Presentation()
     print_help(output=output)
@@ -513,7 +551,7 @@ def _current_refresh_target(client):
     explicit = bool(getattr(client, "explicit_credential", False))
     if reference and (explicit or getattr(client, "endpoint_name", None) is None):
         reference = normalize_key_env(reference)
-        return (_current_base(client), os.environ.get(reference, "").strip(), "env:" + reference)
+        return (_current_base(client), environment_value(reference), "env:" + reference)
     if explicit:
         return (_current_base(client), getattr(client, "key", "") or "", "explicit")
     if name in records:
@@ -537,13 +575,13 @@ def _credential_description(client, records=None):
     if reference and (explicit or getattr(client, "endpoint_name", None) is None):
         from .endpoints import normalize_key_env
         reference = normalize_key_env(reference)
-        return "environment %s (%s)" % (reference, "set" if os.environ.get(reference) else "not set")
+        return "environment %s (%s)" % (reference, "set" if environment_value(reference) else "not set")
     if explicit:
         return "explicit credential (%s)" % ("set" if getattr(client, "key", "") else "not set")
     if name in records:
         reference = records[name].get("key_env")
         if reference:
-            state = "set" if os.environ.get(reference) else "not set"
+            state = "set" if environment_value(reference) else "not set"
             return "environment %s (%s)" % (reference, state)
         return "none (anonymous)"
     if name in ("local", "subscription"):
@@ -610,6 +648,7 @@ def _print_endpoint_usage(output=None):
     output = output or _Presentation()
     tprint = output.line
     for line in (
+        "/endpoint                              open the arrow-key endpoint picker",
         "/endpoint list                         list saved and protected options",
         "/endpoint add NAME URL [--key-env ENV]  save a custom endpoint",
         "/endpoint edit NAME [URL] [--key-env ENV|--no-key]",
@@ -619,7 +658,8 @@ def _print_endpoint_usage(output=None):
         "/endpoint <local|public|subscription|URL|NAME>  select directly",
     ):
         tprint(c_dim("  " + line))
-    tprint(c_dim("  /endpoints is an alias. Add/edit prompt for missing values; Ctrl+C or 'cancel' cancels."))
+    tprint(c_dim("  /endpoints is an alias. ↑/↓ move, Enter selects, Esc cancels; Home/End and PgUp/PgDn navigate."))
+    tprint(c_dim("  Add/edit only require typing new names, URLs and credential references; Ctrl+C or 'cancel' cancels."))
     tprint(c_dim("  Operation aliases: ls=list, update=edit, use=select, check=test, rm/delete=remove."))
     tprint(c_dim("  --key-env stores an existing environment-variable name, never an API key."))
     tprint(c_dim("  local and subscription (public alias) are protected. Model fetching never downloads weights."))
@@ -642,7 +682,7 @@ def _print_endpoints(client):
     tprint(c_dim("     public is an alias for subscription"))
     for name, record in records.items():
         reference = record.get("key_env")
-        credential = "key-env: %s (%s)" % (reference, "set" if os.environ.get(reference) else "not set") if reference else "anonymous"
+        credential = "key-env: %s (%s)" % (reference, "set" if environment_value(reference) else "not set") if reference else "anonymous"
         marker = " * current" if active == name else ""
         tprint("   - %s  %s  [%s]%s" % (name, record["url"], credential, marker))
         cached = MODEL_DISCOVERY.snapshot(record["url"], key_ref="env:" + reference if reference else "", key=credential_for(record))
@@ -670,6 +710,99 @@ def _endpoint_prompt(message, allow_empty=False):
     if value.lower() in ("cancel", "/cancel", "/exit") or (not value and not allow_empty):
         raise _EndpointCancelled()
     return value
+
+
+def _endpoint_choices(client, custom_only=False):
+    """Local configuration and cached status only; never probe menu rows."""
+    from .discovery import MODEL_DISCOVERY
+    from .endpoints import credential_for, list_custom
+    choices = [] if custom_only else [
+        ("local", "Local", LOCAL_ENDPOINT_URL + " · on this computer"),
+        ("subscription", "Subscription", "Published endpoint · REACH_KEY · public alias"),
+    ]
+    records = list_custom()
+    if not custom_only and _endpoint_identity(client, records) == "custom":
+        from .endpoints import EndpointError, normalize_url
+        try:
+            url = normalize_url(_current_base(client))
+            choices.append((url, "Current URL", url + " · not saved by name"))
+        except EndpointError:
+            pass
+    for name, record in records.items():
+        reference = record.get("key_env")
+        credential = "%s (%s)" % (reference, "set" if environment_value(reference) else "not set") if reference else "anonymous"
+        cached = MODEL_DISCOVERY.snapshot(record["url"], key_ref="env:" + reference if reference else "", key=credential_for(record))
+        status = cached.get("status", "idle")
+        if cached.get("stale"):
+            status += " · stale cache"
+        choices.append((name, name, "%s · %s · models: %s" % (record["url"], credential, status)))
+    return choices
+
+
+def _endpoint_menu_current(client, choices):
+    identity = _endpoint_identity(client)
+    values = [choice[0] for choice in choices]
+    return identity if identity in values else _current_base(client)
+
+
+def _choose_endpoint(client, title="Select endpoint", custom_only=False):
+    from . import picker
+    choices = _endpoint_choices(client, custom_only=custom_only)
+    if not choices:
+        from .endpoints import EndpointError
+        raise EndpointError("no custom endpoints saved; choose Add endpoint from /endpoint first")
+    value = picker.choose(title, choices, current=_endpoint_menu_current(client, choices))
+    if value is None:
+        raise _EndpointCancelled()
+    return value
+
+
+def _endpoint_menu(client):
+    from . import picker
+    choices = _endpoint_choices(client) + [
+        ("@add", "+ Add endpoint", "Save a new OpenAI-compatible connection"),
+        ("@manage", "Manage endpoints", "Test, edit, remove or view saved connections"),
+    ]
+    value = picker.choose("Select endpoint", choices, current=_endpoint_menu_current(client, choices))
+    if value is None:
+        raise _EndpointCancelled()
+    if value == "@add":
+        return "add"
+    if value == "@manage":
+        actions = [("test", "Test endpoint", "Check available models without switching")]
+        from .endpoints import list_custom
+        if list_custom():
+            actions.extend([
+                ("edit", "Edit saved endpoint", "Change its URL or credential reference"),
+                ("remove", "Remove saved endpoint", "Remove a custom connection"),
+            ])
+        actions.append(("list", "View endpoint details", "Show URLs, credentials and cached discovery status"))
+        action = picker.choose("Manage endpoints", actions)
+        if action is None:
+            raise _EndpointCancelled()
+        if action == "test":
+            return "test " + shlex.quote(_choose_endpoint(client, "Test endpoint"))
+        return action
+    return "select " + shlex.quote(value)
+
+
+def _endpoint_credential(edit=False):
+    """Choose how to authenticate; only a new environment name needs text."""
+    from . import picker
+    from .endpoints import UNSET
+    choices = [("keep", "Keep current authentication", "Leave the credential reference unchanged")] if edit else []
+    choices.extend([
+        ("anonymous", "No API key", "Anonymous connection"),
+        ("environment", "Use an environment variable", "Enter its name; keys stay outside the config"),
+    ])
+    mode = picker.choose("Endpoint authentication", choices)
+    if mode is None:
+        raise _EndpointCancelled()
+    if mode == "keep":
+        return UNSET
+    if mode == "anonymous":
+        return None
+    return _endpoint_prompt("Key environment-variable name (for example PROVIDER_KEY; cancel stops): ")
 
 
 def _endpoint_arguments(argument):
@@ -728,18 +861,23 @@ def _endpoint_target(client, value):
 
 
 def _select_endpoint(client, value):
-    from .endpoints import EndpointError, select_custom
+    from .endpoints import BUILTIN_NAMES, EndpointError, select_custom
     if not hasattr(client, "_builtin_key") and _endpoint_identity(client) in ("local", "subscription"):
         client._builtin_key = getattr(client, "key", "") or ""
     target, name, record = _endpoint_target(client, value)
     base, key, _key_ref = target
-    changed = _current_base(client) != base
-    keep_explicit = (record is None and name is None and not changed
-                     and getattr(client, "endpoint_name", None) is None
-                     and (getattr(client, "key_env", None) or getattr(client, "explicit_credential", False)))
+    current_name = _endpoint_identity(client)
+    same_builtin = name in BUILTIN_NAMES and current_name == name
+    changed = _current_base(client) != base and not same_builtin
+    same_named = record is not None and current_name == name and not changed
+    same_unnamed = (record is None and name is None and not changed
+                    and getattr(client, "endpoint_name", None) is None)
+    keep_explicit = ((same_builtin or same_named or same_unnamed)
+                     and (getattr(client, "explicit_credential", False)
+                          or same_unnamed and getattr(client, "key_env", None)))
     if keep_explicit:
-        target = _current_refresh_target(client)
-        base, key, _key_ref = target
+        _current_url, key, _key_ref = _current_refresh_target(client)
+        target = (base, key, _key_ref)
     if record is not None:
         record = select_custom(name)
     elif not save_session_config(endpoint=base, endpoint_name=name or "", clear_model=changed):
@@ -747,7 +885,8 @@ def _select_endpoint(client, value):
     client.base = base
     client.key = key
     client.endpoint_name = name
-    client.key_env = record.get("key_env") if record else getattr(client, "key_env", None) if keep_explicit else None
+    client.key_env = (getattr(client, "key_env", None) if keep_explicit
+                      else record.get("key_env") if record else None)
     client.key_ref = target[2]
     client.explicit_credential = bool(keep_explicit and getattr(client, "explicit_credential", False))
     if changed:
@@ -755,12 +894,16 @@ def _select_endpoint(client, value):
     tprint(c_green("  endpoint → ") + c_bold(name or "custom") + "  " + _safe_endpoint_url(base))
     tprint(c_dim("  selection saved; availability and models are checked in the background"))
     _print_discovery(target)
-    return SlashResult(refresh_target=target)
+    return SlashResult(refresh_target=target,
+                       select_model=not client.model and name not in BUILTIN_NAMES)
 
 
 def _cmd_endpoint(client, _history, _session, argument):
     from .endpoints import BUILTIN_NAMES, EndpointError, UNSET, add_custom, credential_for, edit_custom, get_custom, normalize_name, remove_custom
+    from . import picker
     try:
+        if not argument.strip() and picker.available():
+            argument = _endpoint_menu(client)
         values, options = _endpoint_arguments(argument)
         action = values[0].lower() if values else "list"
         action = {"ls": "list", "update": "edit", "use": "select", "check": "test",
@@ -780,7 +923,9 @@ def _cmd_endpoint(client, _history, _session, argument):
             if len(rest) > 2:
                 raise EndpointError("usage: /endpoint %s NAME [URL] [--key-env ENV]" % action)
             interactive = len(rest) < 2 and not options
-            name = rest[0] if rest else _endpoint_prompt("Endpoint name (cancel to stop): ")
+            name = rest[0] if rest else (_choose_endpoint(client, "Edit saved endpoint", custom_only=True)
+                                        if action == "edit" and picker.available()
+                                        else _endpoint_prompt("Endpoint name (cancel to stop): "))
             name = normalize_name(name)
             if name in BUILTIN_NAMES:
                 raise EndpointError("local and subscription/public are protected; choose a custom name")
@@ -791,10 +936,13 @@ def _cmd_endpoint(client, _history, _session, argument):
                 url = _endpoint_prompt(prompt, allow_empty=action == "edit") or None
             key_env = options.get("key_env", UNSET)
             if interactive:
-                prompt = "Key environment-variable name (blank keeps current; '-' clears): " if action == "edit" else "Key environment-variable name (blank for anonymous): "
-                entered = _endpoint_prompt(prompt, allow_empty=True)
-                if entered:
-                    key_env = None if entered == "-" else entered
+                if picker.available():
+                    key_env = _endpoint_credential(edit=action == "edit")
+                else:
+                    prompt = "Key environment-variable name (blank keeps current; '-' clears): " if action == "edit" else "Key environment-variable name (blank for anonymous): "
+                    entered = _endpoint_prompt(prompt, allow_empty=True)
+                    if entered:
+                        key_env = None if entered == "-" else entered
             if action == "add":
                 record = add_custom(name, url, key_env=None if key_env is UNSET else key_env)
             else:
@@ -812,7 +960,7 @@ def _cmd_endpoint(client, _history, _session, argument):
             reference = record.get("key_env")
             target = (record["url"], credential_for(record), "env:" + reference if reference else "")
             tprint(c_green("  endpoint %s: %s  %s" % ("added" if action == "add" else "updated", name, record["url"])))
-            if record.get("key_env") and not os.environ.get(record["key_env"]):
+            if record.get("key_env") and not environment_value(record["key_env"]):
                 tprint(c_yellow("  %s is not set; configure that environment variable separately before authenticated use" % record["key_env"]))
             _print_discovery(target)
             return SlashResult(refresh_target=target)
@@ -829,12 +977,22 @@ def _cmd_endpoint(client, _history, _session, argument):
         if action == "select":
             if len(rest) > 1:
                 raise EndpointError("usage: /endpoint select NAME")
-            value = rest[0] if rest else _endpoint_prompt("Endpoint to select (cancel to stop): ")
+            value = rest[0] if rest else (_choose_endpoint(client) if picker.available()
+                                        else _endpoint_prompt("Endpoint to select (cancel to stop): "))
             return _select_endpoint(client, value)
         if action == "remove":
             if len(rest) > 1:
                 raise EndpointError("usage: /endpoint remove NAME")
-            name = normalize_name(rest[0] if rest else _endpoint_prompt("Custom endpoint to remove (cancel to stop): "))
+            name = normalize_name(rest[0] if rest else (_choose_endpoint(client, "Remove saved endpoint", custom_only=True)
+                                                       if picker.available()
+                                                       else _endpoint_prompt("Custom endpoint to remove (cancel to stop): ")))
+            if not rest and picker.available():
+                confirm = picker.choose("Remove endpoint '%s'?" % name, [
+                    ("keep", "Keep endpoint", "Return without changing saved connections"),
+                    ("remove", "Remove endpoint", "Active connection returns to local; model resets to auto"),
+                ])
+                if confirm != "remove":
+                    raise _EndpointCancelled()
             record = get_custom(name)
             identity = _endpoint_identity(client)
             active = identity == name or (identity == "custom" and _current_base(client) == record["url"])
@@ -883,166 +1041,40 @@ def _cmd_settings(client, _history, _session, argument):
 
 
 
-def _read_single_key():
-    """Read a single keypress or escape sequence cross-platform."""
-    import os, sys
-    if os.name == "nt":
-        import msvcrt
-        ch = msvcrt.getch()
-        if ch in (b"\x00", b"\xe0"):
-            ext = msvcrt.getch()
-            if ext == b"H":
-                return "up"
-            elif ext == b"P":
-                return "down"
-            elif ext == b"I":
-                return "page_up"
-            elif ext == b"Q":
-                return "page_down"
-            return "unknown"
-        if ch in (b"\r", b"\n"):
-            return "enter"
-        if ch in (b"\x1b", b"q", b"Q"):
-            return "escape"
-        if ch == b"k" or ch == b"K":
-            return "up"
-        if ch == b"j" or ch == b"J":
-            return "down"
-        if ch == b"\x03":
-            raise KeyboardInterrupt()
-        try:
-            return ch.decode("utf-8", "ignore")
-        except Exception:
-            return "unknown"
-    else:
-        import tty, termios, select
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                r, _, _ = select.select([sys.stdin], [], [], 0.05)
-                if r:
-                    seq = sys.stdin.read(2)
-                    if seq == "[A":
-                        return "up"
-                    elif seq == "[B":
-                        return "down"
-                    elif seq == "[5~":
-                        return "page_up"
-                    elif seq == "[6~":
-                        return "page_down"
-                return "escape"
-            elif ch in ("\r", "\n"):
-                return "enter"
-            elif ch in ("q", "Q"):
-                return "escape"
-            elif ch in ("k", "K"):
-                return "up"
-            elif ch in ("j", "J"):
-                return "down"
-            elif ch == "\x03":
-                raise KeyboardInterrupt()
-            return ch
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
 def _interactive_pick_model(models, current=None):
-    """Interactive arrow-key and quick-number picker for served models."""
-    import os, sys
-    if not models or not sys.stdin.isatty():
-        return None
-    models = [m for m in models if m]
-    if not models:
-        return None
+    """Models share the resize-safe screen and keyboard reader with endpoints."""
+    from . import picker
+    choices = [(model, model, "") for model in models if model]
+    return picker.choose("Select model (1-9 quick pick)", choices,
+                         current=current, quick_pick=True)
 
-    if os.name == "nt":
-        os.system("")
 
-    selected_idx = 0
-    if current in models:
-        selected_idx = models.index(current)
-
-    page_size = 10
-    total = len(models)
-
-    sys.stdout.write("\033[?25l")
-    sys.stdout.flush()
-
-    last_lines = 0
-
+def _select_endpoint_model(client, result):
+    """Choose from the selection's single scheduled model-discovery request."""
+    from .discovery import MODEL_DISCOVERY
+    base, key, key_ref = result.refresh_target
     try:
-        while True:
-            start_idx = max(0, min(selected_idx - page_size // 2, total - page_size))
-            end_idx = min(total, start_idx + page_size)
-            visible = models[start_idx:end_idx]
-
-            if last_lines > 0:
-                sys.stdout.write(f"\033[{last_lines}A\r\033[0J")
-
-            lines = []
-            header = c_dim("  Select model ") + c_dim("(↑/↓ navigate, Enter select, 1-9 quick-pick, Esc cancel):")
-            lines.append(header)
-
-            for rel_idx, model_name in enumerate(visible):
-                abs_idx = start_idx + rel_idx
-                is_selected = (abs_idx == selected_idx)
-                is_current = (model_name == current)
-
-                num_tag = f"[{abs_idx + 1}]" if abs_idx < 9 else "   "
-                curr_tag = c_dim(" (current)") if is_current else ""
-
-                if is_selected:
-                    line = f"  {c_green('❯')} {c_bold(c_green(num_tag))} {c_bold(c_green(model_name))}{curr_tag}"
-                else:
-                    line = f"    {c_dim(num_tag)} {model_name}{curr_tag}"
-                lines.append(line)
-
-            if total > page_size:
-                footer = c_dim(f"  ({selected_idx + 1}/{total} models · scroll with ↑/↓)")
-                lines.append(footer)
-
-            rendered = "\n".join(lines) + "\n"
-            sys.stdout.write(rendered)
-            sys.stdout.flush()
-            last_lines = len(lines)
-
-            try:
-                key = _read_single_key()
-            except KeyboardInterrupt:
-                break
-
-            if key == "up":
-                selected_idx = (selected_idx - 1) % total
-            elif key == "down":
-                selected_idx = (selected_idx + 1) % total
-            elif key == "page_up":
-                selected_idx = max(0, selected_idx - 5)
-            elif key == "page_down":
-                selected_idx = min(total - 1, selected_idx + 5)
-            elif key == "enter":
-                sys.stdout.write(f"\033[{last_lines}A\r\033[0J")
-                sys.stdout.flush()
-                return models[selected_idx]
-            elif key == "escape":
-                break
-            elif isinstance(key, str) and key.isdigit():
-                d = int(key)
-                if 1 <= d <= total and d <= 9:
-                    selected_idx = d - 1
-                    sys.stdout.write(f"\033[{last_lines}A\r\033[0J")
-                    sys.stdout.flush()
-                    return models[selected_idx]
-    finally:
-        sys.stdout.write("\033[?25h")
-        sys.stdout.flush()
-
-    if last_lines > 0:
-        sys.stdout.write(f"\033[{last_lines}A\r\033[0J")
-        sys.stdout.flush()
-    return None
+        wait = getattr(MODEL_DISCOVERY, "wait", None)
+        snapshot = (wait(base, key_ref=key_ref, key=key, timeout=3)
+                    if callable(wait) else MODEL_DISCOVERY.snapshot(base, key_ref=key_ref, key=key))
+    except Exception:
+        snapshot = None
+    models = snapshot.get("models") if isinstance(snapshot, dict) else None
+    if not models or snapshot.get("status") != "ready":
+        tprint(c_yellow("  endpoint selected; models are not ready. Use /model to choose a model before sending a prompt"))
+        return
+    try:
+        chosen = _interactive_pick_model(models, current=getattr(client, "model", None))
+    except (KeyboardInterrupt, EOFError):
+        chosen = None
+    if not chosen or chosen not in models:
+        tprint(c_yellow("  endpoint selected without a model; use /model before sending a prompt"))
+        return
+    if not save_session_config(model=chosen):
+        tprint(c_red("  could not save the selected model; use /model after checking configuration-file permissions"))
+        return
+    client.model = chosen
+    tprint(c_green("  model → ") + c_bold(chosen))
 
 
 def _cmd_model(client, _history, _session, argument):
@@ -1453,16 +1485,42 @@ def _cmd_theme(_client, _history, _session, argument):
     return SlashResult()
 
 
+def _cmd_pet_care(client, action, argument=""):
+    """Care affects only the session companion, never the chat or config."""
+    if argument:
+        tprint(c_yellow("  usage: /feed · /pat · /treat · /pet feed|pet|treat"))
+        return SlashResult(success=False)
+    from .chatbox import active_footer
+    from .pets import get_client_pet
+    screen = active_footer()
+    if screen is not None:
+        result = screen.care_pet(action)
+    else:
+        result = get_client_pet(client).care(action)
+        paint = c_green if result["accepted"] else c_yellow
+        tprint(paint("  " + result["message"]))
+    return SlashResult(success=result["accepted"])
+
+
 def _cmd_pet(client, _history, _session, argument):
     """Choose a title-box companion and save its animation preference."""
-    from .pets import PET_NAMES, normalize_pet
+    from .pets import PET_NAMES, get_client_pet, normalize_pet
 
     argument = (argument or "").strip().casefold()
     pet = normalize_pet(getattr(client, "pet", "cat")) or "cat"
     motion = bool(getattr(client, "pet_motion", True))
-    if not argument:
+    if argument in ("feed", "pet", "treat"):
+        return _cmd_pet_care(client, argument)
+    if not argument or argument == "status":
+        state = get_client_pet(client).snapshot()
         tprint(c_dim("  pet: %s · %s" % (pet, "animated" if motion else "paused")))
+        tprint(c_dim("  %s%s" % (state["mood"],
+                                " · " + state["care_status"] if state["care_status"] else "")))
         tprint(c_dim("  /pet cat|owl|bulldog · /pet next · /pet pause|resume"))
+        tprint(c_dim("  /feed · /pat · /treat (also /pet feed|pet|treat) · /pet status"))
+        tprint(c_dim("  Give regular care: lonely after 5 minutes without attention, angry after 10."))
+        tprint(c_dim("  Angry pets refuse food and petting; 3 treats earn forgiveness."))
+        tprint(c_dim("  Care is per companion for this CLI session; a fresh CLI starts content."))
         tprint(c_dim("  Ctrl+T cycles companions in the title box"))
         return SlashResult()
 
@@ -1473,12 +1531,13 @@ def _cmd_pet(client, _history, _session, argument):
     else:
         requested = normalize_pet(argument)
         if requested is None:
-            tprint(c_yellow("  usage: /pet cat|owl|bulldog|next|pause|resume"))
+            tprint(c_yellow("  usage: /pet cat|owl|bulldog|next|pause|resume|status|feed|pet|treat"))
             return SlashResult(success=False)
         pet = requested
 
     client.pet = pet
     client.pet_motion = motion
+    get_client_pet(client)
     try:
         from .chatbox import active_footer
         screen = active_footer()
@@ -1509,6 +1568,7 @@ HANDLERS = {
     "/models": _cmd_models,
     "/web": _cmd_web,
     "/agent": _cmd_agent,
+    "/permission": _cmd_permission,
     "/tools": _cmd_tools,
     "/workpath": _cmd_workpath,
     "/system": _cmd_system,
@@ -1524,6 +1584,9 @@ HANDLERS = {
     "/theme": _cmd_theme,
     "/themes": _cmd_theme,
     "/pet": _cmd_pet,
+    "/feed": lambda client, _history, _session, argument: _cmd_pet_care(client, "feed", argument),
+    "/pat": lambda client, _history, _session, argument: _cmd_pet_care(client, "pet", argument),
+    "/treat": lambda client, _history, _session, argument: _cmd_pet_care(client, "treat", argument),
     "/exit": _cmd_exit,
 }
 
@@ -1584,5 +1647,9 @@ def handle_slash(line, client, history, session=None):
                 result.discovery = MODEL_DISCOVERY.refresh(target[0], key=target[1], key_ref=target[2])
             except Exception:
                 tprint(c_yellow("  model discovery could not start; cached settings are retained"))
+    if result.success and result.select_model:
+        from . import picker
+        if picker.available():
+            _select_endpoint_model(client, result)
     return result
 

@@ -57,6 +57,29 @@ class ToolDisclosureScreenTests(unittest.TestCase):
         self.assertNotIn("fixture arguments", self.shown())
         self.assertNotIn("fixture output", self.shown())
 
+    def test_nested_edit_lines_expand_independently_and_survive_parent_toggle(self):
+        token = self.screen.begin_tool_call("  > edit", [
+            "+ first", {"summary": "> 15 more line(s)",
+                        "details": ["+ hidden %d" % i for i in range(15)]}])
+        self.screen.click(self.pointer(token))
+        self.assertIn("> 15 more line(s)", self.shown())
+        self.assertNotIn("hidden 0", self.shown())
+        box = next(box for box in self.screen._interaction_boxes
+                   if box[-1][0] == "tool_detail")
+        target = box[-1]
+        self.assertTrue(self.screen.click((box[0], box[1])))
+        self.assertIn("+ hidden 0", self.shown())
+        self.assertTrue(token.tool["expanded"])
+        self.screen.finish_tool_call(token, ["applied edit"])
+        self.screen.click(self.pointer(token))
+        self.assertNotIn("hidden 0", self.shown())
+        self.assertFalse(self.screen.click(SimpleNamespace(target=target)))
+        self.screen.click(self.pointer(token))
+        self.assertIn("hidden 0", self.shown())
+        self.assertTrue(self.screen.click(SimpleNamespace(target=target)))
+        self.assertNotIn("hidden 0", self.shown())
+        self.assertIn("applied edit", self.shown())
+
     def test_each_call_owns_its_results_and_disclosure_state(self):
         first = self.screen.begin_tool_call("  > read", ["first args"])
         second = self.screen.begin_tool_call("  > list", ["second args"])

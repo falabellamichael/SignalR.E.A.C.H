@@ -163,7 +163,7 @@ class WindowsKeyDecoder:
     _KEYS = {0x25: "left", 0x27: "right", 0x24: "home", 0x23: "end",
              0x08: "backspace", 0x2e: "delete", 0x26: "up", 0x28: "down",
              0x0d: "enter", 0x09: "tab", 0x21: "scroll_page_up",
-             0x22: "scroll_page_down"}
+             0x22: "scroll_page_down", 0x1b: "escape"}
 
     def __init__(self):
         self._high_surrogate = None
@@ -258,6 +258,7 @@ class PosixKeyDecoder:
     def __init__(self):
         self._utf8 = codecs.getincrementaldecoder("utf-8")("replace")
         self._escape = ""
+        self._escape_since = 0.0
         self._paste = False
         self._paste_pending = ""
         self._paste_cr = False
@@ -371,15 +372,18 @@ class PosixKeyDecoder:
                     continue
             if char == "\x1b":
                 self._escape = char
+                self._escape_since = time.monotonic()
             elif char in _CONTROL:
                 events.append((_CONTROL[char], ""))
             elif ord(char) >= 32:
                 events.append(("text", char))
         return events
 
-    def flush_escape(self):
-        if self._escape == "\x1b":
+    def flush_escape(self, force=True):
+        if self._escape == "\x1b" and (force or time.monotonic() - self._escape_since >= 0.05):
             self._escape = ""
+            return [("escape", "")]
+        return []
 
 
 # Standalone reader fallback retains repeated native actions. During a
@@ -391,6 +395,7 @@ _POSIX_DECODER = PosixKeyDecoder()
 _WINDOWS_MOUSE = WindowsMouseDecoder()
 _INPUT_LOCK = threading.RLock()
 _READ_ACTIVE = False
+_MENU_ACTIVE = False
 _SESSION_ACTIVE = False
 _BROKER = None
 _UI_RESOLVER = None
@@ -476,7 +481,9 @@ class _InputBroker:
     def _put(self, events):
         """Route decoded events while holding the broker condition lock."""
         for key, value in events:
-            if key in _SCROLL_ACTIONS:
+            if _MENU_ACTIVE and key in _SCROLL_ACTIONS:
+                self._pending.append((key, value))
+            elif key in _SCROLL_ACTIONS:
                 action, amount = _SCROLL_ACTIONS[key], max(1, int(value or 1))
                 pointer = self._pointer if key in ("scroll_up", "scroll_down") else None
                 event = ("scroll", (action, amount, pointer))
@@ -593,6 +600,7 @@ class _InputBroker:
         while not self._stop.is_set():
             readable, _, _ = select.select([self._fd], [], [], 0)
             if not readable:
+                self._put(self._posix_decoder.flush_escape(force=False))
                 return True
             data = os.read(self._fd, 4096)
             if not data:
@@ -1134,7 +1142,7 @@ def _posix_events():
                 previous_size = current_size
                 yield "resize", ""
             if not readable:
-                decoder.flush_escape()
+                _READ_AHEAD.extend(decoder.flush_escape(force=False))
                 continue
             data = os.read(fd, 1)
             if not data:
@@ -1142,6 +1150,48 @@ def _posix_events():
             _READ_AHEAD.extend(decoder.feed(data))
     finally:
         termios.tcsetattr(fd, termios.TCSANOW, original)
+
+
+@contextmanager
+def _key_reader(fresh=False, menu=False):
+    """Give one editor or menu ownership of the existing native input stream."""
+    global _READ_ACTIVE, _MENU_ACTIVE
+    with _INPUT_LOCK:
+        if _READ_ACTIVE:
+            raise RuntimeError("A footer input reader is already active")
+        _READ_ACTIVE = True
+        _MENU_ACTIVE = menu
+    events = None
+    try:
+        with _INPUT_LOCK:
+            broker = _BROKER if _SESSION_ACTIVE else None
+        if broker is not None:
+            with _reader_mode():
+                events = _broker_events(broker, fresh=fresh)
+                yield events
+        else:
+            events = _windows_events() if os.name == "nt" else _posix_events()
+            yield events
+    finally:
+        try:
+            if events is not None:
+                events.close()
+        finally:
+            with _INPUT_LOCK:
+                _READ_ACTIVE = False
+                _MENU_ACTIVE = False
+
+
+def read_keys(on_key):
+    """Read menu keys through the session broker; stop when callback returns True."""
+    with _key_reader(menu=True) as events:
+        for key, value in events:
+            if key == "interrupt":
+                raise KeyboardInterrupt
+            if key == "eof":
+                raise EOFError
+            if on_key(key, value) is True:
+                return
 
 
 def read_line(on_change, history=(), initial="", on_scroll=None, fresh=False,
@@ -1154,28 +1204,8 @@ def read_line(on_change, history=(), initial="", on_scroll=None, fresh=False,
     Console modes are restored on accept, interruption, errors,
     and callback failures. No native output is produced by this module.
     """
-    global _READ_ACTIVE
-    with _INPUT_LOCK:
-        if _READ_ACTIVE:
-            raise RuntimeError("A footer input reader is already active")
-        _READ_ACTIVE = True
-    events = None
-    try:
+    with _key_reader(fresh=fresh) as events:
         editor = EditBuffer(initial, history)
         if initial_cursor is not None:
             editor.cursor = max(0, min(len(editor.text), int(initial_cursor)))
-        with _INPUT_LOCK:
-            broker = _BROKER if _SESSION_ACTIVE else None
-        if broker is not None:
-            with _reader_mode():
-                events = _broker_events(broker, fresh=fresh)
-                return _drive(editor, on_change, events, on_scroll, on_key)
-        events = _windows_events() if os.name == "nt" else _posix_events()
         return _drive(editor, on_change, events, on_scroll, on_key)
-    finally:
-        try:
-            if events is not None:
-                events.close()
-        finally:
-            with _INPUT_LOCK:
-                _READ_ACTIVE = False

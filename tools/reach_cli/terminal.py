@@ -90,6 +90,19 @@ def c_dim(t):
 
 
 
+def c_diff_sign(t):
+    """Quiet diff punctuation without terminal-dependent faint intensity."""
+    return app_themes.paint_role(
+        "diff_sign", t, enabled=PAINT.on, managed_screen=PAINT.managed_screen)
+
+
+def diff_preview(sign, text):
+    if not PAINT.on:
+        return sign + " " + text
+    paint = c_red if sign == "-" else c_green
+    return paint("│") + " " + c_diff_sign(sign) + " " + text
+
+
 def c_inverse(t):
     return PAINT("7", t)
 

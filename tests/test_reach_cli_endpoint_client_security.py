@@ -207,6 +207,17 @@ class EndpointClientSecurityTests(unittest.TestCase):
                 self.assertIn("HTTP %d" % status, str(caught.exception))
                 self.assertEqual(caught.exception.status, status)
 
+    def test_provider_credential_identifier_is_redacted_from_rate_limit_errors(self):
+        identifier = "owned-provider-key-identifier"
+        message = "Rate limit exceeded for api_key: %s. Limit type: max_parallel_requests. Current limit: 2" % identifier
+        for raw in (message.encode(), json.dumps({"error": {"message": message}}).encode()):
+            with self.subTest(raw=raw):
+                text = client_mod._error_text(raw, "https://owned-provider.example/v1", KEY)
+                self.assertNotIn(identifier, text)
+                self.assertIn("[redacted]", text)
+                self.assertIn("max_parallel_requests", text)
+                self.assertIn("Current limit: 2", text)
+
     def test_nonhttp_transport_exceptions_never_echo_key_or_escape(self):
         for error in (urllib.error.URLError(KEY + "\x1b[2J"), TimeoutError(KEY), OSError(KEY)):
             with self.subTest(error=type(error).__name__):

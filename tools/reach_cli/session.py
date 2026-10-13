@@ -4,10 +4,21 @@ import json
 import os
 import tempfile
 import threading
+from contextlib import contextmanager
+
+from .credentials import environment_value
 
 # Registry edits and ordinary model/workpath saves share one transaction lock.
 _CONFIG_LOCK = threading.RLock()
 _UNSET = object()
+
+
+@contextmanager
+def config_transaction(path):
+    from .config_lock import file_lock
+    with _CONFIG_LOCK:
+        with file_lock(path):
+            yield
 
 
 def _read_config(path, strict=False):
@@ -111,7 +122,7 @@ def save_session_config(endpoint=None, model=None, workpath=None, path=None,
                 return False
         if pet_motion is not None and not isinstance(pet_motion, bool):
             return False
-        with _CONFIG_LOCK:
+        with config_transaction(path):
             current = _read_config(path, strict=True)
             updates = {"endpoint": endpoint, "model": model, "workpath": workpath,
                        "layout": layout, "theme": theme, "pet": pet}
@@ -166,7 +177,7 @@ def apply_saved_session(client, args, path=None):
                 elif name == "local":
                     client.key = ""
                 else:
-                    client.key = (getattr(args, "key", None) or os.environ.get("REACH_KEY") or "").strip()
+                    client.key = (getattr(args, "key", None) or environment_value("REACH_KEY")).strip()
             else:
                 record = get_custom(name, path=path)
                 client.base = record["url"]
@@ -195,9 +206,14 @@ def apply_saved_session(client, args, path=None):
                 client.explicit_credential = False
         except Exception:
             pass
-    if not endpoint_failed and not getattr(args, "model", None) and saved.get("model"):
+    same_endpoint = (not getattr(args, "base", None)
+                     or saved.get("endpoint_name") == getattr(client, "endpoint_name", None)
+                     and saved.get("endpoint_name") is not None
+                     or saved.get("endpoint") == getattr(client, "base", None))
+    if not endpoint_failed and same_endpoint and not getattr(args, "model", None) and saved.get("model"):
         try:
             client.model = saved["model"]
+            client._restored_model = client.model
         except Exception:
             pass
     if not getattr(args, "workpath", None) and saved.get("workpath"):

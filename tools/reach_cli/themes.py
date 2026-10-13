@@ -79,6 +79,7 @@ class Theme:
                 "warning": self.palette.get("yellow", foreground),
                 "error": self.palette.get("red", foreground),
                 "muted": muted or foreground,
+                "diff_sign": self.background,
             }
             self.roles = {role: _contrast_safe(color, self.background)
                           for role, color in source.items() if color}
@@ -115,6 +116,68 @@ _CAMPBELL = {
 }
 
 
+# Tokyo Night's Kitty terminal exports (night and day variants):
+# https://github.com/folke/tokyonight.nvim/tree/main/extras/kitty
+_TOKYO_DARK = {
+    "black": "#15161E", "red": "#F7768E", "green": "#9ECE6A",
+    "yellow": "#E0AF68", "blue": "#7AA2F7", "magenta": "#BB9AF7",
+    "cyan": "#7DCFFF", "white": "#A9B1D6",
+}
+_TOKYO_LIGHT = {
+    "black": "#B4B5B9", "red": "#F52A65", "green": "#587539",
+    "yellow": "#8C6C3E", "blue": "#2E7DE9", "magenta": "#9854F1",
+    "cyan": "#007197", "white": "#6172B0",
+}
+
+
+# SimpleSignal Theme Studio src/presets.ts: Lemonade Dark and Light.
+# Slots follow CLI roles: blue is the citrus accent, magenta the numeric/
+# keyword secondary, yellow the keyword/numeric warning, red the debug red.
+_LEMONADE_DARK = {
+    "black": "#0C0F0A", "red": "#E11D48", "green": "#A3E635",
+    "yellow": "#FACC15", "blue": "#FFF017", "magenta": "#FB923C",
+    "cyan": "#67E8F9", "white": "#FFFFFF",
+}
+_LEMONADE_LIGHT = {
+    "black": "#000000", "red": "#E11D48", "green": "#15803D",
+    "yellow": "#B45309", "blue": "#CA8A04", "magenta": "#C2410C",
+    "cyan": "#1D4ED8", "white": "#FEFCE8",
+}
+
+
+# SimpleTheme src/presets.ts terminal surfaces and semantic inks.
+# Blue uses accentColor; magenta uses the keyword token; red uses debug status.
+_SIMPLETHEME_PRESETS = (
+    ("vintage-grandmaster-chessboard", "Vintage Grandmaster Chessboard",
+     "#181614", "#FFFFFF", "#A39889",
+     ("#EBE1CE", "#E8DEC8", "#CBB898", "#D8CCB8", "#F5EEDC")),
+    ("warm-latte-paper", "Warm Latte & Paper",
+     "#FAF4ED", "#000000", "#6E6884",
+     ("#D7827E", "#1D4ED8", "#047857", "#B45309", "#B91C1C")),
+    ("matcha-latte-cream", "Matcha Latte Cream",
+     "#F7FEE7", "#000000", "#3F6212",
+     ("#4D7C0F", "#15803D", "#047857", "#B45309", "#3F6212")),
+    ("cyberpunk-neon", "Cyberpunk Neon",
+     "#08080C", "#FFFFFF", "#707090",
+     ("#FFE600", "#00F0FF", "#B829FF", "#FFE600", "#FF007F")),
+    ("nord-frost", "Nord Frost",
+     "#2E3440", "#FFFFFF", "#4C566A",
+     ("#88C0D0", "#88C0D0", "#8FBCBB", "#A3BE8C", "#81A1C1")),
+    ("nord-snow-light", "Nord Snow Light",
+     "#ECEFF4", "#000000", "#4C566A",
+     ("#5E81AC", "#81A1C1", "#88C0D0", "#8FBCBB", "#5E81AC")),
+)
+
+
+def _simpletheme_presets():
+    for key, name, background, foreground, muted, inks in _SIMPLETHEME_PRESETS:
+        palette = dict(zip(("blue", "green", "cyan", "yellow", "magenta"), inks))
+        palette.update(black="#000000", white="#FFFFFF", red="#E11D48")
+        yield Theme(key, name, background, foreground, muted=muted,
+                    palette=palette,
+                    note="Based on SimpleTheme's %s; contrast-tuned indicators." % name)
+
+
 DEFAULT_THEME = Theme("default", "Default")
 _THEMES = (
     DEFAULT_THEME,
@@ -133,6 +196,19 @@ _THEMES = (
     Theme("one-half-light", "One Half Light", "#FAFAFA", "#383A42",
           panel="#FAFAFA", muted="#383A42", palette=_ONE_HALF_LIGHT,
           note="One Half palette, included with Windows Terminal."),
+    Theme("tokyo-dark", "Tokyo Dark", "#1A1B26", "#C0CAF5",
+          muted="#A9B1D6", palette=_TOKYO_DARK,
+          note="Based on Tokyo Night's Kitty night palette; contrast-tuned indicators."),
+    Theme("tokyo-light", "Tokyo Light", "#E1E2E7", "#3760BF",
+          muted="#6172B0", palette=_TOKYO_LIGHT,
+          note="Based on Tokyo Night's Kitty day palette; contrast-tuned indicators."),
+    Theme("lemonade-dark", "Lemonade Dark", "#0C0F0A", "#FFFFFF",
+          muted="#8D9C79", palette=_LEMONADE_DARK,
+          note="Based on SimpleTheme's Lemonade Dark; contrast-tuned citrus indicators."),
+    Theme("lemonade-light", "Lemonade Light", "#FEFCE8", "#000000",
+          muted="#713F12", palette=_LEMONADE_LIGHT,
+          note="Based on SimpleTheme's Lemonade Light; contrast-tuned citrus indicators."),
+    *_simpletheme_presets(),
     Theme("campbell", "Campbell (Windows Terminal)", "#0C0C0C", "#CCCCCC",
           panel="#0C0C0C", muted="#CCCCCC", palette=_CAMPBELL,
           note="Microsoft's documented Campbell scheme."),
@@ -140,6 +216,21 @@ _THEMES = (
 
 _THEME_BY_KEY = {theme.key: theme for theme in _THEMES}
 _ALIASES = {
+    "vintage": "vintage-grandmaster-chessboard",
+    "vintage-grandmaster": "vintage-grandmaster-chessboard",
+    "grandmaster": "vintage-grandmaster-chessboard",
+    "vintage-chessboard": "vintage-grandmaster-chessboard",
+    "chessboard": "vintage-grandmaster-chessboard",
+    "warm-latte": "warm-latte-paper",
+    "matcha": "matcha-latte-cream",
+    "cyberpunk": "cyberpunk-neon",
+    "nord-dark": "nord-frost",
+    "nord-light": "nord-snow-light",
+    "lemonade": "lemonade-dark",
+    "toyko-dark": "tokyo-dark",
+    "toyko-light": "tokyo-light",
+    "tokyo-night": "tokyo-dark",
+    "tokyo-day": "tokyo-light",
     "solarized": "solarized-dark",
     "solarized-dark": "solarized-dark",
     "solarized-light": "solarized-light",
@@ -152,16 +243,16 @@ _ALIASES = {
 _CURRENT_KEY = "default"
 
 _ROLE_NAMES = ("border", "accent", "secondary", "success", "warning",
-               "error", "muted")
+               "error", "muted", "diff_sign")
 _ROLE_MARKERS = {role: "\x1b[38;5;%dm" % (240 + index)
                  for index, role in enumerate(_ROLE_NAMES)}
 _MARKER_TO_ROLE = {240 + index: role
                    for index, role in enumerate(_ROLE_NAMES)}
-_MARKER_RE = re.compile(r"\x1b\[38;5;(24[0-6])m")
+_MARKER_RE = re.compile(r"\x1b\[38;5;(24[0-7])m")
 _RESET_RE = re.compile(r"\x1b\[0m")
 _DEFAULT_CODES = {
     "border": 36, "accent": 34, "secondary": 35, "success": 32,
-    "warning": 33, "error": 31, "muted": 90,
+    "warning": 33, "error": 31, "muted": 90, "diff_sign": 39,
 }
 
 _ANSI16 = (
@@ -281,6 +372,19 @@ def _role_sgr(role, theme=None):
     theme = theme or current_theme()
     if theme.key == "default":
         return "\x1b[%dm" % _DEFAULT_CODES.get(role, 36)
+    if _color_capability() == "16" and role in (
+            "border", "accent", "secondary", "success", "warning", "error"):
+        # Nearest RGB can turn semantic hues into gray or merge status colors.
+        # Keep each role's hue and choose its most readable ANSI intensity.
+        normal = _DEFAULT_CODES[role] - 30
+        background_code = int(_nearest_ansi16(theme.background))
+        background_index = (background_code - 30 if background_code < 90
+                            else background_code - 90 + 8)
+        background = _hex(_ANSI16[background_index][1])
+        index = max((normal, normal + 8), key=lambda candidate: contrast_ratio(
+            _hex(_ANSI16[candidate][1]), background))
+        code = 30 + index if index < 8 else 90 + index - 8
+        return "\x1b[%dm" % code
     return _sgr_for_color(theme.roles.get(role, theme.foreground))
 
 
@@ -348,8 +452,12 @@ def preview_lines(value, color_enabled=True):
     background = _sgr_for_color(theme.background, background=True)
     foreground = _sgr_for_color(theme.foreground)
     swatch = "\x1b[0m%s%s      \x1b[0m" % (foreground, background)
-    sample = "\x1b[0m%s%s SignalREACH · theme preview \x1b[0m" % (
-        background, foreground)
+    indicators = "  ".join(
+        _role_sgr(role, theme) + label
+        for role, label in (("accent", "info"), ("success", "success"),
+                            ("warning", "warning"), ("error", "error")))
+    sample = "\x1b[0m%s%s SignalREACH · %s \x1b[0m" % (
+        background, foreground, indicators)
     return [
         "  Preview: %s" % label,
         "  %s  background %s · text %s" % (swatch, bg, fg),

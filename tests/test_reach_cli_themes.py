@@ -40,6 +40,9 @@ class ThemeCatalogTests(unittest.TestCase):
         self.assertEqual(set(themes.theme_names()), {
             "Default", "Solarized Dark", "Solarized Light (contrast tuned)",
             "One Half Dark", "One Half Light", "Campbell (Windows Terminal)",
+            "Tokyo Dark", "Tokyo Light", "Lemonade Dark", "Lemonade Light",
+            "Vintage Grandmaster Chessboard", "Warm Latte & Paper",
+            "Matcha Latte Cream", "Cyberpunk Neon", "Nord Frost", "Nord Snow Light",
         })
         self.assertEqual(themes.get_theme("Solarized Light (contrast tuned)").key,
                          "solarized-light")
@@ -64,6 +67,45 @@ class ThemeCatalogTests(unittest.TestCase):
                     self.assertGreaterEqual(
                         themes.contrast_ratio(color, theme.background), 4.5)
 
+    def test_tokyo_palettes_aliases_and_body_contrast(self):
+        for name, alias, key, background, foreground in (
+                ("Tokyo Dark", "Toyko Dark", "tokyo-dark", "#1A1B26", "#C0CAF5"),
+                ("Tokyo Light", "Toyko Light", "tokyo-light", "#E1E2E7", "#3760BF")):
+            with self.subTest(theme=name):
+                theme = themes.get_theme(name)
+                self.assertIs(themes.get_theme(alias), theme)
+                self.assertEqual(theme.key, key)
+                self.assertEqual((theme.background, theme.foreground),
+                                 (background, foreground))
+                self.assertGreaterEqual(
+                    themes.contrast_ratio(foreground, background), 4.5)
+                self.assertIn(name, "\n".join(themes.preview_lines(key)))
+
+    def test_lemonade_source_palettes_and_alias(self):
+        for name, key, background, foreground, palette in (
+                ("Lemonade Dark", "lemonade-dark", "#0C0F0A", "#FFFFFF",
+                 {"blue": "#FFF017", "green": "#A3E635", "cyan": "#67E8F9",
+                  "yellow": "#FACC15", "magenta": "#FB923C", "red": "#E11D48"}),
+                ("Lemonade Light", "lemonade-light", "#FEFCE8", "#000000",
+                 {"blue": "#CA8A04", "green": "#15803D", "cyan": "#1D4ED8",
+                  "yellow": "#B45309", "magenta": "#C2410C", "red": "#E11D48"})):
+            with self.subTest(theme=name):
+                theme = themes.get_theme(name)
+                self.assertIs(themes.get_theme(key), theme)
+                self.assertEqual((theme.background, theme.foreground),
+                                 (background, foreground))
+                self.assertGreaterEqual(
+                    themes.contrast_ratio(foreground, background), 4.5)
+                for slot, color in palette.items():
+                    self.assertEqual(theme.palette[slot], color)
+                preview = "\n".join(themes.preview_lines(key))
+                for label in (name, "info", "success", "warning", "error"):
+                    self.assertIn(label, preview)
+                self.assertEqual(themes.select_theme(name).key, key)
+        self.assertEqual(themes.select_theme("lemonade").key, "lemonade-dark")
+        self.assertNotEqual(themes.get_theme("lemonade-light").roles["accent"],
+                            "#CA8A04")
+
     def test_color_output_uses_palette_background_and_role_colors(self):
         with mock.patch.dict(os.environ, {"COLORTERM": "truecolor", "TERM": "xterm"}):
             themes.select_theme("default")
@@ -84,6 +126,57 @@ class ThemeCatalogTests(unittest.TestCase):
             campbell = themes.background_sequence()
             self.assertEqual(campbell, "\x1b[48;2;12;12;12m")
             self.assertNotEqual(campbell, background)
+
+    def test_ansi16_indicators_keep_distinct_semantic_hues(self):
+        roles = ("accent", "success", "warning", "error", "secondary", "border")
+        with mock.patch.object(themes, "_color_capability", return_value="16"):
+            for theme in themes.all_themes():
+                if not theme.background:
+                    continue
+                themes.select_theme(theme.key)
+                codes = []
+                for role in roles:
+                    with self.subTest(theme=theme.key, role=role):
+                        sgr = themes._role_sgr(role, theme)
+                        code = int(sgr[2:-1])
+                        normal = themes._DEFAULT_CODES[role]
+                        self.assertIn(code, (normal, normal + 60))
+                        codes.append(code)
+                        self.assertIn(sgr + role, themes.paint_role(role, role))
+                        self.assertIn(sgr + role, themes.render_line(
+                            themes.paint_role(role, role, managed_screen=True)))
+                        self.assertEqual(themes.paint_role(role, role, enabled=False), role)
+                self.assertEqual(len(set(codes)), len(roles))
+            themes.select_theme("solarized-light")
+            self.assertEqual([themes._role_sgr(role) for role in roles],
+                             ["\x1b[34m", "\x1b[32m", "\x1b[33m", "\x1b[31m",
+                              "\x1b[35m", "\x1b[36m"])
+
+    def test_rich_color_roles_and_default_keep_existing_mapping(self):
+        for mode in ("truecolor", "256", "16"):
+            with mock.patch.object(themes, "_color_capability", return_value=mode):
+                for role, code in themes._DEFAULT_CODES.items():
+                    self.assertEqual(themes._role_sgr(role, themes.DEFAULT_THEME),
+                                     "\x1b[%dm" % code)
+                if mode == "16":
+                    continue
+                for theme in themes.all_themes():
+                    for role, color in theme.roles.items():
+                        self.assertEqual(themes._role_sgr(role, theme),
+                                         themes._sgr_for_color(color))
+
+    def test_preview_shows_semantic_colors_without_selecting_theme(self):
+        themes.select_theme("campbell")
+        for mode in ("16", "256", "truecolor"):
+            with mock.patch.object(themes, "_color_capability", return_value=mode):
+                theme = themes.get_theme("solarized-light")
+                preview = "\n".join(themes.preview_lines(theme.key))
+                for role, label in (("accent", "info"), ("success", "success"),
+                                    ("warning", "warning"), ("error", "error")):
+                    self.assertIn(themes._role_sgr(role, theme) + label, preview)
+                self.assertEqual(themes.current_key(), "campbell")
+                plain = "\n".join(themes.preview_lines(theme.key, color_enabled=False))
+                self.assertNotIn("\x1b", plain)
 
     def test_limited_terminal_and_no_color_fallbacks(self):
         with mock.patch.dict(os.environ, {"TERM": "xterm", "COLORTERM": ""}, clear=False):
@@ -154,6 +247,21 @@ class ThemeCommandTests(unittest.TestCase):
         self.assertTrue(reset.success)
         self.assertIn("reset to Default", reset_text)
         self.assertEqual(self.config_data()["theme"], "default")
+
+    def test_tokyo_commands_preview_and_persist_canonical_names(self):
+        _, listing = self.invoke("/themes")
+        for name in ("Tokyo Dark", "Tokyo Light"):
+            self.assertIn(name, listing)
+        for alias, key in (("Toyko Dark", "tokyo-dark"),
+                           ("Toyko Light", "tokyo-light")):
+            before = themes.current_key()
+            result, _ = self.invoke("/theme preview " + alias)
+            self.assertTrue(result.success)
+            self.assertEqual(themes.current_key(), before)
+            result, _ = self.invoke("/theme " + alias)
+            self.assertTrue(result.success)
+            self.assertEqual(themes.current_key(), key)
+            self.assertEqual(self.config_data()["theme"], key)
 
     def test_unknown_theme_does_not_change_selection_or_saved_value(self):
         commands.save_session_config(theme="campbell")

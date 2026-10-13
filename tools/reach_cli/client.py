@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 import unicodedata
 
+from .credentials import environment_value
+
 
 POINTER_GIST = (
     "https://gist.githubusercontent.com/falabellamichael/"
@@ -65,6 +67,16 @@ def _usage_dict(usage):
     return {"prompt": usage.get("prompt_tokens"),
             "completion": usage.get("completion_tokens"),
             "total": usage.get("total_tokens")}
+
+
+def _finish_reason(value):
+    """Keep protocol outcomes without copying arbitrary endpoint text."""
+    if value is None:
+        return None
+    if isinstance(value, str) and value in (
+            "stop", "tool_calls", "function_call", "length", "content_filter"):
+        return value
+    return "unknown"
 
 
 def usage_tokens(usage):
@@ -164,6 +176,7 @@ def _request(url, key="", **kwargs):
 
 def _error_text(raw, base, key=""):
     """Best-effort extraction of API error text."""
+    from .agent_tools_extra import safe_text as redact_fields
     if isinstance(raw, str):
         raw = raw.encode("utf-8", "replace")
     if not isinstance(raw, (bytes, bytearray)):
@@ -174,10 +187,10 @@ def _error_text(raw, base, key=""):
         message = error.get("message") or json.dumps(payload)[:200]
         if error.get("reset_seconds"):
             message += " (retry in ~%ss)" % error["reset_seconds"]
-        return _safe_text(message, key, 1000).strip()
+        return redact_fields(_safe_text(message, key, 1000), 1000).strip()
     except Exception:
         text = raw.decode("utf-8", "replace").strip()
-        return _safe_text(text, key, 200) or "no response body from %s" % _safe_text(base, key, 200)
+        return redact_fields(_safe_text(text, key, 200), 200) or "no response body from %s" % _safe_text(base, key, 200)
 
 
 
@@ -188,7 +201,7 @@ class ReachClient:
         # An sk-reach key, needed for a hosted relay that requires one. A relay
         # on this machine does not, so the default (no key) still works there.
         builtin = self.base.lower() in ("public", "subscription")
-        self._builtin_key = (os.environ.get("REACH_KEY") or "").strip()
+        self._builtin_key = environment_value("REACH_KEY")
         self.endpoint_name = None
         self.key_env = key_env
         self.explicit_credential = key is not None
@@ -196,7 +209,7 @@ class ReachClient:
             import re
             if not isinstance(key_env, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_env):
                 raise ValueError("Use a valid environment variable name for --key-env.")
-            self.key = (os.environ.get(key_env) or "").strip()
+            self.key = environment_value(key_env)
             self.key_ref = "env:" + key_env
         elif key is not None:
             self.key = str(key).strip()
@@ -288,7 +301,7 @@ class ReachClient:
 
     def complete(self, messages, tools=None, on_text=None, on_thought=None,
                  stream=True, cancelled=None):
-        """One request attempt. Returns {"content", "tool_calls", "thought"}.
+        """One request attempt; includes ``finish_reason`` when supplied.
 
         Streams text deltas to ``on_text`` as they arrive and accumulates
         native tool_call fragments by index. Provider reasoning
@@ -325,6 +338,7 @@ class ReachClient:
         text = []
         thought = []
         slots = {}
+        finish_reason = None
         redactor = _TextRedactor(self.key)
         thought_redactor = _TextRedactor(self.key)
 
@@ -362,8 +376,11 @@ class ReachClient:
                     fn["arguments"] = json.dumps(clean(decoded))
                 except (ValueError, TypeError):
                     fn["arguments"] = _safe_text(args, self.key)
-            return {"content": "".join(text), "tool_calls": calls,
-                    "thought": "".join(thought)}
+            result = {"content": "".join(text), "tool_calls": calls,
+                      "thought": "".join(thought)}
+            if finish_reason is not None:
+                result["finish_reason"] = finish_reason
+            return result
 
         try:
             timeout = self.timeout
@@ -406,7 +423,9 @@ class ReachClient:
                         raise ReachTransientError("malformed endpoint response") from None
                     usage = data.get("usage") or {}
                     self.usage = _usage_dict(usage)
-                    message = ((data.get("choices") or [{}])[0] or {}).get("message") or {}
+                    choice = (data.get("choices") or [{}])[0] or {}
+                    finish_reason = _finish_reason(choice.get("finish_reason"))
+                    message = choice.get("message") or {}
                     reasoning = (message.get("reasoning_content")
                                  or message.get("reasoning") or message.get("thought"))
                     if isinstance(reasoning, str) and reasoning:
@@ -420,7 +439,7 @@ class ReachClient:
                     self.last_latency_ms = (time.time() - started) * 1000
                     result = partial()
                     if not result["content"] and not result["tool_calls"]:
-                        raise ReachTransientError("empty endpoint response")
+                        raise ReachTransientError("empty endpoint response", result)
                     return result
                 saw_sse = False
                 done = False
@@ -457,7 +476,11 @@ class ReachClient:
                     if content:
                         emit(content)
                     _merge_tool_delta(slots, delta.get("tool_calls"))
-                    if choice.get("finish_reason"):
+                    if choice.get("finish_reason") is not None:
+                        # A later marker cannot turn a truncated or filtered
+                        # response into a clean finish.
+                        if finish_reason not in ("length", "content_filter", "unknown"):
+                            finish_reason = _finish_reason(choice["finish_reason"])
                         done = True
         except ReachTransientError:
             raise

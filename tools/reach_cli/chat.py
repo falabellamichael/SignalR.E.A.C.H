@@ -24,6 +24,7 @@ from .agent_tools import (
 )
 from .agent_tools_extra import _display_file, _redact_json
 from .client import ReachApiError, ReachTransientError, usage_tokens
+from .agent_completion import answer_text, clean_final_answer, incomplete_finish
 from . import render, terminal
 from .grounding import build_grounded_messages
 from .terminal import (
@@ -81,13 +82,16 @@ AGENT_SYSTEM_PROMPT = (
     "multi-step task, write a plan with todo_write and keep it updated.\n\n"
     "RUN CONTROL FOR TOOL TASKS:\n"
     "When the request is fully handled (plan complete, edits applied, changes "
-    "verified with shell where possible), finish with exactly:\n"
+    "verified with shell where possible), deliver the final answer and stop. "
+    "Close any open plan items before the final answer. Do not call tools just "
+    "to repeat completion. You may also finish with:\n"
     '```agent_status\n{"status": "complete", "summary": "What was done and how it was verified."}\n```\n'
     "If you need a decision from the user, stop with:\n"
     '```agent_status\n{"status": "blocked", "reason": "The question or decision needed from the user."}\n```\n'
     "Do not claim completion while work remains. Do not rewrite a completed "
     "plan or repeat a greeting to keep the run alive. A direct answer with "
-    "no tool work or open plan can finish as ordinary prose."
+    "no pending tools or open plan can finish as ordinary prose, including "
+    "after observing tool results."
 )
 
 
@@ -215,6 +219,12 @@ def workpath_context(workpath):
     )
 
 
+def autopilot_enabled(client):
+    preferences = getattr(client, "cli_settings", {}).get("conversation", {})
+    return (preferences.get("approvals") == "auto-all"
+            and preferences.get("reviewEdits") is False)
+
+
 def build_system(client, state=None):
     parts = []
     parts.append(client.system or DEFAULT_IDENTITY)
@@ -227,6 +237,11 @@ def build_system(client, state=None):
             if "codeContextChars" in budgets:
                 context = context[:budgets["codeContextChars"]]
             prompt += "\n\nFiles in the workpath:\n" + context
+        if autopilot_enabled(client):
+            prompt += ("\n\nPermission mode: autopilot. The user has granted all tool approvals, "
+                       "including shell execution and file edits. Execute tools without asking "
+                       "for y/n confirmation; the runtime approves them automatically. "
+                       "Tool validation and operating-system restrictions still apply.")
         parts.append(prompt)
         if state is not None and state.selected_tools:
             # The text protocol sees the same active extra capabilities as
@@ -435,7 +450,9 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None,
                                          **extra)
             return True, {"content": kept_text + (result.get("content") or ""),
                           "tool_calls": result.get("tool_calls") or [],
-                          "thought": kept_thought + (result.get("thought") or "")}
+                          "thought": kept_thought + (result.get("thought") or ""),
+                          **({"finish_reason": result["finish_reason"]}
+                             if "finish_reason" in result else {})}
         except ReachTransientError as exc:
             last = exc
             got = exc.partial or {}
@@ -444,8 +461,10 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None,
             if cancelled is not None and cancelled.is_set():
                 return False, {"content": kept_text, "tool_calls": [], "stopped": True,
                                "thought": kept_thought}
+            if incomplete_finish(got):
+                break  # a later retry must not make incomplete controls executable
             calls = _complete_tool_calls(got.get("tool_calls"))
-            if calls:  # the call(s) arrived whole before the cut: use them
+            if calls:  # whole calls before a transport cut
                 return True, {"content": kept_text, "tool_calls": calls,
                               "thought": kept_thought}
             if attempt < max_attempts:
@@ -471,6 +490,9 @@ def request_reply(client, messages, tools=None, on_text=None, on_retry=None,
     # Partial text is recovery context, not a successful completion.
     # Never execute a cut-off fenced tool block after exhausting retries.
     return False, {"content": kept_text, "tool_calls": [], "thought": kept_thought,
+                   **({"finish_reason": last.partial["finish_reason"]}
+                      if isinstance(last, ReachTransientError) and
+                      "finish_reason" in (last.partial or {}) else {}),
                    "error": str(last or ""),
                    "reason": failure_reason(last, getattr(client, "base", "")),
                    "attempts": attempts,
@@ -689,6 +711,12 @@ class _FollowUpCollector:
             text = editor.text.strip()
             editor.text, editor.cursor = "", 0
             if text:
+                from .pet_care import parse_care_command
+                care = parse_care_command(text)
+                if care is not None:
+                    self._screen.care_pet(care)
+                    self._screen.finish_input("", echo=False)
+                    return True
                 from .input_privacy import sanitize_endpoint_command
                 self._screen.queue_followup(text)
                 self._screen.finish_input(
@@ -754,6 +782,10 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
     REACH Studio paints on its bubble — leading when the reasoning arrives
     before the answer text, trailing ' ...💭' when it arrives late.
     """
+    checkpoint = getattr(client, "_session_checkpoint", None)
+    store = getattr(client, "conversation_store", None)
+    if callable(checkpoint):
+        checkpoint(status="running")
     live_indent = indent is None
 
     def continuation_indent():
@@ -840,6 +872,8 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
         if delta:
             note_activity("responding")
         state["text"].append(delta)
+        if store is not None:
+            store.partial("".join(state["text"]))
         if control_display is None:
             display(delta)
         else:
@@ -916,12 +950,16 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
                   "thought": "".join(state["thought"]), "stopped": True}
     except Exception:
         _set_pet_activity("error")
+        if store is not None:
+            store.partial("".join(state["text"]), final=True)
         raise
     finally:
         state["indicator"].stop()
         collector.stop()
     if released.is_set():
         result["released"] = True
+    if store is not None:
+        store.partial(result.get("content") or "".join(state["text"]), final=True)
     if result.get("stopped"):
         _set_pet_activity("cancelled")
     if not result.get("stopped") and ok:
@@ -964,8 +1002,6 @@ def stream_reply(client, messages, indent=None, tools=None, full=False):
 
 # ---- agent loop ------------------------------------------------------------
 
-_TOOL_FENCE = re.compile(r"```tool\s*\n(.*?)```", re.DOTALL)
-_STATUS_OPEN = re.compile(r"\A(?:[ \t]*\r?\n)* {0,3}```agent_status[ \t]*\r?\n")
 _JSON_STATUS_FENCE = re.compile(r"\A\s*```json[ \t]*\r?\n(.*?)\r?\n[ \t]*`{3,}[ \t]*\s*\Z", re.DOTALL | re.IGNORECASE)
 
 MAX_AGENT_ROUNDS = 16
@@ -1143,9 +1179,9 @@ def _closes_fence(line, opener):
     return bool(fence and not fence[1] and fence[0][0] == opener[0] and len(fence[0]) >= len(opener))
 
 
-def _explicit_control(block):
+def _explicit_control(block, label="agent_status"):
     """Read a complete JSON control without treating backticks in strings as EOF."""
-    opening = _STATUS_OPEN.match(block)
+    opening = re.match(r"\A(?:[ \t]*\r?\n)* {0,3}```" + re.escape(label) + r"[ \t]*\r?\n", block)
     if opening is None:
         return None
     body = block[opening.end():]
@@ -1160,7 +1196,7 @@ def _explicit_control(block):
     return raw[:end], raw[end + closing.end():]
 
 
-def _explicit_status_payloads(text):
+def _explicit_status_payloads(text, label="agent_status"):
     """Locate controls outside ordinary Markdown fences and indented examples."""
     opener = None
     held = None
@@ -1168,18 +1204,22 @@ def _explicit_status_payloads(text):
         if opener is not None:
             if held is not None:
                 held.append(line)
-                control = _explicit_control("".join(held))
+                control = _explicit_control("".join(held), label)
                 if control is not None:
                     yield control[0]
                     opener = held = None
                     continue
             if _closes_fence(line, opener):
+                if held is not None:
+                    yield "".join(held[1:-1])  # retain malformed controls for validation
                 opener = held = None
             continue
         fence = _fence_line(line)
         if fence:
             opener = fence[0]
-            held = [line] if fence == ("```", "agent_status") else None
+            held = [line] if fence == ("```", label) else None
+    if held is not None:
+        yield ""  # an unfinished control must not become a final prose answer
 
 
 def _standalone_json_status(text):
@@ -1197,7 +1237,8 @@ def _standalone_json_status(text):
 def parse_tool_blocks(text):
     """Split a reply into (actions, status, invalid)."""
     actions = []
-    for raw in _TOOL_FENCE.findall(text or ""):
+    tool_payloads = list(_explicit_status_payloads(text, "tool"))
+    for raw in tool_payloads:
         try:
             data = json.loads(raw.strip())
         except (ValueError, AttributeError):
@@ -1210,7 +1251,7 @@ def parse_tool_blocks(text):
         data = _normalise_status(raw)
         if data is not None:
             status = data
-    invalid = bool(_TOOL_FENCE.search(text or "")) and not actions
+    invalid = bool(tool_payloads) and not actions
     if status is None and not actions and not invalid:
         status = _standalone_json_status(text)
     return actions, status, invalid
@@ -1376,9 +1417,15 @@ def _tool_call_details(name, args):
                                      default=str))
     details.extend(c_dim(line) for line in serialized.splitlines())
     if name == "edit":
-        for sign, text in edit_diff(args):
-            paint = c_red if sign == "-" else c_green
-            details.append(paint("%s %s" % (sign, text)))
+        for sign, key in (("-", "search"), ("+", "replace")):
+            lines = str((args or {}).get(key, "")).splitlines()
+            preview = edit_diff({"path": path, key: "\n".join(lines[:3])})
+            details.extend(terminal.diff_preview(mark, text) for mark, text in preview)
+            if len(lines) > 3:
+                remaining = [terminal.diff_preview(sign, _display_file(path, text))
+                             for text in lines[3:]]
+                details.append({"summary": "> %d more line(s)" % len(remaining),
+                                "details": remaining})
     return details
 
 
@@ -1408,8 +1455,7 @@ def show_tool_call(name, args):
     tprint(line)
     if name == "edit":
         for sign, text in edit_diff(args):
-            paint = c_red if sign == "-" else c_green
-            tprint("      " + paint("%s %s" % (sign, text)))
+            tprint("      " + terminal.diff_preview(sign, text))
 
 
 def show_tool_result(name, result, *, token=None):
@@ -1547,7 +1593,7 @@ def _execute_native(client, tool_calls, state):
     return out
 
 
-def _apply_status(history, reply_text, status, state, fallback_summary=""):
+def _apply_status(history, reply_text, status, state):
     """Handle a run-control block. Returns True when the turn is over."""
     if status.get("status") == "blocked":
         _set_pet_activity("blocked")
@@ -1563,10 +1609,7 @@ def _apply_status(history, reply_text, status, state, fallback_summary=""):
             % (len(open_items), json.dumps(open_items)),
         })
         return False
-    summary = str(status.get("summary") or "").strip() or fallback_summary.strip()
-    if not summary:
-        summary = "The model reported completion without a description."
-    tprint(c_green("  ⏹ agent complete: " + summary[:300]))
+    tprint(c_green("  ⏹ agent complete"))
     _set_pet_activity("complete")
     return True
 
@@ -1600,8 +1643,8 @@ def run_agent_turn(client, history, state, instruction=None):
     rounds = 0
     recovery = 0
     no_progress = 0
+    answered = False
     seen_plans = {_plan_snapshot(state.todos)}
-    last_answer = ""
     meter = TurnMeter(client)
     state.configure(client)
     refresh_studio_context(client)
@@ -1639,8 +1682,14 @@ def run_agent_turn(client, history, state, instruction=None):
                     history.append({"role": "assistant", "content": reply_text})
                 state.resume_results = (had_results, substantive_results)
                 return False
+            if incomplete_finish(result):
+                history.append({"role": "assistant", "content": reply_text})
+                return _pause_agent_run("the provider ended an incomplete response; its tools were not executed.",
+                                        state, (had_results, substantive_results))
             native = result.get("tool_calls") or []
             actions, status, invalid = parse_tool_blocks(reply_text)
+            invalid |= answer_text(reply_text) is None
+            invalid |= not (native or actions) and result.get("finish_reason") in ("tool_calls", "function_call")
             if status is not None and status.get("status") == "blocked":
                 history.append({"role": "assistant", "content": reply_text,
                                 **({"tool_calls": native} if native else {})})
@@ -1648,7 +1697,7 @@ def run_agent_turn(client, history, state, instruction=None):
                     history.extend({"role": "tool", "tool_call_id": call.get("id") or "",
                                     "content": "error: not executed because the model reported blocked"}
                                    for call in native)
-                return _apply_status(history, reply_text, status, state, last_answer)
+                return _apply_status(history, reply_text, status, state)
             before = _plan_snapshot(state.todos)
             if native:
                 history.append({"role": "assistant", "content": reply_text,
@@ -1666,6 +1715,8 @@ def run_agent_turn(client, history, state, instruction=None):
                              for name, text in results]
                 successful_batch = bool(successes) and all(successes)
                 substantive_results |= not planning_only
+                if not planning_only:
+                    answered = False  # new tool work needs a new observed answer
                 after = _plan_snapshot(state.todos)
                 tool_progress = any(ok and name not in _PLAN_TOOLS
                                     for (name, _text), ok in zip(results, successes))
@@ -1679,7 +1730,7 @@ def run_agent_turn(client, history, state, instruction=None):
                 else:
                     no_progress += 1
                 if status is not None and planning_only and successful_batch and not invalid:
-                    if _apply_status(history, reply_text, status, state, last_answer):
+                    if _apply_status(history, reply_text, status, state):
                         return True
                     if progress:
                         no_progress += 1
@@ -1688,6 +1739,11 @@ def run_agent_turn(client, history, state, instruction=None):
                       all(item.get("status") == "completed" for item in state.todos)):
                     _set_pet_activity("complete")
                     return True  # a direct answer with only bookkeeping, no task work
+                if (planning_only and successful_batch and not invalid and
+                        (answered or clean_final_answer(result)) and
+                        all(item.get("status") == "completed" for item in state.todos)):
+                    _set_pet_activity("complete")
+                    return True
                 if no_progress >= MAX_NO_PROGRESS:
                     return _pause_agent_run("repeated plan updates or failed tools without task progress.",
                                             state, (had_results, substantive_results))
@@ -1699,20 +1755,20 @@ def run_agent_turn(client, history, state, instruction=None):
                         "Use the next necessary tool, or finish with agent_status complete or blocked. "
                         "For a direct conversational answer with no open plan, reply once without tools.")})
                 continue
-            if status is not None:
-                if _apply_status(history, reply_text, status, state, last_answer):
+            if status is not None and not invalid:
+                if _apply_status(history, reply_text, status, state):
                     return True
                 no_progress += 1
                 if no_progress >= MAX_NO_PROGRESS:
                     return _pause_agent_run("completion keeps being requested while plan items remain open.",
                                             state, (had_results, substantive_results))
                 continue
-            if not invalid and reply_text.strip():
-                # Keep only this run's substantive answer as an honest
-                # description when later terminal metadata omits its own.
-                last_answer = reply_text.strip()
             # no action, no completion: recover or treat as the final answer
             unfinished_plan = any(t.get("status") != "completed" for t in state.todos)
+            answered = clean_final_answer(result, invalid)
+            if answered and not unfinished_plan:
+                _set_pet_activity("complete")
+                return True
             if ((substantive_results or (had_results and unfinished_plan)) and
                     recovery < MAX_RECOVERY):
                 recovery += 1
@@ -1861,6 +1917,10 @@ def endpoint_notice(client):
 
 
 def run_chat(client, base, initial_prompt=None):
+    if not hasattr(client, "conversation_store"):
+        from .state import ConversationStore
+        client.conversation_store = ConversationStore(client)
+        client.conversation_store.apply_preferences()
     try:
         saved = terminal.load_session_config()
         if saved.get("layout"):
@@ -1889,11 +1949,43 @@ def _run_chat_loop(client, base, initial_prompt=None):
     scoped_sessions = {}
     thoughts = {}
     scope = None
+    store = getattr(client, "conversation_store", None)
+    turn_status = "idle"
+    if store is not None:
+        restored = store.restore(histories, scoped_sessions, session)
+        history = histories.setdefault(None, [])
+        if restored:
+            tprint(c_dim("  restored the last conversation · /clear resets it · --new-session starts fresh"))
+            for message in history:
+                if message["role"] == "user":
+                    tprint(c_green("  you ▸ ") + message["content"])
+                else:
+                    response_open()
+                    markdown = render.MarkdownStream() if render.enabled() else None
+                    if markdown is None:
+                        tprint(message["content"])
+                    else:
+                        for row in markdown.feed(message["content"]) + markdown.flush():
+                            tprint(row)
+            if any(key is not None for key in histories):
+                tprint(c_dim("  addressed conversations restored; use @agent to return to one."))
+
+    def checkpoint(status=None, activity=True):
+        if store is None:
+            return
+        store.checkpoint(histories, scoped_sessions, session, scope,
+                         status or turn_status, activity=activity)
+        if store.failed and not store.warned:
+            store.warned = True
+            tprint(c_yellow("  conversation could not be saved; check the config directory permissions or size."))
+
+    client._session_checkpoint = checkpoint
     client.last_thought = ""
     context = getattr(client, "studio_context", None)
     if context is not None:
         context.clear()
     set_system_message(history, client)
+    checkpoint(activity=False)
     pending_prompt = initial_prompt
     followups_ready = True  # a queued follow-up fires only after a completed turn
     try:
@@ -1911,7 +2003,9 @@ def _run_chat_loop(client, base, initial_prompt=None):
                 screen = active_footer()
                 if screen is not None:
                     from .input_privacy import sanitize_endpoint_command
-                    screen.finish_input(sanitize_endpoint_command(line), echo=bool(str(line).strip()))
+                    from .pet_care import parse_care_command
+                    echo = bool(str(line).strip()) and parse_care_command(line) is None
+                    screen.finish_input(sanitize_endpoint_command(line), echo=echo)
             else:
                 line = None
                 if followups_ready:
@@ -1933,6 +2027,9 @@ def _run_chat_loop(client, base, initial_prompt=None):
                 # Command implementations live in terminal.py. This loop only
                 # quits or sends the prompt /retry asks to resend.
                 result = handle_slash(line, client, history, session)
+                if line.split()[0].lower() in ("/clear", "/undo"):
+                    scope, turn_status = None, "idle"
+                checkpoint(activity=not result.quit)
                 if result.quit:
                     tprint(c_dim("  bye."))
                     return
@@ -1949,6 +2046,9 @@ def _run_chat_loop(client, base, initial_prompt=None):
             addressed_session = scoped_sessions.setdefault(scope, ReplSession()) if scope is not None else session
             if scope is not None and line.startswith("/"):
                 result = handle_slash(line, client, history, addressed_session)
+                if line.split()[0].lower() in ("/clear", "/undo"):
+                    turn_status = "idle"
+                checkpoint(activity=not result.quit)
                 if result.quit:
                     tprint(c_dim("  bye."))
                     return
@@ -1959,6 +2059,14 @@ def _run_chat_loop(client, base, initial_prompt=None):
             if scope is not None:
                 addressed_session.remember(line)
             history.append({"role": "user", "content": line})
+            from .state import validate_restored_model
+            validate_restored_model(client, refresh=True)
+            if client._restored_model_blocked:
+                history.pop()
+                checkpoint()
+                continue
+            turn_status = "running"
+            checkpoint()
             if client.agent:
                 try:
                     followups_ready = bool(
@@ -1967,6 +2075,10 @@ def _run_chat_loop(client, base, initial_prompt=None):
                     _set_pet_activity("error")
                     _calm_failure()
                     followups_ready = False
+                interrupted = (not followups_ready or agent_state.resume_results is not None
+                               or any(item.get("status") != "completed" for item in agent_state.todos))
+                turn_status = "interrupted" if interrupted else "idle"
+                checkpoint()
                 continue
             try:
                 refresh_studio_context(client)
@@ -1987,13 +2099,16 @@ def _run_chat_loop(client, base, initial_prompt=None):
                         history.append({"role": "assistant", "content": reply_text})
                     else:
                         history.pop()
+                    turn_status = "interrupted"
+                    checkpoint()
                     continue
                 if ok:
                     history.append({"role": "assistant", "content": reply_text})
                     print_footer(client)
                     _set_pet_activity("complete")
                     if client.agent:
-                        applied = review_and_apply_edits(client.workpath, reply_text)
+                        applied = review_and_apply_edits(client.workpath, reply_text,
+                                                         auto_yes=autopilot_enabled(client))
                         if applied:
                             status_line(c_green("%d edit(s) applied" % applied))
                 else:
@@ -2002,16 +2117,26 @@ def _run_chat_loop(client, base, initial_prompt=None):
                         history.append({"role": "assistant", "content": reply_text})
                     else:
                         history.pop()
+                turn_status = "idle" if followups_ready else "interrupted"
+                checkpoint()
             except Exception as exc:
                 _set_pet_activity("error")
                 tprint(c_red("  ✗ %s" % exc))
-                history.pop()
+                partial = store.partial_text() if store is not None else ""
+                if partial and history[-1].get("role") == "user":
+                    history.append({"role": "assistant", "content": partial})
+                else:
+                    history.pop()
                 followups_ready = False
+                turn_status = "interrupted"
+                checkpoint()
     except KeyboardInterrupt:
         _set_pet_activity("cancelled")
         raise
     finally:
         # footer_session restores the caller's terminal and output stream.
+        checkpoint(status="interrupted" if turn_status == "running" else turn_status, activity=False)
+        client._session_checkpoint = None
         for state in agent_states.values():
             cleanup_owned_processes(client.workpath, state.tool_context())
         context = getattr(client, "studio_context", None)
@@ -2056,7 +2181,8 @@ def _run_ask(client, question):
         return False
     print_footer(client)
     if client.agent:
-        applied = review_and_apply_edits(client.workpath, reply_text)
+        applied = review_and_apply_edits(client.workpath, reply_text,
+                                         auto_yes=autopilot_enabled(client))
         if applied:
             status_line(c_green("%d edit(s) applied" % applied))
     return True

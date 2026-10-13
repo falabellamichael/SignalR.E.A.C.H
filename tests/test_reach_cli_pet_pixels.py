@@ -108,6 +108,67 @@ class PixelPetTests(unittest.TestCase):
                                     self.assertTrue(all(not any(row[bowl_x - 2:bowl_x])
                                                         for row in pixels))
 
+    def test_care_gestures_are_distinct_and_animated_for_every_species(self):
+        for kind in PET_NAMES:
+            poses = set()
+            for behavior in ('petting', 'treating', 'forgiving', 'sulking', 'refusing'):
+                with self.subTest(kind=kind, behavior=behavior):
+                    frames = [tuple(render_pixel_pet(snapshot(kind, behavior, frame)))
+                              for frame in range(8)]
+                    self.assertGreaterEqual(len(set(frames)), 3)
+                    self.assertNotEqual(frames[0], tuple(render_pixel_pet(snapshot(kind))))
+                    poses.add(frames[0])
+            self.assertEqual(len(poses), 5)
+
+    def test_affection_has_a_heart_and_refusal_shakes_each_species_head(self):
+        for kind in PET_NAMES:
+            with self.subTest(kind=kind):
+                petting = decode(render_pixel_pet(snapshot(kind, 'petting', position=0)))
+                # The two lobes, low sides, and point form a heart in the open lane.
+                for x, y in ((24, 1), (26, 1), (23, 3), (27, 3), (25, 5)):
+                    self.assertTrue(petting[y][x])
+                frames = [decode(render_pixel_pet(snapshot(kind, 'refusing', frame,
+                                                          position=0)))
+                          for frame in (0, 2, 6)]
+                heads = {tuple(tuple(row[:22]) for row in pixels[2:9])
+                         for pixels in frames}
+                self.assertEqual(len(heads), 3)
+
+    def test_care_art_fits_small_habitats_and_keeps_bowl_gutter_clear(self):
+        for kind in PET_NAMES:
+            for width in (1, 7, 13, 17, 22, 28):
+                for height in (1, 2, 3):
+                    baseline = decode(render_pixel_pet(snapshot(kind), width, height))
+                    for behavior in ('petting', 'treating', 'forgiving', 'sulking', 'refusing'):
+                        with self.subTest(kind=kind, width=width, height=height,
+                                          behavior=behavior):
+                            for frame in (0, 3, 7):
+                                state = snapshot(kind, behavior, frame, position=1)
+                                rows = render_pixel_pet(state, width, height)
+                                self.assertEqual(len(rows), height)
+                                self.assertTrue(all(display_width(row) == width for row in rows))
+                                self.assertTrue(all(glyph == ' ' or 0x2801 <= ord(glyph) <= 0x28ff
+                                                    for row in rows for glyph in row))
+                                pixels = decode(rows)
+                                if width >= 17 and height >= 2:
+                                    bowl_x = width * 2 - 8
+                                    self.assertEqual([row[bowl_x:] for row in pixels],
+                                                     [row[bowl_x:] for row in baseline])
+                                    self.assertTrue(all(not any(row[bowl_x - 2:bowl_x])
+                                                        for row in pixels))
+
+    def test_angry_mood_keeps_work_props_while_changing_only_the_face(self):
+        for kind in PET_NAMES:
+            for behavior in ('typing', 'reading', 'speaking', 'working'):
+                with self.subTest(kind=kind, behavior=behavior):
+                    state = snapshot(kind, behavior, frame=0, position=0)
+                    calm = decode(render_pixel_pet(state))
+                    angry = decode(render_pixel_pet(dict(state, mood='angry')))
+                    self.assertNotEqual(calm, angry)
+                    self.assertEqual(calm[9:], angry[9:])
+                    self.assertEqual([row[22:] for row in calm],
+                                     [row[22:] for row in angry])
+
     def test_walking_moves_and_returns_without_touching_bowl(self):
         for kind in PET_NAMES:
             for width in (18, 22, 28):
@@ -152,10 +213,20 @@ class PixelPetTests(unittest.TestCase):
         for kind in PET_NAMES:
             base = render_pixel_pet(dict(snapshot(kind), motion=False))
             for behavior in ("typing", "snacking", "celebrating", "watching", "sleeping",
-                             "pondering", "speaking", "searching", "reading", "working"):
+                             "pondering", "speaking", "searching", "reading", "working",
+                             "petting", "treating", "forgiving", "sulking", "refusing"):
                 state = dict(snapshot(kind, behavior, frame=7, position=1, food=1),
                              motion=False, direction=-1)
                 self.assertEqual(render_pixel_pet(state), base)
+
+    def test_motion_off_angry_face_is_stable_across_care_actions(self):
+        for kind in PET_NAMES:
+            base = render_pixel_pet(dict(snapshot(kind), motion=False, mood='angry'))
+            for behavior in ('petting', 'treating', 'forgiving', 'sulking', 'refusing'):
+                for frame in range(8):
+                    state = dict(snapshot(kind, behavior, frame, position=1),
+                                 motion=False, direction=-1, mood='angry')
+                    self.assertEqual(render_pixel_pet(state), base)
 
     def test_malformed_metadata_cannot_escape_the_grid(self):
         cases = (None, False, [], "\x1b[2J", {},

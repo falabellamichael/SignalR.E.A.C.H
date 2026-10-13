@@ -94,6 +94,11 @@ def effective_budgets(client):
 
 def apply_client_settings(client, args=None, path=None):
     client.cli_settings = load_cli_settings(path)
+    permission_choices = getattr(client, "_session_permission_choices", None)
+    if permission_choices is not None:
+        for key in ("approvals", "reviewEdits"):
+            if key not in permission_choices:
+                client.cli_settings["conversation"][key] = CONVERSATION_DEFAULTS[key]
     with session._CONFIG_LOCK:
         raw = session._read_config(path or session.session_config_path())
     stored = raw.get("settings", {})
@@ -123,7 +128,7 @@ def save_cli_settings(client, group, patch, path=None):
     validator(patch)
     target = path or session.session_config_path()
     try:
-        with session._CONFIG_LOCK:
+        with session.config_transaction(target):
             data = session._read_config(target, strict=True)
             current = data.setdefault("settings", {})
             if not isinstance(current, dict) or not isinstance(current.get(group, {}), dict):
@@ -132,6 +137,9 @@ def save_cli_settings(client, group, patch, path=None):
             session._write_config(target, data)
     except (OSError, ValueError, TypeError):
         raise SettingsError("Could not save CLI settings. Check the original config JSON and permissions; no change was applied to this session.") from None
+    permission_choices = getattr(client, "_session_permission_choices", None)
+    if permission_choices is not None and group == "conversation":
+        permission_choices.update(set(patch) & {"approvals", "reviewEdits"})
     apply_client_settings(client, path=target)
 
 
@@ -161,7 +169,7 @@ def _native(client, history, repl, section, argument, output):
             output.line("  /settings connection list|add|edit|test|select|remove · same options as /endpoint")
             output.line("  /settings model ALIAS · /settings models · /settings workpath DIR")
             output.flush()
-            return commands._cmd_endpoint(client, history, repl, "list")
+            return commands._cmd_endpoint(client, history, repl, "")
         output.flush()
         return commands._cmd_endpoint(client, history, repl, argument)
     if section == "appearance":
@@ -196,7 +204,7 @@ def _native(client, history, repl, section, argument, output):
         elif action == "reset" and len(tokens) == 1:
             target = session.session_config_path()
             try:
-                with session._CONFIG_LOCK:
+                with session.config_transaction(target):
                     data = session._read_config(target, strict=True)
                     if not isinstance(data.get("settings", {}), dict):
                         raise ValueError()

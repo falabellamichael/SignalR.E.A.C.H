@@ -331,7 +331,8 @@ def read_boxed(client, reader=None, out=None):
     from .input_privacy import sanitize_endpoint_command
     visible = sanitize_endpoint_command(text)
     if screen is not None:
-        screen.finish_input(visible, echo=bool(text.strip()))
+        from .pet_care import parse_care_command
+        screen.finish_input(visible, echo=bool(text.strip()) and parse_care_command(text) is None)
     else:
         model, endpoint, details = client_meta(client)
         for row in echo_box(visible, box_width(), "you", model, endpoint,

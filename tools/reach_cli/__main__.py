@@ -23,7 +23,8 @@ examples:
   reach-cli endpoints                    list saved and protected endpoints
   reach-cli endpoints add lab http://127.0.0.1:8080/v1 --key-env LAB_API_KEY
   reach-cli endpoints test lab            refresh models without selecting
-  reach-cli --continue                   resume endpoint, model, and workpath
+  reach-cli --new-session                start a fresh conversation
+  reach-cli --continue                   restore saved choices (also for ask/web)
 """.strip("\n")
 
 ASK_EXAMPLES = """
@@ -126,8 +127,11 @@ def _add_common(parser, suppress):
         dest="resume",
         action="store_true",
         default=fallback(False),
-        help="resume the endpoint, model, and workpath saved in "
-        "~/.config/reach-cli/config.json",
+        help="restore saved choices for one-shot commands; chat restores automatically",
+    )
+    parser.add_argument(
+        "--new-session", action="store_true", default=fallback(False),
+        help="start chat with an empty conversation; keep saved interface and connection choices",
     )
     parser.add_argument(
         "-V",
@@ -286,7 +290,7 @@ def _endpoint_configuration(args):
                 except EndpointError:
                     # The normal restore path provides its safe local fallback.
                     raw = "local"
-        elif getattr(args, "resume", False) and saved.get("endpoint"):
+        elif (getattr(args, "resume", False) or getattr(args, "auto_restore", False)) and saved.get("endpoint"):
             raw = saved["endpoint"]
         else:
             raw = DEFAULT_BASE
@@ -309,14 +313,18 @@ def _endpoint_configuration(args):
 
 
 def _restore_endpoint_selection(client, args):
-    """Named selections persist; general legacy session resume stays explicit."""
+    """Chat restores saved choices automatically; one-shot resume stays explicit."""
     saved = terminal.load_session_config() if not getattr(args, "base", None) else {}
-    if getattr(args, "resume", False):
+    if getattr(args, "resume", False) or getattr(args, "auto_restore", False):
         terminal.apply_saved_session(client, args)
     elif saved.get("endpoint_name"):
         endpoint_only = argparse.Namespace(**vars(args))
-        # These truthy flags suppress the unrelated saved model/workpath fields.
-        endpoint_only.model = True
+        # A custom provider may require its selected model on every request.
+        # Restore that model with the named connection, while keeping ordinary
+        # startup's workspace and built-in auto-model behavior unchanged.
+        endpoint_only.model = (getattr(args, "model", None)
+                               if saved["endpoint_name"].lower() not in ("local", "public", "subscription")
+                               else True)
         endpoint_only.workpath = True
         terminal.apply_saved_session(client, endpoint_only)
     if ((getattr(client, "base", "") or "").lower() in ("public", "subscription")
@@ -384,7 +392,8 @@ def _main(argv=None):
                 raise EndpointError("--key-env requires an environment-variable name")
         except EndpointError as exc:
             return _usage(parser, str(exc))
-        if not os.environ.get(args.key_env, "").strip():
+        from .credentials import environment_value
+        if not environment_value(args.key_env):
             print(c_red("? %s is not set; configure that environment variable separately" % args.key_env))
             return 1
 
@@ -392,6 +401,8 @@ def _main(argv=None):
     if problem:
         examples = ASK_EXAMPLES if command == "ask" else WEB_EXAMPLES if command == "web" else None
         return _usage(parser, problem, examples)
+
+    args.auto_restore = command == "chat"
 
     terminal.COLOR_FORCED = choice == "always"
     terminal.PAINT = terminal.Paint(_paint_enabled(args))
@@ -424,6 +435,11 @@ def _main(argv=None):
     _restore_endpoint_selection(client, args)
     from .settings import apply_client_settings
     apply_client_settings(client, args=args)
+
+    if command == "chat":
+        from .state import ConversationStore
+        client.conversation_store = ConversationStore(client, new=args.new_session)
+        client.conversation_store.apply_preferences(args)
 
     if command in ("endpoint", "endpoints"):
         return _run_endpoint_command(args, client)
@@ -466,8 +482,15 @@ def _main(argv=None):
             **({"endpoint_name": getattr(client, "endpoint_name", None) or ""}
                if getattr(args, "base", None) else {}),
             model=client.model if getattr(args, "model", None) else None,
+            clear_model=bool(getattr(args, "base", None) and not client.model),
             workpath=client.workpath if getattr(args, "workpath", None) else None,
         )
+
+    if command == "chat" and not client.model and client.endpoint_name not in ("local", "public", "subscription"):
+        from . import picker
+        if picker.available():
+            print(c_dim("  Choose a model for this connection before chatting."))
+            terminal.handle_slash("/model", client, [])
 
     try:
         if command in ("chat", "ask", "web"):

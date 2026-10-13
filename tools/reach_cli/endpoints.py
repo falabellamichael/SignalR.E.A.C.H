@@ -6,12 +6,12 @@ environment-variable name, resolved only when a client uses that record.
 
 import copy
 import ipaddress
-import os
 import re
 import unicodedata
 import urllib.parse
 
-from .session import _CONFIG_LOCK, _UNSET, _read_config, _write_config, session_config_path
+from .session import _CONFIG_LOCK, config_transaction, _UNSET, _read_config, _write_config, session_config_path
+from .credentials import environment_value
 
 
 LOCAL_ENDPOINT_URL = "http://127.0.0.1:20777/v1"
@@ -172,7 +172,7 @@ def add_custom(name, url, key_env=None, path=None):
     if reference:
         record["key_env"] = reference
     path = path or session_config_path()
-    with _CONFIG_LOCK:
+    with config_transaction(path):
         config, records = _config(path)
         if name in records:
             raise EndpointError("That custom endpoint already exists. Use /endpoint edit to change it.")
@@ -198,7 +198,7 @@ def edit_custom(name, url=None, key_env=UNSET, path=None):
     validated_url = normalize_url(url) if url is not None else None
     reference = normalize_key_env(key_env) if key_env is not UNSET else UNSET
     path = path or session_config_path()
-    with _CONFIG_LOCK:
+    with config_transaction(path):
         config, records = _config(path)
         if name not in records:
             raise EndpointError("Custom endpoint not found. Run /endpoints to see available names.")
@@ -224,7 +224,7 @@ def edit_custom(name, url=None, key_env=UNSET, path=None):
 def select_custom(name, path=None):
     name = normalize_name(name)
     path = path or session_config_path()
-    with _CONFIG_LOCK:
+    with config_transaction(path):
         config, records = _config(path)
         if name not in records:
             raise EndpointError("Custom endpoint not found. Run /endpoints to see available names.")
@@ -240,7 +240,7 @@ def select_custom(name, path=None):
 def remove_custom(name, path=None):
     name = normalize_name(name)
     path = path or session_config_path()
-    with _CONFIG_LOCK:
+    with config_transaction(path):
         config, records = _config(path)
         if name not in records:
             raise EndpointError("Custom endpoint not found. Run /endpoints to see available names.")
@@ -256,4 +256,4 @@ def remove_custom(name, path=None):
 def credential_for(record):
     """Resolve a credential reference, never the built-in REACH_KEY fallback."""
     reference = normalize_key_env(record.get("key_env") if isinstance(record, dict) else None)
-    return os.environ.get(reference, "").strip() if reference else ""
+    return environment_value(reference)

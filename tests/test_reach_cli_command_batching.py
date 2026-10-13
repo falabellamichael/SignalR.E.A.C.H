@@ -115,7 +115,7 @@ class CommandBatchingTests(unittest.TestCase):
             terminal.PAINT = terminal.Paint(colored)
             for layout in ("center", "full"):
                 splash.set_layout(layout)
-                for line in ("/help", "/settings", "/endpoint list", "/endpoints"):
+                for line in ("/help", "/settings", "/endpoint list", "/endpoints list"):
                     with self.subTest(colored=colored, layout=layout, line=line):
                         with mock.patch.object(splash, "terminal_columns", return_value=140):
                             expected = self.render(line, unbatched=True, sink=_Sink(tty=True))
@@ -179,7 +179,7 @@ class CommandBatchingTests(unittest.TestCase):
     def test_actual_footer_sink_preserves_transcript_styles_geometry_and_cursor(self):
         terminal.PAINT = terminal.Paint(True)
         splash.set_layout("center")
-        for line in ("/help", "/settings", "/endpoints"):
+        for line in ("/help", "/settings", "/endpoints list"):
             with self.subTest(line=line):
                 before = self.screen_result(line, unbatched=True)
                 after = self.screen_result(line, unbatched=False)
