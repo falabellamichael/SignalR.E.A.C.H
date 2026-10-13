@@ -3,7 +3,6 @@
   "packages": {
     ".": {
       "release-type": "simple",
-      "package-name": "signal-reach",
       "versioning": "always-bump-patch",
       "bump-minor-pre-major": false,
       "include-component-in-tag": false,
