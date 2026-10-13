@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.2](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.1...v26.10.2) (2026-10-13)
+
+
+### Features
+
+* **cli:** add endpoint/model pickers, credential store, pet care, and agent completion handling ([fc64769](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/fc647691115bdb6338767755399224ad40aaa817))
+
 ## [26.10.1](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.0...v26.10.1) (2026-10-12)
 
 
