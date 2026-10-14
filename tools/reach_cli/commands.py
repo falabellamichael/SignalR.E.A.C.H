@@ -1303,10 +1303,11 @@ def _cmd_clear(client, history, session, _argument):
             history[:] = []
         if session is not None:
             session.last_prompt = None
+        client.last_thought = ""
         _refresh_system(history, client)
     except Exception as exc:
         tprint(c_red("  ✗ clear: %s" % exc))
-        return SlashResult()
+        return SlashResult(success=False)
     tprint(c_green("  conversation cleared"))
     return SlashResult()
 

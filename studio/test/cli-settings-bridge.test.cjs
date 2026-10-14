@@ -59,6 +59,26 @@ async function fixture(overrides = {}) {
     cleanup() { bridge.stop(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
+test('MCP tools and calls validate parameters before authenticated dispatch', async () => {
+  const calls = [];
+  const f = await fixture({
+    'mcp.tools': () => ({ tools: [{ name: 'roblox__list', inputSchema: { type: 'object' } }] }),
+    'mcp.call': params => { calls.push(params); return { ok: true, text: 'connected' }; },
+  });
+  try {
+    const listed = await f.request('mcp.tools');
+    assert.equal(listed.body.result.tools[0].name, 'roblox__list');
+    for (const params of [{ name: 'shell', arguments: {} }, { name: 'roblox__list', arguments: [] },
+      { name: 'roblox__list', arguments: {}, extra: true }]) {
+      assert.equal((await f.request('mcp.call', params)).body.ok, false);
+    }
+    assert.equal(calls.length, 0);
+    const params = { name: 'roblox__list', arguments: { studio_id: 'one' } };
+    assert.equal((await f.request('mcp.call', params)).body.result.text, 'connected');
+    assert.deepEqual(calls, [params]);
+  } finally { f.cleanup(); }
+});
+
 test('discovery is authenticated loopback and cleanup preserves a newer instance', async () => {
   const f = await fixture();
   try {

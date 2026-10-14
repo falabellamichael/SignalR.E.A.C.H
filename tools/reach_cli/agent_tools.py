@@ -546,7 +546,10 @@ for _name, _tool in TOOLS.items():
     _tool["category"] = ("files" if _name in ("read", "glob", "search", "list", "edit") else
                          "execution" if _name == "shell" else
                          "web" if _name in ("websearch", "browse") else "planning")
+from .mcp_tools import MCP_TOOLS, MCP_PARAMETERS
+
 TOOLS.update(EXTRA_TOOLS)
+TOOLS.update(MCP_TOOLS)
 TOOLS.update({
     "studio_context_list": {
         "approval": False, "category": "studio",
@@ -571,7 +574,7 @@ def tool_help_text(names=None):
         lines.append("- %s: %s" % (name, tool["help"]))
         lines.append("  %s" % json.dumps(tool["example"]))
     if names is None:
-        lines.append("More tools: files, git, execution, processes, web, planning, studio. "
+        lines.append("More tools: files, git, execution, processes, web, planning, studio, mcp (Roblox/Blender). "
                      "Call tool_discover with a category/query or exact names to inspect and enable relevant schemas.")
     return "\n".join(lines)
 
@@ -596,6 +599,7 @@ TOOL_PARAMETERS = {
         "required": ["text"]}}}, ["todos"]),
     "todo_read": ({}, []),
 }
+TOOL_PARAMETERS.update(MCP_PARAMETERS)
 for _name, _tool in EXTRA_TOOLS.items():
     TOOL_PARAMETERS[_name] = _tool["parameters"]
 TOOL_PARAMETERS.update({

@@ -110,6 +110,25 @@ class EditionPackageTests(unittest.TestCase):
         self.assertEqual(sum(item["id"] == "signal-reach-public" for item in registry["extensions"]), 1)
         self.assertTrue((home / "packages/signal-reach-admin/26.9.9/reach.js").exists())
 
+    def test_admin_reinstall_clears_only_its_own_uninstall_marker(self):
+        package, installer = self.package("admin")
+        home = self.base / "extensions"
+        home.mkdir()
+        peer = {"id": "minilmx-simplerag-mini-agent", "enabled": True, "custom": "keep"}
+        registry_path = home / "registry.json"
+        registry_path.write_text(json.dumps({
+            "schema_version": 1, "extensions": [peer], "extra": {"keep": True},
+            "uninstalled_extensions": ["signal-reach", "signal-reach-admin", "signal-reach-public"],
+        }), encoding="utf-8")
+        installer.install(package, home)
+        registry = json.loads(registry_path.read_bytes())
+        self.assertEqual(registry["uninstalled_extensions"], ["signal-reach", "signal-reach-public"])
+        self.assertEqual(registry["extensions"][0], peer)
+        self.assertEqual(registry["extra"], {"keep": True})
+        self.assertEqual([entry["id"] for entry in registry["extensions"]],
+                         ["minilmx-simplerag-mini-agent", "signal-reach-admin"])
+        self.assertEqual([path.name for path in (home / "packages").iterdir()], ["signal-reach-admin"])
+
     def test_installer_merges_a_peer_registry_rewrite_before_commit(self):
         package, installer = self.package()
         home = self.base / "extensions"

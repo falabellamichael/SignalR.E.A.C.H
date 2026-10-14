@@ -3049,6 +3049,13 @@ app.whenReady().then(() => {
       'connections.models': params => listProviderModels(params),
       'connections.test': params => pingConnection(params),
       'mcp.status': () => listMcpStatus(),
+      'mcp.tools': async () => ({ tools: await mcpManager.toolDescriptors() }),
+      'mcp.call': async ({ name, arguments: args }) => {
+        const tools = await mcpManager.toolDescriptors();
+        if (!tools.some(tool => tool.name === name)) return { ok: false, err: 'MCP tool is unavailable.' };
+        const result = await mcpManager.callTool(name, args);
+        return result.ok ? result : { ok: false, err: result.error };
+      },
       'mcp.test': async ({ id }) => {
         const result = await testMcpServer(id);
         return { ...result, status: mcpManager.statusList().find(row => row.id === id) || result.status };

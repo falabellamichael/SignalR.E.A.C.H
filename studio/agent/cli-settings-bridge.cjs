@@ -8,12 +8,12 @@ const os = require('node:os');
 const path = require('node:path');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { atomicWriteJson } = require('./atomic-write.cjs');
-const { sanitizeMcpServers } = require('./mcp.cjs');
+const { sanitizeMcpServers, isMcpToolName } = require('./mcp.cjs');
 const { validateBudgets } = require('./budgets.cjs');
 
 const MAX_BODY_BYTES = 256 * 1024;
 const METHODS = new Set(['settings.get', 'settings.save', 'budget.schema', 'connections.models',
-  'connections.test', 'mcp.status', 'mcp.test', 'conversations.list', 'conversations.get',
+  'connections.test', 'mcp.status', 'mcp.test', 'mcp.tools', 'mcp.call', 'conversations.list', 'conversations.get',
   'conversations.update', 'engines.report', 'theme.set']);
 const SCOPE_FIELDS = {
   connection: ['connections', 'activeConnection', 'reachCli', 'jevEnabled', 'jevAutoMode', 'jevApiKey', 'jevApiKeyAction'],
@@ -238,6 +238,11 @@ function validateParams(method, params, themeOptions) {
   if (method === 'settings.save') { keys(params, ['patch']); validatePatch(params.patch); }
   else if (['connections.models', 'connections.test'].includes(method)) { keys(params, ['connectionId']); if (own(params, 'connectionId')) id(params.connectionId); }
   else if (['mcp.test', 'conversations.get'].includes(method)) { keys(params, ['id']); id(params.id); }
+  else if (method === 'mcp.call') {
+    keys(params, ['name', 'arguments']);
+    if (typeof params.name !== 'string' || !isMcpToolName(params.name)) fail('Invalid MCP tool name.');
+    if (!object(params.arguments)) fail('MCP arguments must be an object.');
+  }
   else if (method === 'conversations.update') {
     keys(params, ['id', 'patch']); id(params.id); keys(params.patch, ['conversationRevision', 'name', 'model', 'settings']);
     if (own(params.patch, 'conversationRevision') && !/^[0-9a-f]{64}$/.test(params.patch.conversationRevision)) fail('Invalid conversation revision. Reload the conversation before saving.');

@@ -315,6 +315,9 @@ def _write_registry_entry(path, plugin_id, entry, home):
         registry = _parse_registry(original)
         registry["extensions"] = [value for value in registry["extensions"]
                                   if value.get("id") != plugin_id] + [entry]
+        if "uninstalled_extensions" in registry:
+            registry["uninstalled_extensions"] = [value for value in registry["uninstalled_extensions"]
+                                                 if value != plugin_id]
         descriptor, temporary = tempfile.mkstemp(prefix=".registry-edition-", dir=str(home))
         registry_temp = Path(temporary)
         try:

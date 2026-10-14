@@ -42,7 +42,7 @@ class StudioSettingsClient:
             data=json.dumps({"method": method, "params": params or {}}, allow_nan=False).encode("utf-8"),
             headers={"Content-Type": "application/json", "Authorization": "Bearer " + self._token})
         try:
-            with self._opener.open(request, timeout=35 if method == "mcp.test" else 10) as response:
+            with self._opener.open(request, timeout=300 if method in ("mcp.tools", "mcp.call") else 35 if method == "mcp.test" else 10) as response:
                 raw = response.read(1048577)
             if len(raw) > 1048576:
                 raise ValueError()

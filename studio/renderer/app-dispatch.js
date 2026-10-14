@@ -197,6 +197,21 @@ async function executeComposerCommand(parsed, snapshot = {}) {
     case 'help':
       commandOutput(helpText(remainder));
       return;
+    case 'agent-clear': {
+      if (!submittedAgent) throw new Error('Open a conversation first.');
+      if (snapshot.attachments?.length) throw new Error('Remove the current-chat attachments before clearing the conversation.');
+      const result = await reachApi.agents.clear(submittedAgent.id);
+      if (!result.ok) throw new Error(result.err || 'Could not clear conversation.');
+      runningAgentIds.delete(submittedAgent.id);
+      setBackgroundAgentGate(submittedAgent.id, '', { clear: true });
+      discardTeamConversation(submittedAgent.id);
+      if (currentAgent?.id === submittedAgent.id) {
+        await selectAgent(result.agent, { preserveEditors: true });
+      } else {
+        await loadAgentTree();
+      }
+      return;
+    }
     case 'say': {
       if (!submittedAgent) throw new Error('Open a conversation first.');
       if (!remainder.trim()) throw new Error(`Usage: ${parsed.command.usage}`);

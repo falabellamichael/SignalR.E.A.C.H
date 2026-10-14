@@ -24,6 +24,7 @@
 
   const COMMANDS = Object.freeze([
     { id: 'help', path: '/help', aliases: ['/commands', '/?'], usage: '/help [command]', description: 'Show the command guide or help for one command.', readOnly: true },
+    { id: 'agent-clear', path: '/clear', aliases: [], usage: '/clear', description: 'Clear the current conversation history and context, keeping its project and model.', noArgs: true },
     { id: 'say', path: '/say', aliases: [], usage: '/say literal message', description: 'Send literal text that would otherwise look like a slash command.' },
     { id: 'message', path: '/msg', aliases: ['/message', '/tell', '/dm'], usage: '/msg @target [--model ID] -- message', description: 'Message a team member, saved chat, or custom agent independently.', targetKinds: ['team', 'agent', 'persona', 'current'] },
     { id: 'reply', path: '/reply', aliases: [], usage: '/reply [@team] -- message', description: 'Reply to a team member; defaults to the selected team tab.', targetKinds: ['team'] },

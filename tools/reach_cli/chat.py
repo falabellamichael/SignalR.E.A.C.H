@@ -1979,6 +1979,15 @@ def _run_chat_loop(client, base, initial_prompt=None):
             store.warned = True
             tprint(c_yellow("  conversation could not be saved; check the config directory permissions or size."))
 
+    def reset_agent_state(target):
+        # A cleared transcript must not resume tools or plans from the old turn.
+        previous = agent_states.get(target)
+        if previous is not None:
+            cleanup_owned_processes(client.workpath, previous.tool_context())
+        agent_states[target] = AgentState()
+        thoughts[target] = ""
+        client.last_thought = ""
+
     client._session_checkpoint = checkpoint
     client.last_thought = ""
     context = getattr(client, "studio_context", None)
@@ -2027,7 +2036,10 @@ def _run_chat_loop(client, base, initial_prompt=None):
                 # Command implementations live in terminal.py. This loop only
                 # quits or sends the prompt /retry asks to resend.
                 result = handle_slash(line, client, history, session)
-                if line.split()[0].lower() in ("/clear", "/undo"):
+                command = line.split()[0].lower()
+                if command in ("/clear", "/undo") and result.success:
+                    if command == "/clear":
+                        reset_agent_state(None)
                     scope, turn_status = None, "idle"
                 checkpoint(activity=not result.quit)
                 if result.quit:
@@ -2046,7 +2058,10 @@ def _run_chat_loop(client, base, initial_prompt=None):
             addressed_session = scoped_sessions.setdefault(scope, ReplSession()) if scope is not None else session
             if scope is not None and line.startswith("/"):
                 result = handle_slash(line, client, history, addressed_session)
-                if line.split()[0].lower() in ("/clear", "/undo"):
+                command = line.split()[0].lower()
+                if command in ("/clear", "/undo") and result.success:
+                    if command == "/clear":
+                        reset_agent_state(scope)
                     turn_status = "idle"
                 checkpoint(activity=not result.quit)
                 if result.quit:
