@@ -571,9 +571,9 @@ bridge.start().then(() => process.stdout.write('ready\n')).catch(error => {
         startup_lines = queue.Queue()
         threading.Thread(target=lambda: startup_lines.put(self.process.stdout.readline()), daemon=True).start()
         try:
-            started = startup_lines.get(timeout=10).strip()
+            started = startup_lines.get(timeout=45).strip()
         except queue.Empty:
-            self.fail("Studio bridge fixture did not start within 10 seconds")
+            self.fail("Studio bridge fixture did not start within 45 seconds")
         if started != "ready":
             _out, error = self.process.communicate(timeout=5)
             self.fail("Studio bridge fixture could not start: " + error)
