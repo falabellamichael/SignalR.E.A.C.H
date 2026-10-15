@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.2](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.1...reach-studio-v26.10.2) (2026-10-15)
+
+
+### Features
+
+* connect CLI MCP tools and fix conversation clearing ([4d00fcf](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/4d00fcf053d5e7a7863978ec0c12a9786f2de6e1))
+
 ## [26.10.1](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.0...reach-studio-v26.10.1) (2026-10-12)
 
 
