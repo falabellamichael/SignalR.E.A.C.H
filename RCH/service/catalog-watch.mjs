@@ -1,6 +1,6 @@
 // Only model limits/availability reload. Auth, billing and private credentials
 // retain their startup values. Invalid edits leave the current catalog intact.
-import { lstatSync, readFileSync, watchFile, unwatchFile } from 'node:fs';
+import { lstatSync, readFileSync } from 'node:fs';
 
 export function watchModelCatalog(path, initial, apply, report = message => console.log(message)) {
   let previous = JSON.stringify(initial);
@@ -21,6 +21,9 @@ export function watchModelCatalog(path, initial, apply, report = message => cons
       rejected = true;
     }
   };
-  watchFile(path, { interval: 500, persistent: false }, refresh);
-  return () => unwatchFile(path, refresh);
+  // watchFile can sample an edit as its initial baseline and never report it.
+  // Compare with the startup catalog on every bounded poll, including that edit.
+  const timer = setInterval(refresh, 500);
+  timer.unref();
+  return () => clearInterval(timer);
 }
