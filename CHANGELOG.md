@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.4](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.3...v26.10.4) (2026-10-16)
+
+
+### Features
+
+* improve Studio chat, model routing, and subscriptions ([#175](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/175)) ([8e72bfd](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8e72bfd95c30fd5497188bc9893d6fe8ce5a71e1))
+
 ## [26.10.3](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.2...v26.10.3) (2026-10-15)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.3](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.2...reach-studio-v26.10.3) (2026-10-16)
+
+
+### Features
+
+* improve Studio chat, model routing, and subscriptions ([#175](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/175)) ([8e72bfd](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8e72bfd95c30fd5497188bc9893d6fe8ce5a71e1))
+
 ## [26.10.2](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.1...reach-studio-v26.10.2) (2026-10-15)
 
 
