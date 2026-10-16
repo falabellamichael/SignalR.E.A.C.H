@@ -8,6 +8,32 @@ const { isMcpToolName } = require('./mcp.cjs');
 
 const nonEmpty = value => (typeof value === 'string' ? value.trim() : '');
 
+// Presentation only: chat mode can inherit the action format from an earlier
+// turn. Unwrap an exact envelope without interpreting or executing its actions.
+// JSON examples surrounded by prose and ordinary JSON data stay unchanged.
+function chatDisplayText(content) {
+  const text = String(content || '');
+  const raw = text.trim();
+  const wrapped = /^```(?:json)?\s*\n([\s\S]*?)\n```$/i.exec(raw);
+  try {
+    const value = JSON.parse(wrapped ? wrapped[1] : raw);
+    if (value && !Array.isArray(value)
+      && ['actions', 'complete', 'question', 'blocked'].includes(value.status)
+      && typeof value.message === 'string'
+      && Array.isArray(value.actions) && Array.isArray(value.options)) return value.message;
+  } catch { /* normal prose or an incomplete response */ }
+  return text;
+}
+
+// Hold possible envelopes until the final response can be parsed. Plain prose
+// still streams normally; JSON/code examples are released unchanged at the end.
+function chatPreviewText(content) {
+  const raw = content.trimStart();
+  if (!raw || raw.startsWith('{') || /^`{1,2}$/.test(raw)
+    || /^```(?:j(?:s(?:o(?:n)?)?)?)?(?:\s|$)/i.test(raw)) return '';
+  return content;
+}
+
 // Only closed, top-level protocol fences are executable. Quoted examples,
 // enclosing code fences and partially streamed JSON are never recovered.
 function protocolBlocks(text) {
@@ -126,4 +152,4 @@ function extractToolBlocks(text) {
   return parsed.invalid ? [] : parsed.actions.map(a => ({ action: a.name, ...a.arguments }));
 }
 
-module.exports = { parseAgentResponse, extractToolBlocks };
+module.exports = { parseAgentResponse, extractToolBlocks, chatDisplayText, chatPreviewText };

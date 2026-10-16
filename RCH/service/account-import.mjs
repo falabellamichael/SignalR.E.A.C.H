@@ -12,10 +12,10 @@ export function readAccountSnapshot(path) {
     db.exec('BEGIN');
     // This legacy format has no request or payment ledger. Refuse an incomplete
     // export rather than losing quotas, holds, or payment replay protection.
-    for (const table of ['request_periods', 'request_reservations', 'payments', 'subscription_checkouts']) {
+    for (const table of ['request_periods', 'request_reservations', 'payments', 'subscription_checkouts', 'plus_payments', 'plus_reversals', 'plus_requests']) {
       const exists = db.prepare("SELECT 1 FROM sqlite_schema WHERE type='table' AND name=?").get(table);
       if (exists && db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get()) {
-        const ledger = table === 'payments' ? 'payment' : 'request';
+        const ledger = ['payments','plus_payments','plus_reversals'].includes(table) ? 'payment' : 'request';
         const records = ledger === 'payment' ? 'payment' : 'request billing';
         throw new Error(`The seven-table account snapshot cannot preserve ${records} records. Use a full database backup until ${ledger}-ledger snapshot migration is supported.`);
       }

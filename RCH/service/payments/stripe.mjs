@@ -120,8 +120,8 @@ export function formEncode(params, prefix = '', out = new URLSearchParams()) {
   return out;
 }
 
-export function checkoutParams({ kind, amountUsdMicros, accountId, basicPriceId, origin, nowMs }) {
-  const metadata = { [ACCOUNT_KEY]: accountId, [KIND_KEY]: kind === 'subscription' ? 'subscription_period' : 'top_up' };
+export function checkoutParams({ kind, amountUsdMicros, accountId, basicPriceId, plusPriceId, planId = 'basic', checkoutId, origin, nowMs }) {
+  const metadata = { [ACCOUNT_KEY]: accountId, [KIND_KEY]: kind === 'subscription' ? 'subscription_period' : 'top_up', ...(kind === 'subscription' && planId === 'plus' ? { reach_plan_id: 'plus', reach_checkout_id: checkoutId } : {}) };
   const common = {
     client_reference_id: accountId, metadata,
     success_url: `${origin}/billing/return?checkout=success`,
@@ -131,7 +131,7 @@ export function checkoutParams({ kind, amountUsdMicros, accountId, basicPriceId,
   };
   if (kind === 'subscription') {
     // The subscription carries the account so every renewal invoice is ours.
-    return { ...common, mode: 'subscription', line_items: [{ price: basicPriceId, quantity: 1 }],
+    return { ...common, mode: 'subscription', line_items: [{ price: planId === 'plus' ? plusPriceId : basicPriceId, quantity: 1 }],
       subscription_data: { metadata } };
   }
   return { ...common, mode: 'payment', line_items: [{ quantity: 1, price_data: { currency: 'usd',
@@ -171,6 +171,11 @@ export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 1
   }
   const list = data => Array.isArray(data?.data) ? data.data : [];
   return {
+    async readPrice(priceId) { return call('GET', `/v1/prices/${encodeURIComponent(priceId)}`); },
+    async readCheckoutSession(sessionId) {
+      if (!/^cs_[A-Za-z0-9_]{3,128}$/.test(sessionId || '')) fail(409,'payment_conflict','Invalid recorded checkout.');
+      return call('GET', `/v1/checkout/sessions/${encodeURIComponent(sessionId)}`);
+    },
     async canReplaceCheckoutSession(sessionId, nowMs = Date.now()) {
       if (!/^cs_[A-Za-z0-9_]{3,256}$/.test(sessionId || '')) fail(502, 'payment_provider_error', 'The payment provider returned an invalid checkout.');
       const data = await call('GET', `/v1/checkout/sessions/${sessionId}`, { expand: ['subscription'] });
@@ -195,16 +200,19 @@ export function createStripeClient({ secretKey, fetchImpl = fetch, timeoutMs = 1
       const invoice = await call('GET', `/v1/invoices/${encodeURIComponent(paid.invoice)}`);
       const metadata = invoiceMetadata(invoice);
       return metadata[KIND_KEY] === 'subscription_period' && typeof metadata[ACCOUNT_KEY] === 'string'
-        ? { originalObjectId: paid.invoice, originalKind: 'subscription_period' } : null;
+        ? { originalObjectId: paid.invoice, originalKind: 'subscription_period', ...(metadata.reach_plan_id==='plus'?{planId:'plus'}:{}) } : null;
     },
     // Stripe's own page for cancelling, changing the card and downloading
     // invoices. The customer is the one on this account's subscription.
-    async createPortalSession({ accountId, returnUrl }) {
+    async createPortalSession({ accountId, returnUrl, customerId }) {
       // Account IDs are generated hex, but the query language has quotes; never interpolate anything else.
       if (!/^[A-Za-z0-9_-]{8,128}$/.test(accountId)) fail(400, 'invalid_account', 'Invalid account.');
-      const query = `metadata["${ACCOUNT_KEY}"]:"${accountId}"`;
-      const [subscription] = list(await call('GET', '/v1/subscriptions/search', { query, limit: 1 }));
-      const customer = typeof subscription?.customer === 'string' ? subscription.customer : subscription?.customer?.id;
+      let customer=customerId;
+      if (customerId === undefined) {
+        const query = `metadata["${ACCOUNT_KEY}"]:"${accountId}"`;
+        const [subscription] = list(await call('GET', '/v1/subscriptions/search', { query, limit: 1 }));
+        customer = typeof subscription?.customer === 'string' ? subscription.customer : subscription?.customer?.id;
+      }
       if (typeof customer !== 'string') fail(404, 'no_subscription', 'This account has no card subscription to manage.');
       const data = await call('POST', '/v1/billing_portal/sessions', { customer, return_url: returnUrl });
       return { url: hostedUrl(data.url, PORTAL_ORIGIN) };

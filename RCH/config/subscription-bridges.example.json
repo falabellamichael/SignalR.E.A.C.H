@@ -202,18 +202,6 @@
       "maxInputBytes": 32000
     },
     {
-      "id": "space-bunny-alpha",
-      "name": "space-bunny-alpha",
-      "provider": "Code GPT",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "tray",
-        "model": "codegpt-eco-space-bunny-alpha"
-      },
-      "maxInputBytes": 32000
-    },
-    {
       "id": "rch-gpt-4o-mini",
       "name": "GPT-4o mini",
       "provider": "Code GPT",

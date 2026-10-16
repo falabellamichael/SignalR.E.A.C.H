@@ -24,6 +24,7 @@
   const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? BigInt(value) : 0n;
   const requestModel = model => model?.access === 'requests' || model?.pricing?.unit === 'request';
   function modelPrice(model, basicActive = false) {
+    if(requestModel(model)&&model.pricing?.unlimited===true)return 'Included with Plus · Unlimited subscription usage';
     const pricing = model?.pricing;
     if (requestModel(model)) return formatUsd(pricing?.usdMicrosPerRequest ?? 10000) + ' per completed request'
       + (basicActive ? ' after ' + format(pricing?.includedRequests ?? 1500) + ' included Basic requests' : '');
@@ -43,10 +44,11 @@
     const requests = account?.requestAllowance;
     const requestMode = !!requests || (allowed.length ? allowed : state.config?.redemptionModels || []).some(requestModel);
     const basicActive = connected && requests?.basicActive === true;
+    const plusActive = connected && requests?.plusActive === true && requests?.unlimited === true;
     const remainingRequests = basicActive ? count(requests.remaining) : 0n;
-    const overageMicros = count(requests?.overageUsdMicrosPerRequest) || 10000n;
+    const overageMicros = account?.plan?.id==='plus' ? 0n : count(requests?.overageUsdMicrosPerRequest) || 10000n;
     const usable = connected && state.secureStorageAvailable !== false && allowed.some(entry => requestModel(entry)
-      ? remainingRequests > 0n || availableMicros >= overageMicros
+      ? plusActive || remainingRequests > 0n || account?.plan?.id!=='plus'&&availableMicros >= overageMicros
       : Number(account?.allowance?.totalRemaining) > 0 || availableMicros > 0n);
     const holdings = connected ? account?.rchBalance : null;
     const balanceKnown = holdings?.status === 'available' && holdings.decimals === 18;
@@ -67,7 +69,7 @@
       canRedeem: connected && state.config?.redemptionEnabled === true,
       redemptionMessage: !connected ? 'Connect your wallet to check whether redemption is enabled.'
         : state.config?.redemptionEnabled !== true ? 'RCH redemption is not enabled on this service.' : '',
-      plan: requestMode ? connected ? basicActive ? 'Basic' : 'Wallet pay as you go' : 'No account connected'
+      plan: requestMode ? connected ? plusActive ? account?.plan?.name || 'REACH Subscription Plus' : account?.plan?.id==='plus' ? 'Plus subscription expired' : basicActive ? 'Basic' : 'Wallet pay as you go' : 'No account connected'
         : account?.plan?.status === 'active' ? account.plan.name
         : connected && (Number(account?.allowance?.prepaidRemaining) > 0 || availableMicros > 0n) ? 'RCH prepaid access'
           : connected ? 'No active subscription' : 'No account connected',
@@ -77,13 +79,13 @@
           : holdings?.status === 'unavailable' ? 'RCH balance is temporarily unavailable. Refresh to try again.'
             : 'RCH balance is not configured on this service.',
       requestMode,
-      requestAllowance: requestMode ? { basicActive, includedLimit: basicActive ? format(requests?.includedLimit) : '0',
-        remaining: connected ? format(remainingRequests) : '—', completed: connected ? format(requests?.completed ?? 0) : '—',
-        reserved: connected ? format(requests?.reserved ?? 0) : '—', periodEndsAt: basicActive ? requests?.periodEndsAt : null,
-        overagePrice: formatUsd(overageMicros) } : null,
-      usageSummary: requestMode ? (basicActive ? format(remainingRequests) + ' included completed requests remaining · '
+      requestAllowance: requestMode ? { basicActive, plusActive, plusExpired:connected&&account?.plan?.id==='plus'&&!plusActive, unlimited:plusActive, includedLimit: plusActive?'Unlimited':basicActive ? format(requests?.includedLimit) : '0',
+        remaining: plusActive?'Unlimited':connected ? format(remainingRequests) : '—', completed: connected ? format(requests?.completed ?? 0) : '—',
+        reserved: connected ? format(requests?.reserved ?? 0) : '—', periodEndsAt: basicActive||plusActive ? requests?.periodEndsAt : null,
+        overagePrice: plusActive?'No overage':formatUsd(overageMicros) } : null,
+      usageSummary: plusActive ? 'Unlimited subscription usage · No monthly request quota or usage overage' : connected&&account?.plan?.id==='plus' ? 'Plus access expired · Renew to use subscription models' : requestMode ? (basicActive ? format(remainingRequests) + ' included completed requests remaining · '
         : '') + formatUsd(overageMicros) + (basicActive ? ' overage' : '') + ' per completed request' : '',
-      counts: requestMode ? { includedRemaining: connected ? format(remainingRequests) : '—',
+      counts: connected&&account?.plan?.id==='plus' ? {includedRemaining:plusActive?'Unlimited':'Expired',prepaidRemaining:format(requests?.completed??0),reserved:format(requests?.reserved??0),totalRemaining:'No overage'} : requestMode ? { includedRemaining: connected ? format(remainingRequests) : '-',
         prepaidRemaining: connected ? format(requests?.completed ?? 0) : '—', reserved: connected ? format(requests?.reserved ?? 0) : '—',
         totalRemaining: formatUsd(overageMicros) + ' / request' }
         : Object.fromEntries(['includedRemaining', 'prepaidRemaining', 'reserved', 'totalRemaining'].map(key => [key, account ? format(account.allowance?.[key]) : '—'])),

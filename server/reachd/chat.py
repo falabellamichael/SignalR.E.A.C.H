@@ -1,5 +1,7 @@
 """The chat request pipeline: transform, upstream relay, finalize."""
 
+from reachd.model_routes import dispatch, private_route
+
 import json
 import time
 import urllib.error
@@ -357,7 +359,7 @@ def chat_execute(h):
     h._reach_log("chat start model=%s upstream=%s stream=%s ip=%s"
                  % (requested, upstream_model,
                     "yes" if stream else "no", ip))
-    if not use_bridge and not core.STATE.key:
+    if not use_bridge and not private_route(upstream_model) and not core.STATE.key:
         h._json(503, {"error": {"message": "SignalR.E.A.C.H is not "
                                                       "configured yet (no "
                                                       "OmniRoute key).",
@@ -368,7 +370,7 @@ def chat_execute(h):
     # different process on a different port, and share no connection with the
     # free upstream. Gating both on one global flag took every economy model
     # down whenever the free tier hiccuped.
-    circuit = "bridge" if use_bridge else "omniroute"
+    circuit = (private_route(upstream_model) or {}).get("circuit", "bridge" if use_bridge else "omniroute")
     if core.STATE.circuit_open(circuit):
         h._json(503, {"error": {"message":
                                 "The local tray bridge is in a failure cool-down — retry shortly."
@@ -415,15 +417,7 @@ def chat_execute(h):
                                           "code": "overloaded"}}, rl_headers)
         return None
     try:
-        url = (core.STATE.bridge_url if use_bridge
-               else core.STATE.omniroute_url).rstrip("/") + "/chat/completions"
-        # The bridge names models itself ("codegpt-eco-<model>"); OmniRoute gets
-        # the full provider-prefixed id.
-        payload["model"] = upstream_model[len("bridge/"):] if use_bridge \
-            else upstream_model
-        auth_headers = {"Content-Type": "application/json"}
-        if not use_bridge:
-            auth_headers["Authorization"] = "Bearer " + core.STATE.key
+        url, payload, auth_headers, circuit = dispatch(upstream_model, payload, core.STATE)
         encoded = json.dumps(payload).encode("utf-8")
         if core.STATE.cfg.get("data", {}).get("log_bodies"):
             request_body = body[:2048].decode("utf-8", "replace")
@@ -468,17 +462,7 @@ def chat_execute(h):
                 fb_upstream = models[fallback_alias]["upstream"]
                 try:
                     fb_payload = dict(payload)
-                    # The fallback alias may itself be a bridge alias, so it
-                    # routes by its own prefix rather than reusing `url`.
-                    fb_bridge = fb_upstream.startswith("bridge/")
-                    fb_payload["model"] = fb_upstream[len("bridge/"):] \
-                        if fb_bridge else fb_upstream
-                    fb_headers = {"Content-Type": "application/json"}
-                    if not fb_bridge:
-                        fb_headers["Authorization"] = "Bearer " + core.STATE.key
-                    fb_url = (core.STATE.bridge_url if fb_bridge
-                              else core.STATE.omniroute_url).rstrip("/") \
-                        + "/chat/completions"
+                    fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE)
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)
@@ -487,6 +471,7 @@ def chat_execute(h):
                         timeout=int(core.STATE.cfg.get("upstream_timeout_s", 600)))
                     upstream_model = fb_upstream
                     spec = models[fallback_alias]
+                    circuit = fb_circuit
                     fallback_used = True
                 except Exception as exc:
                     last_error = exc
@@ -683,23 +668,10 @@ def chat_finalize(h, upstream, ctx):
             if fallback_alias and fallback_alias in models \
                     and models[fallback_alias].get("enabled"):
                 fb_upstream = models[fallback_alias]["upstream"]
-                fb_circuit = "bridge" if fb_upstream.startswith("bridge/") else "omniroute"
+                fb_circuit = (private_route(fb_upstream) or {}).get("circuit", "bridge" if fb_upstream.startswith("bridge/") else "omniroute")
                 try:
                     fb_payload = dict(ctx.get("payload") or {})
-                    # The fallback alias may itself be a bridge alias, so it
-                    # routes by its own prefix rather than reusing the original
-                    # upstream's URL. Getting this wrong sent a bridge wire id
-                    # to OmniRoute, and leaked the OmniRoute bearer token to the
-                    # local tray bridge. Mirrors chat_execute's fallback path.
-                    fb_bridge = fb_upstream.startswith("bridge/")
-                    fb_payload["model"] = fb_upstream[len("bridge/"):] \
-                        if fb_bridge else fb_upstream
-                    fb_headers = {"Content-Type": "application/json"}
-                    if not fb_bridge:
-                        fb_headers["Authorization"] = "Bearer " + core.STATE.key
-                    fb_url = (core.STATE.bridge_url if fb_bridge
-                              else core.STATE.omniroute_url).rstrip("/") \
-                        + "/chat/completions"
+                    fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE)
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)

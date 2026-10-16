@@ -8,6 +8,9 @@ const { parseAgentResponse } = require('../agent/agent-response.cjs');
 const { AgentLoop } = require('../agent/agent-loop.cjs');
 const { MemoryStore } = require('../agent/memory-store.cjs');
 const { defaults } = require('../agent/budgets.cjs');
+const { TOOLS } = require('../agent/tool-registry.cjs');
+const { validateToolArgs } = require('../agent/tool-params.cjs');
+const { createCapabilityStore } = require('../agent/provider-capabilities.cjs');
 
 const toolName = 'roblox-studio__start_stop_play';
 const toolArguments = { datamodel_type: 'Edit', action: 'start' };
@@ -54,6 +57,41 @@ test('MCP prompt scopes the legacy discriminator restriction to built-ins', () =
   assert.match(prompt, /For built-in tools, do not put action inside arguments/);
   assert.match(prompt, /MCP tools[^.]*including a parameter named action/);
   assert.match(prompt, /MCP tools retain all fields required by their input schema/);
+});
+
+test('large external tool catalogs fit small routes and retain full schema discovery', async () => {
+  const tools = Array.from({ length: 39 }, (_, index) => ({ ...descriptor,
+    name: 'external-server__' + ('long_tool_name_' + index).padEnd(65, 'x'),
+    description: 'Use this tool to inspect the scene. ' + 'Extended usage instructions. '.repeat(40) }));
+  const store = new MemoryStore();
+  const agent = store.get('catalog-fixture');
+  agent.runState = { structuredActions: true };
+  const loop = new AgentLoop({ agentId: agent.id, store, model: 'small-model', projectDir: 'D:/fixture' });
+  loop.mcpTools = tools;
+  const messages = loop._requestBody(loop._messagesForRequest()).messages;
+  assert.ok(Buffer.byteLength(JSON.stringify(messages)) < 32000, 'pinned prompt must fit the subscription gateway ceiling');
+  for (const tool of tools) assert.ok(messages[0].content.includes(tool.name));
+  assert.match(messages[0].content, /tool_help with topic set to its full tool name/);
+  const args = validateToolArgs(TOOLS.tool_help.params, { topic: tools[0].name });
+  assert.equal(args.ok, true, 'full MCP names must survive tool argument validation');
+  const result = await TOOLS.tool_help.execute(args.args, { mcpTools: tools });
+  assert.deepEqual(result.tool, tools[0], 'description and schema remain available without truncation');
+});
+
+test('advertised schema support constrains action replies without changing plain chat or summaries', () => {
+  let settings = { connections: [{ id: 'gpu', endpoint: 'http://127.0.0.1/v1' }] };
+  const capabilities = createCapabilityStore({ load: () => settings, save: value => { settings = value; } });
+  capabilities.recordCatalog('gpu', settings.connections[0].endpoint, { data: [{ id: 'fixture', capabilities: { jsonSchema: true } }] });
+  const store = new MemoryStore(), agent = store.get('schema-fixture'); agent.runState = { structuredActions: true };
+  const loop = new AgentLoop({ agentId: agent.id, store, connectionId: 'gpu', capabilityStore: capabilities,
+    endpoint: settings.connections[0].endpoint, model: 'fixture' });
+  assert.equal(loop._requestBody(loop._messagesForRequest()).response_format.type, 'json_schema');
+  assert.equal(loop._requestBody(loop._messagesForRequest(), { purpose: 'summary' }).response_format, undefined);
+  agent.settings.features = { agent: false };
+  assert.equal(loop._requestBody(loop._messagesForRequest()).response_format, undefined);
+  agent.settings.features.agent = true;
+  capabilities.recordCatalog('gpu', settings.connections[0].endpoint, { data: [{ id: 'fixture' }] });
+  assert.equal(loop._requestBody(loop._messagesForRequest()).response_format, undefined, 'catalog refresh clears stale support');
 });
 
 test('built-in structured calls still reject the legacy action discriminator', () => {

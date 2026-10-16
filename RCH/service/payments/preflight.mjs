@@ -1,6 +1,7 @@
 // Read-only provider configuration checks. Only GET requests and a PayPal
 // OAuth token request are made; no charge, customer, order or email is created.
 // Permission checks remain unverified and never count as readiness.
+import { assertPlusPrice } from './plus.mjs';
 import { STRIPE_API, STRIPE_VERSION } from './stripe.mjs';
 import { PAYPAL_API } from './paypal.mjs';
 
@@ -34,9 +35,10 @@ const refused = (check, name, status) => status === 401
     ? skipped(check, `This key could not read this setting (HTTP 403). Verify it in the ${name} dashboard, or use authorized read access.`)
     : problem(check, `${name} could not verify this setting (HTTP ${status}). Resolve the request failure or try again after the provider recovers.`);
 
-export async function checkStripe(stripe, { origin, fetchImpl = fetch, timeoutMs = 15000 }) {
+export async function checkStripe(stripe, { origin, plusPolicy, fetchImpl = fetch, timeoutMs = 15000 }) {
   const headers = { Authorization: `Bearer ${stripe.secretKey}`, 'Stripe-Version': STRIPE_VERSION };
   const results = [];
+  if(stripe.basicPriceId){
   const price = await get(fetchImpl, `${STRIPE_API}/v1/prices/${encodeURIComponent(stripe.basicPriceId)}`, headers, timeoutMs);
   if (price.status === 0) return [unreachable('Stripe key and Basic price', 'Stripe')];
   if (price.status === 401) return [refused('Stripe key and Basic price', 'Stripe', 401)];
@@ -55,6 +57,12 @@ export async function checkStripe(stripe, { origin, fetchImpl = fetch, timeoutMs
     if (p.recurring?.trial_period_days) issues.push('it has a free trial, which REACH does not grant');
     results.push(issues.length ? problem('Basic price', `Price ${stripe.basicPriceId} cannot be used: ${issues.join('; ')}.`)
       : ok('Basic price', 'US$15.00 a month, active.'));
+  }
+  }
+  if(stripe.plusPriceId){
+    const response=await get(fetchImpl,`${STRIPE_API}/v1/prices/${encodeURIComponent(stripe.plusPriceId)}`,headers,timeoutMs);
+    if(response.status!==200)results.push(response.status===0?unreachable('Plus price','Stripe'):refused('Plus price','Stripe',response.status));
+    else { try { assertPlusPrice(response.data,{priceId:stripe.plusPriceId,policy:plusPolicy,livemode:stripe.mode==='live'}); results.push(ok('Plus price',`${plusPolicy.currency.toUpperCase()} ${(plusPolicy.amountMinor/100).toFixed(2)} monthly, inclusive tax behavior; unlimited subscription usage.`)); } catch { results.push(problem('Plus price','The price does not match the configured Plus currency, amount, monthly interval and inclusive tax behavior.')); } }
   }
   const url = `${origin}/v1/billing/stripe/webhook`;
   const hooks = await get(fetchImpl, `${STRIPE_API}/v1/webhook_endpoints?limit=100`, headers, timeoutMs);
@@ -155,7 +163,7 @@ export async function checkResend(resend, { fetchImpl = fetch, timeoutMs = 15000
 
 export async function checkBilling(config, options = {}) {
   const sections = [];
-  if (config.payments?.stripe) sections.push({ provider: `Stripe (${config.payments.stripe.mode})`, results: await checkStripe(config.payments.stripe, { origin: config.origin, ...options }) });
+  if (config.payments?.stripe) sections.push({ provider: `Stripe (${config.payments.stripe.mode})`, results: await checkStripe(config.payments.stripe, { origin: config.origin, plusPolicy:config.subscription?.plus, ...options }) });
   if (config.payments?.paypal) sections.push({ provider: `PayPal (${config.payments.paypal.mode})`, results: await checkPayPal(config.payments.paypal, { origin: config.origin, ...options }) });
   if (config.email?.resend) sections.push({ provider: 'Resend (sign-in email)', results: await checkResend(config.email.resend, options) });
   if (!config.subscription) sections.push({ provider: 'Basic plan', results: [problem('Subscription', 'No Basic subscription is configured in accounts.json.')] });

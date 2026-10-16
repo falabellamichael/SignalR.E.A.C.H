@@ -145,11 +145,11 @@ test('the budgets cover every surface the PRD names, not just Studio', () => {
 test('the biggest source files are the ones being watched', () => {
   /* A budget list that quietly omits the largest module would be decoration.
    * Walk the tree and assert the top few by size are all budgeted. */
-  const skip = new Set(['node_modules', '.git', 'dist', 'out']);
+  const skip = new Set(['node_modules', 'dist', 'out', 'build', 'browser-profile']);
   const found = [];
   (function walk(dir) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (skip.has(entry.name)) continue;
+      if (entry.name.startsWith('.') || skip.has(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) { walk(full); continue; }
       if (!/\.(c|m)?js$|\.py$/.test(entry.name)) continue;

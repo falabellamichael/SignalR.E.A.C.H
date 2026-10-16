@@ -1,3 +1,6 @@
+import { validatePlusPolicy } from './payments/plus.mjs';
+import { gpuBridge } from './gpu-bridge.mjs';
+import { codegptDirect } from './codegpt-direct.mjs';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { isAddress, Wallet } from 'ethers';
@@ -28,7 +31,8 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
   } else if (typeof raw.database !== 'string' || !raw.database || raw.database === ':memory:') throw new Error('Configure a durable account database path.');
   if (!Array.isArray(raw.models)) throw new Error('Configure the hosted model catalog.');
   if (raw.subscription !== undefined) {
-    keys(raw.subscription, ['basic','overageUsdMicrosPerRequest','proEnabled'], 'subscription');
+    validatePlusPolicy(raw.subscription.plus);
+    keys(raw.subscription, ['basic','overageUsdMicrosPerRequest','proEnabled','plus'], 'subscription');
     keys(raw.subscription.basic, ['id','includedRequests','priceUsdMicros'], 'Basic subscription');
     if (raw.subscription.basic.id !== 'basic-wallet'
       || raw.subscription.basic.includedRequests !== 1500
@@ -45,7 +49,7 @@ export function validateConfig(raw, directory = process.cwd(), env = process.env
       const valid = model.bridge.kind === 'tray'
         ? /^(?:copilot-chat|chatgpt-chat|gemini-chat|codegpt-eco-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100})$/.test(model.bridge.model)
         : model.bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(model.bridge.model);
-      if (!valid || model.bridge.model === 'codegpt-eco-gpt-4o-mini') throw new Error('Use a specific approved bridge model; the legacy default-agent mini is not an exact selector.');
+      if ((!valid && !gpuBridge(model.bridge) && !codegptDirect(model.bridge)) || model.bridge.model === 'codegpt-eco-gpt-4o-mini') throw new Error('Use a specific approved bridge model; the legacy default-agent mini is not an exact selector.');
     } else if (model.bridge !== undefined) throw new Error('A bridge requires request access mode.');
     if (model.pricing !== undefined) {
       keys(model.pricing,['inputUsdMicrosPerMillion','outputUsdMicrosPerMillion','cachedInputUsdMicrosPerMillion'],'model pricing');
@@ -112,11 +116,11 @@ function paymentsConfig(raw, origin, env) {
   if (!raw.payments.stripe && !raw.payments.paypal) throw new Error('Configure Stripe, PayPal, or both under payments.');
   if (!raw.subscription) throw new Error('Card and PayPal checkout sell the Basic subscription; configure it first.');
   const otherSecrets = [raw.upstreamKeyEnv, raw.supabase?.secretKeyEnv, raw.redemption?.quoteSignerKeyEnv, raw.email?.resend?.apiKeyEnv];
-  return { ...(raw.payments.stripe ? { stripe: stripeConfig(raw.payments.stripe, origin, env, [...otherSecrets, raw.payments.paypal?.clientIdEnv, raw.payments.paypal?.clientSecretEnv]) } : {}),
+  return { ...(raw.payments.stripe ? { stripe: stripeConfig(raw.payments.stripe, origin, env, [...otherSecrets, raw.payments.paypal?.clientIdEnv, raw.payments.paypal?.clientSecretEnv], raw.subscription?.plus) } : {}),
     ...(raw.payments.paypal ? { paypal: paypalConfig(raw.payments.paypal, origin, env, [...otherSecrets, raw.payments.stripe?.secretKeyEnv, raw.payments.stripe?.webhookSecretEnv]) } : {}) };
 }
-function stripeConfig(stripe, origin, env, otherSecrets) {
-  keys(stripe, ['mode','secretKeyEnv','webhookSecretEnv','basicPriceId'], 'Stripe');
+function stripeConfig(stripe, origin, env, otherSecrets, plusPolicy) {
+  keys(stripe, ['mode','secretKeyEnv','webhookSecretEnv','basicPriceId','plusPriceId'], 'Stripe');
   if (!['test','live'].includes(stripe.mode)) throw new Error('Stripe mode must be "test" or "live".');
   const names = [stripe.secretKeyEnv, stripe.webhookSecretEnv];
   if (!names.every(n => typeof n === 'string' && /^[A-Z][A-Z0-9_]{2,80}$/.test(n)) || new Set(names).size !== 2
@@ -128,9 +132,11 @@ function stripeConfig(stripe, origin, env, otherSecrets) {
     throw new Error(`Set ${stripe.secretKeyEnv} to a Stripe ${stripe.mode}-mode secret or restricted key.`);
   }
   if (typeof webhookSecret !== 'string' || !/^whsec_[A-Za-z0-9+/=]{16,256}$/.test(webhookSecret)) throw new Error(`Set ${stripe.webhookSecretEnv} to the Stripe webhook signing secret.`);
-  if (typeof stripe.basicPriceId !== 'string' || !/^price_[A-Za-z0-9]{8,64}$/.test(stripe.basicPriceId)) throw new Error('Configure the Stripe price ID for the Basic plan.');
+  if (stripe.basicPriceId !== undefined && (typeof stripe.basicPriceId !== 'string' || !/^price_[A-Za-z0-9]{8,64}$/.test(stripe.basicPriceId))) throw new Error('Configure the Stripe price ID for the Basic plan.');
+  if (stripe.plusPriceId !== undefined && (!plusPolicy || !/^price_[A-Za-z0-9]{8,64}$/.test(stripe.plusPriceId) || stripe.plusPriceId === stripe.basicPriceId)) throw new Error('Configure a distinct Stripe Plus price ID and Plus policy.');
+  if (!stripe.basicPriceId && !stripe.plusPriceId) throw new Error('Configure at least one Stripe subscription price ID.');
   if (stripe.mode === 'live' && origin.protocol !== 'https:') throw new Error('Live Stripe payments need a public HTTPS service origin.');
-  return { mode: stripe.mode, basicPriceId: stripe.basicPriceId, secretKey, webhookSecret };
+  return { mode: stripe.mode, ...(stripe.basicPriceId ? { basicPriceId: stripe.basicPriceId } : {}), ...(stripe.plusPriceId ? { plusPriceId: stripe.plusPriceId } : {}), secretKey, webhookSecret };
 }
 // PayPal REST app credentials stay in the environment. The webhook ID and the
 // Basic plan ID are not secret and come from the PayPal developer dashboard.

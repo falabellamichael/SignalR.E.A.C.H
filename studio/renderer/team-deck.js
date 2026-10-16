@@ -367,28 +367,45 @@
     function restart(next) {
       preferredIndex = Math.max(0, [...entries.keys()].indexOf(selected));
       recycledTabs = [...entries.values()].map(entry => entry.tab);
-      const history = document.createElement('details');
-      history.className = 'team-run-history';
-      const heading = document.createElement('summary');
-      const previousTask = banner.title;
-      heading.textContent = `Earlier work · Run ${runNumber++} · ${previousTask.length > 160 ? previousTask.slice(0, 160) + '…' : previousTask}`;
-      heading.title = previousTask;
-      history.append(heading);
-      for (const [card, entry] of entries) {
-        entry.observer.disconnect();
-        clearTimeout(card._renderTimer);
-        card._teamDeck = null;
-        card.removeAttribute('id'); card.removeAttribute('role'); card.removeAttribute('aria-labelledby');
-        card.hidden = false;
-        const member = document.createElement('details');
-        const label = document.createElement('summary');
-        label.textContent = `${entry.name} · ${entry.model} · ${entry.action}`;
-        member.append(label, card); history.append(member);
-      }
       // Reviews keep their original live nodes and decision handlers, outside
       // collapsed history; follow-ups must never discard a pending decision.
-      for (const note of element.querySelectorAll(':scope > .chat-msg')) history.append(note);
-      if (entries.size) element.append(history);
+      // One collapsed dropdown holds every previous run. New archives go directly
+      // under the summary so the latest earlier message is the first thing inside.
+      if (entries.size) {
+        let history = element.querySelector(':scope > .team-run-history');
+        if (!history) {
+          history = document.createElement('details');
+          history.className = 'team-run-history';
+          const heading = document.createElement('summary');
+          heading.textContent = 'Earlier work';
+          history.append(heading);
+        }
+        const previousTask = banner.title || '';
+        const archive = document.createElement('details');
+        archive.className = 'team-run-archive';
+        const archiveLabel = document.createElement('summary');
+        const shortTask = previousTask.length > 160 ? previousTask.slice(0, 160) + '…' : previousTask;
+        archiveLabel.textContent = `Run ${runNumber++}${shortTask ? ` · ${shortTask}` : ''}`;
+        archiveLabel.title = previousTask;
+        archive.append(archiveLabel);
+        const notes = [...element.querySelectorAll(':scope > .chat-msg')].reverse();
+        for (const note of notes) archive.append(note);
+        for (const [card, entry] of entries) {
+          entry.observer.disconnect();
+          clearTimeout(card._renderTimer);
+          card._teamDeck = null;
+          card.removeAttribute('id'); card.removeAttribute('role'); card.removeAttribute('aria-labelledby');
+          card.hidden = false;
+          const member = document.createElement('details');
+          const label = document.createElement('summary');
+          label.textContent = `${entry.name} · ${entry.model} · ${entry.action}`;
+          member.append(label, card); archive.append(member);
+        }
+        history.querySelector(':scope > summary').after(archive);
+        const count = history.querySelectorAll(':scope > .team-run-archive').length;
+        history.querySelector(':scope > summary').textContent = `Earlier work · ${count} run${count === 1 ? '' : 's'}`;
+        element.append(history);
+      }
       entries.clear(); tabs.replaceChildren(); selected = null; ended = false;
       delete element.dataset.finished;
       banner.title = next.task;

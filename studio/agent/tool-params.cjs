@@ -24,7 +24,7 @@ const PARAMS = {
   memory: [s('op', false, 20, 'read'), s('entry', false, 10000)],
   todo_write: [a('todos', true, 200)],
   todo_read: [],
-  tool_help: [s('topic', false, 40, 'core')],
+  tool_help: [s('topic', false, 160, 'core')],
   browser: [s('op', false, 40, 'read'), s('url', false, 4096), s('tabId', false, 120), s('direction', false, 20)],
   'browser.click': [s('tabId', false, 120), s('ref', true, 500)],
   'browser.type': [s('tabId', false, 120), s('ref', true, 500), s('text', true, 100000)],

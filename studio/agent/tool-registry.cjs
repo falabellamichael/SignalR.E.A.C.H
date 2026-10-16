@@ -410,9 +410,11 @@ const CORE_TOOLS = {
   },
   tool_help: {
     class: 'read', tier: 'core', approval: false, budget: 40000,
-    help: 'shows extended documentation for specific tool suites.',
+    help: 'shows documentation for a tool suite, or the full description and input schema for an MCP tool name.',
     example: { action: 'tool_help', topic: 'reach' },
     async execute(args, ctx) {
+      const mcpTool = (ctx.mcpTools || []).find(tool => tool.name === args.topic);
+      if (mcpTool) return { ok: true, tool: mcpTool };
       const disabled = require('./tool-policy.cjs').disabledTools(ctx.agentStore?.get(ctx.agentId)?.settings || {}, TOOLS);
       return { ok: true, help: toolHelp(args.topic || 'core', disabled) };
     },

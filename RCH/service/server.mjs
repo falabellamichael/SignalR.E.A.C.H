@@ -5,12 +5,14 @@ import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, Fetc
 import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { createModelGateway } from './model-gateway.mjs';
+import { requestCapabilities } from './gpu-bridge.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
 import { randomBytes } from 'node:crypto';
 import { createResendMailer, emailCode, emailCodeHash, validEmailCode, normalizeEmail } from './email.mjs';
 import { createPayPalClient, validPayPalTopUp } from './payments/paypal.mjs';
+import { assertPlusPrice, recordPlusInvoice } from './payments/plus.mjs';
 import { verifyStripeSignature, paymentFromStripeEvent, reversalFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
 
 export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
@@ -113,8 +115,8 @@ export function createAccountService({config,store,provider,redemptionProvider,b
     if(++previous.count>180)fail(429,'rate_limit','Too many requests. Please wait one minute.');
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
-  const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:{outputTokenLimit:false},pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false}}:{}),cardPayments:!!stripe,paypalPayments:!!paypal,...(paypal?{paypalOrigin:paypal.pageOrigin}:{}),emailLogin:!!mailer,loginMethod:'ethereum-browser-wallet'});
+  const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:requestCapabilities(m),pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,modelsRevision:digest(JSON.stringify(config.models)),chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false,...(config.subscription.plus?{plus:{...config.subscription.plus}}:{})}}:{}),cardPayments:!!stripe,cardPlans:{basic:!!stripe?.basicPriceId,plus:!!stripe?.plusPriceId},paypalPayments:!!paypal,...(paypal?{paypalOrigin:paypal.pageOrigin}:{}),emailLogin:!!mailer,loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
     // An email-only account has no wallet to read holdings from.
     return {...account,rchBalance:account.walletAddress?await balances.read(account.walletAddress):{status:'unconfigured'},redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
@@ -138,6 +140,8 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         const raw=await readRaw(req);
         if(!verifyStripeSignature(raw,req.headers['stripe-signature'],stripe.webhookSecret,now()))fail(400,'signature_invalid','The webhook signature is invalid.');
         const event=parseObject(raw),livemode=stripe.mode==='live';
+        const plus=await recordPlusInvoice(event,{stripe,subscription:config.subscription,client:stripeClient,store});
+        if(plus){json(res,200,plus.ignored?{received:true,ignored:plus.ignored}:{received:true,...plus.result});return;}
         const reversal=reversalFromStripeEvent(event,{livemode});
         if(reversal) {
           if(reversal.ignored){json(res,200,{received:true,ignored:reversal.ignored});return;}
@@ -145,7 +149,12 @@ export function createAccountService({config,store,provider,redemptionProvider,b
           // still checks the ledger: a refund of anything else is not ours.
           const original=await stripeClient.findOriginal(reversal.paymentIntent);
           if(!original){json(res,200,{received:true,ignored:'not_reach'});return;}
-          const result=await store.applyReversal({...reversal.reversal,...original});
+          const plusReversal=typeof store.applyPlusReversal==='function'?await store.applyPlusReversal({objectId:reversal.reversal.objectId,eventId:reversal.reversal.eventId,kind:reversal.reversal.kind,originalObjectId:original.originalObjectId,amountMinor:event.data.object.amount,currency:event.data.object.currency}):null;
+          if(plusReversal){json(res,200,{received:true,...plusReversal});return;}
+          if(original.planId==='plus')fail(503,'payment_pending','The original Plus invoice is not recorded yet. Retry this notification.');
+          if(event.data.object.currency!=='usd'){json(res,200,{received:true,ignored:'not_reach'});return;}
+          const {planId:originalPlan,...legacyOriginal}=original;
+          const result=await store.applyReversal({...reversal.reversal,...legacyOriginal});
           // Stripe does not guarantee delivery order. Keep an early REACH refund
           // retryable until its original payment is durably recorded.
           if(!result)fail(503,'payment_pending','The original payment is not recorded yet. Retry this notification.');
@@ -218,11 +227,18 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='POST'&&pathname==='/v1/auth/logout') {await store.logout(token);json(res,200,{status:'disconnected'});return;}
       if(req.method==='POST'&&pathname==='/v1/billing/checkout') {
         const viaPayPal=body.provider==='paypal';
+        const planId=body.planId??'basic';
+        if(!['basic','plus'].includes(planId)||planId==='plus'&&(viaPayPal||body.kind!=='subscription'))fail(400,'invalid_checkout','Choose a supported subscription plan.');
         if(body.provider!==undefined&&!['stripe','paypal'].includes(body.provider))fail(400,'invalid_checkout','Choose card or PayPal.');
         if(viaPayPal?!paypal:!stripeClient)fail(503,'payments_unconfigured',viaPayPal?'PayPal is not configured on this service.':'Card payments are not configured on this service.');
         if(body.kind==='subscription') {
           // Renewals bill automatically; a second checkout would charge twice.
           if(account.plan?.status==='active')fail(409,'plan_active','A plan is already active on this account.');
+          if(!viaPayPal){
+            const priceId=planId==='plus'?stripe?.plusPriceId:stripe?.basicPriceId;
+            if(!priceId)fail(503,'payments_unconfigured','This card subscription is not enabled on the service.');
+            if(planId==='plus')assertPlusPrice(await stripeClient.readPrice(priceId),{priceId,policy:config.subscription?.plus,livemode:stripe.mode==='live'});
+          }
         } else if(body.kind==='top_up') {
           if(!(viaPayPal?validPayPalTopUp:validTopUpAmount)(body.amountUsdMicros))fail(400,'invalid_amount','Choose a whole-cent top-up between $1 and $500.');
         } else fail(400,'invalid_checkout','Choose a subscription or a top-up.');
@@ -245,21 +261,30 @@ export function createAccountService({config,store,provider,redemptionProvider,b
           }
           json(res,200,{url:page.url,expiresAt:page.expiresAt});return;
         }
-        const fingerprint=digest(JSON.stringify([config.origin,stripe.basicPriceId]));
-        let checkout=body.kind==='subscription'?await store.reserveSubscriptionCheckout(account.id,fingerprint):null;
-        const create=()=>stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,origin:config.origin,nowMs:checkout?checkout.expiresAt-3600000:now()}),checkout?{idempotencyKey:`reach-subscription-${checkout.id}`}:{ });
+        const fingerprint=digest(JSON.stringify([config.origin,planId==='plus'?stripe.plusPriceId:stripe.basicPriceId]));
+        const previous=body.kind==='subscription'&&config.subscription?.plus?await store.subscriptionCheckout(account.id):null;
+        let checkout;
+        if(previous&&previous.expiresAt<=now()) {
+          if(!previous.providerObjectId)fail(409,'checkout_pending','The earlier checkout has no stored provider reference and requires reconciliation. Contact support.');
+          if(!/^cs_[A-Za-z0-9_]+$/.test(previous.providerObjectId))fail(409,'checkout_pending','The earlier provider checkout requires reconciliation before a card subscription can start. Contact support.');
+          if(!await stripeClient.canReplaceCheckoutSession(previous.providerObjectId,now()))fail(409,'checkout_pending','The earlier subscription checkout is still awaiting confirmation. Refresh your account or contact support.');
+          checkout=await store.reserveSubscriptionCheckout(account.id,fingerprint,previous.id);
+        } else checkout=body.kind==='subscription'?await store.reserveSubscriptionCheckout(account.id,fingerprint):null;
+        const create=()=>stripeClient.createCheckoutSession(checkoutParams({kind:body.kind,amountUsdMicros:body.amountUsdMicros,accountId:account.id,basicPriceId:stripe.basicPriceId,plusPriceId:stripe.plusPriceId,planId,checkoutId:checkout?.id,origin:config.origin,nowMs:checkout?checkout.expiresAt-3600000:now()}),checkout?{idempotencyKey:`reach-subscription-${checkout.id}`}:{ });
         let page=await create();
         if(checkout&&checkout.expiresAt<=now()) {
           if(!await stripeClient.canReplaceCheckoutSession(page.sessionId,now()))fail(409,'checkout_pending','The earlier subscription checkout is still awaiting confirmation. Refresh your account or contact support.');
           checkout=await store.reserveSubscriptionCheckout(account.id,fingerprint,checkout.id);
           page=await create();
         }
+        if(checkout)await store.attachSubscriptionCheckout(account.id,checkout.id,page.sessionId);
         json(res,200,{url:page.url,expiresAt:page.expiresAt});return;
 
       }
       if(req.method==='POST'&&pathname==='/v1/billing/portal') {
         if(!stripeClient)fail(503,'payments_unconfigured','Card payments are not configured on this service.');
-        json(res,200,await stripeClient.createPortalSession({accountId:account.id,returnUrl:`${config.origin}/billing/return?portal=closed`}));return;
+        const customerId=account.plan?.id==='plus'?await store.plusPortalCustomer(account.id):undefined;
+        json(res,200,await stripeClient.createPortalSession({accountId:account.id,customerId,returnUrl:`${config.origin}/billing/return?portal=closed`}));return;
       }
       if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id),reversals:await store.listReversals(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start'&&!account.walletAddress)fail(409,'wallet_required','RCH redemption needs an account signed in with a wallet.');
@@ -278,5 +303,11 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   const timer=setInterval(tick,30000);timer.unref();
   server.once('listening',tick);
   server.once('close',()=>{clearInterval(timer);redemption.close();balances.close();if(ownsProvider)provider.destroy();if(ownsStore)Promise.resolve().then(()=>store.close()).catch(()=>{});});
-  return {server,store,redemption,config:publicConfig};
+  const updateModels = models => {
+    const next = structuredClone(models);
+    gateway.replaceModels(next); // validate before touching either live catalog
+    config.models = next;
+    store.models = next;
+  };
+  return {server,store,redemption,config:publicConfig,updateModels};
 }

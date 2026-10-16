@@ -8,6 +8,7 @@ const os = require('node:os');
 const vm = require('node:vm');
 const { createHash, createHmac } = require('node:crypto');
 const { AgentStore } = require('../agent/agent-store.cjs');
+const { chatDisplayText } = require('../agent/agent-response.cjs');
 
 const main = fs.readFileSync(path.join(__dirname, '../main.mjs'), 'utf8');
 const start = main.indexOf('const pendingAgentMessages =');
@@ -41,7 +42,7 @@ function fixture(messages, options = {}) {
     getAgentLoop: async (id, configuration) => { loops.push({ id, configuration }); if (options.beforeLoop) await options.beforeLoop(agent, loop); return loop; },
     stageAgentAttachments: (selected, ids) => { stages.push({ selected, ids }); return { attachments: options.attachments || [] }; },
     attachmentMessage: () => options.attachmentMessage, ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
-    parseAgentResponse: () => ({ invalid: true }) };
+    parseAgentResponse: () => ({ invalid: true }), chatDisplayText };
   vm.createContext(context);
   const revisionStart = main.indexOf('function conversationRevision(');
   const revisionEnd = main.indexOf('\n}', revisionStart) + 2;
@@ -182,6 +183,21 @@ test('agents:get projects raw saved identities without persisting keys or legacy
   for (let index = 0; index < original.length; index++) assert.equal(projected.messages[index]._reachMessageKey, fx.key(index));
   assert.deepEqual(fx.agent.messages, original);
   assert.equal(fx.agent.messages.some(message => Object.hasOwn(message, '_reachMessageKey')), false);
+});
+
+test('agents:get repairs a saved raw envelope display without changing history, identities or custom displays', () => {
+  const raw = JSON.stringify({ status: 'complete', message: 'Ready to help.', actions: [], options: [] });
+  const fx = fixture([{ role: 'user', content: raw },
+    { role: 'assistant', content: raw, _reachMeta: { display: raw, thought: 'Retained thought.' } },
+    { role: 'assistant', content: raw, _reachMeta: { display: 'Existing custom display.' } }]);
+  const original = structuredClone(fx.agent.messages);
+  const projected = fx.get();
+  assert.equal(projected.messages[0].content, raw);
+  assert.equal(projected.messages[1]._reachMeta.display, 'Ready to help.');
+  assert.equal(projected.messages[1]._reachMeta.thought, 'Retained thought.');
+  assert.equal(projected.messages[2]._reachMeta.display, 'Existing custom display.');
+  assert.equal(projected.messages[1]._reachMessageKey, fx.key(1));
+  assert.deepEqual(fx.agent.messages, original);
 });
 
 test('resend requires a valid saved identity even when the numeric index still exists', async () => {

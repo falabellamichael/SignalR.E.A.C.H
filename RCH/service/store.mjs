@@ -1,3 +1,7 @@
+import { PlusSqliteLedger } from './plus-sqlite.mjs';
+import { gpuBridge, requestCapabilities } from './gpu-bridge.mjs';
+import { codegptDirect } from './codegpt-direct.mjs';
+import { validatePlusPolicy, plusAccount } from './payments/plus.mjs';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, chmodSync, lstatSync } from 'node:fs';
@@ -21,13 +25,15 @@ export function requestBillingPolicy(subscription) {
   if (!subscription || subscription.basic?.id !== 'basic-wallet' || subscription.basic.includedRequests !== 1500
     || subscription.basic.priceUsdMicros !== 15000000 || subscription.overageUsdMicrosPerRequest !== 10000
     || subscription.proEnabled !== false) throw new Error('Configure the approved Basic request subscription policy.');
-  return { basic: { ...subscription.basic }, overageUsdMicrosPerRequest: 10000, proEnabled: false };
+  const plus = validatePlusPolicy(subscription.plus);
+  return { basic: { ...subscription.basic }, overageUsdMicrosPerRequest: 10000, proEnabled: false, ...(plus ? { plus } : {}) };
 }
 export const requestModel = model => model?.access === 'requests' && model.metered === true
   && typeof model.bridge?.model === 'string' && model.bridge.model !== 'codegpt-eco-gpt-4o-mini'
   && (model.bridge.kind === 'tray'
     ? /^(?:copilot-chat|chatgpt-chat|gemini-chat|codegpt-eco-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100})$/.test(model.bridge.model)
-    : model.bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(model.bridge.model));
+    : model.bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(model.bridge.model)
+      || !!gpuBridge(model.bridge) || !!codegptDirect(model.bridge));
 export const basicPlanModelIds = models => models.filter(requestModel).map(m => m.id).sort();
 export function basicRequestPeriod(account, subscription, now) {
   return subscription && ['basic', subscription.basic.id].includes(account.plan_id)
@@ -130,6 +136,7 @@ export class AccountStore {
       for (const [column, definition] of Object.entries(columns)) if (!existing.has(column)) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
     }
     this.allowEmailOnlyAccounts();
+    this.plus = new PlusSqliteLedger(this);
   }
   // Databases created before email sign-in require a wallet on every account.
   // SQLite cannot relax NOT NULL in place, so the accounts table is rebuilt
@@ -166,7 +173,7 @@ export class AccountStore {
     const requests=accountId
       ? this.db.prepare(`SELECT ${requestColumns} FROM request_reservations WHERE account_id=? AND status IN ('reserved','uncertain') ORDER BY created`).all(accountId)
       : this.db.prepare(`SELECT ${requestColumns} FROM request_reservations WHERE status IN ('reserved','uncertain') ORDER BY created`).all();
-    return [...legacy,...requests].sort((a,b)=>a.created-b.created);
+    return [...legacy,...requests,...this.plus.unsettled(accountId)].sort((a,b)=>a.created-b.created);
   }
   pruneExpiredAuthentication() {
     return this.transaction(()=>{
@@ -191,11 +198,13 @@ export class AccountStore {
     const requestAllowance = this.subscription ? this.requestAllowance(accountId) : null;
     const requestHeld = this.db.prepare("SELECT COALESCE(SUM(charge_usd_micros),0) AS usd FROM request_reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId).usd;
     return { id:a.id, walletAddress:a.wallet, email:a.email ?? null, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.access==='requests'
-      ? requestModel(m) && !!this.subscription && (requestAllowance.basicActive || a.usd_prepaid>0)
-      : m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m)||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(requestModel(m)?{access:'requests',pricing:{unit:'request',includedRequests:this.subscription.basic.includedRequests,usdMicrosPerRequest:this.subscription.overageUsdMicrosPerRequest},capabilities:{outputTokenLimit:false}}:modelUsdPricing(m)?{pricing:{...m.pricing}}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd+requestHeld,debtMicros:a.usd_debt}, ...(requestAllowance?{requestAllowance}:{}) };
+      ? requestModel(m) && !!this.subscription && (requestAllowance.basicActive || requestAllowance.plusActive || !plusAccount(a,this.subscription)&&a.usd_prepaid>0)
+      : m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m)||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(requestModel(m)?{access:'requests',pricing:requestAllowance.plusActive?{unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0}:{unit:'request',includedRequests:this.subscription.basic.includedRequests,usdMicrosPerRequest:this.subscription.overageUsdMicrosPerRequest},capabilities:requestCapabilities(m)}:modelUsdPricing(m)?{pricing:{...m.pricing}}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd+requestHeld,debtMicros:a.usd_debt}, ...(requestAllowance?{requestAllowance}:{}) };
   }
   requestAllowance(accountId) {
-    const a=this.accountById(accountId),period=basicRequestPeriod(a,this.subscription,this.now());
+    const a=this.accountById(accountId);
+    const plus = this.plus.allowance(a); if (plus) return plus;
+    const period=basicRequestPeriod(a,this.subscription,this.now());
     const completed=period?this.db.prepare('SELECT completed FROM request_periods WHERE account_id=? AND period_key=?').get(accountId,period)?.completed||0:0;
     const reserved=period?this.db.prepare("SELECT COUNT(*) AS n FROM request_reservations WHERE account_id=? AND period_key=? AND included=1 AND status IN ('reserved','uncertain')").get(accountId,period).n:0;
     const includedLimit=period?this.subscription.basic.includedRequests:0;
@@ -206,6 +215,7 @@ export class AccountStore {
     if(typeof requestId!=='string'||!/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId)||typeof fingerprint!=='string'||!fingerprint.length||fingerprint.length>128)fail(400,'invalid_reservation','Invalid request reservation.');
     return this.transaction(()=>{
       const a=this.accountById(accountId);
+      const plus = this.plus.reserve(a,requestId,model,fingerprint); if(plus)return plus;
       if(this.db.prepare('SELECT 1 FROM reservations WHERE account_id=? AND request_id=?').get(accountId,requestId))fail(409,'idempotency_conflict','Request ID has already been used for different input.');
       const previous=this.db.prepare('SELECT * FROM request_reservations WHERE account_id=? AND request_id=?').get(accountId,requestId);
       if(previous){
@@ -226,6 +236,7 @@ export class AccountStore {
   settleRequest(reservationId,responseRecord) {
     const replay=requestReplay(responseRecord);
     return this.transaction(()=>{
+      if(this.plus.finish(reservationId,'settle',replay))return;
       const r=this.db.prepare('SELECT * FROM request_reservations WHERE id=?').get(reservationId);
       if(!r)fail(404,'reservation_missing','Reservation not found.');
       if(r.status==='settled')return;
@@ -239,6 +250,7 @@ export class AccountStore {
   }
   releaseRequest(reservationId) {
     return this.transaction(()=>{
+      if(this.plus.finish(reservationId,'release'))return;
       const r=this.db.prepare('SELECT * FROM request_reservations WHERE id=?').get(reservationId);
       if(!r)fail(404,'reservation_missing','Reservation not found.');
       if(r.status==='released')return;
@@ -252,6 +264,7 @@ export class AccountStore {
     });
   }
   markRequestUncertain(reservationId,reason='completion_unknown') {
+    if(this.plus.finish(reservationId,'uncertain',String(reason).slice(0,200)))return;
     this.db.prepare("UPDATE request_reservations SET status='uncertain',reason=? WHERE id=? AND status='reserved'").run(String(reason).slice(0,200),reservationId);
   }
   grantPlan({wallet,accountId,grantId,planId,name,models,tokens,expiresAt},nested=false) {
@@ -288,6 +301,10 @@ export class AccountStore {
       return checkout;
     });
   }
+  subscriptionCheckout(accountId) {
+    const row=this.db.prepare('SELECT * FROM subscription_checkouts WHERE account_id=?').get(accountId);
+    return row?{id:row.id,fingerprint:row.fingerprint,expiresAt:row.expires,...(row.provider_object_id?{providerObjectId:row.provider_object_id}:{})}:null;
+  }
   attachSubscriptionCheckout(accountId,checkoutId,providerObjectId) {
     if(!/^[a-f0-9]{64}$/.test(checkoutId||'')||!/^[A-Za-z0-9_-]{3,128}$/.test(providerObjectId||''))fail(400,'invalid_checkout','Invalid checkout reference.');
     return this.transaction(()=>{
@@ -308,8 +325,13 @@ export class AccountStore {
     const row=this.db.prepare("SELECT period_end FROM payments WHERE provider=? AND object_id=? AND kind='subscription_period'").get(provider,objectId);
     return row?{periodEnd:row.period_end}:null;
   }
+  plusCheckout(payment) { return this.plus.checkout(payment); }
+  plusPortalCustomer(accountId) { return this.plus.portalCustomer(accountId); }
+  applyPlusPayment(raw) { return this.plus.applyPayment(raw); }
+  applyPlusReversal(raw) { return this.plus.applyReversal(raw); }
   applyPayment(raw) {
     const payment=normalizePayment(raw),fingerprint=paymentFingerprint(payment);
+    if(payment.provider==='stripe'&&this.plus.hasPayment(payment.objectId))fail(409,'payment_conflict','This invoice belongs to Plus.');
     if(payment.kind==='subscription_period'){
       if(!this.subscription)fail(409,'subscription_unconfigured','Request subscriptions are not configured on this service.');
       if(!this.basicPlanModels().length)fail(409,'no_qualified_models','No qualified request models are configured for the plan grant.');
@@ -341,10 +363,10 @@ export class AccountStore {
   }
   listPayments(accountId,limit=50) {
     const bounded=Number.isSafeInteger(limit)&&limit>=1&&limit<=200?limit:50;
-    return this.db.prepare('SELECT * FROM payments WHERE account_id=? ORDER BY created DESC,id LIMIT ?').all(accountId,bounded).map(publicPayment);
+    return [...this.db.prepare('SELECT * FROM payments WHERE account_id=? ORDER BY created DESC,id LIMIT ?').all(accountId,bounded).map(publicPayment),...this.plus.listPayments(accountId)].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,bounded);
   }
   flaggedPayments() {
-    return this.db.prepare("SELECT * FROM payments WHERE status IN ('rejected','expired') ORDER BY created,id").all().map(reviewPayment);
+    return [...this.db.prepare("SELECT * FROM payments WHERE status IN ('rejected','expired') ORDER BY created,id").all().map(reviewPayment),...this.plus.listPayments(null,true)];
   }
   // Records one refund or dispute and applies its effect in ONE transaction.
   // Returns null when the original payment is not in this ledger: a refund of
@@ -374,10 +396,10 @@ export class AccountStore {
   }
   listReversals(accountId,limit=50) {
     const bounded=Number.isSafeInteger(limit)&&limit>=1&&limit<=200?limit:50;
-    return this.db.prepare('SELECT * FROM payment_reversals WHERE account_id=? ORDER BY created DESC,id LIMIT ?').all(accountId,bounded).map(publicReversal);
+    return [...this.db.prepare('SELECT * FROM payment_reversals WHERE account_id=? ORDER BY created DESC,id LIMIT ?').all(accountId,bounded).map(publicReversal),...this.plus.listReversals(accountId)].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,bounded);
   }
   flaggedReversals() {
-    return this.db.prepare("SELECT * FROM payment_reversals WHERE status='rejected' ORDER BY created,id").all().map(reviewReversal);
+    return [...this.db.prepare("SELECT * FROM payment_reversals WHERE status='rejected' ORDER BY created,id").all().map(reviewReversal),...this.plus.listReversals(null,true)];
   }
   startFlow(state,challenge) {
     if(typeof state!=='string'||typeof challenge!=='string'||!/^[A-Za-z0-9_-]{32,128}$/.test(state)||!/^[A-Za-z0-9_-]{43}$/.test(challenge)) fail(400,'invalid_flow','Invalid sign-in state or proof key.');
@@ -465,7 +487,7 @@ export class AccountStore {
   reserve(accountId,requestId,model,fingerprint,amount) {
     if(!safeCount(amount)||amount===0||typeof requestId!=='string'||requestId.length>128) fail(400,'invalid_reservation','Invalid request reservation.');
     return this.transaction(()=>{
-      if(this.db.prepare('SELECT 1 FROM request_reservations WHERE account_id=? AND request_id=?').get(accountId,requestId))fail(409,'idempotency_conflict','Request ID has already been used for different input.');
+      if(this.plus.hasRequestKey(accountId,requestId)||this.db.prepare('SELECT 1 FROM request_reservations WHERE account_id=? AND request_id=?').get(accountId,requestId))fail(409,'idempotency_conflict','Request ID has already been used for different input.');
       const previous=this.db.prepare('SELECT * FROM reservations WHERE account_id=? AND request_id=?').get(accountId,requestId);
       if(previous) {
         if(previous.fingerprint!==fingerprint||previous.model!==model||previous.currency!=='tokens') fail(409,'idempotency_conflict','Request ID has already been used for different input.');
@@ -488,7 +510,7 @@ export class AccountStore {
     const amount=usdUsageCost(pricing,limits);
     if(amount===0||typeof requestId!=='string'||!requestId.length||requestId.length>128)fail(400,'invalid_reservation','Invalid request reservation.');
     return this.transaction(()=>{
-      if(this.db.prepare('SELECT 1 FROM request_reservations WHERE account_id=? AND request_id=?').get(accountId,requestId))fail(409,'idempotency_conflict','Request ID has already been used for different input.');
+      if(this.plus.hasRequestKey(accountId,requestId)||this.db.prepare('SELECT 1 FROM request_reservations WHERE account_id=? AND request_id=?').get(accountId,requestId))fail(409,'idempotency_conflict','Request ID has already been used for different input.');
       const previous=this.db.prepare('SELECT * FROM reservations WHERE account_id=? AND request_id=?').get(accountId,requestId);
       if(previous){
         if(previous.fingerprint!==fingerprint||previous.model!==model||previous.currency!=='USD')fail(409,'idempotency_conflict','Request ID has already been used for different input.');

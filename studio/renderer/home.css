@@ -118,6 +118,10 @@
 .home-value-card { display: flex; flex-direction: column; gap: 14px; min-height: 277px; padding: 22px; }
 .home-value-card .home-card-description { min-height: 0; }
 .home-value-card .home-field { max-width: 100%; }
+/* Payment copy and controls need their full content height inside the popup. */
+#home-card-payment-options { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; height: max-content; min-width: 0; }
+#home-card-payment-options > * { min-width: 0; margin-top: 0; }
+#home-card-payment-options > button { justify-self: start; max-width: 100%; min-height: 32px; white-space: normal; text-align: left; }
 .home-disabled-action { align-self: start; margin-top: auto; }
 .home-token-points { display: flex; flex-wrap: wrap; gap: 7px; margin-top: auto; }
 .home-token-points span { padding: 7px 9px; border: 1px solid var(--line); border-radius: 5px; color: var(--gold-dim); font-size: 10px; }

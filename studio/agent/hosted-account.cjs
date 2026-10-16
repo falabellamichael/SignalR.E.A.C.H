@@ -56,12 +56,14 @@ const count = value => /^(0|[1-9]\d{0,29})$/.test(String(value)) ? String(value)
 function publicRequestAllowance(raw) {
   if (!raw || typeof raw !== 'object') return null;
   return { basicActive: raw.basicActive === true, periodEndsAt: text(raw.periodEndsAt),
-    ...Object.fromEntries(['includedLimit','completed','reserved','remaining','overageUsdMicrosPerRequest'].map(key => [key, count(raw[key])])) };
+    ...(Object.hasOwn(raw,'plusActive') ? {plusActive:raw.plusActive===true,unlimited:raw.plusActive===true&&raw.unlimited===true} : {}),
+    ...Object.fromEntries(['includedLimit','completed','reserved','remaining','overageUsdMicrosPerRequest'].map(key => [key, ['includedLimit','remaining'].includes(key)&&raw.unlimited===true&&raw.plusActive===true ? null : count(raw[key])])) };
 }
 function publicSubscription(raw) {
   if (!raw || typeof raw !== 'object' || !raw.basic) return null;
   return { basic: { id: text(raw.basic.id), includedRequests: count(raw.basic.includedRequests), priceUsdMicros: count(raw.basic.priceUsdMicros) },
-    overageUsdMicrosPerRequest: count(raw.overageUsdMicrosPerRequest), proEnabled: false };
+    overageUsdMicrosPerRequest: count(raw.overageUsdMicrosPerRequest), proEnabled: false,
+    ...(raw.plus?.id==='plus'&&raw.plus.unlimited===true&&raw.plus.currency==='cad'&&String(raw.plus.amountMinor)==='2500'&&raw.plus.interval==='month'&&raw.plus.intervalCount===1&&raw.plus.taxBehavior==='inclusive' ? {plus:{id:'plus',name:text(raw.plus.name,80)||'REACH Subscription Plus',currency:'cad',amountMinor:'2500',interval:'month',intervalCount:1,taxBehavior:'inclusive',unlimited:true}} : {}) };
 }
 function publicRchBalance(raw) {
   if (!raw || typeof raw !== 'object') return { status: 'unconfigured' };
@@ -78,7 +80,7 @@ function publicModels(models) {
       typeof model === 'string' ? { id: text(model), name: text(model), provider: '' }
         : { id: text(model?.id), name: text(model?.name), provider: text(model?.provider),
           ...(model?.access === 'requests' && model.pricing?.unit === 'request'
-            ? { access: 'requests', pricing: { unit: 'request', includedRequests: count(model.pricing.includedRequests), usdMicrosPerRequest: count(model.pricing.usdMicrosPerRequest) },
+            ? { access: 'requests', pricing: model.pricing.unlimited===true ? {unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:'0'} : { unit: 'request', includedRequests: count(model.pricing.includedRequests), usdMicrosPerRequest: count(model.pricing.usdMicrosPerRequest) },
               ...(model.capabilities?.outputTokenLimit === false ? { capabilities: { outputTokenLimit: false } } : {}) } : {}),
           ...(model?.pricing && ['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion'].every(key => /^(0|[1-9]\d{0,29})$/.test(String(model.pricing[key])))
             ? { pricing: Object.fromEntries(['inputUsdMicrosPerMillion', 'outputUsdMicrosPerMillion', 'cachedInputUsdMicrosPerMillion']
@@ -100,6 +102,7 @@ function publicAccount(raw) {
   };
 }
 function publicConfig(raw) {
+  const subscription = raw?.subscription ? publicSubscription(raw.subscription) : null;
   return { enabled: raw?.enabled === true, chainId: Number.isSafeInteger(raw?.chainId) ? raw.chainId : null,
     tokenAddress: /^0x[0-9a-f]{40}$/i.test(raw?.tokenAddress) ? raw.tokenAddress : '',
     redemptionEnabled: raw?.redemptionEnabled === true, tokensPerRch: raw?.tokensPerRch == null ? null : count(raw.tokensPerRch),
@@ -107,7 +110,8 @@ function publicConfig(raw) {
     treasuryAddress: /^0x[0-9a-f]{40}$/i.test(raw?.treasuryAddress) ? raw.treasuryAddress : '',
     pricingStatus: text(raw?.pricingStatus, 80), pricingMessage: text(raw?.pricingMessage, 400),
     redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true, paypalPayments: raw?.paypalPayments === true, emailLogin: raw?.emailLogin === true,
-    ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}),
+    ...(raw?.subscription ? { subscription } : {}),
+    ...(raw?.cardPlans ? {cardPlans:{basic:raw.cardPlans.basic===true,plus:raw.cardPlans.plus===true&&!!subscription?.plus}} : {}),
     loginMethod: text(raw?.loginMethod) };
 }
 function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, openExternal, onChange = () => {}, now = Date.now }) {
@@ -311,6 +315,10 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
     if (!session) throw new Error('Connect your wallet before paying by card.');
     const viaPayPal = body.provider === 'paypal';
     if (viaPayPal ? !config?.paypalPayments : !config?.cardPayments) throw new Error(viaPayPal ? 'PayPal is not enabled on this service.' : 'Card payments are not enabled on this service.');
+    if (body.kind === 'subscription' && !viaPayPal) {
+      if (body.planId === 'plus' && (!config?.subscription?.plus || config?.cardPlans?.plus !== true)) throw new Error('Plus checkout is not enabled on this service. Refresh your account after setup is complete.');
+      if (body.planId !== 'plus' && config?.cardPlans?.basic === false) throw new Error('Basic checkout is not enabled on this service.');
+    }
     const expected = generation;
     const { data } = await request('/v1/billing/checkout', { method: 'POST', token: session.accessToken, body });
     if (generation !== expected) throw new Error('Wallet connection changed. Start the payment again.');
@@ -319,7 +327,10 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
   }
   // Card checkout sends no provider, as before; PayPal is named explicitly.
   const via = provider => provider === 'paypal' ? { provider: 'paypal' } : {};
-  const subscribe = (provider = 'stripe') => checkout({ kind: 'subscription', ...via(provider) });
+  const subscribe = (provider = 'stripe', planId = 'basic') => {
+    if(!['basic','plus'].includes(planId)||planId==='plus'&&provider!=='stripe')throw new Error('Choose a supported subscription plan.');
+    return checkout({ kind:'subscription',...via(provider),...(planId==='plus'?{planId:'plus'}:{}) });
+  };
   const topUp = async (amountUsd, provider = 'stripe') => checkout({ kind: 'top_up', amountUsdMicros: topUpMicros(amountUsd), ...via(provider) });
   // Cancel, change card, download invoices: all on Stripe's billing portal.
   async function manageBilling() {
