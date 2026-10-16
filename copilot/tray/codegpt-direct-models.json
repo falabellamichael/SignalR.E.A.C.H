@@ -1,0 +1,186 @@
+{
+  "models": [
+    {
+      "id": "deepseek-v4.1-flash",
+      "publicId": "codegpt-direct-deepseek-v4.1-flash",
+      "name": "DeepSeek V4.1 Flash (CodeGPT)",
+      "provider": "openrouter",
+      "aliases": [
+        "deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "ox-alpha",
+      "publicId": "codegpt-direct-ox-alpha",
+      "name": "GLM 5.3 Flash (CodeGPT)",
+      "provider": "openrouter",
+      "aliases": [
+        "ox-alpha",
+        "z-ai/glm-5.3-flash",
+        "z-ai/glm-5.3-flash"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "publicId": "codegpt-direct-gemini-3.8-flash",
+      "name": "Gemini 3.8 Flash (CodeGPT)",
+      "provider": "gemini",
+      "aliases": [
+        "gemini-3.8-flash",
+        "google/gemini-3.8-flash",
+        "gemini 3.8 flash"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "publicId": "codegpt-direct-gpt-5.6-luna",
+      "name": "gpt-5.6-luna (CodeGPT)",
+      "provider": "openrouter",
+      "aliases": [
+        "gpt-5.6-luna",
+        "gpt-5.6-luna",
+        "openai/gpt-5.6-luna"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "glm-5.2",
+      "publicId": "codegpt-direct-glm-5.2",
+      "name": "glm-5.2 (CodeGPT)",
+      "provider": "openrouter",
+      "aliases": [
+        "glm-5.2",
+        "z-ai/glm-5.2",
+        "glm 5.2"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "MiniMax-M3",
+      "publicId": "codegpt-direct-MiniMax-M3",
+      "name": "MiniMax M3 (CodeGPT)",
+      "provider": "openrouter",
+      "aliases": [
+        "minimax-m3",
+        "minimax/minimax-m3",
+        "MiniMax M3"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "gpt-4o",
+      "publicId": "codegpt-direct-gpt-4o",
+      "name": "gpt-4o (CodeGPT)",
+      "provider": "openai",
+      "aliases": [
+        "gpt-4o",
+        "gpt-4o",
+        "openai/gpt-4o"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "gpt-5",
+      "publicId": "codegpt-direct-gpt-5",
+      "name": "gpt-5 (CodeGPT)",
+      "provider": "openai",
+      "aliases": [
+        "gpt-5",
+        "gpt-5",
+        "openai/gpt-5"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "claude-sonnet-4.6",
+      "publicId": "codegpt-direct-claude-sonnet-4.6",
+      "name": "claude-sonnet-4.6 (CodeGPT)",
+      "provider": "anthropic",
+      "aliases": [
+        "claude-sonnet-4.6",
+        "us.anthropic.claude-sonnet-4-6",
+        "anthropic/claude-sonnet-4.6",
+        "claude-sonnet-4-6"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "claude-opus-4.6",
+      "publicId": "codegpt-direct-claude-opus-4.6",
+      "name": "claude-opus-4.6 (CodeGPT)",
+      "provider": "anthropic",
+      "aliases": [
+        "claude-opus-4.6",
+        "us.anthropic.claude-opus-4-6-v1",
+        "anthropic/claude-opus-4.6",
+        "claude-opus-4-6"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "claude-opus-4.6-fast",
+      "publicId": "codegpt-direct-claude-opus-4.6-fast",
+      "name": "claude-opus-4.6-fast (CodeGPT)",
+      "aliases": [
+        "claude-opus-4.6-fast"
+      ],
+      "enabled": false,
+      "availableInCatalog": false
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "publicId": "codegpt-direct-gemini-3.7-flash",
+      "name": "gemini-3.7-flash (CodeGPT)",
+      "provider": "gemini",
+      "aliases": [
+        "gemini-3.7-flash",
+        "gemini-3.7-flash",
+        "google/gemini-3.7-flash"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "publicId": "codegpt-direct-gemini-2.5-flash",
+      "name": "gemini-2.5-flash (CodeGPT)",
+      "provider": "gemini",
+      "aliases": [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash",
+        "google/gemini-2.5-flash"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    },
+    {
+      "id": "gpt-4o-mini",
+      "publicId": "codegpt-direct-rch-gpt-4o-mini",
+      "name": "GPT-4o mini (CodeGPT)",
+      "provider": "openai",
+      "aliases": [
+        "gpt-4o-mini",
+        "gpt-4o-mini",
+        "openai/gpt-4o-mini"
+      ],
+      "enabled": true,
+      "availableInCatalog": true
+    }
+  ],
+  "qualified_at": "2026-10-16T00:08:18.606Z"
+}

@@ -67,6 +67,7 @@ function initDrawerResizers() {
       fileTree.style.height = h + 'px';
     }
   }
+  applyDrawerLayout(localStorage.getItem('reach:drawer-layout') === 'side' ? 'side' : 'top', false);
 
   // --- Horizontal Resize (drawer width) ---
   let isDraggingX = false;
@@ -121,8 +122,19 @@ function initDrawerResizers() {
   let startY = 0;
   let startTreeH = 0;
 
+  let dragAxis = 'y';
+
   const onPointerMoveY = (e) => {
     if (!isDraggingY) return;
+    if (dragAxis === 'x') {
+      const delta = e.clientX - startY;
+      const drawerW = drawer.getBoundingClientRect().width;
+      const minW = 120;
+      const maxW = Math.max(minW, drawerW - 180);
+      const newW = Math.min(maxW, Math.max(minW, Math.round(startTreeH + delta)));
+      drawer.style.setProperty('--drawer-tree-width', newW + 'px');
+      return;
+    }
     const delta = e.clientY - startY;
     const drawerH = drawer.getBoundingClientRect().height;
     const minH = 50;
@@ -134,22 +146,26 @@ function initDrawerResizers() {
   const onPointerUpY = (e) => {
     if (!isDraggingY) return;
     isDraggingY = false;
-    document.body.classList.remove('resizing-y');
+    document.body.classList.remove('resizing-y', 'resizing-split');
     resizerY.classList.remove('active');
     window.removeEventListener('pointermove', onPointerMoveY);
     window.removeEventListener('pointerup', onPointerUpY);
     window.removeEventListener('pointercancel', onPointerUpY);
     try { resizerY.releasePointerCapture(e.pointerId); } catch (_) {}
-    const finalH = Math.round(fileTree.getBoundingClientRect().height);
-    localStorage.setItem('reach:drawer-tree-height', finalH);
+    if (dragAxis === 'x') {
+      localStorage.setItem('reach:drawer-tree-width', Math.round(fileTree.getBoundingClientRect().width));
+    } else {
+      localStorage.setItem('reach:drawer-tree-height', Math.round(fileTree.getBoundingClientRect().height));
+    }
   };
 
   resizerY.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     isDraggingY = true;
-    startY = e.clientY;
-    startTreeH = fileTree.getBoundingClientRect().height;
-    document.body.classList.add('resizing-y');
+    dragAxis = drawer.dataset.layout === 'side' ? 'x' : 'y';
+    startY = dragAxis === 'x' ? e.clientX : e.clientY;
+    startTreeH = dragAxis === 'x' ? fileTree.getBoundingClientRect().width : fileTree.getBoundingClientRect().height;
+    document.body.classList.add(dragAxis === 'x' ? 'resizing-split' : 'resizing-y');
     resizerY.classList.add('active');
     try { resizerY.setPointerCapture(e.pointerId); } catch (_) {}
     window.addEventListener('pointermove', onPointerMoveY);
@@ -158,9 +174,38 @@ function initDrawerResizers() {
   });
 
   resizerY.addEventListener('dblclick', () => {
+    if (drawer.dataset.layout === 'side') {
+      drawer.style.removeProperty('--drawer-tree-width');
+      localStorage.removeItem('reach:drawer-tree-width');
+      return;
+    }
     fileTree.style.height = '180px';
     localStorage.removeItem('reach:drawer-tree-height');
   });
 }
+
+function applyDrawerLayout(layout, persist = true) {
+  const side = layout === 'side';
+  const fileTree = $('#file-tree');
+  const button = $('#btn-drawer-layout');
+  drawer.dataset.layout = side ? 'side' : 'top';
+  if (button) {
+    button.setAttribute('aria-pressed', String(side));
+    button.textContent = side ? 'Top' : 'Side';
+    button.title = side ? 'Put the file tree above the editor' : 'Put the file tree beside the editor';
+  }
+  if (fileTree) {
+    if (side) {
+      fileTree.style.height = '';
+      const savedW = parseInt(localStorage.getItem('reach:drawer-tree-width'), 10);
+      if (Number.isFinite(savedW) && savedW >= 120) drawer.style.setProperty('--drawer-tree-width', savedW + 'px');
+    } else {
+      const savedH = parseInt(localStorage.getItem('reach:drawer-tree-height'), 10);
+      fileTree.style.height = Number.isFinite(savedH) && savedH >= 50 && savedH <= 800 ? savedH + 'px' : '';
+    }
+  }
+  if (persist) localStorage.setItem('reach:drawer-layout', side ? 'side' : 'top');
+}
+$('#btn-drawer-layout').onclick = () => applyDrawerLayout(drawer.dataset.layout === 'side' ? 'top' : 'side');
 initDrawerResizers();
 

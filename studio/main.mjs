@@ -23,7 +23,7 @@ const { AgentStore } = require('./agent/agent-store.cjs');
 const { AgentLoop } = require('./agent/agent-loop.cjs');
 const { decideAuto, intersectFeatures } = require('./agent/jev-auto.cjs');
 const { notice: jevNotice } = require('./agent/jev-policy.cjs');
-const { parseAgentResponse } = require('./agent/agent-response.cjs');
+const { parseAgentResponse, chatDisplayText } = require('./agent/agent-response.cjs');
 const { createReachToolExecutor } = require('./agent/reach-tool-executor.cjs');
 const { PersonaStore } = require('./agent/persona-store.cjs');
 const { AgentSoulStore, MAX_SOUL_CHARS, MAX_MEMORY_CHARS } = require('./agent/agent-soul.cjs');
@@ -929,8 +929,8 @@ function registerIpc() {
     try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
-  ipcMain.handle('account:subscribe', async (_event, provider) => {
-    try { return { ok: true, ...await hostedAccount.subscribe(provider === 'paypal' ? 'paypal' : 'stripe') }; }
+  ipcMain.handle('account:subscribe', async (_event, provider, planId) => {
+    try { return { ok: true, ...await hostedAccount.subscribe(provider === 'paypal' ? 'paypal' : 'stripe',planId??'basic') }; }
     catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('account:billing', async () => {
@@ -1037,6 +1037,9 @@ function registerIpc() {
       if (m.role === 'assistant' && m._reachMeta?.display === undefined) {
         const parsed = parseAgentResponse(m.content);
         if (!parsed.invalid) return { ...projected, _reachMeta: { ...m._reachMeta, display: parsed.display, question: parsed.confirm } };
+      }
+      if (m.role === 'assistant' && m._reachMeta?.display === m.content) {
+        return { ...projected, _reachMeta: { ...m._reachMeta, display: chatDisplayText(m.content) } };
       }
       if (m.role === 'user' && /^(TOOL RESULTS\n|The run-control block was invalid\.|The response ended without an action)/.test(m.content)) {
         return { ...projected, _reachMeta: { ...m._reachMeta, source: 'recovery' } };

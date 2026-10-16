@@ -3,6 +3,7 @@
 // file, never placed in launchd/systemd arguments or the desktop renderer.
 import { readFileSync, lstatSync } from 'node:fs';
 import { loadConfig } from '../service/config.mjs';
+import { watchModelCatalog } from '../service/catalog-watch.mjs';
 import { createAccountService } from '../service/server.mjs';
 const [configFile,keyFile,supabaseKeyFile,quoteSignerKeyFile]=process.argv.slice(2);
 try {
@@ -27,7 +28,9 @@ try {
   const config=loadConfig(configFile);delete process.env[raw.upstreamKeyEnv];
   if (raw.supabase) delete process.env[raw.supabase.secretKeyEnv];
   if(raw.redemption?.quoteSignerKeyEnv)delete process.env[raw.redemption.quoteSignerKeyEnv];
-  const {server}=createAccountService({config});
+  const {server,updateModels}=createAccountService({config});
+  const stopWatching=watchModelCatalog(configFile,config.models,updateModels);
+  server.once('close',stopWatching);
   server.on('error',()=>{console.error('Account service could not listen.');process.exit(1);});
   server.listen(config.port,config.listenHost,()=>console.log(`REACH account service listening on loopback:${config.port} for ${config.origin}`));
   for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>{server.close();server.closeIdleConnections();});

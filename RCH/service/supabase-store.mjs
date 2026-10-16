@@ -1,5 +1,7 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
+import { requestCapabilities } from './gpu-bridge.mjs';
 import { getAddress } from 'ethers';
+import { normalizePlusPayment, normalizePlusReversal, plusFingerprint, plusGrantId, publicPlusPayment, publicPlusReversal } from './payments/plus.mjs';
 import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay, basicPlanModelIds } from './store.mjs';
 import { normalizeEmail } from './email.mjs';
 import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment,
@@ -10,8 +12,10 @@ const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_0
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string'
   && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const ERRORS = {
+  subscription_expired: [402, 'Your paid Plus period has ended. Renew Plus to use subscription models; wallet credit remains separate.'],
   plan_active: [409, 'A plan is already active on this account.'],
   checkout_pending: [409, 'An earlier subscription checkout is still pending. Wait for it to expire.'],
+  plus_checkout_pending: [503, 'The Plus checkout must be recorded before its invoice can be applied.'],
   account_missing: [401, 'Account is unavailable.'], invalid_grant: [400, 'Invalid plan grant, qualified model list, allowance, or expiry.'],
   grant_conflict: [409, 'Grant ID was already used with different values.'], invalid_flow: [400, 'Invalid sign-in flow.'],
   flow_expired: [410, 'Sign-in expired. Start again in Studio.'], flow_verified: [409, 'Sign-in has already been verified.'],
@@ -111,8 +115,8 @@ export class SupabaseAccountStore {
     }
     return { id: a.id, walletAddress: a.wallet, email: a.email ?? null,
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
-      allowedModels: this.models.filter(m => request?.unavailable ? false : m.access === 'requests' ? requestModel(m) && !!this.subscription && (request.allowance.basicActive || a.usd_prepaid > 0)
-        : m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(requestModel(m) ? { access: 'requests', pricing: { unit: 'request', includedRequests: this.subscription.basic.includedRequests, usdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest }, capabilities: { outputTokenLimit: false } } : modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
+      allowedModels: this.models.filter(m => request?.unavailable ? false : m.access === 'requests' ? requestModel(m) && !!this.subscription && (request.allowance.basicActive || request.allowance.plusActive || a.plan_id!=='plus' && a.usd_prepaid > 0)
+        : m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(requestModel(m) ? { access: 'requests', pricing: request.allowance.plusActive ? {unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0} : { unit: 'request', includedRequests: this.subscription.basic.includedRequests, usdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest }, capabilities: requestCapabilities(m) } : modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
       allowance: { includedRemaining: active ? a.included : 0, prepaidRemaining: a.prepaid, reserved: snapshot.reserved,
         totalRemaining: a.debt === 0 ? (active ? a.included : 0) + a.prepaid : 0, debt: a.debt },
       credit: { currency: 'USD', balanceMicros: a.usd_prepaid ?? 0, reservedMicros: (snapshot.reservedUsdMicros ?? 0) + (request?.reservedUsdMicros ?? 0), debtMicros: a.usd_debt ?? 0 },
@@ -171,6 +175,21 @@ export class SupabaseAccountStore {
   async paymentPeriod(provider, objectId) {
     return this._rpc('payment_period', {provider,objectId}, this.endpoint.replace(/reach_account_store$/, 'reach_payment_period'));
   }
+  _plusRpc(operation,payload={}) { return this._rpc(operation,{...payload,subscription:this.subscription},this.endpoint.replace(/reach_account_store$/,'reach_plus_store')); }
+  plusCheckout(payment) { return this._plusRpc('checkout_binding',payment); }
+  subscriptionCheckout(accountId) { return this._plusRpc('pending_checkout',{accountId}); }
+  plusPortalCustomer(accountId) { return this._plusRpc('portal_customer',{accountId}); }
+  async applyPlusPayment(raw) {
+    const payment=normalizePlusPayment(raw),models=basicPlanModelIds(this.models);
+    if(!this.subscription?.plus)fail(409,'subscription_unconfigured','Plus is not configured.');
+    if(!models.length)fail(409,'no_qualified_models','No qualified subscription models are configured.');
+    return this._plusRpc('apply_payment',{...payment,paymentId:id(),fingerprint:plusFingerprint(payment),grantId:plusGrantId(payment.objectId),models});
+  }
+  async applyPlusReversal(raw) {
+    if(!this.subscription?.plus)return null;
+    const reversal=normalizePlusReversal(raw);
+    return this._plusRpc('apply_reversal',{...reversal,reversalId:id(),fingerprint:plusFingerprint(reversal)});
+  }
   async applyPayment(raw) {
     const payment = normalizePayment(raw);
     let models;
@@ -182,8 +201,8 @@ export class SupabaseAccountStore {
     return this._paymentRpc('apply_payment', { ...payment, paymentId: id(), fingerprint: paymentFingerprint(payment),
       grantId: grantIdFor(payment), ...(models ? { models } : {}) });
   }
-  async listPayments(accountId, limit = 50) { return (await this._paymentRpc('list_payments', { accountId, limit })).map(publicPayment); }
-  async flaggedPayments() { return (await this._paymentRpc('flagged_payments')).map(reviewPayment); }
+  async listPayments(accountId,limit=50){const legacy=(await this._paymentRpc('list_payments',{accountId,limit})).map(publicPayment);const plus=this.subscription?.plus?(await this._plusRpc('list_payments',{accountId})).map(publicPlusPayment):[];return [...legacy,...plus].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,Number.isSafeInteger(limit)&&limit>0&&limit<=200?limit:50);}
+  async flaggedPayments(){return [...(await this._paymentRpc('flagged_payments')).map(reviewPayment),...(this.subscription?.plus?(await this._plusRpc('flagged_payments')).map(row=>({...publicPlusPayment(row),accountId:row.account_id,objectId:row.object_id,eventId:row.event_id})):[])];}
   _reversalRpc(operation, payload = {}) {
     return this._rpc(operation, payload, this.endpoint.replace(/reach_account_store$/, 'reach_payment_reversal_store'));
   }
@@ -192,8 +211,8 @@ export class SupabaseAccountStore {
     const reversal = normalizeReversal(raw);
     return this._reversalRpc('apply_reversal', { ...reversal, reversalId: id(), fingerprint: reversalFingerprint(reversal) });
   }
-  async listReversals(accountId, limit = 50) { return (await this._reversalRpc('list_reversals', { accountId, limit })).map(publicReversal); }
-  async flaggedReversals() { return (await this._reversalRpc('flagged_reversals')).map(reviewReversal); }
+  async listReversals(accountId,limit=50){return [...(await this._reversalRpc('list_reversals',{accountId,limit})).map(publicReversal),...(this.subscription?.plus?(await this._plusRpc('list_reversals',{accountId})).map(publicPlusReversal):[])].sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||a.id.localeCompare(b.id)).slice(0,Number.isSafeInteger(limit)&&limit>0&&limit<=200?limit:50);}
+  async flaggedReversals(){return [...(await this._reversalRpc('flagged_reversals')).map(reviewReversal),...(this.subscription?.plus?(await this._plusRpc('flagged_reversals')).map(row=>({...publicPlusReversal(row),accountId:row.account_id,objectId:row.object_id,eventId:row.event_id})):[])];}
   async startFlow(state, challenge) {
     if (typeof state !== 'string' || typeof challenge !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/.test(state) || !/^[A-Za-z0-9_-]{43}$/.test(challenge)) fail(400, 'invalid_flow', 'Invalid sign-in state or proof key.');
     return this._rpc('start_flow', { flowId: id(), stateHash: digest(state), challenge });

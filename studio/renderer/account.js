@@ -27,18 +27,19 @@
     const menuSummary = document.getElementById('account-menu-summary');
     if (menuSummary && model.connected && model.requestMode) menuSummary.textContent = model.plan + ' · ' + model.usageSummary;
     el('account-plan').textContent = model.plan;
-    el('account-plan-status').textContent = model.requestMode ? model.connected ? model.requestAllowance.basicActive ? 'BASIC' : 'PAY AS YOU GO' : '—'
+    el('account-plan-status').textContent = model.requestMode ? model.connected ? model.requestAllowance.plusActive ? 'PLUS' : model.requestAllowance.plusExpired ? 'EXPIRED' : model.requestAllowance.basicActive ? 'BASIC' : 'PAY AS YOU GO' : '—'
       : model.plan === 'RCH prepaid access' ? 'PREPAID' : String(state.account?.plan?.status || '—').toUpperCase();
     const expiry = new Date(model.requestMode ? model.requestAllowance.periodEndsAt ?? NaN : state.account?.plan?.expiresAt).getTime();
     el('account-plan-detail').textContent = model.connected
       ? (Number.isFinite(expiry) ? 'Current period ends ' + new Date(expiry).toLocaleString() + '. ' : '') +
-        (model.requestMode ? model.requestAllowance.basicActive
+        (model.requestMode ? model.requestAllowance.plusExpired ? 'Your paid Plus period has ended. Renew Plus to use subscription models. RCH wallet credit remains separate.' : model.requestAllowance.plusActive ? 'Unlimited usage of the subscription models below. No monthly request quota or usage overage charges. RCH wallet credit is separate.' : model.requestAllowance.basicActive
           ? 'Basic includes ' + model.requestAllowance.includedLimit + ' completed requests this subscription period. ' + model.usageSummary + '.'
           : 'Wallet pay as you go costs ' + model.requestAllowance.overagePrice + ' per completed request. Add credit to use the models below.'
           : model.usable ? 'All models below use the same account allowance.' : 'Add a plan or redeem RCH credit when redemption is available and metered models are configured.')
       : 'Connect your wallet to load your plan and permitted models.';
     el('account-models').replaceChildren();
-    const availableModels = state.account?.allowedModels?.length ? state.account.allowedModels : state.config?.redemptionModels || [];
+    let availableModels = state.account?.allowedModels?.length ? state.account.allowedModels : state.config?.redemptionModels || [];
+    if(state.account?.plan?.id==='plus')availableModels=availableModels.map(entry=>entry.access==='requests'?{...entry,pricing:{unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0}}:entry);
     el('account-models').setAttribute('aria-label', model.usable ? 'Models included with this account' : 'Models available after funding your account');
     for (const entry of availableModels) {
       const chip = document.createElement('span');
@@ -49,7 +50,9 @@
     }
     el('account-use').disabled = busy || !model.usable;
     for (const [id, key] of [['included', 'includedRemaining'], ['prepaid', 'prepaidRemaining'], ['reserved', 'reserved'], ['total', 'totalRemaining']]) el('allowance-' + id).textContent = model.counts[key];
-    for (const [id, label, hint] of model.requestMode ? [
+    for (const [id, label, hint] of model.requestAllowance?.plusActive||model.requestAllowance?.plusExpired ? [
+      ['included','Subscription requests','Unlimited · No monthly quota'],['prepaid','Completed subscription requests','Usage statistics only'],['reserved','Requests in progress','Tracked for recovery'],['total','Usage overage','No usage overage charges'],
+    ] : model.requestMode ? [
       ['included', 'Included requests remaining', model.requestAllowance.basicActive ? 'Completed requests included with Basic' : 'No active Basic allowance'],
       ['prepaid', 'Completed included requests', 'Used in the current subscription period'],
       ['reserved', 'Requests in progress', 'Reserved until each request completes'],
@@ -66,11 +69,11 @@
     if (model.usdCredit) {
       el('usd-credit-available').textContent = model.usdCredit.available;
       el('usd-credit-reserved').textContent = model.usdCredit.reserved;
-      el('usd-credit-detail').textContent = model.usdCredit.debt !== 'US$0.00'
+      el('usd-credit-detail').textContent = model.requestAllowance?.plusActive||model.requestAllowance?.plusExpired ? 'Separate wallet credit. Plus subscription requests do not spend this balance.' : model.usdCredit.debt !== 'US$0.00'
         ? model.usdCredit.debt + ' awaiting settlement' : model.requestMode
           ? model.requestAllowance.overagePrice + ' per completed request after any included Basic allowance.' : 'Spent at the selected model’s published usage price.';
     }
-    el('allowance-debt').textContent = model.requestMode ? model.requestAllowance.basicActive
+    el('allowance-debt').textContent = model.requestAllowance?.plusActive||model.requestAllowance?.plusExpired ? 'No subscription usage overage charges.' : model.requestMode ? model.requestAllowance.basicActive
       ? 'Charged after the included Basic requests are used.' : 'Funded from your available US dollar credit.'
       : state.account?.allowance?.debt && state.account.allowance.debt !== '0'
       ? view.format(state.account.allowance.debt) + ' tokens awaiting reconciliation' : 'Shared across supplied models';
@@ -87,26 +90,61 @@
     el('redemption-start').disabled = busy || !model.canRedeem || !el('redemption-amount').value.trim();
     if (!model.canRedeem || el('redemption-status').dataset.unavailable === 'true') el('redemption-status').textContent = model.redemptionMessage;
     el('redemption-status').dataset.unavailable = String(!model.canRedeem);
-    const cardReady = model.connected && state.config?.cardPayments === true;
-    const paypalReady = model.connected && state.config?.paypalPayments === true, anyReady = cardReady || paypalReady;
-    const planActive = model.requestAllowance?.basicActive === true || state.account?.plan?.status === 'active';
-    el('card-badge').textContent = anyReady ? 'AVAILABLE' : 'UNAVAILABLE';
+    const cardConfigured = state.config?.cardPayments === true;
+    const paypalConfigured = state.config?.paypalPayments === true;
+    const paymentsConfigured = cardConfigured || paypalConfigured;
+    const cardReady = model.connected && cardConfigured;
+    const paypalReady = model.connected && paypalConfigured, anyReady = cardReady || paypalReady;
+    const planActive = model.requestAllowance?.basicActive === true || model.requestAllowance?.plusActive === true || state.account?.plan?.status === 'active';
+    const plus=state.config?.subscription?.plus;
+    const plusButton=el('card-subscribe-plus');
+    const plusConfigured = cardConfigured && !!plus && state.config?.cardPlans?.plus === true;
+    const basicConfigured = cardConfigured && state.config?.cardPlans?.basic !== false;
+    el('card-title').textContent = paymentsConfigured ? plusConfigured || basicConfigured || paypalConfigured ? 'Choose your plan' : 'Wallet credit' : state.config ? 'Payments not enabled' : 'Payment options';
+    el('card-plan-detail').textContent=!paymentsConfigured
+      ? 'Subscriptions and wallet top-ups are not enabled on this REACH service. REACH Subscription Plus is not yet available. RCH redemption is separate.'
+      : plus
+      ? 'Plus is CAD25.00 per month, tax included, with unlimited subscription usage and no monthly request quota or usage overage. US dollar wallet credit and RCH are separate.' + (!plusConfigured ? ' Plus checkout is not yet enabled on this service.' : '') + (planActive ? ' Manage your existing subscription before starting another plan.' : '')
+      : basicConfigured || paypalConfigured
+        ? 'REACH Subscription Plus is not yet available on this service. Basic and US dollar wallet credit use the enabled payment options below. RCH redemption is separate.'
+        : 'No subscription checkout is enabled on this service. US dollar wallet credit uses the enabled payment options below. RCH redemption is separate.';
+    if(plusButton){
+      plusButton.hidden=!plusConfigured;
+      plusButton.textContent=plus?'Subscribe to '+plus.name+' · '+new Intl.NumberFormat('en-CA',{style:'currency',currency:plus.currency.toUpperCase(),currencyDisplay:'code'}).format(Number(plus.amountMinor)/100)+' a month · Unlimited':'';
+      plusButton.disabled=busy||!cardReady||state.config?.cardPlans?.plus!==true||planActive;
+      plusButton.title=state.config?.cardPlans?.plus===true?'':'Plus checkout setup is pending.';
+      if(model.requestAllowance?.plusActive)plusButton.textContent=(plus?.name||'Plus')+' is active · Unlimited';
+    }
+    el('card-badge').textContent = paymentsConfigured ? model.connected ? 'AVAILABLE' : 'SIGN IN' : 'NOT ENABLED';
     el('card-subscribe').textContent = planActive ? 'Basic is active'
       : 'Subscribe to Basic · ' + view.formatUsd(state.config?.subscription?.basic?.priceUsdMicros ?? '15000000') + ' a month';
-    el('card-subscribe').disabled = busy || !cardReady || planActive;
-    el('card-subscribe').hidden = paypalReady && !cardReady;
-    el('card-topup').hidden = paypalReady && !cardReady;
-    el('card-subscribe-paypal').hidden = !paypalReady;
+    el('card-subscribe').disabled = busy || !cardReady || planActive || state.config?.cardPlans?.basic===false;
+    if(planActive&&model.requestAllowance?.plusActive)el('card-subscribe').textContent='Another subscription is active';
+    el('card-subscribe').hidden = !basicConfigured;
+    el('card-topup').hidden = !cardConfigured;
+    el('card-subscribe-paypal').hidden = !paypalConfigured;
     el('card-subscribe-paypal').textContent = planActive ? 'Basic is active' : 'Subscribe with PayPal';
+    if(planActive&&model.requestAllowance?.plusActive)el('card-subscribe-paypal').textContent='Another subscription is active';
     el('card-subscribe-paypal').disabled = busy || !paypalReady || planActive;
-    el('card-topup-paypal').hidden = !paypalReady;
+    el('card-topup-paypal').hidden = !paypalConfigured;
     el('card-topup-paypal').disabled = busy || !paypalReady || !el('card-amount').value.trim();
-    el('card-paypal-note').hidden = !(paypalReady && planActive);
-    el('card-manage').hidden = !(cardReady && planActive);
-    el('card-manage').disabled = busy || !cardReady || !planActive;
+    el('card-paypal-note').hidden = !(paypalReady && planActive && state.account?.plan?.id !== 'plus');
+    const canManage = cardReady && (planActive || state.account?.plan?.id === 'plus');
+    el('card-manage').hidden = !canManage;
+    el('card-manage').disabled = busy || !canManage;
     el('card-amount').disabled = busy || !anyReady;
+    el('card-wallet-topup').hidden = !paymentsConfigured;
     el('card-topup').disabled = busy || !cardReady || !el('card-amount').value.trim();
-    if (!anyReady) el('card-status').textContent = model.connected ? 'Card payments are not enabled on this service.' : 'Connect your wallet to pay by card.';
+    if (!paymentsConfigured) {
+      el('card-status').textContent = state.config ? 'Payment setup is pending on this REACH service.' : 'Connect to your REACH service to load payment options.';
+      el('card-status').dataset.readiness = 'unavailable';
+    } else if (!model.connected) {
+      el('card-status').textContent = 'Sign in to subscribe or add wallet credit.';
+      el('card-status').dataset.readiness = 'sign-in';
+    } else if (el('card-status').dataset.readiness) {
+      el('card-status').textContent = 'Choose an available subscription or manage your existing plan.';
+      delete el('card-status').dataset.readiness;
+    }
   }
   async function action(fn) {
     if (busy) return;
@@ -157,6 +195,7 @@
   const billingOpened = 'Manage your subscription on the Stripe page in your browser. A cancelled plan stays active until the end of its paid period.';
   el('card-amount').addEventListener('input', () => render(state));
   for (const [id, start, opened] of [['card-subscribe', () => api.subscribe(), cardStarted],
+    ['card-subscribe-plus', () => api.subscribe('stripe', 'plus'), cardStarted],
     ['card-topup', () => api.topUp(el('card-amount').value.trim()), cardStarted], ['card-manage', () => api.billing(), billingOpened],
     ['card-subscribe-paypal', () => api.subscribe('paypal'), paypalStarted], ['card-topup-paypal', () => api.topUp(el('card-amount').value.trim(), 'paypal'), paypalStarted]]) {
     el(id).addEventListener('click', () => action(async () => {

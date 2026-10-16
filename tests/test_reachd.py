@@ -278,11 +278,15 @@ class CodegptEconomyTests(unittest.TestCase):
     def test_bridge_aliases_never_carry_the_omniroute_key(self):
         """The tray bridge authenticates through its own signed-in session, so a
         bridge route must not inherit the OmniRoute bearer token."""
-        source = (Path(__file__).resolve().parents[1]
-                  / "server" / "reachd" / "chat.py").read_text(encoding="utf-8")
-        self.assertIn('use_bridge = upstream_model.startswith("bridge/")', source)
-        self.assertIn('if not use_bridge and not core.STATE.key:', source)
-        self.assertIn('if not use_bridge:\n            auth_headers["Authorization"]', source)
+        from types import SimpleNamespace
+        from reachd.model_routes import dispatch
+        state = SimpleNamespace(key="fixture-upstream", bridge_url="http://127.0.0.1:12345/v1",
+                                omniroute_url="https://provider.example/v1")
+        _, bridge, headers, _ = dispatch("bridge/codegpt-eco-ox-alpha", {"messages": []}, state)
+        self.assertEqual(bridge["model"], "codegpt-eco-ox-alpha")
+        self.assertNotIn("Authorization", headers)
+        _, _, upstream_headers, _ = dispatch("provider/model", {"messages": []}, state)
+        self.assertEqual(upstream_headers["Authorization"], "Bearer fixture-upstream")
 
 
 class MergeTests(unittest.TestCase):

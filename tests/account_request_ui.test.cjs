@@ -164,7 +164,7 @@ test('card payment controls appear only when the service enables them and respec
   const studioView = studioRenderer();
   studioView.emit({ ...card, status: 'disconnected', account: null });
   assert.equal(studioView.get('home-card-subscribe').disabled, true);
-  assert.match(studioView.text('home-card-status'), /Connect your wallet/);
+  assert.match(studioView.text('home-card-status'), /Sign in to subscribe/);
   studioView.emit(card);
   assert.equal(studioView.text('home-card-badge'), 'AVAILABLE');
   assert.equal(studioView.get('home-card-subscribe').disabled, false);
@@ -174,7 +174,7 @@ test('card payment controls appear only when the service enables them and respec
   assert.equal(studioView.get('home-card-manage').hidden, false);
   assert.equal(studioView.get('home-card-manage').disabled, false);
   studioView.emit({ ...card, config: { ...card.config, cardPayments: false } });
-  assert.match(studioView.text('home-card-status'), /not enabled/);
+  assert.match(studioView.text('home-card-status'), /Payment setup is pending/);
 });
 
 test('PayPal controls appear next to card ones only when the service offers PayPal', () => {

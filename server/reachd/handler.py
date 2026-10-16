@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import reachd.core as core  # core.STATE is read at call time (cycle-safe)
-from reachd import diagnostics, net
+from reachd import diagnostics, net, model_services
 from reachd.browser import BrowserError, fetch_page
 from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
@@ -631,6 +631,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                          "created": 1715367049, "owned_by": "SignalR.E.A.C.H"}
                         for alias in sorted(core.STATE.public_models())]
                 self._json(200, {"object": "list", "data": data})
+            elif path == "/_reach/model-services":
+                if not self._admin_local():
+                    return self._json(403, {"error": {"message": "Model controls require a direct local connection."}})
+                self._json(200, model_services.inventory())
             elif path == "/_reach/settings":
                 if not self._require_admin():
                     return
@@ -838,6 +842,28 @@ class RelayHandler(BaseHTTPRequestHandler):
                     return self._json(403, {"error": {"message": "The browser requires a direct local connection.",
                                                       "type": "forbidden"}})
                 self.handle_browser_fetch(resource=path.endswith("/resource"))
+            elif path in ("/_reach/subscription-models", "/_reach/model-services/test"):
+                if not self._admin_local():
+                    return self._json(403, {"error": {"message": "Model controls require a direct local connection."}})
+                if (self.headers.get("Content-Type") or "").split(";", 1)[0] != "application/json":
+                    return self._json(415, {"error": {"message": "Send application/json."}})
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                    if not 0 < length <= 8192:
+                        raise ValueError("Model command is empty or too large")
+                    body = json.loads(self._read_exact(length).decode("utf-8"))
+                    if path.endswith("/test"):
+                        if not isinstance(body, dict) or set(body) != {"id"}:
+                            raise ValueError("Send a support model id")
+                        result = model_services.test_support(body["id"])
+                    else:
+                        result = model_services.update_subscription(body)
+                        self._audit("models.subscription.update", body["id"])
+                    self._json(200, result)
+                except (ValueError, UnicodeError) as exc:
+                    self._json(400, {"error": {"message": str(exc)}})
+                except OSError:
+                    self._json(502, {"error": {"message": "The private model service is unavailable. Check its health and tunnel."}})
             elif path == "/_reach/public-url":
                 if not self._require_admin():
                     return

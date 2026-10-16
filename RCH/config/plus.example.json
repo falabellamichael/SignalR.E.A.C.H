@@ -1,0 +1,14 @@
+{
+  "subscription": {
+    "plus": {
+      "id": "plus",
+      "name": "REACH Subscription Plus",
+      "currency": "cad",
+      "amountMinor": 2500,
+      "interval": "month",
+      "intervalCount": 1,
+      "taxBehavior": "inclusive",
+      "unlimited": true
+    }
+  }
+}

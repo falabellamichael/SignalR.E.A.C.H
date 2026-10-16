@@ -22,6 +22,7 @@
 .team-deck-nav.is-concealed { visibility: hidden; pointer-events: none; }
 .team-run-history { border-top: 1px solid var(--deck-line); padding: 10px 0; }
 .team-run-history summary { cursor: pointer; color: var(--deck-muted); padding: 6px 0; font-size: 11px; overflow-wrap: anywhere; }
+.team-run-history > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .team-run-history > details { margin: 8px 0; }
 .team-deck-heading { display: flex; align-items: baseline; gap: 9px; padding: 12px 0 9px; font-size: 12px; min-width: 0; }
 .team-deck-heading strong { font-size: 12px; font-weight: 600; white-space: nowrap; }

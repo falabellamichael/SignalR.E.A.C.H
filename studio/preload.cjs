@@ -57,7 +57,7 @@ contextBridge.exposeInMainWorld('reach', {
     refresh: () => ipcRenderer.invoke('account:refresh'),
     disconnect: () => ipcRenderer.invoke('account:disconnect'),
     redeem: amountRch => ipcRenderer.invoke('account:redeem', amountRch),
-    subscribe: provider => ipcRenderer.invoke('account:subscribe', provider),
+    subscribe: (provider, planId) => ipcRenderer.invoke('account:subscribe', provider, planId),
     topUp: (amountUsd, provider) => ipcRenderer.invoke('account:topUp', amountUsd, provider),
     billing: () => ipcRenderer.invoke('account:billing'),
     onState: callback => {

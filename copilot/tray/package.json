@@ -31,6 +31,8 @@
       "bridge.js",
       "economy-models.js",
       "codegpt-inference.js",
+      "codegpt-direct-host.cjs",
+      "codegpt-direct-models.json",
       "gemini.js",
       "preload.js",
       "panel.html",

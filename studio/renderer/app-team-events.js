@@ -80,6 +80,14 @@ function memberToolLine(ev) {
   return [mark, ev.tool || 'tool', ev.headline, elapsed, error && !ev.ok ? error : ''].filter(Boolean).join('  ');
 }
 
+// Keep the newest status above the earlier-work dropdown. Archived runs live
+// in that dropdown; a fresh note belongs with the run the user is looking at.
+function appendTeamDeckNote(wrap, note) {
+  const history = wrap.querySelector(':scope > .team-run-history');
+  if (history) wrap.insertBefore(note, history);
+  else wrap.appendChild(note);
+}
+
 function handleTeamEvent(ev) {
   if (ev.type === 'queue-run-started') {
     startTeamRunView(ev.teamRunId, ev.team, ev.task, ev.agentId);
@@ -392,14 +400,14 @@ function handleTeamEvent(ev) {
       note.className = 'chat-msg system';
       const okCount = (ev.agents || []).filter(a => a.status === 'completed').length;
       note.textContent = `⑂ Crew workers: ${okCount}/${ev.count} spawned agents completed.`;
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       break;
     }
     case 'chain-broken': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `⛓ Chain broken at ${ev.name}: ${teamErrorSummary(ev.error) || 'member failed'} — remaining members skipped.`;
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       break;
     }
     case 'links-round': {
@@ -409,21 +417,21 @@ function handleTeamEvent(ev) {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `🔗 Links round ${ev.round}: ${waking.join(', ')} got crew messages — ${ev.exchanges}/${ev.budget} exchanges used.`;
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       break;
     }
     case 'links-synthesis': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `🔗 Links: no completion was declared — ${ev.name} synthesizes the final answer (${ev.budgetSpent} crew messages used).`;
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       break;
     }
     case 'links-stall': {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `🔗 Links: ${ev.name} stalled (${teamErrorSummary(ev.error) || 'no usable action'}) — press Start to wake it, or a teammate can send new work; the crew continues meanwhile.`;
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       break;
     }
     case 'links-revive': {
@@ -437,7 +445,7 @@ function handleTeamEvent(ev) {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = `🔗 Links: ${ev.name} was stalled; a teammate sent new work, so it is waking for another bounded turn.`;
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       break;
     }
     case 'done': {
@@ -477,7 +485,7 @@ function handleTeamEvent(ev) {
         }
       }
       if (outcome === 'completed' && run.team?.id && run.agentId) note.textContent += ' Send a follow-up with Teams on to continue this conversation.';
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       // Persist a compact record into the conversation history so a reload
       // still shows the run happened and what the crew answered.
       if (run.agentId && ['completed', 'partial'].includes(outcome) && ev.answer?.trim()) {
@@ -501,7 +509,7 @@ function handleTeamEvent(ev) {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = 'Team error: ' + teamErrorSummary(ev.message);
-      run.wrap.appendChild(note);
+      appendTeamDeckNote(run.wrap, note);
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
       run.deck.finish('error');

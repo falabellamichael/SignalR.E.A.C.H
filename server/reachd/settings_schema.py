@@ -223,6 +223,15 @@ DEFAULT_SETTINGS["models"].update({
     if alias not in DEFAULT_SETTINGS["models"]
 })
 
+# Add optional deployment routes without changing existing provider choices.
+# An operator can select direct routes explicitly in their saved configuration.
+from reachd.model_routes import deployment_defaults
+for alias, spec in deployment_defaults(MODEL_SPEC_DEFAULTS).items():
+    DEFAULT_SETTINGS["models"].setdefault(alias, spec)
+DEFAULT_SETTINGS["models"].pop("space-bunny-alpha", None)
+if "claude-opus-4.6-fast" in DEFAULT_SETTINGS["models"]:
+    DEFAULT_SETTINGS["models"]["claude-opus-4.6-fast"].update(enabled=False, public=False)
+
 NUMERIC_FIELDS = {
     "port": (1024, 65535),
     "upstream_timeout_s": (10, 3600),

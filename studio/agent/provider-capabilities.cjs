@@ -36,7 +36,7 @@ function normalizeCapabilities(value) {
     const model = String(entry.model || '').slice(0, 240);
     if (!endpoint || !model) continue;
     const fact = { endpoint, model };
-    for (const key of ['toolCalling', 'reasoningParam', 'streaming', 'outputTokenLimit', 'textOnly']) {
+    for (const key of ['toolCalling', 'reasoningParam', 'streaming', 'outputTokenLimit', 'jsonSchema', 'textOnly']) {
       if (typeof entry[key] === 'boolean') fact[key] = entry[key];
     }
     if (Number.isSafeInteger(entry.maxTokensCeiling) && entry.maxTokensCeiling > 0) {
@@ -63,10 +63,11 @@ function createCapabilityStore({ load, save }) {
         if (typeof model?.id !== 'string' || !model.id) continue;
         const facts = modelInputLimits(model);
         if (typeof model.capabilities?.outputTokenLimit === 'boolean') facts.outputTokenLimit = model.capabilities.outputTokenLimit;
+        if (typeof model.capabilities?.jsonSchema === 'boolean') facts.jsonSchema = model.capabilities.jsonSchema;
         const old = store.get(connectionId, endpoint, model.id);
-        if (Object.keys(facts).length || old && ['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens', 'outputTokenLimit'].some(key => old[key] !== undefined)) {
+        if (Object.keys(facts).length || old && ['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens', 'outputTokenLimit', 'jsonSchema'].some(key => old[key] !== undefined)) {
           store.record(connectionId, endpoint, model.id, {
-            maxInputBytes: undefined, inputLimitScope: undefined, maxInputTokens: undefined, contextTokens: undefined, outputTokenLimit: undefined, ...facts,
+            maxInputBytes: undefined, inputLimitScope: undefined, maxInputTokens: undefined, contextTokens: undefined, outputTokenLimit: undefined, jsonSchema: undefined, ...facts,
           });
         }
       }

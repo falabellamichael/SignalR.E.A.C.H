@@ -377,7 +377,7 @@ function settleCalls(calls, { outputTool, clientNames, fencedActions, textRespon
     throw unavailable('CodeGPT completed isolated inference without an assistant answer.');
 }
 
-function createCodegptInference({ request = requestHttp, providerError, metadataTimeoutMs = 15000 } = {}) {
+function createCodegptInference({ request = requestHttp, providerError, metadataTimeoutMs = 15000, allowAgents = true } = {}) {
     // Read-only local configuration must settle so a failed sidecar cannot
     // occupy the sender queue. This limit never applies to model generation.
     const metadataGet = async (url, signal) => {
@@ -433,6 +433,10 @@ function createCodegptInference({ request = requestHttp, providerError, metadata
         if (!['credits', 'interactions'].includes(account.metering)) throw unavailable('CodeGPT did not report this account\'s model routing mode.');
         if (provider !== 'codegptplusbeta' && account.metering === 'interactions' && typeof includedInteractions !== 'boolean') throw unavailable('Refresh the CodeGPT catalog before routing this interaction plan.');
         const interactionRoute = provider === 'codegptplusbeta' || account.metering === 'interactions' && includedInteractions;
+        if (interactionRoute && !allowAgents) {
+            throw unavailable('This CodeGPT account/model requires an agent route, which is disabled for direct model access.',
+                503, 'CODEGPT_AGENT_ROUTE_DISABLED');
+        }
         let route = '/chat/tools/codegpt', selection = { modelId: model, provider };
         if (interactionRoute) {
             const agent = await jsonGet('http://127.0.0.1:54112/api/fetch-data/agent-default', signal);
@@ -511,4 +515,4 @@ function createCodegptInference({ request = requestHttp, providerError, metadata
     };
 }
 
-module.exports = { createCodegptInference, readReply, settleCalls, clientToolSpecs };
+module.exports = { createCodegptInference, readReply, settleCalls, clientToolSpecs, requestHttp };

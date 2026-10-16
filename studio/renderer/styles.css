@@ -838,6 +838,25 @@ body.resizing-y, body.resizing-y * {
 .chip.toggle { cursor: pointer; }
 .chip.toggle.active { color: var(--gold); border-color: var(--gold-dim); }
 .file-tree { height: 180px; min-height: 50px; overflow-y: auto; font-size: 12.5px; padding: 6px 4px; border-bottom: none; flex-shrink: 0; }
+/* Side layout: tree column, split, editor. The header and project path stay full width. */
+.file-drawer[data-layout="side"] {
+  display: grid;
+  grid-template-columns: minmax(120px, min(var(--drawer-tree-width, 200px), calc(100% - 180px))) 6px minmax(140px, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.file-drawer[data-layout="side"] > .drawer-head { grid-column: 1 / -1; grid-row: 1; }
+.file-drawer[data-layout="side"] > #drawer-context { grid-column: 1 / -1; grid-row: 2; }
+.file-drawer[data-layout="side"] > #file-tree {
+  grid-column: 1; grid-row: 3; height: auto !important; width: auto; min-height: 0;
+  border-right: none;
+}
+.file-drawer[data-layout="side"] > #drawer-resizer-y {
+  grid-column: 2; grid-row: 3; width: auto; height: auto; margin: 0; cursor: ew-resize; align-self: stretch;
+}
+.file-drawer[data-layout="side"] > #drawer-resizer-y::after { width: 1px; height: 100%; }
+.file-drawer[data-layout="side"] > .editor-main { grid-column: 3; grid-row: 3; min-height: 0; }
+.file-drawer[data-layout="side"] > #browser-panel { grid-column: 1 / -1; grid-row: 3; min-height: 0; }
+body.resizing-split, body.resizing-split * { cursor: ew-resize !important; user-select: none !important; }
 .tree-entry {
   display: block; width: 100%; text-align: left; border: 0;
   background: transparent; font: inherit;
