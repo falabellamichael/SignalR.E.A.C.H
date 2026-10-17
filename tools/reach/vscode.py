@@ -136,7 +136,7 @@ def install(repo_root, quiet=False, with_playwright=False):
             shutil.rmtree(entry, ignore_errors=True)
             if not quiet:
                 print("  pruned old VS Code extension %s" % entry.name)
-    # default route: gpt-4o-mini through the REACH relay
+    # Default route: the GPU Gemma model through the REACH relay.
     if not previous:
         configure_defaults(quiet=quiet)
     # optional Playwright (headless Chromium page fetching)
@@ -145,14 +145,14 @@ def install(repo_root, quiet=False, with_playwright=False):
     if not quiet:
         print("  VS Code extension installed -> " + str(dst))
         if not previous:
-            print("  default model: gpt-4o-mini (change in Settings -> simplereach.model)")
+            print("  default model: gemma-4-12b-qat (change in Settings -> simplereach.model)")
         print("  (reload VS Code: Ctrl+Shift+P -> Developer: Reload Window)")
     return True
 
 
 def configure_defaults(quiet=False):
     """Write VS Code user settings so the extension routes to REACH's
-    gpt-4o-mini chat out of the box (never clobbers unrelated settings)."""
+    GPU Gemma chat out of the box (never clobbers unrelated settings)."""
     import json
     import urllib.request
 
@@ -184,7 +184,7 @@ def configure_defaults(quiet=False):
                 except (OSError, json.JSONDecodeError):
                     settings = {}
             settings.setdefault("simplereach.endpoint", endpoint)
-            settings.setdefault("simplereach.model", "gpt-4o-mini")
+            settings.setdefault("simplereach.model", "gemma-4-12b-qat")
             sp.parent.mkdir(parents=True, exist_ok=True)
             sp.write_text(json.dumps(settings, indent=4), encoding="utf-8")
             if not quiet:

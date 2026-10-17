@@ -12,11 +12,13 @@ ROOT = Path("/srv/signalreach")
 IMAGE = "vllm/vllm-openai-rocm@sha256:749f6f3f944f12af49966ac523c1f8573e4b229594b541954bd5f879b4496b1f"
 DEPLOYMENT = "signalreach-nextify-20261015"
 SERVICES = {
-    "gemma": ("gemma4-12b-qat", "0,1", 8001, 0.30, [
+    "gemma": ("gemma4-12b-qat", "0,1", 8001, 0.40, [
         "--quantization", "fp8_per_tensor", "--quantization-config",
         '{"ignore":["vision_embedder.*"]}',
+        "--reasoning-parser", "gemma4",
+        "--default-chat-template-kwargs", '{"enable_thinking":true}',
     ]),
-    "ornith": ("ornith-1.5-9b", "0,1", 8002, 0.25, [
+    "ornith": ("ornith-1.5-9b", 1, 8002, 0.52, [
         "--quantization", "fp8_per_tensor", "--quantization-config", '{"ignore":["visual.*"]}',
         "--enable-auto-tool-choice", "--tool-call-parser", "qwen3_xml",
         "--reasoning-parser", "qwen3",
@@ -24,23 +26,48 @@ SERVICES = {
         "--limit-mm-per-prompt", '{"image":1,"video":1}',
     ]),
     "support": (None, 1, 8030, None, []),
-    "minicpm": ("minicpm5-2b", 0, 8004, 0.13, [
+    "minicpm": ("minicpm5-2b", 1, 8004, 0.24, [
         "--quantization", "fp8_per_tensor", "--enable-auto-tool-choice",
-        "--tool-call-parser", "minicpm5",
+        "--tool-call-parser", "minicpm5", "--reasoning-parser", "qwen3",
     ]),
 }
 
 
-TP_MODELS = {"gemma", "ornith"}
+# Gemma uses both GPUs with TP2; MiniCPM remains on GPU 1.
+# Distributed runtime checks remain separate from host-memory guards.
+TP_MODELS = frozenset({"gemma"})
+HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith"})
+HOST_MEMORY_LIMIT_BYTES = 12 * 1024 ** 3
+# Operator-disabled services retain their saved profile and assets.
+DISABLED_SERVICES = frozenset({"ornith"})
 RCCL_OVERRIDE = ROOT / "runtime/rccl-gfx1201-7.2.3/librccl.so.1"
 HSA_OVERRIDE = ROOT / "runtime/rocr-7.2.3-poll-backoff/libhsa-runtime64.so.1"
 CHAT_DECODE_CONFIG = {'mode': 0, 'cudagraph_mode': 'FULL_DECODE_ONLY', 'cudagraph_capture_sizes': [1, 2], 'max_cudagraph_capture_size': 2}
-CHAT_RUNNERS = {"gemma": "0", "ornith": "0", "minicpm": "0"}
-CHAT_CAPTURE_SIZES = {"gemma": [1, 2], "ornith": [2], "minicpm": [2]}
+# Gemma MTP uses V2 to capture the assistant's forward pass and sampling on GPU.
+CHAT_RUNNERS = {"gemma": "1", "ornith": "0", "minicpm": "0"}
+# Host-side OpenMP coordination only; model weights and KV caches stay on GPU.
+SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "2", "support": "2"}
+CHAT_CAPTURE_SIZES = {"gemma": [4, 8], "ornith": [2], "minicpm": [2]}
+CHAT_MAX_SEQUENCES = {"gemma": 2, "ornith": 2, "minicpm": 2}
+# Pin every qualified context so a future create cannot silently resize it.
+CHAT_CONTEXT_WINDOWS = {"gemma": 92960, "ornith": 61776, "minicpm": 39904}
+# Tokens of prompt work per scheduler step. Smaller Gemma chunks let an
+# in-flight decode emit tokens while a second request prefills. Context length,
+# tensor parallelism, MTP, and GPU placement stay as qualified below.
+CHAT_PREFILL_TOKENS = {"gemma": 1024, "ornith": 2048, "minicpm": 2048}
+CHAT_SPECULATIVE_CONFIGS = {
+    "gemma": {
+        "method": "mtp",
+        "model": "/models/gemma4-12b-qat-assistant",
+        "num_speculative_tokens": 3,
+    },
+}
 
 
 def chat_decode_config(key):
-    return {**CHAT_DECODE_CONFIG, "cudagraph_capture_sizes": CHAT_CAPTURE_SIZES[key]}
+    sizes = CHAT_CAPTURE_SIZES[key]
+    return {**CHAT_DECODE_CONFIG, "cudagraph_capture_sizes": sizes,
+            "max_cudagraph_capture_size": max(sizes)}
 
 
 def docker(*args, check=True):
@@ -100,11 +127,58 @@ def gemma_config_override():
     return target
 
 
+def validate_existing_context(key, command, port, repository):
+    expected = CHAT_CONTEXT_WINDOWS[key]
+    actual = command[command.index("--max-model-len") + 1] if "--max-model-len" in command else None
+    if actual == str(expected):
+        return
+    # Preserve the already-running MiniCPM auto profile only when the native
+    # model API confirms the exact qualified window. Never rewrite it to fit.
+    if key == "minicpm" and actual == "auto":
+        try:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(f"http://127.0.0.1:{port}/v1/models", timeout=3) as response:
+                payload = json.load(response)
+            matches = [item for item in payload.get("data", [])
+                       if isinstance(item, dict) and item.get("id") == repository]
+            if len(matches) == 1 and type(matches[0].get("max_model_len")) is int \
+                    and matches[0]["max_model_len"] == expected:
+                return
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+    raise RuntimeError(f"Preserving reach-{key}: context must be exactly {expected}; "
+                       "MiniCPM auto requires matching live native model metadata")
+
+
+def quiesce_disabled():
+    """A disabled model must not stay resident. Stop a leftover container and
+    clear its restart policy so Docker cannot load it again at boot."""
+    for key in DISABLED_SERVICES:
+        name = f"reach-{key}"
+        existing = docker("container", "inspect", name, check=False)
+        if existing.returncode != 0:
+            continue
+        details = json.loads(existing.stdout)[0]
+        if details["HostConfig"].get("RestartPolicy", {}).get("Name") != "no":
+            docker("update", "--restart", "no", name)
+        if details["State"]["Status"] == "running":
+            print(f"STOPPING disabled {name}", flush=True)
+            docker("stop", name)
+            print(f"STOPPED {name}", flush=True)
+
+
 def start(key, manifest):
+    if key in DISABLED_SERVICES:
+        raise RuntimeError(f"Service {key} is disabled at the operator request; "
+                           "preserving its containers, weights, and saved settings")
     model, gpu, port, fraction, extra = SERVICES[key]
     name = f"reach-{key}"
+    repository = None
     if model:
+        repository = next(item["repository"] for item in manifest["models"] if item["name"] == model)
         check_weights(model)
+        if key in CHAT_SPECULATIVE_CONFIGS:
+            check_weights(Path(CHAT_SPECULATIVE_CONFIGS[key]["model"]).name)
     else:
         for item in ("bge-m3", "bge-reranker-v2-m3", "d1-omni-600m", "d1-3b"):
             check_weights(item)
@@ -119,6 +193,8 @@ def start(key, manifest):
             raise RuntimeError(f"Preserving {name}: existing GPU settings differ from the requested deployment")
         if environment.get("GPU_MAX_HW_QUEUES") != "1":
             raise RuntimeError(f"Preserving {name}: hardware queue limit differs from qualification")
+        if environment.get("OMP_NUM_THREADS") != SERVICE_OMP_THREADS[key]:
+            raise RuntimeError(f"Preserving {name}: OpenMP thread count differs from qualification")
         hsa_bind = f"{HSA_OVERRIDE}:/opt/rocm-7.2.3/lib/libhsa-runtime64.so.1.18.0:ro"
         if hsa_bind not in set(details["HostConfig"].get("Binds") or []):
             raise RuntimeError(f"Preserving {name}: existing container lacks the validated HSA runtime mount")
@@ -128,19 +204,35 @@ def start(key, manifest):
             expected_tp = 2 if key in TP_MODELS else 1
             if actual_tp != expected_tp or environment.get("ROCR_VISIBLE_DEVICES") != str(gpu):
                 raise RuntimeError(f"Preserving {name}: existing TP/GPU settings differ from the requested deployment")
-            expected_dtype = "bfloat16" if key in {"gemma", "ornith"} else "half"
+            expected_dtype = "bfloat16"
+            validate_existing_context(key, command, port, repository)
+            actual_sequences = int(command[command.index("--max-num-seqs") + 1]) if "--max-num-seqs" in command else None
+            if actual_sequences != CHAT_MAX_SEQUENCES[key]:
+                raise RuntimeError(f"Preserving {name}: sequence limit differs from qualification")
             if "--dtype" not in command or command[command.index("--dtype") + 1] != expected_dtype:
                 raise RuntimeError(f"Preserving {name}: activation dtype differs from qualification")
             if "--gpu-memory-utilization" not in command or float(command[command.index("--gpu-memory-utilization") + 1]) != fraction:
                 raise RuntimeError(f"Preserving {name}: GPU memory budget differs from qualification")
-            for flag in ("--quantization", "--quantization-config"):
+            actual_speculation = json.loads(command[command.index("--speculative-config") + 1]) if "--speculative-config" in command else None
+            if actual_speculation != CHAT_SPECULATIVE_CONFIGS.get(key):
+                raise RuntimeError(f"Preserving {name}: speculative decoding differs from qualification")
+            actual_prefill = int(command[command.index("--max-num-batched-tokens") + 1]) if "--max-num-batched-tokens" in command else None
+            if actual_prefill != CHAT_PREFILL_TOKENS[key]:
+                raise RuntimeError(f"Preserving {name}: prompt scheduling step must be exactly {CHAT_PREFILL_TOKENS[key]} tokens; "
+                                   "context, TP, MTP and GPU placement are unchanged")
+            for flag in ("--quantization", "--quantization-config", "--reasoning-parser", "--default-chat-template-kwargs"):
                 expected = extra[extra.index(flag) + 1] if flag in extra else None
                 actual = command[command.index(flag) + 1] if flag in command else None
-                if flag == "--quantization-config":
+                if flag in ("--quantization-config", "--default-chat-template-kwargs"):
                     expected = json.loads(expected) if expected else None
                     actual = json.loads(actual) if actual else None
                 if actual != expected:
-                    raise RuntimeError(f"Preserving {name}: quantization settings differ from qualification")
+                    raise RuntimeError(f"Preserving {name}: {flag} differs from qualification")
+        if key in HOST_MEMORY_GUARDED_MODELS:
+            host = details["HostConfig"]
+            if host.get("Memory") != HOST_MEMORY_LIMIT_BYTES or host.get("MemorySwap") != HOST_MEMORY_LIMIT_BYTES \
+                    or host.get("OomScoreAdj") != 500:
+                raise RuntimeError(f"Preserving {name}: host-memory guard differs from qualification")
         if key in TP_MODELS:
             required = {
                 f"{RCCL_OVERRIDE}:/opt/rocm-7.2.3/lib/librccl.so.1.0.70203:ro",
@@ -159,6 +251,8 @@ def start(key, manifest):
                     raise RuntimeError(f"Preserving {name}: decode graph configuration differs from qualification")
             elif "--enforce-eager" not in command or "--compilation-config" in command:
                 raise RuntimeError(f"Preserving {name}: expected the qualified eager execution configuration")
+        if details["HostConfig"].get("RestartPolicy", {}).get("Name") != "unless-stopped":
+            docker("update", "--restart", "unless-stopped", name)
         state = details["State"]["Status"]
         if state in {"created", "exited"}:
             docker("start", name)
@@ -170,10 +264,10 @@ def start(key, manifest):
     args = [
         "run", "-d", "--init", "--pull=never", "--name", name,
         "--label", f"io.signalreach.deployment={DEPLOYMENT}",
-        "--restart=no", "--log-opt", "max-size=20m", "--log-opt", "max-file=3",
+        "--restart=unless-stopped", "--log-opt", "max-size=20m", "--log-opt", "max-file=3",
         "--device=/dev/kfd", "--device=/dev/dri", "--group-add=video",
         "--shm-size=2g", "-e", f"ROCR_VISIBLE_DEVICES={gpu}",
-        "-e", "OMP_NUM_THREADS=2", "-e", "GPU_MAX_HW_QUEUES=1", "-e", "HF_HUB_OFFLINE=1",
+        "-e", f"OMP_NUM_THREADS={SERVICE_OMP_THREADS[key]}", "-e", "GPU_MAX_HW_QUEUES=1", "-e", "HF_HUB_OFFLINE=1",
         "-e", "TRANSFORMERS_OFFLINE=1", "-e", "VLLM_ROCM_USE_AITER=0",
         "-v", f"{ROOT}/models:/models:ro",
         "-p", f"127.0.0.1:{port}:{8030 if key == 'support' else 8000}",
@@ -181,8 +275,9 @@ def start(key, manifest):
     if not HSA_OVERRIDE.is_file():
         raise RuntimeError(f"Missing validated HSA runtime: {HSA_OVERRIDE}")
     args += ["-v", f"{HSA_OVERRIDE}:/opt/rocm-7.2.3/lib/libhsa-runtime64.so.1.18.0:ro"]
-    if key in TP_MODELS:
+    if key in HOST_MEMORY_GUARDED_MODELS:
         args += ["--memory=12g", "--memory-swap=12g", "--oom-score-adj=500"]
+    if key in TP_MODELS:
         if not RCCL_OVERRIDE.is_file():
             raise RuntimeError(f"Missing validated RCCL library: {RCCL_OVERRIDE}")
         args += ["-v", f"{RCCL_OVERRIDE}:/opt/rocm-7.2.3/lib/librccl.so.1.0.70203:ro"]
@@ -196,18 +291,19 @@ def start(key, manifest):
     if key == "support":
         args += ["signalreach-support:20261015"]
     else:
-        repository = next(item["repository"] for item in manifest["models"] if item["name"] == model)
         args += [
             IMAGE, f"/models/{model}", "--served-model-name", repository,
             "--host", "0.0.0.0", "--port", "8000",
-            "--dtype", "bfloat16" if key in {"gemma", "ornith"} else "half",
-            "--max-model-len", "8192", "--max-num-seqs", "2",
-            "--max-num-batched-tokens", str(4096 if key == "gemma" else 2048),
+            "--dtype", "bfloat16",
+            "--max-model-len", str(CHAT_CONTEXT_WINDOWS[key]), "--max-num-seqs", str(CHAT_MAX_SEQUENCES[key]),
+            "--max-num-batched-tokens", str(CHAT_PREFILL_TOKENS[key]),
             *(["--compilation-config", json.dumps(chat_decode_config(key))] if key in CHAT_CAPTURE_SIZES else ["--enforce-eager"]),
             "--gpu-memory-utilization", str(fraction),
             "--attention-backend", "TRITON_ATTN", "--mm-processor-cache-gb", "0",
             "--no-enable-log-requests", *extra,
         ]
+        if key in CHAT_SPECULATIVE_CONFIGS:
+            args += ["--speculative-config", json.dumps(CHAT_SPECULATIVE_CONFIGS[key])]
     if key in TP_MODELS:
         args += ["--tensor-parallel-size", "2", "--distributed-executor-backend", "mp", "--disable-custom-all-reduce"]
     print(f"STARTING {name} GPU={gpu} PORT={port}", flush=True)
@@ -221,8 +317,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=SERVICES)
     args = parser.parse_args()
+    if args.only in DISABLED_SERVICES:
+        parser.error(f"Service {args.only} is disabled at the operator request; "
+                     "preserving its containers, weights, and saved settings")
     manifest = json.loads((ROOT / "models.json").read_text())
-    selected = [args.only] if args.only else SERVICES
+    if not args.only:
+        quiesce_disabled()
+    selected = [args.only] if args.only else [key for key in SERVICES if key not in DISABLED_SERVICES]
     for key in selected:
         start(key, manifest)
     print("SELECTED_SERVICES_READY", flush=True)

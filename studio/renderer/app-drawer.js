@@ -127,7 +127,7 @@ function initDrawerResizers() {
   const onPointerMoveY = (e) => {
     if (!isDraggingY) return;
     if (dragAxis === 'x') {
-      const delta = e.clientX - startY;
+      const delta = startY - e.clientX;
       const drawerW = drawer.getBoundingClientRect().width;
       const minW = 120;
       const maxW = Math.max(minW, drawerW - 180);

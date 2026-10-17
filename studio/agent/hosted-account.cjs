@@ -116,7 +116,7 @@ function publicConfig(raw) {
 }
 function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, openExternal, onChange = () => {}, now = Date.now }) {
   let loaded = false, baseUrl = '', session = null, flow = null, config = null, account = null;
-  let phase = 'unconfigured', error = '', generation = 0, polling = false;
+  let phase = 'unconfigured', error = '', generation = 0, polling = false, emailChallengeId = '', linkFlowId = '';
   const issuedSecrets = new Set();
   const filename = () => typeof file === 'function' ? file() : file;
   const available = () => {
@@ -165,7 +165,7 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
   function state() {
     initialize(); expire();
     return { status: phase, baseUrl, account: publicAccount(account), config: config ? { ...config } : null,
-      expiresAt: session?.expiresAt || '', flowExpiresAt: flow?.expiresAt || '', error,
+      expiresAt: session?.expiresAt || '', flowExpiresAt: flow?.expiresAt || '', error, emailChallengeId,
       connectionId: MANAGED_ID, secureStorageAvailable: available() };
   }
   function changed() { onChange(state()); }
@@ -372,6 +372,27 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
     }
     return out;
   }
-  return { state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, hydrate, sanitize, managedConnection };
+  async function linkEmailStart(email) {
+    initialize(); expire();
+    if (!session) throw new Error('Sign in before adding an email.');
+    const { data } = await request('/v1/account/link-email/start', { method: 'POST', token: session.accessToken, body: { email } });
+    emailChallengeId = text(data.challengeId, 64); linkFlowId = text(data.flowId, 64); changed();
+    return state();
+  }
+  async function linkEmailVerify(code) {
+    initialize(); expire();
+    if (!session || !emailChallengeId || !linkFlowId) throw new Error('Request an email code first.');
+    const { data } = await request('/v1/account/link-email/verify', { method: 'POST', token: session.accessToken, body: { flowId: linkFlowId, challengeId: emailChallengeId, code } });
+    account = publicAccount(data); emailChallengeId = ''; linkFlowId = ''; error = ''; changed();
+    return state();
+  }
+  async function linkWallet() {
+    initialize(); expire();
+    if (!session) throw new Error('Sign in before adding a wallet.');
+    const { data } = await request('/v1/account/link-wallet', { method: 'POST', token: session.accessToken, body: {} });
+    await openExternal(browserUrl(data.loginUrl, baseUrl));
+    return state();
+  }
+  return { state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, hydrate, sanitize, managedConnection, linkEmailStart, linkEmailVerify, linkWallet };
 }
 module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, portalUrl, paypalUrl, topUpMicros, publicAccount, publicConfig, MANAGED_ID };

@@ -1,172 +1,37 @@
 {
   "models": [
     {
-      "id": "codegpt-direct-deepseek-v4.1-flash",
-      "name": "DeepSeek V4.1 Flash (CodeGPT)",
-      "provider": "CodeGPT direct",
+      "id": "gemma-4-12b-qat",
+      "name": "Gemma 4 12B QAT",
+      "provider": "SignalREACH GPU",
       "metered": true,
       "access": "requests",
       "bridge": {
-        "kind": "codegpt-direct",
-        "model": "deepseek-v4.1-flash"
-      },
-      "maxInputBytes": 32000
+        "kind": "gpu",
+        "model": "google/gemma-4-12B-it-qat-q4_0-unquantized"
+      }
     },
     {
-      "id": "codegpt-direct-ox-alpha",
-      "name": "GLM 5.3 Flash (CodeGPT)",
-      "provider": "CodeGPT direct",
+      "id": "ornith-1.5-9b",
+      "name": "Ornith 1.5 9B",
+      "provider": "SignalREACH GPU",
       "metered": true,
       "access": "requests",
       "bridge": {
-        "kind": "codegpt-direct",
-        "model": "ox-alpha"
-      },
-      "maxInputBytes": 32000
+        "kind": "gpu",
+        "model": "ornith-ai/Ornith-1.5-9B"
+      }
     },
     {
-      "id": "codegpt-direct-gemini-3.8-flash",
-      "name": "Gemini 3.8 Flash (CodeGPT)",
-      "provider": "CodeGPT direct",
+      "id": "minicpm5-2b",
+      "name": "MiniCPM5 2B FP8",
+      "provider": "SignalREACH GPU",
       "metered": true,
       "access": "requests",
       "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gemini-3.8-flash"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-gpt-5.6-luna",
-      "name": "gpt-5.6-luna (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gpt-5.6-luna"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-glm-5.2",
-      "name": "glm-5.2 (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "glm-5.2"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-MiniMax-M3",
-      "name": "MiniMax M3 (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "MiniMax-M3"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-gpt-4o",
-      "name": "gpt-4o (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gpt-4o"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-gpt-5",
-      "name": "gpt-5 (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gpt-5"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-claude-sonnet-4.6",
-      "name": "claude-sonnet-4.6 (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "claude-sonnet-4.6"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-claude-opus-4.6",
-      "name": "claude-opus-4.6 (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "claude-opus-4.6"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-claude-opus-4.6-fast",
-      "name": "claude-opus-4.6-fast (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": false,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "claude-opus-4.6-fast"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-gemini-3.7-flash",
-      "name": "gemini-3.7-flash (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gemini-3.7-flash"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-gemini-2.5-flash",
-      "name": "gemini-2.5-flash (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gemini-2.5-flash"
-      },
-      "maxInputBytes": 32000
-    },
-    {
-      "id": "codegpt-direct-rch-gpt-4o-mini",
-      "name": "GPT-4o mini (CodeGPT)",
-      "provider": "CodeGPT direct",
-      "metered": true,
-      "access": "requests",
-      "bridge": {
-        "kind": "codegpt-direct",
-        "model": "gpt-4o-mini"
-      },
-      "maxInputBytes": 32000
+        "kind": "gpu",
+        "model": "openbmb/MiniCPM5-2B"
+      }
     }
   ]
 }

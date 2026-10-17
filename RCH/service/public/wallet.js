@@ -1,6 +1,15 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.hash.slice(1));
+const RETURN_ORIGINS = new Set(['http://127.0.0.1:4173','http://localhost:4173','https://signalreach.com','https://www.signalreach.com','https://signalreach.ca','https://www.signalreach.ca','https://falabellamichael.github.io']);
+function returnToCaller() {
+  let url;
+  try { url = new URL(params.get('return') || ''); } catch { url = null; }
+  if (!url || !RETURN_ORIGINS.has(url.origin) || !url.pathname.endsWith('/login.html')) return;
+  url.searchParams.set('signed', '1');
+  url.hash = '';
+  location.assign(url.href);
+}
 const redeemMode = location.pathname === '/wallet/redeem';
 const flowId = params.get('flow');
 const redemptionId = params.get('id'), ticket = params.get('ticket');
@@ -32,6 +41,43 @@ async function api(path, body) {
   return data;
 }
 const status = message => { $('status').textContent=message; };
+const LOGIN_STORAGE = 'reach-login';
+function b64url(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function readHostedLogin() {
+  try { return JSON.parse(sessionStorage.getItem(LOGIN_STORAGE) || 'null'); } catch { return null; }
+}
+async function finishHostedLogin() {
+  const pending = readHostedLogin();
+  if (!pending || pending.flowId !== flowId || typeof pending.state !== 'string' || typeof pending.verifier !== 'string') return false;
+  const session = await api('/v1/auth/exchange', { flowId, state: pending.state, codeVerifier: pending.verifier });
+  try { sessionStorage.removeItem(LOGIN_STORAGE); } catch { /* The account is already stored. */ }
+  const account = session.account || {};
+  const who = [account.walletAddress, account.email].filter(Boolean).join(' · ');
+  status(who ? 'Signed in as ' + who + '. This account is stored in Supabase.' : 'Signed in. This account is stored in Supabase.');
+  return true;
+}
+globalThis.reachFinishLogin = finishHostedLogin;
+async function startHostedLogin() {
+  const verifierBytes = new Uint8Array(32), stateBytes = new Uint8Array(32);
+  crypto.getRandomValues(verifierBytes); crypto.getRandomValues(stateBytes);
+  const verifier = b64url(verifierBytes), state = b64url(stateBytes);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const started = await api('/v1/auth/start', { state, codeChallenge: b64url(new Uint8Array(digest)) });
+  if (!/^[a-f0-9]{64}$/.test(started.flowId || '')) throw new Error('REACH could not start sign-in.');
+  sessionStorage.setItem(LOGIN_STORAGE, JSON.stringify({ flowId: started.flowId, state, verifier }));
+  const hash = new URLSearchParams();
+  hash.set('flow', started.flowId);
+  let ret = '';
+  try { ret = new URL(location.href).searchParams.get('return') || ''; } catch { ret = ''; }
+  if (ret) hash.set('return', ret);
+  // A hash-only change does not rerun the page scripts, so reload after it.
+  location.replace('/wallet/connect#' + hash.toString());
+  location.reload();
+}
 async function wallet(chainId, expectedAddress) {
   if (!window.ethereum?.request) throw new Error('Open this page in a browser with an Ethereum wallet extension.');
   const chain = '0x'+Number(chainId).toString(16);
@@ -281,6 +327,7 @@ $('primary').addEventListener('click',async()=>{
     await api('/v1/auth/verify',{flowId,challengeId:challenge.challengeId,signature});
     status('Wallet verified. Return to REACH Studio to finish connecting.');
     $('primary').hidden=true;
+    if (!await finishHostedLogin()) returnToCaller();
   } catch(e) {
     if(redeemMode && pendingOperation && redemption)renderRedemption(redemption);
     status(e.code===4001?'Wallet request cancelled. No new approval was submitted.':e.message||'The wallet request could not be completed.');
@@ -296,6 +343,6 @@ $('primary').addEventListener('click',async()=>{
       if(!redemptionId||!ticket)throw new Error('Start redemption from your connected account in Studio.');
       renderRedemption(await api('/v1/redemptions/details',{redemptionId,ticket}));
       queueCallPoll();
-    } else if(!flowId)throw new Error('Start wallet sign-in from REACH Studio.');
+    } else if(!flowId) await startHostedLogin();
   } catch(e) {status(e.message);$('primary').disabled=true;}
 })();

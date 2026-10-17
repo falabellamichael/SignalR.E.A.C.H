@@ -48,7 +48,7 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
         if (req.method !== 'POST' || ![ '/', '/send', '/v1/chat/completions' ].includes(req.url)) return json(404, { error: { message: 'Not found' } });
         const chunks = [];
         let size = 0;
-        req.on('data', chunk => { size += chunk.length; if (size > 2e6) req.destroy(); else chunks.push(chunk); });
+        req.on('data', chunk => { size += chunk.length; if (size > 16 * 1024 * 1024) req.destroy(); else chunks.push(chunk); });
         req.on('end', () => {
             let body;
             let text;

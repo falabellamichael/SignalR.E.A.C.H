@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { modelUsdPricing, requestReplay } from './store.mjs';
-import { gpuBridge, requestCapabilities } from './gpu-bridge.mjs';
+import { gpuBridge, hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
 import { codegptDirect } from './codegpt-direct.mjs';
 
-const MAX_BODY = 512 * 1024;
+// Transport guard, independent of model context and application budgets.
+const MAX_BODY = 16 * 1024 * 1024;
 const MAX_RESPONSE = 1024 * 1024;
 const MAX_EVENT = 256 * 1024;
 const FIELDS = new Set(['model', 'messages', 'stream', 'stream_options', 'max_tokens',
@@ -12,10 +13,6 @@ const FIELDS = new Set(['model', 'messages', 'stream', 'stream_options', 'max_to
   'frequency_penalty', 'seed', 'n', 'tools', 'tool_choice', 'parallel_tool_calls',
   'response_format']);
 const REQUEST_FIELDS = new Set(['model', 'messages', 'stream', 'max_tokens', 'max_completion_tokens']);
-const BRIDGE_URLS = Object.freeze({
-  tray: 'http://127.0.0.1:21302/v1/chat/completions',
-  codegpt: 'http://127.0.0.1:21300/v1/chat/completions',
-});
 
 export class GatewayError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -101,15 +98,15 @@ function configureModels(models) {
         : bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(bridge.model));
       if (!/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model.id) || routes.has(model.id)
         || typeof model.provider !== 'string' || model.provider.length > 100
-        || !integer(model.maxInputBytes, 1, MAX_BODY) || (!validModel && !gpuBridge(bridge) && !codegptDirect(bridge))
+        || (model.maxInputBytes !== undefined && !integer(model.maxInputBytes, 1, MAX_BODY)) || (!validModel && !gpuBridge(bridge) && !codegptDirect(bridge))
         || Object.keys(bridge).some(key => !['kind', 'model'].includes(key))
         || model.pricing !== undefined || model.upstreamModel !== undefined) {
         throw new Error('Invalid subscription bridge model configuration.');
       }
-      if (gpuBridge(bridge) && model.maxOutputTokens !== undefined && !integer(model.maxOutputTokens, 1, 4096)) {
-        throw new Error('GPU output limit must be between 1 and 4096.');
+      if (gpuBridge(bridge) && model.maxOutputTokens !== undefined && !integer(model.maxOutputTokens, 1, 1_000_000)) {
+        throw new Error('GPU output limit must be between 1 and 1000000.');
       }
-      routes.set(model.id, Object.freeze({ ...model, bridge: Object.freeze({ ...bridge }) }));
+      if (hostedGpuModel(model)) routes.set(model.id, Object.freeze({ ...model, bridge: Object.freeze({ ...bridge }) }));
       continue;
     }
     if (model.pricing !== undefined && !modelUsdPricing(model)) throw new Error('Invalid USD model pricing.');
@@ -120,7 +117,7 @@ function configureModels(models) {
       || (model.upstreamModel !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(model.upstreamModel))) {
       throw new Error('Invalid hosted model configuration.');
     }
-    routes.set(model.id, Object.freeze({ ...model }));
+    if (hostedGpuModel(model)) routes.set(model.id, Object.freeze({ ...model }));
   }
   return routes;
 }
@@ -130,7 +127,7 @@ function completionRequest(body, routes) {
   if (Object.keys(body).some(k => !FIELDS.has(k))) fail(400, 'unsupported_field', 'This request includes unsupported fields.');
   const route = routes.get(body.model);
   if (!route || route.metered !== true) fail(404, 'model_unavailable', 'This model is not available for metered access.');
-  if (route.access === 'requests') return gpuBridge(route.bridge) ? gpuRequest(body, route) : bridgeRequest(body, route);
+  if (route.access === 'requests') return gpuRequest(body, route);
   if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 100) {
     fail(400, 'invalid_messages', 'Supply between 1 and 100 messages.');
   }
@@ -176,33 +173,42 @@ function completionRequest(body, routes) {
 function gpuRequest(body, route) {
   const { response_format: format, ...textBody } = body;
   const result = bridgeRequest(textBody, route);
-  const limits = { ...gpuBridge(route.bridge), maxOutputTokens: route.maxOutputTokens ?? 4096 };
-  limits.defaultOutputTokens = Math.min(limits.defaultOutputTokens, limits.maxOutputTokens);
-  const output = body.max_completion_tokens ?? body.max_tokens ?? limits.defaultOutputTokens;
-  if (!integer(output, 1, limits.maxOutputTokens)) {
-    fail(400, 'output_limit', `Output limit must be between 1 and ${limits.maxOutputTokens}.`);
+  // No product ceiling: vLLM reserves the available context after tokenizing
+  // the actual prompt. Explicit client and operator limits remain supported.
+  const output = body.max_completion_tokens ?? body.max_tokens ?? route.maxOutputTokens;
+  if (output !== undefined && !integer(output, 1, route.maxOutputTokens ?? 1_000_000)) {
+    fail(400, 'output_limit', `Output limit must be between 1 and ${route.maxOutputTokens ?? 1_000_000}.`);
   }
   // Keep the client's stream preference in replay identity. Request billing
   // already buffers the verified final answer before settlement and delivery.
-  result.payload = { ...result.payload, max_tokens: output,
-    chat_template_kwargs: { enable_thinking: false } };
+  const generation = gpuBridge(route.bridge).generation;
+  result.payload = { ...result.payload, ...(output === undefined ? {} : { max_tokens: output }),
+    ...generation };
+  // A hidden thinking trace is generated before message content. Action calls
+  // need that content to be the JSON object, so those requests answer directly.
+  const actionReply = format !== undefined || result.payload.messages.some(message => message.role === 'system'
+    && message.content.includes('EXECUTABLE ACTION RESPONSE:'));
+  if (actionReply) result.payload.chat_template_kwargs = { ...generation.chat_template_kwargs, enable_thinking: false };
   if (format !== undefined) {
-    if (!plain(format) || format.type !== 'json_schema' || Object.keys(format).some(k => !['type', 'json_schema'].includes(k))
-      || !plain(format.json_schema) || typeof format.json_schema.name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(format.json_schema.name)
-      || !plain(format.json_schema.schema) || Object.keys(format.json_schema).some(k => !['name', 'schema', 'strict'].includes(k))
-      || format.json_schema.strict !== undefined && typeof format.json_schema.strict !== 'boolean'
-      || Buffer.byteLength(JSON.stringify(format)) > 16384) fail(400, 'invalid_response_format', 'Supply a bounded JSON schema response format.');
-    const pending = [format.json_schema.schema];
-    while (pending.length) {
-      const node = pending.pop();
-      if (!node || typeof node !== 'object') continue;
-      if (Object.hasOwn(node, '$ref') && (typeof node.$ref !== 'string' || !node.$ref.startsWith('#'))) {
-        fail(400, 'invalid_response_format', 'External schema references are unsupported.');
+    const jsonObject = plain(format) && format.type === 'json_object' && Object.keys(format).length === 1;
+    if (!jsonObject) {
+      if (!plain(format) || format.type !== 'json_schema' || Object.keys(format).some(k => !['type', 'json_schema'].includes(k))
+        || !plain(format.json_schema) || typeof format.json_schema.name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(format.json_schema.name)
+        || !plain(format.json_schema.schema) || Object.keys(format.json_schema).some(k => !['name', 'schema', 'strict'].includes(k))
+        || format.json_schema.strict !== undefined && typeof format.json_schema.strict !== 'boolean'
+        || Buffer.byteLength(JSON.stringify(format)) > 16384) fail(400, 'invalid_response_format', 'Supply a bounded JSON schema response format.');
+      const pending = [format.json_schema.schema];
+      while (pending.length) {
+        const node = pending.pop();
+        if (!node || typeof node !== 'object') continue;
+        if (Object.hasOwn(node, '$ref') && (typeof node.$ref !== 'string' || !node.$ref.startsWith('#'))) {
+          fail(400, 'invalid_response_format', 'External schema references are unsupported.');
+        }
+        pending.push(...Object.values(node));
       }
-      pending.push(...Object.values(node));
     }
-    result.payload.response_format = format;
-    result.fingerprint = createHash('sha256').update(result.fingerprint).update(canonical(format)).digest('hex');
+    result.payload.response_format = jsonObject ? { type: 'json_object' } : format;
+    result.fingerprint = createHash('sha256').update(result.fingerprint).update(canonical(result.payload.response_format)).digest('hex');
   }
   return result;
 }
@@ -212,13 +218,13 @@ function bridgeRequest(body, route) {
     fail(400, 'unsupported_field', 'Subscription bridges support text messages and streaming; other generation controls are unsupported.');
   }
   const roles = route.bridge.kind === 'codegpt' ? ['system', 'user', 'assistant'] : ['system', 'developer', 'user', 'assistant'];
-  if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 100
+  if (!Array.isArray(body.messages) || body.messages.length < 1
     || body.messages.some(message => !plain(message) || !roles.includes(message.role)
       || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key)))
     || !body.messages.some(message => message.content.trim())) {
     fail(400, 'text_only', 'Subscription bridges accept text messages only, without tools or hosted actions.');
   }
-  if (Buffer.byteLength(JSON.stringify(body.messages)) > route.maxInputBytes) {
+  if (route.maxInputBytes !== undefined && Buffer.byteLength(JSON.stringify(body.messages)) > route.maxInputBytes) {
     throw Object.assign(new GatewayError(400, 'input_too_large', 'Input exceeds this model’s configured text size limit.'),
       { maxInputBytes: route.maxInputBytes, inputLimitScope: 'messages' });
   }
@@ -242,7 +248,11 @@ function bridgeRequest(body, route) {
  * `metered:true` is an operator qualification, never a user-controlled flag.
  */
 export function createModelGateway({ store, models = [], upstreamUrl, upstreamKey, subscription,
-  fetchImpl = globalThis.fetch, timeoutMs = 120_000, maxConcurrency = 6 }) {
+  fetchImpl = globalThis.fetch, timeoutMs, maxConcurrency = 6 }) {
+  // Subscription request deadlines belong to the caller. A positive explicit
+  // operator timeout remains supported; client disconnect always cancels.
+  const requestTimeoutMs = timeoutMs ?? 0;
+  timeoutMs ??= 120_000;
   let routes = configureModels(models);
   const requestRoutes = [...routes.values()].some(route => route.access === 'requests');
   if (requestRoutes && (!plain(subscription) || !plain(subscription.basic)
@@ -251,7 +261,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     || ['reserveRequest', 'settleRequest', 'releaseRequest', 'markRequestUncertain'].some(name => typeof store?.[name] !== 'function'))) {
     throw new Error('Subscription request pricing and durable request store methods are required.');
   }
-  const legacyRoutes = routes.size === 0 || [...routes.values()].some(route => route.access !== 'requests');
+  const legacyRoutes = [...routes.values()].some(route => route.access !== 'requests');
   let completionUrl;
   if (legacyRoutes) {
     const url = new URL(upstreamUrl);
@@ -262,13 +272,14 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     if (typeof upstreamKey !== 'string' || upstreamKey.length < 16 || /[\r\n]/.test(upstreamKey)) throw new Error('A host-only upstream credential is required.');
     completionUrl = new URL(`${url.pathname.replace(/\/$/, '')}/chat/completions`, url).toString();
   }
-  if (!integer(timeoutMs, 100, 600_000) || !integer(maxConcurrency, 1, 100)) throw new Error('Invalid gateway limits.');
+  if ((timeoutMs !== 0 && !integer(timeoutMs, 100, 600_000)) || !integer(maxConcurrency, 1, 100)) throw new Error('Invalid gateway limits.');
   let active = 0;
   const eligible = account => new Set((account.allowedModels || []).map(m => typeof m === 'string' ? m : m.id));
   const catalog = account => ({ object: 'list', data: [...routes.values()]
     .filter(m => m.metered === true && eligible(account).has(m.id))
     .map(m => ({ id: m.id, object: 'model', created: 0, owned_by: 'reach', name: m.name || m.id, provider: m.provider,
       ...(m.access === 'requests' ? { access: 'requests', capabilities: requestCapabilities(m),
+        ...(m.maxInputBytes === undefined ? {} : { max_input_bytes: m.maxInputBytes, input_limit_scope: 'messages' }),
         pricing: account.requestAllowance?.unlimited === true ? { unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0 } : { unit: 'request', includedRequests: subscription.basic.includedRequests,
         usdMicrosPerRequest: subscription.overageUsdMicrosPerRequest } } : m.pricing ? { pricing: m.pricing } : {}) })) });
 
@@ -283,11 +294,16 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     let requestMode = false;
     let settlementAttempted = false;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timer;
     const cancel = () => { if (!res.writableEnded) controller.abort(); };
     res.once('close', cancel);
+    req.once('aborted', cancel);
+    if (req.aborted || res.destroyed) cancel();
     try {
+      if (controller.signal.aborted) fail(408, 'request_cancelled', 'The request was cancelled before dispatch.');
       const { payload, route, amount, reserveUsage, fingerprint } = completionRequest(body ?? await readJson(req), routes);
+      const deadline = route.access === 'requests' ? requestTimeoutMs : timeoutMs;
+      if (deadline > 0) timer = setTimeout(() => controller.abort(), deadline);
       requestMode = route.access === 'requests';
       const requestId = req.headers['idempotency-key'] ?? randomUUID();
       if (typeof requestId !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(requestId)) fail(400, 'invalid_request_id', 'Invalid Idempotency-Key.');
@@ -315,7 +331,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       active += 1;
       counted = true;
       dispatched = true;
-      const upstream = await fetchImpl(requestMode ? (gpuBridge(route.bridge)?.url ?? codegptDirect(route.bridge)?.url ?? BRIDGE_URLS[route.bridge.kind]) : completionUrl, {
+      const upstream = await fetchImpl(requestMode ? gpuBridge(route.bridge).url : completionUrl, {
         method: 'POST', redirect: 'error', signal: controller.signal,
         headers: requestMode ? { 'content-type': 'application/json', 'cache-control': 'no-store' }
           : { 'content-type': 'application/json', authorization: `Bearer ${upstreamKey}`,
@@ -323,7 +339,13 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         body: JSON.stringify(gpuBridge(route.bridge) ? { ...payload, stream: false } : payload),
       });
       if (!upstream.ok) {
-        await upstream.body?.cancel();
+        let detail = '';
+        if (requestMode && upstream.status === 400) {
+          try { detail = (await upstream.text()).slice(0, 500); } catch { detail = ''; }
+        } else await upstream.body?.cancel();
+        if (requestMode && /response_format|json_schema|json_object|structured.output|strict/i.test(detail)) {
+          fail(400, 'invalid_response_format', 'The GPU model rejected the requested JSON format.');
+        }
         fail(502, 'provider_rejected', requestMode ? 'The subscription bridge did not complete the request.'
           : 'The provider did not complete the request. Usage is pending reconciliation.');
       }
@@ -336,9 +358,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       let record;
       let usage;
       if (requestMode) {
-        record = gpuBridge(route.bridge)
-          ? await gpuResponse(upstream, payload, route, controller.signal)
-          : await bridgeResponse(upstream, payload, route, controller.signal);
+        record = await gpuResponse(upstream, payload, route, controller.signal);
         if (controller.signal.aborted || res.destroyed) fail(408, 'request_cancelled', 'The request was cancelled before completion.');
       } else if (payload.stream && contentType.toLowerCase().includes('text/event-stream')) {
         ({ record, usage } = await forwardStream(upstream, res, route.id, controller.signal));
@@ -391,6 +411,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     } finally {
       clearTimeout(timer);
       res.off('close', cancel);
+      req.off('aborted', cancel);
       controller.abort();
       if (counted) active -= 1;
     }
@@ -452,15 +473,20 @@ async function gpuResponse(response, payload, route, signal) {
   const envelope = bridgeEnvelope(parsed, route);
   const choice = parsed.choices[0];
   const message = choice?.message;
-  if (parsed.choices.length !== 1 || !plain(choice) || (choice.index !== undefined && choice.index !== 0)
-    || !plain(message) || message.role !== 'assistant' || typeof message.content !== 'string'
-    || !message.content.trim() || !bridgeFinish(choice.finish_reason)
-    || (message.tool_calls != null && (!Array.isArray(message.tool_calls) || message.tool_calls.length))
-    || message.function_call != null || message.refusal != null) {
-    fail(502, 'incomplete_bridge_response', 'The GPU model did not return a completed text answer.');
+  if (!plain(choice) || !plain(message)) {
+    fail(502, 'invalid_bridge_response', 'The GPU model returned no chat message.');
   }
+  // Models differ in content shape, reasoning fields and finish markers. Pass
+  // their reply through; interpreting an answer or tool call belongs to the client.
+  const hasOutput = ['content', 'reasoning_content', 'reasoning', 'thought', 'refusal', 'tool_calls', 'function_call']
+    .some(key => {
+      const value = message[key];
+      return typeof value === 'string' ? !!value.trim() : Array.isArray(value) ? value.length > 0
+        : plain(value) && Object.keys(value).length > 0;
+    });
+  if (!hasOutput) fail(502, 'empty_response', 'The GPU model returned an empty message.');
   const safe = { ...envelope, object: 'chat.completion', choices: [{ index: 0,
-    message: { role: 'assistant', content: message.content }, finish_reason: choice.finish_reason }] };
+    message: { role: 'assistant', ...message }, finish_reason: choice.finish_reason ?? null }] };
   return payload.stream ? jsonAsStream(safe)
     : { contentType: 'application/json; charset=utf-8', body: JSON.stringify(safe) };
 }

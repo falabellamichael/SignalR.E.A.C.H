@@ -571,7 +571,8 @@ const COLLAB_TOOLS = {
   },
 };
 
-const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS, ...require('./code-tools.cjs') };
+const { PLUGIN_TOOLS } = require('./plugins.cjs');
+const TOOLS = { ...CORE_TOOLS, ...require('./browser-tools.cjs'), ...REACH_TOOLS, ...COLLAB_TOOLS, ...require('./code-tools.cjs'), ...PLUGIN_TOOLS };
 for (const [name, tool] of Object.entries(TOOLS)) {
   if (!Array.isArray(PARAMS[name])) throw new Error(`Tool ${name} has no argument schema.`);
   tool.params = PARAMS[name];

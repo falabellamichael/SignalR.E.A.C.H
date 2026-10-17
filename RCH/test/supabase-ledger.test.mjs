@@ -349,7 +349,7 @@ test('operator snapshot reader preserves the SQLite source and rejects missing o
 test('legacy snapshot export permits empty request tables but refuses either populated request table', async t => {
   const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
     overageUsdMicrosPerRequest: 10000, proEnabled: false };
-  const requestModels = [{ id: 'request-bridge', metered: true, access: 'requests', bridge: { kind: 'tray', model: 'chatgpt-chat' } }];
+  const requestModels = [{ id: 'request-bridge', metered: true, access: 'requests', bridge: { kind: 'gpu', model: 'google/gemma-4-12B-it-qat-q4_0-unquantized' } }];
   for (const populatedTable of ['request_periods', 'request_reservations']) await t.test(populatedTable, async child => {
     const directory = await mkdtemp(join(tmpdir(), 'reach-request-snapshot-'));
     const database = join(directory, 'accounts.sqlite');

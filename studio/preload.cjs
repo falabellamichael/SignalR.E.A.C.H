@@ -60,6 +60,9 @@ contextBridge.exposeInMainWorld('reach', {
     subscribe: (provider, planId) => ipcRenderer.invoke('account:subscribe', provider, planId),
     topUp: (amountUsd, provider) => ipcRenderer.invoke('account:topUp', amountUsd, provider),
     billing: () => ipcRenderer.invoke('account:billing'),
+    linkEmailStart: email => ipcRenderer.invoke('account:linkEmailStart', email),
+    linkEmailVerify: code => ipcRenderer.invoke('account:linkEmailVerify', code),
+    linkWallet: () => ipcRenderer.invoke('account:linkWallet'),
     onState: callback => {
       const listener = (_event, state) => callback(state);
       ipcRenderer.on('account:state', listener);
@@ -184,6 +187,17 @@ contextBridge.exposeInMainWorld('reach', {
   mcp: {
     list: () => ipcRenderer.invoke('mcp:list'),
     test: (serverId) => ipcRenderer.invoke('mcp:test', serverId),
+  },
+
+  // Plugins & Integrations (GitHub, Gmail, Outlook).
+  plugins: {
+    get: () => ipcRenderer.invoke('plugins:get'),
+    save: (patch) => ipcRenderer.invoke('plugins:save', patch),
+    test: (id, config) => ipcRenderer.invoke('plugins:test', { id, config }),
+  },
+
+  git: {
+    info: (dir) => ipcRenderer.invoke('git:info', dir),
   },
 
   // Endpoint connections (multiple providers, each with its own key + model).

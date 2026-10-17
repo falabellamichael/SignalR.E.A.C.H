@@ -44,5 +44,30 @@ test('direct host rejects browser origins and unknown selectors and returns only
     const stream = await call('fixture-model', { stream: true });
     assert.match(stream.headers.get('content-type'), /text\/event-stream/); assert.match(await stream.text(), /\[DONE\]/);
     assert.ok(sent.every(item => item.includedInteractions === false && !Object.hasOwn(item, 'agentId')));
+    const large = await call('fixture-model', { messages: Array.from({ length: 150 }, () => ({ role: 'user', content: 'x'.repeat(4000) })) });
+    assert.equal(large.status, 200, 'application context must pass the old 32KB/128KB host limits');
+    assert.equal(sent.at(-1).messages.length, 150);
+    assert.equal(sent.at(-1).messages.reduce((sum, message) => sum + message.content.length, 0), 600000);
     assert.equal((await (await fetch(base + '/health')).json()).agents, false);
+});
+
+test('the default unlimited direct request releases capacity when its caller cancels', async t => {
+    let started, cancelled;
+    const arrival = new Promise(resolve => { started = resolve; });
+    const cancellation = new Promise(resolve => { cancelled = resolve; });
+    const server = createDirectHost({ models: [{ id: 'fixture', enabled: true }], driverPort: async () => 5000,
+        inferImpl: async ({ signal }) => {
+            started();
+            return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+                cancelled(); reject(new Error('Cancelled')); }, { once: true }));
+        } });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
+    const base = 'http://127.0.0.1:' + server.address().port;
+    const controller = new AbortController();
+    const pending = fetch(base + '/v1/chat/completions', { method: 'POST', signal: controller.signal,
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'fixture', messages: [{ role: 'user', content: 'Wait' }] }) });
+    await arrival; controller.abort(); await assert.rejects(pending);
+    await cancellation; await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await (await fetch(base + '/health')).json()).active, 0);
 });

@@ -6,8 +6,8 @@ import { createAccountService } from '../service/server.mjs';
 import { AccountError } from '../service/store.mjs';
 
 const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 }, overageUsdMicrosPerRequest: 10000, proEnabled: false };
-const model = { id: 'chatgpt-chat', name: 'ChatGPT chat', provider: 'ChatGPT bridge', access: 'requests', metered: true,
-  bridge: { kind: 'tray', model: 'chatgpt-chat' }, maxInputTokens: 64000, maxInputBytes: 32000, maxOutputTokens: 4096 };
+const model = { id: 'gemma-4-12b-qat', name: 'Gemma 4 12B QAT', provider: 'SignalREACH GPU', access: 'requests', metered: true,
+  bridge: { kind: 'gpu', model: 'google/gemma-4-12B-it-qat-q4_0-unquantized' }, maxInputTokens: 64000, maxInputBytes: 32000, maxOutputTokens: 4096 };
 const base = { origin: 'https://accounts.example', listenHost: '127.0.0.1', port: 20978, chainId: 31337,
   database: 'private/accounts.sqlite', upstreamUrl: 'http://127.0.0.1:20777/v1', upstreamKeyEnv: 'REACH_TEST_UPSTREAM',
   models: [model], subscription, redemption: { enabled: false } };
@@ -59,7 +59,7 @@ test('public model and plan metadata excludes private bridge routing and require
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.deepEqual(body.subscription, subscription);
-  assert.deepEqual(body.redemptionModels[0], { id: model.id, name: model.name, provider: model.provider, access: 'requests', capabilities: { outputTokenLimit: false },
+  assert.deepEqual(body.redemptionModels[0], { id: model.id, name: model.name, provider: model.provider, access: 'requests', capabilities: { outputTokenLimit: true, automaticOutput: false, jsonSchema: false },
     pricing: { unit: 'request', includedRequests: 1500, usdMicrosPerRequest: 10000 } });
   assert.equal(/bridge|upstreamKey|21302|apiKey/.test(JSON.stringify(body).replace('ChatGPT bridge', '')), false);
   const protectedModels = await fetch(origin + '/v1/models');

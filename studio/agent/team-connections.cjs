@@ -96,7 +96,7 @@ function resolveTeamConnections({ settings, personas, spread = false, defaultMod
     if (pinnedModel) return pinnedModel;
     const connModel = String((connection && connection.model) || '').trim();
     if (connModel) return connModel;
-    return String(defaultModel || '').trim() || 'gpt-4o-mini';
+    return String(defaultModel || '').trim() || 'gemma-4-12b-qat';
   };
 
   const describe = (index, persona, connection, reason) => ({

@@ -12,7 +12,7 @@ test('a real SQLite Basic quota survives both account adapters without USD or le
   const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
     overageUsdMicrosPerRequest: 10000, proEnabled: false };
   const model = { id: 'browser-model', name: 'My model', provider: 'Test bridge', access: 'requests',
-    metered: true, bridge: { kind: 'tray', model: 'chatgpt-chat' } };
+    metered: true, bridge: { kind: 'gpu', model: 'google/gemma-4-12B-it-qat-q4_0-unquantized' } };
   const store = new AccountStore(':memory:', { subscription, models: [model], now: () => now });
   t.after(() => store.close());
   const raw = store.grantPlan({ wallet: '0x' + '11'.repeat(20), grantId: 'basic-adapter-regression',

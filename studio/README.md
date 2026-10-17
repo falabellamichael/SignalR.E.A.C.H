@@ -288,6 +288,23 @@ preview data is confined to that test process.
 
 ## Budgeting
 
+**Settings → Budgeting → Ultra_Pro · extended work** keeps agents working until
+completion or Stop. It uses automatic output when the endpoint advertises it,
+enables automatic context compression, removes
+application round limits, and permits up to three fresh recovery attempts when
+an answer is truncated. Large file writes are split into smaller steps. Normal
+budgets are retained and apply again when the switch is off. Tool catalogs use
+short descriptions with full documentation available through `tool_help`;
+compression respects the saved character/message thresholds, including zero,
+and budgets history separately from required instructions. Approval and edit
+review settings remain effective; incomplete action payloads are never executed.
+Provider context, output and rate limits still apply. Saved changes apply to
+new runs, including a paused conversation when you press Continue.
+
+Gateway model limits are discovered separately from application budgets. A
+catalog input-policy change invalidates learned limits from the old deployment,
+so a removed gateway cap does not remain attached to a saved conversation.
+
 **Settings ▾ → Budgeting** is a separate scrollable page. It controls output tokens,
 request deadlines, rounds, review/question waits, team concurrency, worker
 population and nesting, context compression, handoffs, and retained history.

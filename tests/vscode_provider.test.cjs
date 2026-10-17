@@ -15,7 +15,7 @@ function host(values, response, workspace = {}, api = {}) {
  require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{isTrusted:true,getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:req(name),
  fetch:async(url,options)=>{calls.push({url,options});return response(url,options);}
  };
- vm.runInNewContext(source+'\nmodule.exports.TestProvider=ReachChatViewProvider; module.exports.testConfig=config;',context,{filename:extensionPath});
+ vm.runInNewContext(source+'\nmodule.exports.TestProvider=ReachChatViewProvider; module.exports.testConfig=config; module.exports.setTestAccount=value=>{hostedAccount=value;};',context,{filename:extensionPath});
  const provider=new context.module.exports.TestProvider({fsPath:'/extension'});
  provider._ideBridge={handles:()=>false}; // Legacy provider tests; bridge activation is covered separately.
  provider._secrets={store:async()=>{}};
@@ -23,7 +23,7 @@ function host(values, response, workspace = {}, api = {}) {
  let receive;
  provider._html=()=>'';
  provider.resolveWebviewView({webview:{onDidReceiveMessage:handler=>{receive=handler;}}});
- return {provider,calls,posts,config,readConfig:context.module.exports.testConfig,receive};
+ return {provider,calls,posts,config,readConfig:context.module.exports.testConfig,receive,setAccount:context.module.exports.setTestAccount};
 }
 
 test('custom agent templates retain their text and receive every missing output format',()=>{
@@ -45,6 +45,77 @@ test('VS Code free-endpoint chat keeps the selected model and access key',async(
  assert.equal(JSON.parse(h.calls[0].options.body).model,'my/free-model');
  assert.equal(h.calls[0].options.headers.Authorization,'Bearer free-only-key');
  assert.equal(h.posts.find(p=>p.type==='done').full,'FREE OK');
+});
+
+test('a plain greeting sends one real selected-model request with no web, files, duplicate planning or Jev calls',async()=>{
+ const {attachAgentBridge,CONTEXT_PREFIX,TOOL_PREFIX}=require('../vscode/agent-bridge');
+ const response=()=>new Response(JSON.stringify({choices:[{message:{content:'Hello from the selected model.'},finish_reason:'stop'}]}));
+ const h=host({model:'gemma-4-12b-qat',think:true,webSearch:true,workspaceContext:true,agentic:true,typesafeAutoMode:true},response,{
+  workspaceFolders:[{name:'project',uri:{fsPath:'/workspace'}}],
+  findFiles:async()=>{throw Error('Greeting must not select files');},
+  openTextDocument:async()=>{throw Error('Greeting must not read files');},
+ });
+ for (const name of ['_applyJevAuto','_reviewJevCompletion','_think','_deriveQuery','_prepareWorkspaceContext']) {
+  h.provider[name]=async()=>{throw Error('Greeting must not call '+name);};
+ }
+ const bridge=attachAgentBridge(h.provider,{workspace:{getConfiguration:()=>({get:()=>true})}});
+ bridge.snapshot=async()=>{throw Error('Greeting must not collect IDE context');};
+ const body={model:'gemma-4-12b-qat',autoRequest:'hey',messages:[
+  {role:'system',content:CONTEXT_PREFIX+'\n'+'x'.repeat(20695)},
+  {role:'system',content:TOOL_PREFIX+'\nowned tool instructions'},
+  {role:'user',content:'Remember cobalt.'},{role:'assistant',content:'Cobalt.'},{role:'user',content:'hey'}],
+  includeWorkspace:true,includeIdeContext:true,think:true,webSearch:true,agentic:true,structuredActions:true,stream:false};
+ const before=JSON.stringify(h.config), original=JSON.stringify(body);
+ await h.provider._chat(body);
+ assert.equal(h.calls.length,1);
+ const payload=JSON.parse(h.calls[0].options.body);
+ assert.equal(payload.model,'gemma-4-12b-qat');
+ assert.deepEqual(payload.messages.filter(m=>m.role!=='system'),body.messages.filter(m=>m.role!=='system'));
+ assert.equal(payload.messages.some(m=>m.content.startsWith(CONTEXT_PREFIX)||m.content.startsWith(TOOL_PREFIX)),false);
+ for (const key of ['response_format','chat_template_kwargs','max_tokens']) assert.equal(payload[key],undefined);
+ assert.equal(h.posts.some(p=>p.type==='contextInfo'||p.type==='ideContextInfo'||p.type==='thinking'||p.type==='searchInfo'),false);
+ assert.deepEqual(h.posts.find(p=>p.type==='done'),{type:'done',full:'Hello from the selected model.',directAnswer:true});
+ assert.equal(JSON.stringify(h.config),before);
+ assert.equal(JSON.stringify(body),original);
+ const renderer=fs.readFileSync(path.join(path.dirname(extensionPath),'media/chat.js'),'utf8');
+ assert.match(renderer,/const turnAgenticEnabled = !msg\.directAnswer && agenticEnabled/);
+});
+
+test('the actual webview completes a greeting with Agent still enabled and never requests recovery or tools',()=>{
+ const chat=fs.readFileSync(path.join(path.dirname(extensionPath),'media/chat.js'),'utf8');
+ const done=chat.slice(chat.indexOf("      case 'done': {"),chat.indexOf("      case 'toolResult': {"));
+ const agentRun=require('../vscode/media/agent-run'),calls=[];
+ const context={agentRun,busy:true,msg:{full:'Hello from Gemma.',directAnswer:true},answeringNow:false,
+  stopRequested:false,rafPending:false,agenticEnabled:true,pendingText:'',pendingBubble:{},pendingEdits:[],
+  pendingActionContext:'',activeResponseStep:null,agentRounds:0,MAX_AGENT_ROUNDS:Infinity,
+  UNFINISHED_RETRY_LIMIT:2,activeRequestLength:1,conv:{messages:[],agentRun:agentRun.start(),jevTurn:{agentic:true}},
+  setRich(){},maskFenced:text=>text,saveAgentRun(value){context.conv.agentRun=value;},saveConv(){},persist(){},showStep(){},
+  finishBubble(outcome){context.outcome=outcome;},continueAgent(){calls.push('retry');},
+  beginToolRound(){calls.push('tools');},extractTools(){throw Error('Direct greeting must not parse tools');},
+  extractEdits(){throw Error('Direct greeting must not parse edits');},hint(){},pickFun(){},ABORT_LINES:[]};
+ vm.runInNewContext('switch ("done") {'+done+'}',context);
+ assert.equal(context.outcome,'completed');
+ assert.equal(context.agenticEnabled,true,'the checkbox preference stays enabled');
+ assert.deepEqual(calls,[]);
+ assert.equal(context.conv.messages[0].content,'Hello from Gemma.');
+});
+
+test('unconfigured GPU chat and reasoning use Gemma while Login Providers retain their own defaults',async()=>{
+ const response=()=>new Response(JSON.stringify({choices:[{message:{content:'OK'}}]}));
+ const gpu=host({model:''},response);
+ assert.equal(gpu.readConfig().model,'gemma-4-12b-qat');
+ await gpu.provider._chat({messages:[{role:'user',content:'hello'}],stream:false});
+ await gpu.provider._think('hello',false);
+ assert.ok(gpu.calls.every(call=>JSON.parse(call.options.body).model==='gemma-4-12b-qat'));
+ const codegpt=host({provider:'codegpt',model:''},response);
+ assert.equal(codegpt.readConfig().model,'codegpt-eco');
+ await codegpt.provider._think('hello',false);
+ assert.equal(JSON.parse(codegpt.calls[0].options.body).model,'codegpt-eco');
+ for (const [provider,model] of [['chatgpt','chatgpt-chat'],['copilot','copilot-chat'],['gemini','gemini-chat']]) {
+   assert.equal(host({provider,model:''},response).readConfig().model,model);
+ }
+ const manifest=JSON.parse(fs.readFileSync(path.join(path.dirname(extensionPath),'package.json'),'utf8'));
+ assert.equal(manifest.contributes.configuration.properties['simplereach.model'].default,'gemma-4-12b-qat');
 });
 
 test('Agent-off requests remove saved action formatting while keeping context and explicit format requests',async()=>{
@@ -209,6 +280,79 @@ test('Think and final chat retain prior turns when answering a follow-up', async
  assert.equal(messages.length,3);
 });
 
+for (const helper of ['think','query']) {
+ test(`${helper} uses its captured parent signal and cancels the in-flight fetch`, {timeout:3000}, async()=>{
+  let entered;
+  const ready=new Promise(resolve=>{entered=resolve;});
+  const h=host({},(_url,options)=>new Promise((_resolve,reject)=>{
+   entered(options);
+   options.signal?.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+  }));
+  const parent=new AbortController(),next=new AbortController();
+  h.provider._controller=parent;
+  const pending=helper==='think' ? h.provider._think('hello',false,'my/free-model',parent.signal)
+   : h.provider._deriveQuery('hello','my/free-model',parent.signal);
+  const options=await ready;
+  assert.equal(options.signal,parent.signal);
+  h.provider._controller=next;
+  parent.abort();
+  await assert.rejects(pending,error=>error.name==='AbortError');
+  assert.equal(h.calls.length,1);
+  assert.equal(next.signal.aborted,false);
+ });
+
+ test(`${helper} does not dispatch after cancellation during endpoint preparation`,async()=>{
+  const h=host({},()=>{throw Error('Unexpected request');});
+  const parent=new AbortController(),next=new AbortController();
+  let release,entered;
+  const gate=new Promise(resolve=>{release=resolve;});
+  const ready=new Promise(resolve=>{entered=resolve;});
+  h.provider._controller=parent;
+  h.provider._modelEndpoint=async()=>{entered();await gate;return 'https://free.example/v1';};
+  const pending=helper==='think' ? h.provider._think('hello',false,'my/free-model',parent.signal)
+   : h.provider._deriveQuery('hello','my/free-model',parent.signal);
+  await ready; h.provider._controller=next; parent.abort(); release();
+  await assert.rejects(pending,error=>error.name==='AbortError');
+  assert.equal(h.calls.length,0);
+ });
+}
+
+test('superseding planning with Answer now aborts the helper and never starts an old answer', {timeout:3000}, async()=>{
+ let entered;
+ const ready=new Promise(resolve=>{entered=resolve;});
+ const h=host({think:true},(_url,options)=>{
+  const body=JSON.parse(options.body);
+  if (body.messages[0].content.includes('private reasoning engine')) return new Promise((_resolve,reject)=>{
+   entered(options.signal);options.signal?.addEventListener('abort',()=>reject(options.signal.reason),{once:true});
+  });
+  return new Response(JSON.stringify({choices:[{message:{content:'New answer'},finish_reason:'stop'}]}));
+ });
+ const old=h.provider._chat({messages:[{role:'user',content:'Explain this example'}],model:'my/free-model',think:true,stream:false});
+ const oldSignal=await ready;
+ await h.provider._chat({messages:[{role:'user',content:'Answer now'}],model:'my/free-model',quickAnswer:true,think:false,stream:false});
+ await old;
+ assert.equal(oldSignal.aborted,true);
+ assert.equal(h.calls.length,2);
+ assert.equal(h.posts.filter(post=>post.type==='done'&&post.full==='New answer').length,1);
+ assert.equal(h.posts.some(post=>post.type==='planningComplete'),false);
+});
+
+test('nested context preparation cannot borrow a replacement turn signal after cancellation',async()=>{
+ const h=host({},()=>{throw Error('Unexpected generation');});
+ let entered,release;
+ const ready=new Promise(resolve=>{entered=resolve;});
+ const gate=new Promise(resolve=>{release=resolve;});
+ h.provider._modelEndpoint=async()=>{entered();await gate;return 'https://free.example/v1';};
+ const parent=new AbortController(),next=new AbortController();
+ h.provider._controller=parent;
+ const pending=h.provider._encodePayload({model:'my/free-model',messages:[
+  ...Array.from({length:10},()=>({role:'assistant',content:'x'.repeat(48000)})),{role:'user',content:'Keep the current task.'}],stream:false},'think',{signal:parent.signal});
+ await ready; h.provider._controller=next; parent.abort(); release();
+ await assert.rejects(pending,error=>error.name==='AbortError');
+ assert.equal(h.calls.length,0,'cancelled nested compaction must not send work under the new turn');
+ assert.equal(next.signal.aborted,false);
+});
+
 test('Copilot receives complete files beyond the old read limits, including unsaved text', async()=>{
  const file='first line\n'+'x'.repeat(70000)+'\nUNSAVED_END_SENTINEL';
  const h=host({provider:'copilot'},()=>new Response(JSON.stringify({choices:[{message:{content:'Read the end.'}}]})),{
@@ -252,6 +396,159 @@ function sourceWorkspace(files) {
   },
  }};
 }
+
+test('Gemma reuses native reasoning once, replaces stale source, and derives web queries without generation',async()=>{
+ const {WORKSPACE_PREFIX}=require('../vscode/agent-bridge');
+ const full='CURRENT_COMPLETE_SOURCE\n'+'x'.repeat(35000)+'\nCURRENT_SOURCE_END';
+ const fixture=sourceWorkspace({'src/app.js':full});
+ const h=host({model:'gemma-4-12b-qat',think:true,thinkModel:'',webSearch:true,typesafeAutoMode:true},()=>new Response(JSON.stringify({choices:[{message:{content:'Grounded answer'},finish_reason:'stop'}]})),fixture.workspace);
+ h.provider._think=async()=>{throw Error('Same Gemma must reason in final request only');};
+ const messages=[{role:'system',content:WORKSPACE_PREFIX+'\n'+'OLD_SOURCE_SENTINEL'.repeat(4500)},
+  {role:'system',content:'Explicit instructions: preserve every word.'},
+  {role:'system',content:'REACH conversation memory (compressed): retained task.'},
+  {role:'user',content:'Earlier user fact.'},{role:'assistant',content:'Retained answer.'},{role:'user',content:'Explain src/app.js'}];
+ await h.provider._chat({messages,model:'gemma-4-12b-qat',includeWorkspace:true,agentic:false,think:true,stream:false});
+ assert.equal(h.calls.length,1);
+ assert.deepEqual(fixture.reads,['src/app.js']);
+ const payload=JSON.parse(h.calls[0].options.body),text=payload.messages.map(m=>m.content).join('\n');
+ assert.equal(payload.model,'gemma-4-12b-qat');
+ assert.equal(payload.chat_template_kwargs.enable_thinking,true);
+ assert.equal(payload.max_tokens,undefined);
+ assert.ok(text.includes(full),'complete fresh source is retained');
+ assert.equal(text.includes('OLD_SOURCE_SENTINEL'),false);
+ assert.match(text,/Explicit instructions: preserve every word/);
+ assert.match(text,/REACH conversation memory \(compressed\): retained task/);
+ assert.match(text,/Earlier user fact/);
+ const query=await h.provider._deriveQuery('  Explain this synthetic example  ','gemma-4-12b-qat');
+ assert.equal(query,'Explain this synthetic example');
+ assert.equal(h.calls.length,1,'web query preparation must not generate on Gemma');
+});
+
+test('an explicitly different Think model retains the separate reasoning pass',async()=>{
+ const h=host({model:'gemma-4-12b-qat',think:true,thinkModel:'different-reasoning-model'},()=>new Response(JSON.stringify({choices:[{message:{content:'Synthetic result'}}]})));
+ await h.provider._chat({messages:[{role:'user',content:'Explain this example'}],model:'gemma-4-12b-qat',think:true,stream:false});
+ assert.equal(h.calls.length,2);
+ assert.equal(JSON.parse(h.calls[0].options.body).model,'different-reasoning-model');
+ assert.equal(JSON.parse(h.calls[1].options.body).model,'gemma-4-12b-qat');
+});
+
+test('subscription Gemma native reasoning uses a body accepted by the actual gateway completion protocol',async()=>{
+ const {gpuBridge}=await import('../RCH/service/gpu-bridge.mjs');
+ const gatewaySource=fs.readFileSync(path.resolve(__dirname,'../RCH/service/model-gateway.mjs'),'utf8');
+ const protocol={Buffer,createHash:require('node:crypto').createHash,gpuBridge};
+ // Execute the real request validator and its allowlists, without a server,
+ // billing store, credentials or network. This catches public-wire mismatches.
+ vm.runInNewContext(gatewaySource.slice(gatewaySource.indexOf('const MAX_BODY'),gatewaySource.indexOf('export function createModelGateway('))
+  .replace(/^export /gm,''),protocol);
+ const route={id:'gemma-4-12b-qat',metered:true,access:'requests',bridge:{kind:'gpu',model:'google/gemma-4-12B-it-qat-q4_0-unquantized'}};
+ const routes=new Map([[route.id,route]]);
+ const h=host({provider:'subscription',model:route.id,think:true,thinkModel:''},(_url,options)=>{
+  const body=JSON.parse(options.body);
+  const accepted=protocol.completionRequest(body,routes);
+  assert.equal(accepted.payload.response_format,undefined,'subscription Gemma sends one normal completion, not an action-schema round trip');
+  assert.deepEqual(JSON.parse(JSON.stringify(accepted.payload.chat_template_kwargs)),{enable_thinking:true});
+  assert.equal(body.chat_template_kwargs,undefined,'private template options never cross the public subscription protocol');
+  assert.throws(()=>protocol.completionRequest({...body,chat_template_kwargs:{enable_thinking:true}},routes),error=>error.code==='unsupported_field','the old wire body really is rejected');
+  return new Response(JSON.stringify({choices:[{message:{content:JSON.stringify({status:'complete',message:'Synthetic answer',actions:[],options:[]})},finish_reason:'stop'}]}));
+ });
+ h.setAccount({state:()=>({baseUrl:'https://subscription.fixture.invalid'}),connection:()=>({endpoint:'https://subscription.fixture.invalid/v1'}),authorize:()=> 'synthetic-test-token'});
+ h.provider._think=async()=>{throw Error('Gemma must use its final native pass');};
+ await h.provider._chat({model:route.id,messages:[{role:'user',content:'Explain this synthetic example'}],think:true,agentic:true,stream:false});
+ assert.equal(h.calls.length,1);
+ assert.equal(h.posts.some(p=>p.type==='error'),false);
+ assert.equal(h.posts.find(p=>p.type==='done').agentAction,undefined);
+ assert.match(h.posts.find(p=>p.type==='done').full,/Synthetic answer/);
+});
+
+test('Gemma Agent uses on-demand real reads, preserves its 83k checkpoint and completes without automatic preparation',async()=>{
+ const {WORKSPACE_PREFIX}=require('../vscode/agent-bridge');
+ const files={'package.json':'{"name":"synthetic-rag"}','src/rag/retriever.js':'FULL_RETRIEVER_SOURCE',
+  'src/rag/index.js':'FULL_RAG_INDEX_SOURCE','src/ui/button.js':'UI_SOURCE'};
+ const fixture=sourceWorkspace(files);
+ let rounds=0;
+ const h=host({model:'gemma-4-12b-qat',think:true,thinkModel:'',workspaceContext:true,webSearch:true},()=>new Response(JSON.stringify({choices:[{message:{content:JSON.stringify(++rounds===1
+  ? {status:'actions',message:'Read relevant source.',actions:[{name:'read',arguments:{path:'src/rag/retriever.js'}}],options:[]}
+  : {status:'complete',message:'Grounded RAG architecture',actions:[],options:[]})},finish_reason:'stop'}]})),fixture.workspace,
+  {Uri:{joinPath:(root,rel)=>({fsPath:root.fsPath+'/'+rel})}});
+ fixture.workspace.findFiles=async()=>{throw Error('No automatic workspace scan');};
+ for(const method of ['_prepareWorkspaceContext','_deriveQuery','_think']) h.provider[method]=async()=>{throw Error('No automatic '+method);};
+ const prompt='Explain the RAG architecture';
+ await h.provider._chat({model:'gemma-4-12b-qat',messages:[{role:'system',content:WORKSPACE_PREFIX+'\n'+'STALE'.repeat(16645)},
+  {role:'user',content:'Earlier user request.'},{role:'assistant',content:'Earlier answer.'},{role:'user',content:prompt}],
+  autoRequest:prompt,includeWorkspace:true,think:true,webSearch:true,agentic:true,stream:false});
+ assert.equal(h.calls.length,1,'no Gemma selector or duplicate planning generation');
+ assert.deepEqual(fixture.reads,[],'source is read only when requested as an action');
+ const payload=JSON.parse(h.calls[0].options.body),text=payload.messages.map(m=>m.content).join('\n');
+ assert.ok(text.includes('STALESTALE'),'prior full source remains because no fresh snapshot replaced it');
+ assert.ok(text.includes('Earlier user request.'));
+ assert.equal(payload.chat_template_kwargs.enable_thinking,true);
+ assert.equal(payload.max_tokens,undefined);
+  assert.equal(payload.response_format.type,'json_schema','first Agent call already requests validated completion');
+  const first=h.posts.find(p=>p.type==='done');
+  assert.deepEqual(first.agentAction.tools,[{path:'src/rag/retriever.js',action:'read'}]);
+  await h.receive({type:'toolReq',uid:'requested-read',...first.agentAction.tools[0]});
+  const result=h.posts.find(p=>p.type==='toolResult'&&p.uid==='requested-read');
+  assert.equal(result.ok,true);assert.ok(result.result.includes('FULL_RETRIEVER_SOURCE'));
+  await h.provider._chat({model:'gemma-4-12b-qat',messages:[...payload.messages,{role:'assistant',content:first.full},
+    {role:'user',content:'TOOL RESULTS\n'+result.result}],autoContinuation:true,includeWorkspace:false,think:false,webSearch:false,agentic:true,structuredActions:true,stream:false});
+  assert.equal(h.calls.length,2,'exactly one model call per requested-action round');
+  const continuation=JSON.parse(h.calls[1].options.body).messages.map(m=>m.content).join('\n');
+  assert.ok(continuation.includes('FULL_RETRIEVER_SOURCE'));assert.ok(continuation.includes('STALESTALE'));
+  const done=h.posts.filter(p=>p.type==='done').at(-1),agentRun=require('../vscode/media/agent-run');
+  assert.equal(done.agentAction.control.status,'complete');
+  assert.equal(agentRun.decide(agentRun.start(),{enabled:true,control:done.agentAction.control,tools:0,edits:0}).action,'complete','ordinary delivered answer needs no recovery round');
+});
+
+test('disabled or restricted fresh preparation retains cached full source even for a greeting',async()=>{
+ const {WORKSPACE_PREFIX}=require('../vscode/agent-bridge');
+ for(const restricted of [false,true]) {
+  const h=host({workspaceContext:restricted,model:'gemma-4-12b-qat'},()=>new Response(JSON.stringify({choices:[{message:{content:'Synthetic answer'}}]})),{isTrusted:!restricted});
+  await h.provider._chat({messages:[{role:'system',content:WORKSPACE_PREFIX+'\nFULL_CACHED_SOURCE'},{role:'user',content:'hey'}],includeWorkspace:true,stream:false});
+  assert.equal(h.calls.length,1);
+  assert.ok(JSON.parse(h.calls[0].options.body).messages.some(m=>m.content.includes('FULL_CACHED_SOURCE')));
+ }
+});
+
+test('automatic Gemma discovery excludes artifact archives, prefers root manifest and keeps full source with a bounded path catalog',async()=>{
+ const full='FULL_CURRENT_RAG_SOURCE\n'+'x'.repeat(40000)+'\nFULL_CURRENT_RAG_END';
+ const files={'package.json':'ROOT_MANIFEST','src/rag/retriever.js':full};
+ for(let i=0;i<80;i++) files['TrainingModel/llama_cpp_src/tools/ui/src/lib/vendors/vendor'+i+'/package.json']='DEEP_VENDOR';
+ for(let i=0;i<200;i++) files['src/misc/component'+i+'_'+'name'.repeat(30)+'.js']='misc';
+ for(let i=0;i<100;i++) files['.codex_artifact_work/archive'+i+'/package.json']='ARCHIVE_CONTENT';
+ const fixture=sourceWorkspace(files),scans=[];
+ const find=fixture.workspace.findFiles;
+ fixture.workspace.findFiles=async(...args)=>{scans.push(args);return find(...args);};
+ const h=host({model:'gemma-4-12b-qat'},()=>{throw Error('Local selection must not generate');},fixture.workspace);
+ const selected=await h.provider._prepareWorkspaceContext([{role:'user',content:'Explain the RAG architecture'}],'gemma-4-12b-qat',true,120*1024);
+ assert.equal(scans.length,1);assert.match(scans[0][1],/\.codex_artifact_work/);
+ assert.ok(!fixture.reads.some(path=>path.startsWith('.codex_artifact_work/')));
+ assert.ok(fixture.reads.includes('package.json'),'actual root manifest survives deep manifest ties');
+ assert.ok(fixture.reads.indexOf('package.json')<fixture.reads.findIndex(path=>path.startsWith('TrainingModel/')));
+ assert.ok(selected.block.includes(full),'complete source is not capped with optional metadata');
+ assert.ok(!selected.block.includes('ARCHIVE_CONTENT'));
+ const catalog=selected.block.split('Catalog (paths only; limited to remaining context budget):')[1]||'';
+ assert.ok(Buffer.byteLength(catalog,'utf8')<=8*1024);
+ assert.ok(catalog.trim().split('\n').length<=32);
+ const {shortlistPaths}=require('../vscode/typesafe-jev');
+ const manifests=['a/deep/package.json','package.json'];
+ assert.equal(shortlistPaths(manifests,'Explain the architecture')[0],'a/deep/package.json','default Jev ordering is preserved');
+ assert.equal(shortlistPaths(manifests,'Explain the architecture',true)[0],'package.json');
+});
+
+test('every webview conversation save preserves disabled preparation flags and other saved state',()=>{
+ const chat=fs.readFileSync(path.join(path.dirname(extensionPath),'media/chat.js'),'utf8');
+ let saved={history:[],includeWorkspace:false,thinkEnabled:false,webEnabled:false,agenticEnabled:false,draft:'preserve draft'};
+ const context={vscode:{getState:()=>saved,setState:value=>{saved=value;}},conv:{id:1,model:'gemma-4-12b-qat',messages:[{role:'user',content:'Synthetic request'}]},renderHistory(){}};
+ const functions=chat.slice(chat.indexOf('  function state()'),chat.indexOf('  /* Zero allows'))
+  +chat.slice(chat.indexOf('  function saveConv()'),chat.indexOf('  function loadHistory('))
+  +chat.slice(chat.indexOf('  function deleteHistory('),chat.indexOf('  function clearChat('));
+ vm.runInNewContext(functions,context);
+ for(const action of ['persist()','saveConv()','deleteHistory(-1)']) {
+  vm.runInNewContext(action,context);
+  for(const key of ['includeWorkspace','thinkEnabled','webEnabled','agenticEnabled']) assert.equal(saved[key],false,action+' preserves '+key);
+  assert.equal(saved.draft,'preserve draft');
+ }
+});
 
 test('a repository review reads closed source before both Think and the answer',async()=>{
  const full='// source\n'+'x'.repeat(70000)+'\nACTUAL_FILE_END';
@@ -299,6 +596,63 @@ test('source budget omits whole files explicitly and disabling workspace avoids 
  fixture.reads.length=0;h.calls.length=0;
  await h.provider._chat({messages:[{role:'user',content:'read large.js'}],agentic:true,includeWorkspace:false,stream:false});
  assert.equal(fixture.reads.length,0);assert.equal(h.calls.length,1);
+});
+
+test('Windows workspace paths accept slash-normalized selector results using one catalog scan',async()=>{
+ let scans=0;
+ const reads=[];
+ const uri={fsPath:'C:\\workspace\\src\\login.js'};
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'["src/login.js"]'}}]})),{
+  workspaceFolders:[{uri:{fsPath:'C:\\workspace'}}],
+  getWorkspaceFolder:()=>({uri:{fsPath:'C:\\workspace'}}),
+  findFiles:async()=>{scans++;return [uri,{fsPath:'C:\\workspace\\.aws\\credentials.json'}];},
+  openTextDocument:async file=>{
+   reads.push(file.fsPath);
+   return {uri:file,isDirty:false,getText:()=>'LOGIN_SOURCE_END'};
+  },
+ });
+ const result=await h.provider._prepareWorkspaceContext([{role:'user',content:'Fix the login button'}],'my/free-model',true,8192);
+ assert.equal(scans,1);assert.equal(h.calls.length,1);assert.equal(result.files,1);
+ assert.deepEqual(reads,[uri.fsPath]);assert.match(result.block,/LOGIN_SOURCE_END/);
+ assert.doesNotMatch(JSON.parse(h.calls[0].options.body).messages[0].content,/credentials/);
+ assert.doesNotMatch(result.block,/credentials/);
+});
+
+test('explicit Windows file names bypass both selectors and retain complete source',async()=>{
+ const fixture=sourceWorkspace({'src/login.js':'EXPLICIT_FILE_END'});
+ const h=host({typesafeFileSelection:true},()=>{throw new Error('Explicit paths must not call a model');},fixture.workspace);
+ h.provider._secrets={get:async()=>{throw new Error('Explicit paths must not call Jev');}};
+ const result=await h.provider._prepareWorkspaceContext([{role:'user',content:'Fix src\\login.js'}],'my/free-model',true,8192);
+ assert.equal(h.calls.length,0);assert.equal(result.files,1);
+ assert.deepEqual(fixture.reads,['src/login.js']);assert.match(result.block,/EXPLICIT_FILE_END/);
+});
+
+test('a large workspace catalog cannot crowd selected source out of the user context budget',async()=>{
+ const files={'src/login.js':'const login = true;\nSOURCE_MUST_REACH_MODEL'};
+ for(let i=0;i<1999;i++) files[`catalog/${'long_directory_'.repeat(7)}${i}.json`]='{}';
+ const fixture=sourceWorkspace(files);
+ let scans=0;
+ const find=fixture.workspace.findFiles;
+ fixture.workspace.findFiles=async()=>{scans++;return find();};
+ const h=host({},()=>{throw new Error('Explicit paths do not need selection');},fixture.workspace);
+ const budget=8192;
+ const result=await h.provider._prepareWorkspaceContext([{role:'user',content:'Fix src/login.js'}],'my/free-model',true,budget);
+ assert.equal(scans,1);assert.equal(h.calls.length,0);assert.equal(result.files,1);
+ assert.deepEqual(fixture.reads,['src/login.js']);assert.match(result.block,/SOURCE_MUST_REACH_MODEL/);
+ assert.ok(Buffer.byteLength(result.block,'utf8')<=budget,'metadata and complete source share the unchanged user budget');
+ assert.match(result.block,/Catalog \(paths only; limited to remaining context budget\)/);
+});
+
+test('explicit file matching cannot confuse a root basename with a nested or unknown path',async()=>{
+ const fixture=sourceWorkspace({'app.js':'ROOT_SOURCE','src/app.js':'NESTED_SOURCE'});
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'["src/app.js"]'}}]})),fixture.workspace);
+ const explicit=await h.provider._prepareWorkspaceContext([{role:'user',content:'Fix src\\app.js'}],'my/free-model',true,8192);
+ assert.equal(h.calls.length,0);assert.deepEqual(fixture.reads,['src/app.js']);
+ assert.equal(explicit.files,1);assert.match(explicit.block,/NESTED_SOURCE/);assert.doesNotMatch(explicit.block,/ROOT_SOURCE/);
+ fixture.reads.length=0;
+ await h.provider._prepareWorkspaceContext([{role:'user',content:'Fix myapp.js'}],'my/free-model',true,8192);
+ assert.equal(h.calls.length,1,'an unknown longer basename cannot bypass selection');
+ assert.deepEqual(fixture.reads,['src/app.js']);
 });
 
 test('Copilot reads every part of long source and keeps the final request below the transport limit',async()=>{
@@ -564,79 +918,52 @@ test('a non-transient status on the free endpoint fails immediately without retr
  assert.equal(attempts,1,'401 must not be retried');
  assert.match(h.posts.find(p=>p.type==='error').message,/401/);
 });
-test('Free endpoints groups the CodeGPT economy models and routes them to the local bridge',async()=>{
- // A Free-endpoints refresh probes BOTH the configured endpoint and the local
- // tray bridge. Economy ids come only from the bridge; they are grouped for
- // the picker and, at request time, routed to the bridge even though the
- // selected provider is Free endpoints (a remote endpoint cannot serve them —
- // its own 127.0.0.1:21302 is not this machine, which is the 503 this fixes).
- const h=host({},url=>new Response(JSON.stringify(url.endsWith('/models')
-   ? (url.startsWith('http://127.0.0.1:21302')
-      ? {data:[{id:'codegpt-eco'},{id:'codegpt-eco-ox-alpha'},{id:'copilot-chat'}]}
-      : {data:[{id:'my/free-model'}]})
-   : {choices:[{message:{content:'OK'}}]})));
+test('GPU endpoint catalogs exclude every login provider and never contact the tray',async()=>{
+ const h=host({},url=>new Response(JSON.stringify({data:[
+   {id:'gemma-4-12b-qat',provider:'gpu'},
+   {id:'codegpt-eco'}, {id:'codegpt-eco-ox-alpha'}, {id:'codegpt-gpt-5'}, {id:'codegpt-direct-deepseek'},
+   {id:'copilot-chat'}, {id:'chatgpt-chat'}, {id:'gemini-chat'},
+   {id:'deepseek-v4.1-flash',provider:'codegpt'},
+   {id:'login-alias',catalog:'login-providers'},
+ ]})));
  await h.provider._fetchModels();
  const models=h.posts.find(p=>p.type==='models');
- assert.deepEqual(Array.from(models.models),['my/free-model','codegpt-eco','codegpt-eco-ox-alpha']);
- // copilot-chat belongs to its own provider and must not leak into this list.
- assert.equal(models.models.includes('copilot-chat'),false);
- // Cross-realm arrays: compare structurally via JSON, not deepEqual.
- const groups=JSON.parse(JSON.stringify(models.groups.map(g=>({label:g.label,models:Array.from(g.models)}))));
- assert.deepEqual(groups,[
-   {label:'Free models',models:['my/free-model']},
-   {label:'CodeGPT economy',models:['codegpt-eco','codegpt-eco-ox-alpha']},
- ]);
- // An economy model selected under Free endpoints goes to the BRIDGE...
- await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'codegpt-eco-ox-alpha',stream:false});
- const econ=h.calls.at(-1);
- assert.equal(econ.url,'http://127.0.0.1:21302/v1/chat/completions');
- // ...without the free endpoint's access key.
- assert.equal(econ.options.headers.Authorization,undefined,'the bridge must never receive the free endpoint key');
- // A free alias still goes to the configured endpoint, WITH its key.
- await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'my/free-model',stream:false});
- const free=h.calls.at(-1);
- assert.equal(free.url,'https://free.example/v1/chat/completions');
- assert.equal(free.options.headers.Authorization,'Bearer free-only-key');
-});
-
-test('a bare economy alias from the endpoint is routed to the bridge with the bridge id',async()=>{
- // reachd publishes the economy models under their bare ids while the bridge
- // validates `codegpt-eco-<id>`. Selecting the bare alias must go DIRECT to
- // the bridge — a relay hop swallowed the tray's run error and surfaced it as
- // an empty stream (2026-09-11) — and the wire body must carry the bridge id.
- const h=host({},url=>new Response(JSON.stringify(url.endsWith('/models')
-   ? (url.startsWith('http://127.0.0.1:21302')
-      ? {data:[{id:'codegpt-eco-deepseek-v4.1-flash'},{id:'copilot-chat'}]}
-      : {data:[{id:'my/free-model'},{id:'deepseek-v4.1-flash'}]})
-   : {choices:[{message:{content:'OK'}}]})));
- await h.provider._fetchModels();
- await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'deepseek-v4.1-flash',stream:false});
- const econ=h.calls.at(-1);
- assert.equal(econ.url,'http://127.0.0.1:21302/v1/chat/completions');
- assert.equal(econ.options.headers.Authorization,undefined,'the bridge must never receive the free endpoint key');
- assert.equal(JSON.parse(econ.options.body).model,'codegpt-eco-deepseek-v4.1-flash');
- // A free alias still goes to the configured endpoint with its own id.
- await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'my/free-model',stream:false});
- const free=h.calls.at(-1);
- assert.equal(free.url,'https://free.example/v1/chat/completions');
- assert.equal(JSON.parse(free.options.body).model,'my/free-model');
-});
-
-test('a tray that is not running drops the economy group without failing Free endpoints',async()=>{
- // The bridge leg rejects; the free aliases must still load, with a note.
- const h=host({},url=>url.startsWith('http://127.0.0.1:21302')
-   ? Promise.reject(new Error('ECONNREFUSED'))
-   : new Response(JSON.stringify(url.endsWith('/models')
-      ? {data:[{id:'my/free-model'}]} : {choices:[{message:{content:'OK'}}]})));
- await h.provider._fetchModels();
- const models=h.posts.find(p=>p.type==='models');
- assert.deepEqual(Array.from(models.models),['my/free-model']);
+ assert.deepEqual(Array.from(models.models),['gemma-4-12b-qat']);
  assert.equal(models.groups.length,1);
- assert.equal(models.groups[0].label,'Free models');
- // The bridge failure is reported as an economy-group note, not as a generic
- // endpoint error, so the cause is obvious from the chat.
- const msgs=h.posts.filter(p=>p.type==='error').map(p=>p.message).join(' | ');
- assert.match(msgs,/CodeGPT economy models/);
+ assert.equal(models.groups[0].label,'GPU server models');
+ assert.equal(h.calls.length,1,'a GPU refresh must not probe any login provider');
+ assert.equal(h.calls[0].url,'https://free.example/v1/models');
+ assert.equal(h.posts.some(p=>p.type==='error'),false);
+});
+
+test('a restored login model cannot silently route a general endpoint chat to the tray',async()=>{
+ const h=host({},()=>new Response(JSON.stringify({choices:[{message:{content:'UNEXPECTED'}}]})));
+ h.provider._bridgeIds=new Map([['old-alias','codegpt-eco-old-alias']]);
+ for (const model of ['codegpt','codegpt-eco','codegpt-eco-ox-alpha','codegpt-gpt-5','codegpt-direct-deepseek','chatgpt-chat','copilot-chat','gemini-chat']) {
+   await assert.rejects(h.provider._modelEndpoint(h.readConfig(),model),/Login Providers/);
+ }
+ assert.equal(await h.provider._modelEndpoint(h.readConfig(),'gemma-4-12b-qat'),'https://free.example/v1');
+ assert.equal(await h.provider._modelEndpoint(h.readConfig(),'ornith-1.5-9b'),'https://free.example/v1');
+ assert.equal(await h.provider._modelEndpoint(h.readConfig(),'minicpm5-2b'),'https://free.example/v1');
+ await h.provider._chat({messages:[{role:'user',content:'hello'}],model:'codegpt-eco',stream:false});
+ assert.equal(h.calls.length,0,'stale selections must not send a provider request');
+ assert.match(h.posts.find(p=>p.type==='error').message,/Login Providers/);
+ // Old bridge mappings must not rewrite a GPU endpoint's arbitrary model IDs.
+ assert.equal(h.provider._wireModel('old-alias'),'old-alias');
+});
+
+test('the CodeGPT login catalog preserves direct tray transport and excludes browser models',async()=>{
+ const h=host({provider:'codegpt'},url=>new Response(JSON.stringify(url.endsWith('/models')
+   ? {data:[{id:'codegpt-eco'},{id:'codegpt-eco-ox-alpha'},{id:'copilot-chat'},{id:'gemma-4-12b-qat'}]}
+   : {choices:[{message:{content:'CODEGPT OK'}}]})));
+ const catalog=await h.provider._discoverModels(h.readConfig());
+ assert.deepEqual(Array.from(catalog.routes.keys()),['codegpt-eco','codegpt-eco-ox-alpha']);
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'codegpt-eco-ox-alpha',stream:false});
+ const request=h.calls.at(-1);
+ assert.equal(request.url,'http://127.0.0.1:21302/v1/chat/completions');
+ assert.equal(request.options.headers.Authorization,undefined);
+ assert.equal(JSON.parse(request.options.body).model,'codegpt-eco-ox-alpha');
+ assert.equal(h.posts.find(p=>p.type==='done').full,'CODEGPT OK');
 });
 
 test('reasoning-only Qwen completion retries once with the same context, endpoint, model, key and token budget', async()=>{
@@ -706,7 +1033,7 @@ test('Stop after a reasoning-only reply prevents the automatic retry',async()=>{
 test('Agent requests always include explicit run control, even with a custom prompt, while chat stays plain',async()=>{
  for(const agentic of [true,false]){
   const h=host({agentTemplate:'My custom instructions.'},()=>new Response(JSON.stringify({choices:[{message:{content:'Hello'}}]})));
-  await h.provider._chat({model:'my/free-model',messages:[{role:'user',content:'hello'}],agentic,runTodos:[],stream:false});
+  await h.provider._chat({model:'my/free-model',messages:[{role:'user',content:'Explain the project structure'}],agentic,runTodos:[],stream:false});
   const text=JSON.parse(h.calls[0].options.body).messages.map(m=>m.content).join('\n');
   assert.equal(text.includes('AGENT RUN CONTROL'),agentic);
   if(agentic)assert.ok(text.includes('My custom instructions.'));
@@ -726,6 +1053,20 @@ test('the host restores the supplied conversation checklist before a resumed too
 function socketFailure(code = 'UND_ERR_HEADERS_TIMEOUT') {
  return new TypeError('fetch failed', {cause:Object.assign(new Error('private token must not appear'),{code})});
 }
+
+test('subscription generation never blindly resends an unknown timeout or gateway failure',async()=>{
+ for(const failure of [()=>{throw socketFailure();},()=>new Response('{"error":{"code":"accounts_unavailable"}}',{status:503})]) {
+  const h=host({provider:'subscription'},failure);
+  const options={method:'POST',headers:{'Idempotency-Key':'synthetic-stable-key'},body:'{"model":"gemma-4-12b-qat"}'};
+  try {
+   const response=await h.provider._fetchRetry('https://synthetic.invalid/v1/chat/completions',options);
+   assert.equal(response.status,503);
+  } catch(error) {assert.match(error.message,/outcome is unknown.*not automatically resent/);}
+  assert.equal(h.calls.length,1);
+  assert.equal(h.calls[0].options.headers['Idempotency-Key'],'synthetic-stable-key');
+  assert.equal(h.calls[0].options.redirect,'error');
+ }
+});
 
 test('a headers timeout retries the inference request without changing context or model', async()=>{
  let count=0;

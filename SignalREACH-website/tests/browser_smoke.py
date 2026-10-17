@@ -88,7 +88,7 @@ with sync_playwright() as p:
     click('.menu-toggle');click('#primary-nav a[href="platform.html"]');expect(page.locator('body')).to_have_attribute('data-page','platform')
     check('Mobile menu, Escape, and route selection')
     layouts=[]
-    for key in ['index','platform','integrations','docs','about','download']:
+    for key in ['index','platform','integrations','docs','about','download','subscription','login']:
         route(key)
         for width in [320,390,768,1024,1440]:
             page.set_viewport_size({'width':width,'height':900})

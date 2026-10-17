@@ -33,6 +33,17 @@
     const reviews = element.querySelector('.team-reviews');
     const modelInfo = element.querySelector('.team-model-info');
     const nav = element.querySelector('.team-deck-nav');
+    const strip = element.querySelector('.team-tab-strip');
+    const compactInfo = document.createElement('span');
+    compactInfo.className = 'team-deck-compact-info';
+    banner.querySelector('strong').after(compactInfo);
+    strip.id = id + '-tabs';
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'team-deck-toggle';
+    toggle.setAttribute('aria-controls', strip.id);
+    toggle.append(icon('caret-right'));
+    banner.append(toggle);
     // Pin the live tab rail, not the expanded metadata. At small window sizes
     // keeping both pinned can cover the entire conversation viewport.
     nav.after(modelInfo);
@@ -42,7 +53,7 @@
     anchor.className = 'team-nav-anchor';
     nav.before(anchor);
     anchor.append(nav);
-    let scroller = null, lastScroll = 0, concealed = false;
+    let scroller = null, lastScroll = 0, concealed = false, manuallyCollapsed = false;
     let recycledTabs = [], preferredIndex = 0, runNumber = 1;
     function positionNav(scrolled = false) {
       if (!scroller || !element.isConnected || !element.getClientRects().length) return;
@@ -56,18 +67,28 @@
       else if (scrolled && Math.abs(delta) >= 2) concealed = delta > 0;
       lastScroll = scroller.scrollTop;
       const floating = offset > 0;
-      anchor.style.height = floating ? nav.offsetHeight + 'px' : '';
+      // Reserve the full rail height even while its floating tabs are folded.
+      // Otherwise collapsing it can move the scroll anchor and reopen it.
+      if (floating && !nav.classList.contains('is-floating')) anchor.style.height = nav.offsetHeight + 'px';
+      else if (!floating) anchor.style.height = '';
       nav.classList.toggle('is-floating', floating);
       nav.style.top = floating ? top + 'px' : '';
       nav.style.left = floating ? origin.left + 'px' : '';
       nav.style.width = floating ? origin.width + 'px' : '';
-      // Preserve keyboard navigation, but a previously mouse-clicked tab must
-      // not prevent the rail from hiding when the user scrolls down again.
-      const hidden = floating && concealed && !nav.querySelector(':focus-visible');
-      nav.classList.toggle('is-concealed', hidden);
-      nav.inert = hidden;
-      nav.setAttribute('aria-hidden', String(hidden));
+      const compact = manuallyCollapsed || (floating && concealed && !strip.querySelector(':focus-visible'));
+      nav.classList.toggle('is-compact', compact);
+      strip.hidden = compact;
+      toggle.setAttribute('aria-expanded', String(!compact));
+      toggle.setAttribute('aria-label', compact ? 'Expand team members' : 'Collapse team members');
     }
+    toggle.addEventListener('click', () => {
+      manuallyCollapsed = !strip.hidden;
+      concealed = false;
+      positionNav();
+      if (!strip.hidden) overflow();
+    });
+    toggle.setAttribute('aria-expanded', 'true');
+    toggle.setAttribute('aria-label', 'Collapse team members');
     const onScroll = () => positionNav(true);
     // Queue rows change the chat viewport height. Move the rail's layout writes
     // outside the observer pass so its height reservation cannot feed back into
@@ -85,7 +106,8 @@
       cancelAnimationFrame(geometryFrame); geometryFrame = 0;
       scroller = null;
       anchor.style.height = '';
-      nav.classList.remove('is-floating', 'is-concealed');
+      nav.classList.remove('is-floating', 'is-compact');
+      strip.hidden = false;
       nav.style.top = nav.style.left = nav.style.width = '';
       nav.inert = false;
       nav.removeAttribute('aria-hidden');
@@ -135,7 +157,7 @@
       // The rail floats only past its origin, so measure where the card would
       // sit: bring it into view first, then correct for whatever the rail
       // actually covers there.
-      const covered = () => nav.classList.contains('is-floating') && !nav.classList.contains('is-concealed')
+      const covered = () => nav.classList.contains('is-floating')
         ? nav.offsetHeight : 0;
       const box = () => {
         const viewportTop = scroller.getBoundingClientRect().top + scroller.clientTop;
@@ -185,6 +207,8 @@
       const entry = selected && entries.get(selected);
       if (!entry) return;
       const state = entry.head.querySelector('.member-state')?.textContent || entry.action || 'Queued';
+      setText(compactInfo, `${entry.name} · ${entry.action || state}`);
+      compactInfo.title = compactInfo.textContent;
       const meta = entry.head.querySelector('.member-meta')?.textContent || '';
       const control = entry.head.querySelector('.member-control');
       setText(modelInfo.querySelector('.team-model-summary-copy strong'), entry.name);
@@ -286,6 +310,9 @@
       setText(entry.head.querySelector('.member-name'), entry.name);
       setText(entry.head.querySelector('.member-model'), entry.model);
       entry.modelNode.title = entry.model;
+      setText(entry.responseName, entry.name);
+      setText(entry.responseModel, entry.model || (entry.worker ? 'Spawned worker' : 'Team member'));
+      entry.responseModel.title = entry.responseModel.textContent;
       if (selected === card) syncModelInfo();
       label(entry);
     }
@@ -308,6 +335,15 @@
         nameNode: tab.querySelector('.team-tab-name'), modelNode: tab.querySelector('.team-tab-model'),
         actionNode: tab.querySelector('.team-tab-action'), stepNode: tab.querySelector('.team-tab-step'),
         initial: tab.querySelector('.team-initial'), ring: orbit.querySelector('.team-icon') };
+      const response = document.createElement('header');
+      response.className = 'member-response-meta';
+      response.innerHTML = '<span class="member-response-label">Response</span><strong></strong><span class="member-response-model"></span><span class="member-response-state"></span>';
+      entry.responseName = response.querySelector('strong');
+      entry.responseModel = response.querySelector('.member-response-model');
+      entry.responseState = response.querySelector('.member-response-state');
+      const body = card.querySelector('.member-body');
+      body.before(response);
+      body.setAttribute('aria-label', 'Agent response');
       entries.set(card, entry);
       entry.observer = new MutationObserver(() => { if (selected === card) syncModelInfo(); });
       entry.observer.observe(entry.head, { subtree: true, childList: true, characterData: true, attributes: true });
@@ -332,6 +368,12 @@
         : ['waiting_edits', 'waiting_input'].includes(state.status) || summary.waiting ? 'waiting'
         : summary.silent ? 'silent' : summary.active ? 'working' : 'queued';
       entry.status = status;
+      const generated = state?.steps?.filter(step => step.kind === 'generate').at(-1);
+      const responseState = !generated ? 'No response yet' : !generated.endedAt && status === 'working'
+        ? generated.chars ? 'Receiving response' : generated.reasoning ? 'Thinking' : 'Awaiting response'
+        : generated.status === 'error' ? 'Response failed' : generated.status === 'done' ? 'Response received' : 'Response interrupted';
+      setText(entry.responseState, responseState);
+      entry.responseState.title = generated?.chars ? `${responseState} · ${generated.chars.toLocaleString()} characters received` : responseState;
       entry.action = state?.status === 'waiting_edits' ? 'Review needed' : state?.status === 'waiting_input' ? 'Answer needed'
         : status === 'completed' ? 'Complete' : summary.title || 'Queued';
       setText(entry.actionNode, entry.action);
@@ -407,6 +449,8 @@
         element.append(history);
       }
       entries.clear(); tabs.replaceChildren(); selected = null; ended = false;
+      setText(compactInfo, '');
+      compactInfo.title = '';
       delete element.dataset.finished;
       banner.title = next.task;
       setText(banner.querySelector('strong'), next.team.name || 'Team');

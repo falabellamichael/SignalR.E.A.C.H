@@ -50,6 +50,17 @@ const PARAMS = {
   'patch.review': [path(true), s('content', true, 4_000_000), n('context')],
   'tests.run': [a('gates', false, 8, [{ id: 'test', command: 'npm test', runner: 'node' }])],
   'tests.quickfix': [command(true), a('paths', false, 400)],
+  'github.repo': [s('owner', false, 120), s('repo', false, 120)],
+  'github.issues': [s('owner', false, 120), s('repo', false, 120), s('state', false, 40), s('query', false, 400), n('limit', 1)],
+  'github.prs': [s('owner', false, 120), s('repo', false, 120), s('state', false, 40), s('pr_number', false, 40), n('limit', 1)],
+  'github.create_pr': [s('owner', false, 120), s('repo', false, 120), s('title', true, 240), s('head', true, 120), s('base', true, 120), s('body', false, 20000)],
+  'github.commits': [s('owner', false, 120), s('repo', false, 120), s('branch', false, 120), n('limit', 1)],
+  'gmail.send': [s('to', true, 300), s('subject', true, 300), s('body', true, 40000)],
+  'gmail.read': [s('query', false, 400), n('limit', 1)],
+  'gmail.draft': [s('to', false, 300), s('subject', false, 300), s('body', false, 40000)],
+  'outlook.send': [s('to', true, 300), s('subject', true, 300), s('body', true, 40000)],
+  'outlook.read': [s('query', false, 400), n('limit', 1)],
+  'outlook.draft': [s('to', false, 300), s('subject', false, 300), s('body', false, 40000)],
 };
 
 // @fixed denotes a structured native Reach compiler invocation. All

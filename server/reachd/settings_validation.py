@@ -104,18 +104,20 @@ def _validate_model_spec(alias, spec, all_aliases, errors):
     _bool(spec.get("strip_trailing_roles", False), path + ".strip_trailing_roles")
     _int(spec.get("context_window", 128000), *MODEL_NUMERIC["context_window"],
          path + ".context_window")
-    from reachd.model_routes import private_route
+    from reachd.model_routes import private_route, GPU_CONTEXT_WINDOWS
     try:
         private_route(spec["upstream"])
     except ValueError as exc:
         raise SettingsError(path + ": " + str(exc)) from exc
     if spec["upstream"].startswith("gpu/"):
-        _int(spec.get("context_window", 8192), 1, 8192, path + ".context_window (deployed limit)")
-        _int(spec.get("max_tokens_cap", 4096), 1, 4096, path + ".max_tokens_cap (deployed limit)")
+        limit = GPU_CONTEXT_WINDOWS.get(spec["upstream"][4:], 8192)
+        _int(spec.get("context_window", 8192), 1, limit, path + ".context_window (deployed limit)")
+        output_cap = spec.get("max_tokens_cap", 0)
+        _int(output_cap, 0, 1000000, path + ".max_tokens_cap")
         if max_tokens is not None:
-            _int(max_tokens, 1, spec.get("max_tokens_cap", 4096), path + ".max_tokens")
-        _expect(spec.get("min_output_tokens", 0) <= spec.get("max_tokens_cap", 4096),
-                path + ".min_output_tokens exceeds the deployed output limit")
+            _int(max_tokens, 1, output_cap or 1000000, path + ".max_tokens")
+        _expect(not output_cap or spec.get("min_output_tokens", 0) <= output_cap,
+                path + ".min_output_tokens exceeds the configured output limit")
         _expect(not spec.get("allow_tools", False), path + ": GPU tool serving is not enabled")
     rl = spec.get("rate_limits", {})
     _expect(isinstance(rl, dict) and set(rl) <= {"rpm", "tokens_day"},

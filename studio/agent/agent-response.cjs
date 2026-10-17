@@ -142,7 +142,13 @@ function parseAgentResponse(content, nativeActions = []) {
     }
   }
   if (actions.length > 8 || (actions.length && (terminal || confirm)) || (terminal && confirm)) invalid = true;
-  if (invalid) return { invalid: true, actions: [], display };
+  if (invalid) {
+    const structuredAttempt = /^\s*\{/.test(wrapped ? wrapped[1] : raw);
+    const error = structuredAttempt ? structured.error : 'The tool or run-control response was invalid.';
+    return { invalid: true, actions: [], error,
+      display: structuredAttempt
+        ? 'The model returned an invalid action response. No actions from this response were executed.' : display };
+  }
   if (!display) display = terminal?.summary || terminal?.reason || '';
   return { actions, control: terminal, confirm, display, invalid: false };
 }

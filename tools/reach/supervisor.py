@@ -33,6 +33,9 @@ _last_publish_attempt = None
 PUBLISH_COOLDOWN = 300
 _server = None
 _cli_module = None
+_model_runtime = None
+_model_status = {}
+WATCH_INTERVAL = 5
 
 
 def _load_cli(override=None):
@@ -261,6 +264,16 @@ def restart_endpoint():
         return _bring_up(restart_relay=True)
 
 
+def ensure_model_services_running():
+    """Adopt healthy connections; revive only explicitly provisioned ones."""
+    global _model_runtime, _model_status
+    from .model_runtime import ModelRuntime
+    if _model_runtime is None:
+        _model_runtime = ModelRuntime(CONFIG_DIR, resolve_node())
+    _model_status = _model_runtime.tick()
+    return _model_status
+
+
 def _allowed_origin(origin):
     """Accept the panel's own renderer origins plus local CLI callers.
 
@@ -310,7 +323,8 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         port = runtime_port()
         url = public_url_from_server(port) if port_open(port) else None
-        self._reply(200, {"ok": bool(url), "relay": port_open(port), "public_url": url})
+        self._reply(200, {"ok": bool(url), "relay": port_open(port), "public_url": url,
+                          "model_services": dict(_model_status)})
 
     def do_POST(self):
         if self.path == "/restart":
@@ -387,15 +401,22 @@ def run():
 
     def watch():
         while True:
-            try:
-                ensure_endpoint()
-                ensure_accounts_running()
-            except Exception as exc:
-                print("supervisor: %s" % exc, flush=True)
-            time.sleep(20)
+            for check in (ensure_model_services_running, ensure_endpoint, ensure_accounts_running):
+                try:
+                    check()
+                except Exception as exc:
+                    print("supervisor %s: %s" % (check.__name__, type(exc).__name__), flush=True)
+            time.sleep(WATCH_INTERVAL)
 
+    # A legacy logon launcher and the persistent recovery task may overlap.
+    # Acquire the control port before starting any watchdog work.
+    try:
+        _server = ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), ControlHandler)
+    except OSError:
+        if port_open(CONTROL_PORT):
+            return
+        raise
     threading.Thread(target=watch, daemon=True).start()
-    _server = ThreadingHTTPServer(("127.0.0.1", CONTROL_PORT), ControlHandler)
     try:
         _server.serve_forever()
     finally:

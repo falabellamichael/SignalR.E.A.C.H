@@ -58,12 +58,16 @@ async function renderer(editAlias = '') {
   const saved = [];
   const prefs = { 'model-edit': editAlias };
   const model = {
-    upstream: 'user/model-alpha', description: 'My model', public: true, enabled: true,
+    upstream: 'gpu/gemma-4-12b-qat', description: 'My model', public: true, enabled: true,
     fallback: null, context_window: 32768, temperature: 0.7, max_tokens: 2048,
     rate_limits: { rpm: 5, tokens_day: 10000 }, allow_stream: true, allow_tools: false,
   };
   const cfg = {
-    models: { alpha: model, beta: { ...model, upstream: 'user/model-beta', fallback: 'alpha' } },
+    models: {
+      alpha: model, beta: { ...model, upstream: 'gpu/ornith-1.5-9b', fallback: 'alpha' },
+      'gpt-4o': { ...model, upstream: 'direct/gpt-4o' },
+      'chatgpt-chat': { ...model, upstream: 'bridge/chatgpt-chat' },
+    },
     request: { default_model: 'beta', blocked_fields: [] }, rate_limits: {},
     access: { access_key: 'set (masked)', keys: [] }, cache: {}, data: {},
     publish: {}, system: {}, omniroute_key: 'set (masked)',
@@ -147,4 +151,19 @@ test('Models-page editing opens only the requested alias before scrolling', asyn
   assert.equal(target.wasOpenWhenScrolled, true);
   assert.equal(document.getElementById('reach-model-alpha').open, false);
   assert.equal(prefs['model-edit'], '', 'the navigation preference is consumed once');
+});
+
+test('GPU settings exclude login providers while preserving their saved definitions', async () => {
+  const { container, document, cfg, saved } = await renderer();
+  assert.equal(document.getElementById('reach-model-gpt-4o'), undefined);
+  assert.equal(document.getElementById('reach-model-chatgpt-chat'), undefined);
+  assert.deepEqual(field(container, 'Default model').children.map(option => option.value), ['alpha', 'beta']);
+  assert.deepEqual(field(document.getElementById('reach-model-beta'), 'Fallback alias').children.map(option => option.value), ['__null__', 'alpha']);
+  const temperature = field(document.getElementById('reach-model-alpha'), 'Default temperature');
+  temperature.value = '0.25'; temperature.dispatch('input');
+  descendants(container).find(node => node.tagName === 'BUTTON' && node.textContent === 'Save settings').dispatch('click');
+  await new Promise(resolve => setImmediate(resolve));
+  for (const alias of ['gpt-4o', 'chatgpt-chat']) {
+    assert.deepEqual(JSON.parse(JSON.stringify(saved[0].models[alias])), cfg.models[alias]);
+  }
 });

@@ -1,0 +1,113 @@
+#file-drawer:not([data-panel="singular"]) #singular-panel { display: none; }
+#file-drawer[data-panel="singular"] {
+  display: flex !important;
+  flex-direction: column !important;
+}
+#file-drawer[data-panel="singular"] > :is(#drawer-context, #file-tree, #drawer-resizer-y, .editor-main, #browser-panel) {
+  display: none !important;
+}
+#file-drawer[data-panel="singular"] > #singular-panel {
+  display: flex !important;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+#singular-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  overflow: hidden;
+  padding: 16px;
+  color: var(--text);
+  gap: 16px;
+  background: var(--panel);
+  box-sizing: border-box;
+}
+
+/* === Left Column: Context, Performance, GitHub, Actions === */
+.singular-col-info {
+  flex: 1 1 240px;
+  min-width: 200px;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  box-sizing: border-box;
+}
+
+.singular-col-info .singular-eyebrow { color: var(--gold); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; font-weight: 600; }
+.singular-col-info h2 { font-size: 20px; margin: 2px 0 0; overflow-wrap: anywhere; }
+.singular-col-info .singular-status { margin: 0 0 4px; font-size: 11.5px; color: var(--dim); }
+
+.singular-col-info .singular-details { border-top: 1px solid var(--line); padding: 8px 0 2px; }
+.singular-col-info .singular-details summary { cursor: pointer; font-weight: 600; font-size: 12.5px; user-select: none; }
+.singular-col-info dl { display: grid; grid-template-columns: minmax(70px, 1fr) minmax(0, 1.4fr); gap: 6px 12px; font-size: 12px; margin: 8px 0 4px; }
+.singular-col-info dt { color: var(--dim); }
+.singular-col-info dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; color: var(--text); }
+.singular-col-info p { font-size: 11px; line-height: 1.45; }
+.singular-col-info .singular-perf-note { margin: 6px 0 2px; color: var(--dim); }
+.singular-col-info .singular-perf-stamp { margin: 2px 0 4px; color: var(--dim); font-size: 10.5px; }
+
+/* GitHub & Repository in left column */
+.singular-col-info .singular-github { border-top: 1px solid var(--line); padding-top: 8px; }
+.singular-col-info .singular-github-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.singular-col-info .singular-github-body dl { margin: 4px 0; }
+.singular-col-info .singular-github-auth {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+}
+
+.singular-col-info .singular-actions {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line);
+}
+
+/* === Right Column: Teams & Bots occupying the open space === */
+.singular-col-team {
+  flex: 1.5 1 280px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-left: 1px solid var(--line);
+  padding-left: 16px;
+  box-sizing: border-box;
+}
+
+.singular-team-head { display: flex; justify-content: space-between; align-items: baseline; }
+.singular-team-head h3 { margin: 0; font-size: 16px; font-weight: 600; font-family: 'Bell MT', Georgia, serif; }
+.singular-team-badge { font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.singular-team-note { margin: 0; font-size: 11.5px; color: var(--dim); }
+
+.singular-team-link-row { display: flex; gap: 6px; align-items: center; margin-bottom: 2px; }
+.singular-team-link-row select { flex: 1; min-width: 0; font-size: 12px; padding: 5px 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; color: var(--text); }
+.singular-team-link-row select:focus { border-color: var(--gold-dim); outline: none; }
+
+.singular-team-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; flex: 1; }
+.singular-member {
+  display: flex; align-items: center; gap: 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--surface);
+  transition: border-color .15s ease, background .15s ease;
+}
+.singular-member:hover { border-color: var(--gold-dim); background: var(--panel2); }
+.singular-member-face { flex: none; line-height: 0; }
+.singular-member-face svg { display: block; border-radius: 14px; }
+.singular-member-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.singular-member-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.singular-member-top strong { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.member-model-pill { font-size: 10px; color: var(--dim); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; background: var(--card); font-family: var(--mono, Consolas, monospace); }
+.singular-member-role { color: var(--dim); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Responsive wrap if drawer is very narrow */
+@container drawer (max-width: 480px) {
+  #singular-panel { flex-direction: column; overflow-y: auto; }
+  .singular-col-info { max-width: none; overflow: visible; padding-right: 0; }
+  .singular-col-team { border-left: none; border-top: 1px solid var(--line); padding-left: 0; padding-top: 14px; overflow: visible; }
+}

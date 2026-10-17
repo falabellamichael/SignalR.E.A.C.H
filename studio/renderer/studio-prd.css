@@ -737,13 +737,16 @@
 .ab-wrap { align-items: flex-start; max-width: 760px; }
 
 .ab-mark {
-  width: 54px; height: 54px;
-  border-radius: 50%;
-  border: 2px solid var(--gold);
+  width: 56px; height: 56px;
+  border-radius: 14px;
+  border: 1.5px solid color-mix(in srgb, var(--gold) 50%, var(--line));
+  background: color-mix(in srgb, var(--gold) 10%, transparent);
   color: var(--gold);
   display: flex; align-items: center; justify-content: center;
-  font-family: 'Bell MT', Georgia, serif;
-  font-size: 28px; font-weight: bold;
+  flex-shrink: 0;
+}
+.ab-mark svg {
+  width: 38px; height: 38px; display: block;
 }
 
 .ab-wrap h2 { margin: 0; font-size: 24px; color: var(--gold); }

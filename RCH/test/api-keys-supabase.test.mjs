@@ -1,0 +1,31 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { pgliteStores } from './helpers/pglite-store.mjs';
+import { API_KEY_TTL_MS } from '../service/api-keys.mjs';
+import { digest } from '../service/store.mjs';
+
+const postgres=pgliteStores({requiredMigration:'_rch_user_api_keys.sql'});
+test('Postgres migration enforces durable key lifecycle, ownership, limit and role permissions',async()=>{
+  const {store,clock}=await postgres.fresh({models:[]});
+  const a=await store.ensureEmailAccount('pg-keys@example.com'),b=await store.ensureEmailAccount('pg-other@example.com');
+  await postgres.query("UPDATE reach_accounts.accounts SET plan_id='basic',plan_expires=$1 WHERE id=$2",[clock.now+2*API_KEY_TTL_MS,a.id]);
+  const key=await store.createApiKey(a.id,'Server');
+  assert.equal((await store.authenticateApiKey(key.key)).id,a.id);
+  const rows=(await postgres.query('select * from reach_accounts.api_keys')).rows;
+  assert.equal(rows[0].hash,digest(key.key));
+  assert.ok(!JSON.stringify(rows).includes(key.key));
+  assert.deepEqual(await store.listApiKeys(b.id),[]);
+  await assert.rejects(store.revokeApiKey(b.id,key.id),{code:'api_key_missing'});
+  for(let i=1;i<10;i++)await store.createApiKey(a.id,`Key ${i}`);
+  await assert.rejects(store.createApiKey(a.id,'Eleventh'),{code:'api_key_limit'});
+  const revoked=await store.revokeApiKey(a.id,key.id);
+  assert.equal(revoked.revokedAt,new Date(clock.now).toISOString());
+  assert.deepEqual(await store.revokeApiKey(a.id,key.id),revoked);
+  await assert.rejects(store.authenticateApiKey(key.key),{code:'api_key_invalid'});
+  const replacement=await store.createApiKey(a.id,'Replacement');
+  clock.now+=API_KEY_TTL_MS;
+  await assert.rejects(store.authenticateApiKey(replacement.key),{code:'api_key_invalid'});
+  assert.ok(await store.createApiKey(a.id,'After expiry'));
+  const permissions=(await postgres.query("select has_function_privilege('anon','public.reach_api_key_store(text,jsonb)','execute') as anon, has_function_privilege('authenticated','public.reach_api_key_store(text,jsonb)','execute') as authenticated, has_table_privilege('anon','reach_accounts.api_keys','select') as table_read")).rows[0];
+  assert.deepEqual(permissions,{anon:false,authenticated:false,table_read:false});
+});

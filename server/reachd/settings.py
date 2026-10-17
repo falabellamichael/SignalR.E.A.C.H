@@ -197,6 +197,22 @@ def public_key_view(k):
     return view
 
 
+def strip_masked_system_secrets(patch):
+    """settings_public() shows system.admin_token / system.host_salt as the
+    literal "set". If the panel posts that back, drop it so the stored value
+    is kept (otherwise host_salt fails hex validation and admin_token would
+    be overwritten with "set"). Returns True if it touched the patch."""
+    system = patch.get("system") if isinstance(patch, dict) else None
+    if not isinstance(system, dict):
+        return False
+    touched = False
+    for name in ("host_salt", "admin_token"):
+        if system.get(name) == "set":
+            system.pop(name)
+            touched = True
+    return touched
+
+
 def restore_masked_client_keys(existing_access, access_patch):
     """When a settings patch carries access.keys whose entries hold masked
     or empty token strings (the panel round-trips the public view),

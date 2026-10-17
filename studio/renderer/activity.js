@@ -5,16 +5,32 @@
   const panel = document.querySelector('#agent-activity');
   const badge = document.querySelector('#activity-global');
   const scroller = document.querySelector('#chat-scroll');
-  let teamVisible = false, concealed = false, restoringDetails = false, lastScroll = scroller.scrollTop;
+  let teamVisible = false, concealed = false, expanded = false, restoringDetails = false, lastScroll = scroller.scrollTop;
   function updateVisibility() {
     const unavailable = teamVisible || !states.get(selected);
-    const hidden = !unavailable && concealed && !restoringDetails && !panel.querySelector(':focus-visible');
-    panel.classList.toggle('is-concealed', hidden);
-    panel.inert = unavailable || hidden;
-    panel.setAttribute('aria-hidden', String(unavailable || hidden));
+    panel.inert = unavailable;
+    panel.setAttribute('aria-hidden', String(unavailable));
+    if (unavailable || restoringDetails) return;
+    const details = panel.querySelector('.activity-details');
+    const open = expanded && (!concealed || !!panel.querySelector(':focus-visible'));
+    if (details.open === open) return;
+    // Resizing the sticky panel must not become another directional scroll.
+    const top = scroller.scrollTop;
+    restoringDetails = true;
+    details.open = open;
+    requestAnimationFrame(() => {
+      scroller.scrollTop = top;
+      lastScroll = scroller.scrollTop;
+      requestAnimationFrame(() => {
+        lastScroll = scroller.scrollTop;
+        restoringDetails = false;
+        updateVisibility();
+      });
+    });
   }
   scroller.addEventListener('scroll', () => {
     const next = scroller.scrollTop, delta = next - lastScroll;
+    if (restoringDetails || teamVisible) { lastScroll = next; return; }
     if (next <= 8) concealed = false;
     else if (Math.abs(delta) >= 2) concealed = delta > 0;
     lastScroll = next;
@@ -23,22 +39,15 @@
   panel.addEventListener('focusout', () => queueMicrotask(updateVisibility));
   function createView(host) {
     host.classList.add('activity-panel');
-    host.innerHTML = '<div class="activity-head"><span class="activity-spinner" aria-hidden="true"></span><strong class="activity-title" role="status" aria-live="polite"></strong><span class="activity-time"></span></div><p class="activity-note"></p><div class="activity-progress" aria-hidden="true"><i></i></div><details class="activity-details"><summary>Agent activity <span class="activity-count"></span></summary><div class="activity-steps" tabindex="0" role="region" aria-label="Agent activity steps"></div></details>';
+    host.innerHTML = '<div class="activity-head"><span class="activity-spinner" aria-hidden="true"></span><strong class="activity-title" role="status" aria-live="polite"></strong><span class="activity-time"></span></div><p class="activity-note"></p><div class="activity-progress" aria-hidden="true"><i></i></div><details class="activity-details"><summary>Agent activity <span class="activity-count"></span></summary><dl class="activity-metadata" aria-label="Run metadata"></dl><div class="activity-steps" tabindex="0" role="region" aria-label="Agent activity steps"></div></details>';
     return { host, rows: new Map() };
   }
   const mainView = createView(panel);
-  panel.querySelector('.activity-details > summary').addEventListener('click', () => {
-    // Expanding the sticky panel can move the scroll anchor. Keep the user's
-    // reading position so that layout movement is not treated as a scroll down.
-    const top = scroller.scrollTop;
-    restoringDetails = true;
-    requestAnimationFrame(() => {
-      scroller.scrollTop = top;
-      lastScroll = scroller.scrollTop;
-      concealed = false;
-      restoringDetails = false;
-      updateVisibility();
-    });
+  panel.querySelector('.activity-details > summary').addEventListener('click', event => {
+    event.preventDefault();
+    expanded = !panel.querySelector('.activity-details').open;
+    concealed = false;
+    updateVisibility();
   });
   function text(el, value) { if (el.textContent !== value) el.textContent = value; }
   function paint(view, state, now, key) {
@@ -51,14 +60,39 @@
     const details = host.querySelector('.activity-details');
     // Every new trace starts compact; updates (including completion) respect
     // the user's choice to open or close it. Shared by agents and team workers.
-    if (view.session !== session) details.open = false;
+    if (view.session !== session) {
+      details.open = false;
+      if (view === mainView) { expanded = false; concealed = false; }
+    }
     view.session = session;
     host.dataset.status = state.status;
     host.dataset.active = String(summary.active && !summary.waiting);
     host.dataset.waiting = String(summary.waiting || summary.silent);
     text(host.querySelector('.activity-title'), summary.title);
     text(host.querySelector('.activity-time'), summary.elapsed + ' elapsed');
-    text(host.querySelector('.activity-note'), summary.detail);
+    const note = host.querySelector('.activity-note');
+    text(note, summary.detail);
+    note.title = summary.detail;
+    const latest = state.steps.at(-1);
+    const fields = [
+      ['Round', state.round || null],
+      ['Steps', state.count],
+      ['Output', latest?.chars ? `${latest.chars.toLocaleString()} chars` : null],
+      ['Reasoning', latest?.reasoning ? `${latest.reasoning.toLocaleString()} chars` : null],
+      ['Updated', summary.active ? `${summary.age} ago` : null],
+    ].filter(([, value]) => value !== null);
+    const metadata = host.querySelector('.activity-metadata');
+    const signature = JSON.stringify(fields);
+    if (view.metadata !== signature) {
+      metadata.replaceChildren(...fields.map(([label, value]) => {
+        const item = document.createElement('div');
+        const term = document.createElement('dt'), detail = document.createElement('dd');
+        term.textContent = label; detail.textContent = String(value);
+        item.append(term, detail);
+        return item;
+      }));
+      view.metadata = signature;
+    }
     text(host.querySelector('.activity-count'), `· ${state.count} steps${state.round ? ' · round ' + state.round : ''}`);
     const items = host.querySelector('.activity-steps');
     // Keep details nodes stable while counters update so expanded results stay open.

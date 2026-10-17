@@ -6,7 +6,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const out = path.join(root,'dist');
 await rm(out, {recursive:true,force:true});
 await mkdir(out, {recursive:true});
-for (const name of ['index.html','platform.html','integrations.html','docs.html','about.html','download.html','assets']) {
+for (const name of ['index.html','platform.html','integrations.html','docs.html','about.html','download.html','subscription.html','login.html','profile.html','assets']) {
   await cp(path.join(root,name),path.join(out,name),{recursive:true});
 }
 console.log('Static deployment files created in dist/. Upload its contents to a static host.');

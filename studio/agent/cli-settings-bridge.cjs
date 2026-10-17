@@ -9,6 +9,7 @@ const path = require('node:path');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { atomicWriteJson } = require('./atomic-write.cjs');
 const { sanitizeMcpServers, isMcpToolName } = require('./mcp.cjs');
+const { sanitizePlugins } = require('./plugins.cjs');
 const { validateBudgets } = require('./budgets.cjs');
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -17,7 +18,7 @@ const METHODS = new Set(['settings.get', 'settings.save', 'budget.schema', 'conn
   'conversations.update', 'engines.report', 'theme.set']);
 const SCOPE_FIELDS = {
   connection: ['connections', 'activeConnection', 'reachCli', 'jevEnabled', 'jevAutoMode', 'jevApiKey', 'jevApiKeyAction'],
-  mcp: ['mcpServers'], budgeting: ['budgets'],
+  mcp: ['mcpServers', 'plugins'], budgeting: ['budgets'],
 };
 const own = (value, key) => Object.hasOwn(value, key);
 const object = value => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -61,7 +62,7 @@ function validatePatch(patch, savedSettings) {
   // The first pass checks structure only: displayed strings may contain
   // redaction markers. Validate their final values after restoring projections.
   const complete = savedSettings !== undefined;
-  keys(patch, ['settingsScope', 'settingsRevision', 'connections', 'activeConnection', 'reachCli', 'jevEnabled', 'jevAutoMode', 'jevApiKey', 'jevApiKeyAction', 'pageLayout', 'budgets', 'mcpServers']);
+  keys(patch, ['settingsScope', 'settingsRevision', 'connections', 'activeConnection', 'reachCli', 'jevEnabled', 'jevAutoMode', 'jevApiKey', 'jevApiKeyAction', 'pageLayout', 'budgets', 'mcpServers', 'plugins']);
   if (own(patch, 'settingsScope')) {
     if (!own(SCOPE_FIELDS, patch.settingsScope)) fail('Invalid settings scope.');
     keys(patch, ['settingsScope', 'settingsRevision', ...SCOPE_FIELDS[patch.settingsScope]]);

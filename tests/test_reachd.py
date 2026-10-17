@@ -769,6 +769,64 @@ class ClientKeyManagementTests(unittest.TestCase):
         self.assertEqual(patch["access"]["keys"][0]["key"], raw_key)
 
 
+class MaskedSystemSecretTests(unittest.TestCase):
+    """The panel round-trips settings_public(), where host_salt/admin_token
+    show as the literal "set"; that must never reach validation or storage."""
+
+    def _cfg(self):
+        cfg = json.loads(json.dumps(reachd.DEFAULT_SETTINGS))
+        cfg["system"]["host_salt"] = "ab" * 16
+        cfg["system"]["admin_token"] = "tok-real-123"
+        return cfg
+
+    def _run(self, method, body):
+        from reachd import handler, core
+        cfg = self._cfg()
+        sent = []
+        fake = MagicMock()
+        fake._read_body.return_value = json.dumps(body).encode()
+        fake._json.side_effect = lambda code, obj: sent.append((code, obj))
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as td:
+            state = SimpleNamespace(cfg=cfg, cfg_path=Path(td) / "c.json",
+                                    poll_public_url=lambda: None)
+            self.addCleanup(setattr, core, "STATE", core.STATE)
+            core.STATE = state
+            getattr(handler.RelayHandler, method)(fake)
+            after = core.STATE.cfg
+            return sent[-1], json.loads(json.dumps(after["system"]))
+
+    def test_helper_only_strips_literal_set(self):
+        p = {"system": {"host_salt": "set", "admin_token": "set", "x": 1}}
+        self.assertTrue(reachd.strip_masked_system_secrets(p))
+        self.assertEqual(p["system"], {"x": 1})
+        q = {"system": {"host_salt": "zz", "admin_token": "new"}}
+        self.assertFalse(reachd.strip_masked_system_secrets(q))
+        self.assertEqual(q["system"], {"host_salt": "zz", "admin_token": "new"})
+
+    def test_save_with_masks_keeps_stored_values(self):
+        (code, _), system = self._run("handle_settings_update", {
+            "system": {"host_salt": "set", "admin_token": "set"}})
+        self.assertEqual(code, 200)
+        self.assertEqual(system["host_salt"], "ab" * 16)
+        self.assertEqual(system["admin_token"], "tok-real-123")
+
+    def test_save_still_rejects_non_hex_salt(self):
+        (code, body), system = self._run("handle_settings_update", {
+            "system": {"host_salt": "zz"}})
+        self.assertEqual(code, 400)
+        self.assertIn("hex", body["error"]["message"])
+        self.assertEqual(system["host_salt"], "ab" * 16)
+
+    def test_settings_test_ignores_masks_but_rejects_bad_salt(self):
+        (code, body), _ = self._run("handle_settings_test", {
+            "system": {"host_salt": "set", "admin_token": "set"}})
+        self.assertEqual(code, 200)
+        self.assertTrue(body["valid"])
+        (code, _), _ = self._run("handle_settings_test", {"system": {"host_salt": "zz"}})
+        self.assertEqual(code, 400)
+
+
 class ConfigRepairTests(unittest.TestCase):
     """A config that fails validation must never reach the runtime.
 
@@ -1094,7 +1152,7 @@ class StreamPreflightTests(unittest.TestCase):
         return source
 
     def _finalize(self, source, *, upstream_model="bridge/codegpt-eco-test",
-                  fallback=None, urlopen=None, strip_roles=False):
+                  fallback=None, urlopen=None, strip_roles=False, on_write=None):
         from reachd import core
         from reachd.chat import chat_finalize
 
@@ -1105,6 +1163,8 @@ class StreamPreflightTests(unittest.TestCase):
         state.key = "test-key"
         h = MagicMock()
         h.headers = {}
+        if on_write:
+            h._write_chunk.side_effect = on_write
         h.key_limits.return_value = (None, 0, 0)
         ctx = {
             "started": time.time(), "ip": "127.0.0.1",
@@ -1124,6 +1184,32 @@ class StreamPreflightTests(unittest.TestCase):
             else:
                 chat_finalize(h, source, ctx)
         return h, state
+
+    def test_short_gpu_stream_reports_decode_rate_with_exact_usage(self):
+        tokens = {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        source = self._stream(
+            *[{"choices": [{"delta": {"content": "x"}}]} for _ in range(9)],
+            {"choices": [], "usage": tokens}, b"[DONE]")
+        clock = [5.0 - .0225]
+        read_line = source.readline
+
+        def timed_readline():
+            line = read_line()
+            if b'"content": "x"' in line:
+                clock[0] += .0225
+            return line
+
+        source.readline = timed_readline
+        with patch("reachd.chat.time.monotonic", side_effect=lambda: clock[0]):
+            h, _ = self._finalize(source, upstream_model="gpu/gemma-4-12b-qat")
+        events = [json.loads(line[5:]) for call in h._write_chunk.call_args_list
+                  for line in call.args[0].splitlines() if line.startswith(b"data: {")]
+        final = [event for event in events if "usage" in event][-1]
+        self.assertEqual(final["usage_source"], "provider")
+        self.assertEqual({key: final["usage"][key] for key in tokens}, tokens)
+        self.assertEqual(final["usage"]["tokens_per_second"], 50.0)
+        self.assertEqual(final["usage"]["tokens_per_second_source"], "relay_stream_decode")
+        self.assertEqual(final["usage"]["completion_seconds"], 0.18)
 
     def test_bridge_sse_error_preserves_429_without_empty_success(self):
         source = self._stream({"error": {

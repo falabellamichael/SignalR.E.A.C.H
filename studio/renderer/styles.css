@@ -150,11 +150,16 @@ header {
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .mark {
-  width: 30px; height: 30px; border-radius: 50%;
-  border: 1.5px solid var(--gold); color: var(--gold);
+  width: 32px; height: 32px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--gold) 45%, var(--line));
+  background: color-mix(in srgb, var(--gold) 12%, transparent);
+  color: var(--gold);
   display: grid; place-items: center;
-  padding: 0 0 1px 1px; margin: 0; line-height: 1; text-align: center;
-  font-family: 'Bell MT', serif; font-size: 17px; font-weight: bold;
+  padding: 0; margin: 0; flex-shrink: 0;
+  transition: transform .15s ease, border-color .15s ease;
+}
+.mark svg {
+  width: 22px; height: 22px; display: block;
 }
 h1 { font-size: 22px; font-weight: normal; letter-spacing: 1px; color: var(--gold); }
 .statusbar { display: flex; align-items: center; gap: 10px; }
@@ -211,9 +216,13 @@ aside {
 .work { flex: 1; display: flex; min-width: 0; min-height: 0; padding: 20px 22px; }
 .empty { margin: auto; text-align: center; color: var(--dim); display: flex; flex-direction: column; gap: 10px; align-items: center; }
 .big-mark {
-  font-size: 64px; color: var(--gold-dim); width: 110px; height: 110px;
-  border: 1.5px solid var(--gold-dim); border-radius: 50%;
+  color: var(--gold-dim); width: 110px; height: 110px;
+  border: 1.5px solid var(--gold-dim); border-radius: 22px;
+  background: color-mix(in srgb, var(--gold) 8%, transparent);
   display: flex; align-items: center; justify-content: center; margin-bottom: 8px;
+}
+.big-mark svg {
+  width: 60px; height: 60px; display: block;
 }
 .empty .sub { font-size: 12px; color: var(--dim); }
 .hidden { display: none !important; }
@@ -767,7 +776,7 @@ button.tiny { padding: 1px 7px; font-size: 11px; }
   border-left: 1px solid var(--line); border-right: none; background: var(--panel);
   min-height: 0; padding: 0; gap: 0;
 }
-.file-drawer.closed { display: none; }
+.file-drawer.closed, .file-drawer.closed[data-layout] { display: none; }
 .file-drawer[data-panel="browser"] > :is(#drawer-context, #file-tree, #drawer-resizer-y, .editor-main) { display: none; }
 #browser-panel { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 .browser-tabstrip, .browser-toolbar { display: flex; align-items: center; gap: 5px; padding: 6px; border-bottom: 1px solid var(--line); flex-shrink: 0; }
@@ -838,24 +847,25 @@ body.resizing-y, body.resizing-y * {
 .chip.toggle { cursor: pointer; }
 .chip.toggle.active { color: var(--gold); border-color: var(--gold-dim); }
 .file-tree { height: 180px; min-height: 50px; overflow-y: auto; font-size: 12.5px; padding: 6px 4px; border-bottom: none; flex-shrink: 0; }
-/* Side layout: tree column, split, editor. The header and project path stay full width. */
-.file-drawer[data-layout="side"] {
+/* Side layout: editor, split, tree column. The header and project path stay full width.
+ * Applies only when viewing files; Singular and Browser take the full drawer. */
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) {
   display: grid;
-  grid-template-columns: minmax(120px, min(var(--drawer-tree-width, 200px), calc(100% - 180px))) 6px minmax(140px, 1fr);
+  grid-template-columns: minmax(140px, 1fr) 6px minmax(120px, min(var(--drawer-tree-width, 200px), calc(100% - 180px)));
   grid-template-rows: auto auto minmax(0, 1fr);
 }
-.file-drawer[data-layout="side"] > .drawer-head { grid-column: 1 / -1; grid-row: 1; }
-.file-drawer[data-layout="side"] > #drawer-context { grid-column: 1 / -1; grid-row: 2; }
-.file-drawer[data-layout="side"] > #file-tree {
-  grid-column: 1; grid-row: 3; height: auto !important; width: auto; min-height: 0;
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > .drawer-head { grid-column: 1 / -1; grid-row: 1; }
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > #drawer-context { grid-column: 1 / -1; grid-row: 2; }
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > #file-tree {
+  grid-column: 3; grid-row: 3; height: auto !important; width: auto; min-height: 0;
   border-right: none;
 }
-.file-drawer[data-layout="side"] > #drawer-resizer-y {
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > #drawer-resizer-y {
   grid-column: 2; grid-row: 3; width: auto; height: auto; margin: 0; cursor: ew-resize; align-self: stretch;
 }
-.file-drawer[data-layout="side"] > #drawer-resizer-y::after { width: 1px; height: 100%; }
-.file-drawer[data-layout="side"] > .editor-main { grid-column: 3; grid-row: 3; min-height: 0; }
-.file-drawer[data-layout="side"] > #browser-panel { grid-column: 1 / -1; grid-row: 3; min-height: 0; }
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > #drawer-resizer-y::after { width: 1px; height: 100%; }
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > .editor-main { grid-column: 1; grid-row: 3; min-height: 0; }
+.file-drawer[data-layout="side"]:not([data-panel="browser"]):not([data-panel="singular"]) > #browser-panel { grid-column: 1 / -1; grid-row: 3; min-height: 0; }
 body.resizing-split, body.resizing-split * { cursor: ew-resize !important; user-select: none !important; }
 .tree-entry {
   display: block; width: 100%; text-align: left; border: 0;
@@ -1318,7 +1328,17 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 .team-member-row .dim { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Per-row crew-role picker: the role is the member's behavior, so it must stay
    visible next to the name and take the remaining width. */
-.team-member-row .row-role { flex: 1; min-width: 0; font-size: 12px; padding: 3px 6px; }
+.team-member-row .member-design-pick {
+  flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; line-height: 0; cursor: pointer;
+}
+.team-member-row .member-design-pick svg { display: block; border-radius: 8px; }
+.team-design-board { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.team-design-board p { margin: 0 0 8px; font-size: 11px; }
+.team-design-grid { display: grid; grid-template-columns: repeat(10, 36px); gap: 6px; max-height: 168px; overflow: auto; }
+.team-design-option { width: 36px; height: 36px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; line-height: 0; cursor: pointer; }
+.team-design-option svg { display: block; border-radius: 7px; }
+.team-design-option:hover, .team-design-option.active { border-color: var(--gold); }
 /* The member add-row must FIT inside the modal box. Its four controls carry
    intrinsic widths (longest option text, the input's default `size`) that total
    ~690px — wider than the old 440px box — and flex refuses to shrink items below
@@ -1495,6 +1515,21 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 .activity-panel { flex-shrink: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 11px 14px; }
 .activity-head { display: flex; align-items: center; gap: 9px; font-size: 13px; }
 .activity-title { color: var(--gold); }
+.activity-metadata { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 9px 0 0; font-size: 11px; font-variant-numeric: tabular-nums; }
+.activity-metadata > div { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.activity-metadata dt { color: var(--dim); }
+.activity-metadata dd { margin: 0; color: var(--text); }
+.member-response-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: linear-gradient(100deg, color-mix(in srgb, var(--gold) 5%, var(--panel)), var(--panel)); font-size: 11px; }
+.member-response-label { color: var(--dim); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.member-response-meta strong { color: var(--text); font-weight: 600; overflow-wrap: anywhere; }
+.member-response-model { flex: 1 1 160px; min-width: 0; color: var(--dim); overflow-wrap: anywhere; }
+.member-response-state { color: var(--gold-dim); font-variant-numeric: tabular-nums; }
+@media (max-width: 600px) {
+  .member-response-meta { gap: 5px 8px; }
+  .member-response-model { flex-basis: 100%; order: 1; }
+  .member-response-state { margin-left: auto; }
+  .activity-metadata { gap: 5px 12px; }
+}
 .activity-time { margin-left: auto; color: var(--dim); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .activity-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--dim); font-size: 12px; margin: 6px 0; overflow-wrap: anywhere; }
 .activity-spinner { display: inline-block; flex: 0 0 auto; width: 14px; height: 14px; border: 2px solid var(--line); border-top-color: var(--gold); border-radius: 50%; animation: activity-spin 1s linear infinite; }
@@ -1583,7 +1618,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
   outline: none;
 }
 #agent-activity { position: sticky; top: 0; z-index: 4; padding: var(--chat-status-padding); display: flex; flex-direction: column; min-height: 0; }
-#agent-activity.is-concealed { visibility: hidden; pointer-events: none; }
 #team-deck-slot { min-width: 0; }
 #team-deck-slot:empty { display: none; }
 #team-deck-slot > .team-deck { width: 100%; box-sizing: border-box; padding: 0 14px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }

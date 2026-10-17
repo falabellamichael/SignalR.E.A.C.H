@@ -19,7 +19,16 @@
 .team-nav-anchor { min-width: 0; overflow-anchor: none; }
 .team-deck-nav { position: relative; z-index: 2; background: var(--surface); }
 .team-deck-nav.is-floating { position: fixed; z-index: 5; }
-.team-deck-nav.is-concealed { visibility: hidden; pointer-events: none; }
+.team-tab-strip[hidden] { display: none; }
+.team-deck-compact-info { display: none; min-width: 0; color: var(--deck-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-deck-nav.is-compact .team-deck-compact-info { display: block; flex: 1; }
+.team-deck-nav.is-compact .team-deck-count { max-width: 40%; font-size: 10px; }
+.team-deck-toggle { display: grid; place-items: center; flex-shrink: 0; width: 28px; height: 28px; padding: 4px; border: 1px solid var(--deck-line); border-radius: 5px; background: var(--deck-surface); color: var(--deck-ink); cursor: pointer; }
+.team-deck-toggle[aria-expanded="true"] .team-icon { transform: rotate(90deg); }
+.team-deck-toggle:focus-visible { outline: 2px solid var(--deck-ink); outline-offset: 2px; }
+.team-deck-nav.is-compact .team-deck-heading { align-items: center; padding: 6px 0; border-bottom: 1px solid var(--deck-line); }
+.team-deck-nav.is-compact .team-deck-heading strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.team-deck-nav.is-compact .team-deck-mode, .team-deck-nav.is-compact .team-deck-nurse { display: none; }
 .team-run-history { border-top: 1px solid var(--deck-line); padding: 10px 0; }
 .team-run-history summary { cursor: pointer; color: var(--deck-muted); padding: 6px 0; font-size: 11px; overflow-wrap: anywhere; }
 .team-run-history > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

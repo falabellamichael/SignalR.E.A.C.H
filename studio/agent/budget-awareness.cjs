@@ -11,6 +11,10 @@ function budgetPolicy({ maxTokens, purpose, budgets, round = 1, contextChars = 0
       'Use the available budget for useful substance and verification. Fit the complete response inside it; do not pad text merely to consume tokens. Put the result first, then the most useful evidence.');
   } else lines.push('No application output cap is set. The provider chooses its own limit; do not assume unlimited output. Reserve space for a complete visible response.');
   if (purpose !== 'summary') {
+    if (budgets.ultraPro) lines.push('Ultra_Pro is on: keep working until the task is finished. Return at most ONE action per request and one short sentence. '
+      + (maxTokens > 0 ? 'Limit new source text to 1200 characters per request. For a larger new file, write a small working scaffold first, then extend it with edit_patch over later rounds. Never generate an entire large game or source file in a single action. '
+        : 'Use complete, reviewable actions. Split work into further requests when needed to fit the model context, without asking the user to continue. ')
+      + 'Preserve verified progress. Ask for user input only when it is required.');
     lines.push('Prefer a small executable action batch over lengthy planning. Never truncate JSON, code edits, or tool arguments. Use smaller edits and reread source as needed.');
     if (budgets.maxRounds > 0) {
       const remaining = Math.max(0, budgets.maxRounds - round + 1);
@@ -37,11 +41,11 @@ function reserveGuard(maxTokens) {
     }
   };
 }
-function checkpoint({ maxTokens, results = [], todos = [], pendingEdits = {}, cause = 'output' }) {
+function checkpoint({ maxTokens, retries = 1, results = [], todos = [], pendingEdits = {}, cause = 'output' }) {
   const allowance = maxTokens > 0 ? `${maxTokens.toLocaleString()}-token per-request allowance` : 'provider output allowance';
   const lines = ['REACH budget checkpoint', '', cause === 'round'
     ? 'The configured round budget has been reached. The task is saved and remains unfinished.'
-    : `The model could not finish a usable response within the ${allowance}, including one concise retry. The unfinished response was not executed.`];
+    : `The model could not finish a usable response within the ${allowance}, including ${retries === 1 ? 'one concise retry' : retries + ' concise retries'}. The unfinished response was not executed.`];
   if (results.length) {
     lines.push('', 'Actions actually recorded this turn:');
     for (const entry of results.slice(-8)) {

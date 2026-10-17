@@ -6,12 +6,65 @@ GPU_MODELS = {
     "minicpm5-2b": ("openbmb/MiniCPM5-2B", 18004, "MiniCPM5 2B", "FP8", 0),
 }
 GPU_TP_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b"))
+GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 92960, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856}
+GPU_SAMPLING_DEFAULTS = {
+    "ornith-1.5-9b": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+    "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
+    "minicpm5-2b": {"temperature": 1.0, "top_p": 0.95, "min_p": 0.0},
+}
 DIRECT_MODELS = (
     "deepseek-v4.1-flash", "ox-alpha", "gemini-3.8-flash", "gpt-5.6-luna",
     "glm-5.2", "MiniMax-M3", "gpt-4o", "gpt-5", "claude-sonnet-4.6",
     "claude-opus-4.6", "gemini-3.7-flash", "gemini-2.5-flash", "gpt-4o-mini",
 )
 BROWSER_MODELS = ("chatgpt-chat", "copilot-chat", "gemini-chat")
+
+
+def is_gpu_model(spec):
+    """Only fixed private GPU selectors belong to the general API catalog."""
+    return isinstance(spec, dict) and spec.get("upstream") in {
+        "gpu/" + alias for alias in GPU_MODELS}
+
+
+def is_login_provider_model(spec):
+    if not isinstance(spec, dict):
+        return False
+    upstream = spec.get("upstream", "")
+    return (upstream in {"direct/" + alias for alias in DIRECT_MODELS}
+            or upstream in {"bridge/" + alias for alias in BROWSER_MODELS}
+            or upstream.startswith("bridge/codegpt-eco")
+            or upstream.startswith("codegpt/"))
+
+
+def catalog_models(models, catalog, *, include_private=False):
+    """Select before dispatch so a saved fallback cannot cross catalogs."""
+    predicate = is_login_provider_model if catalog == "login-providers" else is_gpu_model
+    return {alias: spec for alias, spec in models.items()
+            if predicate(spec) and spec.get("enabled")
+            and (include_private or spec.get("public", True))}
+
+
+def login_provider_catalog(models):
+    data = []
+    for alias, spec in sorted(catalog_models(models, "login-providers", include_private=True).items()):
+        upstream = spec["upstream"]
+        provider = upstream[7:-5] if upstream in {"bridge/" + name for name in BROWSER_MODELS} else "codegpt"
+        data.append({"id": alias, "object": "model", "created": 1715367049,
+                     "owned_by": "SignalR.E.A.C.H", "name": alias,
+                     "description": spec.get("description", ""),
+                     "provider": provider, "requires_login": True,
+                     "catalog": "login-providers"})
+    return {"object": "list", "catalog": "login-providers", "data": data}
+
+
+def service_label(upstream):
+    if upstream.startswith("gpu/"):
+        return "Private GPU model service"
+    if upstream.startswith("direct/"):
+        return "CodeGPT direct service"
+    if upstream.startswith("bridge/"):
+        return "Local tray bridge"
+    return "OmniRoute"
 
 
 def private_route(upstream):
@@ -42,11 +95,15 @@ def dispatch(upstream, payload, state):
             data = {key: value for key, value in data.items()
                     if key in ("model", "messages", "stream", "max_tokens", "max_completion_tokens")}
         else:
-            output = data.pop("max_completion_tokens", data.get("max_tokens", 1024))
-            data["max_tokens"] = min(output, 4096) if type(output) is int else output
+            if "max_completion_tokens" in data:
+                data["max_tokens"] = data.pop("max_completion_tokens")
             for field in ("tools", "tool_choice", "parallel_tool_calls"):
                 data.pop(field, None)
-            data["chat_template_kwargs"] = {"enable_thinking": False}
+            alias = upstream[4:]
+            # All resident chat models use their native reasoning path.
+            data["chat_template_kwargs"] = {"enable_thinking": True}
+            for field, value in GPU_SAMPLING_DEFAULTS[alias].items():
+                data.setdefault(field, value)
             if data.get("stream"):
                 options = data.get("stream_options")
                 if options is None or isinstance(options, dict):
@@ -69,8 +126,8 @@ def deployment_defaults(spec_defaults):
         placement = "GPUs 0+1 (TP2)" if alias in GPU_TP_MODELS else "GPU %d" % gpu
         models[alias] = {**spec_defaults, "upstream": "gpu/" + alias,
                          "description": "%s — %s, %s, resident" % (name, precision, placement),
-                         "context_window": 8192, "max_tokens": 1024,
-                         "max_tokens_cap": 4096, "allow_tools": False}
+                         "context_window": GPU_CONTEXT_WINDOWS.get(alias, 8192), "max_tokens": None,
+                         "max_tokens_cap": 0, "allow_tools": False}
     models.update({alias: {**spec_defaults, "upstream": "bridge/" + alias,
                           "description": "Provider browser chat (existing sign-in)",
                           "enabled": alias != "gemini-chat", "public": alias != "gemini-chat"}

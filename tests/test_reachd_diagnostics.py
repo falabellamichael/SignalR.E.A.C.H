@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "server"))
 
 import reachd.core as core
 from reachd.handler import RelayHandler
+from reachd.model_routes import GPU_MODELS
 
 
 class ConnectivityProbeTests(unittest.TestCase):
@@ -25,7 +26,8 @@ class ConnectivityProbeTests(unittest.TestCase):
             bridge_url="http://127.0.0.1:18080/v1/",
             key="upstream-test-placeholder",
             public_url="https://relay.example/",
-            cfg={"access": {}},
+            cfg={"access": {}, "models": {
+                "sample": {"upstream": "gpu/gemma-4-12b-qat", "enabled": True}}},
         )
 
     @staticmethod
@@ -38,44 +40,43 @@ class ConnectivityProbeTests(unittest.TestCase):
 
     def test_no_models_returns_503_without_opening_a_connection(self):
         self.state.public_models.return_value = {}
+        self.state.cfg["models"] = {}
         with patch.object(core, "STATE", self.state), \
              patch("reachd.handler.net.urlopen") as opener:
             RelayHandler.handle_upstream_test(self.handler)
         opener.assert_not_called()
         self.handler._json.assert_called_once_with(
-            503, {"ok": False, "error": "no enabled models configured"})
+            503, {"ok": False, "error": "no enabled GPU models configured"})
 
-    def test_mixed_models_prefer_omniroute_with_auth_and_handler_time_patch(self):
+    def test_mixed_models_use_fixed_gpu_without_provider_auth(self):
         self.state.public_models.return_value = {
             "bridge": "bridge/browser", "remote": "provider/remote"}
+        self.state.cfg["models"]["login"] = {"upstream": "direct/gpt-4o", "enabled": True}
         response = self.response({"choices": [{"message": {"content": "REACH OK"}}]})
         with patch.object(core, "STATE", self.state), \
              patch("reachd.handler.net.urlopen", return_value=response) as opener, \
              patch("reachd.handler.time.time", side_effect=[100, 100.25]):
             RelayHandler.handle_upstream_test(self.handler)
         request = opener.call_args.args[0]
-        self.assertEqual(request.full_url, "http://127.0.0.1:20128/v1/chat/completions")
-        self.assertEqual(request.get_header("Authorization"), "Bearer upstream-test-placeholder")
-        self.assertEqual(json.loads(request.data)["model"], "provider/remote")
+        self.assertEqual(request.full_url, "http://127.0.0.1:18001/v1/chat/completions")
+        self.assertIsNone(request.get_header("Authorization"))
+        self.assertEqual(json.loads(request.data)["model"], GPU_MODELS["gemma-4-12b-qat"][0])
         self.assertEqual(opener.call_args.kwargs, {"timeout": 60})
         self.state.enabled_models.assert_not_called()
         self.handler._json.assert_called_once_with(
             200, {"ok": True, "reply": "REACH OK",
-                  "latency_ms": 250, "model": "provider/remote"})
+                  "latency_ms": 250, "model": "gpu/gemma-4-12b-qat"})
 
-    def test_bridge_only_fallback_strips_prefix_and_omits_bearer_auth(self):
+    def test_login_only_config_does_not_probe_signed_in_providers(self):
         self.state.public_models.return_value = {}
         self.state.enabled_models.return_value = {"private": "bridge/browser"}
+        self.state.cfg["models"] = {"private": {"upstream": "bridge/chatgpt-chat", "enabled": True}}
         response = self.response({"choices": [{"message": {"content": "bridge ready"}}]})
         with patch.object(core, "STATE", self.state), \
              patch("reachd.handler.net.urlopen", return_value=response) as opener:
             RelayHandler.handle_upstream_test(self.handler)
-        request = opener.call_args.args[0]
-        self.assertEqual(request.full_url, "http://127.0.0.1:18080/v1/chat/completions")
-        self.assertIsNone(request.get_header("Authorization"))
-        self.assertEqual(json.loads(request.data)["model"], "browser")
-        self.assertEqual(self.handler._json.call_args.args[0], 200)
-        self.assertEqual(self.handler._json.call_args.args[1]["model"], "bridge/browser")
+        opener.assert_not_called()
+        self.assertEqual(self.handler._json.call_args.args[0], 503)
 
     def test_upstream_http_failure_keeps_status_and_bounds_error_body(self):
         failure = urllib.error.HTTPError(
@@ -92,13 +93,14 @@ class ConnectivityProbeTests(unittest.TestCase):
         response = self.response({"choices": []})
         replacement = SimpleNamespace(**vars(self.state))
         replacement.public_models = Mock(return_value={"other": "provider/other"})
+        replacement.cfg = {"models": {"other": {"upstream": "gpu/ornith-1.5-9b", "enabled": True}}}
         with patch("reachd.handler.net.urlopen", return_value=response) as opener:
             with patch.object(core, "STATE", self.state):
                 RelayHandler.handle_upstream_test(self.handler)
             with patch.object(core, "STATE", replacement):
                 RelayHandler.handle_upstream_test(self.handler)
         models = [json.loads(call.args[0].data)["model"] for call in opener.call_args_list]
-        self.assertEqual(models, ["provider/sample", "provider/other"])
+        self.assertEqual(models, [GPU_MODELS["gemma-4-12b-qat"][0], GPU_MODELS["ornith-1.5-9b"][0]])
 
     def test_diagnose_uses_handler_expiry_patch_and_public_system_opener(self):
         candidate = {"name": "candidate", "key": "client-test-placeholder"}

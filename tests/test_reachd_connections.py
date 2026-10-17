@@ -89,6 +89,18 @@ class _ServerFixture(unittest.TestCase):
 
 
 class TimeoutTests(_ServerFixture):
+    def test_accepted_socket_sends_small_stream_chunks_without_nagle(self):
+        observed = []
+        original = RelayHandler.setup
+
+        def record_socket(handler):
+            original(handler)
+            observed.append(handler.connection.getsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY))
+
+        with patch.object(RelayHandler, "setup", record_socket):
+            self.assertIn(b" 200 ", self.health_on(self.connect()))
+        self.assertEqual(observed, [1])
+
     def test_handler_has_a_bounded_default_timeout(self):
         self.assertIsInstance(RelayHandler.timeout, (int, float))
         self.assertTrue(0 < RelayHandler.timeout <= 120)

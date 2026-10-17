@@ -87,7 +87,7 @@
         urlRow.appendChild(copyBtn);
         urlCard.appendChild(urlRow);
         const meta = el('div', 'reach-meta-row');
-        meta.appendChild(chip('model: gpt-4o'));
+        meta.appendChild(chip('GPU server models'));
         meta.appendChild(chip('tokens/s telemetry'));
         meta.appendChild(chip('unlimited · free'));
         meta.appendChild(chip('no API key'));
@@ -218,7 +218,7 @@
         const modelLabel = el('span', 'reach-hint', 'Model:');
         ctrlBar.appendChild(modelLabel);
         const modelSelect = el('select', 'reach-input reach-input-sm');
-        const availModels = (core.store.local && core.store.local.models) || ['gpt-4o', 'gpt-4o-mini'];
+        const availModels = (core.store.local && core.store.local.models) || ['gemma-4-12b-qat', 'ornith-1.5-9b', 'minicpm5-2b'];
         availModels.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m;
@@ -297,7 +297,7 @@
                 toast('Please enter a prompt', 'warn');
                 return;
             }
-            const model = modelSelect.value || 'gpt-4o';
+            const model = modelSelect.value || 'gemma-4-12b-qat';
             const isStream = streamCheck.checked;
             const temp = parseFloat(tempInput.value) || 0.7;
             let maxTok = parseInt(maxInput.value, 10);
@@ -457,7 +457,7 @@
                             name: 'SignalR.E.A.C.H (REACH)',
                             base_url: url + '/v1',
                             api_key: (minted && minted.key) || '',
-                            default_model: 'gpt-4o'
+                            default_model: 'gemma-4-12b-qat'
                         })
                     });
                 })
@@ -506,10 +506,10 @@
         const U = () => (core.store.pointerUrl || 'https://YOUR-PUBLIC-URL');
         const renderedUrl = U();
         const snips = [
-            { id: 'curl', text: 'curl ' + renderedUrl + '/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_SK_REACH_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}\'' },
-            { id: 'python', text: 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + renderedUrl + '/v1", api_key="YOUR_SK_REACH_KEY")\nreply = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)' },
-            { id: 'javascript', text: 'const res = await fetch("' + renderedUrl + '/v1/chat/completions", {\n  method: "POST",\n  headers: { "Content-Type": "application/json", "Authorization": "Bearer YOUR_SK_REACH_KEY" },\n  body: JSON.stringify({ model: "gpt-4o",\n    messages: [{ role: "user", content: "Hello!" }] }),\n});\nconst data = await res.json();\nconsole.log(data.choices[0].message.content);' },
-            { id: 'simplerag', text: '1. Endpoint settings → add OpenAI-compatible\n2. Base URL: ' + renderedUrl + '/v1\n3. Model: gpt-4o\n4. API key: your sk-reach key (Settings → Client API Keys)\n5. Save + select as active model\n(or just hit "Add to SimpleRAG" above)' }
+            { id: 'curl', text: 'curl ' + renderedUrl + '/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_SK_REACH_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d \'{"model":"gemma-4-12b-qat","messages":[{"role":"user","content":"Hello!"}]}\'' },
+            { id: 'python', text: 'from openai import OpenAI\n\nclient = OpenAI(base_url="' + renderedUrl + '/v1", api_key="YOUR_SK_REACH_KEY")\nreply = client.chat.completions.create(\n    model="gemma-4-12b-qat",\n    messages=[{"role": "user", "content": "Hello!"}],\n)\nprint(reply.choices[0].message.content)' },
+            { id: 'javascript', text: 'const res = await fetch("' + renderedUrl + '/v1/chat/completions", {\n  method: "POST",\n  headers: { "Content-Type": "application/json", "Authorization": "Bearer YOUR_SK_REACH_KEY" },\n  body: JSON.stringify({ model: "gemma-4-12b-qat",\n    messages: [{ role: "user", content: "Hello!" }] }),\n});\nconst data = await res.json();\nconsole.log(data.choices[0].message.content);' },
+            { id: 'simplerag', text: '1. Endpoint settings → add OpenAI-compatible\n2. Base URL: ' + renderedUrl + '/v1\n3. Model: gemma-4-12b-qat\n4. API key: your sk-reach key (Settings → Client API Keys)\n5. Save + select as active model\n(or just hit "Add to SimpleRAG" above)' }
         ];
         snips.forEach(s => {
             const pre = el('pre', 'reach-snippet');

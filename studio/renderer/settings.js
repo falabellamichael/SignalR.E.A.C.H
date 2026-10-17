@@ -142,6 +142,7 @@ function fillBudgetFields(values) {
       const label = document.createElement('label'); label.htmlFor = 'budget-' + field.key; label.textContent = field.label;
       const input = document.createElement('input'); input.id = label.htmlFor; input.dataset.budgetKey = field.key;
       input.type = field.type === 'boolean' ? 'checkbox' : 'number';
+      if (field.key === 'ultraPro') input.setAttribute('role', 'switch');
       if (field.type === 'boolean') input.checked = values[field.key];
       else { input.value = values[field.key]; input.min = field.min; input.max = 2147483647; input.step = 1; input.required = true; }
       const help = document.createElement('p'); help.id = input.id + '-help'; help.className = 'dim'; help.textContent = field.help + (field.globalOnly ? ' Change this in global budgets.' : '');

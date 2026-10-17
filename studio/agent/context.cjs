@@ -84,16 +84,20 @@ function groupsFor(messages) {
 }
 
 async function compactMessages(messages, summarize, options = {}) {
-  const trigger = options.trigger === 0 ? Infinity : (options.trigger ?? 240000);
+  const instructionChars = options.historyBudget && !options.measure
+    ? contextChars(messages.filter(m => ['system', 'developer'].includes(m.role) && !String(m.content).startsWith(MEMORY_PREFIX))) : 0;
+  const historyTrigger = options.trigger === 0 ? Infinity : (options.trigger ?? 240000);
+  const trigger = historyTrigger + instructionChars;
   const messageLimit = options.messageLimit === 0 ? Infinity : (options.messageLimit ?? 72);
-  const target = options.measure ? (options.target || trigger * 0.95) : Math.min(options.target || 120000, Math.floor(trigger * 0.6));
+  const target = options.measure ? (options.target || trigger * 0.95)
+    : Math.min(options.target || 120000, Math.floor(historyTrigger * 0.6)) + instructionChars;
   const measure = options.measure || contextChars;
   const before = measure(messages);
   const provenance = provenanceFor(messages);
   if (!options.force && before <= trigger && messages.length <= messageLimit) return { messages, changed: false, before, after: before, provenance };
   const keep = new Map();
   let used = measure([]);
-  let reserve = Math.min(16000, Math.floor(target / 4));
+  let reserve = Math.min(16000, Math.floor((target - instructionChars) / 4));
   const retainedMessages = () => [...keep.entries()].sort((a,b) => a[0]-b[0]).map(([, m]) => m);
   const add = (i, message = messages[i]) => { if (!keep.has(i)) { keep.set(i, message); used = measure(retainedMessages()); } };
   const isMemory = m => String(m.content).startsWith(MEMORY_PREFIX);

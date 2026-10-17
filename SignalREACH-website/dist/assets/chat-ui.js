@@ -26,8 +26,8 @@
       const max = rail.scrollWidth - rail.clientWidth;
       const atStart = rail.scrollLeft <= 0;
       const atEnd = rail.scrollLeft >= max - 1;
-      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return;
       event.preventDefault();
+      if ((delta < 0 && atStart) || (delta > 0 && atEnd)) return;
       rail.scrollLeft = Math.max(0, Math.min(max, rail.scrollLeft + delta));
     };
     panel.addEventListener('wheel', horizontalWheel, {signal, passive:false});

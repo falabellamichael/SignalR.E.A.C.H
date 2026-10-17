@@ -7,7 +7,7 @@ import { watchModelCatalog } from '../service/catalog-watch.mjs';
 import { createAccountService } from '../service/server.mjs';
 const [configFile,keyFile,supabaseKeyFile,quoteSignerKeyFile]=process.argv.slice(2);
 try {
-  if(!configFile||!keyFile||![4,5,6].includes(process.argv.length))throw new Error('Usage: accounts-host.mjs <private config.json> <private upstream.key> [private supabase.key] [private quote-signer.key]');
+  if(!configFile||!keyFile||![4,5,6,7].includes(process.argv.length))throw new Error('Usage: accounts-host.mjs <private config.json> <private upstream.key> [private supabase.key] [private quote-signer.key]');
   process.umask(0o077);
   for(const file of [configFile,keyFile,supabaseKeyFile,quoteSignerKeyFile].filter(Boolean)) {
     const stat=lstatSync(file);

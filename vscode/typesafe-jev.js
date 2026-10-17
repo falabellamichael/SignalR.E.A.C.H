@@ -23,7 +23,7 @@ function jevShortlistCoversRequest(catalog, request, totalCount) {
 
 // This is a path-only shortlist. File contents and the full conversation are
 // never sent to TypeSafe for workspace selection.
-function shortlistPaths(paths, request) {
+function shortlistPaths(paths, request, preferShallow = false) {
   const words = new Set(String(request || '').toLowerCase().match(/[a-z0-9]{3,}/g) || []);
   const score = value => {
     const path = value.toLowerCase().replace(/\\/g, '/');
@@ -32,7 +32,9 @@ function shortlistPaths(paths, request) {
     const manifest = /(?:^|\/)(?:package\.json|pyproject\.toml|cargo\.toml|go\.mod)$/.test(path) ? 1 : 0;
     return matches * 10 + manifest;
   };
-  return [...paths].sort((a, b) => score(b) - score(a) || a.localeCompare(b)).slice(0, MAX_CANDIDATES);
+  return [...paths].sort((a, b) => score(b) - score(a)
+    || (preferShallow ? a.replace(/\\/g, '/').split('/').length - b.replace(/\\/g, '/').split('/').length : 0)
+    || a.localeCompare(b)).slice(0, MAX_CANDIDATES);
 }
 
 async function selectWorkspaceFilesWithJev({ key, request, paths, signal, fetchImpl = fetch }) {

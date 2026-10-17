@@ -11,31 +11,25 @@ import urllib.error
 import urllib.request
 
 from reachd import net
+from reachd.model_routes import catalog_models, dispatch
 
 
 def handle_upstream_test(handler, state):
     started = time.time()
-    models = state.public_models() or state.enabled_models()
+    models = catalog_models(state.cfg.get("models", {}), "gpu", include_private=True)
     if not models:
         return handler._json(503, {"ok": False,
-                                "error": "no enabled models configured"})
-    # Prefer an OmniRoute alias — this is the OmniRoute connectivity probe.
-    # Only when nothing but bridge aliases exists does it test the bridge.
-    upstreams = sorted(models.values())
-    upstream_model = next((u for u in upstreams
-                           if not u.startswith("bridge/")), upstreams[0])
-    use_bridge = upstream_model.startswith("bridge/")
-    payload = {"model": upstream_model[len("bridge/"):] if use_bridge
-               else upstream_model,
+                                "error": "no enabled GPU models configured"})
+    alias = state.cfg.get("request", {}).get("default_model")
+    if alias not in models:
+        alias = "gemma-4-12b-qat" if "gemma-4-12b-qat" in models else next(iter(models))
+    upstream_model = models[alias]["upstream"]
+    payload = {"model": alias,
                "messages": [{"role": "user",
                              "content": "Reply with exactly: REACH OK"}],
                "max_tokens": 16}
     try:
-        url = (state.bridge_url if use_bridge
-               else state.omniroute_url).rstrip("/") + "/chat/completions"
-        headers = {"Content-Type": "application/json"}
-        if not use_bridge:
-            headers["Authorization"] = "Bearer " + state.key
+        url, payload, headers, _ = dispatch(upstream_model, payload, state)
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"), method="POST",
             headers=headers)
@@ -66,6 +60,10 @@ def handle_diagnose(handler, state, key_expired):
     if not url.lower().startswith("https://"):
         return handler._json(409, {"ok": False,
                                 "error": "public URL is not https"})
+    models = state.public_models()
+    if not models:
+        return handler._json(503, {"ok": False,
+                                  "error": "no public GPU models configured"})
     checks = []
     started = time.time()
     # ngrok free tier serves a browser-warning interstitial (HTTP 502 to
@@ -125,7 +123,7 @@ def handle_diagnose(handler, state, key_expired):
         None) or access.get("access_key")
     if probe_key:
         headers["Authorization"] = "Bearer " + probe_key
-    payload = {"model": sorted(state.public_models() or ["gpt-4o"])[0],
+    payload = {"model": sorted(models)[0],
                "messages": [{"role": "user",
                              "content": "Reply with exactly: REACH OK"}],
                "max_tokens": 16, "stream": False}

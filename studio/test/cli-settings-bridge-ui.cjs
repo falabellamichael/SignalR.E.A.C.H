@@ -140,7 +140,7 @@ const timeout = setTimeout(() => { console.error('CLI SETTINGS BRIDGE UI timed o
   assert.equal((await call('connections.test', { connectionId: 'conn_fixture' })).ok, true);
 
   const schema = await call('budget.schema');
-  assert.equal(schema.fields.length, 42, 'Bridge must use all Studio budget fields.');
+  assert.equal(schema.fields.length, require('../agent/budgets.cjs').fields.length, 'Bridge must use all Studio budget fields.');
   await save({ budgets: { ...schema.defaults, maxRounds: 0, requestTimeoutMs: 0, messageHandoffs: 0 } });
   settings = await call('settings.get');
   assert.equal(settings.budgets.maxRounds, 0); assert.equal(settings.budgets.requestTimeoutMs, 0); assert.equal(settings.budgets.messageHandoffs, 0);
@@ -258,7 +258,7 @@ const timeout = setTimeout(() => { console.error('CLI SETTINGS BRIDGE UI timed o
   assert.equal(modelAuthPreserved, true, 'Omitted saved connection credential did not reach the model fixture.');
   assert.equal(chatRequests, 0, 'The smoke test attempted a model completion.');
   assert.deepEqual(errors, [], 'Renderer reported console errors.');
-  console.log('CLI SETTINGS BRIDGE UI PASS: genuine handlers, secret preservation, all 42 budgets, appearance, conversation settings, disabled MCP, model listing, stale connection/conversation/budget/MCP drafts, dirty panel reopen, Reload actions, independent panel saves.');
+  console.log('CLI SETTINGS BRIDGE UI PASS: genuine handlers, secret preservation, all budget fields, appearance, conversation settings, disabled MCP, model listing, stale connection/conversation/budget/MCP drafts, dirty panel reopen, Reload actions, independent panel saves.');
   console.log('Credential preservation:', encrypted ? 'OS-encrypted vault verified.' : 'Platform fallback verified.');
   console.log('Isolated profile:', profile);
   clearTimeout(timeout); server.close(); app.exit(0);

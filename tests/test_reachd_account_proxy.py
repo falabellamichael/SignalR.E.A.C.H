@@ -1,7 +1,9 @@
 """Public account proxy isolation, limits, and existing owner-route compatibility."""
 import http.client
 import json
+import socket
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -131,6 +133,41 @@ class AccountProxyTests(RelayFixture):
                 self.assertEqual(self.requests[-1]["path"], "/v1/chat/completions")
                 self.assertEqual(self.requests[-1]["headers"]["Authorization"], "Bearer rch_session_example")
 
+    def test_account_response_preserves_service_origin_policy(self):
+        self.reply_headers["Access-Control-Allow-Origin"] = "https://signalreach.com"
+        self.reply_headers["Vary"] = "Origin"
+        status, _, reply = self.call("GET", "/v1/account/config", {**TUNNEL, "Origin": "https://signalreach.com"})
+        self.assertEqual(status, 200)
+        self.assertEqual(reply.getheader("Access-Control-Allow-Origin"), "https://signalreach.com")
+        self.assertEqual(reply.getheader("Vary"), "Origin")
+
+    def test_website_preflight_allows_ngrok_header(self):
+        status, _, reply = self.call("OPTIONS", "/v1/auth/start", {
+            **TUNNEL, "Origin": "http://127.0.0.1:4173",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,ngrok-skip-browser-warning",
+        })
+        self.assertEqual(status, 204)
+        self.assertIn("ngrok-skip-browser-warning", reply.getheader("Access-Control-Allow-Headers").lower())
+
+    def test_onboarding_wallet_link_reaches_account_service(self):
+        self.assertEqual(self.status("POST", "/v1/account/link-wallet", self.session_headers(), b'{}'), 200)
+        self.assertEqual(self.requests[-1]["path"], "/v1/account/link-wallet")
+
+    def test_api_key_management_routes_reach_account_service(self):
+        for method, path in (("GET", "/v1/account/api-keys"), ("POST", "/v1/account/api-keys"),
+                             ("POST", "/v1/account/api-keys/revoke")):
+            self.assertEqual(self.status(method, path, self.session_headers(), b'{}' if method == "POST" else None), 200)
+            self.assertEqual(self.requests[-1]["path"], path)
+
+    def test_api_keys_use_customer_gateway_not_owner_bypass(self):
+        with patch("reachd.handler.RelayHandler._check_access", side_effect=AssertionError("legacy access")), \
+             patch("reachd.handler.chat_execute", side_effect=AssertionError("legacy generation")):
+            headers = {"Authorization": "Bearer rch_key_example"}
+            self.assertEqual(self.status("GET", "/v1/models", headers), 200)
+            self.assertEqual(self.status("POST", "/v1/chat/completions", headers, b'{}'), 200)
+            self.assertEqual(self.requests[-1]["headers"]["Authorization"], "Bearer rch_key_example")
+
     def test_direct_loopback_customer_still_cannot_use_local_owner_bypass(self):
         self.reply_status = 401
         self.reply_body = b'{"error":{"code":"session_required"}}'
@@ -185,6 +222,67 @@ class AccountProxyTests(RelayFixture):
         status, data, _ = self.call("POST", "/v1/auth/start", {**TUNNEL, "Content-Length": "524289"})
         self.assertEqual(status, 413)
         self.assertFalse(self.requests)
+
+
+class AccountProxyCancellationTests(RelayFixture):
+    def cancellation(self, headers_first):
+        arrived, disconnected, finish = threading.Event(), threading.Event(), threading.Event()
+
+        class PendingAccountsHandler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                if headers_first:
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", "100000")
+                    self.end_headers()
+                    self.wfile.write(b"{")
+                    self.wfile.flush()
+                arrived.set()
+                self.connection.settimeout(0.1)
+                while not finish.is_set():
+                    try:
+                        if not self.connection.recv(1):
+                            disconnected.set()
+                            return
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        disconnected.set()
+                        return
+
+        accounts = ThreadingHTTPServer(("127.0.0.1", 0), PendingAccountsHandler)
+        threading.Thread(target=lambda: accounts.serve_forever(poll_interval=0.02), daemon=True).start()
+        self.state.cfg["account_service_url"] = "http://127.0.0.1:%d" % accounts.server_address[1]
+        client = socket.create_connection(("127.0.0.1", self.port), timeout=2)
+        try:
+            body = b'{"model":"fixture","messages":[{"role":"user","content":"hello"}]}'
+            request = ("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                       "Authorization: Bearer rch_session_fixture\r\nContent-Type: application/json\r\n"
+                       "Content-Length: %d\r\n\r\n" % len(body)).encode() + body
+            client.sendall(request)
+            self.assertTrue(arrived.wait(2), "Mock model request never arrived")
+            self.assertFalse(disconnected.is_set())
+            started = time.monotonic()
+            client.close()
+            self.assertTrue(disconnected.wait(1), "Relay left the upstream model request running after Stop")
+            self.assertLess(time.monotonic() - started, 1)
+        finally:
+            client.close()
+            finish.set()
+            accounts.shutdown()
+            accounts.server_close()
+
+    def test_disconnect_cancels_actual_upstream_while_response_headers_pending(self):
+        self.cancellation(headers_first=False)
+
+    def test_disconnect_cancels_actual_upstream_while_response_body_pending(self):
+        self.cancellation(headers_first=True)
 
 
 class AccountProxyConfigTests(unittest.TestCase):

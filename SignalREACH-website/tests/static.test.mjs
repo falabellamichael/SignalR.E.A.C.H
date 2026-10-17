@@ -4,7 +4,7 @@ import {readFile, access} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const pages=['index','platform','integrations','docs','about','download'];
+const pages=['index','platform','integrations','docs','about','download','subscription','login','profile'];
 for(const page of pages){
  test(`${page}: structure, unique IDs, and local links`,async()=>{
    const html=await readFile(path.join(root,page+'.html'),'utf8');
@@ -39,4 +39,26 @@ test('Brand, motion, and offline assets',async()=>{
  assert.match(scripts[4],/controller\.abort\(\)/);
  assert.match(scripts[4],/if \(busy \|\| destroyed \|\| composing\) return/);
  assert.ok(!css.includes('@import'),'no remote font or stylesheet import');
+ const home=await readFile(path.join(root,'index.html'),'utf8');
+ const plan=await readFile(path.join(root,'subscription.html'),'utf8');
+ assert.match(home,/href="subscription\.html"[^>]*>Subscription</);
+ assert.match(home,/href="login\.html"/);
+ assert.match(home,/CAD \$25\.00/);
+ assert.match(plan,/id="subscription-checkout"/);
+ assert.match(plan,/assets\/account\.js/);
+ assert.doesNotMatch(plan,/href="https:\/\/checkout\.stripe\.com"/,'checkout must be created for the authenticated account, not a generic Stripe link');
+ assert.match(plan,/Subscribe with Stripe/);
+ assert.match(plan,/Gemma 4 12B QAT/);
+ assert.match(plan,/MiniCPM5 2B FP8/);
+ assert.match(plan,/BGE M3/);
+ assert.match(plan,/BGE Reranker v2 M3/);
+ assert.match(plan,/Liquid d1 Omni 600M/);
+ assert.match(plan,/Liquid d1 3B/);
+ assert.match(plan,/Ornith 1\.5 9B/);
+ assert.match(plan,/Offline - for now/);
+ assert.match(plan,/Embedder/);
+ assert.match(plan,/Reranker/);
+ assert.match(plan,/Decision/);
+ assert.match(plan,/tax included/);
+ assert.match(plan,/REACH Subscription Plus/);
 });

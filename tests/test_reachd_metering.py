@@ -38,12 +38,14 @@ class MeteredRelayTests(unittest.TestCase):
             **(extra or {})}).encode()
         return h
 
-    def finalize(self, payload, *, stream=False, metered=True, spec=None):
-        source = io.BytesIO(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
+    def finalize(self, payload, *, stream=False, metered=True, spec=None,
+                 source=None, upstream_model="vendor/test"):
+        if source is None:
+            source = io.BytesIO(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
         source.headers = {"Content-Type": "text/event-stream" if stream else "application/json"}
         state, h = self.state(), self.handler()
         ctx = {"started": time.time(), "ip": "127.0.0.1", "rl_headers": {},
-               "requested": "test", "upstream_model": "vendor/test", "spec": spec or {},
+               "requested": "test", "upstream_model": upstream_model, "spec": spec or {},
                "stream": stream, "metered": metered, "total_chars": 50, "request_body": None,
                "fallback_used": False, "cache_cfg": {}, "cache_key": None, "models": {}}
         with patch.object(core, "STATE", state):
@@ -125,6 +127,42 @@ class MeteredRelayTests(unittest.TestCase):
                                         b"[DONE]"), stream=True)
         self.assertIn(b'"usage_source": "estimated"', data)
         self.assertNotIn(b'"usage_source": "provider"', data)
+
+    def test_gpu_speed_includes_reasoning_buffered_by_answer_probe(self):
+        for field in ("reasoning_content", "reasoning", "thought"):
+            with self.subTest(field=field):
+                events = [
+                    (1.0, {"choices": [{"delta": {field: "Thinking"}}]}),
+                    (5.0, {"choices": [{"delta": {field: " about the answer"}}]}),
+                    (9.0, {"choices": [{"delta": {"content": "The "}}]}),
+                    (10.0, {"choices": [{"delta": {"content": "answer "}}]}),
+                    (11.0, {"choices": [{"delta": {"content": "is 42."}}]}),
+                    (12.0, {"choices": [], "usage": {"prompt_tokens": 10,
+                        "completion_tokens": 101, "total_tokens": 111,
+                        "completion_tokens_details": {"reasoning_tokens": 80}}}),
+                    (12.0, b"[DONE]"),
+                ]
+                clock = [0.0]
+                fixture = self
+
+                class TimedSource(io.BytesIO):
+                    def readline(self):
+                        if not events:
+                            return b""
+                        clock[0], event = events.pop(0)
+                        return fixture.sse(event)
+
+                with patch("reachd.chat.time.monotonic", side_effect=lambda: clock[0]):
+                    data, _ = self.finalize(b"", stream=True, source=TimedSource(),
+                                           upstream_model="gpu/ornith-1.5-9b")
+                frames = [json.loads(line[6:]) for line in data.splitlines()
+                          if line.startswith(b"data: {")]
+                usage = frames[-1]["usage"]
+                self.assertEqual(usage["completion_tokens"], 101)
+                self.assertEqual(usage["completion_tokens_details"]["reasoning_tokens"], 80)
+                self.assertEqual(usage["completion_seconds"], 10.0)
+                self.assertEqual(usage["tokens_per_second"], 10.0)
+                self.assertEqual(usage["tokens_per_second_source"], "relay_stream_decode")
 
     def test_truncated_stream_does_not_synthesize_successful_final_usage(self):
         data, _ = self.finalize(self.sse({"choices": [{"delta": {"content": "Hello"}}]},

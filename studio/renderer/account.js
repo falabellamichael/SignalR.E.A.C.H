@@ -19,8 +19,9 @@
     el('account-disconnect').disabled = busy || !['connected', 'locked', 'expired'].includes(state.status);
     el('account-status').textContent = model.message;
     el('account-status').dataset.state = state.error || state.status === 'locked' ? 'error' : model.connected ? 'success' : '';
-    el('account-wallet').textContent = state.account?.walletAddress || state.account?.email || 'Your wallet address will appear after sign-in.';
-    el('account-connect').textContent = state.config?.emailLogin ? 'Sign in with wallet or email' : 'Connect wallet';
+    el('account-wallet').textContent = [state.account?.walletAddress, state.account?.email].filter(Boolean).join(' · ') || 'Your wallet or email will appear after sign-in.';
+    el('account-connect').textContent = 'Sign in with wallet or email';
+    renderAccountLink(state, busy);
     el('wallet-balance').textContent = model.walletBalance;
     el('wallet-balance-detail').textContent = model.walletBalanceDetail;
     window.ReachAccountMenu?.update(state, model);
@@ -169,6 +170,47 @@
     const result = await api.configure(url); if (result?.ok !== false) serviceDirty = false; return result;
   }); });
   el('account-connect').addEventListener('click', () => action(() => api.connect()));
+  function renderAccountLink(next, isBusy) {
+    let box = document.getElementById('home-account-link');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'home-account-link';
+      box.className = 'home-account-link';
+      el('account-wallet').insertAdjacentElement('afterend', box);
+      box.addEventListener('click', event => {
+        const id = event.target?.id;
+        if (id === 'home-link-email-send') void action(() => api.linkEmailStart(box.querySelector('#home-link-email').value.trim()));
+        if (id === 'home-link-email-verify') void action(() => api.linkEmailVerify(box.querySelector('#home-link-code').value.trim()));
+        if (id === 'home-link-wallet') void action(() => api.linkWallet());
+      });
+    }
+    const account = next.account, connected = next.status === 'connected';
+    if (!connected || (account?.email && account?.walletAddress)) { box.hidden = true; box.replaceChildren(); return; }
+    box.hidden = false;
+    const emailValue = box.querySelector('#home-link-email')?.value || '';
+    const codeValue = box.querySelector('#home-link-code')?.value || '';
+    box.replaceChildren();
+    const note = document.createElement('p');
+    note.className = 'home-card-footnote';
+    note.textContent = account?.email ? 'Add the wallet that should stay on this same account.' : 'Add an email that should stay on this same account.';
+    box.appendChild(note);
+    if (!account?.email) {
+      const email = document.createElement('input');
+      email.id = 'home-link-email'; email.type = 'email'; email.placeholder = 'you@example.com'; email.value = emailValue; email.disabled = isBusy;
+      const send = document.createElement('button');
+      send.id = 'home-link-email-send'; send.type = 'button'; send.className = 'ghost small'; send.textContent = 'Email me a code'; send.disabled = isBusy;
+      const code = document.createElement('input');
+      code.id = 'home-link-code'; code.inputMode = 'numeric'; code.maxLength = 8; code.placeholder = '8-digit code'; code.value = codeValue; code.disabled = isBusy;
+      const verify = document.createElement('button');
+      verify.id = 'home-link-email-verify'; verify.type = 'button'; verify.className = 'ghost small'; verify.textContent = 'Verify email'; verify.disabled = isBusy || !next.emailChallengeId;
+      box.append(email, send, code, verify);
+    }
+    if (!account?.walletAddress) {
+      const wallet = document.createElement('button');
+      wallet.id = 'home-link-wallet'; wallet.type = 'button'; wallet.className = 'ghost small'; wallet.textContent = 'Add wallet to this account'; wallet.disabled = isBusy;
+      box.appendChild(wallet);
+    }
+  }
   el('account-cancel').addEventListener('click', async () => { const result = await api.cancel(); render(result.state); });
   el('account-refresh').addEventListener('click', refresh);
   el('account-disconnect').addEventListener('click', () => action(() => api.disconnect()));

@@ -45,7 +45,7 @@ module.exports = ({ workerSoulKey, SUBAGENT_MAX_ROUNDS }) => ({
     const useModel = String(model || '').trim()
       || (parentRec && parentRec.model)
       || this.defaultModel
-      || 'gpt-4o-mini';
+      || 'gemma-4-12b-qat';
     /* This worker's OWN SOUL.md + MEMORY.md.
      *
      * A spawned worker is a full agent — same loop, same tools, same review

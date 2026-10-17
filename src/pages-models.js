@@ -19,7 +19,7 @@
     /* ---------------------------------------------------------------- MODELS */
     function renderModels(container) {
         container.appendChild(pageHeader('fa-cubes', 'Models',
-            'Public aliases and their upstream targets — codegpt via OmniRoute, or the local CodeGPT economy bridge. Toggles apply instantly.'));
+            'GPU server models for subscriptions, API clients and connected apps. Toggles apply instantly.'));
         const body = el('div', 'reach-stack');
         container.appendChild(body);
         let timer = null;
@@ -28,7 +28,8 @@
             const cfg = core.store.settings;
             body.innerHTML = '';
             const card = el('section', 'reach-card');
-            card.appendChild(el('header', 'reach-card-head', 'Served aliases'));
+            card.appendChild(el('header', 'reach-card-head', 'GPU model list'));
+            card.appendChild(el('p', 'reach-copy', 'Login Providers are available separately in REACH Studio and the REACH VS Code extension.'));
             if (!cfg || !cfg.models) {
                 const snap = core.store.local;
                 if (snap && snap.connection_mode === 'hosted') {
@@ -45,7 +46,8 @@
             const table = el('table', 'reach-table');
             table.innerHTML = '<thead><tr><th>Public alias</th><th>Upstream target &amp; specs</th><th>Live Test</th><th>Enabled</th><th></th><th></th></tr></thead>';
             const tbody = document.createElement('tbody');
-            const entries = Object.entries(cfg.models).sort((a, b) => a[0].localeCompare(b[0]));
+            const entries = Object.entries(cfg.models).filter(([, spec]) => spec.upstream?.startsWith('gpu/'))
+                .sort((a, b) => a[0].localeCompare(b[0]));
             entries.forEach(([alias, spec]) => {
                 const tr = document.createElement('tr');
 
@@ -159,7 +161,7 @@
                 const rmTd = document.createElement('td');
                 const rm = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Remove');
                 rm.addEventListener('click', () => {
-                    if (Object.keys(cfg.models).length <= 1) { toast('Keep at least one alias', 'error'); return; }
+                    if (entries.length <= 1) { toast('Keep at least one GPU alias', 'error'); return; }
                     core.saveSettings({ models: { [alias]: null } }).then(({ ok, data }) => {
                         if (ok) {
                             toast('Removed ' + alias, 'ok');
@@ -186,6 +188,7 @@
                 const alias = aliasInput.value.trim();
                 const upstream = upstreamInput.value.trim();
                 if (!alias || !upstream) { toast('Both fields are required', 'error'); return; }
+                if (!upstream.startsWith('gpu/')) { toast('Choose a GPU server upstream. Login Providers are managed in Studio or VS Code.', 'error'); return; }
                 core.saveSettings({ models: { [alias]: { upstream: upstream, enabled: true } } })
                     .then(({ ok, data }) => {
                         if (ok) {
@@ -198,10 +201,10 @@
             });
             const row = el('div', 'reach-form-row');
             const aliasInput = document.createElement('input');
-            aliasInput.placeholder = 'public alias (e.g. gpt-4o-mini)';
+            aliasInput.placeholder = 'public alias (e.g. gemma-chat)';
             aliasInput.className = 'reach-input';
             const upstreamInput = document.createElement('input');
-            upstreamInput.placeholder = 'upstream (e.g. codegpt/codegpt-gpt-4o-mini, or bridge/codegpt-eco-ox-alpha)';
+            upstreamInput.placeholder = 'upstream (e.g. gpu/gemma-4-12b-qat)';
             upstreamInput.className = 'reach-input';
             row.appendChild(aliasInput);
             row.appendChild(upstreamInput);
@@ -210,7 +213,7 @@
             row.appendChild(submit);
             form.appendChild(row);
             addCard.appendChild(form);
-            addCard.appendChild(el('p', 'reach-copy', 'Upstream ids live in OmniRoute\'s /v1/models catalog.'));
+            addCard.appendChild(el('p', 'reach-copy', 'Use gpu/<GPU alias> to publish another name for a deployed GPU model.'));
             body.appendChild(addCard);
         }
 

@@ -218,7 +218,8 @@ test('subscription model requests stay on their origin with account auth and no 
   const f = fixture(); await f.login();
   const h = providerFixture(f.host), connection = h.connection();
   h.provider._bridgeIds = new Map([['codegpt-eco', 'bridge-alias']]);
-  assert.equal(await h.provider._modelEndpoint(connection, 'codegpt-eco'), origin + '/v1');
+  await assert.rejects(h.provider._modelEndpoint(connection, 'codegpt-eco'), /Login Providers/);
+  assert.equal(await h.provider._modelEndpoint(connection, 'cloud/model'), origin + '/v1');
   assert.equal(h.provider._wireModel('codegpt-eco'), 'codegpt-eco');
   const headers = h.provider._authHeaders({}, connection, 'codegpt-eco');
   assert.equal(headers.Authorization, 'Bearer ' + token);

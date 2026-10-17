@@ -106,12 +106,20 @@ function decide(run, input) {
   if (count >= limit || input.rounds >= input.roundLimit) {
     return end('paused', input.rounds >= input.roundLimit
       ? 'Agent round limit reached. Send continue to resume.'
-      : 'The endpoint did not supply a usable action after structured recovery. The task is paused, not complete. The saved run will resume in action mode.', 'pause');
+      : 'The endpoint did not supply a usable action after structured recovery. The task is paused, not complete. The saved run will resume in action mode.'
+        + (input.validationError ? ' Last validation error: ' + input.validationError : ''), 'pause');
   }
-  let reason = input.invalid ? 'The run-control block was invalid.'
+  let reason = input.invalid ? (input.validationError || 'The run-control block was invalid.')
     : input.control?.status === 'complete' && open.length ? 'Completion was rejected: ' + open.length + ' plan item(s) remain open.'
     : 'The response ended without an action or an explicit task completion.';
-  const instruction = reason + '\n' + actionResponseReminder + '\n'
+  const instruction = reason + '\n'
+    + (input.invalid ? 'No actions from the rejected response were executed. Generate a fresh valid response; do not repeat the malformed response. '
+      + 'Use one small tool call. For edit_patch, send one hunk per response and keep every hunk inside arguments.hunks. '
+      + 'Close the hunk, hunks array, arguments object, action object, actions array, and response object. '
+      + 'Keep the requested targeted edit; do not replace the whole file to work around a response-format error.\n'
+      + 'Valid edit_patch shape (replace placeholders with actual values): '
+      + '{"status":"actions","message":"Apply the next targeted change.","actions":[{"name":"edit_patch","arguments":{"path":"<actual path>","hunks":[{"search":"<exact existing text>","replace":"<replacement text>"}]}}],"options":[]}\n' : '')
+    + actionResponseReminder + '\n'
     + (open.length ? 'Open plan items: ' + JSON.stringify(open) + '\n' : '');
   return { state: { ...state, status: 'running', reason }, action: 'continue', reason, instruction };
 }

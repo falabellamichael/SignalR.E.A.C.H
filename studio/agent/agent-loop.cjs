@@ -10,6 +10,7 @@
  */
 
 const { compactMessages, normalizeChatMessages, contextChars } = require('./context.cjs');
+const { providerRequestOptions } = require('./endpoint.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
 const { measureRequest, inputLimitFromError, budgetExceeded, budgetRatio, fitError } = require('./request-budget.cjs');
 const { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
@@ -40,7 +41,7 @@ const { ReadMemo } = require('./read-memo.cjs');
 const engines = require('./engines.cjs');
 const { netForAgent } = require('./net-registry.cjs');
 
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gemma-4-12b-qat';
 const RATE_LIMIT_RETRIES = 3;
 
 function normalizeUserInput(value) {
@@ -231,7 +232,7 @@ class AgentLoop {
       + (this.nativeTools
         ? nativeInstruction({ includeCollab: this._inCrew(), disabled, mcpTools: this.mcpTools || [] })
         : structured
-          ? actionInstruction({ includeCollab: this._inCrew(), disabled, mcpTools: this.mcpTools || [] })
+          ? actionInstruction({ includeCollab: this._inCrew(), disabled, mcpTools: this.mcpTools || [], compact: this._budgets().ultraPro })
           // Advertise the codebase tools only when bound to a project: indexing,
           // impact analysis and refactoring have nothing to act on otherwise, and
           // offering them would invite calls that can only fail.
@@ -242,9 +243,22 @@ class AgentLoop {
       });
   }
 
+  _budgetRecoveryPending() {
+    const messages = this._agent()?.messages || [];
+    return messages.findLast(m => m.role === 'assistant')?._reachMeta?.source === 'budget-checkpoint'
+      && messages.findLast(m => m.role === 'user')?._reachMeta?.source === 'recovery';
+  }
+
   _messagesForRequest() {
     const agent = this._agent();
-    return [{ role: 'system', content: this._buildSystemPrompt() }, ...workingMessages(agent)];
+    // Checkpoints are application notices, not model answers. Replaying their
+    // blocked JSON teaches a resumed model to repeat the old budget failure.
+    // Keep the audit transcript and verified tool results intact on disk.
+    const messages = workingMessages(agent).filter(m => m._reachMeta?.source !== 'budget-checkpoint');
+    if (this._budgetRecoveryPending()) {
+      messages.push({ role: 'system', content: 'RECOVER THE UNFINISHED TASK: The previous application checkpoint paused the run; it did not complete the task. No actions from the unfinished output were executed. Use only the verified tool results above as evidence of work done. Return the next small executable action now. If a file still needs creating, write a small working scaffold first and extend it in later rounds. Verify file contents with read before claiming a file was created or changed. Do not repeat a budget notice or claim that unexecuted work already exists.' });
+    }
+    return [{ role: 'system', content: this._buildSystemPrompt() }, ...messages];
   }
 
   contextStatus() {
@@ -263,7 +277,12 @@ class AgentLoop {
       ? { ...budgets, maxTokens: 0, summaryTokens: 0 } : budgets;
   }
 
-  _inputRouteKey() { return fingerprint([this.endpoint, this.model, this.connectionId, this.accessKey]); }
+  _inputRouteKey() {
+    const known = this.capabilityStore?.get(this.connectionId, this.endpoint, this.model) || {};
+    // A changed catalog invalidates an observed limit from the old deployment.
+    return fingerprint([this.endpoint, this.model, this.connectionId, this.accessKey,
+      ...['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens'].map(key => known[key] ?? null)]);
+  }
 
   _inputLimits() {
     const known = this.capabilityStore?.get(this.connectionId, this.endpoint, this.model) || {};
@@ -362,15 +381,23 @@ class AgentLoop {
     return error.ngrokTunnelUnavailable && configured > 0 ? Math.max(configured, 6) : configured;
   }
 
+  _outputTokens(requested = this._budgets().maxTokens) {
+    if (this._budgets().ultraPro && this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.automaticOutput === true) return 0;
+    if (this.textOnly || this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.outputTokenLimit === false || !requested) return 0;
+    return Math.min(requested, this.maxTokensCeiling || Infinity);
+  }
+
   _requestBody(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
-    if (this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.outputTokenLimit === false) maxTokens = 0;
+    maxTokens = this._outputTokens(maxTokens);
     const settings = this._settings();
     // Browser chat pages receive a flattened transcript rather than enforced
     // API roles. Keep the active contract next to the latest task/results.
     // This request-only reminder never enters saved history or compaction.
     const reminder = purpose === 'answer' && features(settings).agent && !this.nativeTools
-      && ['chatgpt-chat', 'copilot-chat'].includes(this.model)
-      ? [{ role: 'user', content: 'Response format for the current saved task above (the task and permissions are unchanged):\n' + actionResponseReminder }]
+      && (['chatgpt-chat', 'copilot-chat'].includes(this.model) || this._budgets().ultraPro)
+      ? [{ role: 'user', content: 'Response format for the current saved task above (the task and permissions are unchanged):\n' + actionResponseReminder
+        + (this._budgets().ultraPro ? '\nReturn exactly one complete action. Put source code only inside its arguments, never outside the JSON.'
+          + (maxTokens > 0 ? ' For a new large file, use write with path and content containing a short working scaffold; extend it after the tool result arrives.' : '') : '') }]
       : [];
     const body = {
       model: this.model,
@@ -379,15 +406,21 @@ class AgentLoop {
     };
     if (!this.textOnly) {
       if ((features(settings).think === false || concise || maxTokens > 0 && maxTokens <= 1024) && /qwen/i.test(this.model) && !this.noThinkingHint) body.chat_template_kwargs = { enable_thinking: false };
-      if (maxTokens > 0) body.max_tokens = this.maxTokensCeiling
-        ? Math.min(maxTokens, this.maxTokensCeiling) : maxTokens;
+      if (maxTokens > 0) body.max_tokens = maxTokens;
       // Small GPU models can produce useful prose while misnaming action
       // fields. Only endpoints that advertise schema support receive this
       // constraint; plain chat, summaries and native tool calls stay unchanged.
       if (purpose === 'answer' && features(settings).agent && !this.nativeTools
         && this._agent()?.runState?.structuredActions
         && this.capabilityStore?.get(this.connectionId, this.endpoint, this.model)?.jsonSchema === true) {
-        body.response_format = { type: 'json_schema', json_schema: { name: 'reach_action', strict: false, schema: actionSchema } };
+        const recovery = this._budgetRecoveryPending()
+          && this._agent().messages.some(m => m.role === 'tool' || m._reachMeta?.source === 'tool-summary');
+        const schema = this._budgets().ultraPro ? { ...actionSchema, properties: {
+          ...actionSchema.properties,
+          ...(recovery ? { status: { type: 'string', enum: ['actions'] } } : {}),
+          actions: { ...actionSchema.properties.actions, maxItems: 1, ...(recovery ? { minItems: 1 } : {}) },
+        } } : actionSchema;
+        body.response_format = { type: 'json_schema', json_schema: { name: 'reach_action', strict: false, schema } };
       }
       // Native protocol: advertise the same registry as real OpenAI functions.
       // Summary/compaction requests never carry tools — they must not act.
@@ -411,7 +444,6 @@ class AgentLoop {
   async _fetchChat(messages, { stream = true, maxTokens = this._budgets().maxTokens, purpose = stream ? 'answer' : 'summary', concise = false } = {}) {
     const url = this.endpoint.replace(/\/+$/, '') + '/chat/completions';
     const headers = { 'Content-Type': 'application/json' };
-    if (this.accessKey) headers.Authorization = 'Bearer ' + this.accessKey;
     const body = this._requestBody(messages, { stream, maxTokens, purpose, concise });
     const exceeded = budgetExceeded(body, this._inputLimits());
     if (exceeded) throw fitError(`The request uses ${exceeded.used} ${exceeded.unit}; the endpoint allows ${exceeded.limit}.`);
@@ -428,12 +460,12 @@ class AgentLoop {
     if (this.requestTimeoutMs > 0) signals.push(AbortSignal.timeout(this.requestTimeoutMs));
     this.requestSignal = AbortSignal.any(signals);
     this._emit('request-start', { purpose, ...measureRequest(body) });
-    const response = await fetch(url, {
+    const response = await fetch(url, providerRequestOptions(this.endpoint, this.accessKey, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
       signal: this.requestSignal,
-    });
+    }));
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       const providerError = providerErrorDetails(text);
@@ -535,7 +567,7 @@ class AgentLoop {
   _budgetCheckpoint(cause = 'output') {
     const agent = this._agent();
     const evidence = this.journal?.evidence(this.agentId).map(item => ({ tool: item.tool, path: item.path, ok: item.ok, pending: item.pending })) || this.turnResults || [];
-    return checkpoint({ maxTokens: this._budgets().maxTokens, results: evidence, todos: agent?.todos || [], pendingEdits: agent?.pendingEdits || {}, cause });
+    return checkpoint({ maxTokens: this._outputTokens(), retries: this._budgets().ultraPro ? 3 : 1, results: evidence, todos: agent?.todos || [], pendingEdits: agent?.pendingEdits || {}, cause });
   }
 
   async _readAnswer(messages, concise = false) {
@@ -553,7 +585,7 @@ class AgentLoop {
           shown = preview.length;
         }
       },
-      onProgress: reserveGuard(this._budgets().maxTokens),
+      onProgress: reserveGuard(this._outputTokens()),
     });
   }
 
@@ -686,7 +718,7 @@ class AgentLoop {
     }
     this._throwReplyError(reply);
     if (!reply.content?.trim() && !reply.nativeActions?.length && !reply.toolCalls
-        && !reply.reasoningChars && !['content_filter', 'length'].includes(reply.finishReason)) {
+        && !reply.reasoningChars && !['content_filter', 'length', 'unknown'].includes(reply.finishReason)) {
       // A successful HTTP stream can still contain no answer at all. No action
       // ran and no text reached the conversation, so one bounded retry is safe.
       this.abortController.signal.throwIfAborted();
@@ -696,20 +728,28 @@ class AgentLoop {
         'The previous response contained no answer and no actions were executed. Return a concise complete answer, or explain why you cannot answer.' }], true);
       this._throwReplyError(reply);
     }
+    if (['content_filter', 'unknown'].includes(reply.finishReason)) return reply;
     if (reply.finishReason !== 'length' && !(reply.reasoningChars && !reply.content?.trim() && !reply.nativeActions?.length)) return reply;
-    this.abortController.signal.throwIfAborted();
-    this._emit('message-end', { role: 'assistant', provisional: true });
-    this._emit('budget-recovery', { note: 'Output reserve reached · requesting a shorter complete response with the same per-request cap' });
-    try {
-      reply = await this._readAnswer([...requestMessages, { role: 'user', content: 'The previous response did not finish within its output budget and no actions from it were executed. Return a shorter, complete executable response now. Report verified results first. If the task is unfinished, choose one small next action or state what remains; never invent completion.' }], true);
-    } catch (error) {
-      if (this.abortController.signal.aborted || error.code !== 'REACH_OUTPUT_RESERVE') throw error;
-      return this._budgetCheckpoint();
+    const retries = this._budgets().ultraPro ? 3 : 1;
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      this.abortController.signal.throwIfAborted();
+      this._emit('message-end', { role: 'assistant', provisional: true });
+      this._emit('budget-recovery', { note: `Output limit reached · requesting a smaller complete step (${attempt}/${retries})` });
+      // Only verified history is replayed; incomplete actions are never joined
+      // to another response or executed, even if their JSON happens to parse.
+      try {
+        reply = await this._readAnswer([...requestMessages, { role: 'user', content: 'The previous response did not finish within its output budget and no actions from it were executed. Return a shorter, complete executable response now. Report verified results first. If the task is unfinished, choose one small next action or state what remains; never invent completion.'
+          + (attempt > 1 ? '\nRecovery: return at most ONE action with minimal arguments and one short sentence. Split large file writes into smaller edits over several rounds. Do not repeat completed actions.' : '') }], true);
+      } catch (error) {
+        if (this.abortController.signal.aborted || error.code !== 'REACH_OUTPUT_RESERVE') throw error;
+        continue;
+      }
+      this._throwReplyError(reply);
+      if (['content_filter', 'unknown'].includes(reply.finishReason)) return reply;
+      const parsed = parseAgentResponse(reply.content || '', reply.nativeActions || []);
+      if (reply.finishReason !== 'length' && !parsed.invalid && (parsed.actions.length || parsed.control || parsed.confirm)) return reply;
     }
-    this._throwReplyError(reply);
-    const parsed = parseAgentResponse(reply.content || '', reply.nativeActions || []);
-    if (reply.finishReason === 'length' || parsed.invalid || !parsed.actions.length && !parsed.control && !parsed.confirm) return this._budgetCheckpoint();
-    return reply;
+    return this._budgetCheckpoint();
   }
 
   _throwReplyError(reply) {
@@ -771,6 +811,7 @@ class AgentLoop {
     const compacted = await compactMessages(messages, (archived, options) => this._summarizeForCompaction(archived, options), {
       trigger: budgets.contextTrigger, target: target ? Math.min(target, budgets.contextTarget) : budgets.contextTarget,
       messageLimit: budgets.contextMessages, force,
+      historyBudget: budgets.ultraPro,
       ...wireOptions,
     });
     this.abortController.signal.throwIfAborted();
@@ -1027,6 +1068,7 @@ class AgentLoop {
           confirm: parsed.invalid ? null : parsed.confirm,
           control: parsed.control,
           invalid: parsed.invalid,
+          validationError: parsed.error,
           edits: Object.keys(this._agent()?.pendingEdits || {}).length > 0,
           tools: !parsed.invalid && parsed.actions.length > 0,
           rounds: round + 1,
@@ -1074,6 +1116,7 @@ class AgentLoop {
           thought: reply.reasoning || '', provisional });
         this.store.appendMessage(this.agentId, { role: 'assistant', content: storedContent,
           _reachMeta: { display: parsed.display, question: parsed.confirm || null,
+            ...(parsed.error ? { validationError: parsed.error } : {}),
             ...(reply.reasoning?.trim() ? { thought: reply.reasoning } : {}),
             ...(reply.budgetFallback ? { source: 'budget-checkpoint' } : provisional ? { source: 'recovery-attempt' } : {}) } });
         this._appendPeerMessages(peerMessages);

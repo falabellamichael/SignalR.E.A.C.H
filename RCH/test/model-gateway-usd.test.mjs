@@ -7,7 +7,7 @@ import { createModelGateway } from '../service/model-gateway.mjs';
 
 for (const exhaustCredit of [false,true]) test(`a treasury-funded account pays once and replays ${exhaustCredit?'after exhausting its credit':'with credit remaining'}`,async t=>{
   const now=1_800_000_000_000,wallet='0x'+'11'.repeat(20);
-  const model={id:'rch-gpt-4o-mini',provider:'openai',metered:true,maxInputTokens:100,maxInputBytes:8000,maxOutputTokens:20,
+  const model={id:'gemma-4-12b-qat',provider:'SignalREACH GPU',metered:true,maxInputTokens:100,maxInputBytes:8000,maxOutputTokens:20,
     pricing:{inputUsdMicrosPerMillion:150000,outputUsdMicrosPerMillion:600000,cachedInputUsdMicrosPerMillion:75000}};
   const store=new AccountStore(':memory:',{models:[model],now:()=>now});t.after(()=>store.close());
   const account=store.ensureAccount(wallet);

@@ -1,6 +1,6 @@
 """The chat request pipeline: transform, upstream relay, finalize."""
 
-from reachd.model_routes import dispatch, private_route
+from reachd.model_routes import catalog_models, dispatch, private_route, service_label
 
 import json
 import time
@@ -37,6 +37,26 @@ def provider_usage(payload):
     return dict(usage)
 
 
+def stream_speed(tokens, chunks, first, last, elapsed, *, gpu_usage=False):
+    """Keep short, measured GPU streams separate from buffered responses.
+
+    A ten-token GPU greeting can finish decoding in under 300 ms. Charging
+    its connection/prefill time as decode time makes the same model appear
+    slower than on a long reply. Still reject instantaneous buffered bursts.
+    """
+    duration = max(0.0, last - first) if first is not None and last is not None else 0.0
+    minimum = 0.05 if gpu_usage else 0.3
+    if duration >= minimum and chunks >= 3 and tokens > 2:
+        return round((tokens - 1) / duration, 1), "relay_stream_decode", duration
+    return round(tokens / max(0.2, elapsed), 1), "request_elapsed", None
+
+
+def _has_generated_text(delta):
+    return isinstance(delta, dict) and any(
+        isinstance(delta.get(field), str) and delta[field]
+        for field in ("content", "reasoning_content", "reasoning", "thought"))
+
+
 def merge_system_messages(messages):
     """Strict upstreams (vLLM/Qwen-class chat templates) accept exactly ONE
     system message, and only at index 0 — a second system, even one leading,
@@ -71,7 +91,7 @@ def merge_system_messages(messages):
     return messages
 
 
-def chat_execute(h):
+def chat_execute(h, *, catalog=None):
     ip = h._client_ip()
     if not h._check_ip_lists():
         return
@@ -130,7 +150,14 @@ def chat_execute(h):
     metered = h.headers.get("X-Reach-Metered") == "provider-v1"
     req_cfg = core.STATE.cfg.get("request", {})
     models = core.STATE.cfg.get("models", {})
-    requested = payload.get("model") or req_cfg.get("default_model", "")
+    if catalog:
+        models = catalog_models(models, catalog, include_private=h._admin_local())
+    requested = payload.get("model")
+    if not requested:
+        requested = req_cfg.get("default_model", "")
+        if catalog and requested not in models:
+            requested = ("gemma-4-12b-qat" if "gemma-4-12b-qat" in models
+                         else next(iter(models), ""))
     spec = models.get(requested)
 
     # model visibility: unknown or disabled → 404; private + remote → 404
@@ -139,7 +166,7 @@ def chat_execute(h):
             "error": {
                 "message": ("Unknown model %r. Served models: %s"
                             % (requested,
-                               ", ".join(sorted(core.STATE.public_models()))
+                               ", ".join(sorted(models if catalog else core.STATE.public_models()))
                                or "(none)")),
                 "type": "invalid_request_error", "param": "model",
                 "code": "model_not_found",
@@ -487,8 +514,7 @@ def chat_execute(h):
                                request_body=request_body)
                 h._relay_upstream_error(
                     last_error,
-                    "Local tray bridge rejected the request" if use_bridge
-                    else "OmniRoute rejected the request")
+                    service_label(upstream_model) + " rejected the request")
                 return None
             core.STATE.note_failure(circuit)
             h._log_chat(model=requested, upstream_model=upstream_model,
@@ -500,7 +526,7 @@ def chat_execute(h):
             h._relay_upstream_error(
                 last_error,
                 "Local tray bridge unreachable (is the SignalREACH tray running?)"
-                if use_bridge else "OmniRoute unreachable")
+                if use_bridge else service_label(upstream_model) + " unreachable")
             return None
     finally:
         if not stream or upstream is None:
@@ -537,14 +563,16 @@ def chat_finalize(h, upstream, ctx):
     # Clear the breaker for the upstream that actually answered — not a global
     # one, or a working bridge reply would mask a broken OmniRoute (and the
     # other way round).
-    circuit = "bridge" if upstream_model.startswith("bridge/") else "omniroute"
+    circuit = ctx.get("circuit") or (private_route(upstream_model) or {}).get(
+        "circuit", "bridge" if upstream_model.startswith("bridge/") else "omniroute")
     if stream:
         # An upstream can answer HTTP 200 and then send an SSE error, reasoning
-        # only, or [DONE] without an answer. Keep the response uncommitted until
-        # actual assistant text arrives, so errors can still use an HTTP status
-        # and a configured fallback can be checked before the client sees 200.
+        # only, or [DONE] without an answer. Legacy routes wait for an answer
+        # before committing. Private GPU reasoning is real streaming progress;
+        # forward it promptly, then report a missing answer as an SSE error.
         stream_timeout = None if upstream_model in BROWSER_CHAT_UPSTREAMS else int(core.STATE.cfg.get("stream_timeout_s", 300))
         max_prefix_bytes = 8 * 1024 * 1024
+        provider_first_token_time = None
 
         def _answer_or_error(parsed, strip_roles):
             if not isinstance(parsed, dict):
@@ -575,7 +603,11 @@ def chat_finalize(h, upstream, ctx):
                            and part["text"].strip() for part in content), None
             return False, None
 
-        def _probe(source, strip_roles):
+        def _probe(source, strip_roles, selector):
+            nonlocal provider_first_token_time
+            # Probe may buffer reasoning until an answer arrives. Preserve its
+            # arrival time, and discard a failed provider's timing on fallback.
+            provider_first_token_time = None
             prefix = []
             prefix_size = 0
             raw_sock = None
@@ -602,9 +634,18 @@ def chat_finalize(h, upstream, ctx):
                         parsed = json.loads(stripped[5:].decode("utf-8", "replace"))
                     except (ValueError, UnicodeDecodeError):
                         continue
+                    choices = parsed.get("choices") if isinstance(parsed, dict) else None
+                    if provider_first_token_time is None and isinstance(choices, list) \
+                            and choices and isinstance(choices[0], dict) \
+                            and _has_generated_text(choices[0].get("delta")):
+                        provider_first_token_time = time.monotonic()
                     answered, error = _answer_or_error(parsed, strip_roles)
-                    if error is not None or answered:
-                        return prefix, answered, error
+                    gpu_progress = selector.startswith("gpu/") and not strip_roles \
+                        and isinstance(choices, list) and choices \
+                        and isinstance(choices[0], dict) \
+                        and _has_generated_text(choices[0].get("delta"))
+                    if error is not None or answered or gpu_progress:
+                        return prefix, answered or bool(gpu_progress), error
                 # Some providers ignore stream:true and return ordinary JSON.
                 if prefix and not any(line.lstrip().startswith(b"data:") for line in prefix):
                     try:
@@ -653,7 +694,7 @@ def chat_finalize(h, upstream, ctx):
             return status, payload, headers
 
         pending_prefix, saw_content, failure = _probe(
-            upstream, bool(spec.get("strip_trailing_roles")))
+            upstream, bool(spec.get("strip_trailing_roles")), upstream_model)
         if not saw_content:
             # Account capacity is temporary and outside the bridge process.
             # Repeated 429s must not open its circuit for every other request.
@@ -679,7 +720,7 @@ def chat_finalize(h, upstream, ctx):
                         fb_req,
                         timeout=int(core.STATE.cfg.get("stream_timeout_s", 300)))
                     fb_prefix, fb_answered, fb_failure = _probe(
-                        fallback, bool(models[fallback_alias].get("strip_trailing_roles")))
+                        fallback, bool(models[fallback_alias].get("strip_trailing_roles")), fb_upstream)
                     if fb_answered:
                         upstream = fallback
                         pending_prefix = fb_prefix
@@ -932,10 +973,13 @@ def chat_finalize(h, upstream, ctx):
                 first_token_time = None
                 last_token_time = None
                 token_chunks_count = 0
+                provider_last_token_time = None
+                provider_token_chunks_count = 0
                 streamed_tokens = 0
                 streamed_prompt_tokens = 0
                 reported_usage = None
                 upstream_done = False
+                assistant_answered = False
                 assembled_chunks = []
                 last_chunk_id = "chatcmpl-reach"
                 try:
@@ -951,6 +995,8 @@ def chat_finalize(h, upstream, ctx):
                             try:
                                 parsed_chunk = json.loads(text_line.decode("utf-8", "replace"))
                                 if isinstance(parsed_chunk, dict):
+                                    answered, _ = _answer_or_error(parsed_chunk, False)
+                                    assistant_answered = assistant_answered or answered
                                     if parsed_chunk.get("error") is not None:
                                         stream_failure = parsed_chunk["error"]
                                     if parsed_chunk.get("id"):
@@ -969,9 +1015,14 @@ def chat_finalize(h, upstream, ctx):
                                     choices = parsed_chunk.get("choices")
                                     if isinstance(choices, list) and choices:
                                         delta = choices[0].get("delta", {})
+                                        if _has_generated_text(delta):
+                                            provider_token_chunks_count += 1
+                                            provider_last_token_time = time.monotonic()
+                                            if provider_first_token_time is None:
+                                                provider_first_token_time = provider_last_token_time
                                         content = delta.get("content")
                                         if isinstance(content, str) and content:
-                                            now_t = time.time()
+                                            now_t = time.monotonic()
                                             token_chunks_count += 1
                                             if first_token_time is None:
                                                 first_token_time = now_t
@@ -983,9 +1034,16 @@ def chat_finalize(h, upstream, ctx):
                         if stream_failure is not None:
                             break
 
-                    if metered and not upstream_done and stream_failure is None:
+                    if (metered or upstream_model.startswith("gpu/")) \
+                            and not upstream_done and stream_failure is None:
                         stream_failure = {"code": "upstream_truncated",
                                           "message": "The provider stream ended before completion."}
+                        h._write_chunk(("data: " + json.dumps({"error": stream_failure})
+                                        + "\n\n").encode("utf-8"))
+                    if upstream_model.startswith("gpu/") and not assistant_answered \
+                            and stream_failure is None:
+                        stream_failure = {"code": "empty_upstream_response",
+                                          "message": "The GPU model finished without an assistant answer."}
                         h._write_chunk(("data: " + json.dumps({"error": stream_failure})
                                         + "\n\n").encode("utf-8"))
                     full_streamed_text = "".join(assembled_chunks)
@@ -994,15 +1052,17 @@ def chat_finalize(h, upstream, ctx):
                     total_elapsed = max(0.2, now_end - started)
                     latency_ms = int((now_end - started) * 1000)
 
-                    # Genuine continuous stream: multiple chunks spread over at least 300ms
-                    if (first_token_time and last_token_time and
-                            (last_token_time - first_token_time) >= 0.3 and
-                            token_chunks_count >= 3 and approx_out > 2):
-                        decode_duration = last_token_time - first_token_time
-                        tps = round((approx_out - 1) / decode_duration, 1)
-                    else:
-                        # Buffered burst: tokens arrived in 1-2 chunks, use elapsed request duration
-                        tps = round(approx_out / total_elapsed, 1)
+                    gpu_usage = upstream_model.startswith("gpu/") and reported_usage is not None
+                    if gpu_usage:
+                        # Provider completion counts include reasoning tokens;
+                        # their clock must include generation before the answer.
+                        first_token_time = provider_first_token_time
+                        last_token_time = provider_last_token_time
+                        token_chunks_count = provider_token_chunks_count
+                    tps, speed_source, decode_duration = stream_speed(
+                        approx_out, token_chunks_count, first_token_time,
+                        last_token_time, total_elapsed,
+                        gpu_usage=gpu_usage)
 
                     if streamed_prompt_tokens > 0:
                         approx_in = streamed_prompt_tokens
@@ -1023,12 +1083,15 @@ def chat_finalize(h, upstream, ctx):
                             "completion_tokens": approx_out,
                             "total_tokens": approx_in + approx_out,
                             "tokens_per_second": tps,
+                            "tokens_per_second_source": speed_source,
                             "tokensPerSecond": tps,
                             "completion_tokens_per_second": tps,
                             "speed_tps": tps
                         }
                     }
                     usage_chunk["usage_source"] = "provider" if reported_usage is not None else "estimated"
+                    if decode_duration is not None:
+                        usage_chunk["usage"]["completion_seconds"] = round(decode_duration, 6)
                     if reported_usage is not None:
                         usage_chunk["usage"].update(reported_usage)
                     if stream_failure is None:

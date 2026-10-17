@@ -11,6 +11,7 @@ import reachd.core as core   # PORT is read at call time (cycle-safe)
 from reachd import net
 from reachd.analytics import Analytics
 from reachd.cache import ResponseCache
+from reachd.model_routes import catalog_models, is_gpu_model
 from reachd.const import (
     LATENCY_SAMPLE_LIMIT,
     SERVICE,
@@ -209,8 +210,7 @@ class RelayState:
 
     def public_models(self):
         return {alias: spec["upstream"] for alias, spec
-                in self.cfg.get("models", {}).items()
-                if spec.get("enabled") and spec.get("public", True)}
+                in catalog_models(self.cfg.get("models", {}), "gpu").items()}
 
     def p95_latency_ms(self):
         with self._lock:
@@ -269,7 +269,7 @@ class RelayState:
                     "bridge": self.circuit_open("bridge"),
                 },
                 "models": list(self.public_models()),
-                "model_count": len(self.cfg.get("models", {})),
+                "model_count": sum(is_gpu_model(spec) for spec in self.cfg.get("models", {}).values()),
                 "public_url": self.public_url,
                 "public_url_source": self.public_url_source,
                 "last_published_at": self.last_published_at,

@@ -41,6 +41,14 @@ const timeout = setTimeout(() => { console.error('Workspace UI timed out'); app.
   await until('typeof ReachWorkspace !== "undefined" && document.querySelector("#agent-project-select option") !== null', 'Renderer did not initialize');
   await run(`(async () => { setDrawer(false); await showTab('agents'); await selectAgent({id:${JSON.stringify(fixture.id)}}); })()`);
   assert.equal(await run('document.querySelector("#telemetry-dashboard").hidden'), true);
+  await run('document.querySelector("#btn-show-singular").click()');
+  await until('document.querySelector("#singular-panel h2").textContent === "Chat"', 'Singular details did not render');
+  assert.equal(await run('getComputedStyle(document.querySelector("#singular-panel")).display !== "none"'), true);
+  assert.equal(await run('getComputedStyle(document.querySelector("#file-tree")).display'), 'none');
+  await until('document.querySelector("#singular-panel [role=status]").textContent.startsWith("Updated")', 'Singular telemetry did not load');
+  await run('selectDrawerPanel("files")');
+  assert.equal(await run('getComputedStyle(document.querySelector("#singular-panel")).display'), 'none');
+  await run('setDrawer(false)');
   // Tool preferences cross the real context-isolated preload and IPC handlers.
   await run('document.querySelector("[role=switch][aria-label=Web]").click()');
   await until(`currentAgent.settings.features.web === false && !document.querySelector('[role=switch][aria-label=Web]').disabled`, 'Web switch did not save');

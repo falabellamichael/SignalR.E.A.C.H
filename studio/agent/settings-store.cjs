@@ -41,6 +41,40 @@ function createSettingsStore({ file, safeStorage }) {
     };
     const decoded = decodeKey(raw);
     if (Array.isArray(raw.connections)) decoded.connections = raw.connections.map(decodeKey);
+    if (raw.plugins && typeof raw.plugins === 'object') {
+      const p = { ...raw.plugins };
+      if (p.github) {
+        p.github = { ...p.github };
+        if (p.github.encryptedToken) {
+          try {
+            if (!available()) throw new Error('Vault unavailable.');
+            p.github.token = safeStorage.decryptString(Buffer.from(p.github.encryptedToken, 'base64'));
+          } catch { p.github.token = ''; locked = true; }
+          delete p.github.encryptedToken;
+        }
+      }
+      if (p.gmail) {
+        p.gmail = { ...p.gmail };
+        if (p.gmail.encryptedPassword) {
+          try {
+            if (!available()) throw new Error('Vault unavailable.');
+            p.gmail.password = safeStorage.decryptString(Buffer.from(p.gmail.encryptedPassword, 'base64'));
+          } catch { p.gmail.password = ''; locked = true; }
+          delete p.gmail.encryptedPassword;
+        }
+      }
+      if (p.outlook) {
+        p.outlook = { ...p.outlook };
+        if (p.outlook.encryptedPassword) {
+          try {
+            if (!available()) throw new Error('Vault unavailable.');
+            p.outlook.password = safeStorage.decryptString(Buffer.from(p.outlook.encryptedPassword, 'base64'));
+          } catch { p.outlook.password = ''; locked = true; }
+          delete p.outlook.encryptedPassword;
+        }
+      }
+      decoded.plugins = p;
+    }
     if (raw.encryptedJevApiKey !== undefined) {
       try {
         if (!available()) throw new Error('Credential vault unavailable.');
@@ -71,6 +105,31 @@ function createSettingsStore({ file, safeStorage }) {
       }
       return entry;
     });
+    if (settings.plugins && typeof settings.plugins === 'object') {
+      const p = { ...settings.plugins };
+      if (p.github) {
+        p.github = { ...p.github };
+        if (p.github.token && available()) {
+          p.github.encryptedToken = safeStorage.encryptString(p.github.token).toString('base64');
+          delete p.github.token;
+        }
+      }
+      if (p.gmail) {
+        p.gmail = { ...p.gmail };
+        if (p.gmail.password && available()) {
+          p.gmail.encryptedPassword = safeStorage.encryptString(p.gmail.password).toString('base64');
+          delete p.gmail.password;
+        }
+      }
+      if (p.outlook) {
+        p.outlook = { ...p.outlook };
+        if (p.outlook.password && available()) {
+          p.outlook.encryptedPassword = safeStorage.encryptString(p.outlook.password).toString('base64');
+          delete p.outlook.password;
+        }
+      }
+      out.plugins = p;
+    }
     return out;
   }
   function persist(value) {

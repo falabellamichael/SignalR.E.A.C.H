@@ -19,7 +19,7 @@ const infer = createCodegptInference({ request: directRequest, allowAgents: fals
     providerError: (_value, status) => Object.assign(new Error('CodeGPT did not complete the selected direct model request.'),
         { status: status >= 400 ? status : 502, code: 'CODEGPT_DIRECT_REJECTED' }) });
 
-function createDirectHost({ models, inferImpl = infer, driverPort = discoverCodegptApiPort, timeoutMs = 180000 } = {}) {
+function createDirectHost({ models, inferImpl = infer, driverPort = discoverCodegptApiPort, timeoutMs = 0 } = {}) {
     const registry = new Map(models.filter(model => model.enabled).map(model => [model.id, model]));
     let active = 0;
     const server = http.createServer(async (req, res) => {
@@ -33,20 +33,19 @@ function createDirectHost({ models, inferImpl = infer, driverPort = discoverCode
         const controller = new AbortController();
         const cancel = () => { if (!res.writableEnded) controller.abort(); };
         res.once('close', cancel);
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
         let counted = false;
         try {
             if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')) return json(415, { error: { code: 'content_type' } });
             let size = 0; const chunks = [];
-            for await (const chunk of req) { size += chunk.length; if (size > 131072) return json(413, { error: { code: 'request_too_large' } }); chunks.push(chunk); }
+            for await (const chunk of req) { size += chunk.length; if (size > 16 * 1024 * 1024) return json(413, { error: { code: 'request_too_large' } }); chunks.push(chunk); }
             let body; try { body = JSON.parse(Buffer.concat(chunks)); } catch (_) { return json(400, { error: { code: 'invalid_json' } }); }
             const model = registry.get(body?.model);
             if (!model) return json(404, { error: { code: 'model_unavailable' } });
             if (Object.keys(body).some(key => !['model', 'messages', 'stream', 'max_tokens', 'max_completion_tokens'].includes(key))
-                || !Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 100
+                || !Array.isArray(body.messages) || body.messages.length < 1
                 || body.messages.some(message => !message || !['system', 'developer', 'user', 'assistant'].includes(message.role)
-                    || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key)))
-                || Buffer.byteLength(JSON.stringify(body.messages)) > 32000) return json(400, { error: { code: 'text_only' } });
+                    || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key)))) return json(400, { error: { code: 'text_only' } });
             if (active >= 1) return json(429, { error: { code: 'capacity' } });
             active++; counted = true;
             const answer = await inferImpl({ driverPort: await driverPort(), model: model.id, provider: model.provider,

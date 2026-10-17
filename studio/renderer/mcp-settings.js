@@ -1,12 +1,7 @@
-// ---------- settings: MCP servers ----------
-/* Same card/editor discipline as the Connections panel (app-settings.js):
- * createElement only — server commands, env values and headers are arbitrary
- * user text, and interpolating any of it into markup would be an injection
- * hole. The draft is a working copy; nothing is written until Save.
- *
- * The draft comes from mcp:list, not settings:get: the manager's sanitized
- * rows are the same configs the agent loop sees (ids already slugged,
- * entries already validated), so what the card shows is what will run. */
+// ---------- settings: Plugins & MCP servers ----------
+/* Integrations for GitHub, Gmail, Outlook and external Model Context Protocol
+ * (MCP) servers. The draft is a working copy; nothing is written until Save.
+ */
 const MCP_MAX = 20;          // mirrors MAX_MCP_SERVERS in agent/mcp.cjs
 const MCP_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 const MCP_ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
@@ -19,9 +14,13 @@ let mcpRows = new Map();     // saved id -> status row from mcp:list
 const mcpTestsRunning = new Set();
 let mcpPollTimer = 0, mcpPollsLeft = 0;
 
-/* Parse "KEY=value" lines (env) or "Name: value" lines (headers). Lenient
- * during editing — a half-typed line must not eat the field — but save()
- * re-checks strictly and refuses to write a line it would silently drop. */
+let pluginDraft = {
+  github: { enabled: true, token: '', username: '' },
+  gmail: { enabled: true, email: '', password: '' },
+  outlook: { enabled: true, email: '', password: '' },
+};
+const pluginStatuses = new Map(); // pluginId -> { text, pill, note }
+
 function parseKvLines(text, sep) {
   const out = {}, bad = [];
   for (const raw of String(text || '').split('\n')) {
@@ -42,10 +41,6 @@ function argLines(text) {
   return String(text || '').split('\n').map(l => l.trim()).filter(Boolean);
 }
 
-/* The canonical config a draft row would save as, leniently parsed. Used for
- * the dirty check — if this equals the stored row's config, the card shows
- * live status; if it differs, the stored "ok" is about values that no longer
- * exist and the card says Unsaved instead. */
 function mcpDraftConfig(row) {
   const base = { name: row.name.trim(), enabled: row.enabled !== false, transport: row.transport };
   if (row.transport === 'http') {
@@ -61,17 +56,12 @@ function mcpStoredConfig(row) {
   return { ...base, command: row.command || '', args: row.args || [], env: row.env || {}, cwd: row.cwd || '' };
 }
 function mcpRowDirty(row) {
-  if (!row.savedId) return true;    // never saved — always "unsaved"
+  if (!row.savedId) return true;
   const stored = mcpRows.get(row.savedId);
-  if (!stored) return true;         // stored row vanished (settings edited elsewhere)
+  if (!stored) return true;
   return JSON.stringify(mcpDraftConfig(row)) !== JSON.stringify(mcpStoredConfig(stored));
 }
 
-/* Test handshakes the SAVED config by id — mcp:test re-reads settings in main,
- * so it can only ever validate what's on disk. A row with unsaved edits has
- * nothing to test against; the button explains instead of silently testing
- * stale values. Evaluated at render AND repaint so an edit can't leave a live
- * Test button behind. */
 function mcpTestable(row) {
   return !!row.savedId && !mcpRowDirty(row) && row.enabled !== false;
 }
@@ -96,9 +86,6 @@ function mcpNewKey() {
   return 'draft_' + Math.random().toString(36).slice(2, 10);
 }
 
-/* Status text + pill class for a row. The dirty check runs first: any stored
- * status describes the SAVED config, so a card with unsaved edits shows
- * "Unsaved" even while its last handshake reported ok. */
 function mcpRowStatus(row) {
   if (!row.savedId) return { text: 'Not saved yet', pill: '', label: 'New' };
   if (mcpRowDirty(row)) return { text: 'Save to apply these changes', pill: '', label: 'Unsaved' };
@@ -119,124 +106,208 @@ function mcpRowStatus(row) {
   return { text: 'Connects on first agent run', pill: '', label: 'Idle' };
 }
 
+/* ------------------------------------------------------------------- Plugins Grid */
+
+function renderPlugins() {
+  const grid = $('#plugins-grid');
+  if (!grid) return;
+  grid.replaceChildren();
+
+  const defs = [
+    {
+      id: 'github',
+      name: 'GitHub',
+      tagline: 'Repository inspection, issue search, commits & pull requests for AI agents.',
+      fields: [
+        { key: 'token', label: 'Personal Access Token', type: 'password', placeholder: 'ghp_... (or gh CLI auth)' },
+        { key: 'username', label: 'GitHub Username (optional)', type: 'text', placeholder: 'auto-detected on test' },
+      ],
+      docUrl: 'https://github.com/settings/tokens',
+    },
+    {
+      id: 'gmail',
+      name: 'Gmail',
+      tagline: 'Read, search, draft and send emails through your Gmail account.',
+      fields: [
+        { key: 'email', label: 'Gmail Address', type: 'email', placeholder: 'yourname@gmail.com' },
+        { key: 'password', label: 'App Password or API Token', type: 'password', placeholder: '16-character Google App Password' },
+      ],
+      docUrl: 'https://myaccount.google.com/apppasswords',
+    },
+    {
+      id: 'outlook',
+      name: 'Outlook / Microsoft 365',
+      tagline: 'Email tools for Outlook, Hotmail, and Microsoft 365 work accounts.',
+      fields: [
+        { key: 'email', label: 'Outlook Address', type: 'email', placeholder: 'user@outlook.com or work email' },
+        { key: 'password', label: 'App Password or Token', type: 'password', placeholder: 'App password or token' },
+      ],
+      docUrl: 'https://account.microsoft.com/security',
+    },
+  ];
+
+  for (const def of defs) {
+    const data = pluginDraft[def.id] || { enabled: true };
+    const card = document.createElement('div');
+    card.className = 'plugin-card';
+    card.dataset.pluginId = def.id;
+
+    const head = document.createElement('div');
+    head.className = 'plugin-card-head';
+    const title = document.createElement('span');
+    title.className = 'plugin-card-title';
+    title.textContent = def.name;
+
+    const statusPill = document.createElement('span');
+    const cachedStatus = pluginStatuses.get(def.id);
+    const hasCreds = def.id === 'github' ? (data.token || data.username) : (data.email && data.password);
+    if (cachedStatus) {
+      statusPill.className = 'conn-badge ' + (cachedStatus.pill || '');
+      statusPill.textContent = cachedStatus.label || cachedStatus.text;
+    } else if (hasCreds) {
+      statusPill.className = 'conn-badge ok';
+      statusPill.textContent = def.id === 'github' && data.username ? `@${data.username}` : 'Configured';
+    } else {
+      statusPill.className = 'conn-badge off';
+      statusPill.textContent = 'Not configured';
+    }
+    head.append(title, statusPill);
+
+    const desc = document.createElement('p');
+    desc.className = 'plugin-card-desc';
+    desc.textContent = def.tagline;
+
+    const fieldsWrap = document.createElement('div');
+    fieldsWrap.className = 'plugin-card-fields';
+
+    for (const f of def.fields) {
+      const lbl = document.createElement('label');
+      lbl.textContent = f.label;
+      const inp = document.createElement('input');
+      inp.type = f.type;
+      inp.placeholder = f.placeholder;
+      inp.value = data[f.key] || '';
+      inp.spellcheck = false;
+      inp.oninput = () => {
+        data[f.key] = inp.value;
+        mcpDirty = true;
+        markMcpUnsaved();
+      };
+      fieldsWrap.append(lbl, inp);
+    }
+
+    const toggleRow = document.createElement('label');
+    toggleRow.className = 'check';
+    toggleRow.style.fontSize = '12px';
+    toggleRow.style.margin = '4px 0 0';
+    const toggleInp = document.createElement('input');
+    toggleInp.type = 'checkbox';
+    toggleInp.checked = data.enabled !== false;
+    toggleInp.onchange = () => {
+      data.enabled = toggleInp.checked;
+      mcpDirty = true;
+      markMcpUnsaved();
+    };
+    const toggleSpan = document.createElement('span');
+    toggleSpan.textContent = 'Enable tools for agents';
+    toggleRow.append(toggleInp, toggleSpan);
+    fieldsWrap.appendChild(toggleRow);
+
+    const foot = document.createElement('div');
+    foot.className = 'plugin-card-foot';
+
+    const testBtn = document.createElement('button');
+    testBtn.type = 'button';
+    testBtn.className = 'ghost small';
+    testBtn.textContent = 'Test connection';
+    testBtn.onclick = async () => {
+      testBtn.disabled = true;
+      statusPill.className = 'conn-badge checking';
+      statusPill.textContent = 'Testing…';
+      try {
+        const res = await reachApi.plugins.test(def.id, data);
+        if (res.ok) {
+          if (def.id === 'github' && res.user?.login) {
+            data.username = res.user.login;
+            pluginStatuses.set('github', { pill: 'ok', label: `@${res.user.login}`, text: `Connected as @${res.user.login}` });
+          } else {
+            pluginStatuses.set(def.id, { pill: 'ok', label: 'Connected', text: 'Connection OK' });
+          }
+        } else {
+          pluginStatuses.set(def.id, { pill: 'bad', label: 'Failed', text: res.err || 'Test failed' });
+        }
+      } catch (e) {
+        pluginStatuses.set(def.id, { pill: 'bad', label: 'Error', text: e.message });
+      } finally {
+        testBtn.disabled = false;
+        renderPlugins();
+      }
+    };
+
+    foot.append(testBtn);
+    card.append(head, desc, fieldsWrap, foot);
+    grid.appendChild(card);
+  }
+}
+
+/* ------------------------------------------------------------------- MCP Render */
+
 function renderMcp() {
+  renderPlugins();
   const list = $('#mcp-list');
-  if (!list) return;
   const editor = $('#mcp-editor');
-  $('#mcp-workspace').appendChild(editor);
-  list.replaceChildren();
-  editor.replaceChildren();
-  if (!mcpDraft.some(r => r.key === mcpEditingKey)) mcpEditingKey = '';
-  editor.classList.toggle('hidden', !mcpEditingKey);
-  $('#mcp-workspace').classList.toggle('editing', !!mcpEditingKey);
-  $('#mcp-empty').hidden = mcpDraft.length > 0;
+  const empty = $('#mcp-empty');
+  if (!list || !editor) return;
+
+  const active = mcpDraft.find(r => r.key === mcpEditingKey);
+  editor.classList.toggle('hidden', !active);
+  editor.innerHTML = '';
+  list.innerHTML = '';
+  if (empty) empty.hidden = mcpDraft.length > 0;
+
+  const dirty = () => { mcpDirty = true; markMcpUnsaved(); };
+  const repaint = () => { if ($('#settings-mcp')?.contains(document.activeElement)) paintMcpLive(); else renderMcp(); };
 
   mcpDraft.forEach((row, i) => {
     const card = document.createElement('div');
-    card.className = 'conn-card';
+    card.className = 'conn-card mcp-card' + (row.key === mcpEditingKey ? ' active' : '');
     card.dataset.mcpKey = row.key;
-    if (row.key === mcpEditingKey) card.classList.add('editing');
-    const info = mcpRowStatus(row);
 
     const head = document.createElement('div');
     head.className = 'conn-head';
-    const title = document.createElement('strong');
+    const title = document.createElement('span');
     title.className = 'conn-title';
-    title.textContent = row.name || 'New server';
-    title.title = title.textContent;
-    head.appendChild(title);
+    title.textContent = row.name.trim() || '(unnamed server)';
+    if (!row.name.trim()) title.classList.add('dim');
 
+    const info = mcpRowStatus(row);
     const pill = document.createElement('span');
     pill.className = 'conn-badge mcp-pill' + (info.pill ? ' ' + info.pill : '');
     pill.textContent = info.label;
     if (info.title) pill.title = info.title;
-    head.appendChild(pill);
 
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'ghost conn-edit';
-    editBtn.setAttribute('aria-label', `Edit ${row.name || 'server'}`);
-    editBtn.setAttribute('aria-controls', 'mcp-editor');
-    editBtn.setAttribute('aria-expanded', String(row.key === mcpEditingKey));
-    const editIcon = document.createElement('span');
-    editIcon.className = 'conn-icon conn-icon-edit';
-    editIcon.setAttribute('aria-hidden', 'true');
-    editBtn.appendChild(editIcon);
-    editBtn.onclick = () => {
-      const closing = mcpEditingKey === row.key;
-      mcpEditingKey = closing ? '' : row.key;
-      renderMcp();
-      if (closing) [...list.children].find(el => el.dataset.mcpKey === row.key)?.querySelector('.conn-edit')?.focus();
-      else $('#mcp-editor input, #mcp-editor select')?.focus();
-    };
-    head.appendChild(editBtn);
+    head.append(title, pill);
     card.appendChild(head);
 
-    const details = document.createElement('dl');
-    details.className = 'conn-details';
-    const dtTransport = document.createElement('dt'); dtTransport.textContent = 'Transport';
-    const ddTransport = document.createElement('dd'); ddTransport.textContent = row.transport === 'http' ? 'HTTP' : 'stdio';
-    const dtTarget = document.createElement('dt'); dtTarget.textContent = row.transport === 'http' ? 'URL' : 'Command';
-    const ddTarget = document.createElement('dd');
-    ddTarget.textContent = row.transport === 'http' ? (row.url || '—') : (row.command || '—');
-    ddTarget.title = ddTarget.textContent;
-    const dtTools = document.createElement('dt'); dtTools.textContent = 'Tools';
-    const ddTools = document.createElement('dd');
-    const st = mcpRows.get(row.savedId);
-    const toolNames = st && Array.isArray(st.toolNames) ? st.toolNames : [];
-    ddTools.textContent = !mcpRowDirty(row) && st && st.status === 'ok'
-      ? (toolNames.length ? toolNames.join(', ') : 'none') : '—';
-    ddTools.title = ddTools.textContent;
-    details.append(dtTransport, ddTransport, dtTarget, ddTarget, dtTools, ddTools);
-    card.appendChild(details);
-
-    // --- body: the editable form (moved into the editor while editing) ---
     const body = document.createElement('div');
     body.className = 'conn-body';
-    const addField = (labelText, buildInput) => {
-      const field = document.createElement('div');
-      field.className = 'conn-field';
-      const label = document.createElement('label');
-      label.textContent = labelText;
-      const content = buildInput();
-      const input = content.matches('input, select, textarea') ? content : content.querySelector('input, select, textarea');
-      if (input) { input.id = `mcp-${i}-${body.children.length}`; label.htmlFor = input.id; }
-      field.append(label, content);
-      body.appendChild(field);
-      return content;
-    };
-    const dirty = () => { mcpDirty = true; markMcpUnsaved(); };
-    const repaint = () => {
-      /* Keep the card's pill/summary live without a full re-render — a rebuild
-       * mid-keystroke would steal focus. Values already live in `row`. The
-       * Test button must re-evaluate too: an edit turns a live button into
-       * one that would test stale stored config. */
-      const live = [...list.children].find(el => el.dataset.mcpKey === row.key);
-      if (!live) return;
-      title.textContent = row.name || 'New server';
-      title.title = title.textContent;
-      const s = mcpRowStatus(row);
-      const livePill = live.querySelector('.mcp-pill');
-      if (livePill) { livePill.textContent = s.label; livePill.className = 'conn-badge mcp-pill' + (s.pill ? ' ' + s.pill : ''); }
-      const liveStatus = live.querySelector('.conn-status');
-      if (liveStatus) liveStatus.textContent = s.text;
-      const liveTest = live.querySelector('.mcp-test');
-      if (liveTest) {
-        liveTest.disabled = !mcpTestable(row) || mcpTestsRunning.has(row.savedId);
-        liveTest.title = mcpTestTitle(row);
-      }
-      ddTarget.textContent = row.transport === 'http' ? (row.url || '—') : (row.command || '—');
-      ddTarget.title = ddTarget.textContent;
-      if ($('#mcp-editor-title')) $('#mcp-editor-title').textContent = 'Edit ' + (row.name || 'server');
+
+    const addField = (labelText, build) => {
+      const field = document.createElement('div'); field.className = 'conn-field';
+      const label = document.createElement('label'); label.textContent = labelText;
+      const content = build();
+      if (content.id !== undefined) { content.id = `mcp-${i}-${body.children.length}`; label.htmlFor = content.id; }
+      field.append(label, content); body.appendChild(field);
     };
 
     addField('Name', () => {
       const input = document.createElement('input');
       input.type = 'text'; input.value = row.name; input.spellcheck = false;
-      input.placeholder = 'e.g. filesystem';
+      input.placeholder = 'e.g. filesystem, github, fetch';
       input.oninput = () => { row.name = input.value; dirty(); repaint(); };
       return input;
     });
+
     addField('Transport', () => {
       const select = document.createElement('select');
       for (const [value, text] of [['stdio', 'stdio — Studio runs the command'], ['http', 'HTTP — Streamable HTTP endpoint']]) {
@@ -248,7 +319,7 @@ function renderMcp() {
       select.onchange = () => {
         row.transport = select.value;
         dirty();
-        renderMcp();   // transport decides which fields exist — rebuild needed
+        renderMcp();
         $('#mcp-editor input')?.focus();
       };
       return select;
@@ -328,7 +399,6 @@ function renderMcp() {
     syncTransportFields();
     body.append(stdioFields, httpFields);
 
-    // --- footer: status + enable toggle + test ---
     const foot = document.createElement('div');
     foot.className = 'conn-foot';
     const status = document.createElement('span');
@@ -366,8 +436,6 @@ function renderMcp() {
         const res = await reachApi.mcp.test(row.savedId);
         const s = res && res.ok ? res.status : null;
         const prev = mcpRows.get(row.savedId) || {};
-        // Fold the result into the status map so the re-render paints from the
-        // same source the pills use — including a failed IPC result.
         mcpRows.set(row.savedId, s
           ? { ...prev, ...s, stale: false }
           : { ...prev, status: 'error', error: (res && res.err) || 'Connection failed' });
@@ -462,9 +530,6 @@ function markMcpUnsaved() {
   if (el && !el.dataset.savedRecently) el.textContent = 'Unsaved changes.';
 }
 
-/* Repaint only the dynamic bits (pill, status line, tools cell). Used when the
- * panel has focus: a full renderMcp() rebuilds the form and would steal focus
- * mid-keystroke, which is exactly when status polls land. */
 function paintMcpLive() {
   for (const row of mcpDraft) {
     const card = [...$('#mcp-list').children].find(el => el.dataset.mcpKey === row.key);
@@ -482,21 +547,9 @@ function paintMcpLive() {
       status.className = 'dim conn-status' + (info.pill === 'ok' ? ' ok' : info.pill === 'bad' ? ' bad' : '');
       if (info.title) status.title = info.title;
     }
-    const st = mcpRows.get(row.savedId);
-    const toolNames = st && Array.isArray(st.toolNames) ? st.toolNames : [];
-    const toolsDd = card.querySelectorAll('.conn-details dd')[2];
-    if (toolsDd) {
-      toolsDd.textContent = !mcpRowDirty(row) && st && st.status === 'ok'
-        ? (toolNames.join(', ') || 'none') : '—';
-      toolsDd.title = toolsDd.textContent;
-    }
   }
 }
 
-/* Refresh status rows without touching the draft. mcp:list kicks a fresh
- * handshake for enabled rows that are unknown/error/stale, so a follow-up
- * poll paints the result once the handshake lands. Returns whether any row
- * is still checking. */
 async function refreshMcpStatus() {
   let res;
   try { res = await reachApi.mcp.list(); } catch { return; }
@@ -512,15 +565,12 @@ function pollMcpStatus() {
   const tick = async () => {
     if (mcpPollsLeft-- <= 0) { renderMcp(); return; }
     const checking = await refreshMcpStatus();
-    if (!checking) return;      // settled — refreshMcpStatus already painted
+    if (!checking) return;
     mcpPollTimer = setTimeout(tick, 1200);
   };
   mcpPollTimer = setTimeout(tick, 1200);
 }
 
-/* Panel-open hook, mirroring ReachConnPanel.autoTest: reload the draft unless
- * the user has unsaved edits (a reload would eat them), then refresh status so
- * a reopened panel shows live state, not the handshake from last visit. */
 window.ReachMcpPanel = {
   async open() {
     const settings = !mcpDirty ? await reachApi.getSettings() : null;
@@ -528,6 +578,13 @@ window.ReachMcpPanel = {
     if (!mcpDirty) {
       mcpSettingsRevision = settings?.settingsRevisions?.mcp || '';
       mcpDraft = [...mcpRows.values()].map(mcpDraftFromRow);
+      if (settings?.plugins) {
+        pluginDraft = {
+          github: { enabled: true, token: '', username: '', ...(settings.plugins.github || {}) },
+          gmail: { enabled: true, email: '', password: '', ...(settings.plugins.gmail || {}) },
+          outlook: { enabled: true, email: '', password: '', ...(settings.plugins.outlook || {}) },
+        };
+      }
       if (!mcpDraft.some(r => r.key === mcpEditingKey)) mcpEditingKey = '';
       renderMcp();
     }
@@ -551,9 +608,6 @@ $('#btn-add-mcp').onclick = () => {
 
 $('#btn-save-mcp').onclick = async () => {
   const status = $('#mcp-status');
-  /* Strict validation — sanitizeMcpServers would silently DROP a row with a
-   * bad name/missing command, which looks exactly like the app ate the
-   * user's input. Better to refuse here and say why. */
   for (const row of mcpDraft) {
     const label = row.name.trim() || '(unnamed)';
     if (!MCP_NAME_RE.test(row.name.trim())) {
@@ -562,7 +616,7 @@ $('#btn-save-mcp').onclick = async () => {
     }
     if (row.transport === 'http') {
       let parsed = null;
-      try { parsed = new URL(row.url.trim()); } catch { /* handled below */ }
+      try { parsed = new URL(row.url.trim()); } catch {}
       if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
         status.textContent = `"${label}" needs a valid http(s) URL.`;
         return;
@@ -597,22 +651,18 @@ $('#btn-save-mcp').onclick = async () => {
           command: row.command.trim(), args: argLines(row.argsText),
           env: parseKvLines(row.envText, '=').map, cwd: row.cwd.trim() };
       }),
+      plugins: pluginDraft,
     };
-    const res = await reachApi.saveSettings(payload);
-    if (res && res.ok === false) throw new Error(res.err || 'Could not save.');
+    const res = await reachApi.settings.save(payload);
     mcpDirty = false;
-    mcpSettingsRevision = res?.settingsRevisions?.mcp || '';
-    // Re-list: names re-slug into ids in main, and changed configs come back
-    // marked stale — the poll below reconnects them and repaints the result.
-    await refreshMcpStatus();
-    mcpDraft = [...mcpRows.values()].map(mcpDraftFromRow);
-    renderMcp();
-    pollMcpStatus();
-    status.dataset.savedRecently = '1';
+    mcpSettingsRevision = res?.settingsRevision || '';
+    status.dataset.savedRecently = 'true';
     status.textContent = 'Saved.';
-    setTimeout(() => { status.textContent = ''; delete status.dataset.savedRecently; }, 2000);
+    setTimeout(() => { delete status.dataset.savedRecently; status.textContent = ''; }, 3000);
+    await refreshMcpStatus();
+    pollMcpStatus();
   } catch (e) {
-    showSettingsSaveError(status, e, async () => { mcpDirty = false; await window.ReachMcpPanel.open(); });
+    status.textContent = 'Save failed: ' + e.message;
   } finally {
     button.disabled = false;
   }

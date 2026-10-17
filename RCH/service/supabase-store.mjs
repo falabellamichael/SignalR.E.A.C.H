@@ -4,6 +4,7 @@ import { getAddress } from 'ethers';
 import { normalizePlusPayment, normalizePlusReversal, plusFingerprint, plusGrantId, publicPlusPayment, publicPlusReversal } from './payments/plus.mjs';
 import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay, basicPlanModelIds } from './store.mjs';
 import { normalizeEmail } from './email.mjs';
+import { newApiKey, publicApiKey, validateApiKey, validateApiKeyId } from './api-keys.mjs';
 import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment,
   normalizeReversal, reversalFingerprint, publicReversal, reviewReversal } from './payments/core.mjs';
 
@@ -12,6 +13,9 @@ const safeCount = n => Number.isSafeInteger(n) && n >= 0 && n <= 1_000_000_000_0
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string'
   && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const ERRORS = {
+  api_key_limit: [409, 'Revoke an active key before creating another (maximum 10).'],
+  api_key_missing: [404, 'API key not found.'],
+  api_key_invalid: [401, 'The API key is invalid, expired, or revoked.'],
   subscription_expired: [402, 'Your paid Plus period has ended. Renew Plus to use subscription models; wallet credit remains separate.'],
   plan_active: [409, 'A plan is already active on this account.'],
   checkout_pending: [409, 'An earlier subscription checkout is still pending. Wait for it to expire.'],
@@ -19,12 +23,14 @@ const ERRORS = {
   account_missing: [401, 'Account is unavailable.'], invalid_grant: [400, 'Invalid plan grant, qualified model list, allowance, or expiry.'],
   grant_conflict: [409, 'Grant ID was already used with different values.'], invalid_flow: [400, 'Invalid sign-in flow.'],
   flow_expired: [410, 'Sign-in expired. Start again in Studio.'], flow_verified: [409, 'Sign-in has already been verified.'],
+  identity_taken: [409, 'That wallet or email already belongs to another REACH account.'],
   invalid_challenge: [400, 'Invalid challenge.'], challenge_expired: [410, 'This sign-in challenge is no longer valid.'],
   invalid_proof: [401, 'The sign-in proof does not match.'], session_expired: [401, 'Your REACH session expired. Connect your wallet again.'],
   invalid_reservation: [400, 'Invalid request reservation.'], idempotency_conflict: [409, 'Request ID has already been used for different input.'],
   model_not_entitled: [403, 'This model requires an active REACH plan.'], usage_debt: [402, 'An earlier request exceeded its allowance; account reconciliation is required.'],
   allowance_exhausted: [402, 'Not enough shared allowance for this request.'], invalid_usage: [400, 'Measured usage is invalid.'],
   reservation_missing: [404, 'Reservation not found.'], reservation_closed: [409, 'Reservation is closed.'],
+  api_key_ineligible: [403, 'An active subscription or unspent confirmed RCH redemption credit is required.'],
   invalid_redemption: [400, 'Invalid usage conversion.'], plan_required: [403, 'An active plan is required to redeem usage credit.'],
   redemption_missing: [404, 'Redemption is unavailable.'], invalid_transaction: [400, 'Invalid transaction hash.'],
   transaction_conflict: [409, 'This redemption already has a different transaction.'],
@@ -114,6 +120,7 @@ export class SupabaseAccountStore {
         overageUsdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest, basicActive: false } };
     }
     return { id: a.id, walletAddress: a.wallet, email: a.email ?? null,
+      redemptionCredit: { tokens: Math.min(a.prepaid,a.rch_tokens ?? 0), usdMicros: Math.min(a.usd_prepaid ?? 0,a.rch_usd ?? 0) },
       plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
       allowedModels: this.models.filter(m => request?.unavailable ? false : m.access === 'requests' ? requestModel(m) && !!this.subscription && (request.allowance.basicActive || request.allowance.plusActive || a.plan_id!=='plus' && a.usd_prepaid > 0)
         : m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(requestModel(m) ? { access: 'requests', pricing: request.allowance.plusActive ? {unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0} : { unit: 'request', includedRequests: this.subscription.basic.includedRequests, usdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest }, capabilities: requestCapabilities(m) } : modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
@@ -221,9 +228,9 @@ export class SupabaseAccountStore {
     if (typeof flowId !== 'string' || !/^[a-f0-9]{64}$/.test(flowId)) fail(400, 'invalid_flow', 'Invalid sign-in flow.');
     return this._rpc('get_flow', { flowId });
   }
+  async bindFlowAccount(flowId, accountId) { await this._rpc('bind_flow_account', { flowId, accountId }); }
   async challenge(flowId, wallet, makeMessage) {
     const f = await this.getFlow(flowId);
-    if (f.account_id) fail(409, 'flow_verified', 'Sign-in has already been verified.');
     wallet = getAddress(wallet);
     const now = this.now(), expires = Math.min(f.expires, now + 300000), challengeId = id();
     const message = makeMessage(wallet, id(), new Date(now).toISOString(), new Date(expires).toISOString());
@@ -245,6 +252,24 @@ export class SupabaseAccountStore {
   async authenticate(token) {
     if (typeof token !== 'string' || !/^rch_session_[a-f0-9]{64}$/.test(token)) fail(401, 'session_required', 'Connect your wallet to REACH.');
     return this._view(await this._rpc('authenticate', { sessionHash: digest(token) }));
+  }
+  _apiKeyRpc(operation, payload = {}) {
+    return this._rpc(operation, payload, this.endpoint.replace(/reach_account_store$/, 'reach_api_key_store'));
+  }
+  async listApiKeys(accountId) { return (await this._apiKeyRpc('list', {accountId})).map(publicApiKey); }
+  async createApiKey(accountId, name) {
+    const {key,row}=newApiKey(name,this.now());
+    const stored=await this._apiKeyRpc('create', {accountId,...row});
+    return {key,...publicApiKey(stored)};
+  }
+  async revokeApiKey(accountId, id) {
+    validateApiKeyId(id);
+    return publicApiKey(await this._apiKeyRpc('revoke', {accountId,id}));
+  }
+  async authenticateApiKey(key) {
+    const hash=validateApiKey(key);
+    const accountId=await this._apiKeyRpc('authenticate', {hash});
+    return this.account(accountId);
   }
   async logout(token) { await this._rpc('logout', { sessionHash: digest(token) }); }
   async reserve(accountId, requestId, model, fingerprint, amount) {

@@ -307,7 +307,7 @@
             pages.defs.forEach(def => {
                 let count = null;
                 if (def.id === 'models' && core.store.settings && core.store.settings.models) {
-                    count = Object.keys(core.store.settings.models).length;
+                    count = Object.values(core.store.settings.models).filter(model => model.upstream?.startsWith('gpu/')).length;
                 }
                 addFolder(def.id, def.icon, def.label, count);
             });

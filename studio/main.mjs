@@ -68,9 +68,10 @@ const { createCliSettingsBridge, SCOPE_FIELDS: settingsScopeFields } = require('
 const { McpManager } = require('./agent/mcp.cjs');
 const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
-const { resolveEndpoint } = require('./agent/endpoint.cjs');
+const { resolveEndpoint, providerRequestOptions, isLoginProvidersEndpoint } = require('./agent/endpoint.cjs');
 const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
+const { testPlugin, getGitInfo, sanitizePlugins } = require('./agent/plugins.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 let cliSettingsBridge = null;
@@ -413,16 +414,15 @@ async function listProviderModels(payload = {}) {
 
   try {
     const base = await resolveEndpoint(endpoint);
-    const headers = {};
-    if (accessKey) headers.Authorization = 'Bearer ' + accessKey;
-    const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+    const res = await fetch(base + '/models', providerRequestOptions(base, accessKey, { signal: AbortSignal.timeout(10000) }));
     if (!res.ok) return { ok: false, err: `HTTP ${res.status}` };
     const data = await res.json();
     capabilityStore.recordCatalog(connectionId, base, data);
     const ids = (data.data || []).map(m => m.id).filter(Boolean).sort();
     // Tell the caller which connection these models came from, so the UI can
     // say so instead of implying they came from the active one.
-    return { ok: true, models: ids, connectionId, connectionName: label, endpoint };
+    return { ok: true, models: ids, connectionId, connectionName: isLoginProvidersEndpoint(base) ? 'Login Providers' : label, endpoint,
+      ...(isLoginProvidersEndpoint(base) ? { catalog: 'login-providers' } : {}) };
   } catch (e) {
     return { ok: false, err: e.message };
   }
@@ -437,9 +437,7 @@ async function pingConnection(payload = {}) {
   const started = Date.now();
   try {
     const base = await resolveEndpoint(connection.endpoint);
-    const headers = {};
-    if (connection.accessKey) headers.Authorization = 'Bearer ' + connection.accessKey;
-    const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+    const res = await fetch(base + '/models', providerRequestOptions(base, connection.accessKey, { signal: AbortSignal.timeout(10000) }));
     const latencyMs = Date.now() - started;
     if (!res.ok) return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}` };
     let modelCount = null;
@@ -529,7 +527,7 @@ function autoSnapshot(settings, agent) {
 function autoCandidates(settings, agent, hasAttachments) {
   const pinned = agent.connectionId ? connections.findConnection(settings, agent.connectionId) : null;
   const current = pinned?.enabled !== false && pinned ? pinned : connections.activeConnection(settings);
-  const currentModel = agent.model || current?.model || settings.model || 'gpt-4o-mini';
+  const currentModel = agent.model || current?.model || settings.model || 'gemma-4-12b-qat';
   const candidates = [{ id: 'current-model', kind: 'model', label: `${current?.name || 'Current connection'} · ${currentModel}`,
     model: currentModel, connectionId: current?.id || '', description: 'The current conversation model.' }];
   for (const connection of connections.enabledPool(settings)) {
@@ -719,7 +717,7 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     accessKey,
     connectionId: selectedConnection?.id || '',
     capabilityStore,
-    model: route?.model || agent.model || selectedConnection?.model || settings.model || 'gpt-4o-mini',
+    model: route?.model || agent.model || selectedConnection?.model || settings.model || 'gemma-4-12b-qat',
     personaPrompt: agent.personaPrompt || '',
     /* SOUL.md + MEMORY.md for the agent this conversation is running as. Keyed
      * by the persona id when the chat has one (so a single chat and a crew run
@@ -925,6 +923,9 @@ function registerIpc() {
   ipcMain.handle('account:cancel', () => accountAction(() => hostedAccount.cancel()));
   ipcMain.handle('account:refresh', () => accountAction(() => hostedAccount.refresh()));
   ipcMain.handle('account:disconnect', () => accountAction(() => hostedAccount.disconnect()));
+  ipcMain.handle('account:linkEmailStart', (_event, email) => accountAction(() => hostedAccount.linkEmailStart(email)));
+  ipcMain.handle('account:linkEmailVerify', (_event, code) => accountAction(() => hostedAccount.linkEmailVerify(code)));
+  ipcMain.handle('account:linkWallet', () => accountAction(() => hostedAccount.linkWallet()));
   ipcMain.handle('account:redeem', async (_event, amount) => {
     try { return { ok: true, ...await hostedAccount.redeem(amount) }; }
     catch (error) { return { ok: false, err: error.message }; }
@@ -948,6 +949,25 @@ function registerIpc() {
    * status row. Neither ever throws across IPC — errors travel in the row. */
   ipcMain.handle('mcp:list', async () => listMcpStatus());
   ipcMain.handle('mcp:test', async (_e, serverId) => testMcpServer(serverId));
+  ipcMain.handle('plugins:get', () => {
+    const settings = loadSettings();
+    return settings.plugins || { github: { enabled: true }, gmail: { enabled: true }, outlook: { enabled: true } };
+  });
+  ipcMain.handle('plugins:save', (_e, patch) => {
+    const current = loadSettings();
+    const plugins = sanitizePlugins(patch, current.plugins);
+    saveSettings({ ...current, plugins });
+    return { ok: true, plugins };
+  });
+  ipcMain.handle('plugins:test', async (_e, { id, config }) => {
+    const settings = loadSettings();
+    const cfg = config || settings.plugins?.[id] || {};
+    return testPlugin(id, cfg);
+  });
+  ipcMain.handle('git:info', (_e, dir) => {
+    const settings = loadSettings();
+    return getGitInfo(dir, settings);
+  });
   ipcMain.handle('settings:save', (_e, s) => applySettingsPatch(s));
 
   ipcMain.handle('dialog:pickDir', async () => {
@@ -1415,7 +1435,7 @@ function registerIpc() {
         runner.stop(); teamRuns.delete(id);
       }
       const accessKey = settings.accessKey || '';
-      const defaultModel = settings.model || 'gpt-4o-mini';
+      const defaultModel = settings.model || 'gemma-4-12b-qat';
 
       // Resolve the roster (personas in member order; skip deleted ones).
       // Keep persona+role PAIRED while filtering — filtering personas alone
@@ -1477,14 +1497,11 @@ function registerIpc() {
       const catalogs = new Map();
       await Promise.all([...catalogEntries.entries()].map(async ([memberEndpoint, mc]) => {
         try {
-          const headers = {};
-          if (mc.accessKey) headers.Authorization = 'Bearer ' + mc.accessKey;
-          const response = await fetch(memberEndpoint.replace(/\/+$/, '') + '/models', {
-            headers,
+          const response = await fetch(memberEndpoint.replace(/\/+$/, '') + '/models', providerRequestOptions(memberEndpoint, mc.accessKey, {
             // A catalog is an optional safety check, never a reason to make the
             // Run button feel hung on an endpoint that omits GET /models.
             signal: AbortSignal.timeout(3000),
-          });
+          }));
           if (!response.ok) return;
           const data = await response.json();
           capabilityStore.recordCatalog(mc.connectionId || '', memberEndpoint, data);
@@ -1979,9 +1996,7 @@ function registerIpc() {
     const started = Date.now();
     try {
       const base = await resolveEndpoint(settings.endpoint);
-      const headers = {};
-      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
-      const res = await fetch(base + '/models', { headers, signal: AbortSignal.timeout(10000) });
+      const res = await fetch(base + '/models', providerRequestOptions(base, settings.accessKey, { signal: AbortSignal.timeout(10000) }));
       const latencyMs = Date.now() - started;
       if (!res.ok) {
         const body = await res.text().catch(() => '');
@@ -2143,7 +2158,6 @@ function registerIpc() {
     try {
       const base = await resolveEndpoint(settings.endpoint);
       const headers = { 'Content-Type': 'application/json' };
-      if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
 
       const system = String(payload.system || '').trim();
       const messages = [];
@@ -2164,9 +2178,9 @@ function registerIpc() {
         if (maxTokens > 0) body.max_tokens = maxTokens;
       }
 
-      const post = (out) => fetch(base + '/chat/completions', {
+      const post = (out) => fetch(base + '/chat/completions', providerRequestOptions(base, settings.accessKey, {
         method: 'POST', headers, body: JSON.stringify(out), signal: controller.signal,
-      });
+      }));
       let response = await post(body);
 
       if (!response.ok) {
@@ -2553,7 +2567,6 @@ function registerIpc() {
   async function proposeEditsViaModel({ settings, model, task, contextBlock = '', files, controller, send = () => {}, extraRules = [] }) {
     const base = await resolveEndpoint(settings.endpoint);
     const headers = { 'Content-Type': 'application/json' };
-    if (settings.accessKey) headers.Authorization = 'Bearer ' + settings.accessKey;
 
     const system = [
       'You are a precise refactoring engine for REACH Studio.',
@@ -2577,14 +2590,14 @@ function registerIpc() {
         : `--- ${f.path} ---\n${f.content}`),
     ].join('\n');
 
-    const response = await fetch(base + '/chat/completions', {
+    const response = await fetch(base + '/chat/completions', providerRequestOptions(base, settings.accessKey, {
       method: 'POST', headers,
       body: JSON.stringify({
         model, stream: true, temperature: 0.1,
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
       }),
       signal: controller.signal,
-    });
+    }));
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       // Surface the provider's own message: "429 rate limit exceeded" is far more
@@ -3009,7 +3022,9 @@ function createWindow({ show = true } = {}) {
     minWidth: 1000, // supported shell minimum; narrower widths clip the chat column
     minHeight: 640,
     backgroundColor: themeChoice().bg,
-    icon: path.join(rootDir, 'assets', 'icon.png'),
+    icon: process.platform === 'win32'
+      ? path.join(rootDir, 'assets', 'icon.ico')
+      : path.join(rootDir, 'assets', 'icon.png'),
     show: false,
     webPreferences: {
       preload: path.join(rootDir, 'preload.cjs'),

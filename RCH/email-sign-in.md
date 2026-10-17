@@ -19,8 +19,9 @@ billing.
   or in the email subject.
 - An email account can subscribe, top up and be refunded like a wallet account.
   It cannot redeem RCH, which needs a wallet (`409 wallet_required`).
-- Wallet accounts and email accounts are separate. Linking an email to an
-  existing wallet account is not supported yet.
+- Wallet and email sign-in stay on one account. Proving the missing method
+  during the same sign-in, or from a signed-in Studio or VS Code session,
+  fills the empty identity. Two accounts that already exist are not merged.
 
 ## Setting it up
 

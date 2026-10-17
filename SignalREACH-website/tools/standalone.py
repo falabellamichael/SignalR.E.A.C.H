@@ -5,7 +5,7 @@ from pathlib import Path
 from urllib.parse import quote
 ROOT=Path(__file__).resolve().parents[1]
 out=Path(sys.argv[1]) if len(sys.argv)>1 else ROOT.parent/'SignalREACH-preview.html'
-keys=['index','platform','integrations','docs','about','download']
+keys=['index','platform','integrations','docs','about','download','subscription','login']
 pages={}
 for key in keys:
  text=(ROOT/f'{key}.html').read_text(encoding='utf-8')
@@ -54,7 +54,7 @@ router=r'''
       event.preventDefault();const node=document.querySelector(href);node?.scrollIntoView({behavior:document.documentElement.dataset.motion==='off'?'instant':'smooth'});
       if(href==='#main'){node.tabIndex=-1;node.focus({preventScroll:true});}return;
     }
-    if(!/^(index|platform|integrations|docs|about|download)\.html(?:[?#].*)?$/.test(href))return;
+    if(!/^(index|platform|integrations|docs|about|download|subscription|login)\.html(?:[?#].*)?$/.test(href))return;
     const url=new URL(href,'https://signalreach-preview.invalid/');
     const page=url.pathname.slice(1).replace('.html','');
     event.preventDefault();event.stopImmediatePropagation();

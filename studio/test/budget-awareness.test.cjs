@@ -34,6 +34,116 @@ test('policy explains actual cap, answer reserve, remaining rounds and explicit 
   assert.match(budgetPolicy({ maxTokens: 0, purpose: 'answer', budgets: defaults }), /No application output cap/);
   assert.doesNotMatch(budgetPolicy({ maxTokens: 0, purpose: 'answer', budgets: defaults }), /Hard output allowance/);
 });
+
+test('Ultra_Pro learns the deployed output ceiling and uses it in the prompt, stream and checkpoint', async t => {
+  const bodies = [];
+  const url = await endpoint(t, (body, res) => {
+    bodies.push(body);
+    if (body.max_tokens > 4096) {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'output_limit', message: 'Output limit must be between 1 and 4096.' } }));
+    } else reply(res, '', 'length', 'thinking');
+  });
+  const { loop, store } = fixture(url, { ultraPro: true, maxTokens: 16384 });
+  await loop.sendUserMessage('Write a large file in small steps.');
+  assert.deepEqual(bodies.map(b => b.max_tokens), [16384, 4096, 4096, 4096, 4096]);
+  assert.ok(bodies.slice(1).every(b => b.messages[0].content.includes('Hard output allowance: 4096')));
+  assert.ok(bodies.slice(1).every(b => !b.messages[0].content.includes('Hard output allowance: 16384')));
+  assert.equal(loop._outputTokens(), 4096);
+  assert.equal(store.get('a').runState.status, 'paused');
+  assert.match(store.get('a').messages.at(-1)._reachMeta.display, /4,096-token/);
+  assert.match(store.get('a').messages.at(-1)._reachMeta.display, /3 concise retries/);
+});
+
+test('Ultra_Pro recovers with one small valid action without executing truncated actions', async t => {
+  let requests = 0;
+  const url = await endpoint(t, (body, res) => {
+    requests++;
+    if (requests <= 2) reply(res, action('actions', 'Invalid partial work', [{ name: 'todo_write', arguments: { todos: [{ text: 'Do not execute', status: 'completed' }] } }]), 'length');
+    else if (requests === 3) {
+      assert.match(JSON.stringify(body.messages), /at most ONE action/);
+      reply(res, action('actions', 'Read the plan', [{ name: 'todo_read', arguments: {} }]));
+    } else reply(res, action('complete', 'Verified complete.'));
+  });
+  const { loop, store, events } = fixture(url, { ultraPro: true });
+  await loop.sendUserMessage('Work through the task.');
+  assert.equal(requests, 4);
+  assert.equal(store.get('a').runState.status, 'completed');
+  assert.deepEqual(store.get('a').todos, []);
+  const tools = events.filter(e => e.type === 'tool-call');
+  assert.equal(tools.length, 1);
+  assert.equal(tools[0].tool, 'todo_read');
+});
+
+test('Ultra_Pro never retries a filtered or unknown finish reason', async t => {
+  for (const finish of ['content_filter', 'unknown']) {
+    let requests = 0;
+    const url = await endpoint(t, (_, res) => { requests++; reply(res, '', finish, 'reasoning'); });
+    const { loop } = fixture(url, { ultraPro: true });
+    await loop.sendUserMessage('Answer');
+    assert.equal(requests, 1);
+  }
+});
+
+test('Ultra_Pro uses one small action and a fresh contract without changing normal schemas', () => {
+  const { loop, store } = fixture('http://unused.invalid/v1', { ultraPro: true });
+  store.get('a').runState = { structuredActions: true };
+  loop.capabilityStore = { get: () => ({ jsonSchema: true }) };
+  const request = loop._requestBody([{ role: 'user', content: 'Build a game.' }]);
+  assert.equal(request.response_format.json_schema.schema.properties.actions.maxItems, 1);
+  assert.match(request.messages.at(-1).content, /Return exactly one complete action/);
+  assert.match(request.messages[0].content, /1200 characters/);
+  assert.equal(require('../agent/agent-action.cjs').schema.properties.actions.maxItems, 8);
+  store.appendMessage('a', { role: 'tool', content: 'verified results' });
+  store.appendMessage('a', { role: 'assistant', content: 'checkpoint', _reachMeta: { source: 'budget-checkpoint' } });
+  store.appendMessage('a', { role: 'user', content: 'Continue', _reachMeta: { source: 'recovery' } });
+  const recovery = loop._requestBody([{ role: 'user', content: 'Continue.' }]);
+  assert.deepEqual(recovery.response_format.json_schema.schema.properties.status.enum, ['actions']);
+  assert.equal(recovery.response_format.json_schema.schema.properties.actions.minItems, 1);
+  store.appendMessage('a', { role: 'user', content: 'Never mind, just say hello.' });
+  assert.equal(loop._requestBody([{ role: 'user', content: 'Hello.' }]).response_format.json_schema.schema.properties.actions.minItems, undefined,
+    'A new request does not inherit the interrupted task recovery restriction');
+  loop.budgets.ultraPro = false;
+  assert.equal(loop._requestBody([{ role: 'user', content: 'Work.' }]).response_format.json_schema.schema.properties.actions.maxItems, 8);
+});
+
+test('Continue excludes application budget notices while preserving saved history and verified results', async t => {
+  const url = await endpoint(t, (body, res) => {
+    const transcript = JSON.stringify(body.messages);
+    assert.doesNotMatch(transcript, /REACH budget checkpoint|old provider output allowance/);
+    assert.match(transcript, /Create an HTML Sudoku game/);
+    assert.match(transcript, /index.html does not exist/);
+    assert.match(transcript, /RECOVER THE UNFINISHED TASK/);
+    assert.match(transcript, /Verify file contents with read/);
+    reply(res, action('complete', 'The current output allowance is available.'));
+  });
+  const { loop, store } = fixture(url, { ultraPro: true });
+  store.appendMessage('a', { role: 'user', content: 'Create an HTML Sudoku game.' });
+  store.appendMessage('a', { role: 'user', content: 'Verified tool result: index.html does not exist.', _reachMeta: { source: 'tool-summary' } });
+  const notice = { role: 'assistant', content: action('blocked', 'REACH budget checkpoint: old provider output allowance'), _reachMeta: { source: 'budget-checkpoint' } };
+  store.appendMessage('a', notice);
+  store.setRunState('a', { status: 'paused', reason: 'Budget reached.' });
+  await loop.sendUserMessage('Continue');
+  assert.ok(store.get('a').messages.includes(notice), 'The visible saved checkpoint is retained');
+  assert.equal(store.get('a').runState.status, 'completed');
+});
+
+test('Ultra_Pro shortens repeated tool catalogs while retaining every enabled tool and core argument examples', () => {
+  const { actionInstruction } = require('../agent/agent-action.cjs');
+  const mcpTools = Array.from({ length: 39 }, (_, i) => ({ name: `studio__tool_${i}`, description: 'External tool description '.repeat(15) }));
+  const normal = actionInstruction({ mcpTools });
+  const compact = actionInstruction({ mcpTools, compact: true });
+  assert.ok(compact.length < normal.length * 0.8);
+  for (const tool of mcpTools) assert.ok(compact.includes(tool.name));
+  for (const [name, tool] of Object.entries(require('../agent/tool-registry.cjs').TOOLS)) {
+    if (!['browser', 'collab'].includes(tool.tier)) assert.ok(compact.includes(name));
+  }
+  assert.match(compact, /tool_help topic: reach/);
+  assert.match(compact, /"name":"write","arguments":\{"path"/);
+  assert.match(compact, /full tool name to read its description and input schema/);
+  assert.match(compact, /at most 1 actions/);
+  assert.match(normal, /at most 8 actions/);
+});
 test('soft reserve ignores answer-bearing or finished frames and unbounded requests', () => {
   const guard = reserveGuard(1000);
   assert.throws(() => guard({ reasoningChars: 1800 }), { code: 'REACH_OUTPUT_RESERVE' });

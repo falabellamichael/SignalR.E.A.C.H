@@ -196,6 +196,7 @@ class PersonaStore {
         // purpose: presets evolve, and a stale id must degrade to the member's
         // free-text role label instead of breaking an older team.
         roleId: String(m.roleId || '').slice(0, 64),
+        designId: /^bot-(0[1-9]|[1-4]\d|50)$/.test(String(m.designId || '')) ? String(m.designId) : '',
       };
     });
   }

@@ -70,6 +70,20 @@ test('unfit instructions fail before summarization instead of silently dropping 
     { force: true, trigger: 10000, target: 8000 }), /instructions.*preserved/);
 });
 
+test('Ultra_Pro history budgets accommodate large required instructions without weakening wire limits', async () => {
+  const instructions = { role: 'system', content: 'Tool instructions '.repeat(4000) };
+  const short = [instructions, { role: 'user', content: 'Create an HTML Sudoku game.' }];
+  const options = { historyBudget: true, trigger: 24000, target: 16000, messageLimit: 24 };
+  const unchanged = await compactMessages(short, () => assert.fail('Short history does not need compression'), options);
+  assert.equal(unchanged.changed, false);
+  const compacted = await compactMessages([instructions, ...history()], async () => 'Original goal, latest correction and verified evidence.', options);
+  assert.equal(compacted.changed, true);
+  assert.deepEqual(compacted.messages[0], instructions);
+  assert.ok(contextChars(compacted.messages.slice(1)) < 16000);
+  await assert.rejects(compactMessages(short, () => assert.fail('Cannot summarize away required instructions'),
+    { ...options, force: true, measure: contextChars, trigger: 24000, target: 16000 }), /input allowance|cannot fit|preserved|request budget/i);
+});
+
 test('native tool call/result groups stay together during compression', async () => {
   const pair = [{ role: 'assistant', content: '', tool_calls: [{ id: 'call1', function: { name: 'read', arguments: '{}' } }] },
     { role: 'tool', tool_call_id: 'call1', content: 'file content' }];

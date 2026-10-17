@@ -1,4 +1,4 @@
-// Email sign-in: a 6-digit code sent to the address, typed into the same
+// Email sign-in: the code from the email, typed into the same
 // browser page that wallet sign-in uses. The code only authorizes the existing
 // PKCE sign-in flow, so Studio and VS Code finish exactly as they do for a
 // wallet. Nothing here touches balances.
@@ -27,7 +27,35 @@ export function normalizeEmail(value) {
 export const emailCode = () => String(randomInt(0, 1_000_000)).padStart(6, '0');
 // Salted by the challenge ID so a code is only ever valid for its own challenge.
 export const emailCodeHash = (challengeId, code) => createHash('sha256').update(`${challengeId}:${code}`).digest('hex');
-export const validEmailCode = code => typeof code === 'string' && /^\d{6}$/.test(code);
+// Supabase Auth emails an 8-digit code. The Resend fallback still generates 6.
+export const validEmailCode = code => typeof code === 'string' && /^(?:\d{6}|\d{8})$/.test(code);
+
+// Sends the sign-in code through the Supabase project's own email auth and
+// checks the code there. The REACH account row is still created in the same
+// Supabase project by the account store after the code is accepted.
+export function createSupabaseOtpMailer({ url, secretKey, fetchImpl = fetch, timeoutMs = 15000 }) {
+  const headers = { 'content-type': 'application/json', apikey: secretKey, authorization: `Bearer ${secretKey}` };
+  async function post(pathname, body) {
+    let response;
+    try {
+      response = await fetchImpl(new URL(pathname, url), { method: 'POST', headers, redirect: 'error',
+        signal: AbortSignal.timeout(timeoutMs), body: JSON.stringify(body) });
+    } catch { fail(502, 'email_unavailable', 'The sign-in email could not be sent. Try again shortly.'); }
+    return response;
+  }
+  return {
+    kind: 'supabase',
+    async sendSignInCode({ to }) {
+      const response = await post('/auth/v1/otp', { email: to, create_user: true });
+      if (response.status === 429) fail(429, 'email_rate_limit', 'Supabase is temporarily limiting sign-in emails. Wait about an hour, then request a new code.');
+      if (!response.ok) fail(502, 'email_unavailable', 'The sign-in email could not be sent. Try again shortly.');
+    },
+    async verifyCode({ email, code }) {
+      const response = await post('/auth/v1/verify', { type: 'email', email, token: code });
+      return response.ok;
+    },
+  };
+}
 
 export function createResendMailer({ apiKey, from, fetchImpl = fetch, timeoutMs = 15000 }) {
   return {

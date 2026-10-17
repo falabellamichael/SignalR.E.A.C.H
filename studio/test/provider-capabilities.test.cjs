@@ -18,6 +18,26 @@ test('output-token capabilities preserve explicit booleans without interpreting 
   assert.equal(Object.hasOwn(facts[2], 'outputTokenLimit'), false);
 });
 
+test('Ultra_Pro uses automatic GPU output without replaying a stale learned ceiling', () => {
+  const endpoint = 'http://gpu.invalid/v1';
+  let settings = connections.normalizeSettings({ connections: [
+    { id: 'gpu', name: 'GPU', endpoint, model: 'ornith-1.5-9b' },
+  ], activeConnection: 'gpu' }).settings;
+  const capabilities = createCapabilityStore({ load: () => settings, save: value => { settings = connections.normalizeSettings(value).settings; } });
+  capabilities.record('gpu', endpoint, 'ornith-1.5-9b', { maxTokensCeiling: 1024 });
+  capabilities.recordCatalog('gpu', endpoint, { data: [{ id: 'ornith-1.5-9b', capabilities: { outputTokenLimit: true, automaticOutput: true } }] });
+  const loop = new AgentLoop({ agentId: 'a', store: { get: () => ({ settings: {} }) },
+    endpoint, connectionId: 'gpu', capabilityStore: capabilities, model: 'ornith-1.5-9b',
+    budgets: { ...resolveBudgets(), ultraPro: true, maxTokens: 1024 } });
+  const body = loop._requestBody([{ role: 'user', content: 'Build a game.' }]);
+  assert.equal(Object.hasOwn(body, 'max_tokens'), false);
+  assert.equal(loop._outputTokens(), 0);
+  loop.budgets.ultraPro = false;
+  assert.equal(loop._outputTokens(), 1024, 'Normal explicit budgets remain effective');
+  capabilities.recordCatalog('gpu', endpoint, { data: [{ id: 'ornith-1.5-9b' }] });
+  assert.equal(capabilities.get('gpu', endpoint, 'ornith-1.5-9b').automaticOutput, undefined);
+});
+
 test('model discovery persists subscription output capability through normalized settings', async () => {
   const endpoint = 'http://subscription.invalid/v1';
   let settings = connections.normalizeSettings({ connections: [
@@ -153,10 +173,12 @@ for (const [code, message] of [
     };
     const messages = [{ role: 'user', content: 'hello' }];
     await assert.rejects(makeLoop()._fetchChat(messages, { stream: true }), /HTTP 400/);
-    assert.equal(requests.length, 1, 'ordinary validation failures must not retry bare');
+    assert.equal(requests.length, code === 'output_limit' ? 2 : 1);
+    assert.ok(requests.every(request => request.tools?.length), 'validation recovery must not strip native tools');
+    if (code === 'output_limit') assert.equal(requests[1].max_tokens, 1024, 'only the rejected output allowance changes');
     assert.notEqual(capabilityStore.get('generic', endpoint, 'm')?.textOnly, true);
     const next = makeLoop()._requestBody(messages);
-    assert.equal(next.max_tokens, 2048);
+    assert.equal(next.max_tokens, code === 'output_limit' ? 1024 : 2048);
     assert.ok(next.tools?.length, 'the next loop still advertises native tools');
   });
 }
@@ -169,6 +191,21 @@ test('settings form saves preserve facts only while the connection URL is unchan
   assert.equal(same.connections[0].capabilities[0].streaming, true);
   const changed = connections.preserveCapabilities(current, { connections: [{ id: 'a', endpoint: 'http://two/v1' }] });
   assert.equal(changed.connections[0].capabilities, undefined);
+});
+
+test('a catalog input-policy change invalidates the saved limit from the old gateway', () => {
+  let facts = { maxInputBytes: 32000, inputLimitScope: 'messages' };
+  const agent = { settings: {} };
+  const loop = new AgentLoop({ agentId: 'a', store: { get: () => agent }, endpoint: 'http://gateway.invalid/v1',
+    connectionId: 'hosted', model: 'm', capabilityStore: { get: () => facts } });
+  agent.contextBudget = { routeKey: loop._inputRouteKey(), maxInputBytes: 32000, inputLimitScope: 'messages' };
+  assert.equal(loop._inputLimits().maxInputBytes, 32000);
+  facts = {};
+  assert.equal(loop._inputLimits().maxInputBytes, undefined);
+  agent.contextBudget = { routeKey: loop._inputRouteKey(), contextTokens: 61776 };
+  assert.equal(loop._inputLimits().contextTokens, 61776, 'native context learned under the current catalog still applies');
+  facts = { contextTokens: 92960 };
+  assert.equal(loop._inputLimits().contextTokens, 92960);
 });
 
 test('an observed output-token ceiling is reused by the next loop', async t => {

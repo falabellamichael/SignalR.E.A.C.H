@@ -5,6 +5,7 @@
 // to another backend without inheriting the old backend's observations.
 const MAX_ENTRIES = 32;
 const { createHash } = require('node:crypto');
+const { providerRequestOptions } = require('./endpoint.cjs');
 
 // Gateway byte limits and provider token windows are separate facts. Never
 // infer one from the other or guess an input scope absent from the catalog.
@@ -22,7 +23,8 @@ function modelInputLimits(model) {
 function observedMaxTokensCeiling(message) {
   const text = String(message || '');
   const match = /(?:max[_ ](?:completion[_ ]|output[_ ])?tokens?|output tokens?)\s*(?:must be|is|:)?\s*(?:at most|less than or equal to|<=|maximum of)\s*(\d{1,7})/i.exec(text)
-    || /(?:maximum|limit)\s*(?:for\s+)?(?:max[_ ](?:completion[_ ]|output[_ ])?tokens?|output tokens?)\s*(?:is|:|of)\s*(\d{1,7})/i.exec(text);
+    || /(?:maximum|limit)\s*(?:for\s+)?(?:max[_ ](?:completion[_ ]|output[_ ])?tokens?|output tokens?)\s*(?:is|:|of)\s*(\d{1,7})/i.exec(text)
+    || /output (?:token )?limit must be between 1 and (\d{1,7})\b/i.exec(text);
   const value = match ? Number(match[1]) : 0;
   return Number.isSafeInteger(value) && value > 0 ? value : null;
 }
@@ -36,7 +38,7 @@ function normalizeCapabilities(value) {
     const model = String(entry.model || '').slice(0, 240);
     if (!endpoint || !model) continue;
     const fact = { endpoint, model };
-    for (const key of ['toolCalling', 'reasoningParam', 'streaming', 'outputTokenLimit', 'jsonSchema', 'textOnly']) {
+    for (const key of ['toolCalling', 'reasoningParam', 'streaming', 'outputTokenLimit', 'automaticOutput', 'jsonSchema', 'textOnly']) {
       if (typeof entry[key] === 'boolean') fact[key] = entry[key];
     }
     if (Number.isSafeInteger(entry.maxTokensCeiling) && entry.maxTokensCeiling > 0) {
@@ -63,11 +65,12 @@ function createCapabilityStore({ load, save }) {
         if (typeof model?.id !== 'string' || !model.id) continue;
         const facts = modelInputLimits(model);
         if (typeof model.capabilities?.outputTokenLimit === 'boolean') facts.outputTokenLimit = model.capabilities.outputTokenLimit;
+        if (typeof model.capabilities?.automaticOutput === 'boolean') facts.automaticOutput = model.capabilities.automaticOutput;
         if (typeof model.capabilities?.jsonSchema === 'boolean') facts.jsonSchema = model.capabilities.jsonSchema;
         const old = store.get(connectionId, endpoint, model.id);
-        if (Object.keys(facts).length || old && ['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens', 'outputTokenLimit', 'jsonSchema'].some(key => old[key] !== undefined)) {
+        if (Object.keys(facts).length || old && ['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens', 'outputTokenLimit', 'automaticOutput', 'jsonSchema'].some(key => old[key] !== undefined)) {
           store.record(connectionId, endpoint, model.id, {
-            maxInputBytes: undefined, inputLimitScope: undefined, maxInputTokens: undefined, contextTokens: undefined, outputTokenLimit: undefined, jsonSchema: undefined, ...facts,
+            maxInputBytes: undefined, inputLimitScope: undefined, maxInputTokens: undefined, contextTokens: undefined, outputTokenLimit: undefined, automaticOutput: undefined, jsonSchema: undefined, ...facts,
           });
         }
       }
@@ -79,8 +82,7 @@ function createCapabilityStore({ load, save }) {
       if (previous && Date.now() - previous.at < 60000) return previous.promise;
       const promise = (async () => {
         try {
-          const headers = accessKey ? { Authorization: 'Bearer ' + accessKey } : {};
-          const response = await fetchImpl(endpoint.replace(/\/+$/, '') + '/models', { headers, signal: AbortSignal.timeout(3000) });
+          const response = await fetchImpl(endpoint.replace(/\/+$/, '') + '/models', providerRequestOptions(endpoint, accessKey, { signal: AbortSignal.timeout(3000) }));
           if (response.ok) store.recordCatalog(connectionId, endpoint, await response.json());
         } catch { /* Optional discovery: unsupported catalogs keep response learning. */ }
       })();

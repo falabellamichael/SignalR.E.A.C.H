@@ -1,8 +1,8 @@
 import { PlusSqliteLedger } from './plus-sqlite.mjs';
-import { gpuBridge, requestCapabilities } from './gpu-bridge.mjs';
-import { codegptDirect } from './codegpt-direct.mjs';
+import { hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
 import { validatePlusPolicy, plusAccount } from './payments/plus.mjs';
 import { DatabaseSync } from 'node:sqlite';
+import { newApiKey, publicApiKey, validateApiKey, validateApiKeyId, MAX_ACTIVE_API_KEYS } from './api-keys.mjs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, chmodSync, lstatSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -29,11 +29,7 @@ export function requestBillingPolicy(subscription) {
   return { basic: { ...subscription.basic }, overageUsdMicrosPerRequest: 10000, proEnabled: false, ...(plus ? { plus } : {}) };
 }
 export const requestModel = model => model?.access === 'requests' && model.metered === true
-  && typeof model.bridge?.model === 'string' && model.bridge.model !== 'codegpt-eco-gpt-4o-mini'
-  && (model.bridge.kind === 'tray'
-    ? /^(?:copilot-chat|chatgpt-chat|gemini-chat|codegpt-eco-[a-zA-Z0-9][a-zA-Z0-9._-]{0,100})$/.test(model.bridge.model)
-    : model.bridge.kind === 'codegpt' && /^codegpt-(?!eco(?:-|$))[a-zA-Z0-9][a-zA-Z0-9._-]{0,100}$/.test(model.bridge.model)
-      || !!gpuBridge(model.bridge) || !!codegptDirect(model.bridge));
+  && hostedGpuModel(model);
 export const basicPlanModelIds = models => models.filter(requestModel).map(m => m.id).sort();
 export function basicRequestPeriod(account, subscription, now) {
   return subscription && ['basic', subscription.basic.id].includes(account.plan_id)
@@ -106,6 +102,8 @@ export class AccountStore {
       CREATE TABLE IF NOT EXISTS flows(id TEXT PRIMARY KEY,state_hash TEXT NOT NULL,challenge TEXT NOT NULL,expires INTEGER NOT NULL,account_id TEXT,consumed INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS challenges(id TEXT PRIMARY KEY,flow_id TEXT NOT NULL,wallet TEXT NOT NULL,message TEXT NOT NULL,expires INTEGER NOT NULL,consumed INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS sessions(hash TEXT PRIMARY KEY,account_id TEXT NOT NULL,expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS api_keys(id TEXT PRIMARY KEY,account_id TEXT NOT NULL REFERENCES accounts(id),name TEXT NOT NULL,prefix TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,created INTEGER NOT NULL,expires INTEGER NOT NULL,revoked INTEGER);
+      CREATE INDEX IF NOT EXISTS api_keys_account ON api_keys(account_id,created);
       CREATE TABLE IF NOT EXISTS grants(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS reservations(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,request_id TEXT NOT NULL,model TEXT NOT NULL,fingerprint TEXT NOT NULL,amount INTEGER NOT NULL,held_included INTEGER NOT NULL,held_prepaid INTEGER NOT NULL,plan_version TEXT,status TEXT NOT NULL,created INTEGER NOT NULL,usage TEXT,replay TEXT,reason TEXT,UNIQUE(account_id,request_id));
       CREATE TABLE IF NOT EXISTS redemptions(id TEXT PRIMARY KEY,account_id TEXT NOT NULL,wallet TEXT NOT NULL,amount TEXT NOT NULL,usage_tokens INTEGER NOT NULL,ticket_hash TEXT NOT NULL,expires INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'created',tx_hash TEXT,event_key TEXT UNIQUE,created INTEGER NOT NULL);
@@ -137,6 +135,19 @@ export class AccountStore {
     }
     this.allowEmailOnlyAccounts();
     this.plus = new PlusSqliteLedger(this);
+    const provenanceColumns = new Set(this.db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name));
+    for (const column of ['rch_tokens', 'rch_usd']) if (!provenanceColumns.has(column)) this.db.exec(`ALTER TABLE accounts ADD COLUMN ${column} INTEGER NOT NULL DEFAULT 0`);
+    for (const table of ['reservations', 'request_reservations']) {
+      const columns = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name));
+      if (!columns.has('held_rch')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN held_rch INTEGER NOT NULL DEFAULT 0 CHECK(held_rch>=0)`);
+    }
+    // Debits take available RCH first; each hold records its source so only its
+    // own unused RCH can return. Historical holds have unknown source (zero).
+    // Existing pooled balances cannot prove historical debt payments or imports.
+    this.db.exec(`CREATE TRIGGER IF NOT EXISTS consume_rch_credit AFTER UPDATE OF prepaid,usd_prepaid ON accounts
+      WHEN NEW.prepaid<OLD.prepaid OR NEW.usd_prepaid<OLD.usd_prepaid BEGIN
+      UPDATE accounts SET rch_tokens=MAX(0,rch_tokens-MAX(0,OLD.prepaid-NEW.prepaid)),
+        rch_usd=MAX(0,rch_usd-MAX(0,OLD.usd_prepaid-NEW.usd_prepaid)) WHERE id=NEW.id; END;`);
   }
   // Databases created before email sign-in require a wallet on every account.
   // SQLite cannot relax NOT NULL in place, so the accounts table is rebuilt
@@ -191,13 +202,42 @@ export class AccountStore {
     this.db.prepare('INSERT OR IGNORE INTO accounts(id,wallet) VALUES(?,?)').run(id(),wallet);
     return this.db.prepare('SELECT * FROM accounts WHERE wallet=?').get(wallet);
   }
+  // A second proof on the same sign-in fills the empty identity. Two existing
+  // accounts are never merged, so one login cannot take over another balance.
+  bindFlowAccount(flowId, accountId) {
+    return this.transaction(() => {
+      const flow = this.getFlow(flowId);
+      if (flow.account_id) fail(409, 'flow_verified', 'Sign-in has already been verified.');
+      this.accountById(accountId);
+      this.db.prepare('UPDATE flows SET account_id=? WHERE id=?').run(accountId, flowId);
+      return true;
+    });
+  }
+  attachWallet(accountId, wallet) {
+    wallet = getAddress(wallet);
+    const account = this.accountById(accountId);
+    const existing = this.findAccountByWallet(wallet);
+    if (existing && existing.id !== account.id) fail(409, 'identity_taken', 'That wallet already belongs to another REACH account.');
+    if (account.wallet && getAddress(account.wallet) !== wallet) fail(409, 'identity_taken', 'This account already has a wallet.');
+    if (!account.wallet) this.db.prepare('UPDATE accounts SET wallet=? WHERE id=?').run(wallet, account.id);
+    return this.findAccountByWallet(wallet);
+  }
+  attachEmail(accountId, email) {
+    email = normalizeEmail(email);
+    const account = this.accountById(accountId);
+    const existing = this.findAccountByEmail(email);
+    if (existing && existing.id !== account.id) fail(409, 'identity_taken', 'That email already belongs to another REACH account.');
+    if (account.email && account.email !== email) fail(409, 'identity_taken', 'This account already has an email.');
+    if (!account.email) this.db.prepare('UPDATE accounts SET email=? WHERE id=?').run(email, account.id);
+    return this.findAccountByEmail(email);
+  }
   account(accountId) {
     const a = this.accountById(accountId), active = a.plan_expires > this.now();
     const held = this.db.prepare("SELECT COALESCE(SUM(CASE WHEN currency='tokens' THEN amount ELSE 0 END),0) AS tokens,COALESCE(SUM(CASE WHEN currency='USD' THEN amount ELSE 0 END),0) AS usd FROM reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId);
     const allowed = JSON.parse(a.models);
     const requestAllowance = this.subscription ? this.requestAllowance(accountId) : null;
     const requestHeld = this.db.prepare("SELECT COALESCE(SUM(charge_usd_micros),0) AS usd FROM request_reservations WHERE account_id=? AND status IN ('reserved','uncertain')").get(accountId).usd;
-    return { id:a.id, walletAddress:a.wallet, email:a.email ?? null, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.access==='requests'
+    return { id:a.id, walletAddress:a.wallet, email:a.email ?? null, redemptionCredit:{tokens:Math.min(a.prepaid,a.rch_tokens),usdMicros:Math.min(a.usd_prepaid,a.rch_usd)}, plan:{ id:a.plan_id, name:a.plan_name, status:active?'active':a.plan_id?'expired':'none', expiresAt:a.plan_expires?new Date(a.plan_expires).toISOString():null }, allowedModels:this.models.filter(m=>m.access==='requests'
       ? requestModel(m) && !!this.subscription && (requestAllowance.basicActive || requestAllowance.plusActive || !plusAccount(a,this.subscription)&&a.usd_prepaid>0)
       : m.metered===true && (a.usd_prepaid>0&&modelUsdPricing(m)||a.prepaid>0||active&&allowed.includes(m.id))).map(m=>({id:m.id,name:m.name||m.id,provider:m.provider,...(requestModel(m)?{access:'requests',pricing:requestAllowance.plusActive?{unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0}:{unit:'request',includedRequests:this.subscription.basic.includedRequests,usdMicrosPerRequest:this.subscription.overageUsdMicrosPerRequest},capabilities:requestCapabilities(m)}:modelUsdPricing(m)?{pricing:{...m.pricing}}:{})})), allowance:{ includedRemaining:active?a.included:0, prepaidRemaining:a.prepaid, reserved:held.tokens, totalRemaining:a.debt===0?(active?a.included:0)+a.prepaid:0, debt:a.debt }, credit:{currency:'USD',balanceMicros:a.usd_prepaid,reservedMicros:held.usd+requestHeld,debtMicros:a.usd_debt}, ...(requestAllowance?{requestAllowance}:{}) };
   }
@@ -230,6 +270,7 @@ export class AccountStore {
       if(charge)this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid-? WHERE id=?').run(charge,accountId);
       const ri=previous?.id||id();
       this.db.prepare("INSERT INTO request_reservations(id,account_id,request_id,model,fingerprint,period_key,included,charge_usd_micros,status,created) VALUES(?,?,?,?,?,?,?,?,'reserved',?) ON CONFLICT(id) DO UPDATE SET period_key=excluded.period_key,included=excluded.included,charge_usd_micros=excluded.charge_usd_micros,status='reserved',created=excluded.created,replay=NULL,reason=NULL").run(ri,accountId,requestId,model,fingerprint,included?period:null,included?1:0,charge,this.now());
+      this.db.prepare('UPDATE request_reservations SET held_rch=? WHERE id=?').run(Math.min(charge,a.rch_usd),ri);
       return{id:ri,status:'reserved',replay:null,fresh:true};
     });
   }
@@ -258,7 +299,7 @@ export class AccountStore {
       if(r.charge_usd_micros){
         const a=this.accountById(r.account_id);
         if(!safeCount(a.usd_prepaid+r.charge_usd_micros))fail(409,'credit_limit','Account credit limit requires reconciliation.');
-        this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+? WHERE id=?').run(r.charge_usd_micros,r.account_id);
+        this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,rch_usd=rch_usd+? WHERE id=?').run(r.charge_usd_micros,r.held_rch,r.account_id);
       }
       this.db.prepare("UPDATE request_reservations SET status='released',reason='not_completed' WHERE id=?").run(r.id);
     });
@@ -410,7 +451,8 @@ export class AccountStore {
   getFlow(flowId) { if(typeof flowId!=='string'||!/^[a-f0-9]{64}$/.test(flowId))fail(400,'invalid_flow','Invalid sign-in flow.'); const f=this.db.prepare('SELECT * FROM flows WHERE id=?').get(flowId); if(!f||f.expires<=this.now()||f.consumed) fail(410,'flow_expired','Sign-in expired. Start again in Studio.'); return f; }
   challenge(flowId,wallet,makeMessage) {
     return this.transaction(()=>{
-      const f=this.getFlow(flowId); if(f.account_id) fail(409,'flow_verified','Sign-in has already been verified.');
+      const f=this.getFlow(flowId);
+      if(f.account_id && this.accountById(f.account_id).wallet) fail(409,'flow_verified','Sign-in has already been verified.');
       wallet=getAddress(wallet); const challengeId=id(),expires=Math.min(f.expires,this.now()+300_000),nonce=id();
       const message=makeMessage(wallet,nonce,new Date(this.now()).toISOString(),new Date(expires).toISOString());
       this.db.prepare('UPDATE challenges SET consumed=1 WHERE flow_id=?').run(flowId);
@@ -424,7 +466,8 @@ export class AccountStore {
     email=normalizeEmail(email);
     if(!hex64(challengeId)||!hex64(codeHash))fail(400,'invalid_challenge','Invalid challenge.');
     return this.transaction(()=>{
-      const f=this.getFlow(flowId); if(f.account_id) fail(409,'flow_verified','Sign-in has already been verified.');
+      const f=this.getFlow(flowId);
+      if(f.account_id && this.accountById(f.account_id).email) fail(409,'flow_verified','Sign-in has already been verified.');
       const now=this.now(),since=now-EMAIL_WINDOW_MS;
       const recent=this.db.prepare('SELECT COUNT(*) AS n,MAX(created) AS last FROM email_challenges WHERE email=? AND created>?').get(email,since);
       if(recent.last!==null&&now-recent.last<EMAIL_COOLDOWN_MS)fail(429,'email_cooldown','Wait a minute before requesting another code.');
@@ -441,7 +484,7 @@ export class AccountStore {
   verifyEmailChallenge(flowId,challengeId,codeHash) {
     if(!hex64(challengeId)||!hex64(codeHash))fail(400,'invalid_challenge','Invalid challenge.');
     const outcome=this.transaction(()=>{
-      const f=this.getFlow(flowId); if(f.account_id) fail(409,'flow_verified','Sign-in has already been verified.');
+      const f=this.getFlow(flowId);
       const c=this.db.prepare('SELECT * FROM email_challenges WHERE id=? AND flow_id=?').get(challengeId,flowId);
       if(!c||c.consumed||c.expires<=this.now())return{expired:true};
       if(!equal(c.code_hash,codeHash)){
@@ -449,7 +492,7 @@ export class AccountStore {
         this.db.prepare('UPDATE email_challenges SET attempts=?,consumed=? WHERE id=?').run(attempts,attempts>=EMAIL_CODE_ATTEMPTS?1:0,c.id);
         return{remaining:EMAIL_CODE_ATTEMPTS-attempts};
       }
-      const a=this.ensureEmailAccount(c.email);
+      const a=f.account_id ? this.attachEmail(f.account_id, c.email) : this.ensureEmailAccount(c.email);
       this.db.prepare('UPDATE email_challenges SET consumed=1 WHERE id=?').run(c.id);
       this.db.prepare('UPDATE flows SET account_id=? WHERE id=?').run(a.id,flowId);
       return{accountId:a.id};
@@ -463,7 +506,7 @@ export class AccountStore {
     if(!c||c.consumed||c.expires<=this.now()) fail(410,'challenge_expired','This sign-in challenge is no longer valid.');return c;
   }
   authorize(flowId,challengeId) {
-    return this.transaction(()=>{ const c=this.getChallenge(flowId,challengeId);const a=this.ensureAccount(c.wallet);
+    return this.transaction(()=>{ const f=this.getFlow(flowId); const c=this.getChallenge(flowId,challengeId);const a=f.account_id?this.attachWallet(f.account_id,c.wallet):this.ensureAccount(c.wallet);
       this.db.prepare('UPDATE challenges SET consumed=1 WHERE id=?').run(challengeId);
       this.db.prepare('UPDATE flows SET account_id=? WHERE id=?').run(a.id,flowId);return a.id;
     });
@@ -483,6 +526,37 @@ export class AccountStore {
     const s=this.db.prepare('SELECT * FROM sessions WHERE hash=? AND expires>?').get(digest(token),this.now());
     if(!s) fail(401,'session_expired','Your REACH session expired. Connect your wallet again.');return this.account(s.account_id);
   }
+  listApiKeys(accountId) {
+    this.accountById(accountId);
+    return this.db.prepare('SELECT id,name,prefix,created,expires,revoked FROM api_keys WHERE account_id=? ORDER BY created DESC,id').all(accountId).map(publicApiKey);
+  }
+  createApiKey(accountId, name) {
+    const {key,row}=newApiKey(name,this.now());
+    return this.transaction(()=>{
+      const a=this.accountById(accountId);
+      if (!(a.plan_id && a.plan_expires>this.now()) && !(a.debt===0 && Math.min(a.prepaid,a.rch_tokens)>0) && !(a.usd_debt===0 && Math.min(a.usd_prepaid,a.rch_usd)>0))
+        fail(403,'api_key_ineligible','An active subscription or unspent confirmed RCH redemption credit is required.');
+      const {count}=this.db.prepare('SELECT count(*) AS count FROM api_keys WHERE account_id=? AND revoked IS NULL AND expires>?').get(accountId,this.now());
+      if(count>=MAX_ACTIVE_API_KEYS)fail(409,'api_key_limit','Revoke an active key before creating another (maximum 10).');
+      this.db.prepare('INSERT INTO api_keys(id,account_id,name,prefix,hash,created,expires,revoked) VALUES(?,?,?,?,?,?,?,NULL)').run(row.id,accountId,row.name,row.prefix,row.hash,row.created,row.expires);
+      return {key,...publicApiKey(row)};
+    });
+  }
+  revokeApiKey(accountId, id) {
+    validateApiKeyId(id);
+    return this.transaction(()=>{
+      const row=this.db.prepare('SELECT * FROM api_keys WHERE id=? AND account_id=?').get(id,accountId);
+      if(!row)fail(404,'api_key_missing','API key not found.');
+      if(row.revoked==null){row.revoked=this.now();this.db.prepare('UPDATE api_keys SET revoked=? WHERE id=?').run(row.revoked,id);}
+      return publicApiKey(row);
+    });
+  }
+  authenticateApiKey(key) {
+    const hash=validateApiKey(key);
+    const row=this.db.prepare('SELECT account_id FROM api_keys WHERE hash=? AND revoked IS NULL AND expires>?').get(hash,this.now());
+    if(!row)fail(401,'api_key_invalid','The API key is invalid, expired, or revoked.');
+    return this.account(row.account_id);
+  }
   logout(token) { this.db.prepare('DELETE FROM sessions WHERE hash=?').run(digest(token)); }
   reserve(accountId,requestId,model,fingerprint,amount) {
     if(!safeCount(amount)||amount===0||typeof requestId!=='string'||requestId.length>128) fail(400,'invalid_reservation','Invalid request reservation.');
@@ -501,6 +575,7 @@ export class AccountStore {
       const ri=previous?.id||id(),inc=planEntitled?Math.min(a.included,amount):0,pre=amount-inc;
       this.db.prepare('UPDATE accounts SET included=included-?,prepaid=prepaid-? WHERE id=?').run(inc,pre,accountId);
       this.db.prepare("INSERT INTO reservations(id,account_id,request_id,model,fingerprint,amount,held_included,held_prepaid,plan_version,status,created) VALUES(?,?,?,?,?,?,?,?,?,'reserved',?) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,held_included=excluded.held_included,held_prepaid=excluded.held_prepaid,plan_version=excluded.plan_version,status='reserved',created=excluded.created,reason=NULL").run(ri,accountId,requestId,model,fingerprint,amount,inc,pre,a.plan_version,this.now());
+      this.db.prepare('UPDATE reservations SET held_rch=? WHERE id=?').run(Math.min(pre,a.rch_tokens),ri);
       return {id:ri,status:'reserved',replay:null,fresh:true};
     });
   }
@@ -522,6 +597,7 @@ export class AccountStore {
       const ri=previous?.id||id();
       this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid-? WHERE id=?').run(amount,accountId);
       this.db.prepare("INSERT INTO reservations(id,account_id,request_id,model,fingerprint,amount,held_included,held_prepaid,plan_version,status,created,currency,pricing_json) VALUES(?,?,?,?,?,?,0,0,NULL,'reserved',?,'USD',?) ON CONFLICT(id) DO UPDATE SET amount=excluded.amount,status='reserved',created=excluded.created,pricing_json=excluded.pricing_json,reason=NULL,usage=NULL,replay=NULL").run(ri,accountId,requestId,model,fingerprint,amount,this.now(),JSON.stringify(pricing));
+      this.db.prepare('UPDATE reservations SET held_rch=? WHERE id=?').run(Math.min(amount,a.rch_usd),ri);
       return{id:ri,status:'reserved',replay:null,fresh:true};
     });
   }
@@ -534,7 +610,7 @@ export class AccountStore {
         const a=this.accountById(r.account_id),actual=usdUsageCost(JSON.parse(r.pricing_json),usage),delta=r.amount-actual;
         const available=a.usd_prepaid+delta,debt=a.usd_debt+Math.max(0,-available);
         if(!safeCount(Math.max(0,available))||!safeCount(debt))fail(409,'credit_limit','Account credit limit requires reconciliation.');
-        this.db.prepare('UPDATE accounts SET usd_prepaid=?,usd_debt=? WHERE id=?').run(Math.max(0,available),debt,a.id);
+        this.db.prepare('UPDATE accounts SET usd_prepaid=?,usd_debt=?,rch_usd=rch_usd+? WHERE id=?').run(Math.max(0,available),debt,Math.max(0,r.held_rch-actual),a.id);
         const replay=responseRecord?JSON.stringify(responseRecord):null;
         this.db.prepare("UPDATE reservations SET status='settled',usage=?,replay=?,reason=NULL WHERE id=?").run(JSON.stringify({...usage,chargedUsdMicros:actual}),replay&&Buffer.byteLength(replay)<=1048576?replay:null,r.id);
         return;
@@ -549,7 +625,8 @@ export class AccountStore {
         let over=actual-r.amount;const planEntitled=a.plan_expires>this.now()&&a.plan_version===r.plan_version&&JSON.parse(a.models).includes(r.model);
         const inc=planEntitled?Math.min(over,included):0;included-=inc;over-=inc;const pre=Math.min(over,prepaid);prepaid-=pre;over-=pre;debt+=over;
       }
-      this.db.prepare('UPDATE accounts SET included=?,prepaid=?,debt=? WHERE id=?').run(included,prepaid,debt,a.id);
+      const unusedRch=actual<=r.amount?Math.max(0,r.held_rch-Math.max(0,actual-r.held_included)):0;
+      this.db.prepare('UPDATE accounts SET included=?,prepaid=?,debt=?,rch_tokens=rch_tokens+? WHERE id=?').run(included,prepaid,debt,unusedRch,a.id);
       const replay=responseRecord?JSON.stringify(responseRecord):null;
       this.db.prepare("UPDATE reservations SET status='settled',usage=?,replay=?,reason=NULL WHERE id=?").run(JSON.stringify(usage),replay&&Buffer.byteLength(replay)<=1_048_576?replay:null,r.id);
     });
@@ -557,8 +634,8 @@ export class AccountStore {
   markUncertain(reservationId,reason='usage_unavailable') { this.db.prepare("UPDATE reservations SET status='uncertain',reason=? WHERE id=? AND status='reserved'").run(String(reason).slice(0,200),reservationId); }
   release(reservationId,reason='not_dispatched') {
     return this.transaction(()=>{const r=this.db.prepare('SELECT * FROM reservations WHERE id=?').get(reservationId);if(!r||r.status==='released')return;if(r.status!=='reserved')fail(409,'reservation_closed','Cannot release a dispatched or settled reservation.');const a=this.accountById(r.account_id);
-      if(r.currency==='USD'){if(!safeCount(a.usd_prepaid+r.amount))fail(409,'credit_limit','Account credit limit requires reconciliation.');this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+? WHERE id=?').run(r.amount,a.id);}
-      else this.db.prepare('UPDATE accounts SET included=included+?,prepaid=prepaid+? WHERE id=?').run(a.plan_version===r.plan_version&&a.plan_expires>this.now()?r.held_included:0,r.held_prepaid,a.id);
+      if(r.currency==='USD'){if(!safeCount(a.usd_prepaid+r.amount))fail(409,'credit_limit','Account credit limit requires reconciliation.');this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,rch_usd=rch_usd+? WHERE id=?').run(r.amount,r.held_rch,a.id);}
+      else this.db.prepare('UPDATE accounts SET included=included+?,prepaid=prepaid+?,rch_tokens=rch_tokens+? WHERE id=?').run(a.plan_version===r.plan_version&&a.plan_expires>this.now()?r.held_included:0,r.held_prepaid,r.held_rch,a.id);
       this.db.prepare("UPDATE reservations SET status='released',reason=? WHERE id=?").run(reason,r.id);});
   }
   createMarketRedemption(accountId,amount,quote) {
@@ -602,12 +679,12 @@ export class AccountStore {
       if(r.usd_micros>0){
         const a=this.accountById(r.account_id),debtPaid=Math.min(a.usd_debt,r.usd_micros),credit=r.usd_micros-debtPaid;
         if(!safeCount(a.usd_prepaid+credit))fail(409,'credit_limit','Account credit limit requires reconciliation.');
-        this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,usd_debt=usd_debt-? WHERE id=?').run(credit,debtPaid,a.id);
+        this.db.prepare('UPDATE accounts SET usd_prepaid=usd_prepaid+?,usd_debt=usd_debt-?,rch_usd=rch_usd+? WHERE id=?').run(credit,debtPaid,credit,a.id);
         this.db.prepare("UPDATE redemptions SET status='credited',event_key=? WHERE id=?").run(eventKey,r.id);return;
       }
       const a=this.accountById(r.account_id),debtPaid=Math.min(a.debt,r.usage_tokens),credit=r.usage_tokens-debtPaid;
       if(!safeCount(a.prepaid+credit))fail(409,'credit_limit','Account credit limit requires reconciliation.');
-      this.db.prepare('UPDATE accounts SET prepaid=prepaid+?,debt=debt-? WHERE id=?').run(credit,debtPaid,a.id);
+      this.db.prepare('UPDATE accounts SET prepaid=prepaid+?,debt=debt-?,rch_tokens=rch_tokens+? WHERE id=?').run(credit,debtPaid,credit,a.id);
       this.db.prepare("UPDATE redemptions SET status='credited',event_key=? WHERE id=?").run(eventKey,r.id);
     });
   }

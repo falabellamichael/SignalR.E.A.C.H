@@ -4,13 +4,14 @@ import { readFileSync } from 'node:fs';
 import { getAddress, verifyMessage, hashMessage, Contract, JsonRpcProvider, FetchRequest } from 'ethers';
 import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
+import { accountAccess } from './eligibility.mjs';
 import { createModelGateway } from './model-gateway.mjs';
 import { requestCapabilities } from './gpu-bridge.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
 import { randomBytes } from 'node:crypto';
-import { createResendMailer, emailCode, emailCodeHash, validEmailCode, normalizeEmail } from './email.mjs';
+import { createResendMailer, createSupabaseOtpMailer, EMAIL_CODE_TTL_MS, emailCode, emailCodeHash, validEmailCode, normalizeEmail } from './email.mjs';
 import { createPayPalClient, validPayPalTopUp } from './payments/paypal.mjs';
 import { assertPlusPrice, recordPlusInvoice } from './payments/plus.mjs';
 import { verifyStripeSignature, paymentFromStripeEvent, reversalFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
@@ -72,6 +73,8 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   const redemption=createRedemptionService({store,config,provider:redemptionProvider});
   const balances=createTokenBalanceReader({config,provider:balanceProvider});
   if(!mailer&&config.email?.resend)mailer=createResendMailer(config.email.resend);
+  if(!mailer&&config.supabase)mailer=createSupabaseOtpMailer(config.supabase);
+  const supabaseEmail=new Map();
   const stripe=config.payments?.stripe;
   const stripeClient=stripe?createStripeClient({secretKey:stripe.secretKey,...(paymentFetch?{fetchImpl:paymentFetch}:{})}):null;
   const paypal=config.payments?.paypal?createPayPalClient({...config.payments.paypal,now,...(paypalFetch?{fetchImpl:paypalFetch}:{})}):null;
@@ -118,16 +121,32 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:requestCapabilities(m),pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
   const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,modelsRevision:digest(JSON.stringify(config.models)),chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false,...(config.subscription.plus?{plus:{...config.subscription.plus}}:{})}}:{}),cardPayments:!!stripe,cardPlans:{basic:!!stripe?.basicPriceId,plus:!!stripe?.plusPriceId},paypalPayments:!!paypal,...(paypal?{paypalOrigin:paypal.pageOrigin}:{}),emailLogin:!!mailer,loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
-    // An email-only account has no wallet to read holdings from.
-    return {...account,rchBalance:account.walletAddress?await balances.read(account.walletAddress):{status:'unconfigured'},redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
+    const access=accountAccess(account);
+    if(!access.website)return {id:account.id,email:account.email,walletAddress:null,access};
+    // An email-only subscriber has no wallet to read holdings from.
+    return {...account,access,rchBalance:account.walletAddress?await balances.read(account.walletAddress):{status:'unconfigured'},redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };
   const server=createServer(async(req,res)=>{
     res.setHeader('cache-control','no-store');res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','no-referrer');
     res.setHeader('content-security-policy',"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     try {
-      if(req.headers.origin && req.headers.origin!==config.origin)fail(403,'origin_rejected','This origin is not permitted.');
+      const loginOrigins=new Set(['http://127.0.0.1:4173','http://localhost:4173','https://signalreach.com','https://www.signalreach.com','https://signalreach.ca','https://www.signalreach.ca','https://falabellamichael.github.io']);
+      const origin=req.headers.origin;
+      if(origin && origin!==config.origin && !loginOrigins.has(origin))fail(403,'origin_rejected','This origin is not permitted.');
+      if(origin && loginOrigins.has(origin)){
+        res.setHeader('access-control-allow-origin',origin);
+        res.setHeader('vary','Origin');
+        res.setHeader('access-control-allow-headers','authorization, content-type, ngrok-skip-browser-warning');
+        res.setHeader('access-control-allow-methods','GET, POST, OPTIONS');
+      }
+      if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
       // Proxy headers never choose the signature domain or identify a customer.
       const pathname=new URL(req.url,'http://service.invalid').pathname;
+      const token=/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1];
+      const modelApiKey=token?.startsWith('rch_key_');
+      if(modelApiKey && !((req.method==='GET'&&pathname==='/v1/models')||(req.method==='POST'&&pathname==='/v1/chat/completions'))) {
+        fail(403,'api_key_scope','API keys can only list models and create chat completions.');
+      }
       if(req.method==='GET'&&pathname==='/healthz') {json(res,200,{status:'ok',service:'reach-accounts'});return;}
       rateLimit(req);
       const asset=staticAssets.get(pathname);
@@ -198,8 +217,16 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         await store.authorize(body.flowId,body.challengeId);json(res,200,{status:'verified'});return;
       }
       if(req.method==='POST'&&pathname==='/v1/auth/email/start') {
-        if(!mailer)fail(404,'not_found','Route not found.');
+        if(!mailer)fail(404,'not_found','Email sign-in is not configured on this service.');
         emailLimit(req);
+        if(mailer.kind==='supabase'){
+          if(typeof body.flowId!=='string'||!/^[a-f0-9]{64}$/.test(body.flowId))fail(400,'invalid_flow','Invalid sign-in flow.');
+          await store.getFlow(body.flowId);
+          const email=normalizeEmail(body.email), challengeId=randomBytes(32).toString('hex');
+          await mailer.sendSignInCode({to:email});
+          supabaseEmail.set(challengeId,{flowId:body.flowId,email,expires:now()+EMAIL_CODE_TTL_MS});
+          json(res,200,{challengeId,expiresAt:new Date(now()+EMAIL_CODE_TTL_MS).toISOString()});return;
+        }
         // The code is generated here and only its hash is stored. The email is
         // sent after the challenge commits, so a rate-limited request sends nothing.
         const code=emailCode(),challengeId=randomBytes(32).toString('hex');
@@ -209,8 +236,15 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       }
       if(req.method==='POST'&&pathname==='/v1/auth/email/verify') {
         if(!mailer)fail(404,'not_found','Route not found.');
-        if(!validEmailCode(body.code))fail(400,'code_invalid','Enter the 6-digit code from the email.');
+        if(!validEmailCode(body.code))fail(400,'code_invalid','Enter the 8-digit code from the email.');
         if(typeof body.challengeId!=='string'||!/^[a-f0-9]{64}$/.test(body.challengeId))fail(400,'invalid_challenge','Invalid challenge.');
+        if(mailer.kind==='supabase'){
+          const pending=supabaseEmail.get(body.challengeId);
+          if(!pending||pending.flowId!==body.flowId||pending.expires<=now())fail(410,'code_expired','This code is no longer valid. Request a new one.');
+          if(!await mailer.verifyCode({email:pending.email,code:body.code}))fail(401,'code_invalid','That code is not right. Check the email and try again.');
+          await store.createEmailChallenge(body.flowId,pending.email,body.challengeId,emailCodeHash(body.challengeId,body.code));
+          supabaseEmail.delete(body.challengeId);
+        }
         await store.verifyEmailChallenge(body.flowId,body.challengeId,emailCodeHash(body.challengeId,body.code));
         json(res,200,{status:'verified'});return;
       }
@@ -221,9 +255,59 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       }
       if(req.method==='POST'&&pathname==='/v1/redemptions/details') {json(res,200,await redemption.details(body.redemptionId,body.ticket));return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/submit') {json(res,200,await redemption.submit(body.redemptionId,body.ticket,body.txHash));return;}
-      const token=/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1];
-      const account=await store.authenticate(token);
+      const account=modelApiKey?await store.authenticateApiKey(token):await store.authenticate(token);
+      // Re-evaluate access on every request, including sessions issued before
+      // subscription expiry. Only identity linking and checkout are onboarding.
+      if(!modelApiKey && !accountAccess(account).website && ![
+        '/v1/account','/v1/account/link-wallet','/v1/account/link-email/start',
+        '/v1/account/link-email/verify','/v1/billing/checkout','/v1/auth/logout',
+        '/v1/account/api-keys/revoke',
+      ].includes(pathname))fail(403,'website_access_required','An active subscription or verified connected wallet is required.');
+      if(req.method==='POST'&&pathname==='/v1/billing/checkout'&&!accountAccess(account).website&&body.kind!=='subscription')
+        fail(403,'website_access_required','Choose a subscription or connect a verified wallet.');
+      if(req.method==='GET'&&pathname==='/v1/account/api-keys') {json(res,200,{data:await store.listApiKeys(account.id)});return;}
+      if(req.method==='POST'&&pathname==='/v1/account/api-keys') {json(res,201,await store.createApiKey(account.id,body.name));return;}
+      if(req.method==='POST'&&pathname==='/v1/account/api-keys/revoke') {json(res,200,await store.revokeApiKey(account.id,body.id));return;}
       if(req.method==='GET'&&pathname==='/v1/account') {json(res,200,await accountView(await store.account(account.id)));return;}
+      if(req.method==='POST'&&pathname==='/v1/account/link-wallet') {
+        const state=randomBytes(32).toString('base64url'), proof=randomBytes(32).toString('base64url').slice(0,43);
+        const flow=await store.startFlow(state, proof);
+        await store.bindFlowAccount(flow.flowId, account.id);
+        json(res,200,{loginUrl:`${config.origin}/wallet/connect#flow=${flow.flowId}`});return;
+      }
+      if(req.method==='POST'&&pathname==='/v1/account/link-email/start') {
+        if(!mailer)fail(404,'not_found','Email sign-in is not configured on this service.');
+        emailLimit(req);
+        const state=randomBytes(32).toString('base64url'), proof=randomBytes(32).toString('base64url').slice(0,43);
+        const flow=await store.startFlow(state, proof);
+        await store.bindFlowAccount(flow.flowId, account.id);
+        const challengeId=randomBytes(32).toString('hex');
+        if(mailer.kind==='supabase'){
+          const email=normalizeEmail(body.email);
+          await mailer.sendSignInCode({to:email});
+          supabaseEmail.set(challengeId,{flowId:flow.flowId,email,expires:now()+EMAIL_CODE_TTL_MS});
+          json(res,200,{challengeId,flowId:flow.flowId,expiresAt:new Date(now()+EMAIL_CODE_TTL_MS).toISOString()});return;
+        }
+        const code=emailCode();
+        const created=await store.createEmailChallenge(flow.flowId, body.email, challengeId, emailCodeHash(challengeId, code));
+        await mailer.sendSignInCode({to:normalizeEmail(body.email), code, challengeId, host:new URL(config.origin).host});
+        json(res,200,{...created, flowId:flow.flowId});return;
+      }
+      if(req.method==='POST'&&pathname==='/v1/account/link-email/verify') {
+        if(!mailer)fail(404,'not_found','Email sign-in is not configured on this service.');
+        if(!validEmailCode(body.code))fail(400,'code_invalid','Enter the 8-digit code from the email.');
+        const flow=await store.getFlow(body.flowId);
+        if(flow.account_id!==account.id)fail(403,'origin_rejected','This sign-in does not belong to the connected account.');
+        if(mailer.kind==='supabase'){
+          const pending=supabaseEmail.get(body.challengeId);
+          if(!pending||pending.flowId!==body.flowId||pending.expires<=now())fail(410,'code_expired','This code is no longer valid. Request a new one.');
+          if(!await mailer.verifyCode({email:pending.email,code:body.code}))fail(401,'code_invalid','That code is not right. Check the email and try again.');
+          await store.createEmailChallenge(body.flowId,pending.email,body.challengeId,emailCodeHash(body.challengeId,body.code));
+          supabaseEmail.delete(body.challengeId);
+        }
+        await store.verifyEmailChallenge(body.flowId, body.challengeId, emailCodeHash(body.challengeId, body.code));
+        json(res,200,await accountView(await store.account(account.id)));return;
+      }
       if(req.method==='POST'&&pathname==='/v1/auth/logout') {await store.logout(token);json(res,200,{status:'disconnected'});return;}
       if(req.method==='POST'&&pathname==='/v1/billing/checkout') {
         const viaPayPal=body.provider==='paypal';

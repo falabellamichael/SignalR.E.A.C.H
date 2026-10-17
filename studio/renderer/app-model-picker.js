@@ -43,6 +43,7 @@ async function openModelPicker(arg) {
     };
   }
   modelPickerPick = pick;
+  modal.querySelector('h3').textContent = label === 'Login Providers' ? 'Login Providers' : 'Pick a Model';
 
   search.value = '';
   if (source) source.textContent = label ? `From: ${label}` : '';

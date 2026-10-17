@@ -16,7 +16,7 @@ export const DAY = 86_400_000;
 export const SUBSCRIPTION = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15_000_000 },
   overageUsdMicrosPerRequest: 10_000, proEnabled: false };
 export const MODELS = [{ id: 'bridge-chat', name: 'Bridge chat', provider: 'fixture', access: 'requests', metered: true,
-  bridge: { kind: 'tray', model: 'chatgpt-chat' } }];
+  bridge: { kind: 'gpu', model: 'google/gemma-4-12B-it-qat-q4_0-unquantized' } }];
 const wallet = getAddress(`0x${'11'.repeat(20)}`);
 const REPLAY = { contentType: 'application/json; charset=utf-8', body: '{"ok":true}' };
 // SQLite's store methods are synchronous and Postgres's are async. A synchronous

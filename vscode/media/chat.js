@@ -95,7 +95,7 @@
   const MAX_ATTACHMENTS = 6;
 
   function state() { return vscode.getState() || { history: [], conv: null }; }
-  function persist() { vscode.setState({ history: state().history, conv }); }
+  function persist() { vscode.setState({ ...state(), history: state().history, conv }); }
 
   /* Zero allows unlimited tool rounds and uses the default recovery allowance.
    * The run controller separately caps recovery from responses without actions. */
@@ -1803,18 +1803,21 @@
   }
 
   function updateProviderOptions(cfg) {
-    providerSelect.replaceChildren(new Option('Free endpoints', 'endpoint'));
+    providerSelect.replaceChildren(new Option('GPU server models', 'endpoint'));
     if (cfg.hostedConfigured || cfg.providerSelection === 'subscription') providerSelect.appendChild(new Option('REACH subscription', 'subscription'));
     const others = document.createElement('optgroup');
-    others.label = 'Other providers';
+    others.label = 'Other endpoints';
     for (const endpoint of new Set(cfg.additionalEndpoints || [])) {
       if (endpoint.trim()) others.appendChild(new Option(endpoint, 'endpoint:' + endpoint));
     }
-    others.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
-    others.appendChild(new Option('ChatGPT', 'chatgpt'));
-    others.appendChild(new Option('CodeGPT economy models', 'codegpt'));
-    others.appendChild(new Option('Gemini web', 'gemini'));
-    providerSelect.appendChild(others);
+    if (others.children.length) providerSelect.appendChild(others);
+    const login = document.createElement('optgroup');
+    login.label = 'Login Providers';
+    login.appendChild(new Option('CodeGPT', 'codegpt'));
+    login.appendChild(new Option('ChatGPT', 'chatgpt'));
+    login.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
+    login.appendChild(new Option('Gemini web', 'gemini'));
+    providerSelect.appendChild(login);
     providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
   }
 
@@ -2045,7 +2048,7 @@
 
   function ensureConv() {
     if (!conv) {
-      conv = { id: Date.now(), model: modelSelect.value || 'gpt-4o-mini', ts: Date.now(), title: '', messages: [] };
+      conv = { id: Date.now(), model: modelSelect.value || configCache?.model || 'gemma-4-12b-qat', ts: Date.now(), title: '', messages: [] };
     }
     return conv;
   }
@@ -2059,7 +2062,7 @@
       thoughts: Object.assign({}, conv.thoughts || {}), activity: conv.activity || [], agentRun: conv.agentRun,
     };
     hist.push(entry);
-    vscode.setState({ history: hist, conv });
+    vscode.setState({ ...state(), history: hist, conv });
   }
 
   function loadHistory(id) {
@@ -2067,7 +2070,7 @@
     if (!item) return;
     if (conv && conv.messages.length) saveConv();
     conv = { id: item.id, model: item.model, ts: item.ts, title: item.title, messages: item.messages.slice(), requestContext: item.requestContext, agentRun: item.agentRun, activity: item.activity || [], thoughts: Object.assign({}, item.thoughts || {}) };
-    modelSelect.value = item.model || 'gpt-4o-mini';
+    modelSelect.value = item.model || configCache?.model || 'gemma-4-12b-qat';
     persist();
     renderMessages();
     restoreAgentRun();
@@ -2078,7 +2081,7 @@
 
   function deleteHistory(id) {
     const hist = state().history.filter((h) => h.id !== id);
-    vscode.setState({ history: hist, conv });
+    vscode.setState({ ...state(), history: hist, conv });
     if (conv && conv.id === id) {
       conv = null;
       persist();
@@ -2115,9 +2118,8 @@
 
   /* ---------- sending ---------- */
 
-  /* `groups` is the optional sectioned form: [{label, models}]. When present
-   * it renders as <optgroup>s so the CodeGPT economy models are a distinct
-   * section under Free endpoints. Falls back to a flat list when absent, so an
+  /* `groups` is the optional sectioned form: [{label, models}]. The host labels
+   * the selected catalog as GPU server models or Login Providers. Falls back to a flat list when absent, so an
    * older host that only sends `models` still works. */
   function setModelOptions(models, current, groups) {
     modelSelect.innerHTML = '';
@@ -2457,7 +2459,7 @@
         break;
       case 'done': {
         if (!busy) break;
-        const turnAgenticEnabled = agenticEnabled && (conv?.jevTurn?.agentic ?? true);
+        const turnAgenticEnabled = !msg.directAnswer && agenticEnabled && (conv?.jevTurn?.agentic ?? true);
         const isAnsweringNow = typeof answeringNow !== 'undefined' && Boolean(answeringNow);
         const aborted = (msg.aborted && !isAnsweringNow) || stopRequested;
         if (rafPending && pendingBubble) {
@@ -3312,8 +3314,8 @@
     conv = saved.conv;
     modelSelect.innerHTML = '';
     const opt = document.createElement('option');
-    opt.value = conv.model || 'gpt-4o-mini';
-    opt.textContent = conv.model || 'gpt-4o-mini';
+    opt.value = conv.model || configCache?.model || 'gemma-4-12b-qat';
+    opt.textContent = conv.model || configCache?.model || 'gemma-4-12b-qat';
     modelSelect.appendChild(opt);
     renderMessages();
     restoreAgentRun();

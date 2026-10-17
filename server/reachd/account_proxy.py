@@ -6,7 +6,9 @@ through the account service and can never become local-owner relay requests.
 import http.client
 import ipaddress
 import re
+import select
 import socket
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -18,6 +20,8 @@ ACCOUNT_PATHS = frozenset((
     "/wallet/rch", "/wallet/rch-logo.png", "/wallet/rch-tokenlist.json", "/wallet/rch-add-token.js",
     "/v1/auth/start", "/v1/auth/challenge", "/v1/auth/verify", "/v1/auth/exchange", "/v1/auth/logout",
     "/v1/auth/email/start", "/v1/auth/email/verify",
+    "/v1/account/api-keys", "/v1/account/api-keys/revoke", "/v1/account/link-wallet",
+    "/v1/account/link-email/start", "/v1/account/link-email/verify",
     "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
     "/v1/billing/checkout", "/v1/billing/portal", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
     "/v1/billing/paypal/webhook", "/v1/billing/paypal/return",
@@ -33,7 +37,8 @@ FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key",
                    "PayPal-Auth-Algo", "PayPal-Cert-Url", "PayPal-Transmission-Id",
                    "PayPal-Transmission-Sig", "PayPal-Transmission-Time")
 RESPONSE_HEADERS = ("Content-Type", "Cache-Control", "Content-Security-Policy", "Referrer-Policy",
-                    "X-Content-Type-Options", "X-Frame-Options", "X-Request-Id", "X-Reach-Replayed", "Retry-After")
+                    "X-Content-Type-Options", "X-Frame-Options", "X-Request-Id", "X-Reach-Replayed", "Retry-After",
+                    "Access-Control-Allow-Origin", "Vary")
 
 
 def account_service_target(value):
@@ -57,12 +62,37 @@ def customer_session(headers):
     # Malformed/case-varied session credentials still enter the account service,
     # whose strict parser rejects them. They must never inherit local bypass.
     authorization = headers.get("Authorization", "")
-    return bool(re.match(r"^\s*Bearer\s+rch_session_", authorization, re.I)
-                or headers.get("X-Reach-Key", "").lower().startswith("rch_session_"))
+    return bool(re.match(r"^\s*Bearer\s+rch_(?:session|key)_", authorization, re.I)
+                or headers.get("X-Reach-Key", "").lower().startswith(("rch_session_", "rch_key_")))
 
 
 def _error(h, status, code, message):
     h._json(status, {"error": {"code": code, "message": message, "type": "account_service_error"}})
+
+
+def _watch_chat_disconnect(client, upstream, stopped, disconnected):
+    """Cancel a buffered model request even while its headers/body are pending.
+
+    The incoming body is already consumed. Peeking must not eat a subsequent
+    keep-alive request. Shutdown interrupts the other thread's blocking HTTP
+    read and makes the account gateway cancel its provider fetch immediately.
+    """
+    while not stopped.is_set():
+        try:
+            readable, _, _ = select.select([client], [], [], 0.05)
+            if not readable:
+                continue
+            if client.recv(1, socket.MSG_PEEK):
+                stopped.wait(0.05)
+                continue
+        except (OSError, ValueError):
+            pass
+        disconnected.set()
+        try:
+            upstream.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        return
 
 
 def try_account_proxy(h):
@@ -85,6 +115,9 @@ def try_account_proxy(h):
         _error(h, 503, "accounts_unconfigured", "REACH wallet access is not configured on this host.")
         return True
     connection = None
+    disconnect_watch = None
+    watch_stopped = threading.Event()
+    client_disconnected = threading.Event()
     sent_headers = False
     previous_timeout = h.connection.gettimeout()
     try:
@@ -133,6 +166,10 @@ def try_account_proxy(h):
         if parts.query:
             forward_path += "?" + parts.query
         connection.request(h.command, forward_path, body=body, headers=headers)
+        if customer and h.command == "POST" and MODEL_PATHS.get(path) == "/v1/chat/completions":
+            disconnect_watch = threading.Thread(target=_watch_chat_disconnect,
+                args=(h.connection, connection.sock, watch_stopped, client_disconnected), daemon=True)
+            disconnect_watch.start()
         upstream = connection.getresponse()
         if 300 <= upstream.status < 400:
             _error(h, 502, "account_redirect", "The account service returned an unexpected redirect.")
@@ -174,13 +211,18 @@ def try_account_proxy(h):
     except CLIENT_DISCONNECT_ERRORS:
         h.close_connection = True
     except (OSError, ValueError, http.client.HTTPException, socket.timeout):
-        if sent_headers:
+        if client_disconnected.is_set():
+            h.close_connection = True
+        elif sent_headers:
             # Closing the account connection also cancels its provider fetch.
             # That service retains the reservation for uncertain usage.
             h.close_connection = True
         else:
             _error(h, 503, "accounts_unavailable", "The REACH account service is unavailable. Try again shortly.")
     finally:
+        watch_stopped.set()
+        if disconnect_watch is not None:
+            disconnect_watch.join(timeout=0.2)
         if connection is not None:
             connection.close()
         try:

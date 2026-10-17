@@ -9,6 +9,8 @@ let connEditingId = '';    // Editing a tile never changes the active connection
 let jevClearRequested = false;
 let connDirty = false, connSettingsRevision = '';
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
+const LOGIN_PROVIDERS_ENDPOINT = 'http://127.0.0.1:20777/_reach/login-providers';
+const isLoginProviderConnection = c => c?.endpoint === LOGIN_PROVIDERS_ENDPOINT;
 /* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
  * a re-render (pool toggle, activation, Settings save) does not wipe the last
  * "OK · 812 ms" off a card — and so auto-test on panel open knows which rows
@@ -300,7 +302,7 @@ function renderConnections() {
       input.type = 'text';
       input.className = 'conn-url';
       input.value = c.endpoint || '';
-      input.readOnly = c.id === 'reach_hosted';
+      input.readOnly = c.id === 'reach_hosted' || isLoginProviderConnection(c);
       input.placeholder = 'https://your-endpoint.example.com/v1';
       input.spellcheck = false;
       input.oninput = () => { c.endpoint = input.value.trim(); syncSummary(); clearConnStatus(c.id); markUnsaved(); };
@@ -315,7 +317,7 @@ function renderConnections() {
       input.type = 'password';
       input.value = c.accessKey || '';
       input.placeholder = c.id === 'reach_hosted' ? 'Managed securely by wallet sign-in' : 'leave blank for none';
-      input.disabled = c.id === 'reach_hosted';
+      input.disabled = c.id === 'reach_hosted' || isLoginProviderConnection(c);
       input.autocomplete = 'off';
       input.spellcheck = false;
       input.oninput = () => { c.accessKey = input.value; clearConnStatus(c.id); markUnsaved(); };
@@ -323,7 +325,7 @@ function renderConnections() {
       reveal.type = 'button';
       reveal.className = 'ghost small';
       reveal.textContent = 'Show';
-      reveal.disabled = c.id === 'reach_hosted';
+      reveal.disabled = c.id === 'reach_hosted' || isLoginProviderConnection(c);
       reveal.onclick = () => {
         const showing = input.type === 'text';
         input.type = showing ? 'password' : 'text';
@@ -584,6 +586,26 @@ $('#btn-add-connection').onclick = () => {
   markUnsaved();
   $('#conn-editor .conn-name')?.focus();
 };
+
+$('#btn-login-providers').onclick = () => openModelPicker({
+  target: { endpoint: LOGIN_PROVIDERS_ENDPOINT, accessKey: '' },
+  label: 'Login Providers',
+  onPick: model => {
+    let connection = connDraft.find(isLoginProviderConnection);
+    if (!connection && connDraft.length >= CONN_MAX) { showNotice('Remove one connection before adding Login Providers.'); return; }
+    if (!connection) {
+      connection = { id: 'reach_login_providers', name: 'Login Providers', endpoint: LOGIN_PROVIDERS_ENDPOINT, accessKey: '', model, enabled: false };
+      connDraft.push(connection);
+    }
+    connection.model = model;
+    connection.accessKey = '';
+    connActiveId = connection.id;
+    connEditingId = connection.id;
+    connection.enabled = true;
+    renderConnections();
+    markUnsaved();
+  },
+});
 
 /* "Test all": ping every row with the values on screen, in parallel. Read-only
  * (GET /models), so it cannot cost tokens or mutate anything. Each row writes

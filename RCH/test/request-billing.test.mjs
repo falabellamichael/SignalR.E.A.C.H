@@ -10,7 +10,7 @@ import { SupabaseAccountStore } from '../service/supabase-store.mjs';
 
 const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
   overageUsdMicrosPerRequest: 10000, proEnabled: false };
-const models = [{ id: 'bridge-chat', name: 'Bridge chat', provider: 'fixture', access: 'requests', metered: true, bridge: { kind: 'tray', model: 'chatgpt-chat' } },
+const models = [{ id: 'bridge-chat', name: 'Bridge chat', provider: 'fixture', access: 'requests', metered: true, bridge: { kind: 'gpu', model: 'google/gemma-4-12B-it-qat-q4_0-unquantized' } },
   { id: 'legacy-tokens', provider: 'fixture', metered: true },
   { id: 'legacy-usd', provider: 'fixture', metered: true, pricing: { inputUsdMicrosPerMillion: 1000000, outputUsdMicrosPerMillion: 1000000 } }];
 const wallet = '0x' + '11'.repeat(20), otherWallet = '0x' + '22'.repeat(20);
@@ -118,7 +118,7 @@ for (const backend of ['sqlite', 'postgres']) {
     const catalog = (await f.store.account(f.account.id)).allowedModels;
     assert.deepEqual(catalog.map(model => model.id), [models[0].id]);
     assert.deepEqual(catalog[0].pricing, { unit: 'request', includedRequests: 1500, usdMicrosPerRequest: 10000 });
-    assert.deepEqual(catalog[0].capabilities, { outputTokenLimit: false });
+    assert.deepEqual(catalog[0].capabilities, { outputTokenLimit: true, automaticOutput: true, jsonSchema: false });
     assert.equal(catalog[0].access, 'requests'); assert.equal(Object.hasOwn(catalog[0], 'bridge'), false);
     assert.equal((await f.store.requestAllowance(f.account.id)).reserved, 0);
   });

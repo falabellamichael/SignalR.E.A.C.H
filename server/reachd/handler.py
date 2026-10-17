@@ -19,11 +19,12 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 import reachd.core as core  # core.STATE is read at call time (cycle-safe)
-from reachd import diagnostics, net, model_services
+from reachd import diagnostics, net, model_services, support
 from reachd.browser import BrowserError, fetch_page
 from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
-from reachd.account_proxy import try_account_proxy
+from reachd.model_routes import login_provider_catalog
+from reachd.account_proxy import try_account_proxy, customer_session
 from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
 from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
@@ -35,6 +36,7 @@ from reachd.settings import (
     merged_settings,
     public_key_view,
     restore_masked_client_keys,
+    strip_masked_system_secrets,
     save_config,
     settings_public,
     validate_settings,
@@ -205,6 +207,9 @@ class RelayHTTPServer(ThreadingHTTPServer):
 class RelayHandler(BaseHTTPRequestHandler):
     server_version = "SignalR.E.A.C.H/" + VERSION
     protocol_version = "HTTP/1.1"
+    # SSE deltas and their HTTP chunk frames are small writes. Send them
+    # immediately instead of waiting for Nagle/delayed-ACK coalescing.
+    disable_nagle_algorithm = True
     # Seconds any single read or write on the CLIENT socket may block. Without
     # it a client that never finishes its request (slowloris) or idles on a
     # keep-alive connection pins a thread forever. Waiting on the upstream is
@@ -245,7 +250,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods",
                          "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers",
-                         "Content-Type, Authorization, X-Reach-Key")
+                         "Content-Type, Authorization, X-Reach-Key, ngrok-skip-browser-warning")
         self.send_header("Access-Control-Expose-Headers",
                          "X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After,"
                          " X-Reach-Cache, X-Tokens-Per-Second, X-Reach-Tokens-Per-Second,"
@@ -390,6 +395,17 @@ class RelayHandler(BaseHTTPRequestHandler):
         if _is_loopback_ip(ip) and not self._admin_local():
             return "web:" + ip
         return ip
+
+    def _require_login_provider_client(self):
+        # This is a local application capability, never a public/admin-token
+        # API. Forwarded requests must fail even with a forged client marker.
+        if (self._admin_local()
+                and self.headers.get("X-Reach-Client") in ("studio", "vscode")):
+            return True
+        self._json(403, {"error": {
+            "message": "Login Providers are available only in local REACH Studio and the REACH VS Code extension.",
+            "type": "forbidden", "code": "login_provider_client_required"}})
+        return False
 
     def _deny_if_locked_out(self, ip):
         """Refuse a locked-out client before its credential is even compared."""
@@ -630,11 +646,16 @@ class RelayHandler(BaseHTTPRequestHandler):
                 data = [{"id": alias, "object": "model",
                          "created": 1715367049, "owned_by": "SignalR.E.A.C.H"}
                         for alias in sorted(core.STATE.public_models())]
+                data.extend(support.catalog())
                 self._json(200, {"object": "list", "data": data})
             elif path == "/_reach/model-services":
                 if not self._admin_local():
                     return self._json(403, {"error": {"message": "Model controls require a direct local connection."}})
                 self._json(200, model_services.inventory())
+            elif path == "/_reach/login-providers/models":
+                if not self._require_login_provider_client():
+                    return
+                self._json(200, login_provider_catalog(core.STATE.cfg.get("models", {})))
             elif path == "/_reach/settings":
                 if not self._require_admin():
                     return
@@ -919,10 +940,21 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._require_admin():
                     return
                 self.handle_tray()
+            elif path in support.PATHS:
+                if customer_session(self.headers):
+                    return self._json(403, {"error": {"message": "GPU support operations require a REACH API key.",
+                                                     "type": "forbidden", "code": "support_access"}})
+                if not self._check_access():
+                    return
+                support.execute(self, path)
             elif path in ("/v1/chat/completions", "/chat/completions"):
                 if not self._check_access():
                     return
                 self.handle_chat()
+            elif path == "/_reach/login-providers/chat/completions":
+                if not self._require_login_provider_client() or not self._check_access():
+                    return
+                self.handle_chat(catalog="login-providers")
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
@@ -1159,6 +1191,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                     and access_patch["access_key"].startswith("set ("):
                 access_patch.pop("access_key")
             restore_masked_client_keys(core.STATE.cfg.get("access"), access_patch)
+        strip_masked_system_secrets(patch)  # "set" placeholders mean keep
         next_cfg = merged_settings(core.STATE.cfg, patch)
         # Patch-supplied keys may lack an id; mint one so the /_reach/keys/<id>
         # routes can address them (they deliberately never match raw secrets).
@@ -1267,6 +1300,11 @@ class RelayHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             return self._json(400, {"error": {"message": "invalid JSON",
                                               "type": "invalid_request"}})
+        if isinstance(patch, dict):
+            access_patch = patch.get("access")
+            if isinstance(access_patch, dict):
+                restore_masked_client_keys(core.STATE.cfg.get("access"), access_patch)
+            strip_masked_system_secrets(patch)
         try:
             validate_settings(merged_settings(core.STATE.cfg, patch))
             self._json(200, {"valid": True})
@@ -1347,7 +1385,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             fields.pop("response_body", None)
         core.STATE.analytics.log_request(**fields)
 
-    def handle_chat(self):
+    def handle_chat(self, *, catalog="gpu"):
         # One record per request, live for as long as it runs: /status shows it
         # and the log line at each end says how long it took. There is no
         # timeout — a slow generation is meant to be watched, not killed.
@@ -1358,7 +1396,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             # limit, bad body, unknown model, upstream down) and returns None.
             # Unpacking that used to raise, so the error handler then wrote a
             # second 500 onto a connection that had already been answered.
-            result = chat_execute(self)
+            result = chat_execute(self, catalog=catalog)
             if result is None:
                 return
             upstream, ctx = result

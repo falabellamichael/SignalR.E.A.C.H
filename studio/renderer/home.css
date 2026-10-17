@@ -24,7 +24,18 @@
 .home-art-orbit { position: absolute; border: 1px solid color-mix(in srgb, var(--gold) 38%, transparent); border-radius: 50%; transform: rotate(-22deg); }
 .home-art-orbit-one { width: 182px; height: 182px; top: 3px; left: 26px; }
 .home-art-orbit-two { width: 222px; height: 112px; top: 39px; left: 8px; }
-.home-art-core { position: absolute; top: 42px; left: 63px; width: 108px; height: 108px; display: grid; place-items: center; border: 1px solid var(--gold-dim); border-radius: 50%; background: var(--panel); color: var(--gold); font: 58px 'Bell MT', Georgia, serif; }
+.home-art-core {
+  position: absolute; top: 42px; left: 63px; width: 108px; height: 108px;
+  display: grid; place-items: center;
+  border: 1px solid var(--gold-dim); border-radius: 50%;
+  background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--gold) 14%, var(--panel)), var(--panel));
+  color: var(--gold);
+  box-shadow: 0 0 32px color-mix(in srgb, var(--gold) 16%, transparent);
+}
+.home-art-core svg {
+  width: 62px; height: 62px; display: block;
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, .35));
+}
 .home-art-caption { position: absolute; bottom: 4px; right: 23px; color: var(--gold-dim); font-size: 9px; letter-spacing: .24em; }
 
 .home-tools, .home-section { padding-top: 31px; }

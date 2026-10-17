@@ -55,10 +55,11 @@ async function selectDrawerPanel(panel, { focus = true } = {}) {
   drawerPanel = panel;
   drawer.dataset.panel = panel;
   $('#browser-panel').classList.toggle('hidden', panel !== 'browser');
-  $('#drawer-title').textContent = panel === 'browser' ? 'Browser' : 'Files';
-  $('#btn-toggle-files').textContent = (panel === 'browser' ? 'Browser' : 'Files') + ' ▾';
-  $('#btn-refresh-tree').classList.toggle('hidden', panel === 'browser');
-  $('#btn-drawer-layout').classList.toggle('hidden', panel === 'browser');
+  const panelTitle = panel === 'singular' ? 'Info' : panel === 'browser' ? 'Browser' : 'Files';
+  $('#drawer-title').textContent = panelTitle;
+  $('#btn-toggle-files').textContent = panelTitle + ' ▾';
+  $('#btn-refresh-tree').classList.toggle('hidden', panel !== 'files');
+  $('#btn-drawer-layout').classList.toggle('hidden', panel !== 'files');
   setDrawer(true);
   if (panel === 'browser' && !browserReady) {
     browserReady = true;

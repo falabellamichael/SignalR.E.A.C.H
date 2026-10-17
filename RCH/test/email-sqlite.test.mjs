@@ -57,6 +57,30 @@ test('sqlite: a database from before email sign-in is migrated in place without 
   reopened.close();
 });
 
+test('sqlite: wallet and email proofs stay on one account and never merge two accounts', () => {
+  let now = 1_800_000_000_000;
+  const store = new AccountStore(':memory:', { now: () => now });
+  const wallet = getAddress('0x' + 'ab'.repeat(20));
+  const flow = store.startFlow(randomBytes(32).toString('base64url'), randomBytes(32).toString('base64url').slice(0, 43));
+  const challenge = store.challenge(flow.flowId, wallet, () => 'sign in');
+  store.authorize(flow.flowId, challenge.challengeId);
+  const challengeId = randomBytes(32).toString('hex');
+  store.createEmailChallenge(flow.flowId, 'Ada@Example.com', challengeId, emailCodeHash(challengeId, '123456'));
+  store.verifyEmailChallenge(flow.flowId, challengeId, emailCodeHash(challengeId, '123456'));
+  const byWallet = store.findAccountByWallet(wallet);
+  assert.equal(byWallet.id, store.findAccountByEmail('ada@example.com').id);
+  assert.equal(byWallet.email, 'ada@example.com');
+  now += 61_000;
+  const other = store.startFlow(randomBytes(32).toString('base64url'), randomBytes(32).toString('base64url').slice(0, 43));
+  const otherWallet = getAddress('0x' + 'cd'.repeat(20));
+  const otherChallenge = store.challenge(other.flowId, otherWallet, () => 'other');
+  store.authorize(other.flowId, otherChallenge.challengeId);
+  const taken = randomBytes(32).toString('hex');
+  store.createEmailChallenge(other.flowId, 'ada@example.com', taken, emailCodeHash(taken, '654321'));
+  assert.throws(() => store.verifyEmailChallenge(other.flowId, taken, emailCodeHash(taken, '654321')), { code: 'identity_taken' });
+  store.close();
+});
+
 test('sqlite: the service-wide hourly email limit holds', () => {
   let now = 1_800_000_000_000;
   const store = new AccountStore(':memory:', { now: () => now });

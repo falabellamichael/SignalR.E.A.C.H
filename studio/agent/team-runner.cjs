@@ -265,7 +265,7 @@ class TeamRunner {
       return {
         endpoint: resolved.endpoint,
         accessKey: resolved.accessKey || '',
-        model: resolved.model || this.defaultModel || 'gpt-4o-mini',
+        model: resolved.model || this.defaultModel || 'gemma-4-12b-qat',
         connectionName: resolved.connectionName || '',
         reason: resolved.reason || '',
       };
@@ -282,7 +282,7 @@ class TeamRunner {
     return {
       endpoint: this.endpoint,
       accessKey: this.accessKey,
-      model: personaModel || this.defaultModel || 'gpt-4o-mini',
+      model: personaModel || this.defaultModel || 'gemma-4-12b-qat',
       connectionName: '',
       reason: '',
     };

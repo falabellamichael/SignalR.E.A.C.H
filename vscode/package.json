@@ -222,7 +222,7 @@
         },
         "simplereach.model": {
           "type": "string",
-          "default": "gpt-4o-mini",
+          "default": "gemma-4-12b-qat",
           "markdownDescription": "Default model for new chats."
         },
         "simplereach.maxTokens": {

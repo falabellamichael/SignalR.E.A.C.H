@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { createModelGateway, providerUsage } from '../service/model-gateway.mjs';
 
-const MODELS = ['codegpt', 'free'].map(id => ({ id, provider: id, metered: true,
+const MODELS = ['gemma-4-12b-qat', 'ornith-1.5-9b'].map(id => ({ id, provider: id, metered: true,
   maxInputTokens: 100, maxInputBytes: 8000, maxOutputTokens: 20 }));
 const account = { id: 'alice', allowedModels: MODELS };
 const completion = (extra = {}) => ({ id: 'upstream-id', object: 'chat.completion',
@@ -12,7 +12,7 @@ const completion = (extra = {}) => ({ id: 'upstream-id', object: 'chat.completio
   usage: { prompt_tokens: 4, completion_tokens: 6, total_tokens: 10 }, usage_source: 'provider', ...extra });
 const response = (value, options = {}) => new Response(JSON.stringify(value), {
   headers: { 'content-type': 'application/json', 'x-reach-metering': 'provider-v1', ...options.headers }, status: options.status ?? 200 });
-const request = (model = 'codegpt', extra = {}) => ({ model, messages: [{ role: 'user', content: 'Hello.' }], ...extra });
+const request = (model = 'gemma-4-12b-qat', extra = {}) => ({ model, messages: [{ role: 'user', content: 'Hello.' }], ...extra });
 
 class TestLedger {
   constructor(balance = 1000) { this.balance = balance; this.holds = new Map(); this.settlements = []; }
@@ -60,16 +60,16 @@ const delta = { id: 'stream', object: 'chat.completion.chunk', choices: [{ index
 const finish = { ...delta, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] };
 const usage = { ...completion(), object: 'chat.completion.chunk', choices: [] };
 
-test('CodeGPT and free routes share one account balance; upstream secrets stay server-side', async t => {
+test('GPU routes share one account balance; upstream secrets stay server-side', async t => {
   const sent = [];
   const f = await fixture(t, async (url, options) => { sent.push({ url, options }); return response(completion()); });
-  for (const model of ['codegpt', 'free']) {
+  for (const model of ['gemma-4-12b-qat', 'ornith-1.5-9b']) {
     const reply = await f.call(request(model));
     assert.equal(reply.status, 200);
     assert.equal((await reply.json()).model, model);
   }
   assert.equal(f.store.balance, 980);
-  assert.deepEqual(f.store.settlements.map(s => s.provider), ['codegpt', 'free']);
+  assert.deepEqual(f.store.settlements.map(s => s.provider), ['gemma-4-12b-qat', 'ornith-1.5-9b']);
   assert.equal(sent[0].options.headers['x-reach-metered'], 'provider-v1');
   assert.equal(sent[0].options.headers.authorization, 'Bearer operator-test-secret-not-for-customers');
   assert.equal(sent[0].options.redirect, 'error');
@@ -83,9 +83,9 @@ test('parallel holds prevent spending the same allowance twice across models', a
   const pending = new Promise(r => { resolve = r; });
   let calls = 0;
   const f = await fixture(t, async () => { calls++; dispatched(); return pending; }, { balance: 150 });
-  const first = f.call(request('codegpt'), 'first');
+  const first = f.call(request('gemma-4-12b-qat'), 'first');
   await dispatch;
-  const second = await f.call(request('free'), 'second');
+  const second = await f.call(request('ornith-1.5-9b'), 'second');
   assert.equal(second.status, 402);
   assert.equal(calls, 1);
   resolve(response(completion()));
@@ -102,7 +102,7 @@ test('idempotent replay returns persisted completion without dispatch or a secon
   assert.equal(second.headers.get('x-reach-replayed'), 'true');
   assert.equal(calls, 1);
   assert.equal(f.store.balance, 990);
-  const conflict = await f.call(request('free'), 'logical-request');
+  const conflict = await f.call(request('ornith-1.5-9b'), 'logical-request');
   assert.equal(conflict.status, 409);
   assert.equal(calls, 1);
 });
@@ -144,13 +144,13 @@ test('unknown usage, estimates, transport failures, and upstream errors retain u
 test('qualified SSE streams settle once and replay the entire answer', async t => {
   let calls = 0;
   const f = await fixture(t, async () => { calls++; return streamResponse([delta, finish, usage, '[DONE]']); });
-  const first = await f.call(request('free', { stream: true }), 'streamed');
+  const first = await f.call(request('ornith-1.5-9b', { stream: true }), 'streamed');
   const text = await first.text();
   assert.match(text, /Hello/);
   assert.match(text, /"usage_source":"provider"/);
   assert.equal(text.match(/\[DONE\]/g).length, 1);
   assert.equal(f.store.balance, 990);
-  const repeat = await f.call(request('free', { stream: true }), 'streamed');
+  const repeat = await f.call(request('ornith-1.5-9b', { stream: true }), 'streamed');
   assert.equal(await repeat.text(), text);
   assert.equal(calls, 1);
 });
@@ -159,7 +159,7 @@ test('SSE without final usage or DONE retains hold and emits a clean error', asy
   for (const events of [[delta, finish, '[DONE]'], [delta, finish, usage], [delta, { error: { message: 'SECRET' } }, '[DONE]']]) {
     await t.test(JSON.stringify(events), async t => {
       const f = await fixture(t, async () => streamResponse(events));
-      const reply = await f.call(request('free', { stream: true }), 'broken');
+      const reply = await f.call(request('ornith-1.5-9b', { stream: true }), 'broken');
       const text = await reply.text();
       assert.match(text, /"error"/);
       assert.doesNotMatch(text, /SECRET/);
@@ -171,7 +171,7 @@ test('SSE without final usage or DONE retains hold and emits a clean error', asy
 
 test('JSON provider replies convert to SSE when stream was requested', async t => {
   const f = await fixture(t, async () => response(completion()));
-  const reply = await f.call(request('free', { stream: true }));
+  const reply = await f.call(request('ornith-1.5-9b', { stream: true }));
   assert.equal(reply.headers.get('content-type'), 'text/event-stream');
   assert.match(await reply.text(), /"delta":\{"role":"assistant"/);
   assert.equal(f.store.balance, 990);
@@ -182,11 +182,11 @@ test('catalog hides unqualified routes and request caps reject before a reservat
   const f = await fixture(t, async () => { calls++; return response(completion()); },
     { models: [{ ...MODELS[0], metered: false }, MODELS[1]] });
   const catalog = await (await fetch(`${f.base}/v1/models`)).json();
-  assert.deepEqual(catalog.data.map(m => m.id), ['free']);
-  for (const body of [request(), request('free', { n: 2 }), request('free', { max_tokens: 21 }),
-    request('free', { messages: [{ role: 'user', content: [{ type: 'image_url' }] }] }),
-    request('free', { messages: [{ role: 'user', content: 'x'.repeat(9000) }] }),
-    request('free', { max_tokens: 10, max_completion_tokens: 10 }), request('free', { api_key: 'customer-secret' })]) {
+  assert.deepEqual(catalog.data.map(m => m.id), ['ornith-1.5-9b']);
+  for (const body of [request(), request('ornith-1.5-9b', { n: 2 }), request('ornith-1.5-9b', { max_tokens: 21 }),
+    request('ornith-1.5-9b', { messages: [{ role: 'user', content: [{ type: 'image_url' }] }] }),
+    request('ornith-1.5-9b', { messages: [{ role: 'user', content: 'x'.repeat(9000) }] }),
+    request('ornith-1.5-9b', { max_tokens: 10, max_completion_tokens: 10 }), request('ornith-1.5-9b', { api_key: 'customer-secret' })]) {
     const reply = await f.call(body);
     assert.ok(reply.status === 400 || reply.status === 404);
   }
@@ -228,7 +228,7 @@ test('gateway capacity releases only a reservation known not to have dispatched'
   const f = await fixture(t, async () => { calls++; arrived(); return pending; }, { maxConcurrency: 1 });
   const first = f.call(request(), 'holding');
   await arrival;
-  const blocked = await f.call(request('free'), 'capacity');
+  const blocked = await f.call(request('ornith-1.5-9b'), 'capacity');
   assert.equal(blocked.status, 429);
   assert.equal(f.store.holds.size, 1);
   assert.equal(f.store.balance, 880);
@@ -248,7 +248,7 @@ test('client disconnect propagates cancellation and keeps the uncertain reservat
     } });
     return new Response(stream, { headers: { 'content-type': 'text/event-stream', 'x-reach-metering': 'provider-v1' } });
   });
-  const reply = await f.call(request('codegpt', { stream: true }), 'cancelled');
+  const reply = await f.call(request('gemma-4-12b-qat', { stream: true }), 'cancelled');
   const reader = reply.body.getReader();
   await reader.read();
   await reader.cancel();
@@ -262,7 +262,7 @@ test('client disconnect propagates cancellation and keeps the uncertain reservat
 test('conflicting provider usage cannot silently undercharge an SSE request', async t => {
   const conflicting = { ...usage, usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } };
   const f = await fixture(t, async () => streamResponse([delta, finish, usage, conflicting, '[DONE]']));
-  const reply = await f.call(request('codegpt', { stream: true }), 'conflicting');
+  const reply = await f.call(request('gemma-4-12b-qat', { stream: true }), 'conflicting');
   assert.match(await reply.text(), /ambiguous_usage/);
   assert.equal(f.store.holds.get('alice/conflicting').status, 'uncertain');
   assert.equal(f.store.balance, 880);

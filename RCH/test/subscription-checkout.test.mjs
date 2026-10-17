@@ -7,7 +7,7 @@ import {PGlite} from '@electric-sql/pglite';
 import {AccountStore} from '../service/store.mjs';
 import {SupabaseAccountStore} from '../service/supabase-store.mjs';
 const NOW=1_800_000_000_123, fingerprint='a'.repeat(64);
-const models=[{id:'bridge-chat',metered:true,access:'requests',bridge:{kind:'tray',model:'chatgpt-chat'}}];
+const models=[{id:'bridge-chat',metered:true,access:'requests',bridge:{kind:'gpu',model:'google/gemma-4-12B-it-qat-q4_0-unquantized'}}];
 const subscription={basic:{id:'basic-wallet',includedRequests:1500,priceUsdMicros:15000000},overageUsdMicrosPerRequest:10000,proEnabled:false};
 let db;
 before(async()=>{

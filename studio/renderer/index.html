@@ -4,6 +4,8 @@
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; frame-src 'self' blob: data:; base-uri 'self'; object-src 'none'; frame-ancestors 'none'" />
   <title>Reach Studio</title>
+  <link rel="icon" type="image/svg+xml" href="../assets/icon.svg" />
+  <link rel="alternate icon" type="image/png" href="../assets/icon.png" />
   <script src="boot.js"></script>
   <script src="theme-data.js"></script>
   <script src="theme.js"></script>
@@ -16,11 +18,12 @@
   <link rel="stylesheet" href="create-page.css" />
   <link rel="stylesheet" href="account-menu.css" />
   <link rel="stylesheet" href="responsive.css" />
+  <link rel="stylesheet" href="singular-panel.css" />
 </head>
 <body>
   <header>
     <div class="brand">
-      <span class="mark">R</span>
+      <span class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 21.2 12 12 21.2 2.8 12Z"/><circle cx="12" cy="2.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="21.2" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="12" cy="21.2" r="1.8" fill="currentColor" stroke="none"/><circle cx="2.8" cy="12" r="1.8" fill="currentColor" stroke="none"/><g transform="translate(12 12) scale(.77) translate(-12 -12)"><path d="M9.2 7.2h3.4c1.6 0 2.5 1 2.5 2.4 0 1.1-.8 2-1.9 2.2l2.1 5H13.4l-1.9-4.6h-.7v4.6H9.2V7.2Zm1.6 1.4v2.2h1.7c.8 0 1.2-.5 1.2-1.1 0-.6-.5-1.1-1.2-1.1h-1.7Z" fill="currentColor" stroke="none"/></g></svg></span>
       <h1>Reach Studio</h1>
     </div>
     <nav class="tabs">
@@ -148,7 +151,7 @@
             <div class="home-hero-art" aria-hidden="true">
               <div class="home-art-orbit home-art-orbit-one"></div>
               <div class="home-art-orbit home-art-orbit-two"></div>
-              <div class="home-art-core">R</div>
+              <div class="home-art-core"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 21.2 12 12 21.2 2.8 12Z"/><circle cx="12" cy="2.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="21.2" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="12" cy="21.2" r="1.8" fill="currentColor" stroke="none"/><circle cx="2.8" cy="12" r="1.8" fill="currentColor" stroke="none"/><g transform="translate(12 12) scale(.77) translate(-12 -12)"><path d="M9.2 7.2h3.4c1.6 0 2.5 1 2.5 2.4 0 1.1-.8 2-1.9 2.2l2.1 5H13.4l-1.9-4.6h-.7v4.6H9.2V7.2Zm1.6 1.4v2.2h1.7c.8 0 1.2-.5 1.2-1.1 0-.6-.5-1.1-1.2-1.1h-1.7Z" fill="currentColor" stroke="none"/></g></svg></div>
               <span class="home-art-caption">REACH / STUDIO</span>
             </div>
           </section>
@@ -235,7 +238,7 @@
           <section class="home-section" aria-labelledby="home-subscription-title">
             <div class="home-section-intro">
               <div><p class="home-eyebrow">YOUR ACCOUNT / MODEL ACCESS</p><h2 id="home-subscription-title">One allowance. Every supplied model.</h2></div>
-              <p>CodeGPT and supplied free endpoints share your plan allowance across chats, agents, teams, and devices.</p>
+              <p>GPU server models share your REACH plan allowance across chats, agents, teams, and devices. Login Providers use your separate provider sign-in.</p>
             </div>
             <div class="home-account-grid">
               <article class="home-card home-value-card">
@@ -323,7 +326,7 @@
 
       <section class="work">
         <div id="no-project" class="empty">
-          <div class="big-mark">R</div>
+          <div class="big-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 21.2 12 12 21.2 2.8 12Z"/><circle cx="12" cy="2.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="21.2" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="12" cy="21.2" r="1.8" fill="currentColor" stroke="none"/><circle cx="2.8" cy="12" r="1.8" fill="currentColor" stroke="none"/><g transform="translate(12 12) scale(.77) translate(-12 -12)"><path d="M9.2 7.2h3.4c1.6 0 2.5 1 2.5 2.4 0 1.1-.8 2-1.9 2.2l2.1 5H13.4l-1.9-4.6h-.7v4.6H9.2V7.2Zm1.6 1.4v2.2h1.7c.8 0 1.2-.5 1.2-1.1 0-.6-.5-1.1-1.2-1.1h-1.7Z" fill="currentColor" stroke="none"/></g></svg></div>
           <p>Select a project or create a new one.</p>
           <p class="sub">Manage projects, run project commands, and compile Reach DApps with a native compiler.</p>
         </div>
@@ -555,6 +558,7 @@
           <div class="settings-actions">
             <button id="btn-test-all" class="ghost small" type="button" title="Ping every connection with the values on screen (GET /models — read-only, costs no tokens)">Test all</button>
             <button id="btn-add-connection" class="gold small" type="button">Add connection</button>
+            <button id="btn-login-providers" class="ghost small" type="button">Login Providers</button>
           </div>
         </div>
         <p id="credential-storage-warning" class="settings-description hidden" role="alert"></p>
@@ -566,6 +570,7 @@
         </p>
 
         <p id="conn-summary" class="settings-description conn-summary" role="status"></p>
+        <p class="settings-description">GPU server models are listed by REACH endpoints and subscriptions. Open <strong>Login Providers</strong> for CodeGPT, ChatGPT, Copilot, and Gemini models that use your provider sign-in. This catalog is available in REACH Studio and the REACH VS Code extension.</p>
 
         <div id="conn-workspace" class="conn-workspace">
           <div id="conn-list" class="conn-list" role="radiogroup" aria-label="Endpoint connections"></div>
@@ -809,7 +814,7 @@
     <!-- ========== ABOUT PAGE (PRD: About REACH Studio) ========== -->
     <section id="page-about" class="page">
       <div class="ab-wrap">
-        <div class="ab-mark" aria-hidden="true">R</div>
+        <div class="ab-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 21.2 12 12 21.2 2.8 12Z"/><circle cx="12" cy="2.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="21.2" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="12" cy="21.2" r="1.8" fill="currentColor" stroke="none"/><circle cx="2.8" cy="12" r="1.8" fill="currentColor" stroke="none"/><g transform="translate(12 12) scale(.77) translate(-12 -12)"><path d="M9.2 7.2h3.4c1.6 0 2.5 1 2.5 2.4 0 1.1-.8 2-1.9 2.2l2.1 5H13.4l-1.9-4.6h-.7v4.6H9.2V7.2Zm1.6 1.4v2.2h1.7c.8 0 1.2-.5 1.2-1.1 0-.6-.5-1.1-1.2-1.1h-1.7Z" fill="currentColor" stroke="none"/></g></svg></div>
         <h2>Reach Studio</h2>
         <p class="dim" id="ab-tagline">Desktop workspace for local AI relays, agents, and prompt engineering.</p>
         <dl class="ab-list" id="ab-list"></dl>
@@ -1143,6 +1148,7 @@
       <p id="team-spread-hint" class="dim field-hint"></p>
       <label>Members (in order — for Chain, this is the pipeline)</label>
       <div id="team-members" class="team-members"></div>
+      <div id="team-design-board" class="team-design-board hidden" role="dialog" aria-label="Choose a bot design"></div>
       <div class="row">
         <select id="team-member-pick"></select>
         <select id="team-member-role-pick" title="Preset crew role — each of the 20 roles works differently and collaborates through the crew's agent links"></select>
@@ -1206,6 +1212,7 @@
   <script src="app-editor.js"></script>
   <script src="app-settings.js"></script>
   <script src="app-model-picker.js"></script>
+  <script src="member-designs.js"></script>
   <script src="app-create.js"></script>
   <script src="app-composer-catalog.js"></script>
   <script src="app-dispatch.js"></script>
@@ -1218,6 +1225,7 @@
   <script src="workspace.js"></script>
   <script src="team-composer.js"></script>
   <script src="telemetry.js"></script>
+  <script src="singular-panel.js"></script>
   <script src="activity-bar.js"></script>
   <script src="workspace-shell.js"></script>
   <script src="connections-ui.js"></script>

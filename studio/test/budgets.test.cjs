@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { defaults, presets, resolveBudgets, validateBudgets } = require('../agent/budgets.cjs');
+const { defaults, presets, resolveBudgets, validateBudgets, budgetsForModel } = require('../agent/budgets.cjs');
 const { AgentLoop } = require('../agent/agent-loop.cjs');
 const { TeamRunner, boundedRelay } = require('../agent/team-runner.cjs');
 const { AgentNet } = require('../agent/agent-net.cjs');
@@ -29,6 +29,34 @@ test('global budgets replace legacy defaults; overrides and explicit zero surviv
   for (const value of [-1, 2.5, null, '4096', Infinity, 2147483648]) assert.throws(() => validateBudgets({ maxTokens: value }));
   assert.throws(() => validateBudgets({ autoCompact: 0 }));
   assert.throws(() => validateBudgets({ contextTarget: 200 }));
+});
+
+test('Ultra_Pro overlays extended-run budgets without replacing saved values or permissions', () => {
+  const normal = { ...presets.balanced, maxTokens: 0, maxRounds: 3, autoCompact: false, contextTrigger: 0, contextMessages: 0 };
+  const settings = { budgets: { ...normal, ultraPro: true } };
+  const agent = { approvals: 'prompt', reviewEdits: true };
+  const effective = resolveBudgets(settings, agent);
+  assert.equal(effective.maxTokens, 1024);
+  assert.equal(budgetsForModel(effective, 'ornith-1.5-9b').maxTokens, 4096);
+  assert.equal(budgetsForModel(effective, 'ornith-ai/Ornith-1.5-9B').summaryTokens, 16384);
+  assert.equal(budgetsForModel({ ...effective, summaryTokens: 0 }, 'ornith-1.5-9b').summaryTokens, 2048);
+  assert.equal(budgetsForModel(effective, 'gemma-4-12b-qat').maxTokens, 1024);
+  assert.equal(budgetsForModel(effective, 'chatgpt-chat').maxTokens, 0);
+  assert.equal(budgetsForModel(normal, 'ornith-1.5-9b').maxTokens, 0);
+  assert.equal(effective.maxRounds, 0);
+  assert.equal(effective.autoCompact, true);
+  assert.equal(effective.contextTrigger, 0, 'Ultra_Pro preserves an unlimited character window');
+  assert.equal(effective.contextMessages, 0, 'Ultra_Pro preserves an unlimited message window');
+  assert.equal(effective.contextTarget, normal.contextTarget);
+  assert.equal(effective.teamConcurrency, normal.teamConcurrency);
+  assert.equal(effective.maxAgents, normal.maxAgents);
+  assert.equal(agent.approvals, 'prompt');
+  assert.equal(agent.reviewEdits, true);
+  assert.equal(settings.budgets.maxTokens, 0);
+  assert.equal(settings.budgets.autoCompact, false);
+  assert.deepEqual(resolveBudgets({ budgets: { ...settings.budgets, ultraPro: false } }, agent), normal);
+  assert.equal(resolveBudgets(settings, { budgetOverrides: { ultraPro: false } }).maxRounds, 3);
+  assert.throws(() => validateBudgets({ ultraPro: 'true' }));
 });
 test('HTTP requests honor high output caps and omit max_tokens only for zero', async t => {
   const bodies = [];

@@ -10,7 +10,7 @@ import { createAccountService, signInMessage } from '../service/server.mjs';
 import { createModelGateway } from '../service/model-gateway.mjs';
 import { createRedemptionService, redemptionInterface } from '../service/redemption.mjs';
 
-const model = { id: 'async/measured', name: 'Measured', provider: 'test', metered: true,
+const model = { id: 'gemma-4-12b-qat', name: 'Gemma 4 12B QAT', provider: 'test', metered: true,
   maxInputTokens: 50, maxInputBytes: 4096, maxOutputTokens: 10 };
 const wallet = Wallet.createRandom();
 const tokenAddress = getAddress(`0x${'22'.repeat(20)}`);

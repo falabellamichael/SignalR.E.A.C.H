@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { AccountStore } from '../service/store.mjs';
 import { createAccountService } from '../service/server.mjs';
 import { validateConfig } from '../service/config.mjs';
-import { createResendMailer, normalizeEmail } from '../service/email.mjs';
+import { createResendMailer, createSupabaseOtpMailer, normalizeEmail } from '../service/email.mjs';
 const example = JSON.parse(readFileSync(new URL('../config/subscription-bridges.example.json', import.meta.url), 'utf8'));
 const SUBSCRIPTION = example.subscription, MODELS = example.models;
 
@@ -178,4 +178,6 @@ test('the sign-in page offers email only when the service enables it, and comple
   assert.deepEqual(page.requests.at(-1).body, { flowId: 'f'.repeat(64), challengeId: 'c'.repeat(64), code: '123456' });
   assert.match(page.element('email-status').textContent, /Return to REACH Studio/);
   assert.equal(page.element('primary').hidden, true);
-});
+  page.element('email-code').value = '1234 5678';
+  await page.click('email-verify');
+  assert.deepEqual(page.requests.at(-1).body, { flowId: 'f'.repeat(64), challengeId: 'c'.repeat(64), code: '12345678' });

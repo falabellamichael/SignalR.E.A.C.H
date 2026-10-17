@@ -183,7 +183,7 @@
             controls.appendChild(enToggle);
             const rm = el('button', 'reach-btn reach-btn-danger reach-btn-sm', 'Remove');
             rm.addEventListener('click', () => {
-                if (Object.keys(draft.models).length <= 1) { toast('Keep at least one alias', 'error'); return; }
+                if (Object.values(draft.models).filter(model => model.upstream?.startsWith('gpu/')).length <= 1) { toast('Keep at least one GPU alias', 'error'); return; }
                 delete draft.models[alias];
                 markDirty(true);
                 draw();
@@ -246,7 +246,7 @@
                 if (help) wrap.appendChild(el('span', 'reach-field-help', help));
                 return wrap;
             };
-            const aliases = Object.keys(draft.models);
+            const aliases = Object.keys(draft.models).filter(alias => draft.models[alias].upstream?.startsWith('gpu/'));
             grid.appendChild(mf('text', 'upstream', 'Upstream model id'));
             grid.appendChild(mf('text', 'description', 'Description'));
             // NOTE: mf signature is (kind, key, label, help, opts) — the
@@ -467,7 +467,7 @@
                             id: (data.key && data.key.id) || '',
                             baseUrl: baseUrl,
                             key: (data.key && data.key) || '',
-                            model: firstModel || 'gpt-4o',
+                            model: firstModel || 'gemma-4-12b-qat',
                             onRevoked: () => { if (rerender) rerender(); }
                         });
                         toast('Remote client ready ✓', 'ok');
@@ -486,7 +486,7 @@
                 saveBtn.disabled = true;
                 return;
             }
-            const modelAliases = Object.keys(draft.models);
+            const modelAliases = Object.keys(draft.models).filter(alias => draft.models[alias].upstream?.startsWith('gpu/'));
 
             // 1. Relay
             const relay = section('Relay', 'fa-server', 'Core listener + upstream connection.');
@@ -536,7 +536,7 @@
 
             // 4. Models
             const mo = section('Models', 'fa-cubes',
-                'Expand a model to tune its defaults. The Models page links here for editing.');
+                'Expand a GPU model to tune its defaults. Login Providers are available separately in REACH Studio and the REACH VS Code extension.');
             modelAliases.sort().forEach(modelEditor);
             const addCard = el('section', 'reach-card');
             addCard.appendChild(el('header', 'reach-card-head', 'Add alias'));
@@ -546,8 +546,9 @@
                 const alias = aliasInput.value.trim();
                 const upstream = upstreamInput.value.trim();
                 if (!alias || !upstream) { toast('Both fields are required', 'error'); return; }
+                if (!upstream.startsWith('gpu/')) { toast('Choose a GPU server upstream. Login Providers are managed in Studio or VS Code.', 'error'); return; }
                 if (draft.models[alias]) { toast('Alias already exists', 'error'); return; }
-                const template = Object.values(draft.models)[0] || {};
+                const template = Object.values(draft.models).find(model => model.upstream?.startsWith('gpu/')) || {};
                 draft.models[alias] = Object.assign({}, template,
                     { upstream: upstream, description: '', temperature: null, max_tokens: null,
                       fallback: null, system_prompt: '', rate_limits: { rpm: 0, tokens_day: 0 } });
@@ -556,10 +557,10 @@
             });
             const row = el('div', 'reach-form-row');
             const aliasInput = document.createElement('input');
-            aliasInput.placeholder = 'alias (e.g. gpt-4o-mini)';
+            aliasInput.placeholder = 'alias (e.g. gemma-chat)';
             aliasInput.className = 'reach-input';
             const upstreamInput = document.createElement('input');
-            upstreamInput.placeholder = 'upstream (e.g. codegpt/codegpt-gpt-4o-mini, or bridge/codegpt-eco-ox-alpha)';
+            upstreamInput.placeholder = 'upstream (e.g. gpu/gemma-4-12b-qat)';
             upstreamInput.className = 'reach-input';
             row.appendChild(aliasInput);
             row.appendChild(upstreamInput);
@@ -796,8 +797,8 @@
             remoteBtn.title = 'Mint a key, require it, and show the paste-ready Base URL for another PC.';
             remoteBtn.addEventListener('click', () => {
                 const firstPublic = Object.keys(draft.models || {}).find(
-                    alias => draft.models[alias] && draft.models[alias].enabled
-                        && draft.models[alias].public !== false) || 'gpt-4o';
+                    alias => draft.models[alias]?.upstream?.startsWith('gpu/') && draft.models[alias].enabled
+                        && draft.models[alias].public !== false) || 'gemma-4-12b-qat';
                 addRemoteClient(remoteBtn, keyNameInput, firstPublic, () => {
                     renderKeysList();
                     draw();

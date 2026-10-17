@@ -10,7 +10,7 @@ import tempfile
 import threading
 import urllib.request
 
-from reachd.model_routes import GPU_MODELS, DIRECT_MODELS, BROWSER_MODELS
+from reachd.model_routes import GPU_MODELS, GPU_CONTEXT_WINDOWS
 
 LOCK = threading.Lock()
 SUPPORT_MODELS = (
@@ -43,9 +43,7 @@ def model_revision(models):
 def editable(model):
     bridge = model.get("bridge") or {}
     return model.get("access") == "requests" and (
-        bridge.get("kind") == "gpu" and bridge.get("model") in {row[0] for row in GPU_MODELS.values()}
-        or bridge.get("kind") == "codegpt-direct" and bridge.get("model") in DIRECT_MODELS
-        or bridge.get("kind") == "tray" and bridge.get("model") in BROWSER_MODELS)
+        bridge.get("kind") == "gpu" and bridge.get("model") in {row[0] for row in GPU_MODELS.values()})
 
 
 def subscription_view(path=None):
@@ -59,9 +57,9 @@ def subscription_view(path=None):
             "models": [{"id": m["id"], "name": m.get("name", m["id"]),
                         "provider": m.get("provider", ""), "enabled": m.get("metered") is True,
                         "route": dict(m.get("bridge") or {}), "editable": editable(m),
-                        "maxInputBytes": m.get("maxInputBytes", 32000),
-                        "maxOutputTokens": (m.get("maxOutputTokens") or 4096) if (m.get("bridge") or {}).get("kind") == "gpu" else None}
-                       for m in config["models"]]}
+                        "maxInputBytes": m.get("maxInputBytes"),
+                        "maxOutputTokens": m.get("maxOutputTokens") if (m.get("bridge") or {}).get("kind") == "gpu" else None}
+                       for m in config["models"] if editable(m)]}
 
 
 def update_subscription(body, path=None):
@@ -85,13 +83,16 @@ def update_subscription(body, path=None):
                     raise ValueError("Enabled must be a boolean")
                 model["metered"] = value
             else:
-                limit = 32000 if key == "maxInputBytes" else 4096
+                limit = 16 * 1024 * 1024 if key == "maxInputBytes" else 1000000
                 if key == "maxOutputTokens" and model["bridge"]["kind"] != "gpu":
                     raise ValueError("This provider does not enforce an output token limit")
+                if type(value) is int and value == 0:
+                    model.pop(key, None)
+                    continue
                 if type(value) is not int or not 1 <= value <= limit:
                     raise ValueError("%s must be between 1 and %d" % (key, limit))
                 model[key] = value
-        if not any(m.get("metered") is True for m in config["models"]):
+        if not any(editable(m) and m.get("metered") is True for m in config["models"]):
             raise ValueError("Keep at least one Subscription model enabled")
         backup = path.parent / "backups" / "admin-models"
         backup.mkdir(parents=True, exist_ok=True)
@@ -131,7 +132,9 @@ def inventory():
         try:
             result = request_json(port, "/v1/account/config" if port == 20978 else "/health")
             if port in gpu_ports:
-                result["servedModels"] = [m["id"] for m in request_json(port, "/v1/models").get("data", [])]
+                models = request_json(port, "/v1/models").get("data", [])
+                result["servedModels"] = [m["id"] for m in models]
+                result["contextWindows"] = {m["id"]: m.get("max_model_len") for m in models}
             return result
         except Exception:
             return None
@@ -139,7 +142,7 @@ def inventory():
         health = dict(zip(ports, pool.map(probe, ports)))
     rows = [{"id": alias, "repository": repo, "name": name, "precision": precision,
              "gpu": gpu, "kind": "chat", "port": port, "path": "/v1/chat/completions",
-             "contextWindow": 8192, "ready": repo in (health[port] or {}).get("servedModels", [])}
+             "contextWindow": (health[port] or {}).get("contextWindows", {}).get(repo) or GPU_CONTEXT_WINDOWS.get(alias, 8192), "ready": repo in (health[port] or {}).get("servedModels", [])}
             for alias, (repo, port, name, precision, gpu) in GPU_MODELS.items()]
     support = health[18030] or {}
     rows.extend({"id": alias, "repository": repo, "name": name, "precision": precision,
@@ -151,12 +154,14 @@ def inventory():
     public = health[20978] or {}
     subscription.update({"online": health[20978] is not None,
                          "appliedRevision": public.get("modelsRevision"),
-                         "activeModels": [m["id"] for m in public.get("redemptionModels", [])]})
+                         "activeModels": [m["id"] for m in public.get("redemptionModels", [])
+                                          if m["id"] in {row["id"] for row in subscription.get("models", [])}]})
     direct = health[21304] or {}
     return {"gpuModels": rows, "residentReady": sum(m["ready"] for m in rows),
             "codegpt": {"ready": direct.get("status") == "ready" and direct.get("agents") is False,
                         "agents": direct.get("agents"),
-                        "models": direct.get("models", []), "active": direct.get("active", 0)},
+                        "active": direct.get("active", 0), "catalog": "login-providers",
+                        "availableIn": ["studio", "vscode"]},
             "subscription": subscription}
 
 

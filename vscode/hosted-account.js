@@ -91,12 +91,12 @@ function publicConfig(raw) {
 }
 function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {
   let baseUrl = '', session = null, account = null, config = null, flow = null;
-  let phase = 'unconfigured', error = '', generation = 0, loading, polling = false;
+  let phase = 'unconfigured', error = '', generation = 0, loading, polling = false, emailChallengeId = '', linkFlowId = '';
   let persistence = Promise.resolve();
   const secure = !!(secrets?.get && secrets?.store && secrets?.delete);
   const state = () => ({ status: session && Date.parse(session.expiresAt) <= now() ? 'expired' : phase,
     baseUrl, account: session && Date.parse(session.expiresAt) <= now() ? null : publicAccount(account),
-    config, error, secureStorageAvailable: secure });
+    config, error, secureStorageAvailable: secure, emailChallengeId });
   const changed = () => onChange(state());
   function persist() {
     if (!secure) return Promise.reject(new Error('VS Code secure credential storage is unavailable.'));
@@ -274,6 +274,27 @@ function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetch
     if (await openExternal(portalUrl(data.url)) === false) throw new Error('The billing page could not be opened.');
     return state();
   }
-  return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, connection, authorize, models };
+  async function linkEmailStart(email) {
+    await initialize();
+    if (!session || Date.parse(session.expiresAt) <= now()) throw new Error('Sign in before adding an email.');
+    const { data } = await request('/v1/account/link-email/start', { method: 'POST', token: session.accessToken, body: { email } });
+    emailChallengeId = text(data.challengeId, 64); linkFlowId = text(data.flowId, 64); changed();
+    return state();
+  }
+  async function linkEmailVerify(code) {
+    await initialize();
+    if (!session || !emailChallengeId || !linkFlowId) throw new Error('Request an email code first.');
+    const { data } = await request('/v1/account/link-email/verify', { method: 'POST', token: session.accessToken, body: { flowId: linkFlowId, challengeId: emailChallengeId, code } });
+    account = publicAccount(data); emailChallengeId = ''; linkFlowId = ''; error = ''; phase = 'connected'; changed();
+    return state();
+  }
+  async function linkWallet() {
+    await initialize();
+    if (!session || Date.parse(session.expiresAt) <= now()) throw new Error('Sign in before adding a wallet.');
+    const { data } = await request('/v1/account/link-wallet', { method: 'POST', token: session.accessToken, body: {} });
+    if (await openExternal(browserUrl(data.loginUrl, baseUrl)) === false) throw new Error('The wallet browser could not be opened.');
+    return state();
+  }
+  return { initialize, state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, connection, authorize, models, linkEmailStart, linkEmailVerify, linkWallet };
 }
 module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, portalUrl, paypalUrl, topUpMicros, publicAccount, publicConfig, SECRET };

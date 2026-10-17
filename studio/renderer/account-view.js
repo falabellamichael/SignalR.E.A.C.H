@@ -54,9 +54,9 @@
     const balanceKnown = holdings?.status === 'available' && holdings.decimals === 18;
     const messages = {
       unconfigured: 'Configure the hosted service to connect your wallet.',
-      disconnected: 'Ready to connect. Sign a login message in your browser wallet.',
-      connecting: 'Waiting for your browser wallet. Return here after signing in.',
-      connected: 'Wallet connected. Your allowance is enforced by the REACH service.',
+      disconnected: 'Sign in with your browser wallet or email. Both stay on the same REACH account.',
+      connecting: 'Waiting for your browser. Return here after the wallet signature or email code.',
+      connected: 'Signed in. Wallet and email on this account stay together.',
       expired: 'Your session expired. Connect your wallet again.',
       locked: 'Unlock your system credential vault and restart Studio, or disconnect to remove the saved session.',
     };

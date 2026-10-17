@@ -2,6 +2,11 @@
    Demo content is intentionally distinct from live product functionality. */
 (() => {
   'use strict';
+  try {
+    if (JSON.parse(sessionStorage.getItem('signalreach.account.session') || 'null')?.accessToken) {
+      document.querySelectorAll('.nav-actions a[href="login.html"]').forEach(link => { link.href = 'profile.html'; link.textContent = 'Profile'; });
+    }
+  } catch (_) {}
   const DATA = window.REACH_DATA;
   if (!DATA) return;
   const REPO = 'https://github.com/falabellamichael/SignalR.E.A.C.H';

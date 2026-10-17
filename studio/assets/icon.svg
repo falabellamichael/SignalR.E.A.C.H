@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background deep graphite gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#242429"/>
+      <stop offset="40%" stop-color="#161619"/>
+      <stop offset="100%" stop-color="#0d0d0f"/>
+    </linearGradient>
+
+    <!-- Outer rim metallic highlight -->
+    <linearGradient id="rimGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f5e18a" stop-opacity="0.8"/>
+      <stop offset="30%" stop-color="#d4af37" stop-opacity="0.4"/>
+      <stop offset="70%" stop-color="#4a3e14" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#d4af37" stop-opacity="0.5"/>
+    </linearGradient>
+
+    <!-- Inner rim soft highlight -->
+    <linearGradient id="innerRim" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.3"/>
+    </linearGradient>
+
+    <!-- Gold Metallic Gradient for Emblem -->
+    <linearGradient id="goldMetallic" x1="25%" y1="0%" x2="75%" y2="100%">
+      <stop offset="0%" stop-color="#fff5cc"/>
+      <stop offset="25%" stop-color="#fad66a"/>
+      <stop offset="70%" stop-color="#d4af37"/>
+      <stop offset="100%" stop-color="#a4801f"/>
+    </linearGradient>
+
+    <!-- Node 3D Spherical Radial Lighting -->
+    <radialGradient id="nodeLight" cx="35%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="45%" stop-color="#fad66a"/>
+      <stop offset="85%" stop-color="#d4af37"/>
+      <stop offset="100%" stop-color="#7a5e12"/>
+    </radialGradient>
+
+    <!-- Atmospheric Central Gold Glow -->
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#d4af37" stop-opacity="0.24"/>
+      <stop offset="55%" stop-color="#d4af37" stop-opacity="0.08"/>
+      <stop offset="100%" stop-color="#d4af37" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Premium Drop Shadow for Depth -->
+    <filter id="emblemShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#000000" flood-opacity="0.6"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#d4af37" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Base Rounded Squircle (macOS & Windows 11 Fluent style) -->
+  <rect x="20" y="20" width="472" height="472" rx="112" fill="url(#bgGrad)" stroke="url(#rimGrad)" stroke-width="3"/>
+  <rect x="23" y="23" width="466" height="466" rx="109" fill="none" stroke="url(#innerRim)" stroke-width="1.5"/>
+
+  <!-- Core Ambient Glow -->
+  <circle cx="256" cy="256" r="190" fill="url(#coreGlow)"/>
+
+  <!-- Centered Diamond + Nodes + Balanced 'R' Emblem -->
+  <g id="brand-emblem" filter="url(#emblemShadow)">
+    <!-- Diamond Outline -->
+    <path d="M256 96 L416 256 L256 416 L96 256 Z" 
+          fill="none" stroke="url(#goldMetallic)" stroke-width="24" stroke-linejoin="round"/>
+    
+    <!-- 4 Connection Nodes -->
+    <circle cx="256" cy="96" r="28" fill="url(#nodeLight)"/>
+    <circle cx="416" cy="256" r="28" fill="url(#nodeLight)"/>
+    <circle cx="256" cy="416" r="28" fill="url(#nodeLight)"/>
+    <circle cx="96" cy="256" r="28" fill="url(#nodeLight)"/>
+    
+    <!-- Balanced Centered 'R' (Scale 0.77 for optimal clearance and elegance) -->
+    <g transform="translate(256, 256) scale(0.77) translate(-256, -256)">
+      <path d="M208 174 H266 C296 174 314 192 314 218 C314 238 300 254 278 259 L318 340 H284 L248 266 H236 V340 H208 V174 Z
+               M236 198 V242 H264 C280 242 288 234 288 220 C288 206 280 198 264 198 H236 Z" 
+            fill="url(#goldMetallic)"/>
+    </g>
+  </g>
+</svg>

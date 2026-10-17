@@ -67,6 +67,92 @@ function fixture() {
 
 const count = (f, kind) => f.calls.filter(call => call[0] === kind).length;
 
+test('standalone greetings skip automatic IDE snapshots without changing preferences or conversation', async () => {
+  const f = fixture(), posted = [];
+  const conversation = [{ role: 'user', content: 'Remember cobalt.' }, { role: 'assistant', content: 'Cobalt.' },
+    { role: 'user', content: 'Hey!' }];
+  const body = { model: 'gemma-4-12b-qat', autoRequest: 'Hey!', messages: [
+    { role: 'system', content: f.CONTEXT_PREFIX + '\n' + 'x'.repeat(20695) },
+    { role: 'system', content: f.TOOL_HELP }, ...conversation],
+    includeWorkspace: true, includeIdeContext: true, webSearch: true, think: true, agentic: true, structuredActions: true };
+  const original = JSON.stringify(body);
+  const prepared = await f.bridge.prepare(body, (...args) => posted.push(args));
+  assert.deepEqual(prepared.messages, conversation);
+  assert.equal(prepared.model, body.model);
+  for (const key of ['includeWorkspace', 'includeIdeContext', 'webSearch', 'think', 'agentic', 'structuredActions']) assert.equal(prepared[key], false);
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(posted, []);
+  assert.deepEqual(f.configuration, {});
+  assert.equal(JSON.stringify(body), original);
+});
+
+test('greeting optimization preserves explicit context, attachments, mixed requests and continuations', async () => {
+  const f = fixture();
+  const user = content => ({ role: 'user', content });
+  for (const body of [
+    { messages: [user('hey, review src/app.js')] },
+    { messages: [user('hey\n\nAttached context:\n--- notes.txt ---\nplease review')] },
+    { messages: [user([{ type: 'text', text: 'hey' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }])] },
+    { messages: [{ role: 'system', content: 'Use my explicitly supplied context.' }, user('hey')] },
+    { messages: [{ role: 'developer', content: 'Explicit instructions.' }, user('hey')] },
+    { messages: [user('hey')], autoContinuation: true },
+    { messages: [user('hey')], autoRequest: 'Review this repository' },
+  ]) assert.equal(f.prepareGreetingRequest(body), null);
+  const prepared = await f.bridge.prepare({ messages: [user('hey, review src/app.js')], includeWorkspace: true }, () => {});
+  assert.equal(count(f, 'editor.snapshot'), 1);
+  assert.ok(prepared.messages.some(m => m.content.startsWith(f.CONTEXT_PREFIX)));
+});
+
+test('standalone small talk skips preparation without matching coding questions or supplied context', async () => {
+  const f = fixture(), posted = [];
+  const user = content => ({ role: 'user', content });
+  for (const prompt of ['how are you?', 'How are you doing?', 'how is it going?', "how's it going?", "what's up?", 'what’s up?']) {
+    const body = { messages: [user(prompt)], autoRequest: prompt, includeWorkspace: true,
+      includeIdeContext: true, webSearch: true, think: true, agentic: true, structuredActions: true };
+    const prepared = await f.bridge.prepare(body, (...args) => posted.push(args));
+    assert.deepEqual(prepared.messages, body.messages);
+    for (const key of ['includeWorkspace', 'includeIdeContext', 'webSearch', 'think', 'agentic', 'structuredActions']) assert.equal(prepared[key], false);
+    assert.equal(body.includeWorkspace, true);
+  }
+  assert.deepEqual(f.calls, []);
+  assert.deepEqual(posted, []);
+  for (const body of [
+    { messages: [user('how are you fixing X?')] },
+    { messages: [user('how are your tests?')] },
+    { messages: [user('how are you? Review src/app.js')] },
+    { messages: [user("what's up with src/app.js?")] },
+    { messages: [user('how are you?\n\nAttached context:\n--- src/app.js ---\nsource')] },
+    { messages: [user([{ type: 'text', text: 'how are you?' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA==' } }])] },
+    { messages: [{ role: 'system', content: 'Explicit user context.' }, user('how are you?')] },
+    { messages: [user('how are you?')], autoRequest: 'Fix src/app.js' },
+  ]) assert.equal(f.prepareGreetingRequest(body), null);
+});
+
+test('fresh preparation replaces only owned snapshots and continuations retain full source and memory', async () => {
+  const f = fixture();
+  const explicit = { role: 'system', content: 'User instructions: keep this.\n' + f.WORKSPACE_PREFIX };
+  const memory = { role: 'system', content: 'REACH conversation memory (compressed): retained user task.' };
+  const source = { role: 'system', content: f.WORKSPACE_PREFIX + '\n\n' + 'OLD_SOURCE'.repeat(10000) };
+  const search = { role: 'system', content: f.WEB_PREFIX + '\nold search' };
+  const user = { role: 'user', content: 'Explain src/app.js' };
+  const messages = [explicit, memory, source, search, user];
+  const fresh = f.prepareRequestMessages({ messages, includeWorkspace: true, webSearch: true });
+  assert.deepEqual(fresh, [explicit, memory, user]);
+  const continuation = f.prepareRequestMessages({ messages, includeWorkspace: false, webSearch: false, autoContinuation: true });
+  assert.deepEqual(continuation, messages);
+  const greeting = await f.bridge.prepare({ messages: [source, { role: 'user', content: 'hey' }], includeWorkspace: true, think: true }, () => {});
+  assert.equal(greeting.messages.length, 1);
+  assert.equal(greeting.think, false);
+  assert.deepEqual(f.calls, []);
+  f.configuration.workspaceContext = false;
+  const disabled = await f.bridge.prepare({ messages: [source, user], includeWorkspace: true }, () => {});
+  assert.ok(disabled.messages.includes(source), 'disabled context cannot discard source without replacing it');
+  f.configuration.workspaceContext = true;
+  f.vscode.workspace.isTrusted = false;
+  const untrusted = await f.bridge.prepare({ messages: [source, user], includeWorkspace: true }, () => {});
+  assert.ok(untrusted.messages.includes(source), 'restricted workspace cannot discard source without replacing it');
+});
+
 test('aborting during editor context preparation never starts a model request', async () => {
   const f = fixture();
   const posted = [];
@@ -82,6 +168,21 @@ test('aborting during editor context preparation never starts a model request', 
   assert.equal(requested, false);
   assert.equal(provider._idePreparing, null);
   assert.deepEqual(posted, [['done', { aborted: true }]]);
+});
+
+test('Gemma Agent retains owned source/search snapshots while refreshing only live IDE metadata', async () => {
+  const f=fixture();
+  const source={role:'system',content:f.WORKSPACE_PREFIX+'\nFULL_PREVIOUS_SOURCE'};
+  const search={role:'system',content:f.WEB_PREFIX+'\nprevious results'};
+  const prepared=await f.bridge.prepare({model:'gemma-4-12b-qat',agentic:true,includeWorkspace:true,webSearch:true,
+    messages:[source,search,{role:'user',content:'Explain the RAG architecture'}]},()=>{});
+  assert.ok(prepared.messages.includes(source));assert.ok(prepared.messages.includes(search));
+  assert.equal(prepared.includeWorkspace,true);assert.equal(prepared.webSearch,true);
+  assert.equal(count(f,'editor.snapshot'),0,'Gemma Agent does not preload the editor snapshot');
+  assert.ok(prepared.messages.some(m => m.content.startsWith(f.TOOL_PREFIX)));
+  assert.equal(f.isOnDemandGemmaAgent({...prepared,quickAnswer:true}),false);
+  assert.equal(f.isOnDemandGemmaAgent({...prepared,agentic:false}),false);
+  assert.equal(f.isOnDemandGemmaAgent({...prepared,model:'other-model'}),false);
 });
 
 test('prepare replaces only its tagged system messages with fresh editor and branch data', async () => {

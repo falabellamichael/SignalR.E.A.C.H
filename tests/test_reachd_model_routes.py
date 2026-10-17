@@ -15,6 +15,35 @@ from tests.test_reachd_access import RelayFixture, TUNNEL
 
 
 class PrivateModelRouteTests(unittest.TestCase):
+    def test_gpu_output_defaults_to_available_context_and_preserves_explicit_limits(self):
+        defaults = model_routes.deployment_defaults({})
+        for alias in model_routes.GPU_MODELS:
+            self.assertIsNone(defaults[alias]["max_tokens"])
+            self.assertEqual(defaults[alias]["max_tokens_cap"], 0)
+            self.assertEqual(defaults[alias]["context_window"], model_routes.GPU_CONTEXT_WINDOWS[alias])
+            for field in ("max_tokens", "max_completion_tokens"):
+                for requested in (None, 256, 2048, 8192):
+                    with self.subTest(alias=alias, field=field, requested=requested):
+                        payload = {} if requested is None else {field: requested}
+                        _, body, _, _ = model_routes.dispatch("gpu/" + alias, payload, None)
+                        if requested is None:
+                            self.assertNotIn("max_tokens", body)
+                        else:
+                            self.assertEqual(body["max_tokens"], requested)
+                        self.assertTrue(body["chat_template_kwargs"]["enable_thinking"])
+                        if alias == "ornith-1.5-9b":
+                            self.assertEqual((body["temperature"], body["top_p"], body["top_k"]), (0.6, 0.95, 20))
+                        elif alias == "minicpm5-2b":
+                            self.assertEqual((body["temperature"], body["top_p"], body["min_p"]), (1.0, 0.95, 0.0))
+                        else:
+                            self.assertEqual((body["temperature"], body["top_p"], body["top_k"]), (1.0, 0.95, 64))
+
+    def test_failure_labels_identify_the_selected_dependency(self):
+        self.assertEqual(model_routes.service_label("gpu/ornith-1.5-9b"), "Private GPU model service")
+        self.assertEqual(model_routes.service_label("direct/gpt-4o"), "CodeGPT direct service")
+        self.assertEqual(model_routes.service_label("bridge/chatgpt-chat"), "Local tray bridge")
+        self.assertEqual(model_routes.service_label("saved-custom-model"), "OmniRoute")
+
     def test_gpu_dispatch_preserves_input_and_requests_real_usage(self):
         for alias, (repository, port, *_rest) in model_routes.GPU_MODELS.items():
             for options in (None, {}, {"include_usage": False, "continuous_usage_stats": True}):
@@ -32,6 +61,7 @@ class PrivateModelRouteTests(unittest.TestCase):
                     self.assertEqual(body["max_tokens"], 256)
                     self.assertEqual(body["temperature"], 0.7)
                     self.assertEqual(body["top_p"], 0.9)
+                    self.assertTrue(body["chat_template_kwargs"]["enable_thinking"])
                     self.assertTrue(body["stream_options"]["include_usage"])
                     if options and "continuous_usage_stats" in options:
                         self.assertTrue(body["stream_options"]["continuous_usage_stats"])
@@ -89,6 +119,17 @@ class SubscriptionModelEditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Configuration changed"):
                 model_services.update_subscription(command, path)
             self.assertEqual(path.read_bytes(), after)
+            removed = model_services.update_subscription({"revision": model_services.subscription_view(path)["revision"],
+                "id": "gemma-4-12b-qat", "changes": {"maxOutputTokens": 0}}, path)
+            self.assertNotIn("maxOutputTokens", json.loads(path.read_text())["models"][0])
+            self.assertIsNone(removed["models"][0]["maxOutputTokens"])
+            uncapped = model_services.update_subscription({"revision": model_services.subscription_view(path)["revision"],
+                "id": "gemma-4-12b-qat", "changes": {"maxInputBytes": 600000}}, path)
+            self.assertEqual(uncapped["models"][0]["maxInputBytes"], 600000)
+            uncapped = model_services.update_subscription({"revision": uncapped["revision"],
+                "id": "gemma-4-12b-qat", "changes": {"maxInputBytes": 0}}, path)
+            self.assertNotIn("maxInputBytes", json.loads(path.read_text())["models"][0])
+            self.assertIsNone(uncapped["models"][0]["maxInputBytes"])
 
     def test_retired_and_external_routes_are_not_editable(self):
         for bridge in ({"kind": "gpu", "model": "ibm-granite/granite-4.2-3b-fp8"},

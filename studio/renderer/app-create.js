@@ -444,14 +444,60 @@ function fillRolePicker() {
   $('#team-member-role').disabled = true;
 }
 
+function nextDesignId(personaId) {
+  const used = new Set(teamBuilderMembers.map(member => member.designId).filter(Boolean));
+  const free = window.ReachMemberDesigns.all().find(bot => !used.has(bot.id));
+  return free ? free.id : window.ReachMemberDesigns.fromSeed(personaId);
+}
+
+function openDesignPicker(index) {
+  const board = $('#team-design-board');
+  const member = teamBuilderMembers[index];
+  if (!board || !member) return;
+  const persona = personas.find(item => item.id === member.personaId);
+  const heading = document.createElement('p');
+  heading.className = 'dim';
+  heading.textContent = 'Design for ' + (persona ? persona.name : 'this member');
+  const grid = document.createElement('div');
+  grid.className = 'team-design-grid';
+  const current = window.ReachMemberDesigns.resolve(member).id;
+  for (const bot of window.ReachMemberDesigns.all()) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'team-design-option' + (bot.id === current ? ' active' : '');
+    button.title = bot.name;
+    button.setAttribute('aria-label', bot.name);
+    button.innerHTML = window.ReachMemberDesigns.svg(bot.id, 36);
+    button.onclick = () => {
+      member.designId = bot.id;
+      renderTeamBuilder();
+    };
+    grid.append(button);
+  }
+  board.replaceChildren(heading, grid);
+  board.classList.remove('hidden');
+}
+
 function renderTeamBuilder() {
+  const board = $('#team-design-board');
+  if (board) board.classList.add('hidden');
   const el = $('#team-members');
   el.innerHTML = '';
   teamBuilderMembers.forEach((m, i) => {
     const p = personas.find(x => x.id === m.personaId);
     const row = document.createElement('div');
     row.className = 'team-member-row';
-    row.innerHTML = `<span class="member-idx">${i + 1}</span><strong>${escapeHtml(p ? p.name : '(deleted)')}</strong>`;
+    const design = window.ReachMemberDesigns.resolve(m);
+    const face = document.createElement('button');
+    face.type = 'button';
+    face.className = 'member-design-pick';
+    face.title = 'Design: ' + design.name;
+    face.setAttribute('aria-label', 'Choose a design for ' + (p ? p.name : 'member'));
+    face.innerHTML = window.ReachMemberDesigns.svg(design.id, 32);
+    face.onclick = () => openDesignPicker(i, face);
+    const name = document.createElement('strong');
+    name.textContent = p ? p.name : '(deleted)';
+    row.append(face, name);
     const roleSel = document.createElement('select');
     roleSel.className = 'row-role';
     roleSel.title = 'Crew role for this member — the role is behavior: it is injected into the member\'s prompt on every run.';
@@ -513,6 +559,7 @@ $('#btn-team-add-member').onclick = () => {
     personaId,
     roleId: spec ? spec.id : '',
     role: spec ? spec.name : custom.slice(0, 120),
+    designId: nextDesignId(personaId),
   });
   $('#team-member-role').value = '';
   $('#team-member-role-pick').value = '';

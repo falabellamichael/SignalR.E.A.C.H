@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-pkg/
 renderer/editor.bundle.js
 *.log
 .env

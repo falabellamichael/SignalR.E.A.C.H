@@ -59,7 +59,7 @@ function host({ enabled = true, key = 'private-jev-key', files = ['src/app.js', 
 
 test('Jev receives only a bounded path catalog and latest request, then reads its selected file', async () => {
   const h = host();
-  await h.select('Inspect src/app.js for the bug');
+  await h.select('Inspect the app implementation for the bug');
   assert.equal(h.calls.length, 1);
   const sent = h.calls[0];
   assert.equal(sent.url, 'https://api.typesafe.ai/v1/systemone');
@@ -67,19 +67,19 @@ test('Jev receives only a bounded path catalog and latest request, then reads it
   assert.equal(sent.options.redirect, 'error');
   const body = JSON.parse(sent.options.body);
   assert.equal(body.model, 'jev-latest');
-  assert.deepEqual(body.state, { user_request: 'Inspect src/app.js for the bug' });
+  assert.deepEqual(body.state, { user_request: 'Inspect the app implementation for the bug' });
   assert.equal(Object.keys(body.questions).length, 2);
   assert.equal(sent.options.body.includes('source for'), false);
   assert.deepEqual(h.reads, ['src/app.js']);
   assert.ok(h.posts.some(post => post.note?.includes('111 input')));
-  await h.select('Inspect src/app.js for the bug');
+  await h.select('Inspect the app implementation for the bug');
   assert.equal(h.calls.length, 1, 'same request and catalog reuses the judgment');
 });
 
 test('disabled or missing key keeps the selected provider file-selection call', async () => {
   for (const options of [{ enabled: false }, { key: '' }]) {
     const h = host(options);
-    await h.select('Inspect src/other.js');
+    await h.select('Inspect the other module');
     assert.equal(h.calls.length, 1);
     assert.equal(h.calls[0].url, 'https://chat.example/v1/chat/completions');
     assert.deepEqual(h.reads, ['src/other.js']);
@@ -100,15 +100,16 @@ test('uncertain Jev answers report their usage before provider fallback, and fol
   assert.equal(jevRequestIsSelfContained('continue with that'), false);
   const toolResults = host();
   await toolResults.select('TOOL RESULTS (you asked for these):\n\n[read src/app.js]\nprivate tool output');
-  assert.equal(toolResults.calls.length, 1);
-  assert.equal(toolResults.calls[0].url, 'https://chat.example/v1/chat/completions');
+  assert.equal(toolResults.calls.length, 0, 'an exact catalog path does not need another selector');
+  assert.deepEqual(toolResults.reads, ['src/app.js']);
   assert.equal(jevRequestIsSelfContained('TOOL RESULTS (results gathered before answering):\nsecret'), false);
 });
 
-test('explicitly named paths remain first and Stop aborts Jev without provider fallback', async () => {
+test('explicitly named paths bypass selection and Stop aborts Jev without provider fallback', async () => {
   const h = host({ jevAnswers: { file_0: { type: 'noul', noul: 0.08 }, file_1: { type: 'noul', noul: 0.94 } } });
   await h.select('Inspect src/other.js and explain its behavior');
-  assert.deepEqual(h.reads, ['src/other.js', 'src/app.js']);
+  assert.deepEqual(h.reads, ['src/other.js']);
+  assert.equal(h.calls.length, 0);
   const stop = host();
   stop.provider._controller.abort();
   await assert.rejects(stop.select('Review the module implementation'));
@@ -117,7 +118,7 @@ test('explicitly named paths remain first and Stop aborts Jev without provider f
 
 test('Stop during secret lookup rejects cached selection without a new network request', async () => {
   const h = host();
-  const prompt = 'Inspect src/app.js for the bug';
+  const prompt = 'Inspect the app implementation for the bug';
   await h.select(prompt);
   let releaseKey, lookupStarted;
   const started = new Promise(resolve => { lookupStarted = resolve; });
@@ -136,7 +137,7 @@ test('a superseding request cannot inherit the old selection after secret lookup
   let releaseKey, lookupStarted;
   const started = new Promise(resolve => { lookupStarted = resolve; });
   h.provider._secrets.get = () => { lookupStarted(); return new Promise(resolve => { releaseKey = resolve; }); };
-  const pending = h.select('Inspect src/app.js for the bug');
+  const pending = h.select('Inspect the app implementation for the bug');
   await started;
   h.provider._controller = new AbortController();
   releaseKey('private-jev-key');

@@ -58,8 +58,8 @@
     };
     const messages = {
       unconfigured: 'Add your REACH account service to sign in.',
-      disconnected: 'Sign in with your browser wallet to view your subscription and shared allowance.',
-      connecting: 'Waiting for your browser wallet. Return here after signing the login message.',
+      disconnected: 'Sign in with your browser wallet or email. Both stay on the same REACH account.',
+      connecting: 'Waiting for the REACH sign-in page. Return here after the wallet signature or email code.',
       connected: 'Your account and allowance are shared across REACH apps.',
       expired: 'Your session expired. Sign in again to continue.',
       locked: 'Secure credential storage could not be unlocked. Disconnect the saved account, then sign in again.',
@@ -71,7 +71,7 @@
       : account?.plan?.status === 'active' ? account.plan.name
       : connected && (Number(account?.allowance?.prepaidRemaining) > 0 || available > 0n) ? 'RCH prepaid access'
         : connected ? 'No active subscription' : 'REACH account');
-    if (account?.walletAddress || account?.email) paragraph(account.walletAddress || account.email, 'account-wallet');
+    if (account?.walletAddress || account?.email) paragraph([account.walletAddress, account.email].filter(Boolean).join(' · '), 'account-wallet');
     const periodEnd = requestMode ? basicActive ? requests.periodEndsAt : null : account?.plan?.expiresAt;
     if (periodEnd) {
       const expiry = new Date(periodEnd);
@@ -112,9 +112,17 @@
     const actions = create('div', 'account-actions'); body.appendChild(actions);
     if (connecting) button(actions, 'account-cancel', 'Cancel sign-in', 'cancel');
     else if (!connected) {
-      const signIn = button(actions, 'account-connect', state.config?.emailLogin ? 'Sign in with wallet or email' : 'Sign in with wallet', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
+      const signIn = button(actions, 'account-connect', 'Sign in with wallet or email', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
       signIn.classList.add('primary');
     }
+    if (connected && !account?.email) {
+      paragraph('Add an email to this same account. A later email sign-in reaches this account.');
+      const email = field('account-link-email', 'Email address', 'linkEmail', '', 'you@example.com');
+      button(actions, 'account-link-email-send', 'Email me a code', 'linkEmailStart', false, () => email.value.trim());
+      const code = field('account-link-code', '8-digit code', 'linkCode', '', '12345678'); code.maxLength = 8; code.inputMode = 'numeric';
+      button(actions, 'account-link-email-verify', 'Verify email', 'linkEmailVerify', !state.emailChallengeId, () => code.value.trim());
+    }
+    if (connected && !account?.walletAddress) button(actions, 'account-link-wallet', 'Add wallet to this account', 'linkWallet');
     if (connected) button(actions, 'account-use', 'Use REACH models', 'use', !active);
     button(actions, 'account-refresh', 'Refresh', 'refresh', !state.baseUrl || connecting);
     if (connected || state.status === 'locked' || state.status === 'expired') button(actions, 'account-disconnect', 'Disconnect', 'disconnect');
@@ -138,7 +146,8 @@
         if (paypal) button(body, 'account-topup-paypal', 'Add credit with PayPal', 'paypalTopup', false, () => topUp.value.trim());
       }
     }
-    const url = field('account-service', 'Account service URL', 'url', state.baseUrl, 'https://accounts.example.com');
+    const defaultServiceOrigin = 'https://unbent-semicolon-hermit.ngrok-free.dev';
+    const url = field('account-service', 'Account service URL', 'url', state.baseUrl || defaultServiceOrigin, defaultServiceOrigin);
     button(body, 'account-save', 'Save account service', 'configure', connecting, () => url.value.trim());
     if (state.secureStorageAvailable === false) paragraph('VS Code secure credential storage is unavailable.', 'account-error');
   }
