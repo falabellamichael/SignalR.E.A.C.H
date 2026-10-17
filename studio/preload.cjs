@@ -32,12 +32,8 @@ contextBridge.exposeInMainWorld('reach', {
   run: (cwd, args) => ipcRenderer.invoke('reach:run', { cwd, args }),
   runProject: (cwd, args) => ipcRenderer.invoke('project:run', { cwd, args }),
   kill: (runId) => ipcRenderer.invoke('reach:kill', runId),
-  onOutput: (cb) => {
-    ipcRenderer.on('reach:output', (_e, d) => cb(d));
-  },
-  onExit: (cb) => {
-    ipcRenderer.on('reach:exit', (_e, d) => cb(d));
-  },
+  onOutput: cb => { ipcRenderer.on('reach:output', (_e, d) => cb(d)); },
+  onExit: cb => { ipcRenderer.on('reach:exit', (_e, d) => cb(d)); },
 
   // Projects
   getProjects: () => ipcRenderer.invoke('projects:get'),

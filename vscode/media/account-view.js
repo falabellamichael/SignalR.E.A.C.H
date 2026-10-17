@@ -112,7 +112,7 @@
     const actions = create('div', 'account-actions'); body.appendChild(actions);
     if (connecting) button(actions, 'account-cancel', 'Cancel sign-in', 'cancel');
     else if (!connected) {
-      const signIn = button(actions, 'account-connect', 'Sign in with wallet or email', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
+      const signIn = button(actions, 'account-connect', state.config?.emailLogin === true ? 'Sign in with wallet or email' : 'Sign in with wallet', 'connect', !state.baseUrl || state.status === 'locked' || state.secureStorageAvailable === false);
       signIn.classList.add('primary');
     }
     if (connected && !account?.email) {

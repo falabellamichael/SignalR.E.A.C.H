@@ -16,7 +16,8 @@ test('Studio permanent Plus control sends planId plus and follows service and en
  const fs=require('node:fs'),vm=require('node:vm');
  const ids=new Map(),calls=[];let clones=0,notify;
  const element=()=>({value:'',textContent:'',dataset:{},hidden:false,disabled:false,listeners:{},
-  addEventListener(type,fn){this.listeners[type]=fn;},setAttribute(){},replaceChildren(){},appendChild(){},
+  addEventListener(type,fn){this.listeners[type]=fn;},setAttribute(){},replaceChildren(){},appendChild(){},append(){},
+  querySelector(selector){return ids.get(selector.replace(/^#/,'')) || null;},insertAdjacentElement(){},
   after(){},cloneNode(){clones++;return element();},
   parentElement:{querySelector(){return {textContent:''};}},
   set id(value){this._id=value;ids.set(value,this);},get id(){return this._id;}});

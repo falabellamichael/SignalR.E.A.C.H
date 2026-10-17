@@ -34,7 +34,12 @@ class Element {
   replaceChildren(...children) { this.children = []; this.append(...children); }
   setAttribute(name, value) { this.attributes[name] = value; }
   addEventListener(name, handler) { this.handlers[name] = handler; }
-  querySelector(tag) { return descendants(this).find(child => child.tagName === tag.toUpperCase()); }
+  querySelector(selector) { return descendants(this).find(child => selector.startsWith('#') ? child.id === selector.slice(1) : child.tagName === selector.toUpperCase()); }
+  insertAdjacentElement(position, child) {
+    if (position !== 'afterend') throw new Error('Unsupported fixture insertion: ' + position);
+    if (this.parentElement) this.parentElement.appendChild(child);
+    return child;
+  }
 }
 function descendants(node) { return node.children.flatMap(child => [child, ...descendants(child)]); }
 

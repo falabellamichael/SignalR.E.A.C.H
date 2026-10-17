@@ -66,8 +66,15 @@ test('a customer signs in with an email code end to end, and the code never appe
   assert.equal(session.status, 200);
   assert.equal(session.body.account.email, 'ada@example.com');
   assert.equal(session.body.account.walletAddress, null);
-  assert.equal(session.body.account.rchBalance.status, 'unconfigured');
+  assert.equal(session.body.account.access.onboarding, true);
+  assert.equal(session.body.account.rchBalance, undefined, 'email identity alone does not unlock account details');
+  const headers = { Authorization: `Bearer ${session.body.accessToken}` };
+  const blocked = await s.post('/v1/redemptions/start', { amountRch: '1' }, headers);
+  assert.deepEqual([blocked.status, blocked.body.error.code], [403, 'website_access_required']);
+  s.store.grantPlan({ accountId: session.body.account.id, grantId: 'email-subscriber-fixture',
+    planId: 'basic-wallet', name: 'Basic', models: MODELS.map(model => model.id), tokens: 0, expiresAt: NOW + 3600000 });
   const account = await s.get('/v1/account', session.body.accessToken);
+  assert.equal(account.body.rchBalance.status, 'unconfigured');
   assert.equal(account.body.email, 'ada@example.com');
   // RCH redemption needs a wallet; an email account is told so plainly.
   const redeem = await s.post('/v1/redemptions/start', { amountRch: '1' }, { Authorization: `Bearer ${session.body.accessToken}` });
@@ -181,3 +188,4 @@ test('the sign-in page offers email only when the service enables it, and comple
   page.element('email-code').value = '1234 5678';
   await page.click('email-verify');
   assert.deepEqual(page.requests.at(-1).body, { flowId: 'f'.repeat(64), challengeId: 'c'.repeat(64), code: '12345678' });
+});

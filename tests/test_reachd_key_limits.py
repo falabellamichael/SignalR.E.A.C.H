@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+from urllib.error import URLError
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
@@ -371,20 +372,23 @@ class SharedBucketChargeTests(RelayFixture):
 
     def test_one_request_costs_one_shared_token(self):
         self.state.cfg["upstream_retries"] = 0
-        self.state.cfg["models"]["gpt-4o"]["rate_limits"]["rpm"] = 10
-        body = json.dumps({"model": "gpt-4o",
+        model = "gemma-4-12b-qat"
+        self.state.cfg["models"][model]["rate_limits"]["rpm"] = 10
+        body = json.dumps({"model": model,
                            "messages": [{"role": "user", "content": "hi"}]}).encode()
-        # Nothing listens on the upstream port in tests, so the request fails
-        # AFTER both limiter phases — which is exactly what this measures.
-        status, _b = self.call("POST", "/v1/chat/completions",
-                               self.bearer(**{"Content-Type": "application/json"}),
-                               body=body)
+        # The general API serves GPU models. Fail dispatch deterministically
+        # after both limiter phases without contacting a resident GPU service.
+        with patch("reachd.chat.net.urlopen", side_effect=URLError("test upstream unavailable")) as upstream:
+            status, _b = self.call("POST", "/v1/chat/completions",
+                                   self.bearer(**{"Content-Type": "application/json"}),
+                                   body=body)
         self.assertIn(status, (502, 503))
+        upstream.assert_called_once()
         self.assertAlmostEqual(
             self.state.limiter._buckets["203.0.113.9"]["tokens"], 59.0)
         self.assertAlmostEqual(self.state.limiter._global["tokens"], 999.0)
         self.assertAlmostEqual(
-            self.state.limiter._buckets["203.0.113.9::gpt-4o"]["tokens"], 9.0)
+            self.state.limiter._buckets["203.0.113.9::" + model]["tokens"], 9.0)
 
 
 if __name__ == "__main__":

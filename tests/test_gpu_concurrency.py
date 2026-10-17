@@ -40,7 +40,7 @@ class ConcurrencyTests(unittest.TestCase):
             if index == 3:
                 return {"error": "injected failure"}
             return {"usage": {"completion_tokens": 10}, "end_to_end_tokens_s": 100,
-                    "ttft_s": .01, "elapsed_s": .1, "max_chunk_gap_s": .02}
+                    "ttft_s": .01, "first_content_s": .01, "elapsed_s": .1, "max_chunk_gap_s": .02}
 
         class Opener:
             def open(self, *args, **kwargs):
@@ -77,6 +77,49 @@ class ConcurrencyTests(unittest.TestCase):
         self.assertNotIn("decode_tokens_s", result)
         self.assertEqual(result["end_to_end_tokens_s"], 4)
         self.assertEqual((result["ttft_s"], result["chunks"], result["max_chunk_gap_s"]), (2, 2, 1))
+        self.assertEqual(result["first_content_s"], result["ttft_s"])
+
+    def test_reasoning_only_stream_has_no_visible_content_latency(self):
+        bench = load("benchmark_concurrency")
+        events = [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "length"}],
+             "usage": {"completion_tokens": 10}},
+        ]
+        stream = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events)
+        opener = unittest.mock.Mock()
+        opener.open.return_value = io.BytesIO(stream + b"data: [DONE]\n")
+        with patch.object(bench.urllib.request, "build_opener", return_value=opener), \
+                patch.object(bench.time, "perf_counter", side_effect=[0, 2, 5]):
+            result = bench.request("http://local", "test", "prompt", 10)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["ttft_s"], 2)
+        self.assertIsNone(result["first_content_s"])
+        report = bench.summarize([result], 5)
+        self.assertEqual(report["requests_with_visible_content"], 0)
+        self.assertIsNone(report["p95_first_content_s"])
+        self.assertEqual(report["aggregate_tokens_s"], 2)
+
+    def test_visible_content_latency_excludes_earlier_reasoning(self):
+        bench = load("benchmark_concurrency")
+        events = [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {"content": "answer"}, "finish_reason": "stop"}],
+             "usage": {"completion_tokens": 20}},
+        ]
+        stream = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events)
+        opener = unittest.mock.Mock()
+        opener.open.return_value = io.BytesIO(stream + b"data: [DONE]\n")
+        with patch.object(bench.urllib.request, "build_opener", return_value=opener), \
+                patch.object(bench.time, "perf_counter", side_effect=[0, 2, 3, 5]):
+            result = bench.request("http://local", "test", "prompt", 20)
+        self.assertNotIn("error", result)
+        self.assertEqual(result["ttft_s"], 2)
+        self.assertEqual(result["first_content_s"], 3)
+        report = bench.summarize([result], 5)
+        self.assertEqual(report["requests_with_visible_content"], 1)
+        self.assertEqual(report["p95_first_content_s"], 3)
+        self.assertEqual(report["aggregate_tokens_s"], 4)
 
     def test_invalid_or_incomplete_streams_fail(self):
         bench = load("benchmark_concurrency")
@@ -102,7 +145,7 @@ class ConcurrencyTests(unittest.TestCase):
             if base.endswith("18004"):
                 raise RuntimeError("worker failure")
             return {"usage": {"completion_tokens": 10}, "end_to_end_tokens_s": 100,
-                    "ttft_s": .01, "elapsed_s": .1, "max_chunk_gap_s": .02}
+                    "ttft_s": .01, "first_content_s": .01, "elapsed_s": .1, "max_chunk_gap_s": .02}
 
         output = io.StringIO()
         argv = ["bench", "--rounds", "2", "--concurrency", "1", "--requests", "3", "--warmup", "0"]

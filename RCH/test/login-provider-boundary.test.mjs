@@ -42,7 +42,7 @@ test('mixed private catalogs remain intact while every public model surface and 
   process.cwd(), { REACH_TEST_UPSTREAM: 'server-only-test-relay-credential' });
   let calls = 0;
   const forbidden = () => { calls++; throw new Error('Unavailable models cannot reserve or dispatch.'); };
-  const account = { id: 'fixture', allowedModels: models, walletAddress: null };
+  const account = { id: 'fixture', allowedModels: models, walletAddress: null, plan: { id: 'basic-wallet', status: 'active' } };
   const store = { models, reserveRequest: forbidden, settleRequest: forbidden, releaseRequest: forbidden,
     markRequestUncertain: forbidden, reserve: forbidden, reserveUsd: forbidden,
     authenticate: () => account, account: () => account, pruneExpiredAuthentication: () => {} };

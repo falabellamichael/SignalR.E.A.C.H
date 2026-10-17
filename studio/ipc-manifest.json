@@ -29,6 +29,41 @@
     "args": [],
     "returns": "Hosted account state"
   },
+  "account:linkEmailStart": {
+    "module": "main.mjs",
+    "args": ["email"],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:linkEmailVerify": {
+    "module": "main.mjs",
+    "args": ["code"],
+    "returns": "{ ok, state?, err? }"
+  },
+  "account:linkWallet": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "{ ok, state?, err? }"
+  },
+  "git:info": {
+    "module": "main.mjs",
+    "args": ["dir"],
+    "returns": "Git repository information from getGitInfo"
+  },
+  "plugins:get": {
+    "module": "main.mjs",
+    "args": [],
+    "returns": "Configured plugin settings"
+  },
+  "plugins:save": {
+    "module": "main.mjs",
+    "args": ["patch"],
+    "returns": "{ ok, plugins }"
+  },
+  "plugins:test": {
+    "module": "main.mjs",
+    "args": ["{ id, config }"],
+    "returns": "Plugin connection test result"
+  },
   "account:redeem": {
     "module": "main.mjs",
     "args": ["amountRch"],

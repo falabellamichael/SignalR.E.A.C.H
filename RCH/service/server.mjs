@@ -6,7 +6,7 @@ import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { accountAccess } from './eligibility.mjs';
 import { createModelGateway } from './model-gateway.mjs';
-import { requestCapabilities } from './gpu-bridge.mjs';
+import { hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
@@ -119,12 +119,12 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
   const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:requestCapabilities(m),pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
-  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,modelsRevision:digest(JSON.stringify(config.models)),chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false,...(config.subscription.plus?{plus:{...config.subscription.plus}}:{})}}:{}),cardPayments:!!stripe,cardPlans:{basic:!!stripe?.basicPriceId,plus:!!stripe?.plusPriceId},paypalPayments:!!paypal,...(paypal?{paypalOrigin:paypal.pageOrigin}:{}),emailLogin:!!mailer,loginMethod:'ethereum-browser-wallet'});
+  const publicConfig=()=>({enabled:true,serviceOrigin:config.origin,modelsRevision:digest(JSON.stringify(config.models)),chainId:config.chainId,tokenAddress:config.redemption?.tokenAddress||null,redemptionEnabled:redemption.enabled,redemptionMode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,redemptionModels:(config.models||[]).filter(m=>hostedGpuModel(m)&&m.metered===true&&(m.pricing||m.access==='requests')).map(publicModel),...(config.subscription?{subscription:{basic:{...config.subscription.basic},overageUsdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest,proEnabled:false,...(config.subscription.plus?{plus:{...config.subscription.plus}}:{})}}:{}),cardPayments:!!stripe,cardPlans:{basic:!!stripe?.basicPriceId,plus:!!stripe?.plusPriceId},paypalPayments:!!paypal,...(paypal?{paypalOrigin:paypal.pageOrigin}:{}),emailLogin:!!mailer,loginMethod:'ethereum-browser-wallet'});
   const accountView=async account=>{
     const access=accountAccess(account);
     if(!access.website)return {id:account.id,email:account.email,walletAddress:null,access};
     // An email-only subscriber has no wallet to read holdings from.
-    return {...account,access,rchBalance:account.walletAddress?await balances.read(account.walletAddress):{status:'unconfigured'},redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
+    return {...account,allowedModels:(account.allowedModels||[]).filter(hostedGpuModel),access,rchBalance:account.walletAddress?await balances.read(account.walletAddress):{status:'unconfigured'},redemption:{enabled:redemption.enabled,mode:config.redemption?.mode||'burn',treasuryAddress:config.redemption?.treasuryAddress||null,tokensPerRch,chainId:config.chainId}};
   };
   const server=createServer(async(req,res)=>{
     res.setHeader('cache-control','no-store');res.setHeader('x-content-type-options','nosniff');res.setHeader('referrer-policy','no-referrer');

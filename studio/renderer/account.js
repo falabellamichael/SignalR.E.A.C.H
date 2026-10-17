@@ -20,7 +20,7 @@
     el('account-status').textContent = model.message;
     el('account-status').dataset.state = state.error || state.status === 'locked' ? 'error' : model.connected ? 'success' : '';
     el('account-wallet').textContent = [state.account?.walletAddress, state.account?.email].filter(Boolean).join(' · ') || 'Your wallet or email will appear after sign-in.';
-    el('account-connect').textContent = 'Sign in with wallet or email';
+    el('account-connect').textContent = state.config?.emailLogin === true ? 'Sign in with wallet or email' : 'Sign in with wallet';
     renderAccountLink(state, busy);
     el('wallet-balance').textContent = model.walletBalance;
     el('wallet-balance-detail').textContent = model.walletBalanceDetail;

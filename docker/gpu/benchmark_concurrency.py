@@ -47,13 +47,14 @@ def request(base, model, prompt, tokens, delay=0):
                     usage = event["usage"]
                 for choice in event.get("choices", []):
                     delta = choice.get("delta", {})
+                    if any(delta.get(key) for key in ("content", "reasoning_content", "reasoning", "tool_calls")):
+                        arrived = time.perf_counter()
+                        arrivals.append(arrived)
+                        if delta.get("content") and first_content is None:
+                            first_content = arrived
                     if delta.get("content"):
-                        if first_content is None:
-                            first_content = time.perf_counter()
                         content_chars += len(delta["content"])
                     reasoning_chars += sum(len(delta.get(key) or "") for key in ("reasoning_content", "reasoning"))
-                    if any(delta.get(key) for key in ("content", "reasoning_content", "reasoning", "tool_calls")):
-                        arrivals.append(time.perf_counter())
                     finished |= choice.get("finish_reason") is not None
                     if choice.get("finish_reason") is not None:
                         finish_reason = choice["finish_reason"]
