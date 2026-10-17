@@ -1,1 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect width="48" height="48" rx="12" fill="#161618"/><g fill="none" stroke="#d4af37" stroke-width="2.4"><path d="M24 10 38 24 24 38 10 24Z"/><circle cx="24" cy="10" r="3" fill="#d4af37"/><circle cx="38" cy="24" r="3" fill="#d4af37"/><circle cx="24" cy="38" r="3" fill="#d4af37"/><circle cx="10" cy="24" r="3" fill="#d4af37"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <rect width="48" height="48" rx="12" fill="#161618"/>
+  <g fill="none" stroke="#d4af37" stroke-width="2.6" stroke-linejoin="round">
+    <path d="M24 7.6 L40.4 24 L24 40.4 L7.6 24 Z"/>
+  </g>
+  <circle cx="24" cy="7.6" r="3.2" fill="#d4af37"/>
+  <circle cx="40.4" cy="24" r="3.2" fill="#d4af37"/>
+  <circle cx="24" cy="40.4" r="3.2" fill="#d4af37"/>
+  <circle cx="7.6" cy="24" r="3.2" fill="#d4af37"/>
+  <g transform="translate(24, 24) scale(0.77) translate(-24, -24)">
+    <path d="M19 16.5 H25.2 C28.2 16.5 30 18.2 30 20.8 C30 22.8 28.5 24.3 26.5 24.8 L30.4 32.5 H27.2 L23.6 25.5 H22 V32.5 H19 V16.5 Z
+             M22 19 V23 H25 C26.6 23 27.3 22.2 27.3 21 C27.3 19.8 26.6 19 25 19 H22 Z" 
+          fill="#d4af37"/>
+  </g>
+</svg>
