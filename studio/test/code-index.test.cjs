@@ -154,6 +154,64 @@ test('indexProject on a missing directory reports an error instead of throwing',
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+
+test('project indexing reaches root metadata and application source before bundled runtimes', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'index-source-first-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const files = {
+    'README.md': '# SimpleRAG — Offline-First RAG Desktop Workspace\n',
+    'pyproject.toml': '[project]\nname = "RAGWorkspace"\n',
+    'GUI/app.py': 'def answer_question():\n    return "answer"\n',
+    'electron_app/main.js': 'function openSimpleRAG() {}\n',
+    'artifacts/old-reach/reach.js': 'function oldReachArtifact() {}\n',
+    'electron_app/backend/ragworkspace-service/_internal/torch/tensor.py': 'def bundled_tensor(): pass\n',
+    'python/Lib/site-packages/dependency.py': 'def installed_dependency(): pass\n',
+    'electron_dist_old/resources/app.js': 'function packagedApp() {}\n',
+  };
+  for (const [file, content] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), content);
+  }
+  const index = indexProject(dir, { maxFiles: 4 });
+  assert.ok(index.symbolsByFile.has('README.md'), 'root README must be indexed');
+  assert.ok(index.symbolsByFile.has('GUI/app.py'), 'real Python application must be indexed');
+  assert.ok(index.symbolsByFile.has('electron_app/main.js'), 'Electron application must be indexed');
+  assert.ok(index.symbols.some(symbol => symbol.name === 'answer_question'));
+  assert.ok([...index.symbolsByFile.keys()].every(file => !/artifacts|_internal|site-packages|electron_dist_old/.test(file)));
+  assert.equal(index.root, path.resolve(dir));
+  assert.match(index.project.name, /SimpleRAG/);
+  assert.ok(index.project.evidence.some(item => item.path === 'README.md'));
+});
+
+test('source folders named packages or runtime remain indexable', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'index-source-folders-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  for (const file of ['packages/core/index.js', 'runtime/worker.py']) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), file.endsWith('.py') ? 'def worker(): pass\n' : 'export function core() {}\n');
+  }
+  const index = indexProject(dir);
+  assert.deepEqual([...index.symbolsByFile.keys()].sort(), ['packages/core/index.js', 'runtime/worker.py']);
+});
+
+test('project indexing respects Git ignore rules while retaining new source files', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'index-git-scope-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { spawnSync } = require('node:child_process');
+  const init = spawnSync('git', ['init', dir], { windowsHide: true });
+  if (init.error?.code === 'ENOENT') { t.skip('Git is not installed'); return; }
+  assert.equal(init.status, 0);
+  fs.writeFileSync(path.join(dir, '.gitignore'), '/TrainingModel/\n/outputs/\n');
+  for (const file of ['src/new.js', 'TrainingModel/dependency.py', 'outputs/export.css']) {
+    fs.mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(dir, file), 'export function newSource() {}\n');
+  }
+  const index = indexProject(dir);
+  assert.equal(index.scope.gitIgnore, true);
+  assert.deepEqual([...index.symbolsByFile.keys()], ['src/new.js']);
+  const explicit = indexProject(dir, { respectGitIgnore: false });
+  assert.ok(explicit.symbolsByFile.has('TrainingModel/dependency.py'));
+});
 const { stripJsonComments, parseTsConfig, buildTsConfigTables, nearestTsConfig,
   resolveAlias } = require('../agent/code-index.cjs');
 

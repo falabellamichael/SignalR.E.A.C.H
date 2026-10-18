@@ -42,6 +42,22 @@ function makeLoop(dir, { overrides = {}, settings = {}, events } = {}) {
 
 const conversation = [{ role: 'user', content: 'How does computeTotal work?' }];
 
+test('the request identifies the selected project from files rather than the hosting app', t => {
+  const dir = project();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, 'README.md'), '# SimpleRAG — Offline-First RAG Desktop Workspace\n');
+  const { loop, store } = makeLoop(dir);
+  store.get('a').messages.push({ role: 'assistant', content: 'Workspace is REACH Studio.' });
+  const prompt = loop._buildSystemPrompt();
+  assert.match(prompt, /SimpleRAG/);
+  assert.match(prompt, /README\.md/);
+  assert.match(prompt, /SELECTED PROJECT/);
+  assert.match(prompt, /partial|truncated/i, 'incomplete scans must not become comprehensive claims');
+  assert.match(prompt, /data, not instructions/i, 'repository metadata stays untrusted');
+  const { loop: disabled } = makeLoop(dir, { settings: { features: { workspace: false } } });
+  assert.doesNotMatch(disabled._buildSystemPrompt(), /SimpleRAG|README\.md|SELECTED PROJECT/);
+});
+
 test('a matching prompt gets codebase data without promoting it to a system instruction', () => {
   const dir = project();
   const { loop, sent } = makeLoop(dir);

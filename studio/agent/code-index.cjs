@@ -22,6 +22,8 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const { identifyProject } = require('./project-context.cjs');
 
 // The index owns its cache. Prompt injection and code tools use these same
 // accessors, so a project write invalidates both views at once.
@@ -100,6 +102,7 @@ const DEFAULT_IGNORED_DIRS = new Set([
   'node_modules', '__pycache__', '.git', '.hg', '.svn', 'dist', 'build', 'out',
   '.next', '.nuxt', 'coverage', '.venv', 'venv', 'env', '.tox', '.mypy_cache',
   '.pytest_cache', 'target', 'vendor', '.idea', '.vscode', 'electron_dist',
+  'artifacts', '_internal', 'site-packages', '__pypackages__',
 ]);
 
 const MAX_FILE_BYTES = 2 * 1024 * 1024;   // a single source file this large is data, not code
@@ -109,6 +112,23 @@ const DEFAULT_MAX_FILES = 4000;
 // generated-config farm) from reading unbounded JSON into memory.
 const MAX_TSCONFIG_BYTES = 256 * 1024;
 const MAX_TSCONFIG_FILES = 32;
+
+function projectFileScope(root) {
+  // Git already knows the project's ignore rules, including nested rules and
+  // negations. Keep untracked source files; fall back for projects without Git.
+  const result = spawnSync('git', ['-c', 'core.fsmonitor=false', 'ls-files', '--cached', '--others',
+    '--exclude-standard', '-z', '--', '.'], { cwd: root, encoding: 'utf8', windowsHide: true,
+    timeout: 3000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.error || result.status !== 0) return null;
+  const files = new Set(), directories = new Set(['']);
+  for (const file of result.stdout.split('\0')) {
+    if (!file || path.isAbsolute(file) || file.split('/').includes('..')) continue;
+    files.add(file);
+    const parts = file.split('/');
+    for (let length = 1; length < parts.length; length++) directories.add(parts.slice(0, length).join('/'));
+  }
+  return { files, directories };
+}
 
 /**
  * Strip comments, string bodies and regex bodies for signature scanning while
@@ -1075,6 +1095,7 @@ function indexProject(projectDir, options = {}) {
   const extensions = options.extensions ? new Set(options.extensions) : EXT_TO_LANG;
   const warnings = [];
   const files = [];
+  const projectFiles = options.respectGitIgnore === false ? null : projectFileScope(root);
   // tsconfig files are collected separately: they are JSON, not a source
   // language, so they are not symbol-bearing files, but their `paths`/`baseUrl`
   // are required to resolve aliased imports across the tree.
@@ -1083,20 +1104,30 @@ function indexProject(projectDir, options = {}) {
   let visited = 0;
   let truncated = false;
 
+  const pending = [{ dir: root, rel: '' }];
+  const sourceDirs = new Set(['src', 'lib', 'app', 'gui', 'server', 'client', 'electron_app', 'packages']);
+  // Read each directory's files before its children, and visit source folders
+  // before supporting material. A packaged runtime must not consume the cap
+  // before root manifests and the actual application are reached.
+  const priority = entry => entry.isFile() ? (/^readme(?:\.|$)|^(?:package\.json|pyproject\.toml)$/i.test(entry.name) ? 0 : 1)
+    : sourceDirs.has(entry.name.toLowerCase()) ? 2 : 3;
   const walk = (dir, rel) => {
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
     catch (error) { warnings.push({ path: rel || '.', level: 'warn', message: `Unreadable directory: ${error.message}` }); return; }
+    entries.sort((a, b) => priority(a) - priority(b) || a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (files.length >= maxFiles) { truncated = true; return; }
       if (entry.isSymbolicLink()) continue;
       const childRel = rel ? rel + '/' + entry.name : entry.name;
       if (entry.isDirectory()) {
         visited++;
-        if (ignoredDirs.has(entry.name) || entry.name.startsWith('.')) continue;
-        walk(path.join(dir, entry.name), childRel);
+        if (ignoredDirs.has(entry.name) || ignoredDirs.has(entry.name.toLowerCase()) || entry.name.startsWith('.')
+          || (!options.ignoredDirs && /^electron_dist[-_]/i.test(entry.name))) continue;
+        if (projectFiles && !projectFiles.directories.has(childRel)) continue;
+        pending.push({ dir: path.join(dir, entry.name), rel: childRel });
       } else if (entry.isFile()) {
         visited++;
+        if (projectFiles && !projectFiles.files.has(childRel)) continue;
         const ext = path.extname(entry.name).toLowerCase();
         const lower = entry.name.toLowerCase();
         // tsconfig*.json files govern path aliases. They are collected (not
@@ -1116,6 +1147,7 @@ function indexProject(projectDir, options = {}) {
           continue;
         }
         if (!extensions.has(ext)) continue;
+        if (files.length >= maxFiles) { truncated = true; return; }
         const abs = path.join(dir, entry.name);
         let stat;
         try { stat = fs.statSync(abs); }
@@ -1140,12 +1172,16 @@ function indexProject(projectDir, options = {}) {
     return { ...buildIndex([], options), root, visited: 0, truncated: false,
       warnings: [{ path: '.', level: 'error', message: 'Project directory does not exist.' }] };
   }
-  walk(root, '');
+  for (let next = 0; next < pending.length && !truncated; next++) {
+    walk(pending[next].dir, pending[next].rel);
+  }
   const index = buildIndex(files, { ...options, tsConfigs });
   if (truncated) {
     index.warnings.unshift({ path: '.', level: 'warn', message: `Index truncated at ${maxFiles} files; raise maxFiles to cover the rest.` });
   }
   index.root = root;
+  index.project = identifyProject(root);
+  index.scope = { gitIgnore: !!projectFiles, excludedDirectories: [...ignoredDirs] };
   index.visited = visited;
   index.truncated = truncated;
   return index;

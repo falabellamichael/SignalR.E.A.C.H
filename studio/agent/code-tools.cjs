@@ -130,6 +130,9 @@ const CODE_TOOLS = {
         const summary = codeIndex.summarize(index);
         return {
           ok: true,
+          root: index.root,
+          project: index.project,
+          scope: index.scope,
           summary,
           warnings: summarizeWarnings(index.warnings),
           truncated: !!index.truncated,

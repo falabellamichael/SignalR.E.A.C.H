@@ -113,6 +113,8 @@ test('code.index reports the symbol/dependency summary and honours refresh', asy
   const dir = project();
   const first = await run('code.index', {}, ctx(dir));
   assert.equal(first.ok, true, first.error);
+  assert.equal(first.root, path.resolve(dir), 'tool results identify the selected root');
+  assert.equal(first.project.root, path.resolve(dir), 'project identity belongs to this root');
   assert.ok(first.summary.symbols > 0, 'symbols indexed: ' + JSON.stringify(first.summary));
   assert.equal(first.summary.files, 3, 'three source files, tsconfig.json is not source');
   // `dependencies` counts files that have outgoing imports (fileGraph.size),

@@ -69,7 +69,7 @@ test('the agent soul and memory reach the system prompt after the persona role',
   // Ordering: role, then soul, then the generic identity line.
   const roleAt = prompt.indexOf('You audit contracts.');
   const soulAt = prompt.indexOf('I am the auditor');
-  const genericAt = prompt.indexOf("You are REACH Studio, a coding assistant for the user's selected project.");
+  const genericAt = prompt.indexOf("You are a coding assistant running inside REACH Studio for the user's selected project.");
   assert.ok(roleAt >= 0 && soulAt > roleAt, 'soul follows the role');
   assert.ok(genericAt > soulAt, 'the generic identity stays after the agent definition');
 });
@@ -104,7 +104,7 @@ test('a loop with no soul store produces the pre-feature prompt', () => {
   const prompt = loop._buildSystemPrompt();
   assert.doesNotMatch(prompt, /SOUL/);
   assert.doesNotMatch(prompt, /MEMORY \(/);
-  assert.match(prompt, /You are REACH Studio, a coding assistant/);
+  assert.match(prompt, /You are a coding assistant running inside REACH Studio/);
 });
 
 test('one agent cannot read another agent\'s soul', () => {
@@ -127,7 +127,7 @@ test('an unsafe soul key injects nothing instead of throwing', () => {
     const { loop } = makeLoop({ soulStore: souls, soulKey: key });
     const prompt = loop._buildSystemPrompt();
     assert.doesNotMatch(prompt, /REAL-SOUL/, `key ${JSON.stringify(key)} must not resolve`);
-    assert.match(prompt, /You are REACH Studio/, 'the prompt still builds');
+    assert.match(prompt, /You are a coding assistant running inside REACH Studio/, 'the prompt still builds');
   }
 });
 
