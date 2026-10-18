@@ -747,7 +747,12 @@
   }
 
   function setRich(el, text) {
-    const src = String(text == null ? '' : text);
+    let src = String(text == null ? '' : text);
+    if (el.parentElement?.classList?.contains('assistant')) {
+      // Saved replies can retain blank lines before the answer. Hide those
+      // lines without changing paragraph spacing, code indentation or history.
+      src = src.replace(/^(?:[ \t]*\r?\n)+/, '');
+    }
     const parts = src.split('```');
     let html = '';
     parts.forEach((p, idx) => {
