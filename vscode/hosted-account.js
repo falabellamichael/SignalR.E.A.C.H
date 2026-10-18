@@ -89,9 +89,9 @@ function publicConfig(raw) {
     redemptionModels: publicModels(raw?.redemptionModels), cardPayments: raw?.cardPayments === true, paypalPayments: raw?.paypalPayments === true, emailLogin: raw?.emailLogin === true,
     ...(raw?.subscription ? { subscription: publicSubscription(raw.subscription) } : {}) };
 }
-function createHostedAccount({ secrets, openExternal, onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {
-  let baseUrl = '', session = null, account = null, config = null, flow = null;
-  let phase = 'unconfigured', error = '', generation = 0, loading, polling = false, emailChallengeId = '', linkFlowId = '';
+function createHostedAccount({ secrets, openExternal, defaultBaseUrl = '', onChange = () => {}, fetchImpl = globalThis.fetch, now = Date.now }) {
+  let baseUrl = defaultBaseUrl ? serviceUrl(defaultBaseUrl) : '', session = null, account = null, config = null, flow = null;
+  let phase = baseUrl ? 'disconnected' : 'unconfigured', error = '', generation = 0, loading, polling = false, emailChallengeId = '', linkFlowId = '';
   let persistence = Promise.resolve();
   const secure = !!(secrets?.get && secrets?.store && secrets?.delete);
   const state = () => ({ status: session && Date.parse(session.expiresAt) <= now() ? 'expired' : phase,

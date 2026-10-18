@@ -1,8 +1,8 @@
 {
   "name": "simplereach",
   "displayName": "SimpleREACH",
-  "description": "Chat with your free SignalREACH endpoints or Microsoft 365 Copilot, with a desktop tray on macOS, Windows, and Linux.",
-  "version": "1.1.0",
+  "description": "Chat with REACH subscription models, your own endpoints, or login providers through the desktop tray.",
+  "version": "1.1.1",
   "publisher": "simplereach",
   "license": "MIT",
   "engines": {
@@ -209,7 +209,7 @@
         "simplereach.endpoint": {
           "type": "string",
           "default": "https://gist.githubusercontent.com/falabellamichael/e261e0c31ad08c373bcd667b6982847a/raw/simple-reach-endpoint.txt",
-          "markdownDescription": "Free endpoint base URL or the published endpoint-pointer URL. Used when Provider is Free endpoints."
+          "markdownDescription": "An OpenAI-compatible endpoint or endpoint pointer. Hosted REACH GPU models always use the REACH subscription connection and require a signed-in account."
         },
         "simplereach.additionalEndpoints": {
           "type": "array",
@@ -222,7 +222,7 @@
         "simplereach.accessKey": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Access key for the original Free endpoints connection. Added endpoints use their own keys."
+          "markdownDescription": "Access key for your primary custom endpoint. Hosted REACH models use your signed-in account; added custom endpoints use their own keys."
         },
         "simplereach.model": {
           "type": "string",
@@ -347,7 +347,7 @@
             "gemini"
           ],
           "enumDescriptions": [
-            "Your free OpenAI-compatible endpoints",
+            "Your own OpenAI-compatible endpoint. Hosted REACH GPU models always use the REACH subscription connection.",
             "Your REACH subscription. Configure the account service and sign in using the top-right account menu; session credentials stay in VS Code SecretStorage.",
             "The local Microsoft 365 Copilot tray bridge",
             "The local ChatGPT tray bridge",
@@ -365,7 +365,7 @@
         "simplereach.selectedEndpoint": {
           "type": "string",
           "default": "",
-          "description": "Endpoint chosen under Other providers. Empty selects the original Free endpoints connection."
+          "description": "Selected custom endpoint. Hosted REACH URLs always use the REACH subscription connection."
         },
         "simplereach.endpointAccessKeys": {
           "type": "object",

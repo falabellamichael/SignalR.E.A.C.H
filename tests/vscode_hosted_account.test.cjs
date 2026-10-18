@@ -45,6 +45,19 @@ function fixture({ exchange, stored, write, request } = {}) {
     async login() { await host.configure(origin); await host.connect(); await host.poll(); } };
 }
 
+test('a fresh install can select REACH subscription without a discovery request or a saved credential', async () => {
+  let requests=0,writes=0;
+  const host=createHostedAccount({defaultBaseUrl:'https://unbent-semicolon-hermit.ngrok-free.dev',
+    secrets:{get:async()=>undefined,store:async()=>{writes++;},delete:async()=>{}},openExternal:async()=>true,
+    fetchImpl:async()=>{requests++;throw new Error('No discovery before sign-in');}});
+  await host.initialize();
+  assert.equal(host.state().status,'disconnected');
+  assert.equal(host.state().baseUrl,'https://unbent-semicolon-hermit.ngrok-free.dev');
+  assert.equal(host.connection().accessKey,'');
+  assert.throws(()=>host.authorize(host.connection().endpoint),/Sign in/);
+  assert.equal(requests,0);assert.equal(writes,0);
+});
+
 test('account service and browser links reject credential URLs and foreign origins', () => {
   assert.equal(serviceUrl(origin + '/'), origin);
   assert.equal(serviceUrl('http://127.0.0.1:1234'), 'http://127.0.0.1:1234');

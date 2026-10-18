@@ -38,7 +38,7 @@ const CONFIG_SECTION = 'simplereach';
 const PROVIDER_SELECTION_STATE = 'simplereach.providerSelection';
 let providerSelectionOverride;
 let hostedAccount;
-const { resolveEndpoint, trayDirectory, trayBinary, DEFAULT_ENDPOINT } = require('./connection');
+const { resolveEndpoint, trayDirectory, trayBinary, DEFAULT_ENDPOINT, DEFAULT_ACCOUNT_ORIGIN, isReachEndpoint } = require('./connection');
 
 const FREE_ENDPOINT_KEY_SECRET = 'simplereach.freeEndpointAccessKey';
 let freeEndpointKeyOverride;
@@ -450,15 +450,20 @@ function config() {
       && additionalEndpoints.includes(selection.slice(9)));
   const rawProvider = useOverride
     ? (selection === 'subscription' || TRAY_PROVIDERS.includes(selection) ? selection : 'endpoint') : cfg.get('provider');
-  const provider = rawProvider === 'subscription' || TRAY_PROVIDERS.includes(rawProvider) ? rawProvider : 'endpoint';
-  const hosted = provider === 'subscription' ? hostedAccount?.connection() : null;
   const selectedEndpoint = useOverride
     ? (selection.startsWith('endpoint:') ? selection.slice(9) : '')
     : (additionalEndpoints.includes(cfg.get('selectedEndpoint')) ? cfg.get('selectedEndpoint') : '');
+  const accountOrigin = hostedAccount?.state?.()?.baseUrl || DEFAULT_ACCOUNT_ORIGIN;
+  const reachEndpointManaged = isReachEndpoint(freeEndpoint, accountOrigin);
+  const reachSubscriptionEndpoints = additionalEndpoints.filter(endpoint => isReachEndpoint(endpoint, accountOrigin));
+  const provider = rawProvider === 'subscription' || !TRAY_PROVIDERS.includes(rawProvider)
+      && isReachEndpoint(selectedEndpoint || freeEndpoint, accountOrigin)
+    ? 'subscription' : TRAY_PROVIDERS.includes(rawProvider) ? rawProvider : 'endpoint';
+  const hosted = provider === 'subscription' ? hostedAccount?.connection() : null;
   const storedKeys = cfg.get('endpointAccessKeys');
   const endpointAccessKeys = Object.fromEntries(additionalEndpoints.map(endpoint =>
-    [endpoint, storedKeys && typeof storedKeys[endpoint] === 'string' ? storedKeys[endpoint] : '']));
-  const freeAccessKey = freeEndpointKeyOverride === undefined
+    [endpoint, !reachSubscriptionEndpoints.includes(endpoint) && storedKeys && typeof storedKeys[endpoint] === 'string' ? storedKeys[endpoint] : '']));
+  const freeAccessKey = reachEndpointManaged ? '' : freeEndpointKeyOverride === undefined
     ? String(cfg.get('accessKey') || '') : freeEndpointKeyOverride;
   const isTrayBridge = TRAY_PROVIDERS.includes(provider);
   const limit = (key, fallback = 0) => {
@@ -472,6 +477,8 @@ function config() {
     endpoint: provider === 'subscription' ? hosted?.endpoint || '' : isTrayBridge ? 'http://127.0.0.1:21302/v1' : selectedEndpoint || freeEndpoint,
     hostedConfigured: !!hostedAccount?.state().baseUrl,
     freeEndpoint,
+    reachEndpointManaged,
+    reachSubscriptionEndpoints,
     additionalEndpoints,
     freeAccessKey,
     endpointAccessKeys,
@@ -933,6 +940,10 @@ class ReachChatViewProvider {
           if (key === 'endpointAccessKey') {
             const connection = config();
             const endpoint = String(msg.endpoint || '').trim();
+            if (isReachEndpoint(endpoint, this._account?.state?.()?.baseUrl)) {
+              this._post('error', { message: 'REACH GPU models use your signed-in REACH account. Select REACH subscription.' });
+              break;
+            }
             if (typeof msg.value !== 'string' ||
                 (endpoint !== connection.freeEndpoint && !connection.additionalEndpoints.includes(endpoint))) break;
             const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
@@ -952,8 +963,10 @@ class ReachChatViewProvider {
             break;
           }
           if (key === 'provider') {
-            const selection = String(msg.value || '');
+            let selection = String(msg.value || '');
             const connection = config();
+            if (selection === 'endpoint' && connection.reachEndpointManaged
+                || selection.startsWith('endpoint:') && connection.reachSubscriptionEndpoints.includes(selection.slice(9))) selection = 'subscription';
             if (selection === 'subscription' && !this._account?.state().baseUrl) {
               this._post('error', { message: 'Configure your REACH account service first.' });
               break;
@@ -992,6 +1005,10 @@ class ReachChatViewProvider {
           const allowed = ['additionalEndpoints', 'accessKey', 'model', 'maxTokens', 'workspaceContext', 'contextMaxKb', 'think', 'thinkModel', 'thinkMaxTokens', 'webSearch', 'searchResults', 'playwright', 'agentic', 'temperature', 'additionalHeaders', 'agentTemplate',
             'agentMaxRounds', 'agentUnfinishedRetries', 'toolResultBudgetKb', 'summaryMaxTokens', 'selectMaxTokens', 'compressThink', 'disabledTools', 'typesafeAutoMode', 'typesafeFileSelection'];
           if (!allowed.includes(key)) break;
+          if (key === 'accessKey' && config().reachEndpointManaged) {
+            this._post('error', { message: 'REACH GPU models use your signed-in REACH account. Select REACH subscription.' });
+            break;
+          }
           const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
           const current = cfg.get(key);
           let value = msg.value;
@@ -1479,6 +1496,9 @@ class ReachChatViewProvider {
       headers['Idempotency-Key'] = require('node:crypto').randomUUID();
       return headers;
     }
+    if (!TRAY_PROVIDERS.includes(connection.provider) && isReachEndpoint(connection.endpoint, this._account?.state?.()?.baseUrl)) {
+      throw new Error('REACH GPU models require your REACH account. Select REACH subscription and sign in.');
+    }
     const { accessKey } = connection;
     const toBridge = TRAY_PROVIDERS.includes(connection.provider)
       || (model !== null && isEconomyModel(model));
@@ -1514,7 +1534,8 @@ class ReachChatViewProvider {
       const all = [...catalog.routes.keys()];
       this._post('models', {
         models: all,
-        groups: [{ label: TRAY_PROVIDERS.includes(connection.provider) ? 'Login Providers' : 'GPU server models', models: all }],
+        groups: [{ label: connection.provider === 'subscription' ? 'REACH subscription models'
+          : TRAY_PROVIDERS.includes(connection.provider) ? 'Login Providers' : 'Your endpoint models', models: all }],
         endpoint: catalog.bases.join(' · '),
         provider: connection.provider,
         providerSelection: connection.providerSelection,
@@ -1522,6 +1543,9 @@ class ReachChatViewProvider {
       if (catalog.errors.length) this._post('error', { message: 'Some endpoints could not load: ' + catalog.errors.join('; ') });
     } catch (err) {
       if (this._endpointKey(connection) !== this._endpointKey(config())) return;
+      if (connection.provider === 'subscription' && this._account?.state?.()?.status !== 'connected') {
+        this._post('models', { models: [], groups: [], endpoint, provider: 'subscription', providerSelection: 'subscription' });
+      }
       this._post('error', { message: `Could not reach ${endpoint}: ${err.message}` });
     }
   }
@@ -1539,6 +1563,9 @@ class ReachChatViewProvider {
       return { routes: new Map(models.map(model => [model, connection.endpoint])), bases: [connection.endpoint], errors: [], bridgeError: '' };
     }
     const base = await resolveEndpoint(connection.endpoint);
+    if (!TRAY_PROVIDERS.includes(connection.provider) && isReachEndpoint(base, this._account?.state?.()?.baseUrl)) {
+      throw new Error('REACH GPU models require your REACH account. Select REACH subscription and sign in.');
+    }
     const response = await this._fetchRetry(`${base}/models`, { headers: this._authHeaders({}, connection) });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
@@ -1883,7 +1910,11 @@ class ReachChatViewProvider {
       hostedAccount.authorize(connection.endpoint);
       return connection.endpoint;
     }
-    return resolveEndpoint(connection.endpoint);
+    const base = await resolveEndpoint(connection.endpoint);
+    if (!TRAY_PROVIDERS.includes(connection.provider) && isReachEndpoint(base, this._account?.state?.()?.baseUrl)) {
+      throw new Error('REACH GPU models require your REACH account. Select REACH subscription and sign in.');
+    }
+    return base;
   }
 
   /* The bridge validates `body.model` against its own ids (`codegpt-eco-<id>`),
@@ -2827,7 +2858,7 @@ async function activate(context) {
   provider._secrets = context.secrets;
   provider._globalState = context.globalState;
   let lastAccountStatus = '';
-  hostedAccount = createHostedAccount({ secrets: context.secrets,
+  hostedAccount = createHostedAccount({ secrets: context.secrets, defaultBaseUrl: DEFAULT_ACCOUNT_ORIGIN,
     openExternal: url => vscode.env.openExternal(vscode.Uri.parse(url)),
     onChange: state => {
       provider._post('accountState', { state });

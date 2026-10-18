@@ -193,7 +193,20 @@ def subscription():
 LOGIN_URL = 'https://unbent-semicolon-hermit.ngrok-free.dev/wallet/connect'
 
 def login():
-    return page_hero('REACH ACCOUNT','Sign in with email<br><span class="accent">or your wallet.</span>','This opens the same REACH sign-in page used by REACH Studio and the VS Code extension. An email sign-up is saved on your Supabase account.')+f'''<section class="compact-section"><div class="container"><article class="plan-card reveal"><p class="plan-kicker">ONE SIGN-IN</p><h2>Wallet or email</h2><p>Connect the browser wallet and sign the login message, or choose email on that page and enter the 8-digit code. Both belong to the same REACH account.</p><button class="btn btn-primary" type="button" id="account-signin">Sign in with wallet or email</button><p id="account-status" role="status" aria-live="polite">You will leave this page to approve sign-in, then return to your Profile. JavaScript is required for secure sign-in.</p><p class="plan-note">Finish the wallet signature or the email code on the REACH sign-in page. That page is the one REACH Studio and the VS Code extension open.</p></article>{notice('The sign-in page is the hosted REACH account service. Email sign-ups are stored in Supabase. REACH never sees your wallet key.')}</div></section>'''
+    return page_hero('REACH ACCOUNT','Sign in with email<br><span class="accent">or your wallet.</span>','Use the same REACH account as Studio and the VS Code extension. Sign in securely here with email or your browser wallet.')+f'''<section class="compact-section"><div class="container"><article class="plan-card reveal"><p class="plan-kicker">ONE SIGN-IN</p><h2>Wallet or email</h2><p>Connect your browser wallet and sign the login message, or request an email code. Both use the same REACH account.</p><section id="account-onboarding" hidden aria-labelledby="onboarding-title"><h3 id="onboarding-title">One more step to your workspace.</h3><p>Email verification alone does not unlock a full profile. Subscribe or verify a wallet for this account. API key creation separately requires an active subscription or remaining redeemed RCH credits.</p><a class="btn btn-primary" href="subscription.html">View subscription</a> <button class="btn btn-secondary" type="button" id="account-link-wallet">Connect wallet to this account</button><p>Verify your browser wallet here to unlock access. Your existing email account stays connected.</p><button class="btn btn-secondary" type="button" id="account-check-access">Recheck access</button></section><button class="btn btn-primary" type="button" id="account-signin">Sign in with wallet or email</button><div id="account-login-options" hidden>
+  <button class="btn btn-secondary" type="button" id="account-wallet-signin">Connect wallet</button>
+  <pre class="login-message" id="account-wallet-message" hidden></pre>
+  <form id="account-email-form" hidden>
+    <label class="login-label" for="account-email">Email address</label>
+    <input class="login-input" id="account-email" type="email" autocomplete="email" maxlength="254" required placeholder="you@example.com">
+    <button class="btn btn-primary" id="account-email-send" type="submit">Email me a code</button>
+  </form>
+  <div id="account-code-step" hidden><form id="account-code-form">
+    <label class="login-label" for="account-code">Email verification code</label>
+    <input class="login-input" id="account-code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{{6,11}}" maxlength="11" required>
+    <button class="btn btn-primary" id="account-code-verify" type="submit">Sign in with code</button>
+  </form></div>
+</div><p id="account-status" role="status" aria-live="polite">Sign in here with an email code or your browser wallet. JavaScript is required for secure sign-in.</p><p class="plan-note">Your private key stays in your wallet. The sign-in message proves ownership and does not approve a payment.</p></article>{notice('Sign-in is verified by the hosted REACH account service. Email sign-ups are stored in Supabase. REACH never sees your wallet key.')}</div></section>'''
 
 def platform():
     tab=''.join(f'<button type="button" role="tab" id="platform-{key}" aria-controls="platform-stage" aria-selected="{"true" if key=="studio" else "false"}" {"tabindex=-1" if key!="studio" else ""} data-platform="{key}">{icon(ico)}{label}</button>' for key,ico,label in [('studio','desktop','REACH Studio'),('relay','network','Relay & panel'),('editor','code','VS Code'),('tray','window','Desktop tray')])
@@ -249,7 +262,7 @@ def build():
         chat_scripts = '<script src="assets/chat-engine.js" defer></script><script src="assets/chat-ui.js" defer></script>' if name == 'index' else ''
         policy = CSP.replace("connect-src 'self'", "connect-src 'self' https://unbent-semicolon-hermit.ngrok-free.dev") if name == 'login' else CSP
         if name == 'login':
-            chat_scripts += '<script src="assets/account.js" defer></script>'
+            chat_scripts += '<script src="assets/account.js?v=20261018-signin" defer></script>'
         doc=f'''<!DOCTYPE html>
 <html lang="en" data-theme="dark" data-motion="on">
 <head><meta http-equiv="Content-Security-Policy" content="{policy}"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="{html.escape(description,quote=True)}"><meta name="theme-color" content="#161618"><meta name="color-scheme" content="dark light"><meta property="og:type" content="website"><meta property="og:title" content="SignalREACH — {html.escape(title,quote=True)}"><meta property="og:description" content="{html.escape(description,quote=True)}"><title>{html.escape(title)} | SignalREACH</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><script src="assets/theme.js"></script><link rel="stylesheet" href="assets/styles.css"><script src="assets/data.js" defer></script>{chat_scripts}<script src="assets/app.js" defer></script></head>

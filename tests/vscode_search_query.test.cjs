@@ -16,7 +16,7 @@ function fixture(response) {
     AbortSignal, TextDecoder, setTimeout, clearTimeout,
     require: name => name === 'vscode' ? {
       workspace: { getConfiguration: () => ({ get: (key, fallback) => settings[key] ?? fallback }) },
-    } : name.startsWith('./') ? {} : req(name),
+    } : name === './connection' ? req(name) : name.startsWith('./') ? {} : req(name),
     fetch: async (url, options) => { calls.push({ url, body: JSON.parse(options.body) }); return response(); },
   };
   vm.runInNewContext(source + '\nmodule.exports.TestProvider = ReachChatViewProvider;', context, { filename });

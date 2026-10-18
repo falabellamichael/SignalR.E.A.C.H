@@ -12,7 +12,7 @@ function host(values, response, workspace = {}, api = {}) {
  const config={provider:'endpoint',endpoint:'https://free.example/v1',model:'my/free-model',accessKey:'free-only-key',...values};
  const req=createRequire(extensionPath);
  const context={module:{exports:{}},console,process,Buffer,URL,AbortController,AbortSignal,TextDecoder,setTimeout,clearTimeout,
- require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{isTrusted:true,getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:req(name),
+ require:name=>name==='vscode'?{window:{tabGroups:{all:[]}},RelativePattern:class {constructor(folder,pattern){this.folder=folder;this.pattern=pattern;}},ConfigurationTarget:{Global:1},Uri:{joinPath:(root,rel)=>({fsPath:path.join(root.fsPath,rel)})},workspace:{isTrusted:true,getConfiguration:()=>({get:key=>config[key],update:async(key,value)=>{config[key]=value;}}),...workspace},...api}:name==='./search'?{}:name==='./connection'&&api.resolveEndpoint?{...req(name),resolveEndpoint:api.resolveEndpoint}:req(name),
  fetch:async(url,options)=>{calls.push({url,options});return response(url,options);}
  };
  vm.runInNewContext(source+'\nmodule.exports.TestProvider=ReachChatViewProvider; module.exports.testConfig=config; module.exports.setTestAccount=value=>{hostedAccount=value;};',context,{filename:extensionPath});
@@ -918,7 +918,106 @@ test('a non-transient status on the free endpoint fails immediately without retr
  assert.equal(attempts,1,'401 must not be retried');
  assert.match(h.posts.find(p=>p.type==='error').message,/401/);
 });
-test('GPU endpoint catalogs exclude every login provider and never contact the tray',async()=>{
+function attachSubscription(h, {connected = true, origin = 'https://accounts.example', models = ['gpu/gemma-4-12b-qat']} = {}) {
+ const token='rch_session_'+ '9'.repeat(64);
+ const account={state:()=>({baseUrl:origin}),connection:()=>({endpoint:origin+'/v1',accessKey:connected?token:''}),
+  authorize:endpoint=>{assert.equal(endpoint,origin+'/v1');if(!connected)throw new Error('Sign in to your REACH account before using subscription models.');return token;},
+  models:async()=>{if(!connected)throw new Error('Sign in to your REACH account before using subscription models.');return models;}};
+ h.setAccount(account);h.provider._account=account;
+ return {account,token};
+}
+
+test('legacy hosted URLs and the default endpoint pointer migrate to the account route without using an endpoint key',async()=>{
+ const {DEFAULT_ENDPOINT,DEFAULT_ACCOUNT_ORIGIN}=require('../vscode/connection');
+ for(const endpoint of [DEFAULT_ENDPOINT,DEFAULT_ACCOUNT_ORIGIN+'/v1','http://127.0.0.1:20777/v1','http://127.0.0.2:20777/v1','http://localhost:20978/v1','http://[::1]:20777/v1','http://[::ffff:127.0.0.1]:20777/v1']) {
+  const h=host({endpoint,accessKey:'old-owner-key',model:'gpu/gemma-4-12b-qat'},()=>{throw new Error('Signed-out model requests must not reach inference');});
+  attachSubscription(h,{connected:false});
+  const connection=h.readConfig();
+  assert.equal(connection.provider,'subscription',endpoint);
+  assert.equal(connection.providerSelection,'subscription');
+  assert.equal(connection.freeAccessKey,'');assert.equal(connection.accessKey,'');
+  assert.equal(h.config.accessKey,'old-owner-key','keep the saved key intact');
+  await h.provider._fetchModels();
+  await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'gpu/gemma-4-12b-qat',stream:false});
+  assert.equal(h.calls.length,0);
+  assert.ok(h.posts.some(post=>post.type==='models'&&post.models.length===0));
+  assert.ok(h.posts.some(post=>post.type==='error'&&/Sign in/.test(post.message)));
+ }
+});
+
+test('hosted URLs added as custom providers still use account authorization and hide their old endpoint keys',async()=>{
+ const endpoint='https://unbent-semicolon-hermit.ngrok-free.dev/v1';
+ const h=host({additionalEndpoints:[endpoint],selectedEndpoint:endpoint,endpointAccessKeys:{[endpoint]:'old-owner-key'}},()=>{throw new Error('No raw endpoint request expected');});
+ const {token}=attachSubscription(h);
+ const connection=h.readConfig();
+ assert.equal(connection.provider,'subscription');
+ assert.equal(connection.endpoint,'https://accounts.example/v1');
+ assert.equal(connection.endpointAccessKeys[endpoint],'');
+ assert.equal(h.config.endpointAccessKeys[endpoint],'old-owner-key');
+ assert.equal(h.provider._authHeaders({},connection).Authorization,'Bearer '+token);
+ await h.receive({type:'setConfig',key:'provider',value:'endpoint:'+endpoint});
+ assert.equal(h.readConfig().providerSelection,'subscription');
+ assert.equal(h.calls.length,0);
+});
+
+test('direct catalog, chat, thinking and query routes cannot use a managed relay as a custom endpoint',async()=>{
+ const {DEFAULT_ACCOUNT_ORIGIN}=require('../vscode/connection');
+ const h=host({},()=>{throw new Error('Raw relay bypass');});
+ attachSubscription(h);
+ const direct={...h.readConfig(),provider:'endpoint',endpoint:DEFAULT_ACCOUNT_ORIGIN+'/v1',accessKey:'owner-key'};
+ await assert.rejects(h.provider._discoverModels(direct),/REACH subscription/);
+ await assert.rejects(h.provider._modelEndpoint(direct,'gemma-4-12b-qat'),/REACH subscription/);
+ assert.throws(()=>h.provider._authHeaders({},direct),/REACH subscription/);
+ h.config.endpoint=DEFAULT_ACCOUNT_ORIGIN+'/v1';
+ await h.provider._think('private planning',false,'gpu/gemma-4-12b-qat');
+ await h.provider._deriveQuery('find an example','gpu/gemma-4-12b-qat');
+ assert.ok(h.calls.every(call=>call.url.startsWith('https://accounts.example/')));
+});
+
+test('an endpoint pointer resolving to the hosted service cannot bypass account routing',async()=>{
+ const h=host({},()=>{throw new Error('No hosted inference expected');},{},{resolveEndpoint:async()=> 'https://unbent-semicolon-hermit.ngrok-free.dev/v1'});
+ attachSubscription(h);
+ await assert.rejects(h.provider._discoverModels(h.readConfig()),/REACH subscription/);
+ await assert.rejects(h.provider._modelEndpoint(h.readConfig(),'gemma-4-12b-qat'),/REACH subscription/);
+ assert.equal(h.calls.length,0);
+});
+
+test('signed-in hosted GPU calls use account credentials and cannot fall back after an entitlement rejection',async()=>{
+ const h=host({endpoint:'https://unbent-semicolon-hermit.ngrok-free.dev/v1',model:'gpu/gemma-4-12b-qat',accessKey:'owner-key',additionalHeaders:'Authorization: Bearer old-endpoint-key'},()=>
+  new Response(JSON.stringify({error:{message:'An active plan or paid credit is required.'}}),{status:402}));
+ const {token}=attachSubscription(h);
+ const catalog=await h.provider._discoverModels(h.readConfig());
+ assert.deepEqual(Array.from(catalog.routes.keys()),['gpu/gemma-4-12b-qat']);
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'gpu/gemma-4-12b-qat',stream:false});
+ assert.equal(h.calls.length,1);
+ assert.equal(h.calls[0].url,'https://accounts.example/v1/chat/completions');
+ assert.equal(h.calls[0].options.headers.Authorization,'Bearer '+token);
+ assert.equal(h.calls[0].options.redirect,'error');
+ assert.equal(h.posts.some(post=>post.type==='done'&&post.full),false);
+ assert.ok(h.posts.some(post=>post.type==='error'&&/active plan|402/.test(post.message)));
+});
+
+test('the provider selector offers hosted GPUs only through REACH subscription while retaining custom endpoints',()=>{
+ const chat=fs.readFileSync(path.resolve(path.dirname(extensionPath),'media/chat.js'),'utf8');
+ class Element {
+  constructor(text='',value=''){this.textContent=text;this.value=value;this.children=[];}
+  appendChild(node){this.children.push(node);return node;}
+  replaceChildren(...nodes){this.children=nodes;}
+ }
+ const providerSelect=new Element();
+ const context={providerSelect,Option:Element,document:{createElement:()=>new Element()}};
+ vm.runInNewContext(chat.slice(chat.indexOf('  function updateProviderOptions('),chat.indexOf('  function renderConnectionPage('))+'\nthis.update=updateProviderOptions;',context);
+ const managed='https://unbent-semicolon-hermit.ngrok-free.dev/v1',custom='https://other.example/v1';
+ context.update({providerSelection:'subscription',reachEndpointManaged:true,additionalEndpoints:[managed,custom],reachSubscriptionEndpoints:[managed]});
+ const options=providerSelect.children.flatMap(node=>node.children.length?node.children:[node]);
+ assert.equal(options[0].textContent,'REACH subscription');
+ assert.equal(options.some(option=>option.value==='endpoint'||option.value==='endpoint:'+managed),false);
+ assert.equal(options.some(option=>option.value==='endpoint:'+custom),true);
+ assert.equal(options.some(option=>option.value==='codegpt'),true);
+ assert.equal(providerSelect.value,'subscription');
+});
+
+test('custom endpoint catalogs exclude every login provider and never contact the tray',async()=>{
  const h=host({},url=>new Response(JSON.stringify({data:[
    {id:'gemma-4-12b-qat',provider:'gpu'},
    {id:'codegpt-eco'}, {id:'codegpt-eco-ox-alpha'}, {id:'codegpt-gpt-5'}, {id:'codegpt-direct-deepseek'},
@@ -930,7 +1029,7 @@ test('GPU endpoint catalogs exclude every login provider and never contact the t
  const models=h.posts.find(p=>p.type==='models');
  assert.deepEqual(Array.from(models.models),['gemma-4-12b-qat']);
  assert.equal(models.groups.length,1);
- assert.equal(models.groups[0].label,'GPU server models');
+ assert.equal(models.groups[0].label,'Your endpoint models');
  assert.equal(h.calls.length,1,'a GPU refresh must not probe any login provider');
  assert.equal(h.calls[0].url,'https://free.example/v1/models');
  assert.equal(h.posts.some(p=>p.type==='error'),false);

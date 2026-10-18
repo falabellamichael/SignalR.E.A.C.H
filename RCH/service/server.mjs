@@ -16,8 +16,8 @@ import { createPayPalClient, validPayPalTopUp } from './payments/paypal.mjs';
 import { assertPlusPrice, recordPlusInvoice } from './payments/plus.mjs';
 import { verifyStripeSignature, paymentFromStripeEvent, reversalFromStripeEvent, checkoutParams, validTopUpAmount, createStripeClient } from './payments/stripe.mjs';
 
-export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt) {
-  return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nConnect to REACH Studio. This signature only signs you in.\n\nURI: ${origin}/wallet/connect\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expiresAt}`;
+export function signInMessage(origin, chainId, wallet, nonce, issuedAt, expiresAt, pathname = '/wallet/connect') {
+  return `${new URL(origin).host} wants you to sign in with your Ethereum account:\n${wallet}\n\nConnect to REACH Studio. This signature only signs you in.\n\nURI: ${origin}${pathname}\nVersion: 1\nChain ID: ${chainId}\nNonce: ${nonce}\nIssued At: ${issuedAt}\nExpiration Time: ${expiresAt}`;
 }
 export async function verifyWallet(challenge, signature, provider, chainId) {
   if (typeof signature !== 'string' || !/^0x(?:[0-9a-fA-F]{2}){1,8192}$/.test(signature)) return false;
@@ -209,7 +209,10 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='POST'&&pathname==='/v1/auth/challenge') {
         if(typeof body.address!=='string')fail(400,'wallet_required','Select an Ethereum wallet.');
         try{getAddress(body.address);}catch{fail(400,'wallet_invalid','Invalid wallet address.');}
-        json(res,200,await store.challenge(body.flowId,body.address,(...args)=>signInMessage(config.origin,config.chainId,...args)));return;
+        // The checked browser Origin binds the wallet message to the sign-in
+        // page. Request bodies and proxy headers cannot choose its domain.
+        const signInOrigin=origin||config.origin;
+        json(res,200,await store.challenge(body.flowId,body.address,(...args)=>signInMessage(signInOrigin,config.chainId,...args,signInOrigin===config.origin?'/wallet/connect':'/login.html')));return;
       }
       if(req.method==='POST'&&pathname==='/v1/auth/verify') {
         const c=await store.getChallenge(body.flowId,body.challengeId);

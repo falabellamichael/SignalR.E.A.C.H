@@ -1803,12 +1803,12 @@
   }
 
   function updateProviderOptions(cfg) {
-    providerSelect.replaceChildren(new Option('GPU server models', 'endpoint'));
-    if (cfg.hostedConfigured || cfg.providerSelection === 'subscription') providerSelect.appendChild(new Option('REACH subscription', 'subscription'));
+    providerSelect.replaceChildren(new Option('REACH subscription', 'subscription'));
+    if (!cfg.reachEndpointManaged) providerSelect.appendChild(new Option('Your endpoint', 'endpoint'));
     const others = document.createElement('optgroup');
     others.label = 'Other endpoints';
     for (const endpoint of new Set(cfg.additionalEndpoints || [])) {
-      if (endpoint.trim()) others.appendChild(new Option(endpoint, 'endpoint:' + endpoint));
+      if (endpoint.trim() && !(cfg.reachSubscriptionEndpoints || []).includes(endpoint)) others.appendChild(new Option(endpoint, 'endpoint:' + endpoint));
     }
     if (others.children.length) providerSelect.appendChild(others);
     const login = document.createElement('optgroup');
@@ -1818,7 +1818,7 @@
     login.appendChild(new Option('Microsoft 365 Copilot', 'copilot'));
     login.appendChild(new Option('Gemini web', 'gemini'));
     providerSelect.appendChild(login);
-    providerSelect.value = cfg.providerSelection || cfg.provider || 'endpoint';
+    providerSelect.value = cfg.providerSelection || cfg.provider || 'subscription';
   }
 
   function renderConnectionPage() {
@@ -1852,7 +1852,7 @@
       if (first) {
         input.id = 'set-endpoint';
         input.readOnly = true;
-        input.title = 'Free endpoints — locked';
+        input.title = cfg.reachEndpointManaged ? 'REACH subscription — sign in with your REACH account' : 'Configured endpoint';
       }
       const keyPanel = document.createElement('div');
       keyPanel.className = 'setting-row endpoint-key-panel';
@@ -1877,6 +1877,7 @@
       keyPanel.append(keyLabel, accessKeyControl(keyInput, saveKey));
       const keyButton = document.createElement('button');
       keyButton.type = 'button';
+      keyButton.hidden = first && cfg.reachEndpointManaged;
       keyButton.className = 'icon-btn endpoint-action endpoint-key-toggle';
       keyButton.innerHTML = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6.5 9.5a4 4 0 1 1 3-3L8 8l1.5 1.5L8 11 6.5 9.5 5 11v2H3v2H1v-3l5.5-5.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="11" cy="3" r=".8" fill="currentColor"/></svg>';
       keyButton.title = 'Edit access key';

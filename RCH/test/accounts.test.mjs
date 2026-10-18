@@ -119,6 +119,30 @@ test('service rejects foreign origins, protects account endpoints, and completes
  assert.equal((await post('/v1/auth/logout',{},headers)).status,200);
  assert.equal((await fetch(base+'/v1/account',{headers})).status,401);
 });
+test('website wallet messages use only the allowed request origin and retain PKCE and signature checks',async t=>{
+ const {store}=setup(t);const {server}=createAccountService({config,store});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+ const base=`http://127.0.0.1:${server.address().port}`;
+ const post=async(path,body,origin)=>fetch(base+path,{method:'POST',headers:{'content-type':'application/json','ngrok-skip-browser-warning':'true',Origin:origin,'x-forwarded-host':'untrusted.example'},body:JSON.stringify(body)});
+ for(const site of ['https://signalreach.ca','https://www.signalreach.ca','https://falabellamichael.github.io','http://127.0.0.1:4173']) {
+  const p=proof(),flow=await (await post('/v1/auth/start',{state:p.state,codeChallenge:p.challenge},site)).json();
+  const response=await post('/v1/auth/challenge',{flowId:flow.flowId,address:wallet.address,origin:'https://untrusted.example'},site);
+  assert.equal(response.status,200);assert.equal(response.headers.get('access-control-allow-origin'),site);
+  const challenge=await response.json();
+  assert.ok(challenge.message.startsWith(new URL(site).host+' wants you to sign in'));
+  assert.ok(challenge.message.includes(`\nURI: ${site}/login.html\n`));
+  assert.equal(challenge.message.includes('untrusted.example'),false);
+  const altered=challenge.message.replace(site,'https://untrusted.example');
+  assert.equal((await post('/v1/auth/verify',{flowId:flow.flowId,challengeId:challenge.challengeId,signature:await wallet.signMessage(altered)},site)).status,401);
+  assert.equal((await post('/v1/auth/verify',{flowId:flow.flowId,challengeId:challenge.challengeId,signature:await wallet.signMessage(challenge.message)},site)).status,200);
+  const result=await post('/v1/auth/exchange',{flowId:flow.flowId,state:p.state,codeVerifier:p.verifier},site);
+  assert.equal(result.status,200);assert.equal((await result.json()).account.walletAddress,wallet.address);
+ }
+ assert.equal((await post('/v1/auth/challenge',{},'https://signalreach.ca.evil.example')).status,403);
+ const preflight=await fetch(base+'/v1/auth/start',{method:'OPTIONS',headers:{Origin:'https://signalreach.ca','access-control-request-method':'POST','access-control-request-headers':'content-type,ngrok-skip-browser-warning'}});
+ assert.equal(preflight.status,204);assert.match(preflight.headers.get('access-control-allow-headers'),/ngrok-skip-browser-warning/);
+});
+
 test('production config disallows plaintext public origin, arbitrary bind, inline secrets and unknown fields',()=>{
  const raw={...config,port:20978,database:'private/db.sqlite',upstreamKeyEnv:'REACH_TEST_KEY'};delete raw.upstreamKey;
  const env={REACH_TEST_KEY:'host-only-test-credential'};
