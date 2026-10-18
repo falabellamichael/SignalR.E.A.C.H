@@ -1,0 +1,41 @@
+import fs from 'node:fs/promises';
+import assert from 'node:assert/strict';
+const renderer = new URL('../renderer/', import.meta.url);
+export default async function (page) {
+  await page.setContent('<html><head><title>Agent tile activity QA</title></head><body><div id="drawer"><div id="drawer-menu"></div></div></body></html>');
+  for (const file of ['styles.css', 'singular-panel.css']) await page.addStyleTag({ content: await fs.readFile(new URL(file, renderer), 'utf8') });
+  await page.addStyleTag({ content: '#drawer { position:static; width:100%; height:auto; } #singular-panel { display:flex; }' });
+  for (const file of ['member-designs.js', 'activity-state.js']) await page.addScriptTag({ content: await fs.readFile(new URL(file, renderer), 'utf8') });
+  await page.addScriptTag({ content: `
+    const $ = s => document.querySelector(s), drawer = $('#drawer');
+    const drawerOpen = true, drawerPanel = 'singular';
+    const member = {personaId:'builder',personaName:'Builder',role:'Developer',personaModel:'Test model',designId:'bot-01'};
+    const team = {id:'team-1',name:'Test crew',members:[member],mode:'links'};
+    const currentAgent = {id:'chat-1',name:'Test chat',settings:{teamChat:{teamId:team.id,enabled:true}}};
+    const card = {_teamActivity: ReachActivityState.reduce(null,{type:'run-state',status:'running'}),_crewComms:{sent:2,received:3,inbox:1}};
+    card._teamActivity = ReachActivityState.reduce(card._teamActivity,{type:'tool-call',tool:'read_file'});
+    const teamConversationViews = new Map([['chat-1',{team,task:'Inspect the project files',cards:new Map([[0,card]])}]]);
+    window.ReachWorkspace = {node(tag,cls,text){const el=document.createElement(tag);if(cls)el.className=cls;if(text)el.textContent=text;return el;},action(text,fn){const el=document.createElement('button');el.textContent=text;el.onclick=fn;return el;}};
+    const reachApi = {teams:{list:async()=>[team]},git:{info:async()=>({})},telemetry:{sample:async()=>({})}};
+  ` });
+  await page.addScriptTag({ content: await fs.readFile(new URL('singular-panel.js', renderer), 'utf8') });
+  const summary = page.locator('.singular-member-activity summary');
+  await summary.waitFor();
+  assert.match(await summary.innerText(), /read_file/);
+  await summary.click();
+  assert.match(await page.locator('.singular-member-activity').innerText(), /Inspect the project files/);
+  assert.equal(await page.locator('.singular-member-facts dt').allTextContents().then(labels => labels.join(',')), 'Model');
+  assert.equal(await page.locator('.singular-member-pulse').count(), 0);
+  await page.addScriptTag({ content: `card._teamActivity = ReachActivityState.reduce(card._teamActivity,{type:'run-state',status:'completed'});` });
+  await page.waitForFunction(() => document.querySelector('.singular-member-activity summary').textContent === 'Completed');
+  assert.equal(await page.locator('.singular-member-activity').getAttribute('open'), '');
+  await page.addScriptTag({ content: `currentAgent.settings.teamChat.enabled = false; document.dispatchEvent(new Event('reach-team-settings-changed'));` });
+  await page.locator('.singular-team-list').waitFor({ state: 'hidden' });
+  await page.addScriptTag({ content: `currentAgent.settings.teamChat.enabled = true; document.dispatchEvent(new Event('reach-team-settings-changed'));` });
+  await summary.waitFor({ state: 'visible' });
+  assert.equal(await page.locator('.singular-member').count(), 1);
+  await page.addScriptTag({ content: `currentAgent.id = 'another-chat';` });
+  await page.waitForFunction(() => document.querySelector('.singular-member-activity summary').textContent.startsWith('Idle'));
+  assert.doesNotMatch(await page.locator('.singular-member-activity').innerText(), /Inspect the project files/);
+  return { liveTool: true, completed: true, expansionPreserved: true, conversationIsolation: true, toggleVisibility: true };
+}

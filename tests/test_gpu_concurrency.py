@@ -186,15 +186,22 @@ class ConcurrencyTests(unittest.TestCase):
         class Response(io.BytesIO):
             status = 200
 
-        with patch("sys.argv", ["trial", "gemma", "--sequences", "4"]), \
+        with patch("sys.argv", ["trial", "gemma", "--sequences", "5"]), \
                 patch.object(trial, "api", side_effect=api), \
                 patch.object(trial.urllib.request, "urlopen", side_effect=lambda *a, **k: Response(b"")), \
                 contextlib.redirect_stdout(io.StringIO()):
             trial.main()
         command = created[0]["Cmd"]
         graph = json.loads(command[command.index("--compilation-config") + 1])
-        self.assertEqual(graph["cudagraph_capture_sizes"], [4, 8, 12, 16])
-        self.assertEqual(graph["max_cudagraph_capture_size"], 16)
+        # vLLM drops captures larger than max_seqs * tokens_per_request for
+        # each pass. Five target-only sizes left the fifth draft batch eager.
+        for tokens_per_request in (1, 4):
+            captures = [size for size in graph["cudagraph_capture_sizes"]
+                        if size <= 5 * tokens_per_request]
+            for active_requests in range(1, 6):
+                with self.subTest(pass_width=tokens_per_request, active=active_requests):
+                    self.assertIn(active_requests * tokens_per_request, captures)
+        self.assertEqual(graph["max_cudagraph_capture_size"], 20)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,10 @@ const isLoginProviderConnection = c => c?.endpoint === LOGIN_PROVIDERS_ENDPOINT;
 const connStatus = new Map();   // id -> { text, cls }
 const connTesters = [];         // rebuilt by renderConnections: [{ id, running, run }]
 const connTestsRunning = new Set(); // Survives opening/closing an editor during a ping.
+reachApi.onHubSettingsSynced?.(() => {
+  if (connDirty) { showNotice('Shared settings synced. Your unsaved connection draft has been kept; reopen Settings to load the synced values.'); return; }
+  loadSettings().catch(error => showNotice('Settings refresh failed: ' + error.message));
+});
 
 async function loadSettings() {
   const s = await reachApi.getSettings();

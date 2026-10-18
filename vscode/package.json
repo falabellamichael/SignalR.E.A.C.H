@@ -27,6 +27,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "simplereach.settingsHub",
+        "title": "REACH: Shared Settings Hub"
+      },
+      {
         "command": "simplereach.openChat",
         "title": "REACH: Open Chat",
         "icon": "$(comment-discussion)"

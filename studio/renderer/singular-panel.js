@@ -99,6 +99,34 @@
   }
 
   let teamToken = 0, teamAt = 0, teamSig = '';
+  const activityTiles = [];
+  function syncTeamVisibility() {
+    const enabled = currentAgent?.settings?.teamChat?.enabled === true;
+    teamList.classList.toggle('hidden', !enabled);
+    teamBadge.classList.toggle('hidden', !enabled);
+    if (!enabled) {
+      teamNote.textContent = 'Teams is off. Turn it on to show your bots.';
+      teamNote.hidden = false;
+    }
+  }
+  function updateTeamActivity(agent) {
+    const latest = typeof teamConversationViews !== 'undefined' ? teamConversationViews.get(agent?.id) : null;
+    for (const tile of activityTiles) {
+      // Member indices are valid only for the roster captured by this run.
+      const run = latest?.team?.id === tile.teamId && latest.team.members?.[tile.index]?.personaId === tile.personaId
+        && (latest.team.members[tile.index].role || '') === tile.role ? latest : null;
+      const card = run?.cards.get(tile.index);
+      const state = card?._teamActivity;
+      const summary = state ? window.ReachActivityState.summary(state) : null;
+      const put = (element, text) => { if (element.textContent !== text) element.textContent = text; };
+      put(tile.headline, summary?.title || (run ? 'Queued - waiting to start' : 'Idle - no current activity'));
+      put(tile.detail, summary?.detail || (run ? 'Waiting for this member to receive work.' : 'Start a team task to see this agent\'s activity here.'));
+      put(tile.task, run?.task || 'No task in this session.');
+      tile.card.dataset.activity = state?.status || (run ? 'queued' : 'idle');
+      const recent = (state?.steps || []).slice(-4).map(step => [step.title, step.note].filter(Boolean).join(' - ')).join('\n');
+      put(tile.recent, recent || 'No activity reported yet.');
+    }
+  }
   function renderTeam(agent) {
     const token = ++teamToken;
     const linked = agent?.settings?.teamChat?.teamId;
@@ -130,6 +158,7 @@
             agent.settings = { ...agent.settings, teamChat: { ...agent.settings?.teamChat, enabled: true, teamId: sel.value } };
           }
           await reachApi.agents.update(agent.id, { settings: agent.settings });
+          syncTeamVisibility();
           teamAt = 0;
           renderTeam(agent);
         };
@@ -139,18 +168,21 @@
         teamLinkRow.hidden = true;
       }
 
-      if (!agent || !linked) {
+      if (!agent || !linked || agent.settings?.teamChat?.enabled !== true) {
+        activityTiles.length = 0;
         teamSig = '';
         teamList.replaceChildren();
         teamBadge.textContent = '';
         teamTitle.textContent = 'Team';
-        teamNote.textContent = agent ? 'No team assigned to this chat.' : 'Open a conversation to view its team.';
+        teamNote.textContent = agent ? agent.settings?.teamChat?.enabled === true ? 'No team assigned to this chat.' : 'Teams is off. Turn it on to show your bots.' : 'Open a conversation to view its team.';
         teamNote.hidden = false;
         return;
       }
 
       const team = allTeams.find(item => item.id === linked);
       if (!team) {
+        activityTiles.length = 0;
+        teamSig = '';
         teamTitle.textContent = 'Team';
         teamBadge.textContent = '';
         teamNote.textContent = 'The linked team was removed.';
@@ -162,28 +194,41 @@
       teamTitle.textContent = team.name || 'Team';
       const count = (team.members || []).length;
       teamBadge.textContent = `${count} member${count === 1 ? '' : 's'}`;
-      const sig = JSON.stringify((team.members || []).map(member => [member.personaId, member.role, member.designId, member.personaName, member.personaModel]));
-      if (sig === teamSig) return;
+      const sig = JSON.stringify([agent.id, team.id, team.mode, team.toolProtocol, team.spreadConnections, team.members]);
+      if (sig === teamSig) { updateTeamActivity(agent); return; }
       teamSig = sig;
+      activityTiles.length = 0;
       teamList.replaceChildren();
       teamNote.hidden = true;
 
-      for (const member of team.members || []) {
+      for (const [index, member] of (team.members || []).entries()) {
         const design = window.ReachMemberDesigns.resolve(member);
         const card = node('article', 'singular-member');
         const face = node('span', 'singular-member-face');
-        face.innerHTML = window.ReachMemberDesigns.svg(design.id, 48);
+        face.innerHTML = window.ReachMemberDesigns.svg(design.id, 64);
 
         const copy = node('div', 'singular-member-copy');
         const topRow = node('div', 'singular-member-top');
         topRow.append(node('strong', '', member.personaName || 'Member'));
-        if (member.personaModel) topRow.append(node('span', 'member-model-pill', member.personaModel));
 
-        const roleText = member.role || design.name;
+        const roleText = member.role || 'General-purpose agent';
         copy.append(topRow, node('span', 'singular-member-role', roleText));
+        const facts = node('dl', 'singular-member-facts');
+        const fact = (label, value) => { facts.append(node('dt', '', label), node('dd', '', value)); };
+        fact('Model', member.personaModel || 'Inherits chat model');
+        copy.append(facts);
+        const activity = node('details', 'singular-member-activity');
+        const headline = node('summary');
+        const detail = node('p');
+        const task = node('p');
+        const recent = node('p', 'singular-member-recent');
+        activity.append(headline, detail, node('strong', '', 'Current task'), task, node('strong', '', 'Recent activity'), recent);
+        activityTiles.push({ teamId: team.id, personaId: member.personaId, role: member.role || '', index, card, headline, detail, task, recent });
+        card.append(activity);
         card.append(face, copy);
         teamList.append(card);
       }
+      updateTeamActivity(agent);
 
       if (!team.members?.length) {
         teamNote.textContent = 'This team has no members yet.';
@@ -282,13 +327,16 @@
 
   function sync() {
     clearTimeout(timer); timer = null;
+    syncTeamVisibility();
     if (!visible()) return;
     conversation();
+    updateTeamActivity(currentAgent);
     if (!pending && Date.now() - lastSample >= 3000) sample();
     timer = setTimeout(sync, 1000);
   }
 
   new MutationObserver(sync).observe(drawer, { attributes: true, attributeFilter: ['class', 'data-panel'] });
   document.addEventListener('visibilitychange', sync);
+  document.addEventListener('reach-team-settings-changed', () => { teamAt = 0; sync(); });
   sync();
 })();

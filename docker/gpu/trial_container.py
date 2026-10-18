@@ -75,10 +75,13 @@ def main():
         graph.update(cudagraph_capture_sizes=args.capture, max_cudagraph_capture_size=max(args.capture))
         command[index] = json.dumps(graph)
     elif args.sequences is not None:
-        # Speculative decode graphs contain one target plus draft tokens per sequence.
+        # The target verifies one token plus drafts per sequence. The V2 MTP
+        # assistant also decodes one token per sequence on later draft steps,
+        # using this same capture list; omit those sizes and it falls back to eager.
         speculation = json.loads(command[command.index("--speculative-config") + 1]) if "--speculative-config" in command else {}
         width = 1 + speculation.get("num_speculative_tokens", 0)
-        sizes = [width * n for n in range(1, args.sequences + 1)]
+        sizes = sorted(set(range(1, args.sequences + 1)) |
+                       {width * n for n in range(1, args.sequences + 1)})
         index = command.index("--compilation-config") + 1
         graph = json.loads(command[index])
         graph.update(cudagraph_capture_sizes=sizes, max_cudagraph_capture_size=max(sizes))

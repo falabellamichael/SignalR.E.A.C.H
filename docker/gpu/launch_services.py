@@ -12,7 +12,7 @@ ROOT = Path("/srv/signalreach")
 IMAGE = "vllm/vllm-openai-rocm@sha256:749f6f3f944f12af49966ac523c1f8573e4b229594b541954bd5f879b4496b1f"
 DEPLOYMENT = "signalreach-nextify-20261015"
 SERVICES = {
-    "gemma": ("gemma4-12b-qat", "0,1", 8001, 0.40, [
+    "gemma": ("gemma4-12b-qat", "0,1", 8001, 0.55, [
         "--quantization", "fp8_per_tensor", "--quantization-config",
         '{"ignore":["vision_embedder.*"]}',
         "--reasoning-parser", "gemma4",
@@ -26,16 +26,16 @@ SERVICES = {
         "--limit-mm-per-prompt", '{"image":1,"video":1}',
     ]),
     "support": (None, 1, 8030, None, []),
-    "minicpm": ("minicpm5-2b", 1, 8004, 0.24, [
+    "minicpm": ("minicpm5-2b", "0,1", 8004, 0.24, [
         "--quantization", "fp8_per_tensor", "--enable-auto-tool-choice",
         "--tool-call-parser", "minicpm5", "--reasoning-parser", "qwen3",
     ]),
 }
 
 
-# Gemma uses both GPUs with TP2; MiniCPM remains on GPU 1.
+# Gemma and qualified MiniCPM use both GPUs with TP2.
 # Distributed runtime checks remain separate from host-memory guards.
-TP_MODELS = frozenset({"gemma"})
+TP_MODELS = frozenset({"gemma", "minicpm"})
 HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith"})
 HOST_MEMORY_LIMIT_BYTES = 12 * 1024 ** 3
 # Operator-disabled services retain their saved profile and assets.
@@ -46,15 +46,17 @@ CHAT_DECODE_CONFIG = {'mode': 0, 'cudagraph_mode': 'FULL_DECODE_ONLY', 'cudagrap
 # Gemma MTP uses V2 to capture the assistant's forward pass and sampling on GPU.
 CHAT_RUNNERS = {"gemma": "1", "ornith": "0", "minicpm": "0"}
 # Host-side OpenMP coordination only; model weights and KV caches stay on GPU.
-SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "2", "support": "2"}
-CHAT_CAPTURE_SIZES = {"gemma": [4, 8], "ornith": [2], "minicpm": [2]}
-CHAT_MAX_SEQUENCES = {"gemma": 2, "ornith": 2, "minicpm": 2}
+SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "1", "support": "2"}
+# MTP needs both target verification (4 tokens/request) and later assistant
+# decode (1 token/request) shapes to cover every admitted batch on runner V2.
+CHAT_CAPTURE_SIZES = {"gemma": [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32], "ornith": [2], "minicpm": [1, 2, 3, 4, 5]}
+CHAT_MAX_SEQUENCES = {"gemma": 8, "ornith": 2, "minicpm": 5}
 # Pin every qualified context so a future create cannot silently resize it.
 CHAT_CONTEXT_WINDOWS = {"gemma": 92960, "ornith": 61776, "minicpm": 39904}
 # Tokens of prompt work per scheduler step. Smaller Gemma chunks let an
 # in-flight decode emit tokens while a second request prefills. Context length,
 # tensor parallelism, MTP, and GPU placement stay as qualified below.
-CHAT_PREFILL_TOKENS = {"gemma": 1024, "ornith": 2048, "minicpm": 2048}
+CHAT_PREFILL_TOKENS = {"gemma": 3072, "ornith": 2048, "minicpm": 2048}
 CHAT_SPECULATIVE_CONFIGS = {
     "gemma": {
         "method": "mtp",
@@ -180,7 +182,7 @@ def start(key, manifest):
         if key in CHAT_SPECULATIVE_CONFIGS:
             check_weights(Path(CHAT_SPECULATIVE_CONFIGS[key]["model"]).name)
     else:
-        for item in ("bge-m3", "bge-reranker-v2-m3", "d1-omni-600m", "d1-3b"):
+        for item in ("bge-m3", "bge-reranker-v2-m3", "d1-omni-600m"):
             check_weights(item)
     existing = docker("container", "inspect", name, check=False)
     if existing.returncode == 0:
@@ -289,7 +291,7 @@ def start(key, manifest):
         override = gemma_config_override()
         args += ["-v", f"{override}:/models/{model}/config.json:ro"]
     if key == "support":
-        args += ["signalreach-support:20261015"]
+        args += ["signalreach-support:20261017-fp8-gpu"]
     else:
         args += [
             IMAGE, f"/models/{model}", "--served-model-name", repository,

@@ -116,6 +116,7 @@
       if (!result.ok) throw new Error(result.err);
       if (currentAgent?.id === id) {
         currentAgent.settings = { ...currentAgent.settings, teamChat: next };
+        document.dispatchEvent(new Event('reach-team-settings-changed'));
         placeSelectedTeamDeck();
       }
     } catch (error) { showNotice(error.message); }

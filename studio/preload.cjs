@@ -69,6 +69,11 @@ contextBridge.exposeInMainWorld('reach', {
   // Settings
   getBudgetSchema: () => ipcRenderer.invoke('settings:budgetSchema'),
   getSettings: () => ipcRenderer.invoke('settings:get'),
+  onHubSettingsSynced: callback => {
+    const listener = () => callback();
+    ipcRenderer.on('settings:hub-synced', listener);
+    return () => ipcRenderer.removeListener('settings:hub-synced', listener);
+  },
   saveSettings: (s) => ipcRenderer.invoke('settings:save', s),
 
   // Agents

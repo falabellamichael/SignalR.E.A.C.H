@@ -1,5 +1,120 @@
 /* SimpleREACH reach-responsive.css — responsive overrides; split of reach.css, loaded last in STYLE_SOURCES order. */
 /* ---- responsive ---- */
+/* The host can resize Panel 3 independently of the browser viewport. */
+.reach-page {
+    container: reach-admin / inline-size;
+    min-width: 0;
+    min-height: 0;
+    width: 100%;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+#settings-container:has(> .reach-panel3) {
+    min-width: 0;
+    min-height: 0;
+    scrollbar-gutter: stable;
+}
+
+.reach-page.reach-panel3 { padding: 16px 18px 24px; }
+.reach-page.reach-panel3 .reach-content { padding: 0 0 16px; }
+.reach-content { min-height: 0; }
+.reach-page-head {
+    gap: 12px;
+    padding: 0 0 16px;
+    margin-bottom: 18px;
+    border-bottom: 1px solid var(--reach-accent-border);
+}
+.reach-page-head > div { min-width: 0; }
+.reach-page-head-icon { width: 40px; height: 40px; border-radius: 12px; }
+.reach-page-title { font-size: 22px; letter-spacing: -.025em; line-height: 1.25; }
+.reach-page-sub { font-size: 12px; line-height: 1.6; margin-top: 4px; opacity: .75; }
+.reach-stack, .reach-dash { gap: 16px; }
+.reach-dash-grid, .reach-form-grid { gap: 14px; }
+.reach-card, .reach-feed-card, .reach-presence-section {
+    padding: 16px;
+    border-radius: 12px;
+    gap: 12px;
+    min-width: 0;
+    background: linear-gradient(135deg, rgba(128,128,128,.09), rgba(128,128,128,.035));
+}
+.reach-card-head { flex-wrap: wrap; gap: 10px; }
+.reach-card-head h2 { font-size: 14px; letter-spacing: 0; }
+.reach-card-body { gap: 12px; }
+.reach-copy { font-size: 12px; line-height: 1.7; }
+.reach-tiles { grid-template-columns: repeat(auto-fit, minmax(min(130px, 100%), 1fr)); gap: 10px; }
+.reach-tile { padding: 13px; gap: 5px; border-radius: 10px; }
+.reach-tile-value { font-size: 24px; letter-spacing: -.035em; overflow-wrap: anywhere; }
+.reach-tile-label, .reach-tile-sub { font-size: 11px; }
+.reach-btn { min-height: 32px; padding: 6px 12px; max-width: 100%; white-space: normal; }
+.reach-btn-sm, .reach-tab { min-height: 28px; padding: 5px 9px; }
+.reach-page :is(button, a, summary, input, select, textarea):focus-visible,
+.reach-stationary-panel :is(button, input, select):focus-visible {
+    outline: 2px solid var(--reach-accent);
+    outline-offset: 3px;
+}
+.reach-switch:has(input:focus-visible) { outline: 2px solid var(--reach-accent); outline-offset: 3px; border-radius: 12px; }
+.reach-input { min-height: 34px; padding: 7px 10px; max-width: 100%; }
+.reach-field { gap: 6px; }
+.reach-field-label { font-size: 12px; }
+.reach-field-help, .reach-hint { font-size: 11px; line-height: 1.6; opacity: .75; }
+.reach-form { gap: 14px; }
+.reach-page textarea { resize: vertical; }
+.reach-save-bar, .reach-toggle-row, .reach-playground-stats { flex-wrap: wrap; }
+.reach-save-bar { padding: 12px; margin-top: 16px; gap: 8px; }
+.reach-model-card { padding: 14px 16px; }
+.reach-model-desc { white-space: normal; max-width: none; opacity: .75; }
+.reach-model-summary { flex-wrap: wrap; }
+.reach-kv { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 8px 12px; }
+.reach-kv dd { white-space: normal; overflow-wrap: anywhere; }
+.reach-url, .reach-stat-url-box { overflow-x: auto; text-overflow: clip; }
+
+/* Keep wide datasets local to their page rather than widening the host pane. */
+.reach-table {
+    display: block;
+    max-width: 100%;
+    overflow: auto;
+    max-height: 560px;
+    scrollbar-gutter: stable;
+}
+.reach-table th { padding: 10px; opacity: .8; }
+.reach-table td, .reach-table-logs td { padding: 9px 10px; }
+.reach-table tbody tr:nth-child(even) { background: rgba(128,128,128,.045); }
+.reach-table tbody tr:hover { background: var(--reach-accent-bg); }
+.reach-snippet { padding: 14px; line-height: 1.7; max-height: 420px; overflow: auto; }
+.reach-chart { margin-bottom: 18px; }
+.reach-feed-item { min-width: 570px; padding: 8px; }
+.reach-feed-list { overflow: auto; }
+.reach-presence-grid { grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); }
+.reach-presence-card { min-width: 0; }
+.reach-stationary-panel { min-height: 0; gap: 10px; padding: 10px 10px 20px; }
+.reach-stationary-panel *, .reach-modal-overlay * { box-sizing: border-box; }
+.reach-stat-card { flex-shrink: 0; padding: 11px; border-radius: 10px; }
+.reach-stat-card-head, .reach-stat-meta-row { flex-wrap: wrap; }
+.reach-stat-setting-label { min-width: 0; overflow-wrap: anywhere; }
+.reach-stat-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.reach-modal-card { max-height: calc(100dvh - 24px); min-width: 0; }
+.reach-modal-body { min-height: 0; }
+.reach-modal-head, .reach-modal-foot { flex-shrink: 0; gap: 10px; flex-wrap: wrap; padding: 14px; }
+.reach-toast { max-width: min(420px, calc(100vw - 32px)); right: 16px; overflow-wrap: anywhere; }
+
+@container reach-admin (max-width: 700px) {
+    .reach-dash-grid, .reach-form-grid { grid-template-columns: minmax(0, 1fr); }
+    .reach-content { padding: 14px; }
+    .reach-page-title { font-size: 20px; }
+}
+@container reach-admin (max-width: 420px) {
+    .reach-card, .reach-feed-card, .reach-presence-section { padding: 12px; }
+    .reach-url-row { flex-wrap: wrap; }
+    .reach-url-row .reach-url { flex-basis: 100%; }
+    .reach-about-hero { align-items: flex-start; }
+    .reach-model-summary .reach-chip { white-space: normal; }
+    .reach-live-title-row { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .reach-page *, .reach-modal-overlay, .reach-modal-card { animation: none !important; transition: none !important; }
+}
+
 @media (max-width: 900px) {
     .reach-shell {
         grid-template-columns: minmax(0, 1fr);

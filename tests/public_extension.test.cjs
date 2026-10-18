@@ -70,7 +70,7 @@ function button(root, label) {
   return found;
 }
 
-function mount({ stored = {}, respond = async () => ({}) } = {}) {
+function mount({ stored = {}, respond = async () => ({}), page = 'settings', native = false } = {}) {
   const container = new Element('main');
   const storage = new Map(Object.entries(stored));
   const reads = [];
@@ -101,9 +101,12 @@ function mount({ stored = {}, respond = async () => ({}) } = {}) {
   const sandbox = { window, document, localStorage, fetch, URL, AbortController };
   vm.runInNewContext(source, sandbox, { filename: 'reach-public.js' });
   const controller = window.signalReachPublic.controller;
-  const context = { elements: { settingsContainer: container } };
+  const context = { state: {}, elements: { settingsContainer: container } };
+  if (native) Object.assign(context.elements, { navTitle: new Element('h2'), navFolderList: new Element('div'),
+    listTitle: new Element('h2'), listContent: new Element('div') });
   controller.mount(context);
   controller.activate(context);
+  if (page !== 'dashboard') controller.onFolderChanged(context, page);
   const prefs = () => JSON.parse(storage.get(PREFS_KEY) || '{}');
   return { container, controller, context, window, legacyController, calls, storage, reads, registrations, prefs };
 }
@@ -307,4 +310,121 @@ test('provider error responses cannot expose the credential in the status or sav
   assert.match(ui.container.querySelector('[data-status]').textContent, /HTTP 401/);
   assert.equal(ui.container.querySelector('[data-status]').textContent.includes('synthetic-user-key'), false);
   assert.equal(Array.from(ui.storage.values()).some(value => value.includes('synthetic-user-key')), false);
+});
+
+test('the public extension opens the REACH dashboard and fills the native navigation and connection panes', () => {
+  const ui = mount({ page: 'dashboard', native: true });
+  const elements = ui.context.elements;
+  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(elements.navTitle.textContent, 'SignalREACH');
+  assert.equal(elements.listTitle.textContent, 'Connection & Models');
+  assert.equal(descendants(elements.navFolderList).filter(node => node.tagName === 'BUTTON').length, 9);
+  assert.match(elements.listContent.textContent, /Setup needed/);
+  for (const page of ['Dashboard', 'Endpoint', 'Models', 'Playground', 'Usage', 'Logs', 'Settings', 'About']) {
+    button(elements.navFolderList, page).click();
+    assert.equal(ui.container.querySelector('h1').textContent, page);
+    assert.equal(ui.context.state.folder, page.toLowerCase());
+    assert.equal(button(elements.navFolderList, page).attributes['aria-current'], 'page');
+  }
+  assert.equal(ui.calls.length, 0, 'navigation does not probe a provider or operator service');
+  assert.doesNotMatch(elements.listContent.textContent, /Restart|Start Endpoint|Relay Settings/);
+  ui.controller.onFolderChanged(ui.context, 'dashboard');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  ui.context.state.folder = 'models';
+  ui.controller.renderPage(ui.context);
+  assert.equal(ui.container.querySelector('h1').textContent, 'Models');
+});
+
+test('activating the public extension replaces the previous app main pane', () => {
+  const ui = mount({ page: 'dashboard', native: true });
+  ui.controller.deactivate();
+  const otherPage = new Element('section');
+  otherPage.textContent = 'Another app main pane';
+  ui.container.replaceChildren(otherPage);
+  ui.controller.activate(ui.context);
+  assert.equal(ui.container.children.length, 1);
+  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.doesNotMatch(ui.container.textContent, /Another app main pane/);
+});
+
+test('shared settings keeps the external hub and sync frame alongside the restored dashboard', () => {
+  const ui = mount({ page: 'dashboard', native: true });
+  const sidebar = ui.context.elements.listContent;
+  const sync = descendants(sidebar).find(node => node.tagName === 'IFRAME');
+  assert.equal(sync.src, 'http://127.0.0.1:21309/sync');
+  assert.equal(sync.title, 'Sync Studio and VS Code settings');
+  button(ui.context.elements.navFolderList, 'Shared settings').click();
+  assert.equal(ui.container.querySelector('h1').textContent, 'Shared settings');
+  assert.equal(ui.context.state.folder, 'shared-settings');
+  const link = descendants(ui.container).find(node => node.tagName === 'A');
+  assert.equal(link.href, 'http://127.0.0.1:21309/');
+  assert.equal(link.target, '_blank');
+  assert.equal(link.rel, 'noopener noreferrer');
+  assert.match(ui.container.textContent, /Studio.*VS Code/);
+  assert.equal(ui.calls.length, 0, 'the parent page does not read or write hub or host settings');
+  button(ui.context.elements.navFolderList, 'Dashboard').click();
+  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(ui.context.elements.listContent.querySelector('iframe').src, sync.src);
+});
+
+test('saved connections are loaded explicitly and only the chosen connection metadata is retained', async () => {
+  const ui = mount({ native: true, respond: async () => [
+    { id: 'chosen', name: 'My saved REACH', base_url: 'https://models.example.test/v1',
+      default_model: 'beta', chat_models: ['alpha', 'beta'], api_key: 'must-not-be-copied', is_enabled: true },
+    { id: 'disabled', name: 'Disabled', base_url: 'https://disabled.example.test', is_enabled: false },
+    { id: 'unsafe', name: 'Unsafe', base_url: 'https://user:secret@example.test' }
+  ] });
+  assert.equal(ui.calls.length, 0);
+  await button(ui.container, 'Load saved connections').click();
+  assert.equal(ui.calls.length, 1);
+  assert.equal(ui.calls[0].url, API + '/model-endpoints');
+  assert.equal(ui.calls[0].body, undefined);
+  assert.equal(ui.prefs().endpointId, undefined, 'loading is not selection');
+  const choices = control(ui.container, 'Saved connection');
+  assert.deepEqual(choices.children.map(item => item.value), ['', 'chosen']);
+  choices.value = 'chosen';
+  button(ui.container, 'Use connection').click();
+  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(ui.prefs().endpointId, 'chosen');
+  assert.equal(ui.prefs().model, 'beta');
+  assert.equal(ui.calls.length, 1, 'selection does not overwrite the saved endpoint or its key');
+  assert.equal(Array.from(ui.storage.values()).some(value => value.includes('must-not-be-copied')), false);
+  assert.match(ui.context.elements.listContent.textContent, /My saved REACH/);
+  assert.match(ui.context.elements.listContent.textContent, /beta/);
+});
+
+test('Playground draft and response survive navigation and session activity contains metadata only', async () => {
+  const ui = mount({ page: 'playground', stored: { [PREFS_KEY]: JSON.stringify(connectionPreferences()) },
+    respond: async () => ({ response: 'Private model answer' }) });
+  control(ui.container, 'Prompt').value = 'Private prompt text';
+  control(ui.container, 'Prompt').dispatch('input');
+  button(ui.container, 'Dashboard').click();
+  button(ui.container, 'Playground').click();
+  assert.equal(control(ui.container, 'Prompt').value, 'Private prompt text');
+  await button(ui.container, 'Send prompt').click();
+  button(ui.container, 'Usage').click();
+  assert.match(ui.container.textContent, /Completed prompts1/);
+  assert.match(ui.container.textContent, /This window session only/);
+  button(ui.container, 'Logs').click();
+  assert.match(ui.container.textContent, /alphaCompleted/);
+  assert.doesNotMatch(ui.container.textContent, /Private prompt text|Private model answer/);
+  button(ui.container, 'Playground').click();
+  assert.equal(ui.container.querySelector('.sr-public-output').textContent, 'Private model answer');
+});
+
+test('a late public Playground completion cannot replace another extension sidebar', async () => {
+  let finish;
+  const ui = mount({ page: 'playground', native: true,
+    stored: { [PREFS_KEY]: JSON.stringify(connectionPreferences()) },
+    respond: () => new Promise(resolve => { finish = resolve; }) });
+  control(ui.container, 'Prompt').value = 'Test';
+  const sending = button(ui.container, 'Send prompt').click();
+  ui.controller.deactivate();
+  assert.equal(ui.calls[0].options.signal.aborted, true);
+  ui.context.elements.listContent.textContent = 'Other extension content';
+  finish({ response: 'Late response' });
+  await sending;
+  assert.equal(ui.context.elements.listContent.textContent, 'Other extension content');
+  ui.controller.activate(ui.context);
+  assert.equal(ui.container.querySelector('.sr-public-output').textContent, '');
 });

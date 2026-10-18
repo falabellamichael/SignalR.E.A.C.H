@@ -6,6 +6,7 @@ import { randomUUID, randomBytes, createHash, createHmac } from 'crypto';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
+const settingsHub = require(app.isPackaged ? path.join(process.resourcesPath, 'settings-hub.cjs') : '../vscode/settings-hub.cjs');
 
 /* Drop a copy of a smoke screenshot somewhere predictable so a developer can
  * find it without reading the log for the temp directory. Purely a
@@ -3053,6 +3054,18 @@ function createWindow({ show = true } = {}) {
 
 // ---------- lifecycle ----------
 app.whenReady().then(() => {
+  if (!smokeRoot) settingsHub.start();
+  if (!smokeRoot) settingsHub.watch(async shared => {
+    const stored = settingsStore.load();
+    const synced = settingsHub.applyStudio(stored, shared);
+    if (synced === stored) return;
+    saveSettings(synced);
+    for (const [id, loop] of agentLoops) {
+      if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
+      else agentLoops.delete(id);
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('settings:hub-synced');
+  });
   engines.configure(path.join(app.getPath('userData'), 'engine-ledger.jsonl'));
   nativeTheme.themeSource = themeChoice().scheme;
   reachProcess.configure(loadSettings);

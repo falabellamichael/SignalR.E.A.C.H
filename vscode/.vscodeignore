@@ -1,0 +1,5 @@
+**/*.vsix
+package-lock.json
+node_modules/.cache/**
+node_modules/playwright/.local-browsers/**
+node_modules/playwright-core/.local-browsers/**

@@ -2804,7 +2804,26 @@ async function activate(context) {
   }
   const savedSelection = context.globalState?.get(PROVIDER_SELECTION_STATE);
   providerSelectionOverride = typeof savedSelection === 'string' ? savedSelection : undefined;
+  const settingsHub = require('./settings-hub.cjs');
+  try {
+    const shared = settingsHub.read();
+    if (shared?.settings && shared.syncEnabled && context.globalState.get('reachHubRevision') !== shared.revision) {
+      await settingsHub.applyCode(vscode, context, shared);
+      providerSelectionOverride = 'endpoint:' + shared.settings.endpoint;
+      await context.globalState.update(PROVIDER_SELECTION_STATE, providerSelectionOverride);
+    }
+  } catch (error) { vscode.window.showWarningMessage('REACH settings sync: ' + error.message); }
+  context.subscriptions.push(settingsHub.start());
+  context.subscriptions.push(vscode.commands.registerCommand('simplereach.settingsHub', () => vscode.env.openExternal(vscode.Uri.parse('http://127.0.0.1:21309/'))));
   const provider = new ReachChatViewProvider(context.extensionUri);
+  context.subscriptions.push(settingsHub.watch(async shared => {
+    if (context.globalState.get('reachHubRevision') === shared.revision) return;
+    await settingsHub.applyCode(vscode, context, shared);
+    providerSelectionOverride = 'endpoint:' + shared.settings.endpoint;
+    await context.globalState.update(PROVIDER_SELECTION_STATE, providerSelectionOverride);
+    provider._post('config', config());
+    if (provider._view) await provider._fetchModels();
+  }));
   provider._secrets = context.secrets;
   provider._globalState = context.globalState;
   let lastAccountStatus = '';

@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "id": "signal-reach-public",
   "name": "SignalREACH",
-  "version": "26.9.9",
+  "version": "26.10.3",
   "edition": "public",
-  "description": "Connect your own OpenAI-compatible provider to SimpleRAG, choose model defaults, and try prompts with your own account or local model.",
+  "description": "The public REACH workspace for SimpleRAG: dashboard, connections, models, playground, session activity, and access to the shared Studio and VS Code settings hub.",
   "publisher": { "name": "Michael Anthony Falabella" },
   "license": "MIT",
   "permissions": [
-    { "id": "ui.page", "reason": "Adds connection settings, compact model defaults, and a prompt playground using your own provider.", "required": true }
+    { "id": "ui.page", "reason": "Adds the public REACH dashboard and navigation, connection and model settings, a playground, and the Studio and VS Code settings hub launcher and sync control.", "required": true }
   ],
   "frontend": { "entrypoint": "reach-public.js", "capabilities": ["workspace.page-controller.v1"] },
   "contributes": {

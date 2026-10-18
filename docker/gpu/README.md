@@ -7,7 +7,7 @@ It does not download models or contain credentials or public endpoint addresses.
 
 | Service | GPU | vLLM memory fraction | Context tokens |
 | --- | --- | --- | --- |
-| Gemma 4 12B QAT | 0 + 1, TP2 | 0.40 per GPU | 92,960 |
+| Gemma 4 12B QAT | 0 + 1, TP2 | 0.55 per GPU | 92,960 |
 | MiniCPM5 2B | 1, TP1 | 0.24 | 39,904 |
 | BGE M3, BGE Reranker v2 M3, Liquid d1 Omni 600M, Liquid d1 3B | 1 | Existing support allocation | Native service limits |
 
@@ -21,7 +21,10 @@ explicit profile change and GPU memory review; this launcher does not do so.
 
 Gemma uses FP8 language weights and BF16 vision/activations, native MTP with
 three speculative tokens, Model Runner V2, and its native `gemma4` reasoning
-parser with thinking enabled. Decode graph capture sizes remain 4 and 8.
+parser with thinking enabled. Its eight active sequences have target verification
+graphs at 4, 8, 12, 16, 20, 24, 28, and 32 tokens, plus assistant decode graphs
+at every size from 1 through 8. Both passes use the same capture list; target-only
+sizes can leave the assistant running eagerly or padding small requests.
 `OMP_NUM_THREADS=1` remains unchanged. MiniCPM retains FP8 weights, BF16
 activations, its Qwen3 reasoning parser, existing runner/graphs, and
 `OMP_NUM_THREADS=2`. Support remains unchanged on GPU 1. All models and KV
@@ -35,7 +38,7 @@ causes refusal while preserving the container. No context is silently reduced.
 Input and output share that window; output is automatic unless the client or
 operator supplies a positive cap. Transport guards are separate from context.
 
-Gemma's prompt scheduling step is 1,024 tokens, so a long prefill yields to a
+Gemma's prompt scheduling step is 3,072 tokens, so a long prefill yields to a
 decode that is already running. Its 92,960-token context, TP2 placement, MTP
 speculative decoding, and GPU execution settings are unchanged. A running
 container with a different step is preserved and not rewritten; replace it only
@@ -84,11 +87,14 @@ output and concurrent requests after native startup and readiness checks.
 
 ## Sustained concurrency trials
 
-The qualified profiles currently admit two active sequences each. Raising only
-that limit can leave larger batches without decode graph coverage. On the GPU
+Gemma admits eight active sequences. Its context cache is shared between them;
+eight calls at the full 92,960-token context are not guaranteed to fit at once.
+The native startup log reports actual KV capacity for the available memory.
+Raising only the sequence limit can leave larger batches without decode graph coverage. On the GPU
 host, `python3 trial_container.py minicpm --sequences 4` automatically creates
-graph sizes 1 through 4; the corresponding Gemma trial creates sizes 4, 8, 12,
-and 16 to account for its three MTP draft tokens. Explicit `--capture` values
+graph sizes 1 through 4; the corresponding Gemma trial creates sizes 1, 2, 3, 4,
+8, 12, and 16 to cover both target verification and subsequent assistant decode.
+Explicit `--capture` values
 override that calculation. Trial settings are experimental until measured;
 additional graph captures and active sequences consume GPU memory.
 

@@ -1,10 +1,10 @@
-.sr-public-page { max-width: 1040px; margin: 0 auto; padding: 24px; color: var(--text-primary, #e4e9f2); font: inherit; }
+.sr-public-page { width: 100%; min-width: 0; max-width: 1180px; margin: 0 auto; padding: 20px 24px 32px; color: inherit; font: inherit; }
 .sr-public-page * { box-sizing: border-box; }
 .sr-public-page h1 { margin: 0; font-size: 26px; }
 .sr-public-intro, .sr-public-hint, .sr-public-field small { color: var(--text-secondary, #9aa8bc); line-height: 1.55; }
 .sr-public-intro { margin-top: 6px; }
-.sr-public-tabs { display: flex; gap: 8px; margin: 22px 0 12px; }
-.sr-public-card { padding: 20px; margin: 16px 0; border: 1px solid var(--border-color, #334155); border-radius: 12px; background: var(--bg-secondary, #172131); }
+.sr-public-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 12px; }
+.sr-public-card { padding: 20px; margin: 16px 0; border: 1px solid rgba(128, 128, 128, .22); border-radius: 10px; background: rgba(128, 128, 128, .055); }
 .sr-public-card h2 { margin: 0 0 8px; font-size: 18px; }
 .sr-public-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr)); gap: 14px; margin: 16px 0; }
 .sr-public-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; font-size: 13px; }
@@ -12,8 +12,9 @@
 .sr-public-page input, .sr-public-page select, .sr-public-page textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--border-color, #475569); border-radius: 7px; background: var(--bg-primary, #0f1725); color: inherit; font: inherit; }
 .sr-public-page textarea { resize: vertical; }
 .sr-public-button { padding: 9px 14px; margin: 4px 6px 4px 0; border: 1px solid var(--border-color, #475569); border-radius: 7px; background: var(--bg-primary, #0f1725); color: inherit; font: inherit; cursor: pointer; }
-.sr-public-primary, .sr-public-tabs [aria-current="page"] { background: var(--accent-color, #2864c8); border-color: var(--accent-color, #2864c8); color: #fff; }
+.sr-public-primary { background: #ffb020; border-color: #ffb020; color: #211600; font-weight: 600; }
 .sr-public-button:disabled { opacity: .5; cursor: default; }
+.sr-public-page a.sr-public-button { display: inline-block; text-decoration: none; }
 .sr-public-page :focus-visible { outline: 2px solid var(--accent-color, #72a7ff); outline-offset: 3px; }
 .sr-public-details { padding: 12px 14px; margin: 12px 0; border: 1px solid var(--border-color, #334155); border-radius: 8px; }
 .sr-public-details summary { cursor: pointer; overflow-wrap: anywhere; font-weight: 600; }
@@ -22,3 +23,33 @@
 .sr-public-error { color: #ff9d9d; }
 .sr-public-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 65vh; overflow: auto; font: inherit; line-height: 1.6; }
 @media (max-width: 520px) { .sr-public-page { padding: 12px; } .sr-public-card { padding: 14px; } }
+
+/* Keep the public page in the host's native three panes, independently of REACH Admin. */
+.reading-content.calendar-mode:has(> #settings-container > .sr-public-page) { grid-template-columns: minmax(0, 1fr); }
+#settings-container:has(> .sr-public-page) { width: 100%; min-width: 0; height: 100%; overflow-y: auto; }
+.sr-public-page [hidden], .sr-public-sidebar [hidden] { display: none !important; }
+.sr-public-eyebrow { margin: 0 0 6px; color: #d18a0a; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.sr-public-nav { display: flex; flex-direction: column; gap: 4px; padding: 8px; }
+.sr-public-nav-item { display: flex; align-items: center; gap: 11px; min-height: 36px; padding: 9px 12px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.sr-public-nav-item i { width: 16px; color: #d18a0a; text-align: center; }
+.sr-public-nav-item:hover, .sr-public-shortcut:hover { background: rgba(128, 128, 128, .12); }
+.sr-public-nav-item[aria-current="page"] { background: rgba(255, 176, 32, .16); border-color: rgba(255, 176, 32, .3); font-weight: 600; }
+.sr-public-nav-item:focus-visible, .sr-public-shortcut:focus-visible, .sr-public-sidebar button:focus-visible { outline: 2px solid #d18a0a; outline-offset: 2px; }
+.sr-public-sidebar { padding: 8px; color: inherit; font: inherit; }
+.sr-public-sidebar * { box-sizing: border-box; }
+.sr-public-sidebar .sr-public-card { margin: 0 0 10px; padding: 12px; border-radius: 7px; }
+.sr-public-sidebar h2 { font-size: 13px; overflow-wrap: anywhere; }
+.sr-public-sidebar .sr-public-button { width: 100%; margin: 4px 0; padding: 7px 9px; background: transparent; font-size: 12px; }
+.sr-public-sidebar .sr-public-hint { font-size: 11px; }
+.sr-public-sync-frame { display: block; width: 100%; max-width: 100%; height: 190px; border: 0; border-radius: 6px; margin: 10px 0; }
+.sr-public-badge { display: inline-block; padding: 4px 9px; border-radius: 20px; background: rgba(255, 176, 32, .12); border: 1px solid rgba(255, 176, 32, .28); font-size: 12px; }
+.sr-public-summary { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px 0; }
+.sr-public-summary strong, .sr-public-model-name, .sr-public-url { overflow-wrap: anywhere; }
+.sr-public-summary .sr-public-hint { font-size: 12px; }
+.sr-public-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr)); gap: 12px; }
+.sr-public-tiles .sr-public-summary { padding: 16px; border: 1px solid rgba(128, 128, 128, .22); border-radius: 8px; }
+.sr-public-shortcuts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; margin-top: 16px; }
+.sr-public-shortcut { display: flex; flex-direction: column; gap: 9px; min-width: 0; padding: 16px; background: transparent; border: 1px solid rgba(128, 128, 128, .24); border-radius: 8px; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.sr-public-shortcut .sr-public-hint { font-size: 12px; }
+.sr-public-log-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) 90px 65px; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(128, 128, 128, .18); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 640px) { .sr-public-log-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

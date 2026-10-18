@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SignalREACH Settings Hub</title>
+<style>
+:root{color-scheme:light;--ink:#233126;--line:#cbd5c8;--accent:#315d3d}*{box-sizing:border-box}body{margin:0;color:var(--ink);background:radial-gradient(ellipse at top right,#dce9d8,transparent 65%),#f4f4ec;font:16px Georgia,serif;min-height:100vh}main{max-width:760px;margin:auto;padding:50px 24px}h1{font-size:42px;margin:8px 0 18px;letter-spacing:-1.5px}.eyebrow{font:12px monospace;letter-spacing:2px}p{line-height:1.6}form{background:#fffdf7;border:1px solid var(--line);border-radius:16px;padding:24px;display:grid;gap:18px;box-shadow:0 12px 50px #2331260a}label{display:grid;gap:7px;font:14px sans-serif}input,button{font:16px sans-serif;padding:12px;border:1px solid var(--line);border-radius:7px;min-width:0;width:100%}button{background:var(--accent);color:white;cursor:pointer}button:disabled{opacity:.6}.row{display:grid;grid-template-columns:1fr 1fr;gap:16px}small{line-height:1.5;color:#536450}#status{min-height:25px}a{color:var(--accent)}@media(max-width:480px){.row{grid-template-columns:1fr}h1{font-size:34px}main{padding:28px 16px}}
+</style>
+<main><div class="eyebrow">SIGNALREACH / USER SETTINGS</div><h1>One setup. Both clients.</h1>
+<p>With sync enabled, saved settings automatically refresh REACH Studio and the VS Code extension. Existing conversations may keep their explicitly selected model.</p>
+<iframe title="Sync Studio and VS Code settings" src="/sync" style="width:100%;height:170px;border:0"></iframe>
+<form id="settings"><label>Connection name<input name="name" maxlength="60" value="Shared connection"></label>
+<label>Provider base URL<input name="endpoint" type="url" required placeholder="https://your-provider.example/v1"></label>
+<label>Model ID<input name="model" required maxlength="200" placeholder="Your provider's model ID"></label>
+<div class="row"><label>Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0.7" required></label><label>Maximum output tokens<input name="maxTokens" type="number" min="0" max="131072" step="1" value="1024" required></label></div>
+<small>0 output tokens uses the provider limit. API keys stay in each client's existing credential settings; configure the same endpoint there if it requires a key. This hub does not grant tool or administrator permissions.</small>
+<button type="submit">Save for Studio and VS Code</button></form><p id="status" role="status">Loading shared settings...</p></main>
+<script>
+const token='__HUB_TOKEN__',form=document.querySelector('form'),status=document.querySelector('#status');
+async function call(method,body){const response=await fetch('/settings',{method,headers:{'X-Reach-Hub':token,'Content-Type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});const data=await response.json();if(!response.ok)throw new Error(data.error||'Could not save settings.');return data;}
+call('GET').then(data=>{if(data?.settings)for(const [key,value]of Object.entries(data.settings))if(form.elements[key])form.elements[key].value=value;status.textContent=data?.settings?'Shared settings loaded.':'Choose a connection and model to start syncing.';}).catch(()=>{status.textContent='Could not load settings. Refresh this page to reconnect.';});
+form.addEventListener('submit',async event=>{event.preventDefault();const button=form.querySelector('button');button.disabled=true;try{const values=Object.fromEntries(new FormData(form));values.temperature=Number(values.temperature);values.maxTokens=Number(values.maxTokens);const saved=await call('POST',values);status.textContent=saved.syncEnabled?'Saved. Both running clients will refresh automatically.':'Saved. Enable sync to apply these settings to your clients.';}catch(error){status.textContent=error.message;}finally{button.disabled=false;}});
+</script></html>

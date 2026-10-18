@@ -9,11 +9,29 @@
     const APP_ID = 'signal-reach-public';
     const PREFS_KEY = 'signal-reach-public.preferences.v1';
     const API = '/api/extensions/rag-workspace';
+    const SETTINGS_HUB_URL = 'http://127.0.0.1:21309';
     let context = null;
     let root = null;
-    let activePage = 'settings';
+    const PAGES = [
+        ['dashboard', 'Dashboard', 'fa-gauge-high'],
+        ['endpoint', 'Endpoint', 'fa-link'],
+        ['models', 'Models', 'fa-cubes'],
+        ['playground', 'Playground', 'fa-comment-dots'],
+        ['usage', 'Usage', 'fa-chart-column'],
+        ['logs', 'Logs', 'fa-list'],
+        ['settings', 'Settings', 'fa-sliders'],
+        ['shared-settings', 'Shared settings', 'fa-arrows-rotate'],
+        ['about', 'About', 'fa-circle-info']
+    ];
+    let activePage = 'dashboard';
     let generation = 0;
     let pending = null;
+    let active = false;
+    let savedConnections = null;
+    let connectionStatus = 'Not checked';
+    let promptDraft = '';
+    let lastResponse = '';
+    const activity = [];
 
     function readPreferences() {
         try {
@@ -128,8 +146,11 @@
     }
     async function action(control, job) {
         control.disabled = true;
+        const currentGeneration = generation;
         try { await job(); }
-        catch (error) { status(error.name === 'AbortError' ? 'Request stopped.' : error.message, true); }
+        catch (error) {
+            if (generation === currentGeneration) status(error.name === 'AbortError' ? 'Request stopped.' : error.message, true);
+        }
         finally { control.disabled = false; }
     }
     function card(title, description) {
@@ -147,6 +168,46 @@
     }
 
     function renderSettings() {
+        const existing = card('Use a saved SimpleRAG connection', 'Choose a connection you already use in SimpleRAG. Its key stays in SimpleRAG.');
+        const load = button('Load saved connections', () => action(load, async () => {
+            const data = await request('/model-endpoints');
+            if (!Array.isArray(data)) throw new Error('SimpleRAG did not return saved connections.');
+            savedConnections = data.filter(item => item && typeof item.id === 'string' && item.is_enabled !== false)
+                .flatMap(item => {
+                    try {
+                        return [{ id: item.id, name: String(item.name || 'Saved connection'),
+                            baseUrl: normalizeUrl(item.base_url), model: typeof item.default_model === 'string' ? item.default_model : '',
+                            models: (Array.isArray(item.chat_models) ? item.chat_models : Array.isArray(item.models) ? item.models : [])
+                                .filter(model => typeof model === 'string' && model && model.length <= 256) }];
+                    } catch (_error) { return []; }
+                });
+            render();
+            status(savedConnections.length ? 'Choose a connection, then select Use connection.' : 'No compatible saved connections. Add a connection below.');
+        }));
+        existing.appendChild(load);
+        if (savedConnections && savedConnections.length) {
+            const choices = select([['', 'Choose a saved connection'], ...savedConnections.map(item => [item.id, item.name])], '');
+            existing.appendChild(field('Saved connection', choices));
+            existing.appendChild(button('Use connection', () => {
+                const chosen = savedConnections.find(item => item.id === choices.value);
+                if (!chosen) return status('Choose a saved connection first.', true);
+                if (preferences.endpointId !== chosen.id) {
+                    preferences.defaults = {};
+                    lastResponse = '';
+                }
+                preferences.endpointId = chosen.id;
+                preferences.name = chosen.name;
+                preferences.baseUrl = chosen.baseUrl;
+                preferences.model = chosen.model;
+                models.clear();
+                chosen.models.forEach(model => models.add(model));
+                if (preferences.model) models.add(preferences.model);
+                connectionStatus = 'Not checked';
+                savePreferences();
+                navigate('dashboard');
+                status('Connection selected. Refresh models to check availability.');
+            }, 'sr-public-button sr-public-primary'));
+        }
         const connection = card('Your connection', 'Use your own account or a local model. Saving adds this connection to SimpleRAG; an existing connection at the same URL is updated.');
         const grid = element('div', 'sr-public-grid');
         const name = input('text', preferences.name, 'My provider');
@@ -174,13 +235,38 @@
             preferences.endpointId = data.id;
             preferences.name = name.value.trim() || 'SignalREACH - my provider';
             preferences.baseUrl = baseUrl;
+            connectionStatus = 'Not checked';
             key.value = '';
             savePreferences();
             render();
             status('Connection saved. Refresh models to choose a default.');
         }), 'sr-public-button sr-public-primary');
         connection.appendChild(save);
+        renderModels();
+    }
 
+    async function refreshModels() {
+        if (!preferences.endpointId) throw new Error('Choose or save a connection in Settings first.');
+        const endpointId = preferences.endpointId;
+        try {
+            const data = await request('/model-endpoints/' + encodeURIComponent(endpointId) + '/models?refresh=true');
+            if (endpointId !== preferences.endpointId) return;
+            const list = Array.isArray(data.chat_models) ? data.chat_models : data.models;
+            if (!Array.isArray(list)) throw new Error('SimpleRAG did not return a model list. You can enter a model ID manually.');
+            models.clear();
+            list.filter(model => typeof model === 'string' && model && model.length <= 256).forEach(model => models.add(model));
+            const available = models.size;
+            if (preferences.model) models.add(preferences.model);
+            connectionStatus = data.online === false ? 'Offline' : available ? 'Models available' : 'No models returned';
+            render();
+            status(available + ' model choices available.');
+        } catch (error) {
+            if (endpointId === preferences.endpointId) { connectionStatus = 'Check failed'; renderSidebar(); }
+            throw error;
+        }
+    }
+
+    function renderModels() {
         const settings = card('Model defaults', 'Choose a default for this connection. Temperature and output length apply to prompts sent from this playground.');
         const controls = element('div', 'sr-public-grid');
         const defaultModel = select([['', 'Select a model'], ...Array.from(models).sort().map(model => [model, model])], preferences.model);
@@ -199,17 +285,7 @@
         }));
         settings.appendChild(controls);
         settings.appendChild(customGroup);
-        const refresh = button('Refresh models', () => action(refresh, async () => {
-            if (!preferences.endpointId) throw new Error('Save your connection first.');
-            const data = await request('/model-endpoints/' + encodeURIComponent(preferences.endpointId) + '/models?refresh=true');
-            const list = Array.isArray(data.chat_models) ? data.chat_models : data.models;
-            if (!Array.isArray(list)) throw new Error('SimpleRAG did not return a model list. You can enter a model ID manually.');
-            models.clear();
-            list.filter(model => typeof model === 'string' && model && model.length <= 256).forEach(model => models.add(model));
-            if (preferences.model) models.add(preferences.model);
-            render();
-            status(models.size + ' model choices available.');
-        }));
+        const refresh = button('Refresh models', () => action(refresh, refreshModels));
         refresh.disabled = !preferences.endpointId;
         settings.appendChild(refresh);
         defaultModel.addEventListener('change', () => { preferences.model = defaultModel.value; render(); });
@@ -237,6 +313,171 @@
         settings.appendChild(saveModels);
     }
 
+    function navigate(page) {
+        if (!PAGES.some(item => item[0] === page)) return;
+        if (page !== activePage) deactivateRequest();
+        activePage = page;
+        if (context && context.state) context.state.folder = page;
+        render();
+    }
+
+    function navigation(className) {
+        const nav = element('nav', className);
+        nav.setAttribute('aria-label', 'SignalREACH navigation');
+        PAGES.forEach(([id, label, icon]) => {
+            const item = button('', () => navigate(id), 'sr-public-nav-item');
+            const symbol = element('i', 'fa-solid ' + icon);
+            symbol.setAttribute('aria-hidden', 'true');
+            item.appendChild(symbol);
+            item.appendChild(element('span', '', label));
+            item.setAttribute('aria-current', activePage === id ? 'page' : 'false');
+            nav.appendChild(item);
+        });
+        return nav;
+    }
+
+    function renderNavigation() {
+        if (!active) return;
+        const elements = context && context.elements || {};
+        if (elements.navTitle) elements.navTitle.textContent = 'SignalREACH';
+        if (elements.navFolderList) elements.navFolderList.replaceChildren(navigation('sr-public-nav'));
+    }
+
+    function summary(parent, label, value) {
+        const item = element('div', 'sr-public-summary');
+        item.appendChild(element('span', 'sr-public-hint', label));
+        item.appendChild(element('strong', '', value));
+        parent.appendChild(item);
+    }
+
+    function sharedSettingsLink() {
+        const link = element('a', 'sr-public-button sr-public-primary', 'Open shared settings hub');
+        link.href = SETTINGS_HUB_URL + '/';
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        return link;
+    }
+
+    function renderSidebar() {
+        if (!active) return;
+        const elements = context && context.elements || {};
+        if (elements.listTitle) elements.listTitle.textContent = 'Connection & Models';
+        if (!elements.listContent) return;
+        const panel = element('div', 'sr-public-sidebar');
+        const connection = element('section', 'sr-public-card');
+        connection.appendChild(element('h2', '', preferences.name || 'Your REACH connection'));
+        connection.appendChild(element('span', 'sr-public-badge', preferences.endpointId ? connectionStatus : 'Setup needed'));
+        connection.appendChild(element('p', 'sr-public-hint sr-public-url', preferences.baseUrl || 'Choose a saved connection or add your provider.'));
+        connection.appendChild(button('Connection settings', () => navigate('settings')));
+        panel.appendChild(connection);
+        const selection = element('section', 'sr-public-card');
+        selection.appendChild(element('h2', '', 'Model'));
+        selection.appendChild(element('p', 'sr-public-model-name', preferences.model || 'Choose a default model'));
+        const refresh = button('Refresh models', () => action(refresh, refreshModels));
+        refresh.disabled = !preferences.endpointId;
+        selection.appendChild(refresh);
+        selection.appendChild(button('Model settings', () => navigate('models')));
+        panel.appendChild(selection);
+        const shared = element('section', 'sr-public-card');
+        shared.appendChild(element('h2', '', 'Studio + VS Code sync'));
+        const sync = element('iframe', 'sr-public-sync-frame');
+        sync.title = 'Sync Studio and VS Code settings';
+        sync.src = SETTINGS_HUB_URL + '/sync';
+        shared.appendChild(sync);
+        shared.appendChild(button('Shared settings', () => navigate('shared-settings')));
+        panel.appendChild(shared);
+        const session = element('section', 'sr-public-card');
+        session.appendChild(element('h2', '', 'This session'));
+        summary(session, 'Completed prompts', String(activity.filter(item => item.outcome === 'Completed').length));
+        session.appendChild(button('View activity', () => navigate('logs')));
+        panel.appendChild(session);
+        panel.appendChild(element('p', 'sr-public-hint', 'SignalREACH · v' + manifest.version));
+        elements.listContent.replaceChildren(panel);
+    }
+
+    function renderDashboard() {
+        const welcome = card('Welcome to SignalREACH', 'Your models, connections and prompt activity in SimpleRAG.');
+        welcome.appendChild(element('span', 'sr-public-badge', preferences.endpointId ? connectionStatus : 'Set up your connection'));
+        welcome.appendChild(element('p', 'sr-public-hint', preferences.endpointId
+            ? 'Open Models to refresh your catalog and choose a default, or try a prompt in Playground.'
+            : 'Start with a connection already saved in SimpleRAG, or enter your own REACH / OpenAI-compatible endpoint.'));
+        welcome.appendChild(button(preferences.endpointId ? 'Open Playground' : 'Choose a connection',
+            () => navigate(preferences.endpointId ? 'playground' : 'settings'), 'sr-public-button sr-public-primary'));
+        welcome.appendChild(button('Browse models', () => navigate('models')));
+        const tiles = element('div', 'sr-public-tiles');
+        summary(tiles, 'Connection', preferences.name || 'Not selected');
+        summary(tiles, 'Default model', preferences.model || 'Not selected');
+        summary(tiles, 'Model choices', models.size ? String(models.size) : 'Refresh to load');
+        summary(tiles, 'Completed prompts', String(activity.filter(item => item.outcome === 'Completed').length));
+        root.appendChild(tiles);
+        const shortcuts = card('Your workspace', 'Open a page to manage your connection or try your models.');
+        const grid = element('div', 'sr-public-shortcuts');
+        [['models', 'Models', 'Choose a model and tune prompt defaults.'],
+            ['endpoint', 'Endpoint', 'Review the connection used by this extension.'],
+            ['playground', 'Playground', 'Send a prompt through your selected connection.'],
+            ['usage', 'Usage', 'Review activity from this Playground session.'],
+            ['shared-settings', 'Shared settings', 'Manage shared Studio and VS Code settings and sync.']].forEach(([id, label, detail]) => {
+            const item = button('', () => navigate(id), 'sr-public-shortcut');
+            item.appendChild(element('strong', '', label));
+            item.appendChild(element('span', 'sr-public-hint', detail));
+            grid.appendChild(item);
+        });
+        shortcuts.appendChild(grid);
+    }
+
+    function renderSharedSettings() {
+        const shared = card('REACH settings hub', 'Manage shared connection, model and generation settings for installed REACH Studio and the SimpleREACH VS Code extension.');
+        shared.appendChild(sharedSettingsLink());
+        shared.appendChild(element('p', 'sr-public-hint', 'Keep an updated Studio or VS Code extension running to host the local hub. If it is unavailable, start one of those clients and open the hub again.'));
+        const sync = card('Sync Studio + VS Code', 'Use the switch in the second panel to automatically apply saved hub settings in both running clients. Sync defaults to off.');
+        sync.appendChild(element('p', 'sr-public-hint', 'The hub shares the connection name, endpoint, model, temperature and output-token limit. Configure API keys in each client.'));
+        card('SimpleRAG connection settings', 'The Settings page here manages the connection used by this SimpleRAG extension. Studio and VS Code share their settings through the hub independently.');
+    }
+
+    function renderEndpoint() {
+        const info = card('Your endpoint', 'The connection selected for SignalREACH. Credentials are managed by SimpleRAG.');
+        summary(info, 'Connection', preferences.name || 'Not selected');
+        summary(info, 'Base URL', preferences.baseUrl || 'Not configured');
+        summary(info, 'Default model', preferences.model || 'Not selected');
+        summary(info, 'Last model check', connectionStatus);
+        info.appendChild(button('Choose or edit connection', () => navigate('settings'), 'sr-public-button sr-public-primary'));
+        const check = button('Check models', () => action(check, refreshModels));
+        check.disabled = !preferences.endpointId;
+        info.appendChild(check);
+        card('Use in SimpleRAG', 'Connections saved here are also available in SimpleRAG model settings. Choose the same connection and model in the Copilot model picker to use them in your chats.');
+    }
+
+    function renderUsage() {
+        const usage = card('Playground usage', 'This window session only. Your provider or REACH account remains the source for billing and account-wide usage.');
+        const completed = activity.filter(item => item.outcome === 'Completed');
+        summary(usage, 'Completed prompts', String(completed.length));
+        summary(usage, 'Failed or stopped prompts', String(activity.length - completed.length));
+        summary(usage, 'Average response time', completed.length
+            ? (completed.reduce((sum, item) => sum + item.durationMs, 0) / completed.length / 1000).toFixed(2) + ' s' : 'No completed prompts');
+        usage.appendChild(button('Open activity log', () => navigate('logs')));
+    }
+
+    function renderLogs() {
+        const logs = card('Playground activity', 'Recent requests from this window session. Prompt text, responses and credentials are not stored in this log.');
+        if (!activity.length) logs.appendChild(element('p', 'sr-public-hint', 'No Playground requests yet.'));
+        activity.slice().reverse().forEach(item => {
+            const row = element('div', 'sr-public-log-row');
+            row.appendChild(element('span', '', new Date(item.at).toLocaleTimeString()));
+            row.appendChild(element('strong', '', item.model));
+            row.appendChild(element('span', '', item.outcome));
+            row.appendChild(element('span', 'sr-public-hint', (item.durationMs / 1000).toFixed(2) + ' s'));
+            logs.appendChild(row);
+        });
+    }
+
+    function renderAbout() {
+        const about = card('SignalREACH', 'RAG Endpoint & AI Chat Host · SimpleRAG extension');
+        summary(about, 'Version', manifest.version);
+        summary(about, 'Edition', 'Public');
+        summary(about, 'Publisher', manifest.publisher.name);
+        about.appendChild(element('p', 'sr-public-hint', 'Manage your connection, choose models and try prompts. Your provider credentials stay in SimpleRAG.'));
+    }
+
     function renderPlayground() {
         const playground = card('Try your model', preferences.name && preferences.model
             ? preferences.name + ' · ' + preferences.model
@@ -245,14 +486,20 @@
         const prompt = element('textarea');
         prompt.rows = 4;
         prompt.placeholder = 'Write a prompt…';
+        prompt.value = promptDraft;
+        prompt.addEventListener('input', () => { promptDraft = prompt.value; });
         playground.appendChild(field('Prompt', prompt));
         const output = element('pre', 'sr-public-output');
+        output.textContent = lastResponse;
         output.setAttribute('aria-live', 'polite');
         const send = button('Send prompt', () => action(send, async () => {
             if (!preferences.endpointId || !preferences.model) throw new Error('Save your connection and select a model first.');
             if (!prompt.value.trim()) throw new Error('Write a prompt first.');
+            promptDraft = prompt.value;
             const currentGeneration = generation;
-            pending = new AbortController();
+            const requestController = new AbortController();
+            pending = requestController;
+            const entry = { at: Date.now(), model: preferences.model, outcome: 'Failed', durationMs: 0 };
             stop.disabled = false;
             status('Waiting for your model…');
             try {
@@ -263,11 +510,24 @@
                     max_output_tokens: defaults.maxOutputTokens, context: '',
                     use_workspace_context: false, use_web_search: false,
                     use_web_search_loop: false, embedding_enabled: false
-                }, pending.signal);
+                }, requestController.signal);
                 if (generation !== currentGeneration) return;
-                output.textContent = typeof data.response === 'string' ? data.response : 'No text response returned.';
+                entry.outcome = 'Completed';
+                lastResponse = typeof data.response === 'string' ? data.response : 'No text response returned.';
+                output.textContent = lastResponse;
                 status('Response received.');
-            } finally { pending = null; stop.disabled = true; }
+            } catch (error) {
+                if (error.name === 'AbortError') entry.outcome = 'Stopped';
+                throw error;
+            } finally {
+                if (generation !== currentGeneration) entry.outcome = 'Stopped';
+                entry.durationMs = Date.now() - entry.at;
+                activity.push(entry);
+                if (activity.length > 100) activity.shift();
+                if (pending === requestController) pending = null;
+                stop.disabled = true;
+                renderSidebar();
+            }
         }), 'sr-public-button sr-public-primary');
         send.disabled = !preferences.endpointId || !preferences.model;
         const stop = button('Stop waiting', () => { if (pending) pending.abort(); });
@@ -282,30 +542,24 @@
         return elements.settingsContainer || document.getElementById('settings-container') || document.getElementById('settingsContainer');
     }
     function render() {
+        if (!active) return;
         const container = target();
         if (!container) return;
         if (root) root.remove();
         root = element('div', 'sr-public-page');
-        root.appendChild(element('h1', '', 'SignalREACH'));
-        root.appendChild(element('p', 'sr-public-intro', 'Your providers. Your models. Your settings.'));
-        const nav = element('nav', 'sr-public-tabs');
-        ['settings', 'playground'].forEach(page => {
-            const tab = button(page === 'settings' ? 'Settings' : 'Playground', () => {
-                deactivateRequest();
-                activePage = page;
-                render();
-            });
-            tab.setAttribute('aria-current', activePage === page ? 'page' : 'false');
-            nav.appendChild(tab);
-        });
-        root.appendChild(nav);
+        root.appendChild(element('p', 'sr-public-eyebrow', 'SIGNALREACH'));
+        root.appendChild(element('h1', '', PAGES.find(item => item[0] === activePage)[1]));
+        if (!(context && context.elements && context.elements.navFolderList)) root.appendChild(navigation('sr-public-tabs'));
         const note = element('p', 'sr-public-status');
         note.setAttribute('data-status', '');
         note.setAttribute('role', 'status');
         root.appendChild(note);
-        container.appendChild(root);
-        if (activePage === 'playground') renderPlayground();
-        else renderSettings();
+        container.replaceChildren(root);
+        ({ dashboard: renderDashboard, endpoint: renderEndpoint, models: renderModels,
+            playground: renderPlayground, usage: renderUsage, logs: renderLogs,
+            settings: renderSettings, 'shared-settings': renderSharedSettings, about: renderAbout })[activePage]();
+        renderNavigation();
+        renderSidebar();
     }
     function deactivateRequest() {
         generation++;
@@ -327,22 +581,27 @@
     const controller = {
         appId: APP_ID,
         mount(next) { context = next; ensureHostRecord(); },
-        activate(next) { context = next || context; render(); },
-        renderPage(next) { context = next || context; render(); },
+        activate(next) { active = true; context = next || context; if (context && context.state) context.state.folder = activePage; render(); },
+        renderPage(next) {
+            context = next || context;
+            const page = context && context.state && context.state.folder;
+            if (PAGES.some(item => item[0] === page) && page !== activePage) { deactivateRequest(); activePage = page; }
+            render();
+        },
+        onFolderChanged(next, page) {
+            if (next && typeof next === 'object') context = next;
+            navigate(typeof page === 'string' ? page : typeof next === 'string' ? next : context && context.state && context.state.folder);
+        },
         renderNav(next) {
             context = next || context;
-            const elements = context && context.elements || {};
-            if (elements.navTitle) elements.navTitle.textContent = 'SignalREACH';
-            if (elements.navFolderList) elements.navFolderList.replaceChildren();
+            renderNavigation();
         },
         renderList(next) {
             context = next || context;
-            const elements = context && context.elements || {};
-            if (elements.listTitle) elements.listTitle.textContent = 'Your provider';
-            if (elements.listContent) elements.listContent.replaceChildren(element('p', 'sr-public-hint', preferences.name || 'Add your own connection in Settings.'));
+            renderSidebar();
         },
-        deactivate() { deactivateRequest(); },
-        unmount() { deactivateRequest(); if (root) root.remove(); root = null; }
+        deactivate() { active = false; deactivateRequest(); },
+        unmount() { active = false; deactivateRequest(); if (root) root.remove(); root = null; context = null; }
     };
     host.registerController({ pluginId: manifest.id, capabilities: ['workspace.page-controller.v1'],
         pages: { [manifest.contributes.pages[0].id]: controller }, commands: {

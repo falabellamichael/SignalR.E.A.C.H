@@ -133,6 +133,8 @@ class PersonaStore {
           ...m,
           personaName: p ? p.name : '(deleted)',
           personaModel: p ? p.model : '',
+          personaPrompt: p ? p.prompt : '',
+          personaUpdatedAt: p ? p.updatedAt : null,
           // So the team editor can show which members are pinned without a
           // second round trip for the persona list.
           personaConnectionId: p ? (p.connectionId || '') : '',
@@ -196,7 +198,7 @@ class PersonaStore {
         // purpose: presets evolve, and a stale id must degrade to the member's
         // free-text role label instead of breaking an older team.
         roleId: String(m.roleId || '').slice(0, 64),
-        designId: /^bot-(0[1-9]|[1-4]\d|50)$/.test(String(m.designId || '')) ? String(m.designId) : '',
+        designId: /^(?:bot-(?:0[1-9]|[1-4]\d|50)|bot-v1-(?:scout|visor|cyclops|sleepy|wink|spark)-(?:scout|visor|grin|cyclops|grille|none)-(?:scout|visor|cyclops|sleepy|grin|spark|crown|horn|bloom|signal|none)-(?:round|rounded|square|hex|capsule)-[a-f0-9]{6}-[a-f0-9]{6}-[a-f0-9]{6})$/.test(String(m.designId || '')) ? String(m.designId) : '',
       };
     });
   }

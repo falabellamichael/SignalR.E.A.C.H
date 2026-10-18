@@ -1335,7 +1335,17 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 .team-member-row .member-design-pick svg { display: block; border-radius: 8px; }
 .team-design-board { margin-top: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .team-design-board p { margin: 0 0 8px; font-size: 11px; }
-.team-design-grid { display: grid; grid-template-columns: repeat(10, 36px); gap: 6px; max-height: 168px; overflow: auto; }
+.team-design-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 6px; max-height: 168px; overflow: auto; padding: 8px 0; }
+.team-design-preview { display: flex; align-items: center; gap: 18px; padding: 16px; margin-bottom: 14px; border-radius: 12px; background: radial-gradient(ellipse at top left, var(--gold-dim), transparent 75%), var(--panel2); }
+.team-design-preview > span { flex: none; line-height: 0; }
+.team-design-preview > div { font-size: 18px; font-weight: 600; }
+.team-design-preview small { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; color: var(--dim); line-height: 1.5; }
+.team-design-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.team-design-controls label { display: flex; flex-direction: column; gap: 5px; min-width: 0; font-size: 12px; color: var(--dim); }
+.team-design-controls select, .team-design-controls input { width: 100%; min-width: 0; height: 34px; }
+.team-design-actions { display: flex; justify-content: space-between; gap: 10px; margin: 14px 0; }
+.team-design-board summary { cursor: pointer; font-size: 12px; padding: 6px 0; }
+.team-design-option:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
 .team-design-option { width: 36px; height: 36px; padding: 0; border: 1px solid transparent; border-radius: 8px; background: transparent; line-height: 0; cursor: pointer; }
 .team-design-option svg { display: block; border-radius: 7px; }
 .team-design-option:hover, .team-design-option.active { border-color: var(--gold); }

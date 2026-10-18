@@ -458,6 +458,60 @@ function openDesignPicker(index) {
   const heading = document.createElement('p');
   heading.className = 'dim';
   heading.textContent = 'Design for ' + (persona ? persona.name : 'this member');
+  const designs = window.ReachMemberDesigns;
+  let draft = designs.config(designs.resolve(member).id);
+  const preview = document.createElement('div');
+  preview.className = 'team-design-preview';
+  const portrait = document.createElement('span');
+  const caption = document.createElement('div');
+  caption.textContent = 'Bot workshop';
+  const hint = document.createElement('small');
+  hint.textContent = 'Mix every feature independently. Changes are saved with your team.';
+  caption.append(hint);
+  preview.append(portrait, caption);
+  const refresh = () => {
+    member.designId = designs.encode(draft);
+    portrait.innerHTML = designs.svg(member.designId, 96);
+    const face = $('#team-members').children[index]?.querySelector('.member-design-pick');
+    if (face) face.innerHTML = designs.svg(member.designId, 32);
+  };
+  const controls = document.createElement('div');
+  controls.className = 'team-design-controls';
+  const fields = {};
+  for (const [key, values] of Object.entries(designs.choices)) {
+    const label = document.createElement('label');
+    label.textContent = { eyes: 'Eyes', mouth: 'Mouth', top: 'Top piece', shape: 'Head shape' }[key];
+    const select = document.createElement('select');
+    select.setAttribute('aria-label', label.textContent);
+    for (const value of values) select.add(new Option(value[0].toUpperCase() + value.slice(1), value));
+    select.value = draft[key];
+    select.onchange = () => { draft[key] = select.value; refresh(); };
+    fields[key] = select;
+    label.append(select); controls.append(label);
+  }
+  for (const [key, title] of Object.entries({ ink: 'Shell color', accent: 'Top color', bg: 'Backdrop / face ink' })) {
+    const label = document.createElement('label');
+    label.textContent = title;
+    const input = document.createElement('input');
+    input.type = 'color'; input.value = draft[key]; input.setAttribute('aria-label', title);
+    input.oninput = () => { draft[key] = input.value; refresh(); };
+    fields[key] = input;
+    label.append(input); controls.append(label);
+  }
+  const actions = document.createElement('div');
+  actions.className = 'team-design-actions';
+  const sync = () => { for (const key of Object.keys(fields)) fields[key].value = draft[key]; refresh(); };
+  const shuffle = document.createElement('button');
+  shuffle.type = 'button'; shuffle.className = 'ghost small'; shuffle.textContent = 'Shuffle bot';
+  shuffle.onclick = () => {
+    for (const [key, values] of Object.entries(designs.choices)) draft[key] = values[Math.floor(Math.random() * values.length)];
+    Object.assign(draft, designs.palettes()[Math.floor(Math.random() * designs.palettes().length)]);
+    sync();
+  };
+  const done = document.createElement('button');
+  done.type = 'button'; done.className = 'ghost small'; done.textContent = 'Done';
+  done.onclick = () => { board.classList.add('hidden'); $('#team-members').children[index]?.querySelector('.member-design-pick')?.focus(); };
+  actions.append(shuffle, done);
   const grid = document.createElement('div');
   grid.className = 'team-design-grid';
   const current = window.ReachMemberDesigns.resolve(member).id;
@@ -469,13 +523,21 @@ function openDesignPicker(index) {
     button.setAttribute('aria-label', bot.name);
     button.innerHTML = window.ReachMemberDesigns.svg(bot.id, 36);
     button.onclick = () => {
-      member.designId = bot.id;
-      renderTeamBuilder();
+      draft = designs.config(bot.id);
+      sync();
+      grid.querySelectorAll('.active').forEach(el => el.classList.remove('active'));
+      button.classList.add('active');
     };
     grid.append(button);
   }
-  board.replaceChildren(heading, grid);
+  const presets = document.createElement('details');
+  const summary = document.createElement('summary');
+  summary.textContent = 'Start from a preset';
+  presets.append(summary, grid);
+  portrait.innerHTML = designs.svg(designs.resolve(member).id, 96);
+  board.replaceChildren(heading, preview, controls, actions, presets);
   board.classList.remove('hidden');
+  fields.eyes.focus();
 }
 
 function renderTeamBuilder() {
@@ -774,4 +836,3 @@ function setMemberControl(card, paused, finished = false) {
   if (paused) card.querySelector('.member-state').textContent = 'stopped · ready to start';
   else if (!finished) card.querySelector('.member-state').textContent = 'resuming…';
 }
-

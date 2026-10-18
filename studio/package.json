@@ -123,6 +123,8 @@
       ]
     },
     "extraResources": [
+      { "from": "../vscode/settings-hub.cjs", "to": "settings-hub.cjs" },
+      { "from": "../vscode/settings-hub.html", "to": "settings-hub.html" },
       {
         "from": "../vscode/engine-core.js",
         "to": "engine-core.cjs"
