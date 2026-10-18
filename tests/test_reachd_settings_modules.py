@@ -97,5 +97,42 @@ class SettingsModuleCompatibilityTests(unittest.TestCase):
         self.assertEqual(settings.DEFAULT_SETTINGS, defaults_before)
 
 
+class MaskedHostSettingsTests(unittest.TestCase):
+    def test_display_markers_keep_existing_host_values_without_mutating_inputs(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        config["system"].update(host_salt="ab" * 16, admin_token="fixture-admin-token")
+        displayed = settings.settings_public(config)
+        update = {"system": displayed["system"], "request": {"max_messages": 12}}
+        original_config, original_update = copy.deepcopy(config), copy.deepcopy(update)
+
+        result = settings.merged_settings(config, update)
+
+        settings.validate_settings(result)
+        self.assertEqual(result["system"]["host_salt"], config["system"]["host_salt"])
+        self.assertEqual(result["system"]["admin_token"], config["system"]["admin_token"])
+        self.assertEqual(result["request"]["max_messages"], 12)
+        self.assertEqual(config, original_config)
+        self.assertEqual(update, original_update)
+
+    def test_markers_cannot_become_credentials_on_an_unconfigured_host(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        result = settings.merged_settings(config, {
+            "system": {"host_salt": "set", "admin_token": "set"}})
+        self.assertEqual(result["system"]["host_salt"], config["system"]["host_salt"])
+        self.assertEqual(result["system"]["admin_token"], config["system"]["admin_token"])
+        settings.validate_settings(result)
+
+    def test_explicit_host_value_changes_still_use_normal_validation(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        result = settings.merged_settings(config, {
+            "system": {"host_salt": "cd" * 16, "admin_token": "fixture-replacement"}})
+        settings.validate_settings(result)
+        self.assertEqual(result["system"]["host_salt"], "cd" * 16)
+        self.assertEqual(result["system"]["admin_token"], "fixture-replacement")
+        invalid = settings.merged_settings(config, {"system": {"host_salt": "not-hex"}})
+        with self.assertRaisesRegex(settings.SettingsError, "host_salt must be hex"):
+            settings.validate_settings(invalid)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -249,6 +249,12 @@ def merged_settings(base, patch):
     - other dict sections merge shallowly; scalars replace."""
     result = json.loads(json.dumps(base))
     for key, value in (patch or {}).items():
+        if key == "system" and isinstance(value, dict):
+            # Public display markers retain the existing host identity and token.
+            value = dict(value)
+            for field in ("host_salt", "admin_token"):
+                if value.get(field) == "set":
+                    value.pop(field)
         if key not in result:
             result[key] = value
             continue
