@@ -100,15 +100,9 @@ contextBridge.exposeInMainWorld('reach', {
     appendNote: (id, content) => ipcRenderer.invoke('agents:appendNote', { id, content }),
     respondApproval: (requestId, approved) => ipcRenderer.invoke('agents:respondApproval', { requestId, approved }),
     resolveEdit: (id, editId, accepted) => ipcRenderer.invoke('agents:resolveEdit', { id, editId, accepted }),
-    onEvent: (cb) => {
-      ipcRenderer.on('agent:event', (_e, d) => cb(d));
-    },
-    onApprovalRequest: (cb) => {
-      ipcRenderer.on('agent:approval-request', (_e, d) => cb(d));
-    },
-    onEditPending: (cb) => {
-      ipcRenderer.on('agent:edit-pending', (_e, d) => cb(d));
-    },
+    onEvent: cb => { ipcRenderer.on('agent:event', (_e, d) => cb(d)); },
+    onApprovalRequest: cb => { ipcRenderer.on('agent:approval-request', (_e, d) => cb(d)); },
+    onEditPending: cb => { ipcRenderer.on('agent:edit-pending', (_e, d) => cb(d)); },
   },
 
   // Personas (custom agents) + Teams (crews)
@@ -152,12 +146,8 @@ contextBridge.exposeInMainWorld('reach', {
     answerMember: (teamRunId, agentId, answer) => ipcRenderer.invoke('teams:answerMember', { teamRunId, agentId, answer }),
     resolveEdit: (editId, accepted) => ipcRenderer.invoke('teams:resolveEdit', { editId, accepted }),
     answerQuestion: (questionId, answer) => ipcRenderer.invoke('teams:answerQuestion', { questionId, answer }),
-    onEvent: (cb) => {
-      ipcRenderer.on('team:event', (_e, d) => cb(d));
-    },
-    onEditPending: (cb) => {
-      ipcRenderer.on('team:edit-pending', (_e, d) => cb(d));
-    },
+    onEvent: cb => { ipcRenderer.on('team:event', (_e, d) => cb(d)); },
+    onEditPending: cb => { ipcRenderer.on('team:edit-pending', (_e, d) => cb(d)); },
   },
 
   // Files (scoped to an agent's project directory, or a raw projectDir)

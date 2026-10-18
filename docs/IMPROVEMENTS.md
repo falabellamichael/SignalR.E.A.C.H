@@ -265,7 +265,7 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 | --- | --- |
 | `studio/main.mjs lines` | 5,023 |
 | `studio/renderer/app.js lines` | 148 |
-| `studio/preload.cjs lines` | 255 |
+| `studio/preload.cjs lines` | 245 |
 | `studio/agent modules` | 100 |
 | `studio/renderer scripts` | 49 |
 | `studio/test files` | 120 |

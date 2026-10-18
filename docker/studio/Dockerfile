@@ -25,9 +25,12 @@ COPY studio/ ./
 # The build context includes them, but COPY studio/ alone does not.
 COPY vscode/engine-core.js /src/vscode/engine-core.js
 COPY vscode/jev-policy.js /src/vscode/jev-policy.js
+COPY vscode/settings-hub.cjs vscode/settings-hub.html /src/vscode/
 RUN npm run dist:linux -- --dir \
     && test -f dist/linux-unpacked/resources/engine-core.cjs \
-    && test -f dist/linux-unpacked/resources/jev-policy.cjs
+    && test -f dist/linux-unpacked/resources/jev-policy.cjs \
+    && test -f dist/linux-unpacked/resources/settings-hub.cjs \
+    && test -f dist/linux-unpacked/resources/settings-hub.html
 
 FROM debian:bookworm-slim
 
