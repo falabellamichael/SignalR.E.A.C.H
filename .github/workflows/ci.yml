@@ -114,16 +114,6 @@ jobs:
       - name: Install Electron runtime libraries (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2 libx11-xcb1 xvfb flatpak flatpak-builder elfutils
-      - name: Install Flatpak runtimes (Linux)
-        if: runner.os == 'Linux'
-        # Must match studio/package.json build.flatpak versions. --user so the
-        # non-root runner and flatpak-builder see the same installation.
-        run: |
-          flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-          flatpak --user install -y --noninteractive flathub \
-            org.freedesktop.Platform//25.08 \
-            org.freedesktop.Sdk//25.08 \
-            org.electronjs.Electron2.BaseApp//25.08
       - name: macOS Electron smoke test
         if: runner.os == 'macOS'
         run: npm run smoke
@@ -134,35 +124,9 @@ jobs:
         env:
           ELECTRON_DISABLE_SANDBOX: 1
         run: xvfb-run -a npm run smoke
-      - name: Package macOS application
-        if: runner.os == 'macOS'
-        run: npm run dist:mac -- --dir
-      - name: Package Linux installers
-        if: runner.os == 'Linux'
-        run: npm run dist:linux
-      - name: Package Windows installers
-        if: runner.os == 'Windows'
-        run: npm run dist:win
-      - name: Upload Windows installers
-        if: runner.os == 'Windows'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: reach-studio-windows
-          path: |
-            studio/dist/*.exe
-            studio/dist/*.exe.blockmap
-          if-no-files-found: error
-      - name: Upload Linux installers
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: reach-studio-linux
-          path: |
-            studio/dist/*.AppImage
-            studio/dist/*.deb
-            studio/dist/*.zip
-            studio/dist/*.flatpak
-          if-no-files-found: error
+
+  windows-suite:
+    uses: ./.github/workflows/windows-suite.yml
 
   docker:
     name: Docker images (relay + GUI)

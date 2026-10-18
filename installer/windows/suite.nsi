@@ -9,7 +9,7 @@ RequestExecutionLevel user
 SetCompressor /SOLID lzma
 ShowInstDetails show
 !define MUI_ABORTWARNING
-!define MUI_WELCOMEPAGE_TEXT "Choose which SignalREACH components to install. Your existing settings are preserved.$\r$\n$\r$\nThe VS Code and SimpleRAG extensions require their host applications. Only the public, regular-user SimpleRAG extension is included."
+!define MUI_WELCOMEPAGE_TEXT "Choose which SignalREACH components to install. Your existing settings are preserved.$\r$\n$\r$\nExpand IDE to choose VS Code, Antigravity, or Cursor. Each extension requires its host application. Only the public, regular-user SimpleRAG extension is included."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_INSTFILES
@@ -18,10 +18,14 @@ Page custom LaunchPage LaunchSelected
 Var StudioDone
 Var TrayDone
 Var CodeDone
+Var AntigravityDone
+Var CursorDone
 Var RagDone
 Var LaunchStudio
 Var LaunchTray
 Var LaunchVSCode
+Var LaunchAntigravity
+Var LaunchCursor
 Var LaunchSimpleRag
 
 Function .onInit
@@ -46,14 +50,25 @@ Section "Reach Studio" Studio
   !insertmacro CheckResult "Reach Studio"
   StrCpy $StudioDone 1
 SectionEnd
-Section "SimpleREACH extension for VS Code" Code
+!macro InstallIDE Host Label Done
   SetOutPath "$PLUGINSDIR"
   File /oname=simplereach.vsix "${PAYLOAD}\simplereach.vsix"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\components.ps1" -Action InstallCode -Payload "$PLUGINSDIR\simplereach.vsix"'
+  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\components.ps1" -Action InstallCode -IDE ${Host} -Payload "$PLUGINSDIR\simplereach.vsix"'
   Pop $0
-  !insertmacro CheckResult "VS Code extension"
-  StrCpy $CodeDone 1
+  !insertmacro CheckResult "${Label} extension"
+  StrCpy ${Done} 1
+!macroend
+SectionGroup "IDE" IDEGroup
+Section "VS Code" Code
+  !insertmacro InstallIDE VSCode "VS Code" $CodeDone
 SectionEnd
+Section /o "Antigravity" Antigravity
+  !insertmacro InstallIDE Antigravity "Antigravity" $AntigravityDone
+SectionEnd
+Section /o "Cursor" Cursor
+  !insertmacro InstallIDE Cursor "Cursor" $CursorDone
+SectionEnd
+SectionGroupEnd
 Section "SimpleRAG extension (Public)" Rag
   SetOutPath "$PLUGINSDIR\public"
   File "${PAYLOAD}\public\manifest.json"
@@ -76,6 +91,9 @@ SectionEnd
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
 !insertmacro MUI_DESCRIPTION_TEXT ${Studio} "Desktop workspace for agent conversations, teams, files, and browsing."
 !insertmacro MUI_DESCRIPTION_TEXT ${Code} "Installs SimpleREACH into an existing stable Microsoft VS Code installation."
+!insertmacro MUI_DESCRIPTION_TEXT ${IDEGroup} "Expand to choose one or more installed IDEs for the SimpleREACH extension."
+!insertmacro MUI_DESCRIPTION_TEXT ${Antigravity} "Installs SimpleREACH into an existing Antigravity installation."
+!insertmacro MUI_DESCRIPTION_TEXT ${Cursor} "Installs SimpleREACH into an existing Cursor installation."
 !insertmacro MUI_DESCRIPTION_TEXT ${Rag} "Public REACH dashboard, model connections and Playground for SimpleRAG, with the shared Studio/VS Code settings hub."
 !insertmacro MUI_DESCRIPTION_TEXT ${Tray} "Desktop tray for model endpoints and provider connections."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
@@ -86,22 +104,32 @@ Function LaunchPage
   Pop $0
   ${NSD_CreateLabel} 0 0 100% 32u "Extensions run inside their host applications. For SimpleRAG, reload the Advanced page to see SignalREACH."
   Pop $0
-  ${NSD_CreateCheckbox} 0 42u 100% 16u "Launch Reach Studio"
+  ${NSD_CreateCheckbox} 0 36u 100% 16u "Launch Reach Studio"
   Pop $LaunchStudio
   ${If} $StudioDone != 1
     EnableWindow $LaunchStudio 0
   ${EndIf}
-  ${NSD_CreateCheckbox} 0 66u 100% 16u "Open VS Code"
+  ${NSD_CreateCheckbox} 0 56u 100% 16u "Open VS Code"
   Pop $LaunchVSCode
   ${If} $CodeDone != 1
     EnableWindow $LaunchVSCode 0
   ${EndIf}
-  ${NSD_CreateCheckbox} 0 90u 100% 16u "Open SimpleRAG (if installed)"
+  ${NSD_CreateCheckbox} 0 76u 100% 16u "Open Antigravity"
+  Pop $LaunchAntigravity
+  ${If} $AntigravityDone != 1
+    EnableWindow $LaunchAntigravity 0
+  ${EndIf}
+  ${NSD_CreateCheckbox} 0 96u 100% 16u "Open Cursor"
+  Pop $LaunchCursor
+  ${If} $CursorDone != 1
+    EnableWindow $LaunchCursor 0
+  ${EndIf}
+  ${NSD_CreateCheckbox} 0 116u 100% 16u "Open SimpleRAG (if installed)"
   Pop $LaunchSimpleRag
   ${If} $RagDone != 1
     EnableWindow $LaunchSimpleRag 0
   ${EndIf}
-  ${NSD_CreateCheckbox} 0 114u 100% 16u "Launch SignalREACH system tray"
+  ${NSD_CreateCheckbox} 0 136u 100% 16u "Launch SignalREACH system tray"
   Pop $LaunchTray
   ${If} $TrayDone != 1
     EnableWindow $LaunchTray 0
@@ -123,5 +151,7 @@ Function LaunchSelected
   !insertmacro LaunchHost $LaunchStudio LaunchStudio
   !insertmacro LaunchHost $LaunchTray LaunchTray
   !insertmacro LaunchHost $LaunchVSCode LaunchCode
+  !insertmacro LaunchHost $LaunchAntigravity "LaunchCode -IDE Antigravity"
+  !insertmacro LaunchHost $LaunchCursor "LaunchCode -IDE Cursor"
   !insertmacro LaunchHost $LaunchSimpleRag LaunchRag
 FunctionEnd

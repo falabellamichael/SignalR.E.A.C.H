@@ -19,6 +19,7 @@
     "studio": {
       "release-type": "node",
       "package-name": "reach-studio",
+      "skip-github-release": true,
       "versioning": "always-bump-patch",
       "changelog-path": "CHANGELOG.md"
     }

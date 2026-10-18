@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][ValidateSet('InstallCode','InstallPublic','LaunchCode','LaunchRag','LaunchStudio','LaunchTray')][string]$Action,
     [string]$Payload,
-    [string]$ExtensionHome
+    [string]$ExtensionHome,
+    [ValidateSet('VSCode','Antigravity','Cursor')][string]$IDE = 'VSCode'
 )
 $ErrorActionPreference = 'Stop'
 function File-Hash([string]$Path) {
@@ -12,14 +13,20 @@ function File-Hash([string]$Path) {
 }
 
 function Find-Code {
+    $hostInfo = switch ($IDE) {
+        VSCode { @{ Folder = 'Microsoft VS Code'; Command = 'code.cmd'; Name = 'VS Code' } }
+        Antigravity { @{ Folder = 'Antigravity'; Command = 'antigravity.cmd'; Name = 'Antigravity' } }
+        Cursor { @{ Folder = 'cursor'; Command = 'cursor.cmd'; Name = 'Cursor' } }
+    }
     $candidates = @(
-        "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd",
-        "$env:ProgramFiles\Microsoft VS Code\bin\code.cmd"
+        "$env:LOCALAPPDATA\Programs\$($hostInfo.Folder)\bin\$($hostInfo.Command)",
+        "$env:ProgramFiles\$($hostInfo.Folder)\bin\$($hostInfo.Command)",
+        "${env:ProgramFiles(x86)}\$($hostInfo.Folder)\bin\$($hostInfo.Command)"
     )
-    $command = Get-Command code.cmd -ErrorAction SilentlyContinue
+    $command = Get-Command $hostInfo.Command -CommandType Application -ErrorAction SilentlyContinue
     if ($command) { $candidates += $command.Source }
     foreach ($candidate in $candidates) { if (Test-Path -LiteralPath $candidate) { return $candidate } }
-    throw 'Visual Studio Code is required. Install VS Code, then run this installer again with the VS Code extension selected.'
+    throw "$($hostInfo.Name) is required. Install it, then run Setup again with IDE > $($hostInfo.Name) selected."
 }
 
 function Compare-ExtensionVersion([string]$Left, [string]$Right) {
@@ -109,10 +116,10 @@ try {
         InstallCode {
             $code = Find-Code
             & $code --install-extension $Payload --force
-            if ($LASTEXITCODE -ne 0) { throw "VS Code extension install failed ($LASTEXITCODE)." }
+            if ($LASTEXITCODE -ne 0) { throw "$IDE extension install failed ($LASTEXITCODE)." }
         }
         InstallPublic { Install-Public }
-        LaunchCode { & (Find-Code) --new-window; if ($LASTEXITCODE -ne 0) { throw 'Could not launch VS Code.' } }
+        LaunchCode { & (Find-Code) --new-window; if ($LASTEXITCODE -ne 0) { throw "Could not launch $IDE." } }
         LaunchRag {
             $links = Get-ChildItem -Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs","$env:ProgramData\Microsoft\Windows\Start Menu\Programs" -Filter '*SimpleRAG*.lnk' -Recurse -ErrorAction SilentlyContinue
             $link = $links | Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1

@@ -3,13 +3,15 @@
 One offline Windows installer, with independent component checkboxes:
 
 - Reach Studio
-- SimpleREACH for Microsoft VS Code (stable)
+- IDE (expandable): SimpleREACH for VS Code (stable), Antigravity, and Cursor
 - SignalREACH Public for SimpleRAG
 - SignalREACH system tray
 
 The final page offers independent launch checkboxes for the installed components.
 All launch options default to off. VS Code and SimpleRAG extensions launch their
-host application; those applications must already be installed. SimpleRAG needs
+host application; those applications must already be installed. IDE choices are
+independent, so multiple editors can receive the extension. VS Code is selected
+by default; Antigravity and Cursor are opt-in. SimpleRAG needs
 its Advanced page reloaded. The installer does not install either host.
 
 ## Build
@@ -42,6 +44,12 @@ when rebuilding the app components for a release. Remove old versioned component
 the suite build output before building a different version.
 
 ## Installation and maintenance
+
+CI builds and verifies the Windows suite as its sole downloadable installer
+artifact. Release Please attaches that suite, `sha256.json`, and
+`payload-manifest.json` to the main GitHub release. Studio version tracking
+continues, but separate Studio releases and standalone platform installer
+artifacts are paused. Cross-platform tests and smoke checks still run.
 
 Run the suite installer as the intended Windows user. Choose components, inspect
 installation details, and choose applications to launch. No component is launched

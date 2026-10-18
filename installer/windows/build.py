@@ -54,6 +54,7 @@ def main():
     if not extractor.is_file():
         parser.error('7-Zip is required to verify the finished installer. Supply --sevenzip.')
     run([sys.executable, ROOT / 'installer/windows/test_public.py'])
+    run([sys.executable, ROOT / 'installer/windows/test_ide.py'])
     out = ROOT / 'dist' / 'windows-suite'
     out.mkdir(parents=True, exist_ok=True)
     npm, npx = shutil.which('npm.cmd'), shutil.which('npx.cmd')

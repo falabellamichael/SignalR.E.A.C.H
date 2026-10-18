@@ -11,8 +11,38 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release-created: ${{ steps.release.outputs.release_created }}
+      tag-name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071  # v4 (SHA-pinned; Dependabot bumps)
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  windows-suite:
+    needs: release-please
+    if: needs.release-please.outputs.release-created == 'true'
+    uses: ./.github/workflows/windows-suite.yml
+    permissions:
+      contents: read
+    with:
+      release-tag: ${{ needs.release-please.outputs.tag-name }}
+
+  publish-suite:
+    needs: [release-please, windows-suite]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Attach verified suite to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag-name }}
+        run: |
+          gh run download "$RUN_ID" --name signalreach-windows-suite --dir suite
+          gh release upload "$RELEASE_TAG" suite/*.exe suite/sha256.json suite/payload-manifest.json --clobber
