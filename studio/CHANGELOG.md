@@ -1,5 +1,17 @@
 # Changelog
 
+## [26.10.4](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.3...reach-studio-v26.10.4) (2026-10-17)
+
+
+### Features
+
+* ship account profiles, RCH API access, and workspace updates ([4953571](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/49535714df93bcf8562fbf5b83c0772cb051445e))
+
+
+### Bug Fixes
+
+* restore CI contracts, model boundaries, and regression fixtures ([ba94032](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ba94032e1fa77d4726050474d8594f05142f892f))
+
 ## [26.10.3](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.2...reach-studio-v26.10.3) (2026-10-16)
 
 
