@@ -1,7 +1,7 @@
 {
   "name": "reach-studio",
   "productName": "Reach Studio",
-  "version": "26.10.4",
+  "version": "26.10.5",
   "description": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
   "homepage": "https://github.com/falabellamichael/SignalR.E.A.C.H",
   "desktopName": "reach-studio.desktop",
@@ -123,8 +123,14 @@
       ]
     },
     "extraResources": [
-      { "from": "../vscode/settings-hub.cjs", "to": "settings-hub.cjs" },
-      { "from": "../vscode/settings-hub.html", "to": "settings-hub.html" },
+      {
+        "from": "../vscode/settings-hub.cjs",
+        "to": "settings-hub.cjs"
+      },
+      {
+        "from": "../vscode/settings-hub.html",
+        "to": "settings-hub.html"
+      },
       {
         "from": "../vscode/engine-core.js",
         "to": "engine-core.cjs"

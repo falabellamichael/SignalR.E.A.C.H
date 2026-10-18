@@ -1,5 +1,17 @@
 # Changelog
 
+## [26.10.6](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.5...v26.10.6) (2026-10-18)
+
+
+### Features
+
+* add suite installer, shared settings sync, and team customization ([240d0a8](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/240d0a8fd4b4e6f3b82ea4770a9c4e7873f3289c))
+
+
+### Bug Fixes
+
+* package Studio settings hub and restore preload size budget ([d7862a4](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d7862a41d62ac72545f76fd86aa9704ef4aa466b))
+
 ## [26.10.5](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.4...v26.10.5) (2026-10-17)
 
 
