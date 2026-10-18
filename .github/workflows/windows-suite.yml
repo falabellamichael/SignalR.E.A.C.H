@@ -41,8 +41,10 @@ jobs:
             }
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: Install suite compiler
+        run: choco install nsis --version=3.11 -y --no-progress
       - name: Build and verify Windows suite
-        run: python installer/windows/build.py
+        run: python installer/windows/build.py --makensis "C:/Program Files (x86)/NSIS/makensis.exe"
       - name: Upload suite installer
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
