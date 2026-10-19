@@ -1,14 +1,13 @@
 // Read-only mainnet fork rehearsal. Never sends a mainnet transaction.
-import ganache from 'ganache';
+import {createHardhatRuntimeEnvironment} from 'hardhat/hre';
 import {BrowserProvider,Contract,Interface,parseUnits,formatUnits,ZeroAddress} from 'ethers';
 import {MARKET} from './market-plan.mjs';
 import {RECOVERY,buildWithdrawalPlan,buildLiquidityPlan} from './market-recovery-plan.mjs';
 
-const fork=ganache.provider({
-  fork:{url:process.env.RCH_RPC_URL||'https://ethereum-rpc.publicnode.com',blockNumber:26072906},
-  wallet:{unlockedAccounts:[MARKET.payer,MARKET.owner]},
-  logging:{quiet:true},
-});
+const hre=await createHardhatRuntimeEnvironment({networks:{rehearsal:{type:'edr-simulated',chainType:'l1',
+  forking:{url:process.env.RCH_RPC_URL||'https://ethereum-rpc.publicnode.com',blockNumber:26072906}}}});
+const connection=await hre.network.connect({network:'rehearsal'});
+const fork=connection.provider;
 const provider=new BrowserProvider(fork);
 const ercAbi=['function balanceOf(address) view returns (uint256)','function approve(address,uint256) returns (bool)'];
 const manager=new Contract(MARKET.manager,['function positions(uint256) view returns (uint96,address,address,address,uint24,int24,int24,uint128,uint256,uint256,uint128,uint128)','function ownerOf(uint256) view returns (address)'],provider);
@@ -21,7 +20,8 @@ const quoter=new Contract('0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6',[
 const receipts=[];
 try{
   for(const address of [MARKET.payer,MARKET.owner]){
-    await fork.request({method:'evm_setAccountBalance',params:[address,'0xDE0B6B3A7640000']});
+    await fork.request({method:'hardhat_impersonateAccount',params:[address]});
+    await fork.request({method:'hardhat_setBalance',params:[address,'0xDE0B6B3A7640000']});
   }
   const owner=await provider.getSigner(MARKET.owner);
   const payer=await provider.getSigner(MARKET.payer);
@@ -53,5 +53,5 @@ try{
     leftover:{rch:formatUnits(rchAfter,18),usdc:formatUnits(usdcAfter,6)},
     gasUsed:receipts.map(x=>x.gasUsed.toString()),quotes},null,2));
 }finally{
-  await fork.disconnect();
+  await connection.close();
 }

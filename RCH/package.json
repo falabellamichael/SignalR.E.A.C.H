@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.8",
-    "ganache": "7.9.2",
+    "hardhat": "3.20.0",
     "solc": "0.8.37"
   },
   "engines": {
