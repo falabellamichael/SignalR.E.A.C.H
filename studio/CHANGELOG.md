@@ -1,5 +1,13 @@
 # Changelog
 
+## [26.10.6](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.5...reach-studio-v26.10.6) (2026-10-19)
+
+
+### Bug Fixes
+
+* ground Studio context in the selected project ([e122720](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e12272006bca115f8f0f1395649263c33270c931))
+* restore Studio previews and uncapped Ultra Pro budgets ([10ada4d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/10ada4dad59e3a0116f893841d4cffd5a8598ab5))
+
 ## [26.10.5](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/reach-studio-v26.10.4...reach-studio-v26.10.5) (2026-10-18)
 
 
