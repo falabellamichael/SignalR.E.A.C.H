@@ -21,6 +21,16 @@ const types = {
   '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav',
 };
 
+// Resolve symlinks (macOS /var -> /private/var) so a file URL compares against
+// the real project root. A missing tail keeps its name under the real parent.
+function realPath(candidate) {
+  const resolved = path.resolve(candidate);
+  try { return fs.realpathSync.native(resolved); } catch {
+    const parent = path.dirname(resolved);
+    return parent === resolved ? resolved : path.join(realPath(parent), path.basename(resolved));
+  }
+}
+
 function previewPath(root, requested) {
   // No hidden files, Windows alternate data streams, or ambiguous separators.
   if (String(requested).split(/[\\/]/).some(part => part.startsWith('.') && part !== '.')
@@ -77,7 +87,7 @@ async function openPreview(args, ctx) {
   if (!ctx.projectDir) throw new Error('Select a project directory before opening a local preview.');
   const root = fs.realpathSync(ctx.projectDir);
   let requested = args.path;
-  if (/^file:/i.test(args.url || '')) requested = path.relative(root, fileURLToPath(args.url)) || '.';
+  if (/^file:/i.test(args.url || '')) requested = path.relative(root, realPath(fileURLToPath(args.url))) || '.';
   if (!requested) throw new Error('Use browser with op "preview" and a project-relative path, such as "coffee.html".');
   let target = previewPath(root, requested);
   if (fs.statSync(target).isDirectory()) target = previewPath(root, path.join(requested, 'index.html'));
