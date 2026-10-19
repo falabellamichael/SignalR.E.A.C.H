@@ -629,6 +629,11 @@
     "args": [],
     "returns": "Recoverable crew journal snapshots with partial member results, messages, nurse actions, and evidence"
   },
+  "teams:closeRecoverable": {
+    "module": "main.mjs",
+    "args": ["runId: string"],
+    "returns": "{ ok, err? } - dismiss a recoverable crew run while retaining archived results"
+  },
   "teams:queueAction": {
     "module": "main.mjs",
     "args": [

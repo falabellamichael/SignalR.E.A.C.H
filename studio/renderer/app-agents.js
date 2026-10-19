@@ -214,7 +214,7 @@ async function loadAgentTree() {
 }
 
 function rememberNewChatDraft() {
-  if (currentAgent?.draft) newChatDrafts.set(currentAgent.id, {
+  if (currentAgent) newChatDrafts.set(currentAgent.id, {
     text: composerInput.value, attachments: [...composerAttachments],
   });
 }
@@ -224,14 +224,13 @@ async function selectAgent(a, { preserveEditors = false } = {}) {
   invalidateComposerCatalog();
   if (!preserveEditors && [...openFiles.values()].some(f => f.dirty) && !await confirmAction('There are unsaved editor changes. Discard them and switch conversation?')) return;
   const revision = ++projectSelectionRevision;
-  const selected = await reachApi.agents.get(a.id);
+  let selected = await reachApi.agents.get(a.id);
   if (!selected || revision !== projectSelectionRevision) return;
   if (jevAutoRoutingAgentId && jevAutoRoutingAgentId !== selected.id) {
     jevAutoCancelled = true;
     await reachApi.agents.stop(jevAutoRoutingAgentId);
     if (revision !== projectSelectionRevision) return;
   }
-  const leavingDraft = currentAgent?.draft;
   setBackgroundAgentGate(selected.id, '', { clear: true });
   streamBubble = null;
   recoveryBubble = null;
@@ -241,11 +240,17 @@ async function selectAgent(a, { preserveEditors = false } = {}) {
     name: [...$('#agent-project-select').options].find(o => o.value === selected.dir)?.textContent || selected.dir.split(/[\\/]/).pop(),
     dir: selected.dir,
   }, { openDraft: false })) return;
+  // Project selection refreshes several panels asynchronously. A background
+  // run may finish during that work, before its events target this chat.
+  const selectedRevision = projectSelectionRevision;
+  const latest = await reachApi.agents.get(a.id);
+  if (!latest || selectedRevision !== projectSelectionRevision || latest.dir !== selected.dir) return;
+  selected = latest;
   rememberNewChatDraft();
   currentAgent = selected;
   syncSelectedTeamRun();
-  const draft = selected.draft ? newChatDrafts.get(selected.id) : null;
-  if (selected.draft || leavingDraft) composerInput.value = draft?.text || '';
+  const draft = newChatDrafts.get(selected.id);
+  composerInput.value = draft?.text || '';
   composerAttachments = draft?.attachments || [];
   queuedIndicator.classList.add('hidden');
   renderComposerAttachments();

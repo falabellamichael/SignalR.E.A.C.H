@@ -100,6 +100,7 @@
 
   let teamToken = 0, teamAt = 0, teamSig = '';
   const activityTiles = [];
+  let nextActionAt = Infinity;
   function syncTeamVisibility() {
     const enabled = currentAgent?.settings?.teamChat?.enabled === true;
     teamList.classList.toggle('hidden', !enabled);
@@ -110,6 +111,8 @@
     }
   }
   function updateTeamActivity(agent) {
+    nextActionAt = Infinity;
+    const now = Date.now();
     const latest = typeof teamConversationViews !== 'undefined' ? teamConversationViews.get(agent?.id) : null;
     for (const tile of activityTiles) {
       // Member indices are valid only for the roster captured by this run.
@@ -123,6 +126,11 @@
       put(tile.detail, summary?.detail || (run ? 'Waiting for this member to receive work.' : 'Start a team task to see this agent\'s activity here.'));
       put(tile.task, run?.task || 'No task in this session.');
       tile.card.dataset.activity = state?.status || (run ? 'queued' : 'idle');
+      const action = window.ReachMemberDesigns.actionFor(state || (run ? { status: 'queued' } : null), now);
+      window.ReachMemberDesigns.applyAction(tile.portrait, action);
+      if (state && action !== 'idle' && ['completed', 'error', 'failed', 'paused', 'stopped', 'stalled'].includes(state.status)) {
+        nextActionAt = Math.min(nextActionAt, (state.endedAt ?? state.updatedAt) + 1500);
+      }
       const recent = (state?.steps || []).slice(-4).map(step => [step.title, step.note].filter(Boolean).join(' - ')).join('\n');
       put(tile.recent, recent || 'No activity reported yet.');
     }
@@ -223,7 +231,7 @@
         const task = node('p');
         const recent = node('p', 'singular-member-recent');
         activity.append(headline, detail, node('strong', '', 'Current task'), task, node('strong', '', 'Recent activity'), recent);
-        activityTiles.push({ teamId: team.id, personaId: member.personaId, role: member.role || '', index, card, headline, detail, task, recent });
+        activityTiles.push({ portrait: face.querySelector('svg'), teamId: team.id, personaId: member.personaId, role: member.role || '', index, card, headline, detail, task, recent });
         card.append(activity);
         card.append(face, copy);
         teamList.append(card);
@@ -332,7 +340,7 @@
     conversation();
     updateTeamActivity(currentAgent);
     if (!pending && Date.now() - lastSample >= 3000) sample();
-    timer = setTimeout(sync, 1000);
+    timer = setTimeout(sync, Math.min(1000, Math.max(1, nextActionAt - Date.now())));
   }
 
   new MutationObserver(sync).observe(drawer, { attributes: true, attributeFilter: ['class', 'data-panel'] });

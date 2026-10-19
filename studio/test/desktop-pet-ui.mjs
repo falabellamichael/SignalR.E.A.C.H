@@ -1,0 +1,32 @@
+import fs from 'node:fs/promises';import assert from 'node:assert/strict';
+const renderer=new URL('../renderer/',import.meta.url);
+export default async function(page) {
+  await page.goto('http://127.0.0.1:8796/cli-pet.js');
+  await page.evaluate(()=>localStorage.removeItem('reach.desktop-pet.v1'));
+  const html=await fs.readFile(new URL('index.html',renderer),'utf8');
+  const start=html.indexOf('<div id="settings-appearance"');const end=html.indexOf('<div id="settings-mcp"',start);
+  await page.setContent('<html><head><title>Studio CLI companion QA</title></head><body>'+html.slice(start,end).replace('settings-content hidden','settings-content')+'</body></html>');
+  await page.addStyleTag({content:await fs.readFile(new URL('styles.css',renderer),'utf8')});
+  await page.addStyleTag({content:'body {display:block;height:auto;padding:30px;} #settings-appearance {display:block;max-width:600px;}'});
+  await page.addScriptTag({content:"var currentAgent={id:'qa',runState:{status:'running'},activity:{steps:[{kind:'generate',reasoning:20}]}};"});
+  for(const f of ['cli-pet-frames.js','cli-pet.js','desktop-pet.js']) await page.addScriptTag({content:await fs.readFile(new URL(f,renderer),'utf8')});
+  assert.equal(await page.locator('.desktop-pet').isVisible(),false);
+  await page.getByLabel('Show draggable CLI pet').check();assert.equal(await page.locator('.desktop-pet').isVisible(),true);
+  await page.waitForFunction(()=>document.querySelector('.desktop-pet').dataset.behavior==='pondering');
+  await page.addScriptTag({content:"currentAgent.runState={status:'completed'};currentAgent.activity={endedAt:1000,steps:[]};"});
+  await page.waitForFunction(()=>document.querySelector('.desktop-pet').dataset.behavior==='celebrating');
+  await page.waitForFunction(()=>document.querySelector('.desktop-pet').dataset.behavior==='looking',{},{timeout:5000});
+  await page.getByLabel('Companion',{exact:true}).selectOption('owl');assert.equal(await page.locator('.desktop-pet').getAttribute('data-kind'),'owl');
+  await page.getByRole('button',{name:'Pat',exact:true}).click();assert.match(await page.locator('.desktop-pet-status').innerText(),/Happy hoots/);
+  const handle=page.getByRole('button',{name:'Move pet. Drag or use arrow keys.'});
+  const initial=await handle.boundingBox();await page.mouse.move(initial.x+50,initial.y+20);await page.mouse.down();await page.mouse.move(initial.x-150,initial.y-100,{steps:8});await page.mouse.up();
+  const moved=await handle.boundingBox();assert.ok(moved.x<initial.x);
+  await handle.focus();await page.keyboard.press('ArrowLeft');assert.ok((await handle.boundingBox()).x<moved.x);
+  const saved=await page.evaluate(()=>JSON.parse(localStorage.getItem('reach.desktop-pet.v1')));assert.equal(saved.kind,'owl');assert.equal(saved.enabled,true);
+  await page.emulateMedia({reducedMotion:'reduce'});await page.waitForFunction(()=>document.querySelector('.desktop-pet').dataset.behavior==='looking');
+  await page.emulateMedia({reducedMotion:'no-preference'});
+  await page.setViewportSize({width:360,height:720});
+  const bounds=await page.locator('.desktop-pet').boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=361);assert.ok(bounds.y>=0&&bounds.y+bounds.height<=721);
+  await page.getByLabel('Companion',{exact:true}).selectOption('bulldog');await page.getByRole('button',{name:'Treat',exact:true}).click();
+  return {species:3,care:true,pointerDrag:true,keyboardMove:true,savedPosition:saved,reducedMotion:true,mobileClamped:true};
+}

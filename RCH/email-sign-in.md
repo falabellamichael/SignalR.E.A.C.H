@@ -64,3 +64,26 @@ A manual plan grant can name the existing `accountId` instead of `wallet` in
 its grant JSON. Find the ID with `status --email`; a grant does not create an
 email account. Reusing a grant ID with different account or plan values is
 refused. Use the payment command for paid subscriptions.
+
+## Complimentary administrator subscriptions (Supabase)
+
+The private `reach_accounts.accounts.role` column is the authoritative application
+role. Its default is `user`; an operator can set a verified existing account to
+`admin` through Supabase. Client-editable profile metadata never grants access.
+The corresponding Supabase Auth `app_metadata.role` may mirror this value for
+identity administration, but the account service checks the database role on
+every request.
+
+An admin receives the active **REACH Admin** complimentary plan, website access,
+API-key eligibility and unlimited requests to the configured subscription models.
+There is no expiry while the role remains enabled, no Stripe payment is created,
+and existing paid plans, wallet balances and payment records are preserved.
+Other metered model routes retain their existing billing. Changing the role back
+to `user` immediately restores the underlying account entitlements; existing API
+keys cannot bypass that check. Mirror that change in Auth app metadata as well.
+
+Apply the `rch_admin_subscription` migration and deploy the updated
+`service/supabase-store.mjs` together. The role column and its request/key functions
+remain protected by the existing private schema, RLS and server-only grants.
+This application role does not grant Supabase dashboard membership or remote
+relay administration.

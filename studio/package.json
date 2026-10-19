@@ -7,6 +7,8 @@
   "desktopName": "reach-studio.desktop",
   "main": "main.mjs",
   "scripts": {
+    "build:pet": "python scripts/build-cli-pet.py",
+    "check:pet": "python scripts/build-cli-pet.py --check",
     "prestart": "npm run build:editor",
     "start": "electron .",
     "smoke": "npm run build:editor && electron . --smoke",

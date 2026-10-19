@@ -58,6 +58,13 @@ class CrewJournal {
       evidence: this.evidence(),
     };
   }
+
+  close() {
+    const snapshot = this.snapshot();
+    if (!snapshot.manifest) throw new Error('Crew journal not found.');
+    if (snapshot.recoverable) this.append('complete', { stopped: true, dismissed: true });
+    return this.snapshot();
+  }
 }
 
 function listRecoverable(dir) {

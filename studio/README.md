@@ -71,6 +71,26 @@ import another project's files.
 The Files panel loads the selected directory and expands folders on demand.
 Compiled Python bytecode (`.pyc`) and other binary files are not editable source.
 
+The **Projects → Project workflows** panel provides four task templates:
+**Security review**, **Production hardening**, **Cloud migration**, and
+**Roles & business logic**. Open an existing app folder (including an exported
+Lovable or Bolt project), choose a template, add optional requirements, and
+inspect **Preview task brief** before choosing **Start workflow**. This starts
+a separate coding-agent conversation using the current project conversation's
+model, connection, and permissions, or the normal defaults when none is selected.
+Your existing chats, composer drafts, attachments, and command tabs are retained.
+Requirements are kept separately per project and template while Studio is open.
+
+These templates guide the configured model and tools; they are not a standalone
+vulnerability scanner or production certification. The security task requests
+evidence and reports before fixes; hardening requests targeted local changes and
+verification. Migration begins with dependency discovery, a staging/cutover and
+rollback plan, and any justified local scaffolds. Roles and business logic begin
+with a permission matrix and require concrete semantics before implementation.
+Each task requires actual check results and coverage gaps in its report.
+Hosting purchases, provider discounts, live deployments, DNS cutovers, and
+production database/policy changes are outside these initial tasks.
+
 The **Projects** command bar has two explicit modes. **Project command** runs a
 program in the selected directory, such as `git status`,
 `npm --prefix studio test`, or `python3 -m unittest discover -s tests -q`

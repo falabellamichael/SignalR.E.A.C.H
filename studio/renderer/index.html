@@ -16,6 +16,7 @@
   <link rel="stylesheet" href="activity-bar.css" />
   <link rel="stylesheet" href="home.css" />
   <link rel="stylesheet" href="create-page.css" />
+  <link rel="stylesheet" href="project-workflows.css" />
   <link rel="stylesheet" href="account-menu.css" />
   <link rel="stylesheet" href="responsive.css" />
   <link rel="stylesheet" href="singular-panel.css" />
@@ -328,7 +329,7 @@
         <div id="no-project" class="empty">
           <div class="big-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 21.2 12 12 21.2 2.8 12Z"/><circle cx="12" cy="2.8" r="1.8" fill="currentColor" stroke="none"/><circle cx="21.2" cy="12" r="1.8" fill="currentColor" stroke="none"/><circle cx="12" cy="21.2" r="1.8" fill="currentColor" stroke="none"/><circle cx="2.8" cy="12" r="1.8" fill="currentColor" stroke="none"/><g transform="translate(12 12) scale(.77) translate(-12 -12)"><path d="M9.2 7.2h3.4c1.6 0 2.5 1 2.5 2.4 0 1.1-.8 2-1.9 2.2l2.1 5H13.4l-1.9-4.6h-.7v4.6H9.2V7.2Zm1.6 1.4v2.2h1.7c.8 0 1.2-.5 1.2-1.1 0-.6-.5-1.1-1.2-1.1h-1.7Z" fill="currentColor" stroke="none"/></g></svg></div>
           <p>Select a project or create a new one.</p>
-          <p class="sub">Manage projects, run project commands, and compile Reach DApps with a native compiler.</p>
+          <p class="sub">Open your app folder to review security, prepare a migration, or build access controls.</p>
         </div>
 
         <div id="project-view" class="hidden">
@@ -344,6 +345,8 @@
               <button id="btn-folder" class="ghost">Open Folder</button>
             </div>
           </div>
+
+          <section id="project-workflows" aria-label="Project workflows"></section>
 
           <div class="project-command-tabs-row">
             <div id="project-command-tabs" class="project-command-tabs" role="tablist" aria-label="Project command tabs"></div>
@@ -596,6 +599,13 @@
       </div>
       <div id="settings-appearance" class="settings-panel settings-content hidden">
         <h2>Appearance</h2>
+        <h3>CLI companion</h3>
+        <label class="check"><input id="set-desktop-pet" type="checkbox" /> Show draggable CLI pet</label>
+        <p class="settings-description">The same Cat, Owl, and Micro bulldog artwork, animations, and care rules as the CLI. Drag the pet or focus it and use arrow keys. Changes save immediately on this device.</p>
+        <label for="set-desktop-pet-kind">Companion</label>
+        <select id="set-desktop-pet-kind"><option value="cat">Cat</option><option value="owl">Owl</option><option value="bulldog">Micro bulldog</option></select>
+        <label class="check"><input id="set-desktop-pet-motion" type="checkbox" checked /> Animate companion (respects reduced motion)</label>
+        <button id="btn-desktop-pet-reset" class="ghost small" type="button">Reset pet position</button>
         <label class="check"><input id="set-page-sized" type="checkbox" checked aria-describedby="page-layout-help" /> Page-sized layout</label>
         <p id="page-layout-help" class="settings-description">Keep content centered at a comfortable width. Turn off to use the full width.</p>
         <p id="page-layout-status" class="dim" role="status" aria-live="polite"></p>
@@ -1204,6 +1214,7 @@
   <script src="message-translation.js"></script>
   <script src="message-actions.js"></script>
   <script src="app.js"></script>
+  <script src="project-workflows.js"></script>
   <script src="app-projects.js"></script>
   <script src="app-agents.js"></script>
   <script src="app-chat.js"></script>
@@ -1236,5 +1247,8 @@
   <script src="playground.js"></script>
   <script src="about.js"></script>
   <script src="refactor.js"></script>
+  <script src="cli-pet-frames.js"></script>
+  <script src="cli-pet.js"></script>
+  <script src="desktop-pet.js"></script>
 </body>
 </html>

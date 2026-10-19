@@ -198,7 +198,7 @@ class PersonaStore {
         // purpose: presets evolve, and a stale id must degrade to the member's
         // free-text role label instead of breaking an older team.
         roleId: String(m.roleId || '').slice(0, 64),
-        designId: /^(?:bot-(?:0[1-9]|[1-4]\d|50)|bot-v1-(?:scout|visor|cyclops|sleepy|wink|spark)-(?:scout|visor|grin|cyclops|grille|none)-(?:scout|visor|cyclops|sleepy|grin|spark|crown|horn|bloom|signal|none)-(?:round|rounded|square|hex|capsule)-[a-f0-9]{6}-[a-f0-9]{6}-[a-f0-9]{6})$/.test(String(m.designId || '')) ? String(m.designId) : '',
+        designId: /^(?:bot-(?:0[1-9]|[1-4]\d|50)|bot-v1-(?:scout|visor|cyclops|sleepy|wink|spark)-(?:scout|visor|grin|cyclops|grille|none)-(?:scout|visor|cyclops|sleepy|grin|spark|crown|horn|bloom|signal|none)-(?:round|rounded|square|hex|capsule)-[a-f0-9]{6}-[a-f0-9]{6}-[a-f0-9]{6}(?:-(?:breathe|bob|bounce|hover|sway|wobble|nod|shake|tilt|spin|flip|squish|stretch|jelly|hop|orbit|dance|tremble|peek|sleep|blink|look|chatter|antenna|salute))?)$/.test(String(m.designId || '')) ? String(m.designId) : '',
       };
     });
   }

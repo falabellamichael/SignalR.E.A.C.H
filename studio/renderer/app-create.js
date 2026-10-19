@@ -88,7 +88,22 @@ function renderRecoverableTeamRuns(runs) {
         recovered.evidence.map(item => `${item.agentId}: ${item.tool} ${item.ok ? 'ok' : 'failed'}${item.path ? ` ${item.path}` : ''}${item.decision ? ` (${item.decision})` : ''}`).join('\n'),
       ].filter(Boolean).join('\n\n').slice(0, 100000);
     };
-    card.append(heading, note, button);
+    const close = document.createElement('button');
+    close.className = 'ghost small';
+    close.textContent = 'Close run';
+    close.title = 'Dismiss this recoverable run. Saved results remain archived.';
+    close.onclick = async () => {
+      close.disabled = true;
+      try {
+        const result = await reachApi.teams.closeRecoverable(run.runId);
+        if (!result.ok) throw new Error(result.err || 'The run could not be closed.');
+        card.remove();
+      } catch (error) {
+        note.textContent = error.message || 'The run could not be closed.';
+        close.disabled = false;
+      }
+    };
+    card.append(heading, note, button, close);
     el.append(card);
   }
 }
@@ -466,7 +481,7 @@ function openDesignPicker(index) {
   const caption = document.createElement('div');
   caption.textContent = 'Bot workshop';
   const hint = document.createElement('small');
-  hint.textContent = 'Mix every feature independently. Changes are saved with your team.';
+  hint.textContent = 'Mix features and 25 animations independently. Save your team to keep changes. Reduced-motion settings are respected.';
   caption.append(hint);
   preview.append(portrait, caption);
   const refresh = () => {
@@ -480,10 +495,10 @@ function openDesignPicker(index) {
   const fields = {};
   for (const [key, values] of Object.entries(designs.choices)) {
     const label = document.createElement('label');
-    label.textContent = { eyes: 'Eyes', mouth: 'Mouth', top: 'Top piece', shape: 'Head shape' }[key];
+    label.textContent = { eyes: 'Eyes', mouth: 'Mouth', top: 'Top piece', shape: 'Head shape', animation: 'Animation' }[key];
     const select = document.createElement('select');
     select.setAttribute('aria-label', label.textContent);
-    for (const value of values) select.add(new Option(value[0].toUpperCase() + value.slice(1), value));
+    for (const value of values) select.add(new Option(key === 'animation' && value === 'none' ? 'Still (no animation)' : value[0].toUpperCase() + value.slice(1), value));
     select.value = draft[key];
     select.onchange = () => { draft[key] = select.value; refresh(); };
     fields[key] = select;
@@ -523,7 +538,7 @@ function openDesignPicker(index) {
     button.setAttribute('aria-label', bot.name);
     button.innerHTML = window.ReachMemberDesigns.svg(bot.id, 36);
     button.onclick = () => {
-      draft = designs.config(bot.id);
+      draft = { ...designs.config(bot.id), animation: draft.animation };
       sync();
       grid.querySelectorAll('.active').forEach(el => el.classList.remove('active'));
       button.classList.add('active');

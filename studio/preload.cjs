@@ -125,6 +125,7 @@ contextBridge.exposeInMainWorld('reach', {
   teams: {
     list: () => ipcRenderer.invoke('teams:list'),
     recoverable: () => ipcRenderer.invoke('teams:recoverable'),
+    closeRecoverable: teamRunId => ipcRenderer.invoke('teams:closeRecoverable', { teamRunId }),
     harvest: (teamRunId) => ipcRenderer.invoke('teams:harvest', { teamRunId }),
     get: (id) => ipcRenderer.invoke('teams:get', id),
     create: (t) => ipcRenderer.invoke('teams:create', t),

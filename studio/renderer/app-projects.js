@@ -273,6 +273,7 @@ async function selectProject(p, { openDraft = true } = {}) {
   // Keep Home's mini Projects runner pointed at the active workspace folder.
   window.ReachCurrentProjectDir = p.dir;
   window.dispatchEvent(new CustomEvent('reach:project-selected', { detail: { dir: p.dir } }));
+  projectWorkflows.sync();
   if (currentAgent && currentAgent.dir !== p.dir) {
     rememberNewChatDraft();
     currentAgent = null;
@@ -363,6 +364,54 @@ $('#btn-compile').onclick = async () => {
   }
   await execCommand(['compile', 'index.rsh'], 'reach');
 };
+
+// Workflow runs use the normal agent IPC so command approvals, edit review,
+// workspace containment, activity, Stop, and saved history stay in force.
+const projectWorkflows = window.ReachProjectWorkflows.mount($('#project-workflows'), {
+  getProject: () => currentProject,
+  onStart: async ({ template, project, prompt }) => {
+    if (composerIntentPending || jevAutoRoutingAgentId) throw new Error('Wait for the current message to finish starting, then try again.');
+    const revision = projectSelectionRevision;
+    const source = currentAgent?.dir === project.dir ? currentAgent : null;
+    const settings = source ? structuredClone(source.settings || {}) : null;
+    const created = await reachApi.agents.create({
+      name: template.title, dir: project.dir, model: source?.model || '', connectionId: source?.connectionId || '',
+    });
+    if (!created.ok) throw new Error(created.err);
+    const id = created.agent.id;
+    let accepted = false;
+    try {
+      if (settings) {
+        // This task is a separate conversation, not an implicit team dispatch.
+        if (settings.teamChat) settings.teamChat.enabled = false;
+        const updated = await reachApi.agents.update(id, { settings });
+        if (!updated.ok) throw new Error(updated.err);
+      }
+      if (currentProject?.dir !== project.dir || projectSelectionRevision !== revision) {
+        throw new Error('The selected project changed. Start the workflow again for the project you want.');
+      }
+      const sent = await reachApi.agents.send(id, prompt, []);
+      if (!sent.ok) throw new Error(sent.err);
+      accepted = true;
+      // Do not steal focus if the user changed projects while IPC was starting.
+      if (currentProject?.dir === project.dir && projectSelectionRevision === revision) {
+        await selectAgent(created.agent, { preserveEditors: true });
+        if (currentAgent?.id === id) await showTab('agents');
+      }
+      await loadAgentTree();
+    } catch (error) {
+      // Remove only a new conversation that never accepted any input. A live
+      // or partially accepted run remains recoverable in conversation history.
+      if (!accepted) {
+        const saved = await reachApi.agents.get(id).catch(() => null);
+        if (saved && !saved.messages?.length) await reachApi.agents.delete(id).catch(() => {});
+      } else {
+        return { message: `${template.title} started for ${project.name || project.dir}. Open its conversation in Agents.` };
+      }
+      throw error;
+    }
+  },
+});
 $('#btn-clean').onclick = () => execCommand(['clean'], 'reach');
 $('#btn-info').onclick = () => execCommand(['info'], 'reach');
 $('#btn-folder').onclick = () => currentProject && reachApi.openDir(currentProject.dir);

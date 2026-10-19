@@ -9,6 +9,29 @@ const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { CrewJournal, listRecoverable } = require('../agent/crew-journal.cjs');
 
+test('closing recovery persists dismissal, preserves results and is idempotent', t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-crew-close-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'teamrun-close.team.jsonl');
+  const journal = new CrewJournal(file);
+  journal.append('manifest', { runId: 'teamrun-close', task: 'Saved task' });
+  journal.append('member-turn', { output: 'Partial result' });
+  journal.append('evidence', { tool: 'read', ok: true });
+  assert.equal(listRecoverable(dir).length, 1);
+  journal.close();
+  const reopened = new CrewJournal(file);
+  assert.equal(listRecoverable(dir).length, 0);
+  assert.equal(reopened.snapshot().members[0].output, 'Partial result');
+  assert.equal(reopened.snapshot().evidence.length, 1);
+  assert.equal(reopened.snapshot().complete.stopped, true);
+  const before = fs.readFileSync(file, 'utf8');
+  reopened.close();
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+  const missing = path.join(dir, 'teamrun-missing.team.jsonl');
+  assert.throws(() => new CrewJournal(missing).close(), /not found/);
+  assert.equal(fs.existsSync(missing), false);
+});
+
 test('a killed two-member crew keeps its completed turn and message for recovery', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-crew-crash-'));
   const file = path.join(dir, 'teamrun-crash-fixture.team.jsonl');

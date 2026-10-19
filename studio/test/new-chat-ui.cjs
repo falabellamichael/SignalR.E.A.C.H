@@ -46,7 +46,9 @@ dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [attachment] 
 app.on('browser-window-created', (_event, window) => {
   win = window;
   setImmediate(() => window.removeAllListeners('ready-to-show'));
-  window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) errors.push(message); });
+  window.webContents.on('console-message', (_event, level, message) => {
+    if (level >= 3 && !message.includes("directive 'frame-ancestors' is ignored")) errors.push(message);
+  });
 });
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const run = code => win.webContents.executeJavaScript(code, true);

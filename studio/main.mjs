@@ -1343,6 +1343,13 @@ function registerIpc() {
 
   ipcMain.handle('teams:list', () => getPersonaStore().listTeams());
   ipcMain.handle('teams:recoverable', () => listRecoverable(path.join(app.getPath('userData'), 'agents')).filter(item => !teamRuns.has(item.runId)));
+  ipcMain.handle('teams:closeRecoverable', (_e, { teamRunId } = {}) => {
+    if (teamRuns.has(teamRunId)) return { ok: false, err: 'This run is active. Stop it from its team controls first.' };
+    try {
+      new CrewJournal(journalPath(path.join(app.getPath('userData'), 'agents'), teamRunId)).close();
+      return { ok: true };
+    } catch (error) { return { ok: false, err: error.message }; }
+  });
   ipcMain.handle('teams:harvest', (_e, { teamRunId }) => {
     try {
       const journal = new CrewJournal(journalPath(path.join(app.getPath('userData'), 'agents'), teamRunId));

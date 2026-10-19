@@ -110,6 +110,7 @@ export class SupabaseAccountStore {
   }
   async _view(snapshot) {
     const a = snapshot.account, active = a.plan_expires > this.now(), allowed = JSON.parse(a.models);
+    const admin = a.role === 'admin';
     let request = null;
     if (this.subscription) try { request = await this._requestRpc('request_allowance', { accountId: a.id }); }
     catch {
@@ -119,9 +120,10 @@ export class SupabaseAccountStore {
         includedLimit: 0, completed: 0, reserved: 0, remaining: 0, periodEndsAt: null,
         overageUsdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest, basicActive: false } };
     }
-    return { id: a.id, walletAddress: a.wallet, email: a.email ?? null,
+    return { id: a.id, walletAddress: a.wallet, email: a.email ?? null, role: admin ? 'admin' : 'user',
       redemptionCredit: { tokens: Math.min(a.prepaid,a.rch_tokens ?? 0), usdMicros: Math.min(a.usd_prepaid ?? 0,a.rch_usd ?? 0) },
-      plan: { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
+      plan: admin ? { id: 'admin', name: 'REACH Admin', status: 'active', expiresAt: null, complimentary: true }
+        : { id: a.plan_id, name: a.plan_name, status: active ? 'active' : a.plan_id ? 'expired' : 'none', expiresAt: a.plan_expires ? new Date(a.plan_expires).toISOString() : null },
       allowedModels: this.models.filter(m => request?.unavailable ? false : m.access === 'requests' ? requestModel(m) && !!this.subscription && (request.allowance.basicActive || request.allowance.plusActive || a.plan_id!=='plus' && a.usd_prepaid > 0)
         : m.metered === true && (a.usd_prepaid > 0 && modelUsdPricing(m) || a.prepaid > 0 || active && allowed.includes(m.id))).map(m => ({ id: m.id, name: m.name || m.id, provider: m.provider, ...(requestModel(m) ? { access: 'requests', pricing: request.allowance.plusActive ? {unit:'request',unlimited:true,includedRequests:null,usdMicrosPerRequest:0} : { unit: 'request', includedRequests: this.subscription.basic.includedRequests, usdMicrosPerRequest: this.subscription.overageUsdMicrosPerRequest }, capabilities: requestCapabilities(m) } : modelUsdPricing(m) ? { pricing: { ...m.pricing } } : {}) })),
       allowance: { includedRemaining: active ? a.included : 0, prepaidRemaining: a.prepaid, reserved: snapshot.reserved,
