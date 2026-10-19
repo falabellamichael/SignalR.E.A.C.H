@@ -24,7 +24,7 @@
 const GLOBAL_ONLY_KEYS = new Set(['maxConversations', 'requestPacing', 'requestPacingRpm']);
 
 const fields = [
-  ['ultraPro', 'Ultra_Pro · extended work', false, 'Work mode', 'Continue until completion or Stop, with an explicit output allowance, automatic context compression and up to three fresh recovery attempts for truncated responses. Turning this off restores the normal budgets below. Provider limits, action approvals and edit reviews still apply. May use more tokens.'],
+  ['ultraPro', 'Ultra_Pro · extended work', false, 'Work mode', 'Continue until completion or Stop, with automatic context compression and up to three fresh recovery attempts for truncated responses. Output and compression budgets of 0 remain uncapped by Studio. Turning this off restores the normal budgets below. Provider limits, action approvals and edit reviews still apply. May use more tokens.'],
   ['maxTokens', 'Output tokens per request', 16384, 'Generation', 'Includes shared reasoning tokens. Studio reserves room for a response and may make one concise retry with the same per-request cap. 0 omits max_tokens; the provider chooses its default, which may still be small.'],
   ['requestTimeoutMs', 'Request timeout (milliseconds)', 180000, 'Generation', 'Covers connection and streaming. 0 waits until completion or Stop.'],
   ['requestPacing', 'Pace outbound provider requests', true, 'Generation', 'One request pace per provider, shared by the whole crew, so a team cannot burst a provider into HTTP 429. After a rate limit Studio honors the provider Retry-After, then resumes slower until three clean requests. Off removes the app-imposed pace only; a provider Retry-After is still honored, because that instruction comes from the server rather than from Studio.'],
@@ -97,14 +97,16 @@ function resolveBudgets(global = {}, settings = {}) {
 function applyUltraPro(budgets) {
   if (!budgets.ultraPro) return budgets;
   // A run-time overlay: saving the switch never replaces normal budgets.
-  return { ...budgets, maxTokens: Math.max(budgets.maxTokens || 0, 1024),
+  // Zero explicitly omits the application cap; it is not a missing value to
+  // replace with a minimum (which capped unrestricted Ultra_Pro at 1024).
+  return { ...budgets, maxTokens: budgets.maxTokens === 0 ? 0 : Math.max(budgets.maxTokens || 0, 1024),
     maxRounds: 0, subagentMaxRounds: 0, resumeCycles: 0,
     approvalTimeoutMs: 0, questionTimeoutMs: 0,
     requestTimeoutMs: budgets.requestTimeoutMs === 0 ? 0 : Math.max(budgets.requestTimeoutMs || 0, 900000),
     retryLimit: Math.max(budgets.retryLimit || 0, 2),
     retryBaseMs: Math.max(budgets.retryBaseMs || 0, 1500), retryMaxMs: Math.max(budgets.retryMaxMs || 0, 60000),
     autoCompact: true,
-    summaryTokens: Math.max(budgets.summaryTokens || 0, 1024), storedMessages: 0 };
+    summaryTokens: budgets.summaryTokens === 0 ? 0 : Math.max(budgets.summaryTokens || 0, 1024), storedMessages: 0 };
 }
 const cap = value => value === 0 ? Infinity : value;
 
@@ -123,8 +125,8 @@ function budgetsForModel(budgets, model) {
   budgets = applyUltraPro(budgets);
   // Ornith shares its output allowance between reasoning and the action JSON.
   if (budgets.ultraPro && /(?:^|\/)ornith-1\.5-9b$/i.test(String(model || ''))) {
-    budgets = { ...budgets, maxTokens: Math.max(budgets.maxTokens || 0, 4096),
-      summaryTokens: Math.max(budgets.summaryTokens || 0, 2048) };
+    budgets = { ...budgets, maxTokens: budgets.maxTokens === 0 ? 0 : Math.max(budgets.maxTokens || 0, 4096),
+      summaryTokens: budgets.summaryTokens === 0 ? 0 : Math.max(budgets.summaryTokens || 0, 2048) };
   }
   if (!BROWSER_CHAT_MODELS.has(String(model || ''))) return budgets;
   return { ...budgets, maxRounds: 0, maxTokens: 0, requestTimeoutMs: 0, autoCompact: true, storedMessages: 0 };

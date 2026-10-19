@@ -316,7 +316,7 @@ const CORE_TOOLS = {
   },
   shell: {
     class: 'exec', tier: 'core', approval: true, budget: 40000,
-    help: 'runs a shell command in the project directory and returns stdout/stderr/exit code. The user must approve it first.',
+    help: 'runs a shell command in the project directory and waits for it to exit, returning stdout/stderr/exit code. The user must approve it first. For a static website use browser op:"preview" with its path; a foreground web server here would block the agent from opening the browser.',
     example: { action: 'shell', command: 'ls -la' },
     async execute(args, ctx) {
       const { runCommand } = require('./platform.cjs');
@@ -339,7 +339,9 @@ const CORE_TOOLS = {
     help: 'opens a URL in your in-app browser tab and returns rendered text and element refs. Use browser.click or browser.type to interact.',
     example: { action: 'browse', url: 'https://docs.reach.sh' },
     async execute(args, ctx) {
-      return ctx.browserExecutor ? ctx.browserExecutor('open', args, ctx) : { ok: false, error: 'The in-app browser is not available.' };
+      if (!ctx.browserExecutor) return { ok: false, error: 'The in-app browser is not available.' };
+      if (/^file:/i.test(args.url || '')) return require('./local-preview.cjs').openPreview(args, ctx);
+      return ctx.browserExecutor('open', args, ctx);
     },
   },
   /* The agent's OWN durable memory (MEMORY.md), next to its SOUL.md. This is

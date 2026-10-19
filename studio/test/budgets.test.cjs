@@ -36,11 +36,13 @@ test('Ultra_Pro overlays extended-run budgets without replacing saved values or 
   const settings = { budgets: { ...normal, ultraPro: true } };
   const agent = { approvals: 'prompt', reviewEdits: true };
   const effective = resolveBudgets(settings, agent);
-  assert.equal(effective.maxTokens, 1024);
-  assert.equal(budgetsForModel(effective, 'ornith-1.5-9b').maxTokens, 4096);
+  assert.equal(effective.maxTokens, 0);
+  assert.equal(budgetsForModel(effective, 'ornith-1.5-9b').maxTokens, 0);
   assert.equal(budgetsForModel(effective, 'ornith-ai/Ornith-1.5-9B').summaryTokens, 16384);
-  assert.equal(budgetsForModel({ ...effective, summaryTokens: 0 }, 'ornith-1.5-9b').summaryTokens, 2048);
-  assert.equal(budgetsForModel(effective, 'gemma-4-12b-qat').maxTokens, 1024);
+  assert.equal(budgetsForModel({ ...effective, summaryTokens: 0 }, 'ornith-1.5-9b').summaryTokens, 0);
+  assert.equal(budgetsForModel(effective, 'gemma-4-12b-qat').maxTokens, 0);
+  assert.equal(budgetsForModel({ ...effective, maxTokens: 512, summaryTokens: 512 }, 'ornith-1.5-9b').maxTokens, 4096);
+  assert.equal(resolveBudgets({ budgets: { ...presets.unrestricted, ultraPro: true } }).summaryTokens, 0);
   assert.equal(budgetsForModel(effective, 'chatgpt-chat').maxTokens, 0);
   assert.equal(budgetsForModel(normal, 'ornith-1.5-9b').maxTokens, 0);
   assert.equal(effective.maxRounds, 0);

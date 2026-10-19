@@ -8,6 +8,7 @@ const { presets } = require('../agent/budgets.cjs');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-ultra-ui-'));
 const profile = path.join(root, 'profile'); fs.mkdirSync(profile);
 app.setPath('userData', profile); os.homedir = () => root;
+process.env.LOCALAPPDATA = path.join(root, 'local');
 let win;
 app.on('browser-window-created', (_, window) => {
   win = window;
@@ -48,8 +49,16 @@ const timeout = setTimeout(() => { console.error('Ultra_Pro UI timed out.'); app
   let agent;
   for (let i = 0; i < 100; i++) { agent = await run(`reachApi.agents.get(${JSON.stringify(fixture.id)})`); if (agent.runState?.status === 'completed') break; await delay(50); }
   assert.equal(agent.runState.status, 'completed');
-  assert.deepEqual(requests.map(r => r.max_tokens), [1024, 512]);
-  assert.match(requests[1].messages[0].content, /Hard output allowance: 512/);
+  assert.deepEqual(requests.map(r => r.max_tokens), [undefined]);
+  assert.equal(Object.hasOwn(requests[0], 'max_tokens'), false);
+  assert.match(requests[0].messages[0].content, /No application output cap/);
+  // Explicit finite overrides still negotiate a real provider ceiling.
+  await run(`reachApi.agents.update(${JSON.stringify(fixture.id)}, {settings:{budgetOverrides:{maxTokens:2048}}})`);
+  await run(`reachApi.agents.send(${JSON.stringify(fixture.id)}, 'Verify the explicit finite override.')`);
+  for (let i = 0; i < 100; i++) { agent = await run(`reachApi.agents.get(${JSON.stringify(fixture.id)})`); if (agent.runState?.status === 'completed') break; await delay(50); }
+  assert.equal(agent.runState.status, 'completed');
+  assert.deepEqual(requests.map(r => r.max_tokens), [undefined, 2048, 512]);
+  assert.match(requests[2].messages[0].content, /Hard output allowance: 512/);
   await run("document.querySelector('#budget-ultraPro').click(); document.querySelector('#btn-save-budgets').onclick()");
   settings = await run('reachApi.getSettings()');
   assert.equal(settings.budgets.ultraPro, false);

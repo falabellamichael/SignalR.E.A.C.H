@@ -2,7 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { budgetPolicy, reserveGuard } = require('../agent/budget-awareness.cjs');
-const { defaults } = require('../agent/budgets.cjs');
+const { defaults, presets, resolveBudgets } = require('../agent/budgets.cjs');
 const { AgentLoop } = require('../agent/agent-loop.cjs');
 const { MemoryStore } = require('../agent/memory-store.cjs');
 const action = (status, message, actions = []) => JSON.stringify({ status, message, actions, options: [] });
@@ -33,6 +33,33 @@ test('policy explains actual cap, answer reserve, remaining rounds and explicit 
   assert.match(policy, /do not pad/);
   assert.match(budgetPolicy({ maxTokens: 0, purpose: 'answer', budgets: defaults }), /No application output cap/);
   assert.doesNotMatch(budgetPolicy({ maxTokens: 0, purpose: 'answer', budgets: defaults }), /Hard output allowance/);
+});
+
+test('unrestricted Ultra_Pro omits output caps for answers and summaries despite a legacy 1024-token chat setting', async t => {
+  const bodies = [];
+  const url = await endpoint(t, (body, res) => {
+    bodies.push(body);
+    assert.equal(Object.hasOwn(body, 'max_tokens'), false);
+    assert.match(JSON.stringify(body.messages), /No application output cap/);
+    assert.doesNotMatch(JSON.stringify(body.messages), /Hard output allowance|1200 characters|short working scaffold/);
+    // A substantial complete answer must not trigger the former tiny-budget
+    // reserve or get replaced with an application checkpoint.
+    reply(res, action('complete', 'Verified website details. '.repeat(400)));
+  });
+  const store = new MemoryStore();
+  store.get('a').settings.maxTokens = 1024;
+  const budgets = resolveBudgets({ budgets: { ...presets.unrestricted, ultraPro: true } }, store.get('a').settings);
+  const loop = new AgentLoop({ agentId: 'a', store, endpoint: url, model: 'Qwen/fixture', budgets });
+  assert.equal(loop._outputTokens(), 0);
+  assert.equal(loop._budgets().summaryTokens, 0);
+  const summary = loop._requestBody([{ role: 'user', content: 'Summarize verified work.' }],
+    { stream: false, purpose: 'summary', maxTokens: loop._budgets().summaryTokens });
+  assert.equal(Object.hasOwn(summary, 'max_tokens'), false);
+  await loop.sendUserMessage('Make the website much more comprehensive.');
+  assert.equal(bodies.length, 1);
+  assert.equal(store.get('a').runState.status, 'completed');
+  assert.ok(!store.get('a').messages.some(m => m._reachMeta?.source === 'budget-checkpoint'));
+  assert.equal(store.get('a').settings.maxTokens, 1024, 'Legacy preferences are preserved');
 });
 
 test('Ultra_Pro learns the deployed output ceiling and uses it in the prompt, stream and checkpoint', async t => {
