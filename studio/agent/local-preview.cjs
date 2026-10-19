@@ -22,10 +22,11 @@ const types = {
 };
 
 // Resolve symlinks (macOS /var -> /private/var) so a file URL compares against
-// the real project root. A missing tail keeps its name under the real parent.
+// the real project root. Use the same resolver as the root (the native one
+// expands Windows 8.3 names). A missing tail keeps its name under the real parent.
 function realPath(candidate) {
   const resolved = path.resolve(candidate);
-  try { return fs.realpathSync.native(resolved); } catch {
+  try { return fs.realpathSync(resolved); } catch {
     const parent = path.dirname(resolved);
     return parent === resolved ? resolved : path.join(realPath(parent), path.basename(resolved));
   }
