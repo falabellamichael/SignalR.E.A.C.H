@@ -1,5 +1,23 @@
 # Changelog
 
+## [26.10.7](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.6...v26.10.7) (2026-10-19)
+
+
+### Features
+
+* **installer:** publish unified Windows suite with IDE choices ([ed24d44](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ed24d4436a10b36bb3df82594b7cd8e84b564963))
+
+
+### Bug Fixes
+
+* **ci:** install suite dependencies without committed lockfiles ([96f84cf](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/96f84cfe330d5365124b6b4b5e2d2a072eeeb206))
+* **ci:** provision NSIS compiler for suite packaging ([b4da584](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b4da5848a8a6136f842f4429b86619a6aa461020))
+* ground Studio context in the selected project ([e122720](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e12272006bca115f8f0f1395649263c33270c931))
+* preserve masked host settings when saving ([3ae6ba7](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3ae6ba766868e132ea25eca38107d68eb62f9cb3))
+* remove empty space above VS Code replies ([876ee32](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/876ee32c93ce92d73cf92251403ec87b09251ec8))
+* restore Studio previews and uncapped Ultra Pro budgets ([10ada4d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/10ada4dad59e3a0116f893841d4cffd5a8598ab5))
+* secure REACH sign-in and subscription model routing ([df06677](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/df06677d4386e59493677464073b2a81a32be193))
+
 ## [26.10.6](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.5...v26.10.6) (2026-10-18)
 
 
