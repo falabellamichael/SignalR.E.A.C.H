@@ -1,17 +1,12 @@
-/* Neutral structural borders. Semantic color belongs only to status icons. */
+/* Follow the active theme and its accent tint. Status icons keep semantic colors. */
 .team-deck {
-  --deck-line: #343434;
-  --deck-ink: #e4e4e2;
-  --deck-muted: #a5a5a0;
-  --deck-surface: #101010;
-  --deck-selected: #1b1b1b;
+  --deck-line: var(--line);
+  --deck-ink: var(--text);
+  --deck-muted: var(--muted, var(--dim));
+  --deck-surface: var(--card);
+  --deck-selected: var(--hover);
   align-self: stretch; width: 100%; min-width: 0; gap: 10px;
   color: var(--deck-ink);
-}
-:root[data-scheme="light"] .team-deck,
-:root[data-theme="light"] .team-deck {
-  --deck-line: #949187; --deck-ink: #363b3c; --deck-muted: #626766;
-  --deck-surface: #fbf7ee; --deck-selected: #eeebe4;
 }
 .chat-log:has(> .team-deck) { padding-top: 0; }
 #no-agent.telemetry-landing > .team-deck { display: flex; }

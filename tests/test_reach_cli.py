@@ -885,7 +885,8 @@ class SlashCommandTests(unittest.TestCase):
             history = [{"role": "system", "content": "sys"}]
             _result, _text, history = self.invoke("/web what is paris", history=history)
         web.assert_called_once()
-        self.assertEqual(history[-1]["content"], "what is paris")
+        self.assertEqual(history, [{"role": "system", "content": "sys"}],
+                         'standalone /web must not leave an unanswered user turn')
 
     def test_bad_input_never_traces_back(self):
         from reach_cli.terminal import ReplSession

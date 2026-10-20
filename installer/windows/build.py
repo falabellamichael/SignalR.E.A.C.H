@@ -80,7 +80,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix='payload-', dir=out) as temporary:
         payload = Path(temporary)
         for component in ['studio', 'tray']:
-            installers = list((out / component).glob('*Setup*.exe'))
+            source = 'studio' if component == 'studio' else 'copilot/tray'
+            component_version = json.loads((ROOT / source / 'package.json').read_text())['version']
+            installers = list((out / component).glob(f'*Setup {component_version}.exe'))
             if len(installers) != 1:
                 raise RuntimeError(f'Expected one installer in {out / component}, found {len(installers)}')
             shutil.copyfile(installers[0], payload / f'{component}-setup.exe')

@@ -764,7 +764,7 @@ def cmd_update(args):
     cmd_install(args)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description="SignalR.E.A.C.H installer + runtime manager",
         prog="reach.py")
@@ -807,6 +807,7 @@ def main():
 
     p_vscode = sub.add_parser("vscode",
                               help="manage the VS Code chat extension")
+    p_vscode.set_defaults(func=cmd_vscode)
     vsc_sub = p_vscode.add_subparsers(dest="vscode_cmd")
     p_vi = vsc_sub.add_parser("install",
                                help="side-load the extension into VS Code")
@@ -909,7 +910,7 @@ def main():
     p_update.add_argument("--extension-home", default=None)
     p_update.set_defaults(func=cmd_update, restart=True)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         raise SystemExit(1)

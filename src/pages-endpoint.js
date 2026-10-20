@@ -466,7 +466,7 @@
                     if (ok) {
                         toast('Added ✓ — pick "SignalR.E.A.C.H (REACH)" as your active model', 'ok');
                     } else {
-                        toast('Add failed: ' + esc((data && data.detail) || 'unknown error'), 'error');
+                        toast('Add failed: ' + ((data && data.detail) || 'unknown error'), 'error');
                     }
                 })
                 .catch(err => toast('Add failed: ' + err.message, 'error'))

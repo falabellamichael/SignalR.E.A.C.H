@@ -26,10 +26,12 @@
         let limit = 100;
         let statusFilter = '';
         let modelFilter = '';
-        let activeModal = null;
+        let closeModal = null;
+        let disposed = false;
+        let generation = 0;
 
         function showLogInspector(entry) {
-            if (activeModal) activeModal.remove();
+            if (closeModal) closeModal();
 
             const overlay = el('div', 'reach-modal-overlay');
             const modal = el('div', 'reach-modal-card reach-modal-drawer');
@@ -135,7 +137,6 @@
 
             overlay.appendChild(modal);
             document.body.appendChild(overlay);
-            activeModal = overlay;
             // Body-level overlay: inherit the user's chosen accent palette.
             if (window.signalReach && typeof window.signalReach.reapplyAccent === 'function') {
                 try { window.signalReach.reapplyAccent(); } catch (_e) { /* cosmetic only */ }
@@ -143,9 +144,10 @@
 
             const close = () => {
                 if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-                activeModal = null;
                 document.removeEventListener('keydown', onKey);
+                closeModal = null;
             };
+            closeModal = close;
 
             const onKey = (e) => {
                 if (e.key === 'Escape') close();
@@ -160,14 +162,20 @@
         }
 
         function draw() {
+            if (disposed || document.hidden) return;
+            const request = ++generation;
             const params = new URLSearchParams({ limit: String(limit) });
             if (statusFilter) params.set('status', statusFilter);
             if (modelFilter) params.set('model', modelFilter);
             core.relayFetch('/_reach/logs?' + params.toString(), undefined, 4000)
                 .then(res => (res.ok ? res.json() : Promise.reject(new Error('HTTP ' + res.status))))
                 .then(data => {
+                    if (disposed || request !== generation) return;
                     const logs = data.logs || [];
-                    body.innerHTML = '';
+                    const existingToolbar = body.querySelector('.reach-toolbar');
+                    for (const child of Array.from(body.children)) {
+                        if (child !== existingToolbar) child.remove();
+                    }
 
                     const toolbar = el('div', 'reach-toolbar');
 
@@ -265,7 +273,14 @@
 
                     const count = el('span', 'reach-hint', logs.length + ' rows (click to inspect)');
                     toolbar.appendChild(count);
-                    body.appendChild(toolbar);
+                    if (!existingToolbar) body.appendChild(toolbar);
+                    else {
+                        existingToolbar.querySelectorAll('.reach-presence-filter-btn').forEach((button, index) => {
+                            button.classList.toggle('active', statusFilter === chipDefs[index].val);
+                        });
+                        const countLabel = existingToolbar.querySelector('.reach-hint');
+                        if (countLabel) countLabel.textContent = count.textContent;
+                    }
 
                     const table = el('table', 'reach-table reach-table-logs');
                     table.innerHTML = '<thead><tr><th>ID</th><th>Time</th><th>IP</th><th>Model</th><th>Status</th><th>Cache</th><th>Latency</th><th>In</th><th>Out</th><th>Error</th></tr></thead>';
@@ -307,7 +322,10 @@
                     body.appendChild(buildAuditTrail());
                 })
                 .catch(err => {
-                    body.innerHTML = '';
+                    if (disposed || request !== generation) return;
+                    for (const child of Array.from(body.children)) {
+                        if (!child.classList.contains('reach-toolbar')) child.remove();
+                    }
                     body.appendChild(el('div', 'reach-banner reach-banner-off', 'Logs unavailable: ' + err.message));
                 });
         }
@@ -355,8 +373,10 @@
         draw();
         timer = setInterval(draw, 10000);
         return () => {
+            disposed = true;
+            generation++;
             if (timer) clearInterval(timer);
-            if (activeModal && activeModal.parentNode) activeModal.parentNode.removeChild(activeModal);
+            if (closeModal) closeModal();
         };
     }
 

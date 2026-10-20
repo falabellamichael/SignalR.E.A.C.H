@@ -4,6 +4,7 @@
   const enabled=document.querySelector('#set-desktop-pet');
   if(!api || !enabled) return;
   const species=document.querySelector('#set-desktop-pet-kind'), motion=document.querySelector('#set-desktop-pet-motion');
+  const native=window.reach?.pet;
   const KEY='reach.desktop-pet.v1';
   let prefs={enabled:false,kind:'cat',motion:true,x:null,y:null};
   try {const saved=JSON.parse(localStorage.getItem(KEY)||'null');if(saved) Object.assign(prefs,saved);} catch {}
@@ -28,7 +29,7 @@
   let timer=null;
   function sync() {
     enabled.checked=prefs.enabled===true;species.value=prefs.kind;motion.checked=prefs.motion!==false;
-    host.hidden=!enabled.checked;species.disabled=motion.disabled=!enabled.checked;
+    host.hidden=!!native||!enabled.checked;species.disabled=motion.disabled=!enabled.checked;
     pet.select(prefs.kind);clearTimeout(timer);timer=null;
     if(enabled.checked) {place();tick();}
   }
@@ -65,24 +66,30 @@
     host.dataset.behavior=state.behavior;host.dataset.kind=state.kind;
   }
   function tick() {
-    if(!prefs.enabled || document.hidden) return;
+    if(!prefs.enabled || document.hidden&&!native) return;
     const agent=typeof currentAgent!=='undefined'?currentAgent:null;
     if(lastAgent!==(agent?.id||'')) {lastAgent=agent?.id||'';terminalKey='';lastActivity='';pet.setActivity('idle');}
-    const a=activity();if(a && a!==lastActivity) {pet.setActivity(a);lastActivity=a;}paint();timer=setTimeout(tick,160);
+    const a=activity();if(a && a!==lastActivity) {pet.setActivity(a);lastActivity=a;if(native)native.command('activity',a);}
+    if(!native)paint();timer=setTimeout(tick,160);
   }
-  enabled.onchange=()=>{prefs.enabled=enabled.checked;save();sync();};
-  species.onchange=()=>{prefs.kind=species.value;save();sync();};
-  motion.onchange=()=>{prefs.motion=motion.checked;save();sync();};
-  document.querySelector('#btn-desktop-pet-reset').onclick=()=>{prefs.x=prefs.y=null;place();save();};
+  const configure=()=>{save();sync();if(native)native.command('configure',{enabled:prefs.enabled,kind:prefs.kind,motion:prefs.motion});};
+  enabled.onchange=()=>{prefs.enabled=enabled.checked;configure();};
+  species.onchange=()=>{prefs.kind=species.value;configure();};
+  motion.onchange=()=>{prefs.motion=motion.checked;configure();};
+  document.querySelector('#btn-desktop-pet-reset').onclick=()=>{if(native){native.command('reset');return;}prefs.x=prefs.y=null;place();save();};
   let drag=null;
   handle.onpointerdown=e=>{if(e.button!==0)return;drag={id:e.pointerId,x:e.clientX,y:e.clientY,left:prefs.x,top:prefs.y};handle.setPointerCapture(e.pointerId);host.classList.add('dragging');};
   handle.onpointermove=e=>{if(!drag||drag.id!==e.pointerId)return;prefs.x=drag.left+e.clientX-drag.x;prefs.y=drag.top+e.clientY-drag.y;place();};
   const end=()=>{if(!drag)return;drag=null;host.classList.remove('dragging');save();};
   handle.onpointerup=end;handle.onpointercancel=end;handle.onlostpointercapture=end;
   handle.onkeydown=e=>{const d={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[e.key];if(!d)return;e.preventDefault();prefs.x+=d[0]*(e.shiftKey?30:10);prefs.y+=d[1]*(e.shiftKey?30:10);place();save();};
-  document.querySelector('#composer-input')?.addEventListener('input',e=>{if(e.target.value && !['waiting','thinking','responding','searching','reading','writing','running','checking'].includes(pet.activity)) {pet.setActivity('typing');paint();}});
+  document.querySelector('#composer-input')?.addEventListener('input',e=>{if(e.target.value && !['waiting','thinking','responding','searching','reading','writing','running','checking'].includes(pet.activity)) {pet.setActivity('typing');if(native)native.command('activity','typing');else paint();}});
   addEventListener('resize',()=>{if(prefs.enabled){place();save();}});
-  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);timer=null;if(!document.hidden&&prefs.enabled)tick();});
+  document.addEventListener('visibilitychange',()=>{clearTimeout(timer);timer=null;if((!document.hidden||native)&&prefs.enabled)tick();});
   reduced.addEventListener('change',()=>{if(prefs.enabled)paint();});
+  if(native){
+    const receive=state=>{Object.assign(prefs,{enabled:state.enabled,kind:state.kind,motion:state.motion});save();sync();};
+    native.onState(receive);native.command('get').then(receive);
+  }
   sync();
 })();

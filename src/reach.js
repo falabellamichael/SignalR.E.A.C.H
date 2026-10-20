@@ -667,8 +667,10 @@
             saveSettingsBtn.disabled = true;
             saveSettingsBtn.textContent = 'Saving…';
             const patch = {
-                rate_limit_enabled: switchInput.checked,
-                rate_limit_per_minute: parseInt(rpmInput.value, 10) || 60,
+                rate_limits: {
+                    enabled: switchInput.checked,
+                    per_ip_rpm: parseInt(rpmInput.value, 10) || 12
+                },
                 max_concurrency: parseInt(concInput.value, 10) || 8
             };
             core.saveSettings(patch)
@@ -694,8 +696,8 @@
         updateStationaryValues(panel);
         core.loadSettings().then(cfg => {
             if (!cfg) return;
-            if (typeof cfg.rate_limit_enabled === 'boolean') switchInput.checked = cfg.rate_limit_enabled;
-            if (cfg.rate_limit_per_minute) rpmInput.value = cfg.rate_limit_per_minute;
+            if (typeof cfg.rate_limits?.enabled === 'boolean') switchInput.checked = cfg.rate_limits.enabled;
+            if (cfg.rate_limits?.per_ip_rpm != null) rpmInput.value = cfg.rate_limits.per_ip_rpm;
             if (cfg.max_concurrency) concInput.value = cfg.max_concurrency;
         });
     }

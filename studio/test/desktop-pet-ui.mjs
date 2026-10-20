@@ -11,7 +11,7 @@ export default async function(page) {
   await page.addScriptTag({content:"var currentAgent={id:'qa',runState:{status:'running'},activity:{steps:[{kind:'generate',reasoning:20}]}};"});
   for(const f of ['cli-pet-frames.js','cli-pet.js','desktop-pet.js']) await page.addScriptTag({content:await fs.readFile(new URL(f,renderer),'utf8')});
   assert.equal(await page.locator('.desktop-pet').isVisible(),false);
-  await page.getByLabel('Show draggable CLI pet').check();assert.equal(await page.locator('.desktop-pet').isVisible(),true);
+  await page.getByLabel('Show always-on-top CLI pet').check();assert.equal(await page.locator('.desktop-pet').isVisible(),true);
   await page.waitForFunction(()=>document.querySelector('.desktop-pet').dataset.behavior==='pondering');
   await page.addScriptTag({content:"currentAgent.runState={status:'completed'};currentAgent.activity={endedAt:1000,steps:[]};"});
   await page.waitForFunction(()=>document.querySelector('.desktop-pet').dataset.behavior==='celebrating');

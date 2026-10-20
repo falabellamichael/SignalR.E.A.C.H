@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('reach', {
   platform: process.platform,
+  pet: { command: (action, value) => ipcRenderer.invoke('pet:command', action, value), onState: cb => ipcRenderer.on('pet:state', (_e, state) => cb(state)) },
   engines: { report: () => ipcRenderer.invoke('engines:report') },
   initialTheme: ipcRenderer.sendSync('theme:get'),
   setTheme: theme => ipcRenderer.invoke('theme:set', theme),

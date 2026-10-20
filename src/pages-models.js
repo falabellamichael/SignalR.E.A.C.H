@@ -135,7 +135,7 @@
                     core.saveSettings({ models: { [alias]: { enabled: input.checked } } })
                         .then(({ ok, data }) => {
                             if (ok) { toast('Model toggled ✓', 'ok'); core.loadSettings(); }
-                            else toast('Failed: ' + esc((data && data.error && data.error.message) || ''), 'error');
+                            else toast('Failed: ' + ((data && data.error && data.error.message) || ''), 'error');
                         });
                 });
                 const slider = el('span', 'reach-switch-slider');
@@ -167,7 +167,7 @@
                             toast('Removed ' + alias, 'ok');
                             core.loadSettings().then(draw);
                         } else {
-                            toast('Failed: ' + esc((data && data.error && data.error.message) || ''), 'error');
+                            toast('Failed: ' + ((data && data.error && data.error.message) || ''), 'error');
                         }
                     });
                 });
@@ -195,7 +195,7 @@
                             toast('Alias added ✓', 'ok');
                             core.loadSettings().then(draw);
                         } else {
-                            toast('Failed: ' + esc((data && data.error && data.error.message) || ''), 'error');
+                            toast('Failed: ' + ((data && data.error && data.error.message) || ''), 'error');
                         }
                     });
             });

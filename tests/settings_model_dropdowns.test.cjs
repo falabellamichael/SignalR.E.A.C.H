@@ -117,6 +117,18 @@ test('model editors start collapsed, keeping the default-model and fallback drop
   assert.equal(core.store.dirty, false, 'collapsing the editors does not change settings');
 });
 
+test('removing a model keeps Save enabled across redraw and saves the removal', async () => {
+  const { container, document, saved, core } = await renderer();
+  const card = document.getElementById('reach-model-alpha');
+  descendants(card).find(node => node.textContent === 'Remove').dispatch('click');
+  const save = descendants(container).find(node => node.textContent === 'Save settings');
+  assert.equal(core.store.dirty, true);
+  assert.equal(save.disabled, false);
+  save.dispatch('click');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(saved[0].models.alpha, undefined);
+});
+
 test('expanded model edits survive closing and save with the original values of other aliases', async () => {
   const { container, document, saved, cfg, core } = await renderer();
   const card = document.getElementById('reach-model-alpha');

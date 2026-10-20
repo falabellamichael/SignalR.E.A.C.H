@@ -1150,8 +1150,7 @@ def _cmd_web(client, history, _session, argument):
         tprint(c_yellow("  usage: /web <question>"))
         return SlashResult()
     try:
-        if history:
-            history.append({"role": "user", "content": argument})
+        # Web answers are standalone; do not append an unmatched user turn.
         from . import chat as chat_mod
         context = getattr(client, "studio_context", None)
         if context is not None and context.snapshot()["selected"] is not None:

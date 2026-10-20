@@ -1,4 +1,5 @@
 import { app, nativeTheme, BrowserWindow, ipcMain, dialog, shell, safeStorage, Notification } from 'electron';
+import { createPetWindowController } from './pet-window.mjs';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -120,6 +121,7 @@ const smokeProject = smokeRoot ? path.join(smokeRoot, 'project') : null;
 if (smokeRoot) app.setPath('userData', path.join(smokeRoot, 'profile'));
 
 let win = null;
+let petWindows = null;
 
 function publishFileLive(info) {
   try {
@@ -314,6 +316,7 @@ function setThemeChoice(input) {
   saveSettings({ ...current, theme: painted.theme, accent: painted.accent, tint: painted.tint });
   nativeTheme.themeSource = painted.scheme;
   if (win && !win.isDestroyed()) win.setBackgroundColor(painted.bg);
+  petWindows?.refreshTheme();
   return { theme: painted.theme, accent: painted.accent, tint: painted.tint, scheme: painted.scheme };
 }
 
@@ -869,6 +872,11 @@ async function dispatchAgentMessage({ id, text, attachmentIds = [], autoToken, m
 }
 
 function registerIpc() {
+  petWindows = createPetWindowController({rootDir, profile: app.getPath('userData'), getTheme: themeChoice, notify: state => { if (win && !win.isDestroyed()) win.webContents.send('pet:state', state); }});
+  ipcMain.handle('pet:command', (event, action, value) => {
+    if (event.sender !== win?.webContents && !petWindows.owns(event.sender)) throw new Error('Companion command not permitted');
+    return petWindows.command(event, action, value);
+  });
   ipcMain.handle('telemetry:sample', () => telemetry.sample());
   ipcMain.handle('telemetry:sources', () => loadSettings().telemetrySources || telemetryDefaults);
   ipcMain.handle('telemetry:saveSources', (_event, sources) => {
@@ -3036,6 +3044,7 @@ function createWindow({ show = true } = {}) {
     show: false,
     webPreferences: {
       preload: path.join(rootDir, 'preload.cjs'),
+      backgroundThrottling: false,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -3067,6 +3076,7 @@ app.whenReady().then(() => {
     const synced = settingsHub.applyStudio(stored, shared);
     if (synced === stored) return;
     saveSettings(synced);
+    petWindows?.refreshTheme();
     for (const [id, loop] of agentLoops) {
       if (loop.running || loop.autoRoute && getAgentStore().get(id)?.runState?.status === 'waiting_edits') loop.settingsStale = true;
       else agentLoops.delete(id);
@@ -5009,6 +5019,7 @@ app.whenReady().then(() => {
     return;
   }
   createWindow();
+  petWindows.restore();
 });
 
 app.on('window-all-closed', () => {
@@ -5022,6 +5033,7 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: !process.argv.includes('--smoke') });
 });
 app.on('before-quit', () => {
+  petWindows?.destroy();
   cliSettingsBridge?.stop();
   reachProcess.killAllRuns();
   mcpManager.closeAll();

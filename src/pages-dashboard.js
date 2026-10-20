@@ -376,8 +376,8 @@
             .then(data => {
                 result.className = 'reach-result ' + (data.ok ? 'reach-result-ok' : 'reach-result-error');
                 result.textContent = data.ok
-                    ? '✓ upstream replied in ' + core.fmtLatency(data.latency_ms) + ': ' + esc(data.reply)
-                    : '✗ ' + esc(data.error);
+                    ? '✓ upstream replied in ' + core.fmtLatency(data.latency_ms) + ': ' + data.reply
+                    : '✗ ' + data.error;
             })
             .catch(err => {
                 result.className = 'reach-result reach-result-error';

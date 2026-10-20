@@ -629,6 +629,11 @@
     "args": [],
     "returns": "Recoverable crew journal snapshots with partial member results, messages, nurse actions, and evidence"
   },
+  "pet:command": {
+    "module": "main.mjs",
+    "args": ["action: string", "value?: object | string"],
+    "returns": "Companion state or void; manage the isolated always-on-top pet window"
+  },
   "teams:closeRecoverable": {
     "module": "main.mjs",
     "args": ["runId: string"],

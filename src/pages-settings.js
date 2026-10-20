@@ -12,12 +12,14 @@
         console.error('[signal-reach] reach-core.js missing — re-run install.');
         return;
     }
-    const { el, esc, toast } = core;
-    const { pageHeader, emptyNote, publishNow, copyText } =
+    const { el, esc, toast, copyText } = core;
+    const { pageHeader, emptyNote, publishNow } =
         window.__reachPageWidgets;
 
     /* -------------------------------------------------------------- SETTINGS */
     function renderSettings(container) {
+        const modals = new Set();
+        let disposed = false;
         container.appendChild(pageHeader('fa-sliders', 'Settings',
             'Everything about the endpoint: relay, request policy, per-model '
             + 'tuning, rate limits, access, caching, observability, hosting.'));
@@ -320,6 +322,7 @@
         }
 
         function showNewKeyModal(keyObj) {
+            if (disposed) return;
             const overlay = el('div', 'reach-modal-overlay');
             const dialog = el('div', 'reach-modal-dialog');
             dialog.innerHTML = '<header class="reach-card-head">'
@@ -354,6 +357,7 @@
             foot.appendChild(closeBtn);
             dialog.appendChild(foot);
             overlay.appendChild(dialog);
+            modals.add(overlay);
             document.body.appendChild(overlay);
         }
 
@@ -362,6 +366,7 @@
         // ready-to-paste Base URL + key. Nothing account-bound ever leaves this
         // host: the remote client only receives an address and a random token.
         function showRemoteClientModal(info) {
+            if (disposed) return;
             const overlay = el('div', 'reach-modal-overlay');
             const dialog = el('div', 'reach-modal-dialog');
             const snippet =
@@ -418,6 +423,7 @@
             foot.appendChild(closeBtn);
             dialog.appendChild(foot);
             overlay.appendChild(dialog);
+            modals.add(overlay);
             document.body.appendChild(overlay);
         }
 
@@ -935,8 +941,6 @@
                 'Exposes /_reach/* beyond loopback. DANGEROUS.'));
             sy.appendChild(buildInput('number', 'system', 'log_rotation_mb', 'Log rotation (MB)'));
 
-            markDirty(false);
-
             // deep-link from the Models page: scroll to the requested alias
             const editPref = core.prefsGet('model-edit', '');
             if (editPref) {
@@ -980,9 +984,9 @@
                     core.saveSettings(parsed).then(({ ok, data }) => {
                         if (ok) {
                             toast('Imported ✓', 'ok');
-                            core.loadSettings().then(cfg => { draft = JSON.parse(JSON.stringify(cfg)); draw(); });
+                            core.loadSettings().then(cfg => { draft = JSON.parse(JSON.stringify(cfg)); markDirty(false); draw(); });
                         } else {
-                            toast('Import failed: ' + esc((data && data.error && data.error.message) || ''), 'error');
+                            toast('Import failed: ' + ((data && data.error && data.error.message) || ''), 'error');
                         }
                     });
                 } catch (err) {
@@ -1002,6 +1006,7 @@
                         toast('Reset ✓ (keys kept)', 'ok');
                         core.loadSettings().then(cfg => {
                             draft = JSON.parse(JSON.stringify(cfg));
+                            markDirty(false);
                             draw();
                         });
                     } else {
@@ -1023,16 +1028,17 @@
                     core.store.settings = data.settings || draft;
                     markDirty(false);
                 } else {
-                    toast('Save failed: ' + esc((data && data.error && data.error.message) || ''), 'error');
+                    toast('Save failed: ' + ((data && data.error && data.error.message) || ''), 'error');
                 }
             }).catch(err => toast('Save failed: ' + err.message, 'error'));
         });
 
         core.loadSettings().then(cfg => {
             if (cfg) draft = JSON.parse(JSON.stringify(cfg));
+            markDirty(false);
             draw();
         });
-        return () => {};
+        return () => { disposed = true; modals.forEach(modal => modal.remove()); modals.clear(); };
     }
 
     window.__reachPageRegistry.settings = renderSettings;

@@ -238,6 +238,20 @@
   async function profile() {
     const token = read(SESSION)?.accessToken;
     if (!token) { location.replace('login.html'); return; }
+    const baseUrl = $('#api-base-url');
+    if (baseUrl) {
+      baseUrl.value = ORIGIN + '/v1';
+      baseUrl.addEventListener('click', () => baseUrl.select());
+      $('#copy-api-base-url').addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(baseUrl.value);
+          text('#api-base-copy-status', 'API base URL copied.');
+        } catch {
+          baseUrl.focus(); baseUrl.select();
+          text('#api-base-copy-status', 'Clipboard unavailable. The URL is selected; copy it manually.');
+        }
+      });
+    }
     let secret = '', canCreate = false;
     const clearSecret = () => { secret = ''; text('#new-key-value', ''); $('#new-key').hidden = true; };
     function route() {

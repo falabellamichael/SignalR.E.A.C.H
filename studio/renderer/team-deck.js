@@ -120,6 +120,12 @@
       host.addEventListener('scroll', onScroll, { passive: true });
       window.addEventListener('resize', positionNav);
       geometry.observe(host); geometry.observe(anchor); geometry.observe(nav);
+      // Page-sized chat can keep the same width while its centering changes
+      // as Files/Browser or the navigation rail resizes. Watch the containing
+      // layout too, so the fixed rail follows those position-only changes.
+      for (let parent = host.parentElement; parent; parent = parent.parentElement) {
+        geometry.observe(parent);
+      }
       positionNav();
     }
     const modelControl = modelInfo.querySelector('.team-model-control');
