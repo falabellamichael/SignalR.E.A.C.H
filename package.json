@@ -4,5 +4,8 @@
   },
   "scripts": {
     "rch": "node RCH/scripts/credits.mjs"
+  },
+  "overrides": {
+    "ws": "^8.21.1"
   }
 }

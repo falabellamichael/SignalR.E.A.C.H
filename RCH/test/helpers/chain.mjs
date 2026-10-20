@@ -1,5 +1,5 @@
-import ganache from 'ganache';
-import { BrowserProvider, Contract, ContractFactory, getAddress } from 'ethers';
+import { createHardhatRuntimeEnvironment } from 'hardhat/hre';
+import { BrowserProvider, HDNodeWallet, Mnemonic, Contract, ContractFactory, getAddress } from 'ethers';
 import { compile } from '../../scripts/compile.mjs';
 
 export const build = await compile({ includeTests: true });
@@ -12,8 +12,22 @@ export const ceiling = 100000n * 10n ** 8n;
 export const saleUsdPriceE8 = 138_000_000n;
 export const send = async (pending) => (await pending).wait();
 
+// In-process Hardhat Network (EDR) chain: chainId 1337, shanghai, 6 funded accounts from the
+// standard Hardhat test mnemonic. getInitialAccounts() mirrors the old ganache helper shape.
+const mnemonic = 'test test test test test test test test test test test junk';
+const keys = Array.from({ length: 6 }, (_, i) => HDNodeWallet.fromMnemonic(Mnemonic.fromPhrase(mnemonic), `m/44'/60'/0'/0/${i}`));
+async function hardhatProvider() {
+  const hre = await createHardhatRuntimeEnvironment({ networks: { rch: { type: 'edr-simulated', chainId: 1337, hardfork: 'shanghai',
+    accounts: { mnemonic, count: 6 } } } });
+  const connection = await hre.network.connect({ network: 'rch' });
+  const rpc = connection.provider;
+  rpc.getInitialAccounts = () => Object.fromEntries(keys.map((k) => [k.address.toLowerCase(), { secretKey: k.privateKey }]));
+  rpc.disconnect = () => connection.close();
+  return rpc;
+}
+
 export async function chain(t, { payerIsAdminAndBuyer = false, treasuryAddress } = {}) {
-  const rpc = ganache.provider({ logging: { quiet: true }, chain: { chainId: 1337, hardfork: 'shanghai' }, wallet: { totalAccounts: 6 } });
+  const rpc = await hardhatProvider();
   const provider = new BrowserProvider(rpc, undefined, { cacheTimeout: -1 });
   const signers = await Promise.all([0, 1, 2, 3, 4, 5].map((i) => provider.getSigner(i)));
   const [deployer, adminSigner, buyerSigner, rewardMinter, treasury, other] = signers;
