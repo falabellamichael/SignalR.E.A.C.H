@@ -87,7 +87,7 @@
     },
     "appx": {
       "identityName": "SignalShare.SignalREACH",
-      "publisher": "CN=A2C38C33-71C8-466C-9340-DE594D1B5062",
+      "publisher": "CN=A2C3BC33-71C8-466C-9340-DE594D1B5062",
       "publisherDisplayName": "Signal Share",
       "displayName": "SignalREACH",
       "applicationId": "SignalREACH",
