@@ -8,7 +8,11 @@
       "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
-        { "type": "json", "path": "src/plugin.json", "jsonpath": "$.version" },
+        {
+          "type": "json",
+          "path": "src/plugin.json",
+          "jsonpath": "$.version"
+        },
         "server/reachd/const.py",
         "server/reachd.py",
         "server/reachd/__init__.py",
@@ -20,6 +24,7 @@
       "release-type": "node",
       "package-name": "reach-studio",
       "skip-github-release": true,
+      "last-release-sha": "b57e329e48034ee72f2c6db777db59acc043ba8d",
       "versioning": "always-bump-patch",
       "changelog-path": "CHANGELOG.md"
     }

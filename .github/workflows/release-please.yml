@@ -14,8 +14,6 @@ jobs:
     outputs:
       release-created: ${{ steps.release.outputs.release_created }}
       tag-name: ${{ steps.release.outputs.tag_name }}
-      studio-release-created: ${{ steps.release.outputs['studio--release_created'] }}
-      studio-tag-name: ${{ steps.release.outputs['studio--tag_name'] }}
     steps:
       - uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071  # v4 (SHA-pinned; Dependabot bumps)
         id: release
@@ -23,14 +21,16 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  # Studio skips its own GitHub release, so its Store .appx is attached to the
+  # core vX release alongside the suite installer.
   studio-store:
     needs: release-please
-    if: needs.release-please.outputs.studio-release-created == 'true'
+    if: needs.release-please.outputs.release-created == 'true'
     uses: ./.github/workflows/studio-store.yml
     permissions:
       contents: write
     with:
-      release-tag: ${{ needs.release-please.outputs.studio-tag-name }}
+      release-tag: ${{ needs.release-please.outputs.tag-name }}
 
   windows-suite:
     needs: release-please
