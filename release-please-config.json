@@ -1,6 +1,5 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
-  "last-release-sha": "b1c270d0f99281681744cef20f21b457a8dc4805",
   "packages": {
     ".": {
       "release-type": "simple",
@@ -18,15 +17,23 @@
         "server/reachd.py",
         "server/reachd/__init__.py",
         "src/reach-core.js",
-        "README.md"
+        "README.md",
+        {
+          "type": "json",
+          "path": "studio/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "studio/package-lock.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "studio/package-lock.json",
+          "jsonpath": "$.packages[''].version"
+        }
       ]
-    },
-    "studio": {
-      "release-type": "node",
-      "package-name": "reach-studio",
-      "skip-github-release": true,
-      "versioning": "always-bump-patch",
-      "changelog-path": "CHANGELOG.md"
     }
   }
 }

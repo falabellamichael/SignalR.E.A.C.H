@@ -75,7 +75,8 @@ def main():
         compiler = next((p for p in sorted(cache.glob('*/makensis.exe')) if (p.parent / 'Include' / 'MUI2.nsh').exists()), None)
     if not compiler or not compiler.is_file():
         parser.error('NSIS not found. Supply --makensis or build the app installers first.')
-    version = json.loads((ROOT / 'studio/package.json').read_text())['version']
+    # Suite releases share the core release version (version.txt), which Release Please also writes to studio/package.json.
+    version = (ROOT / 'version.txt').read_text().strip()
     output = out / f'SignalREACH Suite Setup {version}.exe'
     with tempfile.TemporaryDirectory(prefix='payload-', dir=out) as temporary:
         payload = Path(temporary)
