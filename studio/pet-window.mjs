@@ -6,24 +6,21 @@ const {atomicWriteJson}=createRequire(import.meta.url)('./agent/atomic-write.cjs
 
 export function createPetWindowController({rootDir,profile,notify,getTheme=()=>null}) {
  let window=null,state={enabled:false,kind:'cat',motion:true,activity:'idle',expanded:false},bounds=null;
- let dragSession=null,requestedBounds=null,anchorOffset={x:0,y:0};
+ let dragSession=null,requestedBounds=null;
  const file=path.join(profile,'desktop-pet.json');
  try{const saved=JSON.parse(fs.readFileSync(file,'utf8'));state={...state,enabled:saved.enabled===true,kind:['cat','owl','bulldog'].includes(saved.kind)?saved.kind:'cat',motion:saved.motion!==false,expanded:saved.expanded===true};bounds=saved.bounds;}catch{}
  const persist=()=>atomicWriteJson(file,{enabled:state.enabled,kind:state.kind,motion:state.motion,expanded:state.expanded,bounds});
  const publish=()=>{if(window&&!window.isDestroyed())window.webContents.send('pet:state',{...state,theme:getTheme()});notify({...state});};
- function fit(){
+ function fit({keepPosition=false}={}){
   if(!window||window.isDestroyed())return;
   const current=requestedBounds||window.getBounds();
-  const anchor=bounds||{x:current.x,y:current.y};
+  const anchor={x:current.x,y:current.y};
   const work=screen.getDisplayNearestPoint({x:Math.round(anchor.x+145),y:Math.round(anchor.y+90)}).workArea;
   const width=Math.min(state.expanded?420:290,work.width),height=Math.min(state.expanded?660:180,work.height);
-  // The saved coordinates always describe the pet, not the expanded chat.
-  const left=state.expanded&&anchor.x+width>work.x+work.width;
-  const up=state.expanded&&anchor.y+height>work.y+work.height;
-  const x=Math.round(Math.max(work.x,Math.min(anchor.x-(left?width-290:0),work.x+work.width-width)));
-  const y=Math.round(Math.max(work.y,Math.min(anchor.y-(up?height-180:0),work.y+work.height-height)));
-  anchorOffset={x:anchor.x-x,y:anchor.y-y};
-  state.expandUp=up;state.expandLeft=left;
+  // Preserve the collapsed window position. Shift only the overflow needed to
+  // fit the expanded window; the pet remains above the chat in every position.
+  const x=Math.round(Math.max(work.x,Math.min(anchor.x,work.x+work.width-width)));
+  const y=Math.round(Math.max(work.y,Math.min(anchor.y,work.y+work.height-height)));
   requestedBounds={x,y,width,height};
   window.setBounds(requestedBounds);
  }
@@ -38,7 +35,7 @@ export function createPetWindowController({rootDir,profile,notify,getTheme=()=>n
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
   window.webContents.on('will-navigate',event=>event.preventDefault());
   window.once('ready-to-show',()=>{if(window){window.showInactive();publish();}});
-  window.on('moved',()=>{if(window){const position=window.getBounds();const b={...requestedBounds,x:position.x,y:position.y};requestedBounds=b;bounds={x:b.x+anchorOffset.x,y:b.y+anchorOffset.y};persist();}});
+  window.on('moved',()=>{if(window){const position=window.getBounds();const b={...requestedBounds,x:position.x,y:position.y};requestedBounds=b;bounds={x:b.x,y:b.y};persist();}});
   window.on('closed',()=>{window=null;state.enabled=false;persist();notify({...state});});
   window.loadFile(path.join(rootDir,'renderer/pet-window.html'));
  }
@@ -70,7 +67,16 @@ export function createPetWindowController({rootDir,profile,notify,getTheme=()=>n
   }
   if(action==='get')return {...state};
   if(action==='ready'){publish();return {...state};}
-  if(action==='expand'){state.expanded=value===true;fit();persist();publish();if(state.expanded)window?.focus();return {...state};}
+  if(action==='expand'){
+   dragSession=null;
+   state.expanded=value===true;
+   if(window&&!window.isDestroyed()){
+    const current=requestedBounds||window.getBounds();
+    requestedBounds={...current,width:state.expanded?420:290,height:state.expanded?660:180};
+    window.setBounds(requestedBounds);
+   }
+   persist();publish();if(state.expanded)window?.focus();return {...state};
+  }
   if(action==='close'){state.enabled=false;persist();if(window)window.close();publish();return {...state};}
   if(action==='configure'){
    if(!value||typeof value!=='object')throw new Error('Invalid companion settings');

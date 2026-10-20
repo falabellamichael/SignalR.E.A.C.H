@@ -14,7 +14,7 @@
   // Keep the native scrollbar thumb and track interactive too.
   for(let el=event.target;el&&el!==document.body;el=el.parentElement){const r=el.getBoundingClientRect();if(el.scrollHeight>el.clientHeight&&event.clientX>=r.left+el.clientWidth)return;}
   end();
-  const session={id:event.pointerId,x:event.clientX,y:event.clientY,started:false,pending:false};drag=session;
+  const session={id:event.pointerId,x:event.screenX,y:event.screenY,started:false,pending:false};drag=session;
   document.body.setPointerCapture(event.pointerId);
   // Record the original desktop cursor before movement, without moving the window on a click.
   session.ready=window.petWindow.command('drag-start').catch(()=>{if(drag===session)end();});
@@ -22,7 +22,7 @@
  document.addEventListener('pointermove',async event=>{
   const session=drag;
   if(!session||session.id!==event.pointerId||session.pending)return;
-  if(!session.started&&Math.hypot(event.clientX-session.x,event.clientY-session.y)<4)return;
+  if(!session.started&&Math.hypot(event.screenX-session.x,event.screenY-session.y)<4)return;
   session.pending=true;
   try{
    await session.ready;

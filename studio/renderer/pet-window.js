@@ -79,7 +79,7 @@
    }
    if(state.kind)pet.select(state.kind);motion=state.motion!==false;
    if(state.activity && state.activity!==lastActivity){pet.setActivity(state.activity);lastActivity=state.activity;}
-   const wasExpanded=expanded;expanded=state.expanded===true;panel.hidden=!expanded;document.body.classList.toggle('expanded',expanded);document.body.classList.toggle('expand-up',expanded&&state.expandUp===true);document.body.classList.toggle('expand-left',expanded&&state.expandLeft===true);
+   const wasExpanded=expanded;expanded=state.expanded===true;panel.hidden=!expanded;document.body.classList.toggle('expanded',expanded);
    expand.setAttribute('aria-expanded',String(expanded));expand.setAttribute('aria-label',expanded?'Collapse mini-chat':'Expand mini-chat');expand.title=expanded?'Collapse mini-chat':'Expand mini-chat';
    if(expanded&&!wasExpanded)input.focus();
  });

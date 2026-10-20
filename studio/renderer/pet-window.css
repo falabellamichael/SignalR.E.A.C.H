@@ -8,13 +8,7 @@ body.pet-dragging{user-select:none;cursor:grabbing}
 /* Empty areas outside scroll viewports remain available for window dragging. */
 button,input,textarea,select,a,summary,label,[contenteditable=true],.companion-message>div:not(.companion-message-tools),.companion-response-details>div,.step-head,.step-output,.step-result,.steps-head,.app-connection-card p,.app-connection-card h3,#pet-status,#companion-progress,.companion-caption,.companion-toolbar strong,.companion-compose-actions span{-webkit-app-region:no-drag}
 .companion-message>div:not(.companion-message-tools),.companion-response-details>div,.step-output,.step-result{user-select:text}
-body>main{flex:0 0 156px;width:264px;align-self:flex-start}
-body.expand-left>main{align-self:flex-end}
-body.expand-up>main{order:2}
-body.expand-up #companion-panel{order:1;border-top:0;border-bottom:1px solid var(--line,#46533a);padding-top:0;padding-bottom:10px}
-body.expand-up #pet-expand,body.expand-up #pet-close{top:auto;bottom:153px}
-body.expanded:not(.expand-left) #pet-close{right:auto;left:259px}
-body.expand-left #pet-expand{left:auto;right:259px}
+body>main{flex:0 0 156px}
 #pet-close,#pet-expand{position:absolute;top:3px;width:24px;height:24px;display:grid;place-items:center;border:0;background:transparent;color:var(--text,#e5ecd7);font:18px/1 system-ui,sans-serif;padding:0;-webkit-app-region:no-drag;z-index:1}
 #pet-close{right:7px}
 #pet-expand{left:7px}

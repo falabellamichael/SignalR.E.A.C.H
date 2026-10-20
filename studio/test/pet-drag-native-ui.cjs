@@ -19,8 +19,8 @@ app.whenReady().then(async()=>{let ctl;try{
   await w.webContents.executeJavaScript("document.querySelector('#companion-messages').scrollTop=0");
   w.webContents.sendInputEvent({type:'mouseMove',...rect});await wheel(rect.x,rect.y,180);await delay(120);
   assert.ok(await w.webContents.executeJavaScript("document.querySelector('#companion-messages').scrollTop>0"));
-  w.webContents.sendInputEvent({type:'mouseDown',...rect,button:'left',clickCount:1});await delay(40);
-  w.webContents.sendInputEvent({type:'mouseMove',x:rect.x+20,y:rect.y+12,button:'left'});await delay(80);
+  await w.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mousePressed',...rect,button:'left',clickCount:1});await delay(40);
+  await w.webContents.debugger.sendCommand('Input.dispatchMouseEvent',{type:'mouseMoved',x:rect.x+20,y:rect.y+12,button:'left',buttons:1});await delay(80);
   assert.ok(calls.includes('drag-start'));assert.ok(calls.includes('drag-move'));
   await wheel(rect.x+20,rect.y+12,120);await delay(80);
   w.webContents.sendInputEvent({type:'mouseUp',x:rect.x+20,y:rect.y+12,button:'left',clickCount:1});
