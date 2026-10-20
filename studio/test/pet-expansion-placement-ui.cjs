@@ -1,5 +1,6 @@
 'use strict';
 const {app,BrowserWindow,ipcMain,screen}=require('electron');const assert=require('node:assert/strict');const fs=require('node:fs');const os=require('node:os');const path=require('node:path');const delay=ms=>new Promise(r=>setTimeout(r,ms));
+app.on('window-all-closed',()=>{});
 app.whenReady().then(async()=>{let ctl;try{
  const {createPetWindowController}=await import('../pet-window.mjs');
  const work=screen.getPrimaryDisplay().workArea;
