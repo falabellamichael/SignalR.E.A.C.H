@@ -29,6 +29,7 @@
     "dist": "npm run build:editor && electron-builder",
     "dist:mac": "npm run build:editor && electron-builder --mac",
     "dist:win": "npm run build:editor && electron-builder --win",
+    "dist:store": "npm run build:editor && electron-builder --win appx --publish never",
     "dist:linux": "npm run build:editor && electron-builder --linux",
     "check": "node scripts/check-syntax.cjs"
   },
@@ -83,6 +84,17 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Reach Studio"
+    },
+    "appx": {
+      "identityName": "SignalShare.SignalREACH",
+      "publisher": "CN=A2C38C33-71C8-466C-9340-DE594D1B5062",
+      "publisherDisplayName": "Signal Share",
+      "displayName": "SignalREACH",
+      "applicationId": "SignalREACH",
+      "backgroundColor": "transparent",
+      "languages": [
+        "en-US"
+      ]
     },
     "mac": {
       "target": [
