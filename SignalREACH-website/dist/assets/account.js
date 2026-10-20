@@ -10,6 +10,7 @@
   const clearSession = () => sessionStorage.removeItem(SESSION);
   const access = result => result.access || result.account?.access || result.data?.access || {};
   const accountDestination = result => access(result).website === true ? 'profile.html#info' : 'login.html?restricted=1';
+  let signIn = null, signInBusy = false;
   function walletDestination(value) {
     const url = new URL(value);
     if (url.origin !== ORIGIN || url.pathname !== '/wallet/connect' || url.username || url.password) throw new Error('The account service returned an unexpected destination.');
@@ -31,6 +32,7 @@
   }
   function showOnboarding() {
     $('#account-onboarding').hidden = false;
+    $('#account-signin').hidden = !!read(SESSION)?.accessToken;
     message('Profile access requires an active subscription or a verified wallet. Email verification alone does not unlock your profile.');
   }
   async function linkWallet() {
@@ -38,16 +40,15 @@
     const button = $('#account-link-wallet'); button.disabled = true;
     try {
       const result = await request('/v1/account/link-wallet', {}, read(SESSION)?.accessToken);
-      const url = walletDestination(result.loginUrl);
       // A bound-account flow does not exchange PKCE proof or replace this tab's session.
-      location.assign(url.href);
+      await prepareSignIn(result, true);
     } catch (error) { message(error.message); button.disabled = false; }
   }
   const encode = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const random = () => encode(crypto.getRandomValues(new Uint8Array(32)));
   async function request(path, body, token) {
     const response = await fetch(ORIGIN + path, {
-      method: body === undefined ? 'GET' : 'POST', credentials: 'omit', cache: 'no-store',
+      method: body === undefined ? 'GET' : 'POST', credentials: 'omit', cache: 'no-store', redirect: 'error',
       headers: { 'ngrok-skip-browser-warning': 'true', ...(body === undefined ? {} : {'Content-Type': 'application/json'}), ...(token ? {Authorization: `Bearer ${token}`} : {}) },
       ...(body === undefined ? {} : {body: JSON.stringify(body)})
     });
@@ -65,28 +66,139 @@
     if (!read(SESSION)?.accessToken) return;
     document.querySelectorAll('.nav-actions a[href="login.html"]').forEach(link => { link.href = 'profile.html'; link.textContent = 'Profile'; });
   }
+  async function prepareSignIn(result, linking = false) {
+    const url = walletDestination(result.loginUrl);
+    const flowId = new URLSearchParams(url.hash.slice(1)).get('flow');
+    if (!/^[a-f0-9]{64}$/.test(flowId || '') || (result.flowId && flowId !== result.flowId)) throw new Error('The account service returned an invalid sign-in flow.');
+    const config = await request('/v1/account/config');
+    if (!Number.isSafeInteger(config.chainId) || config.chainId < 1) throw new Error('The account service returned an invalid wallet network.');
+    signIn = {flowId, chainId: config.chainId, linking, challenge: null, address: null, verified: false};
+    $('#account-login-options').hidden = false;
+    $('#account-email-form').hidden = linking || config.emailLogin !== true;
+    $('#account-code-step').hidden = true;
+    $('#account-wallet-message').hidden = true;
+    $('#account-wallet-signin').textContent = 'Connect wallet';
+    $('#account-email-send').textContent = 'Email me a code';
+    $('#account-code').value = '';
+    $('#account-signin').hidden = true;
+    message(linking ? 'Connect and sign with the wallet to add it to your existing account.' : 'Choose email or connect your wallet. Sign-in stays on this site.');
+  }
+  async function finishSignIn(current) {
+    if (current !== signIn) return;
+    if (current.linking) {
+      const account = await request('/v1/account', undefined, read(SESSION)?.accessToken);
+      location.replace(accountDestination(account));
+      return;
+    }
+    const pending = read(PENDING);
+    if (!pending || pending.flowId !== current.flowId || Date.now() - pending.startedAt > 600000 || Date.parse(pending.expiresAt) <= Date.now()) {
+      const error = new Error('This sign-in expired. Start a new sign-in.');
+      error.status = 410; throw error;
+    }
+    if (!current.accessToken) {
+      const result = await request('/v1/auth/exchange', {flowId: pending.flowId, state: pending.state, codeVerifier: pending.codeVerifier});
+      if (!result.accessToken) throw new Error('Sign-in is still pending. Please try again.');
+      current.accessToken = result.accessToken;
+    }
+    sessionStorage.setItem(SESSION, JSON.stringify({accessToken: current.accessToken}));
+    const account = await request('/v1/account', undefined, current.accessToken);
+    sessionStorage.removeItem(PENDING);
+    location.replace(pending.subscribe ? 'subscription.html' : accountDestination(account));
+  }
+  const signInAction = action => async event => {
+    event?.preventDefault();
+    if (signInBusy || !signIn) return;
+    signInBusy = true;
+    const current = signIn;
+    const controls = ['#account-wallet-signin', '#account-email-send', '#account-code-verify'];
+    controls.forEach(id => { $(id).disabled = true; });
+    try {
+      if (current.verified) await finishSignIn(current);
+      else await action(current);
+    } catch (error) {
+      if (error.status === 410) {
+        signIn = null; sessionStorage.removeItem(PENDING);
+        $('#account-login-options').hidden = true; $('#account-signin').hidden = !!read(SESSION)?.accessToken;
+        $('#account-signin').disabled = false;
+        $('#account-link-wallet').disabled = false;
+      }
+      message(error.code === 4001 ? 'Wallet request cancelled. You can try again or use email.' : error.message || 'Sign-in could not be completed. Please retry.');
+    } finally {
+      signInBusy = false;
+      controls.forEach(id => { $(id).disabled = false; });
+    }
+  };
+  async function walletSignIn(current) {
+    if (!window.ethereum?.request) throw new Error('Use a browser with an Ethereum wallet extension, or sign in with email.');
+    const chainId = '0x' + current.chainId.toString(16);
+    if ((await window.ethereum.request({method: 'eth_chainId'})).toLowerCase() !== chainId) await window.ethereum.request({method: 'wallet_switchEthereumChain', params: [{chainId}]});
+    const accounts = await window.ethereum.request({method: 'eth_requestAccounts'});
+    const address = accounts?.[0];
+    if (!/^0x[0-9a-f]{40}$/i.test(address || '')) throw new Error('Choose an Ethereum wallet account.');
+    if (!current.challenge || current.address.toLowerCase() !== address.toLowerCase()) {
+      const challenge = await request('/v1/auth/challenge', {flowId: current.flowId, address});
+      // The server binds the message to this allowlisted website origin. Do not
+      // ask a wallet to sign a message naming the tunnel or another website.
+      const site = new URL(location.href);
+      const lines = typeof challenge.message === 'string' ? challenge.message.split('\n') : [];
+      if (lines[0] !== site.host + ' wants you to sign in with your Ethereum account:' || lines[1]?.toLowerCase() !== address.toLowerCase() || !lines.includes('URI: ' + site.origin + '/login.html') || !lines.includes('Chain ID: ' + current.chainId)) throw new Error('The account service must be updated to support wallet sign-in on this site. You can still use email.');
+      current.challenge = challenge; current.address = address;
+      $('#account-wallet-message').textContent = challenge.message;
+      $('#account-wallet-message').hidden = false;
+      $('#account-wallet-signin').textContent = 'Sign in with wallet';
+      message('Review the sign-in message, then choose Sign in with wallet. This does not approve a payment.');
+      return;
+    }
+    const encoded = '0x' + Array.from(new TextEncoder().encode(current.challenge.message), byte => byte.toString(16).padStart(2, '0')).join('');
+    const signature = await window.ethereum.request({method: 'personal_sign', params: [encoded, address]});
+    await request('/v1/auth/verify', {flowId: current.flowId, challengeId: current.challenge.challengeId, signature});
+    current.verified = true;
+    await finishSignIn(current);
+  }
+  async function sendEmail(current) {
+    const email = $('#account-email').value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter your email address.');
+    const result = await request('/v1/auth/email/start', {flowId: current.flowId, email});
+    if (!result.challengeId) throw new Error('The account service did not return an email challenge. Please retry.');
+    current.emailChallengeId = result.challengeId;
+    $('#account-code-step').hidden = false;
+    $('#account-email-send').textContent = 'Send a new code';
+    message('Check your email for an 8-digit code. It expires in 10 minutes.');
+  }
+  async function verifyEmail(current) {
+    const code = $('#account-code').value.replace(/\s/g, '');
+    if (!current.emailChallengeId) throw new Error('Request an email code first.');
+    if (!/^(?:\d{6}|\d{8})$/.test(code)) throw new Error('Enter the code from your email.');
+    await request('/v1/auth/email/verify', {flowId: current.flowId, challengeId: current.emailChallengeId, code});
+    current.verified = true;
+    await finishSignIn(current);
+  }
   async function startLogin() {
     const button = $('#account-signin');
+    if (button.disabled) return;
     button.disabled = true;
-    message('Preparing a secure sign-in. You will approve it on the REACH account page.');
+    message('Preparing a secure sign-in...');
     try {
       const state = random(), codeVerifier = random();
       const codeChallenge = encode(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier))));
       const result = await request('/v1/auth/start', {state, codeChallenge});
       if (!result.flowId || !result.loginUrl) throw new Error('The sign-in service returned an incomplete flow. Please retry.');
-      const url = new URL(result.loginUrl);
-      if (url.origin !== ORIGIN || url.pathname !== '/wallet/connect') throw new Error('The sign-in service returned an unexpected destination.');
+      walletDestination(result.loginUrl);
+      await prepareSignIn(result);
       sessionStorage.setItem(PENDING, JSON.stringify({flowId: result.flowId, state, codeVerifier, expiresAt: result.expiresAt, subscribe: new URLSearchParams(location.search).has('subscribe'), startedAt: Date.now()}));
-      const hash = new URLSearchParams(url.hash.slice(1));
-      hash.set('return', new URL('login.html', location.href).href);
-      url.hash = hash.toString();
-      location.assign(url.href);
-    } catch (error) { message(error.message); button.disabled = false; }
+    } catch (error) {
+      signIn = null; sessionStorage.removeItem(PENDING);
+      $('#account-login-options').hidden = true; button.hidden = false;
+      message(error.message); button.disabled = false;
+    }
   }
   async function login() {
     $('#account-signin')?.addEventListener('click', startLogin);
     $('#account-link-wallet')?.addEventListener('click', linkWallet);
     $('#account-check-access')?.addEventListener('click', () => location.reload());
+    $('#account-wallet-signin')?.addEventListener('click', signInAction(walletSignIn));
+    $('#account-email-form')?.addEventListener('submit', signInAction(sendEmail));
+    $('#account-code-form')?.addEventListener('submit', signInAction(verifyEmail));
     if (new URLSearchParams(location.search).has('restricted')) showOnboarding();
     const returning = new URLSearchParams(location.search).get('signed') === '1';
     if (returning) {
@@ -126,6 +238,20 @@
   async function profile() {
     const token = read(SESSION)?.accessToken;
     if (!token) { location.replace('login.html'); return; }
+    const baseUrl = $('#api-base-url');
+    if (baseUrl) {
+      baseUrl.value = ORIGIN + '/v1';
+      baseUrl.addEventListener('click', () => baseUrl.select());
+      $('#copy-api-base-url').addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(baseUrl.value);
+          text('#api-base-copy-status', 'API base URL copied.');
+        } catch {
+          baseUrl.focus(); baseUrl.select();
+          text('#api-base-copy-status', 'Clipboard unavailable. The URL is selected; copy it manually.');
+        }
+      });
+    }
     let secret = '', canCreate = false;
     const clearSecret = () => { secret = ''; text('#new-key-value', ''); $('#new-key').hidden = true; };
     function route() {

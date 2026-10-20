@@ -4,7 +4,7 @@ import {readFile, access} from 'node:fs/promises';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const pages=['index','platform','integrations','docs','about','download','subscription','login','profile'];
+const pages=['index','platform','integrations','docs','about','download','subscription','login','profile','privacy'];
 for(const page of pages){
  test(`${page}: structure, unique IDs, and local links`,async()=>{
    const html=await readFile(path.join(root,page+'.html'),'utf8');

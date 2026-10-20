@@ -7,25 +7,29 @@ const source = readFileSync(new URL('../assets/account.js', import.meta.url), 'u
 const pendingKey = 'signalreach.account.pending';
 const sessionKey = 'signalreach.account.session';
 const origin = 'https://unbent-semicolon-hermit.ngrok-free.dev';
+const flowId = 'a'.repeat(64);
+const started = () => ({body: {flowId, expiresAt: new Date(Date.now() + 600000).toISOString(), loginUrl: `${origin}/wallet/connect#flow=${flowId}`}});
+const configured = () => ({body: {chainId: 1, emailLogin: true}});
 const settle = () => new Promise(resolve => setTimeout(resolve, 30));
-function harness({search = '', stored = {}, responses = [], page = 'login'} = {}) {
+function harness({search = '', stored = {}, responses = [], page = 'login', ethereum} = {}) {
   const storage = new Map(Object.entries(stored));
   const calls = [], redirects = [], handlers = {};
   const nodes = new Map(['#account-signin', '#account-status', '#account-onboarding', '#account-link-wallet', '#account-check-access', '#subscription-checkout', '#account-retry', '#account-signout', '#profile-info', '#profile-api', '#profile-details', '#api-key-form', '#create-api-key', '#api-access-notice', '#new-key', '#new-key-value', '#copy-api-key', '#dismiss-api-key', '#api-key-list', '#account-id', '#account-email', '#account-wallet', '#account-created', '#api-key-name'].map(id => [id, {disabled: false, hidden: true, value: '', replaceChildren() {}, append() {}, textContent: '', addEventListener: (event, fn) => { handlers[id + event] = fn; }}]));
+  for (const id of ['#account-login-options', '#account-email-form', '#account-code-step', '#account-code-form', '#account-email', '#account-code', '#account-wallet-message', '#account-wallet-signin', '#account-email-send', '#account-code-verify']) nodes.set(id, {disabled: false, hidden: true, value: '', textContent: '', addEventListener: (event, fn) => { handlers[id + event] = fn; }});
   const context = {
     document: {body: {dataset: {page}}, createElement: () => ({append() {}}), querySelector: id => nodes.get(id), querySelectorAll: () => []},
-    window: {addEventListener() {}},
+    window: {addEventListener() {}, ethereum},
     sessionStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
     location: {href: `http://127.0.0.1:4173/login.html${search}`, pathname: '/login.html', search, assign: url => redirects.push(url), replace: url => redirects.push(url)},
     history: {replaceState() {}}, crypto: webcrypto, TextEncoder, Uint8Array, URL, URLSearchParams,
     btoa: value => Buffer.from(value, 'binary').toString('base64'),
-    fetch: async (url, options) => { calls.push({url, ...options}); const next = responses.shift(); if (!next) throw new Error('Unexpected request'); return {ok: next.status !== 410 && next.status !== 401, status: next.status || 200, json: async () => next.body}; }
+    fetch: async (url, options) => { calls.push({url, ...options}); const next = responses.shift(); if (!next) throw new Error('Unexpected request'); if (next.gate) await next.gate; if (next.error) throw next.error; return {ok: !next.status || next.status >= 200 && next.status < 300, status: next.status || 200, json: async () => next.body}; }
   };
   vm.runInNewContext(source, context);
-  return {storage, calls, redirects, nodes, click: id => handlers[id + 'click'](), submit: () => handlers['#api-key-formsubmit']({preventDefault() {}}), start: () => handlers['#account-signinclick']()};
+  return {storage, calls, redirects, nodes, click: id => handlers[id + 'click'](), submit: (id = '#api-key-form') => handlers[id + 'submit']({preventDefault() {}}), start: () => handlers['#account-signinclick']()};
 }
-test('fresh PKCE flow stores proof only in tab and hands off in the same tab', async () => {
-  const h = harness({responses: [{body: {flowId: 'fresh-flow', loginUrl: `${origin}/wallet/connect#flow=fresh-flow`}}]});
+test('fresh PKCE flow stays on the website and every account request skips the ngrok warning', async () => {
+  const h = harness({responses: [started(), configured()]});
   await h.start();
   const body = JSON.parse(h.calls[0].body), pending = JSON.parse(h.storage.get(pendingKey));
   assert.equal(h.calls[0].url, `${origin}/v1/auth/start`);
@@ -33,9 +37,15 @@ test('fresh PKCE flow stores proof only in tab and hands off in the same tab', a
   assert.match(body.codeChallenge, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(body.state, pending.state);
   assert.equal(Buffer.from(await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(pending.codeVerifier))).toString('base64url'), body.codeChallenge);
-  const url = new URL(h.redirects[0]), hash = new URLSearchParams(url.hash.slice(1));
-  assert.equal(hash.get('flow'), 'fresh-flow');
-  assert.equal(hash.get('return'), 'http://127.0.0.1:4173/login.html');
+  assert.equal(pending.flowId, flowId);
+  assert.deepEqual(h.redirects, []);
+  assert.equal(h.nodes.get('#account-login-options').hidden, false);
+  assert.equal(h.nodes.get('#account-email-form').hidden, false);
+  for (const call of h.calls) {
+    assert.equal(call.headers['ngrok-skip-browser-warning'], 'true');
+    assert.equal(call.redirect, 'error');
+    assert.equal(call.credentials, 'omit');
+  }
   assert.equal(h.storage.has(sessionKey), false);
 });
 test('return exchanges tab proof, validates account, and redirects to Profile', async () => {
@@ -118,12 +128,104 @@ test('subscription checkout without session starts sign-in and bound wallet link
   await guest.click('#subscription-checkout');
   assert.deepEqual(guest.redirects, ['login.html?subscribe=1']);
   assert.equal(guest.calls.length, 0);
-  const h = harness({stored: {[sessionKey]: JSON.stringify({accessToken: 'session'})}, responses: [{body: {access: {website: false}}}, {body: {loginUrl: `${origin}/wallet/connect#flow=bound`}}]});
+  const h = harness({stored: {[sessionKey]: JSON.stringify({accessToken: 'session'})}, responses: [{body: {access: {website: false}}}, {body: {loginUrl: `${origin}/wallet/connect#flow=${flowId}`}}, configured()]});
   await settle(); await h.click('#account-link-wallet');
   assert.equal(h.calls[1].url, `${origin}/v1/account/link-wallet`);
   assert.equal(JSON.parse(h.storage.get(sessionKey)).accessToken, 'session');
   assert.equal(h.storage.has(pendingKey), false);
+  assert.deepEqual(h.redirects, []);
+  assert.equal(h.nodes.get('#account-email-form').hidden, true);
 });
+test('email login verifies and exchanges proof with the warning header, then returns to subscription', async () => {
+  const h = harness({search: '?subscribe=1', responses: [started(), configured(), {body: {challengeId: 'email-challenge'}}, {body: {verified: true}}, {body: {accessToken: 'email-session'}}, {body: {access: {website: true}}}]});
+  await h.start();
+  h.nodes.get('#account-email').value = 'reader@example.test';
+  await h.submit('#account-email-form');
+  assert.equal(h.nodes.get('#account-code-step').hidden, false);
+  h.nodes.get('#account-code').value = '1234 5678';
+  await h.submit('#account-code-form');
+  assert.deepEqual(JSON.parse(h.calls[2].body), {flowId, email: 'reader@example.test'});
+  assert.deepEqual(JSON.parse(h.calls[3].body), {flowId, challengeId: 'email-challenge', code: '12345678'});
+  assert.equal(h.storage.has(pendingKey), false);
+  assert.equal(JSON.parse(h.storage.get(sessionKey)).accessToken, 'email-session');
+  assert.deepEqual(h.redirects, ['subscription.html']);
+  assert.ok(h.calls.every(call => call.headers['ngrok-skip-browser-warning'] === 'true'));
+});
+
+test('invalid email code stays retryable, and duplicate submissions do not send another code', async () => {
+  let release;
+  const h = harness({responses: [started(), configured(), {body: {challengeId: 'email-challenge'}, gate: new Promise(resolve => { release = resolve; })}, {status: 400, body: {error: {message: 'Invalid code'}}}, {body: {verified: true}}, {body: {accessToken: 'email-session'}}, {body: {access: {website: false}}}]});
+  await h.start(); h.nodes.get('#account-email').value = 'reader@example.test';
+  const sending = h.submit('#account-email-form');
+  await h.submit('#account-email-form');
+  assert.equal(h.calls.length, 3);
+  assert.equal(h.nodes.get('#account-code-verify').disabled, true);
+  release(); await sending;
+  h.nodes.get('#account-code').value = '12345678';
+  await h.submit('#account-code-form');
+  assert.match(h.nodes.get('#account-status').textContent, /Invalid code/);
+  assert.equal(h.nodes.get('#account-code-verify').disabled, false);
+  assert.equal(h.storage.has(sessionKey), false);
+  await h.submit('#account-code-form');
+  assert.deepEqual(h.redirects, ['login.html?restricted=1']);
+});
+
+test('approved sign-in retries a failed account read without reusing one-use proof or verifying again', async () => {
+  const h = harness({responses: [started(), configured(), {body: {challengeId: 'email'}}, {body: {}}, {body: {accessToken: 'session'}}, {error: new Error('Connection lost')}, {body: {access: {website: true}}}]});
+  await h.start(); h.nodes.get('#account-email').value = 'reader@example.test'; await h.submit('#account-email-form');
+  h.nodes.get('#account-code').value = '12345678'; await h.submit('#account-code-form');
+  assert.deepEqual(h.redirects, []);
+  await h.submit('#account-code-form');
+  assert.deepEqual(h.redirects, ['profile.html#info']);
+  assert.equal(h.calls.filter(call => call.url.endsWith('/v1/auth/exchange')).length, 1);
+  assert.equal(h.calls.filter(call => call.url.endsWith('/v1/auth/email/verify')).length, 1);
+});
+
+const address = '0x' + 'ab'.repeat(20);
+function walletFixture() {
+  const calls = [];
+  return {calls, request: async request => {
+    calls.push(request);
+    if (request.method === 'eth_chainId') return '0x1';
+    if (request.method === 'eth_requestAccounts') return [address];
+    if (request.method === 'personal_sign') return '0x1234';
+    throw new Error('Unexpected wallet method: ' + request.method);
+  }};
+}
+const messageFor = site => `${new URL(site).host} wants you to sign in with your Ethereum account:\n${address}\n\nURI: ${site}/login.html\nVersion: 1\nChain ID: 1\nNonce: fixture`;
+
+test('wallet reviews this website domain, signs only a login message, and exchanges without a tunnel navigation', async () => {
+  const ethereum = walletFixture();
+  const h = harness({ethereum, responses: [started(), configured(), {body: {challengeId: 'wallet-challenge', message: messageFor('http://127.0.0.1:4173')}}, {body: {}}, {body: {accessToken: 'wallet-session'}}, {body: {access: {website: true}}}]});
+  await h.start(); await h.click('#account-wallet-signin');
+  assert.equal(h.nodes.get('#account-wallet-message').hidden, false);
+  assert.equal(ethereum.calls.some(call => call.method === 'personal_sign'), false);
+  await h.click('#account-wallet-signin');
+  assert.equal(ethereum.calls.filter(call => call.method === 'personal_sign').length, 1);
+  assert.deepEqual(JSON.parse(h.calls[3].body), {flowId, challengeId: 'wallet-challenge', signature: '0x1234'});
+  assert.deepEqual(h.redirects, ['profile.html#info']);
+  assert.ok(ethereum.calls.every(call => ['eth_chainId', 'eth_requestAccounts', 'personal_sign'].includes(call.method)));
+});
+
+test('wallet rejects a message for the tunnel or a different website before asking for a signature', async () => {
+  for (const site of [origin, 'https://untrusted.example']) {
+    const ethereum = walletFixture();
+    const h = harness({ethereum, responses: [started(), configured(), {body: {challengeId: 'wallet-challenge', message: messageFor(site)}}]});
+    await h.start(); await h.click('#account-wallet-signin');
+    assert.equal(ethereum.calls.some(call => call.method === 'personal_sign'), false);
+    assert.deepEqual(h.redirects, []);
+    assert.match(h.nodes.get('#account-status').textContent, /account service must be updated/);
+  }
+});
+
+test('expired flow offers a fresh start and never exchanges or stores a session', async () => {
+  const h = harness({responses: [started(), configured(), {status: 410, body: {error: {message: 'Sign-in expired'}}}]});
+  await h.start(); h.nodes.get('#account-email').value = 'reader@example.test'; await h.submit('#account-email-form');
+  assert.equal(h.nodes.get('#account-signin').hidden, false);
+  assert.equal(h.nodes.get('#account-signin').disabled, false);
+  assert.equal(h.storage.has(sessionKey), false); assert.equal(h.storage.has(pendingKey), false);
+});
+
 test('profile and login permit only the explicit hosted account origin', () => {
   for (const name of ['login', 'profile']) {
     const html = readFileSync(new URL(`../${name}.html`, import.meta.url), 'utf8');
