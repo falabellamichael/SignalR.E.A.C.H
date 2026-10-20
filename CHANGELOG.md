@@ -1,5 +1,26 @@
 # Changelog
 
+## [26.10.8](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.7...v26.10.8) (2026-10-20)
+
+
+### Features
+
+* add Studio app connections, companion chat, and GPU tools ([09a0bf1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/09a0bf17370b072e7b2737b630541e4104ba4015))
+* **studio:** add animated team identities and draggable CLI companions ([836809f](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/836809fbf04de98c29ee56a9654632a6b1f33c65))
+* **studio:** add themed always-on-top companion window ([062b7bc](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/062b7bc0dff77f9b99f0fa9a68ef5dea85171cd2))
+* **studio:** build Microsoft Store AppX package and add privacy policy ([09a0329](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/09a0329548ad18f344340fe8a9ebe443fc97fa2c))
+
+
+### Bug Fixes
+
+* **deps:** override ws to ^8.21.1 in root and SimpleDAPP for security advisories ([c27a006](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c27a006740999167ddefd87db1cb81faa65e6182))
+* keep pet placement UI test alive between windows ([f70b0c2](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f70b0c232d3564e1e79beb2a898d9c4a252b308b))
+* **rch:** override tmp to ^0.2.7 for security advisory ([157a1a2](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/157a1a2cdfedc090f6ff158d3d411140c919670d))
+* stabilize companion window placement and dragging ([1794fb1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/1794fb1a5a5edb58c0879dbf414ad3eea7e7cd3e))
+* **studio:** correct Microsoft Store publisher ID ([bcb7a25](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/bcb7a25cf0dad47aa18ad31013cd6ed4969f417d))
+* **studio:** match project root resolver for file URL previews on Windows ([b2fa0ed](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b2fa0ed02d122a2c3d7f0e5220ec5c1a9f3abdbc))
+* **studio:** resolve real paths before static preview root check ([ed60eca](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ed60eca411653b6d9b0de36976e07d90ca84bec8))
+
 ## [26.10.7](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.6...v26.10.7) (2026-10-19)
 
 
