@@ -1,5 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "last-release-sha": "b57e329e48034ee72f2c6db777db59acc043ba8d",
   "packages": {
     ".": {
       "release-type": "simple",
@@ -24,7 +25,6 @@
       "release-type": "node",
       "package-name": "reach-studio",
       "skip-github-release": true,
-      "last-release-sha": "b57e329e48034ee72f2c6db777db59acc043ba8d",
       "versioning": "always-bump-patch",
       "changelog-path": "CHANGELOG.md"
     }
