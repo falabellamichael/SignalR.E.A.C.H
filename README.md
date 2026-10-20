@@ -1,6 +1,42 @@
 # SignalR.E.A.C.H
 
+[![GitHub Downloads (all releases)](https://img.shields.io/github/downloads/falabellamichael/SignalR.E.A.C.H/total?style=flat-square&logo=github&label=Downloads&color=2ea44f)](https://github.com/falabellamichael/SignalR.E.A.C.H/releases)
+[![GitHub Downloads (latest release)](https://img.shields.io/github/downloads/falabellamichael/SignalR.E.A.C.H/latest/total?style=flat-square&logo=github&label=Latest%20Release&color=0969da)](https://github.com/falabellamichael/SignalR.E.A.C.H/releases/latest)
+[![GitHub Release](https://img.shields.io/github/v/release/falabellamichael/SignalR.E.A.C.H?style=flat-square&logo=github&color=blue)](https://github.com/falabellamichael/SignalR.E.A.C.H/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](LICENSE)
+
 **REACH** = **R**AG **E**ndpoint & **A**I **C**hat **H**ost
+
+<p align="center">
+  <img src="assets/reach-studio-themes.webp" alt="REACH Studio Theme Switching — Tokyo Night, Emerald Dark, and Solarized Light" width="100%" />
+</p>
+
+<details>
+  <summary align="center"><b>🎨 View individual theme screenshots side-by-side (Click to expand)</b></summary>
+  <br/>
+  <table>
+    <tr>
+      <td align="center" width="33%">
+        <b>🌙 Tokyo Night</b><br/>
+        <a href="assets/studio-theme-tokyo-night.png">
+          <img src="assets/studio-theme-tokyo-night.png" alt="Tokyo Night Theme" />
+        </a>
+      </td>
+      <td align="center" width="33%">
+        <b>🌲 Emerald Dark</b><br/>
+        <a href="assets/studio-theme-dark.png">
+          <img src="assets/studio-theme-dark.png" alt="Emerald Dark Theme" />
+        </a>
+      </td>
+      <td align="center" width="33%">
+        <b>☀️ Solarized Light</b><br/>
+        <a href="assets/studio-theme-light.png">
+          <img src="assets/studio-theme-light.png" alt="Solarized Light Theme" />
+        </a>
+      </td>
+    </tr>
+  </table>
+</details>
 
 ## Workspace overview
 

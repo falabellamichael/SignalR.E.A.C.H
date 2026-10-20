@@ -1,5 +1,9 @@
 # REACH Studio
 
+<p align="center">
+  <img src="../assets/reach-studio-themes.webp" alt="REACH Studio Theme Switching — Tokyo Night, Emerald Dark, and Solarized Light" width="100%" />
+</p>
+
 REACH Studio is the standalone macOS, Windows, and Linux desktop app in this repository. It combines
 project files and editing, AI conversations, custom personas, and collaborating
 agent teams. It connects to a configured OpenAI-compatible endpoint, including
