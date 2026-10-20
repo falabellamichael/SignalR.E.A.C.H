@@ -6,7 +6,8 @@ GPU_MODELS = {
     "minicpm5-2b": ("openbmb/MiniCPM5-2B", 18004, "MiniCPM5 2B", "FP8", 0),
 }
 GPU_TP_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b"))
-GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 92960, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856}
+GPU_TOOL_MODELS = frozenset(("gemma-4-12b-qat",))
+GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 65536, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856}
 GPU_SAMPLING_DEFAULTS = {
     "ornith-1.5-9b": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
     "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
@@ -97,8 +98,9 @@ def dispatch(upstream, payload, state):
         else:
             if "max_completion_tokens" in data:
                 data["max_tokens"] = data.pop("max_completion_tokens")
-            for field in ("tools", "tool_choice", "parallel_tool_calls"):
-                data.pop(field, None)
+            if upstream[4:] not in GPU_TOOL_MODELS:
+                for field in ("tools", "tool_choice", "parallel_tool_calls"):
+                    data.pop(field, None)
             alias = upstream[4:]
             # All resident chat models use their native reasoning path.
             data["chat_template_kwargs"] = {"enable_thinking": True}
@@ -127,7 +129,7 @@ def deployment_defaults(spec_defaults):
         models[alias] = {**spec_defaults, "upstream": "gpu/" + alias,
                          "description": "%s — %s, %s, resident" % (name, precision, placement),
                          "context_window": GPU_CONTEXT_WINDOWS.get(alias, 8192), "max_tokens": None,
-                         "max_tokens_cap": 0, "allow_tools": False}
+                         "max_tokens_cap": 0, "allow_tools": alias in GPU_TOOL_MODELS}
     models.update({alias: {**spec_defaults, "upstream": "bridge/" + alias,
                           "description": "Provider browser chat (existing sign-in)",
                           "enabled": alias != "gemini-chat", "public": alias != "gemini-chat"}

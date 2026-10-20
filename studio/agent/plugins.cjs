@@ -9,6 +9,13 @@
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { gmailFetch, gmailRead, gmailSend, outlookFetch } = require('./mail-connections.cjs');
+const { readWeather, DEFAULT_WEATHER_URL } = require('./weather-connection.cjs');
+
+function pluginSettings(ctx) {
+  const settings = ctx.getSettings?.() || ctx.agentStore?.get(ctx.agentId)?.settings || {};
+  return { ...settings, plugins: ctx.getPlugins?.() || settings.plugins || {} };
+}
 
 const GITHUB_API = 'https://api.github.com';
 
@@ -33,6 +40,9 @@ function sanitizePlugins(input, current = {}) {
     enabled: gmIn.enabled !== undefined ? gmIn.enabled === true : gmCur.enabled !== false,
     email: typeof gmIn.email === 'string' ? gmIn.email.trim().slice(0, 128) : (gmCur.email || ''),
     password: typeof gmIn.password === 'string' ? gmIn.password.trim().slice(0, 512) : (gmCur.password || ''),
+    clientId: gmCur.clientId || '', clientSecret: gmCur.clientSecret || '',
+    accessToken: gmCur.accessToken || '', refreshToken: gmCur.refreshToken || '',
+    expiresAt: gmCur.expiresAt || 0, scope: gmCur.scope || '',
   };
 
   // 3. Outlook
@@ -44,6 +54,8 @@ function sanitizePlugins(input, current = {}) {
     password: typeof olIn.password === 'string' ? olIn.password.trim().slice(0, 512) : (olCur.password || ''),
   };
 
+  for(const id of require('./extra-apps.cjs').ids){const value=src[id]||{},previous=cur[id]||{};out[id]={...previous,enabled:value.enabled===undefined?previous.enabled===true:value.enabled===true};}
+  out.weather = { enabled: cur.weather?.enabled !== false, url: cur.weather?.url || DEFAULT_WEATHER_URL };
   return out;
 }
 
@@ -70,7 +82,9 @@ async function githubFetch(endpoint, token, options = {}) {
     ...(options.headers || {}),
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  const res = await fetch(url, { ...options, headers });
+  if (new URL(url).origin !== GITHUB_API) throw new Error('Invalid GitHub API endpoint.');
+  const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000);
+  const res = await fetch(url, { ...options, headers, signal, redirect: 'error' });
   const data = await res.json().catch(() => null);
   return { ok: res.ok, status: res.status, data };
 }
@@ -97,19 +111,13 @@ async function testPlugin(id, config = {}) {
   }
 
   if (id === 'gmail') {
-    const email = config.email || '';
-    const password = config.password || '';
-    if (!email || !email.includes('@')) return { ok: false, err: 'Enter a valid Gmail address.' };
-    if (!password) return { ok: false, err: 'Enter your Gmail App Password or API Token.' };
-    return { ok: true, email, note: 'Gmail credentials verified.' };
+    try { const profile = await gmailFetch(config, 'profile'); return { ok: true, email: profile.emailAddress, note: 'Gmail API connected.' }; }
+    catch (error) { return { ok: false, err: error.message }; }
   }
 
   if (id === 'outlook') {
-    const email = config.email || '';
-    const password = config.password || '';
-    if (!email || !email.includes('@')) return { ok: false, err: 'Enter a valid Outlook / Microsoft 365 address.' };
-    if (!password) return { ok: false, err: 'Enter your Outlook App Password or Token.' };
-    return { ok: true, email, note: 'Outlook credentials verified.' };
+    try { const profile = await outlookFetch(config, '?$select=mail,userPrincipalName'); return { ok: true, email: profile.mail || profile.userPrincipalName }; }
+    catch (error) { return { ok: false, err: error.message }; }
   }
 
   return { ok: false, err: `Unknown plugin ${id}` };
@@ -175,7 +183,7 @@ const PLUGIN_TOOLS = {
     help: 'Inspects a GitHub repository (stars, description, default branch, topics). If owner/repo are omitted, inspects the current workspace repository.',
     example: { action: 'github.repo', owner: 'owner', repo: 'name' },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
+      const settings = pluginSettings(ctx);
       const token = getGithubToken(settings);
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {
@@ -207,7 +215,7 @@ const PLUGIN_TOOLS = {
     help: 'Lists or searches issues in a GitHub repository. Options: state ("open"|"closed"|"all"), query (keyword), limit (default 10).',
     example: { action: 'github.issues', owner: 'owner', repo: 'name', state: 'open', limit: 10 },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
+      const settings = pluginSettings(ctx);
       const token = getGithubToken(settings);
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {
@@ -240,7 +248,7 @@ const PLUGIN_TOOLS = {
     help: 'Lists or inspects pull requests in a GitHub repository. Options: state ("open"|"closed"|"all"), pr_number (optional to inspect one PR in detail).',
     example: { action: 'github.prs', owner: 'owner', repo: 'name', state: 'open' },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
+      const settings = pluginSettings(ctx);
       const token = getGithubToken(settings);
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {
@@ -290,7 +298,7 @@ const PLUGIN_TOOLS = {
     help: 'Opens a new pull request on GitHub (requires title, head branch, base branch).',
     example: { action: 'github.create_pr', title: 'Feature update', head: 'feature-branch', base: 'main', body: 'Summary of changes' },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
+      const settings = pluginSettings(ctx);
       const token = getGithubToken(settings);
       if (!token) return { ok: false, error: 'GitHub connection / token required to create pull requests.' };
       let owner = args.owner, repo = args.repo;
@@ -321,6 +329,13 @@ const PLUGIN_TOOLS = {
     },
   },
 
+  'weather.current': {
+    class: 'browse', tier: 'reach', approval: false, budget: 15000,
+    help: 'Reads current conditions from The Weather Network city page. Uses the saved city when url is omitted. For another city, provide its exact current-weather page URL; do not guess a city or use data for the saved city as another location.',
+    example: { action: 'weather.current', url: DEFAULT_WEATHER_URL },
+    async execute(args, ctx) { return readWeather(pluginSettings(ctx).plugins.weather || {}, args, ctx.signal); },
+  },
+
   'gmail.send': {
     class: 'write',
     tier: 'reach',
@@ -329,18 +344,8 @@ const PLUGIN_TOOLS = {
     help: 'Sends an email via the configured Gmail account (requires recipient "to", "subject", "body").',
     example: { action: 'gmail.send', to: 'recipient@example.com', subject: 'Project update', body: 'Hello' },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
-      const gm = settings?.plugins?.gmail;
-      if (!gm?.email || !gm?.password) return { ok: false, error: 'Gmail plugin is not configured. Add credentials in Plugins & MCP.' };
-      if (!args.to || !args.subject || !args.body) return { ok: false, error: '"to", "subject", and "body" are required.' };
-      return {
-        ok: true,
-        delivered: true,
-        from: gm.email,
-        to: args.to,
-        subject: args.subject,
-        timestamp: new Date().toISOString(),
-      };
+      const settings = pluginSettings(ctx);
+      return gmailSend(settings.plugins.gmail || {}, args, ctx.signal);
     },
   },
 
@@ -352,16 +357,8 @@ const PLUGIN_TOOLS = {
     help: 'Searches or lists recent emails in the configured Gmail account.',
     example: { action: 'gmail.read', query: 'is:unread', limit: 5 },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
-      const gm = settings?.plugins?.gmail;
-      if (!gm?.email || !gm?.password) return { ok: false, error: 'Gmail plugin is not configured. Add credentials in Plugins & MCP.' };
-      return {
-        ok: true,
-        account: gm.email,
-        query: args.query || 'all',
-        messages: [],
-        note: 'Inbox connected.',
-      };
+      const settings = pluginSettings(ctx);
+      return gmailRead(settings.plugins.gmail || {}, args, ctx.signal);
     },
   },
 
@@ -373,18 +370,18 @@ const PLUGIN_TOOLS = {
     help: 'Sends an email via the configured Outlook account (requires recipient "to", "subject", "body").',
     example: { action: 'outlook.send', to: 'recipient@example.com', subject: 'Project update', body: 'Hello' },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
-      const ol = settings?.plugins?.outlook;
-      if (!ol?.email || !ol?.password) return { ok: false, error: 'Outlook plugin is not configured. Add credentials in Plugins & MCP.' };
-      if (!args.to || !args.subject || !args.body) return { ok: false, error: '"to", "subject", and "body" are required.' };
-      return {
-        ok: true,
-        delivered: true,
-        from: ol.email,
-        to: args.to,
-        subject: args.subject,
-        timestamp: new Date().toISOString(),
-      };
+      const settings = pluginSettings(ctx);
+      if (!args.to || !args.subject || !args.body || /[\r\n]/.test(args.to)) throw new Error('Recipient, subject and body are required.');
+      // Microsoft returns 202 with no JSON body when the send is accepted.
+      const config = settings.plugins.outlook;
+      if (config?.enabled === false || !config?.password) throw new Error('Connect Outlook with a Microsoft Graph OAuth token first.');
+      const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+        method: 'POST', redirect: 'error', signal: ctx.signal || AbortSignal.timeout(20000),
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.password },
+        body: JSON.stringify({ message: { subject: args.subject, body: { contentType: 'Text', content: args.body }, toRecipients: [{ emailAddress: { address: args.to } }] } }),
+      });
+      if (response.status !== 202) throw new Error(`Outlook returned HTTP ${response.status}. Check Mail.Send permissions and reconnect if needed.`);
+      return { ok: true, accepted: true, to: args.to, subject: args.subject };
     },
   },
 
@@ -396,18 +393,23 @@ const PLUGIN_TOOLS = {
     help: 'Searches or lists recent emails in the configured Outlook account.',
     example: { action: 'outlook.read', query: '', limit: 5 },
     async execute(args, ctx) {
-      const settings = (ctx.agentStore && ctx.agentId && ctx.agentStore.get(ctx.agentId)?.settings) || {};
-      const ol = settings?.plugins?.outlook;
-      if (!ol?.email || !ol?.password) return { ok: false, error: 'Outlook plugin is not configured. Add credentials in Plugins & MCP.' };
-      return {
-        ok: true,
-        account: ol.email,
-        messages: [],
-        note: 'Outlook connected.',
-      };
+      const settings = pluginSettings(ctx);
+      const params = new URLSearchParams({ '$top': String(Math.min(20, Math.max(1, Number(args.limit) || 5))), '$select': 'id,subject,from,receivedDateTime,bodyPreview,webLink' });
+      if (args.query) params.set('$search', '"' + String(args.query).replaceAll('"', '').slice(0, 400) + '"');
+      const result = await outlookFetch(settings.plugins.outlook, '/messages?' + params, { signal: ctx.signal });
+      return { ok: true, messages: result.value || [] };
     },
   },
 };
+
+Object.assign(PLUGIN_TOOLS,require('./extra-apps.cjs').TOOLS);
+for (const [name, tool] of Object.entries(PLUGIN_TOOLS)) {
+  const execute = tool.execute;
+  tool.execute = async (args, ctx) => {
+    if (pluginSettings(ctx).plugins[name.split('.')[0]]?.enabled === false) return { ok: false, error: 'This app connection is disabled.' };
+    return execute(args, ctx);
+  };
+}
 
 module.exports = {
   sanitizePlugins,

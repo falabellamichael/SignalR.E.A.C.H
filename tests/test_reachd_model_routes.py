@@ -15,6 +15,26 @@ from tests.test_reachd_access import RelayFixture, TUNNEL
 
 
 class PrivateModelRouteTests(unittest.TestCase):
+    def test_gemma_tools_and_tool_result_history_reach_the_native_endpoint(self):
+        tools = [{"type": "function", "function": {"name": "get_weather",
+                  "parameters": {"type": "object"}}}]
+        calls = [{"id": "weather-1", "type": "function", "function": {
+                  "name": "get_weather", "arguments": '{"location":"Toronto"}'}}]
+        payload = {"messages": [{"role": "user", "content": "Weather in Toronto?"},
+                                {"role": "assistant", "content": None, "tool_calls": calls},
+                                {"role": "tool", "tool_call_id": "weather-1", "content": "12 C"}],
+                   "tools": tools, "tool_choice": "auto", "parallel_tool_calls": False}
+        before = copy.deepcopy(payload)
+        url, body, headers, _ = model_routes.dispatch("gpu/gemma-4-12b-qat", payload, None)
+        self.assertEqual(url, "http://127.0.0.1:18001/v1/chat/completions")
+        self.assertEqual(payload, before)
+        for field in ("messages", "tools", "tool_choice", "parallel_tool_calls"):
+            self.assertEqual(body[field], before[field])
+        self.assertNotIn("Authorization", headers)
+        defaults = model_routes.deployment_defaults({})
+        self.assertTrue(defaults["gemma-4-12b-qat"]["allow_tools"])
+        self.assertFalse(defaults["minicpm5-2b"]["allow_tools"])
+
     def test_gpu_output_defaults_to_available_context_and_preserves_explicit_limits(self):
         defaults = model_routes.deployment_defaults({})
         for alias in model_routes.GPU_MODELS:

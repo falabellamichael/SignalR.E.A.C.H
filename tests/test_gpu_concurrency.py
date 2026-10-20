@@ -22,6 +22,51 @@ def load(name):
 
 
 class ConcurrencyTests(unittest.TestCase):
+    def test_gemma_context_is_64k_and_matches_relay(self):
+        launch = load("launch_services")
+        spec = importlib.util.spec_from_file_location("context_model_routes", ROOT.parents[1] / "server/reachd/model_routes.py")
+        routes = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(routes)
+        self.assertEqual(launch.CHAT_CONTEXT_WINDOWS["gemma"], 65536)
+        self.assertEqual(routes.GPU_CONTEXT_WINDOWS["gemma-4-12b-qat"], 65536)
+
+    def test_gemma_adoption_requires_tool_parser_and_template_without_restarting(self):
+        launch = load("launch_services")
+        key = "gemma"
+        _, gpu, port, fraction, extra = launch.SERVICES[key]
+        command = ["--tensor-parallel-size", "2", "--max-model-len", str(launch.CHAT_CONTEXT_WINDOWS[key]),
+                   "--max-num-seqs", str(launch.CHAT_MAX_SEQUENCES[key]), "--dtype", "bfloat16",
+                   "--gpu-memory-utilization", str(fraction),
+                   "--speculative-config", json.dumps(launch.CHAT_SPECULATIVE_CONFIGS[key]),
+                   "--max-num-batched-tokens", str(launch.CHAT_PREFILL_TOKENS[key]),
+                   "--compilation-config", json.dumps(launch.chat_decode_config(key)), *extra]
+        details = {"Config": {"Labels": {"io.signalreach.deployment": launch.DEPLOYMENT},
+                              "Cmd": command, "Env": [f"ROCR_VISIBLE_DEVICES={gpu}", "GPU_MAX_HW_QUEUES=1",
+                                                       "OMP_NUM_THREADS=1", "VLLM_USE_V2_MODEL_RUNNER=1"]},
+                   "HostConfig": {"Binds": [f"{launch.HSA_OVERRIDE}:/opt/rocm-7.2.3/lib/libhsa-runtime64.so.1.18.0:ro",
+                                              f"{launch.RCCL_OVERRIDE}:/opt/rocm-7.2.3/lib/librccl.so.1.0.70203:ro"],
+                                  "Memory": launch.HOST_MEMORY_LIMIT_BYTES, "MemorySwap": launch.HOST_MEMORY_LIMIT_BYTES,
+                                  "OomScoreAdj": 500, "RestartPolicy": {"Name": "unless-stopped"}},
+                   "State": {"Status": "running"}}
+        manifest = {"models": [{"name": "gemma4-12b-qat", "repository": "gemma-test"}]}
+        for missing in (None, "--enable-auto-tool-choice", "--tool-call-parser", "--chat-template"):
+            candidate = json.loads(json.dumps(details))
+            if missing:
+                index = candidate["Config"]["Cmd"].index(missing)
+                del candidate["Config"]["Cmd"][index:index + (1 if missing == "--enable-auto-tool-choice" else 2)]
+            result = unittest.mock.Mock(returncode=0, stdout=json.dumps([candidate]))
+            with self.subTest(missing=missing), patch.object(launch, "check_weights"), \
+                    patch.object(launch, "docker", return_value=result) as docker, \
+                    patch.object(launch, "wait_ready") as ready, contextlib.redirect_stdout(io.StringIO()):
+                if missing:
+                    with self.assertRaisesRegex(RuntimeError, "tool|template"):
+                        launch.start(key, manifest)
+                    ready.assert_not_called()
+                else:
+                    launch.start(key, manifest)
+                    ready.assert_called_once_with("reach-gemma", port)
+                docker.assert_called_once_with("container", "inspect", "reach-gemma", check=False)
+
     def test_sustained_requests_refill_slots_and_report_errors(self):
         bench = load("benchmark_concurrency")
         active = peak = calls = 0

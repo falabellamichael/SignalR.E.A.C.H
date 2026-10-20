@@ -55,6 +55,7 @@ for (const id of ['tab-settings']) {
 document.addEventListener('click', e => { if (!e.target.closest('.settings-menu')) closeSettingsMenus(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSettingsMenus(); });
 
+let appConnectionsPanel = null;
 async function openSettingsPanel(panel) {
   const sequence = ++settingsOpenSequence;
   closeSettingsMenus();
@@ -77,6 +78,10 @@ async function openSettingsPanel(panel) {
     // Same principle: reload the card draft and handshake status so the panel
     // reflects what the manager would actually run, not a stale snapshot.
     window.ReachMcpPanel?.open?.();
+  }
+  if (panel === 'apps') {
+    appConnectionsPanel ||= window.ReachAppConnections.mount($('#studio-app-connections'), (action, value) => reachApi.appConnections.command(action, value));
+    await appConnectionsPanel.refresh();
   }
   const agent = currentAgent ? await reachApi.agents.get(currentAgent.id) : null;
   if (sequence !== settingsOpenSequence) return;

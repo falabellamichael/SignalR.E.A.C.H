@@ -1,5 +1,17 @@
 <!doctype html>
-<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"><title>REACH companion</title><link rel="stylesheet" href="pet-window.css"></head><body>
+<html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"><title>REACH companion</title><link rel="stylesheet" href="pet-window.css"><link rel="stylesheet" href="app-connections.css"><link rel="stylesheet" href="companion-activity.css"></head><body>
 <button id="pet-close" aria-label="Close companion" title="Close companion">&times;</button>
+<button id="pet-expand" aria-label="Expand mini-chat" aria-expanded="false" aria-controls="companion-panel" title="Expand mini-chat">&gt;</button>
 <main><div id="pet-drag" title="Drag companion"><canvas width="264" height="72" aria-label="CLI companion"></canvas></div><p id="pet-status" role="status"></p><div id="pet-care"><button data-care="feed">Feed</button><button data-care="pet">Pat</button><button data-care="treat">Treat</button></div></main>
-<script src="cli-pet-frames.js"></script><script src="cli-pet.js"></script><script src="pet-window.js"></script></body></html>
+<section id="companion-panel" hidden aria-label="Companion mini-chat">
+ <header class="companion-toolbar"><strong>REACH</strong><div role="tablist" aria-label="Companion view"><button id="companion-chat-tab" role="tab" aria-selected="true" aria-controls="companion-chat">Chat</button><button id="companion-connections-tab" role="tab" aria-selected="false" aria-controls="companion-connections">Connections</button><button id="companion-workspace-tab" role="tab" aria-selected="false" aria-controls="companion-workspace">Workspace</button></div></header>
+ <section id="companion-chat" role="tabpanel" aria-labelledby="companion-chat-tab">
+  <div class="companion-actions"><button id="companion-new">New chat</button><button id="companion-open">Open in Studio ↗</button></div>
+  <div id="companion-messages" aria-label="Conversation"></div>
+  <p id="companion-progress" role="status" aria-live="polite"></p>
+  <form id="companion-form"><label class="sr-only" for="companion-input">Message</label><textarea id="companion-input" rows="2" maxlength="40000" placeholder="Ask anything…" aria-describedby="companion-model"></textarea><div class="companion-compose-actions"><span id="companion-model">Uses your active Studio model</span><button id="companion-stop" type="button" hidden>Stop</button><button id="companion-send" type="submit">Send ↗</button></div></form>
+ </section>
+ <section id="companion-workspace" role="tabpanel" aria-labelledby="companion-workspace-tab" hidden><p class="companion-caption">Choose a saved REACH Studio project folder. Switching starts a fresh chat; previous chats stay in Studio history. Connected-app permissions remain unchanged.</p><p id="companion-workspace-current" class="companion-caption"></p><button id="companion-workspace-refresh" type="button">Refresh projects</button><div id="companion-projects" aria-live="polite"></div></section>
+ <section id="companion-connections" role="tabpanel" aria-labelledby="companion-connections-tab" hidden><p class="companion-caption">Give your assistant access to the apps you choose.</p><div id="companion-app-connections"></div></section>
+</section>
+<script src="cli-pet-frames.js"></script><script src="cli-pet.js"></script><script src="markdown.js"></script><script src="app-connections.js"></script><script src="activity-state.js"></script><script src="companion-activity.js"></script><script src="pet-window.js"></script><script src="pet-drag.js"></script></body></html>

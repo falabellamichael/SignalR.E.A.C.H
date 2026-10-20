@@ -421,6 +421,45 @@ charcoal theme and a warm Solarized light theme with ivory backgrounds, white
 writing surfaces, and amber accents. The preference persists across launches and
 updates open editors without losing edits, selections, or undo history.
 
+## Companion mini-chat and App Connections
+
+Enable **Settings → Appearance → Show always-on-top CLI pet**, then press **>**
+on the pet to expand its mini-chat. Enter sends; Shift+Enter inserts a newline.
+Stop cancels the reply. Drafts and expansion state survive closing the pet, and
+sent conversations remain in Studio history. **Open in Studio** opens the same
+conversation. The companion uses the active Studio model and the existing chat
+engine, with tools limited to the app connections below.
+
+Open **Connections** in the pet or **Settings → App Connections** in Studio:
+
+- **The Weather Network:** reads the public current-weather page for a saved
+  city (Toronto by default). Paste another city's current-weather URL in Set up.
+  Results include the source URL and the retrieval time. This is a website reader,
+  so a change to the site's markup or availability can require an update.
+- **Gmail:** enable Gmail API in a Google Cloud project, configure its consent
+  screen, create a **Desktop app** OAuth client, then save its client ID and
+  optional client secret under Set up. Add your account as a test user when the
+  Google app is in testing. **Connect Google** opens the system browser and
+  requests read access; sending is optional and each send also requires Studio's
+  approval. Matching mail content is sent to the model when the assistant reads
+  it. Google tokens use the OS credential vault; connecting requires an unlocked
+  vault. Disconnect removes local tokens; revoke the grant in Google Account
+  security settings to remove Google's authorization too.
+- **GitHub:** use a personal access token or an existing `gh auth login` session
+  for repository, issue and pull request inspection.
+- **Outlook / Microsoft 365:** accepts a Microsoft Graph OAuth access token with
+  `Mail.Read`. This connection requires replacing an expired token; it does not
+  provide an automatic Microsoft sign-in flow.
+
+**Check** contacts the service. Saved credentials alone do not show Connected.
+Gmail and Outlook app passwords are not OAuth API access tokens. Add other
+services through the existing **MCP servers** settings for full Studio agents.
+
+For a manual check, run Studio from source, enable the pet, expand **>**, and ask
+“What is the weather in Toronto? Use The Weather Network.” Confirm that a sourced
+answer appears, collapse and reopen the pet, then use **Open in Studio** to see
+the same saved conversation. App sign-in requires your own account consent.
+
 ## Native Reach compiler integration (Docker-free)
 
 Projects and the Home mini Projects panel run ordinary project commands directly

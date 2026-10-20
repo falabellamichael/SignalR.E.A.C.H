@@ -74,6 +74,8 @@ const { resolveEndpoint, providerRequestOptions, isLoginProvidersEndpoint } = re
 const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
 const { testPlugin, getGitInfo, sanitizePlugins } = require('./agent/plugins.cjs');
+const { createAppConnections } = require('./agent/app-connections.cjs');
+const { createCompanionChat, companionSettings, companionPrompt } = require('./agent/companion-chat.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 let cliSettingsBridge = null;
@@ -122,6 +124,8 @@ if (smokeRoot) app.setPath('userData', path.join(smokeRoot, 'profile'));
 
 let win = null;
 let petWindows = null;
+let companionChat = null;
+let appConnections = null;
 
 function publishFileLive(info) {
   try {
@@ -714,6 +718,7 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
   await capabilityStore.discover(selectedConnection?.id || '', endpoint, accessKey);
 
   const budgets = resolveBudgets(settings, agent.settings);
+  const isCompanion = agent.settings?.companion === true;
   const loop = new AgentLoop({
     agentId,
     store,
@@ -733,14 +738,22 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     featureMask: autoRoute?.features || null,
     /* MCP servers configured in Settings → MCP. The loop lazily loads their
      * tools once per run and routes `<server>__<tool>` calls to the manager. */
-    mcpManager,
+    mcpManager: isCompanion ? null : mcpManager,
+    nativeTools: isCompanion,
+    getPlugins: () => loadSettings().plugins || {},
+    settingsTransform: isCompanion ? controls => companionSettings(controls, loadSettings().plugins) : null,
+    promptBuilder: isCompanion ? companionPrompt : null,
     projectDir: agent.dir,
     reachExecutor: createReachToolExecutor(),
     browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
     sendEvent: (channel, payload) => {
+      companionChat?.event(channel, payload);
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },
-    requestApproval: payload => requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs),
+    requestApproval: payload => {
+      if (isCompanion && win && !win.isDestroyed()) { win.show(); win.focus(); }
+      return requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs);
+    },
     auditLog: getAuditLog(),
     requestEditReview: (edit) => {
       store.addPendingEdit(agentId, edit);
@@ -872,10 +885,50 @@ async function dispatchAgentMessage({ id, text, attachmentIds = [], autoToken, m
 }
 
 function registerIpc() {
+  appConnections = createAppConnections({ getSettings: loadSettings, saveSettings, openExternal: url => shell.openExternal(url) });
+  companionChat = createCompanionChat({ profile: app.getPath('userData'), getStore: getAgentStore, getProjects: loadProjects,
+    getLoop: id => getAgentLoop(id, { newTurn: true }),
+    stopLoop: id => agentLoops.get(id)?.stop(),
+    openStudio: async id => {
+      if (!win || win.isDestroyed()) return;
+      win.show(); win.focus(); win.webContents.send('companion:open', { agentId: id });
+    },
+    notify: payload => petWindows?.send('companion:event', payload),
+  });
   petWindows = createPetWindowController({rootDir, profile: app.getPath('userData'), getTheme: themeChoice, notify: state => { if (win && !win.isDestroyed()) win.webContents.send('pet:state', state); }});
   ipcMain.handle('pet:command', (event, action, value) => {
     if (event.sender !== win?.webContents && !petWindows.owns(event.sender)) throw new Error('Companion command not permitted');
     return petWindows.command(event, action, value);
+  });
+  const requireAppSender = event => {
+    if (event.sender !== win?.webContents && !petWindows.owns(event.sender)) throw new Error('App connection command not permitted.');
+  };
+  ipcMain.handle('companion:command', async (event, action, value) => {
+    requireAppSender(event);
+    try { return await companionChat.command(action, value); } catch (error) { return { ok: false, err: error.message }; }
+  });
+  ipcMain.handle('companion:link', async (event, value) => {
+    requireAppSender(event);
+    const url = new URL(String(value));
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Only web links can be opened.');
+    await shell.openExternal(url.href);
+  });
+  ipcMain.handle('app-connections:command', async (event, action, value = {}) => {
+    requireAppSender(event);
+    try {
+      if (action === 'list') return { ok: true, items: appConnections.catalog() };
+      if (action === 'save') return { ok: true, items: appConnections.save(value.id, value.patch) };
+      if (action === 'check') return { ok: true, items: await appConnections.check(value.id) };
+      if (action === 'disconnect') return { ok: true, items: appConnections.disconnect(value.id) };
+      if (action === 'gmail-connect') return { ok: true, items: await appConnections.connectGmail({ allowSend: value.allowSend === true }) };
+      if (action === 'gmail-cancel') { appConnections.cancel(); return { ok: true, items: appConnections.catalog() }; }
+      if (action === 'help') {
+        const item = appConnections.catalog().find(item => item.id === value.id);
+        if (item?.helpUrl) await shell.openExternal(item.helpUrl);
+        return { ok: true };
+      }
+      throw new Error('Unknown app connection action.');
+    } catch (error) { return { ok: false, err: error.message }; }
   });
   ipcMain.handle('telemetry:sample', () => telemetry.sample());
   ipcMain.handle('telemetry:sources', () => loadSettings().telemetrySources || telemetryDefaults);
@@ -910,7 +963,7 @@ function registerIpc() {
   ipcMain.handle('settings:get', () => {
     const settings = loadSettings();
     const { jevApiKey, ...publicSettings } = hostedAccount.sanitize(settings);
-    return { ...publicSettings, settingsRevision: settingsRevision(settings), settingsRevisions: settingsRevisions(settings), jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
+    return { ...publicSettings, plugins: require('./agent/extra-apps.cjs').publicPlugins(publicSettings.plugins), settingsRevision: settingsRevision(settings), settingsRevisions: settingsRevisions(settings), jevKeyConfigured: !!(jevApiKey || process.env.TYPESAFE_API_KEY),
       jevKeySource: jevApiKey ? 'saved' : process.env.TYPESAFE_API_KEY ? 'environment' : '' };
   });
   ipcMain.handle('engines:report', () => engines.getLedger().report());
@@ -960,13 +1013,13 @@ function registerIpc() {
   ipcMain.handle('mcp:test', async (_e, serverId) => testMcpServer(serverId));
   ipcMain.handle('plugins:get', () => {
     const settings = loadSettings();
-    return settings.plugins || { github: { enabled: true }, gmail: { enabled: true }, outlook: { enabled: true } };
+    return require('./agent/extra-apps.cjs').publicPlugins(settings.plugins || { github: { enabled: true }, gmail: { enabled: true }, outlook: { enabled: true } });
   });
   ipcMain.handle('plugins:save', (_e, patch) => {
     const current = loadSettings();
     const plugins = sanitizePlugins(patch, current.plugins);
     saveSettings({ ...current, plugins });
-    return { ok: true, plugins };
+    return { ok: true, plugins: require('./agent/extra-apps.cjs').publicPlugins(plugins) };
   });
   ipcMain.handle('plugins:test', async (_e, { id, config }) => {
     const settings = loadSettings();
@@ -5033,6 +5086,7 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: !process.argv.includes('--smoke') });
 });
 app.on('before-quit', () => {
+  appConnections?.destroy();
   petWindows?.destroy();
   cliSettingsBridge?.stop();
   reachProcess.killAllRuns();

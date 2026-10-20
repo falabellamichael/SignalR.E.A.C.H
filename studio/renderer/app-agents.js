@@ -219,6 +219,13 @@ function rememberNewChatDraft() {
   });
 }
 
+reachApi.onCompanionOpen?.(async ({ agentId }) => {
+  try {
+    await showTab('agents');
+    if (agentId) await selectAgent({ id: agentId }, { preserveEditors: true });
+  } catch (error) { showNotice(error.message); }
+});
+
 async function selectAgent(a, { preserveEditors = false } = {}) {
   closeComposerSuggestions();
   invalidateComposerCatalog();

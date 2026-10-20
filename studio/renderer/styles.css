@@ -1515,10 +1515,7 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
 .theme-tint input { flex: 1; accent-color: var(--gold); }
 .theme-tint span { width: 22px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
 .statusbar { align-items: center; min-width: 0; }
-#reach-version { max-width: 240px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .brand { flex-shrink: 0; }
-@media (max-width: 1200px) { #reach-version { display: none; } }
-
 /* VS Code-style activity timeline, using both Studio palettes. */
 #activity-global { display: flex; align-items: center; gap: 7px; white-space: nowrap; color: var(--gold); }
 #activity-global[hidden] { display: none; }
@@ -1778,7 +1775,6 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
    are, and picking one the active endpoint does not serve fails confusingly at
    request time. */
 .model-source { font-size: 12px; margin: 2px 0 10px; }
-
 /* Reserve headroom for tall top pieces throughout the animation, not just at rest. */
 .team-bot:not([data-animation="none"]) .bot-motion-frame { transform-origin: 32px 32px; transform: scale(.86); }
 /* Animate internal SVG parts so portraits stay inside their fixed-size tiles. */

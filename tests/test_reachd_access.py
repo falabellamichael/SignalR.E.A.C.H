@@ -428,6 +428,21 @@ class KeyManagementApiTests(RelayFixture):
         body = json.loads(self.call("GET", "/_reach/audit")[1])
         return body["events"]
 
+    def test_key_lifecycle_with_gemma_tools_preserves_existing_key(self):
+        self.state.cfg["models"]["gemma-4-12b-qat"]["allow_tools"] = True
+        status, body, _ = self.call("POST", "/_reach/keys",
+                                    {"Content-Type": "application/json"},
+                                    body=json.dumps({"name": "Gemma tool regression"}).encode())
+        self.assertEqual(status, 201, body)
+        created_id = json.loads(body)["key"]["id"]
+        saved = json.loads(self.state.cfg_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved["models"]["gemma-4-12b-qat"]["allow_tools"])
+        self.assertEqual(next(key for key in saved["access"]["keys"]
+                              if key["id"] == self.key["id"]), self.key)
+        self.assertEqual(self.status("DELETE", "/_reach/keys/" + created_id), 200)
+        self.assertEqual(self.state.cfg["access"]["keys"], [self.key])
+        reachd.validate_settings(self.state.cfg)
+
     def test_create_key_is_audited(self):
         status, body, _ = self.call("POST", "/_reach/keys",
                                     {"Content-Type": "application/json"},

@@ -7,7 +7,7 @@ It does not download models or contain credentials or public endpoint addresses.
 
 | Service | GPU | vLLM memory fraction | Context tokens |
 | --- | --- | --- | --- |
-| Gemma 4 12B QAT | 0 + 1, TP2 | 0.55 per GPU | 92,960 |
+| Gemma 4 12B QAT | 0 + 1, TP2 | 0.55 per GPU | 65,536 |
 | MiniCPM5 2B | 1, TP1 | 0.24 | 39,904 |
 | BGE M3, BGE Reranker v2 M3, Liquid d1 Omni 600M, Liquid d1 3B | 1 | Existing support allocation | Native service limits |
 
@@ -21,7 +21,15 @@ explicit profile change and GPU memory review; this launcher does not do so.
 
 Gemma uses FP8 language weights and BF16 vision/activations, native MTP with
 three speculative tokens, Model Runner V2, and its native `gemma4` reasoning
-parser with thinking enabled. Its eight active sequences have target verification
+parser with thinking enabled. Automatic tool choice uses the `gemma4` tool-call
+parser and the tool-use chat template bundled in the pinned image at
+`/app/vllm/examples/tool_chat_template_gemma4.jinja`. The request-based GPU
+gateway forwards function definitions, tool choices, assistant calls, and tool
+results; the calling client executes the functions. Existing containers without
+these parser/template settings are preserved and refused rather than silently
+adopted. The local relay also preserves Gemma's native tool fields and enables
+its model-level `allow_tools` default; a saved explicit setting still takes
+precedence. Its eight active sequences have target verification
 graphs at 4, 8, 12, 16, 20, 24, 28, and 32 tokens, plus assistant decode graphs
 at every size from 1 through 8. Both passes use the same capture list; target-only
 sizes can leave the assistant running eagerly or padding small requests.
@@ -39,7 +47,7 @@ Input and output share that window; output is automatic unless the client or
 operator supplies a positive cap. Transport guards are separate from context.
 
 Gemma's prompt scheduling step is 3,072 tokens, so a long prefill yields to a
-decode that is already running. Its 92,960-token context, TP2 placement, MTP
+decode that is already running. Its 65,536-token context, TP2 placement, MTP
 speculative decoding, and GPU execution settings are unchanged. A running
 container with a different step is preserved and not rewritten; replace it only
 after an overlapping-request check. MiniCPM's step remains 2,048 tokens.
@@ -68,7 +76,7 @@ also requires the qualified RCCL override:
 
 Gemma TP2 retains its qualified RCCL Simple protocol and distributed runtime
 mounts. Its MTP, reasoning, graph configuration, OpenMP setting, precision,
-and 92,960-token context are unchanged. MiniCPM remains TP1 and does not
+and 65,536-token context are unchanged. MiniCPM remains TP1 and does not
 require RCCL; inherited validated RCCL settings are tolerated and retained.
 The launcher does not build or substitute runtime libraries; their ABI must
 match the pinned image. Gemma's matching MTP assistant must already be present
@@ -88,7 +96,7 @@ output and concurrent requests after native startup and readiness checks.
 ## Sustained concurrency trials
 
 Gemma admits eight active sequences. Its context cache is shared between them;
-eight calls at the full 92,960-token context are not guaranteed to fit at once.
+eight calls at the full 65,536-token context are not guaranteed to fit at once.
 The native startup log reports actual KV capacity for the available memory.
 Raising only the sequence limit can leave larger batches without decode graph coverage. On the GPU
 host, `python3 trial_container.py minicpm --sequences 4` automatically creates

@@ -69,8 +69,6 @@ function resetEditors() {
 
 // ---------- elements ----------
 const projectList = $('#project-list');
-const wslStatus = $('#wsl-status');
-const reachVersion = $('#reach-version');
 const noProject = $('#no-project');
 const projectView = $('#project-view');
 const projectName = $('#project-name');

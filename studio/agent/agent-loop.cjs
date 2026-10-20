@@ -57,9 +57,12 @@ function normalizeUserInput(value) {
 }
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, connectionId = '', capabilityStore = null, journal = null, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, logger = null, nativeTools = false, jev = null, featureMask = null, mcpManager = null }) {
+  constructor({ agentId, store, endpoint, accessKey, connectionId = '', capabilityStore = null, journal = null, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, logger = null, nativeTools = false, jev = null, featureMask = null, mcpManager = null, getPlugins = null, settingsTransform = null, promptBuilder = null }) {
     this.agentId = agentId;
     this.store = store;
+    this.getPlugins = getPlugins;
+    this.settingsTransform = settingsTransform;
+    this.promptBuilder = promptBuilder;
     this.endpoint = endpoint;
     this.accessKey = accessKey || '';
     this.model = model || DEFAULT_MODEL;
@@ -73,6 +76,7 @@ class AgentLoop {
     // A subscription bridge rejects the WHOLE request over a single generation
     // control ("unsupported_field"). Learned once, then requests go out bare.
     this.textOnly = capabilityStore?.get(connectionId, endpoint, this.model)?.textOnly === true;
+    if (this.promptBuilder && this.textOnly) this.noToolCalling = true;
     this.projectDir = projectDir;
     this.reachExecutor = reachExecutor;
     this.browserExecutor = browserExecutor;
@@ -153,7 +157,8 @@ class AgentLoop {
   // restoring stale permissions after an approval or edit review.
   _settings() {
     const settings = this._agent()?.settings || {};
-    return this.featureMask ? intersectFeatures(settings, this.featureMask) : settings;
+    const effective = this.featureMask ? intersectFeatures(settings, this.featureMask) : settings;
+    return this.settingsTransform ? this.settingsTransform(effective) : effective;
   }
 
   /* Is this loop part of a live crew network? The registry is a leaf module. */
@@ -196,6 +201,7 @@ class AgentLoop {
   }
 
   _buildSystemPrompt() {
+    if (this.promptBuilder) return this.promptBuilder(this);
     const settings = this._settings(), controls = features(settings);
     const disabled = disabledTools(settings, TOOLS);
     if (!controls.agent) return 'You are REACH Studio. Answer the user directly in normal prose. Agent mode is off: do not use tools, execute commands, modify files, or emit action/control blocks. '
@@ -430,7 +436,7 @@ class AgentLoop {
       }
       // Native protocol: advertise the same registry as real OpenAI functions.
       // Summary/compaction requests never carry tools — they must not act.
-      if (this.nativeTools && purpose !== 'summary' && !this.noToolCalling) {
+      if (this.nativeTools && purpose !== 'summary' && !this.noToolCalling && (!this.promptBuilder || features(settings).agent)) {
         // MCP tools ride along as real functions, with each server's
         // inputSchema passed through untouched — the endpoint gets the same
         // contract the server advertised.
@@ -516,6 +522,10 @@ class AgentLoop {
         if (isUnsupportedField && !this.textOnly
             && (body.temperature !== undefined || body.max_tokens !== undefined || body.tools || body.chat_template_kwargs)) {
           this.textOnly = true;
+          if (this.nativeTools && this.promptBuilder) {
+            this.noToolCalling = true;
+            messages = [{ role: 'system', content: this._buildSystemPrompt() }, ...messages.slice(1)];
+          }
           this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { textOnly: true });
           return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
         }
@@ -528,6 +538,7 @@ class AgentLoop {
         }
         if (!isUnsupportedField && body.tools && /(?:unsupported|not supported|unknown|unrecognized).{0,80}(?:tools|function.calling)|(?:tools|function.calling).{0,80}(?:unsupported|not supported|unknown|unrecognized)/i.test(text)) {
           this.noToolCalling = true;
+          if (this.promptBuilder) messages = [{ role: 'system', content: this._buildSystemPrompt() }, ...messages.slice(1)];
           this.capabilityStore?.record(this.connectionId, this.endpoint, this.model, { toolCalling: false });
           return this._fetchChat(messages, { stream, maxTokens, purpose, concise });
         }
@@ -1162,6 +1173,7 @@ class AgentLoop {
             soulStore: this.soulStore,
             soulKey: this.soulKey,
             getSettings: () => this._settings(),
+            getPlugins: this.getPlugins,
             auditLog: this.auditLog,
             journal: this.journal,
             reachExecutor: this.reachExecutor,

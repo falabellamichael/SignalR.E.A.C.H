@@ -13,6 +13,7 @@ const FIELDS = new Set(['model', 'messages', 'stream', 'stream_options', 'max_to
   'frequency_penalty', 'seed', 'n', 'tools', 'tool_choice', 'parallel_tool_calls',
   'response_format']);
 const REQUEST_FIELDS = new Set(['model', 'messages', 'stream', 'max_tokens', 'max_completion_tokens']);
+const GPU_REQUEST_FIELDS = new Set([...REQUEST_FIELDS, 'tools', 'tool_choice', 'parallel_tool_calls']);
 
 export class GatewayError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -214,19 +215,49 @@ function gpuRequest(body, route) {
 }
 
 function bridgeRequest(body, route) {
-  if (Object.keys(body).some(key => !REQUEST_FIELDS.has(key))) {
-    fail(400, 'unsupported_field', 'Subscription bridges support text messages and streaming; other generation controls are unsupported.');
+  const nativeTools = !!gpuBridge(route.bridge);
+  const fields = nativeTools ? GPU_REQUEST_FIELDS : REQUEST_FIELDS;
+  if (Object.keys(body).some(key => !fields.has(key))) {
+    fail(400, 'unsupported_field', nativeTools
+      ? 'GPU requests support text messages, function tools, streaming, and output limits; other generation controls are unsupported.'
+      : 'Subscription bridges support text messages and streaming; other generation controls are unsupported.');
   }
-  const roles = route.bridge.kind === 'codegpt' ? ['system', 'user', 'assistant'] : ['system', 'developer', 'user', 'assistant'];
+  const roles = route.bridge.kind === 'codegpt' ? ['system', 'user', 'assistant'] : ['system', 'developer', 'user', 'assistant', ...(nativeTools ? ['tool'] : [])];
+  const messageFields = nativeTools ? ['role', 'content', 'name', 'tool_calls', 'tool_call_id'] : ['role', 'content'];
   if (!Array.isArray(body.messages) || body.messages.length < 1
     || body.messages.some(message => !plain(message) || !roles.includes(message.role)
-      || typeof message.content !== 'string' || Object.keys(message).some(key => !['role', 'content'].includes(key)))
-    || !body.messages.some(message => message.content.trim())) {
-    fail(400, 'text_only', 'Subscription bridges accept text messages only, without tools or hosted actions.');
+      || (typeof message.content !== 'string' && !(nativeTools && message.role === 'assistant'
+        && message.content == null && Array.isArray(message.tool_calls) && message.tool_calls.length))
+      || Object.keys(message).some(key => !messageFields.includes(key))
+      || (message.name !== undefined && typeof message.name !== 'string')
+      || (message.tool_calls !== undefined && (message.role !== 'assistant' || !Array.isArray(message.tool_calls)
+        || !message.tool_calls.length || message.tool_calls.some(call => !plain(call) || call.type !== 'function'
+          || typeof call.id !== 'string' || !call.id || !plain(call.function)
+          || typeof call.function.name !== 'string' || !call.function.name || typeof call.function.arguments !== 'string')))
+      || (message.role === 'tool' && (typeof message.tool_call_id !== 'string' || !message.tool_call_id))
+      || (message.tool_call_id !== undefined && message.role !== 'tool'))
+    || !body.messages.some(message => typeof message.content === 'string' && message.content.trim())) {
+    fail(400, 'text_only', nativeTools ? 'Supply text messages, assistant function calls, and tool results with tool_call_id.'
+      : 'Subscription bridges accept text messages only, without tools or hosted actions.');
   }
-  if (route.maxInputBytes !== undefined && Buffer.byteLength(JSON.stringify(body.messages)) > route.maxInputBytes) {
+  if (body.tools !== undefined && (!Array.isArray(body.tools)
+    || body.tools.some(tool => !plain(tool) || tool.type !== 'function' || !plain(tool.function)
+      || typeof tool.function.name !== 'string' || !tool.function.name
+      || (tool.function.parameters !== undefined && !plain(tool.function.parameters))))) {
+    fail(400, 'invalid_tools', 'Supply function tool definitions.');
+  }
+  if (body.tool_choice !== undefined && !['auto', 'none', 'required'].includes(body.tool_choice)
+    && !(plain(body.tool_choice) && body.tool_choice.type === 'function' && plain(body.tool_choice.function)
+      && typeof body.tool_choice.function.name === 'string' && body.tool_choice.function.name)) {
+    fail(400, 'invalid_tool_choice', 'Use auto, none, required, or a named function tool choice.');
+  }
+  if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') {
+    fail(400, 'invalid_parameter', 'Invalid parallel_tool_calls.');
+  }
+  const input = body.tools === undefined ? body.messages : { messages: body.messages, tools: body.tools };
+  if (route.maxInputBytes !== undefined && Buffer.byteLength(JSON.stringify(input)) > route.maxInputBytes) {
     throw Object.assign(new GatewayError(400, 'input_too_large', 'Input exceeds this model’s configured text size limit.'),
-      { maxInputBytes: route.maxInputBytes, inputLimitScope: 'messages' });
+      { maxInputBytes: route.maxInputBytes, inputLimitScope: body.tools === undefined ? 'messages' : 'request_fields' });
   }
   if (body.stream !== undefined && typeof body.stream !== 'boolean') fail(400, 'invalid_stream', 'stream must be true or false.');
   if (body.max_tokens !== undefined && body.max_completion_tokens !== undefined) fail(400, 'output_limit', 'Set only one output token hint.');
@@ -237,6 +268,9 @@ function bridgeRequest(body, route) {
   // Existing clients send token limits by default. These bridges cannot enforce
   // them, so retain the hint only in replay identity, never in upstream dispatch.
   const payload = { model: route.bridge.model, messages: body.messages, stream: body.stream === true };
+  for (const field of ['tools', 'tool_choice', 'parallel_tool_calls']) {
+    if (body[field] !== undefined) payload[field] = body[field];
+  }
   const identity = { ...payload, model: route.id };
   if (outputHint !== undefined) identity[body.max_completion_tokens !== undefined ? 'max_completion_tokens' : 'max_tokens'] = outputHint;
   return { route, payload, fingerprint: createHash('sha256')
@@ -567,7 +601,11 @@ function completionOutput(parsed, model) {
 }
 function jsonAsStream(parsed) {
   const chunk = { ...parsed, object: 'chat.completion.chunk',
-    choices: parsed.choices.map(choice => ({ index: choice.index ?? 0, delta: choice.message || {}, finish_reason: choice.finish_reason })) };
+    choices: parsed.choices.map(choice => {
+      const delta = { ...choice.message };
+      if (Array.isArray(delta.tool_calls)) delta.tool_calls = delta.tool_calls.map((call, index) => ({ ...call, index }));
+      return { index: choice.index ?? 0, delta, finish_reason: choice.finish_reason };
+    }) };
   return { contentType: 'text/event-stream', body: `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n` };
 }
 

@@ -1,1 +1,60 @@
 :root{color-scheme:dark;font-family:Georgia,serif;color:var(--gold,#d5e895);background:transparent}*{box-sizing:border-box}body{margin:0;padding:12px;background:var(--panel,#171c16);border:0;border-radius:14px;overflow:hidden;height:180px}main{padding-top:14px}#pet-drag{-webkit-app-region:drag;cursor:grab}canvas{display:block;width:264px;height:72px;image-rendering:pixelated;pointer-events:none}#pet-close{position:absolute;right:7px;top:3px;border:0;background:transparent;color:var(--text,#e5ecd7);font-size:18px;padding:0 5px;-webkit-app-region:no-drag}button{cursor:pointer;border:1px solid var(--line,#46533a);border-radius:5px;background:var(--panel2,#20281c);color:inherit;padding:3px 10px}button:focus-visible{outline:2px solid var(--gold,#d5e895);outline-offset:1px}#pet-status{color:var(--text,#e5ecd7);margin:5px 0;min-height:28px;font:11px Consolas,monospace}#pet-care{display:flex;gap:8px}#pet-care button{flex:1}
+[hidden]{display:none!important}
+body{height:100vh;display:flex;flex-direction:column;-webkit-app-region:no-drag}
+body.pet-dragging{user-select:none;cursor:grabbing}
+#pet-drag{-webkit-app-region:no-drag}
+/* Native drag hit regions swallow wheel events: keep entire scroll viewports, including gaps, interactive. */
+#companion-messages,#companion-messages *,#companion-connections,#companion-connections *,#companion-workspace,#companion-workspace *{-webkit-app-region:no-drag}
+/* Empty areas outside scroll viewports remain available for window dragging. */
+button,input,textarea,select,a,summary,label,[contenteditable=true],.companion-message>div:not(.companion-message-tools),.companion-response-details>div,.step-head,.step-output,.step-result,.steps-head,.app-connection-card p,.app-connection-card h3,#pet-status,#companion-progress,.companion-caption,.companion-toolbar strong,.companion-compose-actions span{-webkit-app-region:no-drag}
+.companion-message>div:not(.companion-message-tools),.companion-response-details>div,.step-output,.step-result{user-select:text}
+body>main{flex:0 0 156px;width:264px;align-self:flex-start}
+body.expand-left>main{align-self:flex-end}
+body.expand-up>main{order:2}
+body.expand-up #companion-panel{order:1;border-top:0;border-bottom:1px solid var(--line,#46533a);padding-top:0;padding-bottom:10px}
+body.expand-up #pet-expand,body.expand-up #pet-close{top:auto;bottom:153px}
+body.expanded:not(.expand-left) #pet-close{right:auto;left:259px}
+body.expand-left #pet-expand{left:auto;right:259px}
+#pet-close,#pet-expand{position:absolute;top:3px;width:24px;height:24px;display:grid;place-items:center;border:0;background:transparent;color:var(--text,#e5ecd7);font:18px/1 system-ui,sans-serif;padding:0;-webkit-app-region:no-drag;z-index:1}
+#pet-close{right:7px}
+#pet-expand{left:7px}
+#pet-expand[aria-expanded=true]{transform:rotate(90deg)}
+canvas{margin:auto}
+#companion-panel{min-height:0;flex:1;display:flex;flex-direction:column;border-top:1px solid var(--line,#46533a);padding-top:10px;color:var(--text,#e5ecd7);font:13px/1.5 system-ui,sans-serif}
+.companion-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.companion-toolbar strong{font-size:11px;letter-spacing:.12em}
+.companion-toolbar [role=tablist]{display:flex;gap:5px}
+.companion-toolbar button{font:12px system-ui,sans-serif;padding:5px 8px}
+.companion-toolbar [aria-selected=true]{background:var(--gold,#d5e895);color:var(--panel,#171c16)}
+#companion-chat{display:flex;flex:1;flex-direction:column;min-height:0}
+.companion-actions{display:flex;justify-content:space-between;gap:8px;margin-bottom:8px}
+.companion-actions button{border:0;background:transparent;font-size:11px;color:var(--text,#e5ecd7);padding:3px 0}
+#companion-messages{flex:1;min-height:0;overflow:auto;padding:0 3px 8px 0;overscroll-behavior:contain}
+.companion-message{border:1px solid var(--line,#46533a);border-radius:10px;padding:9px 11px;margin:8px 0;overflow-wrap:anywhere;background:var(--panel2,#20281c);font-size:12px}
+.companion-message.user{margin-left:24px}
+.companion-message.assistant{border-color:transparent;padding-left:2px}
+.companion-message p{margin:0 0 7px}
+.companion-message p:last-child{margin-bottom:0}
+.companion-message pre{overflow:auto;max-width:100%;font-size:11px}
+.companion-message a{color:var(--gold,#d5e895)}
+.companion-message ul,.companion-message ol{padding-left:19px}
+.companion-empty{margin:30px 15px;color:var(--muted,#a8b09e);text-align:center}
+#companion-progress{font-size:11px;min-height:17px;margin:5px 0;color:var(--muted,#a8b09e)}
+#companion-input{resize:none;display:block;width:100%;padding:10px;background:var(--panel2,#20281c);color:var(--text,#e5ecd7);border:1px solid var(--line,#46533a);border-radius:9px;font:12px/1.5 system-ui,sans-serif}
+#companion-input:focus{outline:1px solid var(--gold,#d5e895)}
+.companion-compose-actions{display:flex;align-items:center;gap:8px;margin-top:7px}
+.companion-compose-actions span{flex:1;font-size:10px;color:var(--muted,#a8b09e);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.companion-compose-actions button{font:12px system-ui,sans-serif;padding:5px 9px}
+.companion-compose-actions button:disabled{opacity:.45;cursor:default}
+#companion-connections{overflow:auto;min-height:0;flex:1;overscroll-behavior:contain}
+.companion-caption{font-size:12px;margin:0 0 12px;color:var(--muted,#a8b09e)}
+#companion-connections .app-connections-grid{grid-template-columns:1fr}
+#companion-workspace{overflow:auto;min-height:0;flex:1;overscroll-behavior:contain}
+#companion-workspace-current{overflow-wrap:anywhere}
+#companion-projects{display:grid;gap:8px;margin-top:10px}
+.companion-project{display:flex;flex-direction:column;gap:4px;text-align:left;padding:9px;width:100%;overflow-wrap:anywhere}
+.companion-project span{font-size:10px;color:var(--dim,#a8b09e)}
+.companion-project[aria-pressed=true]{border-color:var(--gold,#d5e895)}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}
+}

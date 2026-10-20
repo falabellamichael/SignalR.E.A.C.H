@@ -15,7 +15,9 @@ SERVICES = {
     "gemma": ("gemma4-12b-qat", "0,1", 8001, 0.55, [
         "--quantization", "fp8_per_tensor", "--quantization-config",
         '{"ignore":["vision_embedder.*"]}',
+        "--enable-auto-tool-choice", "--tool-call-parser", "gemma4",
         "--reasoning-parser", "gemma4",
+        "--chat-template", "/app/vllm/examples/tool_chat_template_gemma4.jinja",
         "--default-chat-template-kwargs", '{"enable_thinking":true}',
     ]),
     "ornith": ("ornith-1.5-9b", 1, 8002, 0.52, [
@@ -52,7 +54,7 @@ SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "1", "support": "
 CHAT_CAPTURE_SIZES = {"gemma": [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32], "ornith": [2], "minicpm": [1, 2, 3, 4, 5]}
 CHAT_MAX_SEQUENCES = {"gemma": 8, "ornith": 2, "minicpm": 5}
 # Pin every qualified context so a future create cannot silently resize it.
-CHAT_CONTEXT_WINDOWS = {"gemma": 92960, "ornith": 61776, "minicpm": 39904}
+CHAT_CONTEXT_WINDOWS = {"gemma": 65536, "ornith": 61776, "minicpm": 39904}
 # Tokens of prompt work per scheduler step. Smaller Gemma chunks let an
 # in-flight decode emit tokens while a second request prefills. Context length,
 # tensor parallelism, MTP, and GPU placement stay as qualified below.
@@ -222,7 +224,10 @@ def start(key, manifest):
             if actual_prefill != CHAT_PREFILL_TOKENS[key]:
                 raise RuntimeError(f"Preserving {name}: prompt scheduling step must be exactly {CHAT_PREFILL_TOKENS[key]} tokens; "
                                    "context, TP, MTP and GPU placement are unchanged")
-            for flag in ("--quantization", "--quantization-config", "--reasoning-parser", "--default-chat-template-kwargs"):
+            if ("--enable-auto-tool-choice" in command) != ("--enable-auto-tool-choice" in extra):
+                raise RuntimeError(f"Preserving {name}: automatic tool choice differs from qualification")
+            for flag in ("--quantization", "--quantization-config", "--reasoning-parser", "--default-chat-template-kwargs",
+                         "--tool-call-parser", "--chat-template"):
                 expected = extra[extra.index(flag) + 1] if flag in extra else None
                 actual = command[command.index(flag) + 1] if flag in command else None
                 if flag in ("--quantization-config", "--default-chat-template-kwargs"):

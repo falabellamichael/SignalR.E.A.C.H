@@ -186,7 +186,9 @@ test('GPU reply variations pass through JSON and SSE and replay without another 
     assert.equal(reply.status, 200);
     const wire = await reply.text();
     const parsed = streaming ? JSON.parse(wire.split('\n')[0].slice(6)) : JSON.parse(wire);
-    assert.deepEqual(parsed.choices[0][streaming ? 'delta' : 'message'], { role: 'assistant', ...entry.message });
+    const expected = { role: 'assistant', ...entry.message };
+    if (streaming && expected.tool_calls) expected.tool_calls = expected.tool_calls.map((call, index) => ({ ...call, index }));
+    assert.deepEqual(parsed.choices[0][streaming ? 'delta' : 'message'], expected);
     assert.equal(parsed.choices[0].finish_reason, entry.finish ?? null);
     assert.equal(parsed.model, body.model);
     const replay = await f.call(body);
@@ -199,14 +201,78 @@ test('GPU reply variations pass through JSON and SSE and replay without another 
   });
 });
 
-test('request mode rejects ignored generation controls, tools, images, and oversized text before reserving', async t => {
+test('GPU tools round trip through JSON/SSE, follow-up results, and paid replay identity', async t => {
+  const tools = [{ type: 'function', function: { name: 'weather:get_weather', description: 'Look up current weather',
+    parameters: { type: 'object', properties: { location: { type: 'string' } }, required: ['location'] } } }];
+  const calls = [{ id: 'weather-1', type: 'function', function: { name: 'weather:get_weather', arguments: '{"location":"Toronto"}' } }];
+  for (const streaming of [false, true]) await t.test(`stream=${streaming}`, async t => {
+    const sent = [];
+    const f = await fixture(t, async (_url, options) => {
+      sent.push(JSON.parse(options.body));
+      return response(completion(sent.length === 1 ? { choices: [{ message: { role: 'assistant', content: null, tool_calls: calls },
+        finish_reason: 'tool_calls' }] } : {}));
+    });
+    const body = request({ tools, tool_choice: 'auto', parallel_tool_calls: false, stream: streaming });
+    const reply = await f.call(body);
+    assert.equal(reply.status, 200);
+    const wire = await reply.text();
+    const parsed = streaming ? JSON.parse(wire.split('\n')[0].slice(6)) : JSON.parse(wire);
+    const toolCalls = parsed.choices[0][streaming ? 'delta' : 'message'].tool_calls;
+    assert.deepEqual(toolCalls, streaming ? calls.map((call, index) => ({ ...call, index })) : calls);
+    assert.equal(parsed.choices[0].finish_reason, 'tool_calls');
+    assert.deepEqual(sent[0].tools, tools);
+    assert.equal(sent[0].tool_choice, 'auto');
+    assert.equal(sent[0].parallel_tool_calls, false);
+    assert.equal(sent[0].stream, false, 'verified request billing buffers the native completion');
+    assert.equal(await (await f.call(body)).text(), wire);
+    for (const change of [{ tools: [] }, { tool_choice: 'required' }, { parallel_tool_calls: true }]) {
+      assert.equal((await f.call({ ...body, ...change })).status, 409);
+    }
+    assert.equal(sent.length, 1);
+    const messages = [...body.messages, { role: 'assistant', content: null, tool_calls: calls },
+      { role: 'tool', tool_call_id: 'weather-1', name: 'weather:get_weather', content: '{"temperature":12}' }];
+    const followup = { ...body, messages };
+    assert.equal((await f.call(followup, 'tool-result')).status, 200);
+    assert.deepEqual(sent[1].messages, messages);
+    assert.deepEqual(sent[1].tools, tools);
+    assert.equal(f.store.settlements.length, 2);
+    assert.equal(f.store.releases.length, 0);
+  });
+});
+
+test('GPU forwards required and named tool choices and counts schemas toward input limits', async t => {
+  const tools = [{ type: 'function', function: { name: 'get_weather', parameters: { type: 'object' } } }];
+  const sent = [];
+  const f = await fixture(t, async (_url, options) => { sent.push(JSON.parse(options.body)); return response(completion()); });
+  for (const [index, choice] of ['required', 'none', { type: 'function', function: { name: 'get_weather' } }].entries()) {
+    assert.equal((await f.call(request({ tools, tool_choice: choice, parallel_tool_calls: true }), `choice-${index}`)).status, 200);
+    assert.deepEqual(sent[index].tool_choice, choice);
+  }
+  const manyTools = Array.from({ length: 40 }, (_, index) => ({ type: 'function', function: { name: `tool_${index}` } }));
+  assert.equal((await f.call(request({ tools: manyTools }), 'many-tools')).status, 200);
+  assert.deepEqual(sent[3].tools, manyTools);
+  const oversized = structuredClone(tools);
+  oversized[0].function.description = 'x'.repeat(4096);
+  const rejected = await f.call(request({ tools: oversized }), 'oversized-tools');
+  assert.equal(rejected.status, 400);
+  const error = await rejected.json();
+  assert.equal(error.error.code, 'input_too_large');
+  assert.equal(error.error.input_limit_scope, 'request_fields');
+  assert.equal(sent.length, 4);
+  assert.equal(f.store.reservations.length, 4);
+});
+
+test('request mode rejects ignored controls, malformed tools, images, and oversized text before reserving', async t => {
   let calls = 0;
   const f = await fixture(t, async () => { calls++; return response(completion()); });
   const invalid = [request({ max_tokens: 0 }), request({ max_completion_tokens: -1 }), request({ max_tokens: 1.5 }),
     request({ max_tokens: '4096' }), request({ max_completion_tokens: 1_000_001 }), request({ max_tokens: null }),
     request({ max_tokens: 4096, max_completion_tokens: 4096 }), request({ temperature: 0 }),
     request({ top_p: 1 }), request({ n: 1 }), request({ stream_options: { include_usage: true } }),
-    request({ tools: [] }), request({ hosted_actions: true }),
+    request({ tools: {} }), request({ tools: [{ type: 'function', function: {} }] }),
+    request({ tool_choice: 'sometimes' }), request({ tool_choice: { type: 'function', function: {} } }),
+    request({ parallel_tool_calls: 'true' }), request({ hosted_actions: true }),
+    request({ messages: [{ role: 'assistant', content: null, tool_calls: [{ id: 'one', type: 'function', function: { name: 'read', arguments: {} } }] }] }),
     request({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://image.invalid' } }] }] }),
     request({ messages: [{ role: 'tool', content: 'Tool output.' }] }),
     request({ messages: [{ role: 'assistant', content: 'Answer', tool_calls: [] }] }),

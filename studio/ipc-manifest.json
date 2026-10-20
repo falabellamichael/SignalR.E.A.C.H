@@ -629,6 +629,21 @@
     "args": [],
     "returns": "Recoverable crew journal snapshots with partial member results, messages, nurse actions, and evidence"
   },
+  "companion:command": {
+    "module": "main.mjs",
+    "args": ["action: string", "value?: string"],
+    "returns": "Companion chat state or action result; pet renderer only"
+  },
+  "companion:link": {
+    "module": "main.mjs",
+    "args": ["url: string"],
+    "returns": "Open a validated external companion link"
+  },
+  "app-connections:command": {
+    "module": "main.mjs",
+    "args": ["action: string", "value?: object"],
+    "returns": "Connected app configuration or action result"
+  },
   "pet:command": {
     "module": "main.mjs",
     "args": ["action: string", "value?: object | string"],

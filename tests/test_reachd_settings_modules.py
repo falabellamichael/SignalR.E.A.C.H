@@ -16,6 +16,24 @@ from reachd import settings_schema
 
 
 class SettingsModuleCompatibilityTests(unittest.TestCase):
+    def test_gemma_tools_validate_and_survive_settings_save(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        config["system"]["host_bind"] = False
+        self.assertTrue(config["models"]["gemma-4-12b-qat"]["allow_tools"])
+        settings.validate_settings(config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            settings.save_config(config, path)
+            saved = settings.load_config(path)
+            settings.validate_settings(saved)
+            self.assertTrue(saved["models"]["gemma-4-12b-qat"]["allow_tools"])
+
+    def test_unqualified_gpu_tools_still_fail_settings_validation(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        config["models"]["minicpm5-2b"]["allow_tools"] = True
+        with self.assertRaisesRegex(settings.SettingsError, "models.minicpm5-2b: GPU tool serving"):
+            settings.validate_settings(config)
+
     def test_package_and_settings_expose_the_same_schema_and_error(self):
         self.assertIs(reachd.DEFAULT_SETTINGS, settings.DEFAULT_SETTINGS)
         self.assertIs(settings.DEFAULT_SETTINGS, settings_schema.DEFAULT_SETTINGS)

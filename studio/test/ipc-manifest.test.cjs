@@ -77,7 +77,7 @@ function compareSets({ handlers, channels, manifest }) {
 
 function load() {
   const handlers = handlersIn(fs.readFileSync(MAIN, 'utf8'));
-  const channels = channelsIn(fs.readFileSync(PRELOAD, 'utf8'));
+  const channels = channelsIn(fs.readFileSync(PRELOAD, 'utf8') + '\n' + fs.readFileSync(path.join(ROOT, 'pet-preload.cjs'), 'utf8'));
   const raw = JSON.parse(fs.readFileSync(MANIFEST, 'utf8'));
   return { handlers, channels, raw, manifest: new Set(Object.keys(raw)) };
 }

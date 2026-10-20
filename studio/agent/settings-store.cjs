@@ -55,6 +55,16 @@ function createSettingsStore({ file, safeStorage }) {
       }
       if (p.gmail) {
         p.gmail = { ...p.gmail };
+        for (const field of ['clientSecret', 'accessToken', 'refreshToken']) {
+          const encrypted = 'encrypted' + field[0].toUpperCase() + field.slice(1);
+          if (p.gmail[encrypted]) {
+            try {
+              if (!available()) throw new Error('Vault unavailable.');
+              p.gmail[field] = safeStorage.decryptString(Buffer.from(p.gmail[encrypted], 'base64'));
+            } catch { p.gmail[field] = ''; locked = true; }
+            delete p.gmail[encrypted];
+          }
+        }
         if (p.gmail.encryptedPassword) {
           try {
             if (!available()) throw new Error('Vault unavailable.');
@@ -72,6 +82,9 @@ function createSettingsStore({ file, safeStorage }) {
           } catch { p.outlook.password = ''; locked = true; }
           delete p.outlook.encryptedPassword;
         }
+      }
+      for(const id of require('./extra-apps.cjs').ids)if(p[id]){
+        p[id]={...p[id]};if(p[id].encryptedToken){try{if(!available())throw new Error('Vault unavailable');p[id].token=safeStorage.decryptString(Buffer.from(p[id].encryptedToken,'base64'));}catch{p[id].token='';locked=true;}delete p[id].encryptedToken;}
       }
       decoded.plugins = p;
     }
@@ -116,6 +129,14 @@ function createSettingsStore({ file, safeStorage }) {
       }
       if (p.gmail) {
         p.gmail = { ...p.gmail };
+        for (const field of ['clientSecret', 'accessToken', 'refreshToken']) {
+          const encrypted = 'encrypted' + field[0].toUpperCase() + field.slice(1);
+          delete p.gmail[encrypted];
+          if (p.gmail[field] && available()) {
+            p.gmail[encrypted] = safeStorage.encryptString(p.gmail[field]).toString('base64');
+            delete p.gmail[field];
+          }
+        }
         if (p.gmail.password && available()) {
           p.gmail.encryptedPassword = safeStorage.encryptString(p.gmail.password).toString('base64');
           delete p.gmail.password;
@@ -127,6 +148,9 @@ function createSettingsStore({ file, safeStorage }) {
           p.outlook.encryptedPassword = safeStorage.encryptString(p.outlook.password).toString('base64');
           delete p.outlook.password;
         }
+      }
+      for(const id of require('./extra-apps.cjs').ids)if(p[id]){
+        p[id]={...p[id]};if(p[id].token){if(!available())throw new Error('Unlock your system credential vault before saving app tokens.');p[id].encryptedToken=safeStorage.encryptString(p[id].token).toString('base64');delete p[id].token;}
       }
       out.plugins = p;
     }

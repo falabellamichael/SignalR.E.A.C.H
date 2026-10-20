@@ -104,7 +104,7 @@ def _validate_model_spec(alias, spec, all_aliases, errors):
     _bool(spec.get("strip_trailing_roles", False), path + ".strip_trailing_roles")
     _int(spec.get("context_window", 128000), *MODEL_NUMERIC["context_window"],
          path + ".context_window")
-    from reachd.model_routes import private_route, GPU_CONTEXT_WINDOWS
+    from reachd.model_routes import private_route, GPU_CONTEXT_WINDOWS, GPU_TOOL_MODELS
     try:
         private_route(spec["upstream"])
     except ValueError as exc:
@@ -118,7 +118,8 @@ def _validate_model_spec(alias, spec, all_aliases, errors):
             _int(max_tokens, 1, output_cap or 1000000, path + ".max_tokens")
         _expect(not output_cap or spec.get("min_output_tokens", 0) <= output_cap,
                 path + ".min_output_tokens exceeds the configured output limit")
-        _expect(not spec.get("allow_tools", False), path + ": GPU tool serving is not enabled")
+        _expect(not spec.get("allow_tools", False) or spec["upstream"][4:] in GPU_TOOL_MODELS,
+                path + ": GPU tool serving is not enabled for this model")
     rl = spec.get("rate_limits", {})
     _expect(isinstance(rl, dict) and set(rl) <= {"rpm", "tokens_day"},
             path + ".rate_limits: only rpm/tokens_day allowed")

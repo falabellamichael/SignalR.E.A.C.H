@@ -10,6 +10,7 @@
   <script src="theme-data.js"></script>
   <script src="theme.js"></script>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="app-connections.css" />
   <link rel="stylesheet" href="workspace.css" />
   <link rel="stylesheet" href="studio-prd.css" />
   <link rel="stylesheet" href="team-deck.css" />
@@ -38,6 +39,7 @@
           <button data-settings-panel="connection">Connection &amp; default model</button>
           <button data-settings-panel="appearance">Appearance</button>
           <button data-settings-panel="mcp">MCP servers</button>
+          <button data-settings-panel="apps">App Connections</button>
           <button data-settings-panel="conversation">Conversation &amp; permissions</button>
           <button data-settings-panel="budgeting">Budgeting</button>
         </div>
@@ -69,8 +71,6 @@
           <button id="btn-show-browser" role="menuitem">Browser</button>
         </div>
       </div>
-      <span id="wsl-status" class="chip pending">checking reach&hellip;</span>
-      <span id="reach-version" class="chip dim"></span>
       <button id="account-menu-button" class="account-bubble" type="button" aria-label="Open account, usage and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-menu" title="Account, usage and settings">
         <span id="account-menu-avatar" aria-hidden="true">R</span><i id="account-menu-dot" aria-hidden="true"></i>
       </button>
@@ -552,6 +552,7 @@
         <button data-settings-panel="connection" class="ghost">Connection</button>
         <button data-settings-panel="appearance" class="ghost">Appearance</button>
         <button data-settings-panel="mcp" class="ghost">MCP servers</button>
+        <button data-settings-panel="apps" class="ghost">App Connections</button>
         <button data-settings-panel="conversation" class="ghost">Conversation &amp; permissions</button>
         <button data-settings-panel="budgeting" class="ghost">Budgeting</button>
       </nav>
@@ -601,7 +602,7 @@
         <h2>Appearance</h2>
         <h3>CLI companion</h3>
         <label class="check"><input id="set-desktop-pet" type="checkbox" /> Show always-on-top CLI pet</label>
-        <p class="settings-description">The same Cat, Owl, and Micro bulldog artwork, animations, and care rules as the CLI. Drag the pet in its separate, always-on-top window. Use its small × to close it. Changes save immediately on this device.</p>
+        <p class="settings-description">Drag the Cat, Owl or Micro bulldog in its always-on-top window. Press &gt; to expand a saved mini-chat and App Connections. Close with ×. Chats remain in Studio history and companion settings save on this device.</p>
         <label for="set-desktop-pet-kind">Companion</label>
         <select id="set-desktop-pet-kind"><option value="cat">Cat</option><option value="owl">Owl</option><option value="bulldog">Micro bulldog</option></select>
         <label class="check"><input id="set-desktop-pet-motion" type="checkbox" checked /> Animate companion (respects reduced motion)</label>
@@ -609,6 +610,12 @@
         <label class="check"><input id="set-page-sized" type="checkbox" checked aria-describedby="page-layout-help" /> Page-sized layout</label>
         <p id="page-layout-help" class="settings-description">Keep content centered at a comfortable width. Turn off to use the full width.</p>
         <p id="page-layout-status" class="dim" role="status" aria-live="polite"></p>
+      </div>
+      <div id="settings-apps" class="settings-panel settings-content hidden">
+        <h2>App Connections</h2>
+        <p class="settings-description">Choose the services your assistant can use. These connections are shared with the companion mini-chat. Each mail send requires confirmation.</p>
+        <div id="studio-app-connections"></div>
+        <p class="settings-description">For other services, add an MCP server in <button data-settings-panel="mcp" type="button" class="ghost small">MCP servers</button>.</p>
       </div>
       <div id="settings-mcp" class="settings-panel settings-content hidden">
         <div class="conn-toolbar">
@@ -1231,6 +1238,7 @@
   <script src="scrollbar.js"></script>
   <script src="settings.js"></script>
   <script src="mcp-settings.js"></script>
+  <script src="app-connections.js"></script>
   <script src="browser-overlay.js"></script>
   <script src="browser.js"></script>
   <script src="workspace.js"></script>

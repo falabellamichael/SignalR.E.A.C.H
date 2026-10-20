@@ -183,17 +183,6 @@ reachApi.onExit(event => showRunEvent({ type: 'exit', ...event }));
 async function refreshStatus() {
   const v = await reachApi.getVersion();
   reachCliAvailable = !v.startsWith('Native Reach compiler unavailable.');
-  if (reachCliAvailable) {
-    wslStatus.textContent = 'Reach compiler \u2713';
-    wslStatus.className = 'chip ok';
-    reachVersion.textContent = v;
-    reachVersion.title = '';
-  } else {
-    wslStatus.textContent = 'Reach compiler unavailable';
-    wslStatus.className = 'chip';
-    reachVersion.textContent = 'Configure native reachc in Settings';
-    reachVersion.title = v;
-  }
 }
 
 // ---------- projects ----------

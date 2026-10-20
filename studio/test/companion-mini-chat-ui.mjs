@@ -1,0 +1,56 @@
+import fs from 'node:fs/promises';import assert from 'node:assert/strict';
+const root=new URL('../renderer/',import.meta.url);
+export default async function(page){
+ const html=(await fs.readFile(new URL('pet-window.html',root),'utf8')).replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/,'').replace(/<script[^>]*><\/script>/g,'').replace(/<link[^>]*>/g,'');
+ await page.setContent(html);
+ for(const f of ['pet-window.css','app-connections.css','companion-activity.css'])await page.addStyleTag({content:await fs.readFile(new URL(f,root),'utf8')});
+ await page.addScriptTag({content:`window.dragCalls=[];window.petWindow={command:async(action)=>{dragCalls.push(action);return {};}, onState:cb=>window.state=cb,chat:async(action)=>action==='projects'?{projects:[{name:'Example project',dir:'D:/Example'}],workspace:''}:action==='get'?{messages:[{role:'user',text:'What is the weather?'},{role:'assistant',text:'It is **12 C** in Toronto.'}],model:'Test model'}:{ok:true},onChat:cb=>window.chatEvent=cb,appConnections:async()=>({ok:true,items:[]}),openLink:async()=>({})};`});
+ for(const f of ['cli-pet-frames.js','cli-pet.js','markdown.js','app-connections.js','activity-state.js','companion-activity.js','pet-window.js','pet-drag.js'])await page.addScriptTag({content:await fs.readFile(new URL(f,root),'utf8')});
+ await page.addScriptTag({content:`state({expanded:true,kind:'owl',motion:false,theme:{scheme:'dark',theme:'nord',vars:{panel:'#171c16',panel2:'#20281c',text:'#e5ecd7',dim:'#a8b09e',line:'#46533a',gold:'#d5e895'}}});chatEvent({type:'request-start'});chatEvent({type:'tool-call',tool:'weather.current'});chatEvent({type:'tool-result',ok:true,result:{temperature:'12 C'}});chatEvent({type:'message-start'});chatEvent({type:'delta',text:'Here is the weather.'});`});
+ await page.setViewportSize({width:440,height:740});
+ const controls=await page.locator('#pet-close,#pet-expand').evaluateAll(elements=>elements.map(el=>{const r=el.getBoundingClientRect();return {top:r.top,width:r.width,height:r.height,edge:el.id==='pet-close'?innerWidth-r.right:r.left,font:getComputedStyle(el).fontSize};}));
+ assert.deepEqual(controls[0],controls[1]);
+ assert.equal(await page.locator('body').evaluate(el=>getComputedStyle(el).webkitAppRegion),'no-drag');
+ for(const selector of ['#pet-close','#pet-expand','#companion-input','.companion-toolbar button','.step-result'])assert.equal(await page.locator(selector).first().evaluate(el=>getComputedStyle(el).webkitAppRegion),'no-drag');
+ assert.equal(await page.locator('.companion-message.streaming').getAttribute('data-text'),'Here is the weather.');assert.equal(await page.getByRole('button',{name:'Copy response'}).count(),1);
+ assert.equal(await page.locator('.step-details:not([hidden])').count(),1);
+ await page.locator('.step-details:not([hidden]) summary').click();assert.match(await page.locator('.step-details:not([hidden]) pre').innerText(),/temperature/);
+ await page.addScriptTag({content:`chatEvent({type:'approval-wait'});`});assert.match(await page.locator('#companion-progress').innerText(),/Open in Studio/);
+ assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+ await page.addScriptTag({content:`chatEvent({type:'snapshot',messages:[{role:'user',text:'What is the weather?'},{role:'assistant',text:'Checking now.'},{role:'assistant',text:'It is 12 C.'}],activity:{status:'completed',startedAt:1,updatedAt:2,endedAt:2,steps:[{index:1,title:'Read weather',status:'done',startedAt:1,endedAt:2,result:'12 C'}]}});`});
+ const order=await page.locator('#companion-messages').evaluate(el=>[...el.children].map(child=>child.classList.contains('user')?'user':child.classList.contains('steps')?'activity':'assistant'));
+ assert.deepEqual(order,['user','activity','assistant','assistant']);
+ assert.equal(await page.locator('.companion-response-details').count(),1);
+ assert.equal(await page.locator('.companion-response-details').getAttribute('open'),null);
+ const sharedRow=page.locator('.companion-response-details > summary').first();
+ assert.equal(await sharedRow.getByRole('button',{name:'Copy response'}).count(),1);
+ const align=await sharedRow.evaluate(row=>{const label=row.querySelector('.companion-response-title').getBoundingClientRect(),copy=row.querySelector('button').getBoundingClientRect();return Math.abs((label.top+label.bottom)/2-(copy.top+copy.bottom)/2)<2;});
+ assert.equal(align,true);
+ await page.getByText('Additional response',{exact:true}).click();
+ assert.match(await page.locator('.companion-response-details').innerText(),/It is 12 C/);
+ await page.addScriptTag({content:`chatEvent({type:'message-start'});chatEvent({type:'delta',text:'Additional details'});`});
+ assert.equal(await page.locator('#companion-messages > :last-child .companion-response-details').getAttribute('open'),null);
+ await page.locator('#companion-messages > :last-child summary').click();
+ assert.match(await page.locator('#companion-messages > :last-child').innerText(),/Additional details/);
+ await page.getByRole('tab',{name:'Workspace',exact:true}).click();
+ assert.equal(await page.getByRole('button',{name:/Example project/}).count(),1);
+ assert.match(await page.locator('#companion-projects').innerText(),/D:\/Example/);
+ await page.getByRole('tab',{name:'Workspace',exact:true}).press('ArrowRight');
+ assert.equal(await page.getByRole('tab',{name:'Chat',exact:true}).getAttribute('aria-selected'),'true');
+ for(const [tab,selector]of [['Chat','#companion-messages'],['Connections','#companion-connections'],['Workspace','#companion-workspace']]){
+  await page.getByRole('tab',{name:tab,exact:true}).click();
+  const viewport=page.locator(selector);
+  await viewport.evaluate(el=>{el.replaceChildren();for(let i=0;i<18;i++){const gap=document.createElement('div');gap.className='wheel-test-gap';gap.style.height='80px';el.append(gap);}el.scrollTop=0;});
+  assert.equal(await viewport.evaluate(el=>getComputedStyle(el).webkitAppRegion),'no-drag');
+  assert.equal(await viewport.locator('.wheel-test-gap').first().evaluate(el=>getComputedStyle(el).webkitAppRegion),'no-drag');
+  const box=await viewport.boundingBox();await page.mouse.move(box.x+box.width/2,box.y+box.height/2);await page.mouse.wheel(0,260);
+  await page.waitForFunction(sel=>document.querySelector(sel).scrollTop>0,selector);
+  await viewport.evaluate(el=>el.scrollTop=0);
+  await page.mouse.down();await page.mouse.move(box.x+box.width/2+15,box.y+box.height/2+10,{steps:3});
+  await page.waitForFunction(()=>dragCalls.includes('drag-start'));
+  await page.mouse.wheel(0,150);await page.mouse.up();
+  await page.waitForFunction(()=>dragCalls.includes('drag-end'));
+  assert.equal(await page.locator('body').evaluate(el=>el.classList.contains('pet-dragging')),false);
+ }
+ return {whitespaceWheelScroll:true,workspaceProjects:true,markdown:true,copyResponse:true,streaming:true,toolResults:true,approvalGuidance:true,compactLayout:true,promptActivityResponseOrder:true};
+}

@@ -1,0 +1,27 @@
+.app-connections-grid{display:grid;grid-template-columns:1fr;gap:6px}
+.app-connection-card{border:1px solid var(--line,#46533a);background:var(--panel2,#20281c);border-radius:7px;padding:8px 10px;color:var(--text,#e5ecd7);font:13px/1.5 system-ui,sans-serif;min-width:0}
+.app-connection-card h3{font-size:12px;margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.app-connection-header{display:flex;align-items:center;gap:8px;min-height:22px;cursor:pointer;list-style:none}
+.app-connection-header::-webkit-details-marker{display:none}
+.app-connection-header::before{content:'\25B6';font-size:8px;flex:none}
+.app-connection-card[open]>.app-connection-header::before{transform:rotate(90deg)}
+.app-connection-header h3{flex:1}
+.app-connection-header .app-connection-badge{font-size:10px;white-space:nowrap;max-width:40%;overflow:hidden;text-overflow:ellipsis}
+.app-connection-edit{font-size:10px;color:var(--gold,#d5e895)}
+.app-connection-header:focus-visible{outline:2px solid var(--gold,#d5e895);outline-offset:3px}
+.app-connection-card[open]>.app-connection-header{padding-bottom:7px;border-bottom:1px solid var(--line,#46533a)}
+.app-connection-card p{margin:9px 0;overflow-wrap:anywhere}
+.app-connection-badge{font-size:11px;color:var(--muted,#a8b09e)}
+.app-connection-badge[data-state=connected]{color:var(--gold,#d5e895)}
+.app-connection-badge[data-state=error]{color:#ef9c8d}
+.app-connection-note{font-size:12px}
+.app-connection-actions{display:flex;gap:7px;flex-wrap:wrap;margin:10px 0}
+.app-connection-actions button{font:inherit;padding:5px 9px;cursor:pointer;border:1px solid var(--line,#46533a);border-radius:6px;background:var(--panel,#171c16);color:inherit}
+.app-connection-actions button:disabled{opacity:.5;cursor:default}
+.app-connection-card details{border-top:1px solid var(--line,#46533a);padding-top:8px}
+.app-connection-card summary{cursor:pointer;font-size:12px}
+.app-connection-card label{display:block;font-size:12px;margin:10px 0}
+.app-connection-card input:not([type=checkbox]){display:block;width:100%;min-width:0;margin-top:4px;padding:8px;border:1px solid var(--line,#46533a);border-radius:5px;background:var(--panel,#171c16);color:inherit;font:inherit}
+.app-connection-card .app-connection-toggle{display:flex;gap:7px;align-items:center}
+.app-connection-notice{font:12px/1.5 system-ui,sans-serif;overflow-wrap:anywhere}
+.app-connection-notice:empty{display:none}
