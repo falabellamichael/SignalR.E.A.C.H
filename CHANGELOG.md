@@ -1,5 +1,18 @@
 # Changelog
 
+## [26.10.9](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.8...v26.10.9) (2026-10-22)
+
+
+### Features
+
+* add Studio OAuth, Discord chat, and GPU context controls ([cdbfef1](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/cdbfef145a332d54c11d0b0008b074e4e044f2a7))
+
+
+### Bug Fixes
+
+* restore CI compatibility and model catalog fixtures ([20cf392](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/20cf392c6ade0f2b5b27e724eaec666c3af2eca0))
+* update loop guard mocks after context helper extraction ([ab6ec0f](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ab6ec0fd4e223114cddc7f4e7822cfaf3450be7e))
+
 ## [26.10.8](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.7...v26.10.8) (2026-10-20)
 
 
