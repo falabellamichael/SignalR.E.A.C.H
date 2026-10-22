@@ -158,7 +158,7 @@ class LoopRelayTests(RelayFixture):
     def test_json_stop_is_terminal_and_skips_gpu_compression_gate_and_cache(self):
         self.state.cfg["cache"]["enabled"] = True
         with patch("reachd.chat.net.urlopen") as native, \
-                patch("reachd.chat.prepare_gpu_context") as compress, \
+                patch("reachd.context_compression.prepare_gpu_context") as compress, \
                 patch.object(self.state.gate, "acquire") as acquire, \
                 patch.object(self.state.cache, "get") as cache:
             status, body, response = self.call_loop()
@@ -207,7 +207,7 @@ class LoopRelayTests(RelayFixture):
         def compressed_history(selector, payload, spec, **kwargs):
             return {**payload, "messages": [{"role": "user", "content": "summarized history"}]}, None
         with patch("reachd.chat.net.urlopen", side_effect=OSError("upstream unavailable")) as native, \
-                patch("reachd.chat.prepare_gpu_context", side_effect=compressed_history):
+                patch("reachd.context_compression.prepare_gpu_context", side_effect=compressed_history):
             status, body, response = self.call_loop(model="gemma-4-12b-qat", stream=True)
         self.assertEqual(native.call_count, 1)
         self.assertEqual(status, 200)
