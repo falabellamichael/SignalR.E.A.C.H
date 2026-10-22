@@ -9,13 +9,39 @@
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { gmailFetch, gmailRead, gmailSend, outlookFetch, outlookSend } = require('./mail-connections.cjs');
+const { gmailFetch, gmailRead, gmailSend, outlookFetch, outlookSend, hasSendPermission } = require('./mail-connections.cjs');
 const { readWeather, DEFAULT_WEATHER_URL } = require('./weather-connection.cjs');
 const { normalizeToken } = require('./app-auth.cjs');
 
 function pluginSettings(ctx) {
   const settings = ctx.getSettings?.() || ctx.agentStore?.get(ctx.agentId)?.settings || {};
   return { ...settings, plugins: ctx.getPlugins?.() || settings.plugins || {} };
+}
+
+function appConnectionContext(plugins = {}) {
+  // Only derived, allowlisted state belongs in a model prompt. Never project
+  // account fields, provider responses, credential values or arbitrary keys.
+  const rows = ['github', 'gmail', 'outlook', ...require('./extra-apps.cjs').ids].flatMap(id => {
+    const config = plugins[id];
+    if (!config) return [];
+    const manual = !!(config.token || config.password);
+    const signedIn = !!(config.accessToken || config.refreshToken) && (['gmail', 'drive', 'calendar'].includes(id) || !manual);
+    const enabled = require('./extra-apps.cjs').ids.includes(id) ? config.enabled === true : config.enabled !== false;
+    const row = { app: id, enabled, authentication: signedIn ? 'saved sign-in' : manual ? 'saved manual token' : id === 'github' ? 'no saved credential; GitHub CLI may provide access' : 'not connected' };
+    if (id === 'gmail' || id === 'outlook') {
+      row.sending = config.allowSend === false ? 'disabled in settings'
+        : config.scope ? hasSendPermission(id, config) ? 'permission granted' : 'permission not granted'
+          : signedIn || manual ? 'permission unknown; provider must verify' : 'not connected';
+    }
+    return [row];
+  });
+  if (!rows.length) return '';
+  return '\nAPP CONNECTIONS (current saved configuration, not proof that a provider request succeeded):\n'
+    + JSON.stringify(rows)
+    + '\nUse the provided app tools. Studio supplies and renews saved sign-in credentials; do not ask the user to paste API keys or access tokens for a saved sign-in. '
+    + 'Use the current connection state above when older conversation errors describe a previous configuration. '
+    + 'When mail sending is disabled or permission is not granted, explain that reading and sending have separate permissions. Ask the user to enable "Also allow sending" and reconnect that mail provider in App Connections. Do not try another mail account without the user choosing it. '
+    + 'Only claim success after a successful tool result.\n';
 }
 
 const GITHUB_API = 'https://api.github.com';
@@ -152,12 +178,18 @@ function parseGitRepoSlug(remoteUrl) {
 
 function getGitInfo(projectDir, settings = {}) {
   const targetDir = projectDir ? String(projectDir) : '';
-  if (!targetDir || !fs.existsSync(targetDir)) return { isGit: false, error: 'Directory not found' };
+  // App Connections belongs to the account, not the selected repository.
+  const github = settings?.plugins?.github;
+  const githubStatus = {
+    githubConnected: github?.enabled !== false && !!getGithubToken(settings),
+    githubUser: github?.username || '',
+  };
+  if (!targetDir || !fs.existsSync(targetDir)) return { ...githubStatus, isGit: false, error: 'Directory not found' };
 
   try {
     const gitCheck = spawnSync('git', ['-C', targetDir, 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8', timeout: 3000, shell: false });
     if (gitCheck.status !== 0 || !gitCheck.stdout?.trim()) {
-      return { isGit: false };
+      return { ...githubStatus, isGit: false };
     }
 
     const branchRes = spawnSync('git', ['-C', targetDir, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', timeout: 3000, shell: false });
@@ -173,21 +205,17 @@ function getGitInfo(projectDir, settings = {}) {
     const logRes = spawnSync('git', ['-C', targetDir, 'log', '-1', '--format=%h · %s (%cr)'], { encoding: 'utf8', timeout: 3000, shell: false });
     const lastCommit = logRes.stdout?.trim() || '';
 
-    const token = getGithubToken(settings);
-    const githubUser = settings?.plugins?.github?.username || '';
-
     return {
+      ...githubStatus,
       isGit: true,
       branch,
       remoteUrl,
       repoSlug,
       modifiedCount,
       lastCommit,
-      githubConnected: !!token,
-      githubUser,
     };
   } catch (error) {
-    return { isGit: false, error: error.message };
+    return { ...githubStatus, isGit: false, error: error.message };
   }
 }
 
@@ -412,7 +440,19 @@ const PLUGIN_TOOLS = {
 };
 
 Object.assign(PLUGIN_TOOLS,require('./extra-apps.cjs').TOOLS);
+Object.assign(PLUGIN_TOOLS, require('./connection-operations.cjs').buildTools(async (id, config, route, options) => {
+  const query = options.query ? '?' + new URLSearchParams(options.query) : '';
+  const request = { method: options.method, signal: options.signal, ...(options.body ? { body: JSON.stringify(options.body) } : {}) };
+  if (id === 'gmail') return gmailFetch(config || {}, route + query, request);
+  if (id === 'outlook') return outlookFetch(config || {}, route + query, request);
+  const token = await resolveGithubToken({ plugins: { github: config || {} } }, { signal: options.signal });
+  if (!token) throw new Error('Connect GitHub first.');
+  const response = await githubFetch(route + query, token, { ...request, headers: { 'Content-Type': 'application/json' } });
+  if (!response.ok) throw new Error('GitHub request failed (HTTP ' + response.status + '). Check repository permissions.');
+  return response.data;
+}, ['gmail', 'outlook', 'github']));
 for (const [name, tool] of Object.entries(PLUGIN_TOOLS)) {
+  tool.lazyHelp = true;
   const execute = tool.execute;
   tool.execute = async (args, ctx) => {
     if (pluginSettings(ctx).plugins[name.split('.')[0]]?.enabled === false) return { ok: false, error: 'This app connection is disabled.' };
@@ -421,6 +461,7 @@ for (const [name, tool] of Object.entries(PLUGIN_TOOLS)) {
 }
 
 module.exports = {
+  appConnectionContext,
   sanitizePlugins,
   getGithubToken,
   testPlugin,

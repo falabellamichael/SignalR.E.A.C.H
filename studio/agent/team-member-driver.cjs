@@ -59,6 +59,7 @@ module.exports = ({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME
     const loop = new AgentLoop({
       agentId: key,
       store,
+      getPlugins: this.getPlugins,
       endpoint: conn.endpoint,
       accessKey: conn.accessKey,
       ...(conn.connectionId ? { connectionId: conn.connectionId } : {}),

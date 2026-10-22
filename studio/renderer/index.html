@@ -488,7 +488,6 @@
                   </select>
                 </div>
               </div>
-              <div id="jev-auto-status" class="jev-auto-status dim hidden" role="status" aria-live="polite"></div>
               <div id="team-chat-menu" class="team-chat-menu hidden" role="dialog" aria-label="Team chat options">
                 <div class="team-chat-menu-head"><strong>Team chat</strong><button id="team-chat-close" class="ghost small" type="button" aria-label="Close team chat options">✕</button></div>
                 <label for="team-chat-select">Team</label>
@@ -1008,6 +1007,7 @@
        daemon, and the tray control opens Settings rather than toggling a
        background daemon. Both say what they actually are. -->
   <footer class="statusbar-bottom" id="statusbar-bottom">
+    <div id="jev-auto-status" class="jev-auto-status dim hidden" role="status" aria-live="polite"></div>
     <!-- Quick connection switcher: opens UPWARD from the endpoint chip. Rows are
          built in workspace-shell.js with createElement — connection names and
          endpoints are user input, so they are never interpolated into markup. -->

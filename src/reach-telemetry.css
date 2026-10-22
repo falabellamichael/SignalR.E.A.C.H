@@ -642,6 +642,32 @@
     opacity: 0.85;
 }
 
+.reach-presence-ip-identity {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.reach-presence-country {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 20px;
+    width: 20px;
+    min-height: 15px;
+    font-family: sans-serif;
+}
+
+.reach-presence-country img {
+    display: block;
+    width: 20px;
+    height: 15px;
+    object-fit: contain;
+    border-radius: 2px;
+}
+
 .reach-presence-ua {
     font-size: 9.5px;
     color: #b0b4b8;

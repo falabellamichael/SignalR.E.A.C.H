@@ -300,9 +300,9 @@
         authRow.append(pill, sub);
       } else {
         const pill = node('span', 'conn-badge off', 'GitHub not connected');
-        const connectBtn = node('button', 'ghost small', 'Connect in Plugins / MCP');
+        const connectBtn = node('button', 'ghost small', 'Connect in App Connections');
         connectBtn.onclick = () => {
-          if (typeof openSettingsPanel === 'function') openSettingsPanel('mcp');
+          if (typeof openSettingsPanel === 'function') openSettingsPanel('apps');
           else if (typeof showTab === 'function') showTab('settings');
         };
         authRow.append(pill, connectBtn);

@@ -82,6 +82,7 @@ module.exports = ({ workerSoulKey, SUBAGENT_MAX_ROUNDS }) => ({
     const loop = new AgentLoop({
       agentId: id,
       store,
+      getPlugins: this.getPlugins,
       endpoint: useEndpoint,
       accessKey: useAccessKey,
       connectionId: useConnectionId,

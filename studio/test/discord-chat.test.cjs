@@ -13,8 +13,8 @@ test('Discord chat settings accept saved projects and preserve the existing auth
   const apps = createAppConnections({ getSettings: () => settings, saveSettings: value => { settings = value; }, openExternal: async () => {}, getProjects: () => [{ name: 'Fixture', dir: '/fixture' }] });
   await apps.save('discord', { chatEnabled: true, workspace: '/fixture' });
   assert.equal(settings.plugins.discord.refreshToken, 'fixture-renew'); assert.equal(apps.catalog().find(item => item.id === 'discord').chat.workspace, '/fixture');
-  await assert.rejects(() => apps.save('discord', { workspace: '/not-a-saved-project' }), /saved Studio project/);
-  await assert.rejects(() => apps.save('discord', { chatEnabled: 'yes' }), /Invalid Discord/);
+  await assert.rejects(apps.save('discord', { workspace: '/not-a-saved-project' }), /saved Studio project/);
+  await assert.rejects(apps.save('discord', { chatEnabled: 'yes' }), /Invalid Discord/);
 });
 
 test('Discord conversation uses Studio history, routes replies and approves only the same owner and channel', async t => {

@@ -16,6 +16,101 @@
     const { pageHeader, statTile } =
         window.__reachPageWidgets;
 
+    // Keep country lookups separate from the telemetry poll and reuse them
+    // across page visits. Only public IPs go to the fixed, credential-free API.
+    const countryCache = new Map();
+    const countryQueue = [];
+    let countryLookups = 0;
+    function publicClientIp(value) {
+        if (typeof value !== 'string' || value.length > 64) return '';
+        let ip = value.trim().toLowerCase();
+        if (ip.startsWith('::ffff:') && ip.includes('.')) ip = ip.slice(7);
+        if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(ip)) {
+            const p = ip.split('.').map(Number);
+            if (p.some(n => n > 255) || p[0] === 0 || p[0] === 10 || p[0] === 127 || p[0] >= 224
+                || p[0] === 100 && p[1] >= 64 && p[1] <= 127
+                || p[0] === 169 && p[1] === 254 || p[0] === 172 && p[1] >= 16 && p[1] <= 31
+                || p[0] === 192 && (p[1] === 168 || p[1] === 0 && (p[2] === 0 || p[2] === 2))
+                || p[0] === 198 && (p[1] === 18 || p[1] === 19 || p[1] === 51 && p[2] === 100)
+                || p[0] === 203 && p[1] === 0 && p[2] === 113) return '';
+            return p.join('.');
+        }
+        if (!/^[0-9a-f:]+$/.test(ip) || !ip.includes(':')) return '';
+        try { ip = new URL('http://[' + ip + ']/').hostname.slice(1, -1); }
+        catch (_e) { return ''; }
+        const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(ip);
+        if (mapped) {
+            const hi = parseInt(mapped[1], 16), lo = parseInt(mapped[2], 16);
+            return publicClientIp([hi >> 8, hi & 255, lo >> 8, lo & 255].join('.'));
+        }
+        return /^[23][0-9a-f]{3}:/.test(ip) && !/^2001:db8(?::|$)/.test(ip) ? ip : '';
+    }
+    function drainCountryQueue() {
+        while (countryLookups < 3 && countryQueue.length) {
+            countryLookups++;
+            countryQueue.shift()().finally(() => { countryLookups--; drainCountryQueue(); });
+        }
+    }
+    function clientCountry(ip) {
+        const cached = countryCache.get(ip);
+        if (cached && cached.expires > Date.now()) return cached.promise;
+        const entry = { expires: Infinity, promise: null };
+        entry.promise = new Promise(resolve => {
+            countryQueue.push(async () => {
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 4000);
+                let code = '';
+                try {
+                    const response = await fetch('https://api.country.is/' + encodeURIComponent(ip), {
+                        credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal
+                    });
+                    const data = response.ok ? await response.json() : null;
+                    if (data && typeof data.country === 'string' && /^[A-Z]{2}$/.test(data.country)
+                        && data.country !== 'ZZ' && data.country !== 'XX') code = data.country;
+                } catch (_e) { /* Geolocation must never break usage, Copy, or filtering. */ }
+                finally { clearTimeout(timeout); }
+                entry.expires = Date.now() + (code ? 86400000 : 300000);
+                resolve(code);
+            });
+        });
+        // Bound the cache without evicting jobs that are still queued/running.
+        if (countryCache.size >= 512) {
+            const oldest = Array.from(countryCache).find(([, value]) => value.expires !== Infinity);
+            if (oldest) countryCache.delete(oldest[0]);
+        }
+        countryCache.set(ip, entry);
+        drainCountryQueue();
+        return entry.promise;
+    }
+    function countryFlag(value) {
+        const ip = publicClientIp(value);
+        if (!ip) return null;
+        const badge = el('span', 'reach-presence-country', '🌐');
+        badge.title = 'Looking up IP country…';
+        badge.setAttribute('aria-label', badge.title);
+        clientCountry(ip).then(code => {
+            if (!badge.isConnected) return;
+            if (!code) {
+                badge.title = 'IP country unavailable';
+                badge.setAttribute('aria-label', badge.title);
+                return;
+            }
+            let name = code;
+            try { name = new Intl.DisplayNames(['en'], { type: 'region' }).of(code) || code; }
+            catch (_e) { /* Country code remains a useful accessible label. */ }
+            badge.title = name + ' (' + code + ') · Approximate IP location';
+            badge.setAttribute('aria-label', badge.title);
+            const image = document.createElement('img');
+            image.src = 'https://flagcdn.com/40x30/' + code.toLowerCase() + '.png';
+            image.alt = name + ' flag'; image.width = 20; image.height = 15;
+            image.referrerPolicy = 'no-referrer';
+            image.addEventListener('error', () => { badge.textContent = '🌐'; });
+            badge.textContent = '';
+            badge.appendChild(image);
+        });
+        return badge;
+    }
+
     /* ----------------------------------------------------------------- USAGE */
     function renderUsage(container) {
         container.appendChild(pageHeader('fa-chart-column', 'Live Usage & Telemetry',
@@ -363,8 +458,12 @@
 
                 // IP & UA Row
                 const ipRow = el('div', 'reach-presence-ip-row');
+                const ipIdentity = el('span', 'reach-presence-ip-identity');
+                const flag = showPresence ? countryFlag(c.ip) : null;
+                if (flag) ipIdentity.appendChild(flag);
                 const ipCode = el('span', null, c.ip);
-                ipRow.appendChild(ipCode);
+                ipIdentity.appendChild(ipCode);
+                ipRow.appendChild(ipIdentity);
 
                 const copyBtn = el('button', 'reach-presence-btn', '');
                 copyBtn.innerHTML = '<i class="fa-regular fa-copy"></i> Copy';

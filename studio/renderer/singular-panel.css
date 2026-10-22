@@ -22,7 +22,7 @@
   overflow: hidden;
   padding: 16px;
   color: var(--text);
-  gap: 16px;
+  gap: 16px 0;
   background: var(--panel);
   box-sizing: border-box;
 }
@@ -37,7 +37,8 @@
   gap: 10px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 6px;
+  padding-right: 14px;
+  scrollbar-gutter: stable;
   box-sizing: border-box;
 }
 
@@ -59,9 +60,13 @@
 .singular-col-info .singular-github-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .singular-col-info .singular-github-body dl { margin: 4px 0; }
 .singular-col-info .singular-github-auth {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  align-self: center; width: fit-content; max-width: 100%;
+  min-width: 0; padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
 }
+.singular-col-info .singular-github-auth > * { min-width: 0; max-width: 100%; }
+.singular-col-info .singular-github-auth .conn-badge { white-space: normal; overflow-wrap: anywhere; }
+.singular-col-info .singular-github-auth button { white-space: normal; overflow-wrap: anywhere; text-align: center; }
 
 .singular-col-info .singular-actions {
   display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line);
@@ -125,7 +130,7 @@
 
 /* Responsive wrap if drawer is very narrow */
 @container drawer (max-width: 480px) {
-  #singular-panel { flex-direction: column; overflow-y: auto; }
+  #singular-panel { flex-direction: column; overflow-y: auto; scrollbar-gutter: stable; }
   .singular-col-info { max-width: none; overflow: visible; padding-right: 0; }
   .singular-col-team { border-left: none; border-top: 1px solid var(--line); padding-left: 0; padding-top: 14px; overflow: visible; }
 }

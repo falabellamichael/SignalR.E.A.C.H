@@ -203,7 +203,9 @@ class AgentLoop {
 
   _buildSystemPrompt() {
     const rules = this.rulesProvider ? this.rulesProvider() : '';
-    return rules + this._buildBaseSystemPrompt();
+    const connections = this.getPlugins && features(this._settings()).agent
+      ? require('./plugins.cjs').appConnectionContext(this.getPlugins()) : '';
+    return rules + this._buildBaseSystemPrompt() + connections;
   }
 
   _buildBaseSystemPrompt() {

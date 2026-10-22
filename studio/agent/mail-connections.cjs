@@ -5,11 +5,11 @@
 const refreshes = new Map();
 const { normalizeToken, connectionError } = require('./app-auth.cjs');
 async function jsonRequest(url, options = {}) {
-  const { service = 'gmail', permission, expectedStatus, fetchImpl = fetch, ...requestOptions } = options;
+  const { service = 'gmail', permission, oauthSignIn, expectedStatus, fetchImpl = fetch, ...requestOptions } = options;
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000);
   const response = await fetchImpl(url, { ...requestOptions, redirect: 'error', signal });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || expectedStatus && response.status !== expectedStatus) throw connectionError(service, response.status, data, { permission });
+  if (!response.ok || expectedStatus && response.status !== expectedStatus) throw connectionError(service, response.status, data, { permission, oauthSignIn });
   return data;
 }
 async function googleToken(config = {}, service = 'gmail', options = {}) {
@@ -23,7 +23,7 @@ async function googleToken(config = {}, service = 'gmail', options = {}) {
     const pending = (async () => {
       const body = new URLSearchParams({ client_id: config.clientId, refresh_token: config.refreshToken, grant_type: 'refresh_token' });
       if (config.clientSecret) body.set('client_secret', config.clientSecret);
-      const data = await jsonRequest('https://oauth2.googleapis.com/token', { ...options, service, method: 'POST', body });
+      const data = await jsonRequest('https://oauth2.googleapis.com/token', { ...options, service, oauthSignIn: true, method: 'POST', body });
       if (!data.access_token) throw new Error('Google did not return an access token. Connect Google again.');
       if (refreshes.size > 20) refreshes.clear();
       refreshes.set(key, { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3600) * 1000 });
@@ -41,7 +41,7 @@ async function googleToken(config = {}, service = 'gmail', options = {}) {
 async function gmailFetch(config, route, { signal, ...options } = {}) {
   const token = await googleToken(config, 'gmail', { signal, fetchImpl: options.fetchImpl });
   return jsonRequest('https://gmail.googleapis.com/gmail/v1/users/me/' + route, {
-    ...options, signal, permission: route === 'messages/send' ? 'gmail.send' : 'gmail.readonly', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) },
+    ...options, signal, oauthSignIn: !!(config.accessToken || config.refreshToken), permission: route === 'messages/send' ? 'gmail.send' : 'gmail.readonly', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) },
   });
 }
 async function gmailRead(config, args = {}, signal) {
@@ -77,7 +77,7 @@ async function gmailSend(config, args, signal) {
 }
 async function outlookFetch(config, route, options = {}) {
   const token = await require('./oauth-grants.cjs').oauthToken('outlook', config, options);
-  return jsonRequest('https://graph.microsoft.com/v1.0/me' + route, { ...options, service: 'outlook', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) } });
+  return jsonRequest('https://graph.microsoft.com/v1.0/me' + route, { ...options, service: 'outlook', oauthSignIn: !config.token && !config.password && !!(config.accessToken || config.refreshToken), headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) } });
 }
 function hasSendPermission(id, config = {}) {
   const scopes = String(config.scope || '').toLowerCase().split(/[ ,]+/);

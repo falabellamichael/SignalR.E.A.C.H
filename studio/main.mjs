@@ -1650,6 +1650,7 @@ function registerIpc() {
       const budgets = resolveBudgets(settings, agentId ? getAgentStore().get(agentId)?.settings : {});
       const runner = new TeamRunner({
         agentSettings: structuredClone(agentId ? getAgentStore().get(agentId)?.settings || {} : {}),
+        getPlugins: () => loadSettings().plugins || {},
         team: { ...team, members: roster.map(r => r.member) },
         personas,
         roles,
