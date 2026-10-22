@@ -25,7 +25,7 @@
         dirty: false,
         toastTimer: null,
         starting: null,         // in-flight startEndpoint() promise
-        version: '26.10.9' // x-release-please-version
+        version: '26.10.10' // x-release-please-version
     };
 
     function prefsGet(key, fallback) {

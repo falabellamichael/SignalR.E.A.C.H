@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.9...v26.10.10) (2026-10-22)
+
+
+### Bug Fixes
+
+* **studio:** harden Discord chat, app connections, mail and auth ([c0ebc18](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/c0ebc182364cdf8ba0435e90d55db60bbec2fb3b))
+
 ## [26.10.9](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.8...v26.10.9) (2026-10-22)
 
 
