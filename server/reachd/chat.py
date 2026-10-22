@@ -10,7 +10,7 @@ import urllib.request
 import reachd.core as core  # STATE is read at call time (cycle-safe)
 from reachd import net
 from reachd.const import CLIENT_DISCONNECT_ERRORS
-from reachd.context_compression import ContextCompressionError, prepare_gpu_context
+from reachd.context_compression import ContextCompressionError, prepare_chat_context
 from reachd.loop_guard import check_minicpm_loop, send_loop_stop
 from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
@@ -471,30 +471,10 @@ def chat_execute(h, *, catalog=None):
     context_report = None
     original_payload = payload
 
-    def prepare_context(selector, data, model_spec):
-        if metered or not req_cfg.get("context_compression", True):
-            return data, None
-        record = getattr(h, "_reach_request", None)
-        if isinstance(record, dict):
-            record["phase"] = "checking_context"
-        prepared, report = prepare_gpu_context(selector, data, model_spec,
-            namespace=getattr(h, "_auth_key_id", "") or "local",
-            reserve_tokens=int(req_cfg.get("context_reserve_tokens", 4096)))
-        if isinstance(record, dict):
-            record["phase"] = "connecting_upstream"
-            if report:
-                record["context_compression"] = report
-        if report:
-            h._reach_log("context compressed model=%s tokens=%d->%d reserve=%d "
-                         "schema_docs=%s history=%d tool_results=%d"
-                         % (selector, report["before_tokens"], report["after_tokens"],
-                            report["reserved_tokens"], report["schema_docs_compacted"],
-                            report["history_messages_summarized"], report["tool_results_summarized"]))
-        return prepared, report
-
     try:
         url, payload, auth_headers, circuit = dispatch(upstream_model, payload, core.STATE)
-        payload, context_report = prepare_context(upstream_model, payload, spec)
+        payload, context_report = prepare_chat_context(h, upstream_model, payload, spec,
+            metered=metered, settings=req_cfg)
         encoded = json.dumps(payload).encode("utf-8")
         if core.STATE.cfg.get("data", {}).get("log_bodies"):
             request_body = body[:2048].decode("utf-8", "replace")
@@ -541,7 +521,8 @@ def chat_execute(h, *, catalog=None):
                 try:
                     fb_payload = dict(original_payload)
                     fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE)
-                    fb_payload, fb_report = prepare_context(fb_upstream, fb_payload, models[fallback_alias])
+                    fb_payload, fb_report = prepare_chat_context(h, fb_upstream, fb_payload, models[fallback_alias],
+                        metered=metered, settings=req_cfg)
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)

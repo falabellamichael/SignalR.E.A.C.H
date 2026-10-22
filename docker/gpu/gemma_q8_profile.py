@@ -34,7 +34,11 @@ def start_gemma_q8(root, deployment, docker, wait_ready):
     profile = read_profile(root)
     for kind in ("target", "draft", "projector"):
         path = (root / "models/gemma4-12b-qat-q8" / profile[kind]["file"]).resolve()
-        if not path.is_relative_to((root / "models/gemma4-12b-qat-q8").resolve()) or not path.is_file():
+        try:
+            path.relative_to((root / "models/gemma4-12b-qat-q8").resolve())
+        except ValueError:
+            raise RuntimeError("Missing approved Gemma Q8 asset: " + kind)
+        if not path.is_file():
             raise RuntimeError("Missing approved Gemma Q8 asset: " + kind)
     existing = docker("container", "inspect", "reach-gemma", check=False)
     if existing.returncode == 0:
@@ -64,7 +68,10 @@ def start_gemma_q8(root, deployment, docker, wait_ready):
         for kind in ("target", "draft", "projector"):
             asset = profile[kind]
             with (root / "models/gemma4-12b-qat-q8" / asset["file"]).open("rb") as source:
-                if hashlib.file_digest(source, "sha256").hexdigest() != asset["sha256"]:
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                if digest.hexdigest() != asset["sha256"]:
                     raise RuntimeError("Gemma Q8 asset checksum mismatch: " + kind)
         args = ["run", "-d", "--init", "--pull=never", "--name", "reach-gemma",
                 "--label", "io.signalreach.deployment=" + deployment, "--restart=unless-stopped",

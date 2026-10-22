@@ -8,6 +8,7 @@ import { basicPlanModelIds, digest, requestModel } from '../service/store.mjs';
 import { hostedGpuModel } from '../service/gpu-bridge.mjs';
 
 const { models: gpu } = JSON.parse(readFileSync(new URL('../config/subscription-gpu.example.json', import.meta.url)));
+const activeGpu = gpu.filter(model => model.metered === true);
 const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
   overageUsdMicrosPerRequest: 10000, proEnabled: false };
 const browser = ['chatgpt-chat', 'copilot-chat', 'gemini-chat'].map(id => ({ id, provider: 'Login Provider',
@@ -26,12 +27,12 @@ const login = [...browser,
 
 test('only deployed GPU targets qualify for API and request access', () => {
   assert.ok(gpu.every(hostedGpuModel));
-  assert.ok(gpu.every(requestModel));
+  assert.deepEqual(gpu.filter(requestModel), activeGpu);
   assert.ok(login.every(model => !hostedGpuModel(model) && !requestModel(model)));
   assert.equal(hostedGpuModel({ ...gpu[0], id: 'chatgpt-chat' }), false);
   assert.equal(hostedGpuModel({ ...gpu[0], id: 'codegpt-gpt-5' }), false);
   assert.equal(hostedGpuModel({ ...gpu[0], bridge: { kind: 'gpu', model: 'ibm-granite/granite-4.2-3b-fp8' } }), false);
-  assert.deepEqual(basicPlanModelIds([...gpu, ...login]), gpu.map(model => model.id).sort());
+  assert.deepEqual(basicPlanModelIds([...gpu, ...login]), activeGpu.map(model => model.id).sort());
 });
 
 test('mixed private catalogs remain intact while every public model surface and explicit inference is GPU-only', async t => {
@@ -42,7 +43,7 @@ test('mixed private catalogs remain intact while every public model surface and 
   process.cwd(), { REACH_TEST_UPSTREAM: 'server-only-test-relay-credential' });
   let calls = 0;
   const forbidden = () => { calls++; throw new Error('Unavailable models cannot reserve or dispatch.'); };
-  const account = { id: 'fixture', allowedModels: models, walletAddress: null, plan: { id: 'basic-wallet', status: 'active' } };
+  const account = { id: 'fixture', allowedModels: models.filter(model => model.metered === true), walletAddress: null, plan: { id: 'basic-wallet', status: 'active' } };
   const store = { models, reserveRequest: forbidden, settleRequest: forbidden, releaseRequest: forbidden,
     markRequestUncertain: forbidden, reserve: forbidden, reserveUsd: forbidden,
     authenticate: () => account, account: () => account, pruneExpiredAuthentication: () => {} };
@@ -56,13 +57,13 @@ test('mixed private catalogs remain intact while every public model surface and 
     assert.equal(response.status, 200);
     return response.json();
   };
-  const expected = gpu.map(model => model.id);
+  const expected = activeGpu.map(model => model.id);
   assert.deepEqual((await get('/v1/account/config')).redemptionModels.map(model => model.id), expected);
   assert.deepEqual((await get('/v1/account')).allowedModels.map(model => model.id), expected);
   assert.deepEqual((await get('/v1/models')).data.map(model => model.id), expected);
   assert.equal(service.config().modelsRevision, digest(JSON.stringify(models)));
   assert.deepEqual(config.models, models);
-  for (const model of [...login, { id: 'auto' }, { id: 'default' }]) {
+  for (const model of [...gpu.filter(model => model.metered !== true), ...login, { id: 'auto' }, { id: 'default' }]) {
     const response = await fetch(origin + '/v1/chat/completions', { method: 'POST',
       headers: { authorization: 'Bearer fixture', 'content-type': 'application/json' },
       body: JSON.stringify({ model: model.id, messages: [{ role: 'user', content: 'Hello.' }] }) });

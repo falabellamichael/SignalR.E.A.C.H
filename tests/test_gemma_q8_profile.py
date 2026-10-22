@@ -1,6 +1,7 @@
 """Q8 profile adoption preserves unrelated containers and validates the runtime."""
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -78,6 +79,27 @@ class GemmaQ8ProfileTests(unittest.TestCase):
         (self.root / "gemma_q8_profile.json").write_text(json.dumps(self.profile))
         with self.assertRaisesRegex(RuntimeError, "Unexpected Gemma Q8 profile"):
             q8.read_profile(self.root)
+
+    def test_approved_assets_are_verified_before_creating_a_container(self):
+        for kind in ("target", "draft", "projector"):
+            self.profile[kind]["sha256"] = hashlib.sha256(b"fixture").hexdigest()
+        (self.root / "gemma_q8_profile.json").write_text(json.dumps(self.profile))
+        docker = MagicMock(return_value=SimpleNamespace(returncode=1, stdout=""))
+        with patch.object(q8, "wait_native") as wait:
+            q8.start_gemma_q8(self.root, "fixture", docker, MagicMock())
+        self.assertEqual(docker.call_count, 2)
+        self.assertEqual(docker.call_args.args[0], "run")
+        self.assertIn(self.profile["image"], docker.call_args.args)
+        wait.assert_called_once()
+
+    def test_asset_outside_model_directory_is_rejected_before_docker(self):
+        (self.root / "outside.gguf").write_bytes(b"fixture")
+        self.profile["target"]["file"] = "../../outside.gguf"
+        (self.root / "gemma_q8_profile.json").write_text(json.dumps(self.profile))
+        docker = MagicMock()
+        with self.assertRaisesRegex(RuntimeError, "Missing approved"):
+            q8.start_gemma_q8(self.root, "fixture", docker, MagicMock())
+        docker.assert_not_called()
 
     def test_manifest_routes_q8_without_running_the_legacy_launcher(self):
         spec = importlib.util.spec_from_file_location("q8_launch", GPU / "launch_services.py")

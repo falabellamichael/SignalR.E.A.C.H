@@ -72,7 +72,7 @@ test('a customer signs in with an email code end to end, and the code never appe
   const blocked = await s.post('/v1/redemptions/start', { amountRch: '1' }, headers);
   assert.deepEqual([blocked.status, blocked.body.error.code], [403, 'website_access_required']);
   s.store.grantPlan({ accountId: session.body.account.id, grantId: 'email-subscriber-fixture',
-    planId: 'basic-wallet', name: 'Basic', models: MODELS.map(model => model.id), tokens: 0, expiresAt: NOW + 3600000 });
+    planId: 'basic-wallet', name: 'Basic', models: MODELS.filter(model => model.metered === true).map(model => model.id), tokens: 0, expiresAt: NOW + 3600000 });
   const account = await s.get('/v1/account', session.body.accessToken);
   assert.equal(account.body.rchBalance.status, 'unconfigured');
   assert.equal(account.body.email, 'ada@example.com');

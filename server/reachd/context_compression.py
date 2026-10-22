@@ -124,7 +124,9 @@ def _history_split(messages):
 class _Compressor:
     def __init__(self, route, payload, limit, namespace, request_json):
         self.url = route["url"]
-        self.tokenize_url = self.url.removesuffix("/v1/chat/completions") + "/tokenize"
+        suffix = "/v1/chat/completions"
+        self.base_url = self.url[:-len(suffix)] if self.url.endswith(suffix) else self.url
+        self.tokenize_url = self.base_url + "/tokenize"
         self.model = payload["model"]
         self.limit = limit
         self.namespace = namespace
@@ -145,7 +147,7 @@ class _Compressor:
                 # llama.cpp's /tokenize accepts text rather than chat messages.
                 # Its native chat counter renders tools and processes media
                 # without generating an answer or executing a tool.
-                props_url = self.url.removesuffix("/v1/chat/completions") + "/props"
+                props_url = self.base_url + "/props"
                 props = self.request_json(props_url, None, 20)
                 maximum = llama_context_limit(props, self.model)
                 if maximum:
@@ -279,3 +281,26 @@ def prepare_gpu_context(upstream, payload, spec, *, namespace="local", reserve_t
             % (after, budget, reserve))
     stats.update(after_tokens=after, context_limit=compressor.limit, reserved_tokens=reserve)
     return data, stats
+
+
+def prepare_chat_context(h, selector, payload, spec, *, metered, settings):
+    """Prepare relay context and record content-free progress and compression stats."""
+    if metered or not settings.get("context_compression", True):
+        return payload, None
+    record = getattr(h, "_reach_request", None)
+    if isinstance(record, dict):
+        record["phase"] = "checking_context"
+    prepared, report = prepare_gpu_context(selector, payload, spec,
+        namespace=getattr(h, "_auth_key_id", "") or "local",
+        reserve_tokens=int(settings.get("context_reserve_tokens", 4096)))
+    if isinstance(record, dict):
+        record["phase"] = "connecting_upstream"
+        if report:
+            record["context_compression"] = report
+    if report:
+        h._reach_log("context compressed model=%s tokens=%d->%d reserve=%d "
+                     "schema_docs=%s history=%d tool_results=%d"
+                     % (selector, report["before_tokens"], report["after_tokens"],
+                        report["reserved_tokens"], report["schema_docs_compacted"],
+                        report["history_messages_summarized"], report["tool_results_summarized"]))
+    return prepared, report

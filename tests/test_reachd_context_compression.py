@@ -292,6 +292,7 @@ class CompressionRelayTests(RelayFixture):
         h._client_ip.return_value = "127.0.0.1"
         h.key_limits.return_value = (None, 0, 0)
         h._auth_key_id = "fixture-key-id"
+        h._reach_request = {}
         payload = {"model": "gemma-4-12b-qat", "messages": [{"role": "user", "content": "Hello"}],
                    "stream": stream}
         h._read_body.return_value = json.dumps(payload).encode()
@@ -305,18 +306,20 @@ class CompressionRelayTests(RelayFixture):
         def prepare(selector, payload, spec, **kwargs):
             self.assertEqual(kwargs["namespace"], "fixture-key-id")
             return {**payload, "messages": [{"role": "user", "content": "Preserved request"}]}, report
-        with patch("reachd.chat.prepare_gpu_context", side_effect=prepare), \
+        with patch("reachd.context_compression.prepare_gpu_context", side_effect=prepare), \
                 patch("reachd.chat.net.urlopen", return_value=MagicMock()) as send:
             result = chat_execute(h, catalog="gpu")
         self.assertIsNotNone(result)
         sent = json.loads(send.call_args.args[0].data)
         self.assertEqual(sent["messages"][0]["content"], "Preserved request")
         self.assertEqual(result[1]["rl_headers"]["X-Reach-Context"], "compressed")
+        self.assertEqual(h._reach_request["phase"], "connecting_upstream")
+        self.assertEqual(h._reach_request["context_compression"], report)
         self.state.gate.release()
 
     def test_compression_failure_releases_the_streaming_gate_without_generation(self):
         h = self.execute(stream=True)
-        with patch("reachd.chat.prepare_gpu_context", side_effect=ContextCompressionError("too large")), \
+        with patch("reachd.context_compression.prepare_gpu_context", side_effect=ContextCompressionError("too large")), \
                 patch("reachd.chat.net.urlopen") as send:
             self.assertIsNone(chat_execute(h, catalog="gpu"))
         send.assert_not_called()
@@ -328,7 +331,7 @@ class CompressionRelayTests(RelayFixture):
             with self.subTest(metered=metered):
                 self.state.cfg["request"]["context_compression"] = enabled
                 h = self.execute(metered=metered)
-                with patch("reachd.chat.prepare_gpu_context") as prepare, \
+                with patch("reachd.context_compression.prepare_gpu_context") as prepare, \
                         patch("reachd.chat.net.urlopen", return_value=MagicMock()):
                     self.assertIsNotNone(chat_execute(h, catalog="gpu"))
                 prepare.assert_not_called()
