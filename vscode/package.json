@@ -2,7 +2,7 @@
   "name": "simplereach",
   "displayName": "SimpleREACH",
   "description": "Chat with REACH subscription models, your own endpoints, or login providers through the desktop tray.",
-  "version": "26.10.10",
+  "version": "26.10.11",
   "publisher": "simplereach",
   "license": "MIT",
   "engines": {
