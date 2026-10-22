@@ -11,6 +11,7 @@ import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
 import { isDelegatedEoaCode } from './treasury-redemption.mjs';
 import { randomBytes } from 'node:crypto';
+import { createConnectionsOAuth } from './connections-oauth.mjs';
 import { createResendMailer, createSupabaseOtpMailer, EMAIL_CODE_TTL_MS, emailCode, emailCodeHash, validEmailCode, normalizeEmail } from './email.mjs';
 import { createPayPalClient, validPayPalTopUp } from './payments/paypal.mjs';
 import { assertPlusPrice, recordPlusInvoice } from './payments/plus.mjs';
@@ -65,7 +66,8 @@ const staticAssets = new Map([
   ['/billing/return',['text/html; charset=utf-8','billing.html']],
 ]);
 
-export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,paymentFetch,paypalFetch,mailer,now=Date.now}) {
+export function createAccountService({config,store,provider,redemptionProvider,balanceProvider,fetchImpl,paymentFetch,paypalFetch,mailer,connectionsOAuth,now=Date.now}) {
+  const connections = connectionsOAuth ? createConnectionsOAuth({ origin: config.origin, clients: connectionsOAuth, now }) : null;
   let ownsStore=false,ownsProvider=false;
   if(!store) { store=createAccountStore(config,{now});ownsStore=true; }
   if(!provider&&config.authRpcUrl) { const request=new FetchRequest(config.authRpcUrl);request.timeout=15000;provider=new JsonRpcProvider(request);ownsProvider=true; }
@@ -149,6 +151,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       }
       if(req.method==='GET'&&pathname==='/healthz') {json(res,200,{status:'ok',service:'reach-accounts'});return;}
       rateLimit(req);
+      if (connections && await connections.handle(req, res)) return;
       const asset=staticAssets.get(pathname);
       if(req.method==='GET'&&asset) {res.writeHead(200,{'content-type':asset[0]});res.end(readFileSync(new URL(`./public/${asset[1]}`,import.meta.url)));return;}
       if(req.method==='GET'&&pathname==='/v1/account/config') {json(res,200,publicConfig());return;}
@@ -389,7 +392,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
   const tick=async()=>{if(reconciling)return;reconciling=true;try{await store.pruneExpiredAuthentication();await redemption.reconcile();}catch{/* Retain durable pending intents for the next pass. */}finally{reconciling=false;}};
   const timer=setInterval(tick,30000);timer.unref();
   server.once('listening',tick);
-  server.once('close',()=>{clearInterval(timer);redemption.close();balances.close();if(ownsProvider)provider.destroy();if(ownsStore)Promise.resolve().then(()=>store.close()).catch(()=>{});});
+  server.once('close',()=>{clearInterval(timer);connections?.close();redemption.close();balances.close();if(ownsProvider)provider.destroy();if(ownsStore)Promise.resolve().then(()=>store.close()).catch(()=>{});});
   const updateModels = models => {
     const next = structuredClone(models);
     gateway.replaceModels(next); // validate before touching either live catalog

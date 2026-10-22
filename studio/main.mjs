@@ -76,6 +76,7 @@ const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, uns
 const { testPlugin, getGitInfo, sanitizePlugins } = require('./agent/plugins.cjs');
 const { createAppConnections } = require('./agent/app-connections.cjs');
 const { createCompanionChat, companionSettings, companionPrompt } = require('./agent/companion-chat.cjs');
+const { createDiscordChat } = require('./agent/discord-chat.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
 let cliSettingsBridge = null;
@@ -126,6 +127,7 @@ let win = null;
 let petWindows = null;
 let companionChat = null;
 let appConnections = null;
+let discordChat = null;
 
 function publishFileLive(info) {
   try {
@@ -275,6 +277,9 @@ function applySettingsPatch(s) {
     throw error;
   }
   const next = { ...current, ...patch };
+  // Settings panels submit only the plugins they display, with saved secrets
+  // redacted. Merge their edits into the canonical store instead of replacing it.
+  if (Object.hasOwn(patch, 'plugins')) next.plugins = sanitizePlugins(patch.plugins, current.plugins);
   delete next.settingsRevision;
   delete next.settingsRevisions;
   delete next.settingsScope;
@@ -508,6 +513,7 @@ function saveSettings(s) {
   const list = (s.connections || []).filter(connection => connection.id !== HOSTED_CONNECTION_ID);
   if (managed) list.push(managed);
   settingsStore.save(hostedAccount.sanitize({ ...s, connections: list }));
+  queueMicrotask(() => discordChat?.synchronize());
 }
 function publicHostedConnections(settings) {
   return hostedAccount.sanitize(connections.publicConnections(hostedAccount.sanitize(settings)));
@@ -748,10 +754,13 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
     sendEvent: (channel, payload) => {
       companionChat?.event(channel, payload);
+      discordChat?.event(channel, payload);
       if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
     },
     requestApproval: payload => {
       if (isCompanion && win && !win.isDestroyed()) { win.show(); win.focus(); }
+      if (agent.settings?.discordChat) return discordChat.requestApproval(agentId, payload, { timeoutMs: budgets.approvalTimeoutMs, signal: agentLoops.get(agentId)?.abortController?.signal,
+        fallback: () => { if (win && !win.isDestroyed()) { win.show(); win.focus(); } return requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs); } });
       return requestApprovalFromRenderer(payload, budgets.approvalTimeoutMs);
     },
     auditLog: getAuditLog(),
@@ -885,7 +894,11 @@ async function dispatchAgentMessage({ id, text, attachmentIds = [], autoToken, m
 }
 
 function registerIpc() {
-  appConnections = createAppConnections({ getSettings: loadSettings, saveSettings, openExternal: url => shell.openExternal(url) });
+  require('./agent/oauth-grants.cjs').configureGrantStore({ getSettings: loadSettings, saveSettings });
+  appConnections = createAppConnections({ getSettings: loadSettings, saveSettings, openExternal: url => shell.openExternal(url), clients: require('./agent/oauth-clients.cjs').loadClients(), getProjects: loadProjects, getDiscordChatStatus: () => discordChat?.snapshot() });
+  discordChat = createDiscordChat({ profile: app.getPath('userData'), getSettings: loadSettings, getProjects: loadProjects, getStore: getAgentStore,
+    getLoop: id => getAgentLoop(id, { newTurn: true }), stopLoop: id => agentLoops.get(id)?.stop() });
+  discordChat.synchronize();
   companionChat = createCompanionChat({ profile: app.getPath('userData'), getStore: getAgentStore, getProjects: loadProjects,
     getLoop: id => getAgentLoop(id, { newTurn: true }),
     stopLoop: id => agentLoops.get(id)?.stop(),
@@ -920,8 +933,16 @@ function registerIpc() {
       if (action === 'save') return { ok: true, items: appConnections.save(value.id, value.patch) };
       if (action === 'check') return { ok: true, items: await appConnections.check(value.id) };
       if (action === 'disconnect') return { ok: true, items: appConnections.disconnect(value.id) };
-      if (action === 'gmail-connect') return { ok: true, items: await appConnections.connectGmail({ allowSend: value.allowSend === true }) };
-      if (action === 'gmail-cancel') { appConnections.cancel(); return { ok: true, items: appConnections.catalog() }; }
+      if (['gmail-connect', 'google-connect', 'github-connect', 'oauth-connect'].includes(action)) {
+        try {
+          const items = action === 'gmail-connect' ? await appConnections.connectGmail({ allowSend: value.allowSend === true })
+            : action === 'google-connect' ? await appConnections.connectGoogle({ id: value.id, allowSend: value.allowSend === true })
+            : action === 'github-connect' ? await appConnections.connectGithub()
+            : await appConnections.connectAuthorization({ id: value.id, allowSend: value.allowSend === true });
+          return { ok: true, items };
+        } finally { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } }
+      }
+      if (action === 'gmail-cancel' || action === 'google-cancel' || action === 'oauth-cancel') { appConnections.cancel(); return { ok: true, items: appConnections.catalog() }; }
       if (action === 'help') {
         const item = appConnections.catalog().find(item => item.id === value.id);
         if (item?.helpUrl) await shell.openExternal(item.helpUrl);
@@ -1023,7 +1044,7 @@ function registerIpc() {
   });
   ipcMain.handle('plugins:test', async (_e, { id, config }) => {
     const settings = loadSettings();
-    const cfg = config || settings.plugins?.[id] || {};
+    const cfg = config ? sanitizePlugins({ [id]: config }, settings.plugins)[id] || {} : settings.plugins?.[id] || {};
     return testPlugin(id, cfg);
   });
   ipcMain.handle('git:info', (_e, dir) => {
@@ -5086,6 +5107,7 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: !process.argv.includes('--smoke') });
 });
 app.on('before-quit', () => {
+  discordChat?.destroy();
   appConnections?.destroy();
   petWindows?.destroy();
   cliSettingsBridge?.stop();

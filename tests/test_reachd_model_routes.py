@@ -15,7 +15,7 @@ from tests.test_reachd_access import RelayFixture, TUNNEL
 
 
 class PrivateModelRouteTests(unittest.TestCase):
-    def test_gemma_tools_and_tool_result_history_reach_the_native_endpoint(self):
+    def test_qualified_gpu_tools_and_tool_result_history_reach_the_native_endpoint(self):
         tools = [{"type": "function", "function": {"name": "get_weather",
                   "parameters": {"type": "object"}}}]
         calls = [{"id": "weather-1", "type": "function", "function": {
@@ -25,15 +25,16 @@ class PrivateModelRouteTests(unittest.TestCase):
                                 {"role": "tool", "tool_call_id": "weather-1", "content": "12 C"}],
                    "tools": tools, "tool_choice": "auto", "parallel_tool_calls": False}
         before = copy.deepcopy(payload)
-        url, body, headers, _ = model_routes.dispatch("gpu/gemma-4-12b-qat", payload, None)
-        self.assertEqual(url, "http://127.0.0.1:18001/v1/chat/completions")
-        self.assertEqual(payload, before)
-        for field in ("messages", "tools", "tool_choice", "parallel_tool_calls"):
-            self.assertEqual(body[field], before[field])
-        self.assertNotIn("Authorization", headers)
         defaults = model_routes.deployment_defaults({})
-        self.assertTrue(defaults["gemma-4-12b-qat"]["allow_tools"])
-        self.assertFalse(defaults["minicpm5-2b"]["allow_tools"])
+        for alias, port in (("gemma-4-12b-qat", 18001), ("minicpm5-2b", 18004)):
+            with self.subTest(alias=alias):
+                url, body, headers, _ = model_routes.dispatch("gpu/" + alias, payload, None)
+                self.assertEqual(url, "http://127.0.0.1:%d/v1/chat/completions" % port)
+                self.assertEqual(payload, before)
+                for field in ("messages", "tools", "tool_choice", "parallel_tool_calls"):
+                    self.assertEqual(body[field], before[field])
+                self.assertNotIn("Authorization", headers)
+                self.assertTrue(defaults[alias]["allow_tools"])
 
     def test_gpu_output_defaults_to_available_context_and_preserves_explicit_limits(self):
         defaults = model_routes.deployment_defaults({})
@@ -94,8 +95,8 @@ class PrivateModelRouteTests(unittest.TestCase):
                 model_routes.private_route(value)
         defaults = model_routes.deployment_defaults({})
         self.assertFalse(any("granite" in name for name in defaults))
-        for alias in ("gemma-4-12b-qat", "ornith-1.5-9b"):
-            self.assertIn("TP2", defaults[alias]["description"])
+        self.assertIn("TP2", defaults["ornith-1.5-9b"]["description"])
+        self.assertIn("Q8_0 (BF16 vision), GPU 0", defaults["gemma-4-12b-qat"]["description"])
         self.assertIn("FP8 (BF16 vision)", defaults["ornith-1.5-9b"]["description"])
 
     def test_nonstreaming_and_legacy_route_contracts_stay_distinct(self):
@@ -115,6 +116,26 @@ class PrivateModelRouteTests(unittest.TestCase):
 
 
 class SubscriptionModelEditTests(unittest.TestCase):
+    def test_inventory_reads_llama_live_slot_context_instead_of_training_context(self):
+        repository = model_routes.GPU_MODELS["gemma-4-12b-qat"][0]
+
+        def native(port, path, **kwargs):
+            if port == 18001 and path == "/v1/models":
+                return {"data": [{"id": repository}]}
+            if port == 18001 and path == "/props":
+                return {"model_alias": repository, "n_ctx_train": 1048576,
+                        "default_generation_settings": {"n_ctx": 262144}}
+            if path == "/v1/models":
+                return {"data": []}
+            return {}
+
+        with patch.object(model_services, "request_json", side_effect=native), \
+                patch.object(model_services, "subscription_view", return_value={"models": []}):
+            rows = model_services.inventory()["gpuModels"]
+        gemma = next(row for row in rows if row["id"] == "gemma-4-12b-qat")
+        self.assertTrue(gemma["ready"])
+        self.assertEqual(gemma["contextWindow"], 262144)
+
     def test_compare_and_swap_preserves_private_fields_and_original_backup(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "accounts.json"
@@ -158,6 +179,24 @@ class SubscriptionModelEditTests(unittest.TestCase):
 
 
 class ModelControlAccessTests(RelayFixture):
+    def test_disabled_mini_is_retained_but_absent_from_all_endpoint_model_lists(self):
+        mini = self.state.cfg["models"]["minicpm5-2b"]
+        self.assertFalse(mini["enabled"])
+        self.assertFalse(mini["public"])
+        self.assertEqual(mini["upstream"], "gpu/minicpm5-2b")
+        self.assertTrue(mini["allow_tools"])
+        for path in ("/v1/models", "/models"):
+            for headers in (None, self.bearer(**TUNNEL)):
+                with self.subTest(path=path, remote=headers is not None):
+                    status, body, _ = self.call("GET", path, headers=headers)
+                    self.assertEqual(status, 200)
+                    aliases = {model["id"] for model in json.loads(body)["data"]}
+                    self.assertNotIn("minicpm5-2b", aliases)
+                    self.assertIn("gemma-4-12b-qat", aliases)
+        description = self.state.cfg["models"]["gemma-4-12b-qat"]["description"]
+        self.assertIn("Q8", description)
+        self.assertNotIn("FP8", description)
+
     def test_tunnels_foreign_origins_and_rebinding_cannot_reach_controls(self):
         for headers in (TUNNEL, {"Origin": "https://foreign.example"}, {"Host": "foreign.example"}):
             with self.subTest(headers=headers), patch.object(model_services, "inventory") as inventory:

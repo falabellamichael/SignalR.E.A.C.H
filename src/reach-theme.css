@@ -537,6 +537,47 @@
 :root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-kv-warn { color: #9a6700; }
 :root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-kv-bad { color: #cf222e; }
 
+/* White surfaces sit above the host's warm canvas, including telemetry cards. */
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) :is(.reach-page, .reach-stationary-panel) :is(
+    .reach-card, .reach-stat-card, .reach-tile, .reach-stat-mini-tile,
+    .reach-feed-card, .reach-presence-section, .reach-presence-card, .reach-live-hud
+) {
+    background: #ffffff;
+    border-color: #d8cbbb;
+    color: #29241f;
+    box-shadow: 0 2px 8px rgba(60, 42, 20, 0.05);
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-page :is(
+    .reach-feed-item, .reach-toggle-wrap, .reach-feed-chip, .reach-cadence-selector
+) {
+    background: #faf6ef;
+    border-color: #ded2c2;
+    color: #443b32;
+}
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-page :is(
+    .reach-presence-name, .reach-presence-stat-val, .reach-feed-model
+) { color: #775514; }
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-page :is(
+    .reach-presence-ua, .reach-presence-pill.dormant, .reach-feed-meta
+) { color: #655b51; opacity: 1; }
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-page :is(
+    .reach-feed-status-200, .reach-feed-lat-fast, .reach-presence-pill.active
+) { color: #176b36; }
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-page :is(
+    .reach-feed-status-err, .reach-feed-lat-slow
+) { color: #b42332; }
+
+:root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-page .reach-chart-tooltip {
+    background: #ffffff;
+    color: #29241f;
+    border-color: #d8cbbb;
+}
+
 /* ---- Telemetry HUD & Live Controls ---- */
 :root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-live-hud {
     background: #fffdfa;
@@ -698,5 +739,4 @@
 :root:is([data-workspace-color-scheme="light"], [data-workspace-theme="warm-light"], [data-workspace-theme*="warm"]) .reach-palette-empty {
     color: var(--text-muted, #6b5d4f);
 }
-
 

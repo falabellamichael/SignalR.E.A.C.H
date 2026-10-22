@@ -62,6 +62,11 @@ DEFAULT_SETTINGS = {
         "max_messages": 100,
         "max_input_chars": 400000,
         "max_tokens_cap": 16384,    # global hard cap (0 = off)
+        "context_compression": True,  # native GPU requests only; saved history stays intact
+        "context_reserve_tokens": 4096,  # input headroom, not a cap on the final answer
+        "minicpm_loop_guard": True,
+        "minicpm_no_progress_rounds": 3,  # consecutive completed rounds with no new result
+        "minicpm_max_tool_rounds": 12,    # per user turn, parallel calls count as one round
         "inject_system_prompt": "",  # global system message prepended
         "allow_tools": True,
         "allow_response_format": True,
@@ -250,6 +255,9 @@ REQUEST_NUMERIC = {
     "max_messages": (1, 1000),
     "max_input_chars": (1, 20000000),
     "max_tokens_cap": (0, 1000000),
+    "context_reserve_tokens": (256, 65536),
+    "minicpm_no_progress_rounds": (1, 20),
+    "minicpm_max_tool_rounds": (1, 100),
 }
 
 RATE_LIMIT_FIELDS = {

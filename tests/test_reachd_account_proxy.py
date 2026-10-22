@@ -218,6 +218,22 @@ class AccountProxyTests(RelayFixture):
                 self.assertEqual(self.status("GET", path, TUNNEL), 404)
         self.assertFalse(self.requests)
 
+    def test_app_oauth_routes_reach_only_the_account_service(self):
+        for provider in ("notion", "slack", "discord"):
+            for action in ("start", "exchange", "refresh", "cancel"):
+                path = f"/oauth/{provider}/{action}"
+                self.assertEqual(self.status("POST", path, TUNNEL, b'{}'), 200)
+                self.assertEqual(self.requests[-1]["path"], path)
+            path = f"/oauth/{provider}/callback?state=fixture&code=fixture"
+            self.assertEqual(self.status("GET", path, TUNNEL), 200)
+            self.assertEqual(self.requests[-1]["path"], path)
+        self.assertEqual(self.status("GET", "/oauth/notion/admin", TUNNEL), 404)
+        for action in ("chat-poll", "chat-reply", "chat-close"):
+            path = f"/oauth/discord/{action}"
+            self.assertEqual(self.status("POST", path, TUNNEL, b'{}'), 200)
+            self.assertEqual(self.requests[-1]["path"], path)
+        self.assertEqual(self.status("POST", "/oauth/discord/chat-admin", TUNNEL, b'{}'), 404)
+
     def test_oversized_post_is_rejected_without_dispatch(self):
         status, data, _ = self.call("POST", "/v1/auth/start", {**TUNNEL, "Content-Length": "524289"})
         self.assertEqual(status, 413)

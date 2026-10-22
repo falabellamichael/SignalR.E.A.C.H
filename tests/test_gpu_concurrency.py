@@ -22,13 +22,41 @@ def load(name):
 
 
 class ConcurrencyTests(unittest.TestCase):
-    def test_gemma_context_is_64k_and_matches_relay(self):
+    def test_disabled_minicpm_preserves_saved_profile_without_starting(self):
+        launch = load("launch_services")
+        self.assertIn("minicpm", launch.DISABLED_SERVICES)
+        self.assertIn("minicpm", launch.SERVICES)
+        self.assertEqual(launch.CHAT_CONTEXT_WINDOWS["minicpm"], 39904)
+        with patch.object(launch, "docker") as docker, patch.object(launch, "check_weights") as weights:
+            with self.assertRaisesRegex(RuntimeError, "disabled.*preserving"):
+                launch.start("minicpm", {})
+        docker.assert_not_called()
+        weights.assert_not_called()
+
+    def test_disabled_minicpm_is_unloaded_and_restart_policy_is_cleared(self):
+        launch = load("launch_services")
+        details = {"HostConfig": {"RestartPolicy": {"Name": "unless-stopped"}},
+                   "State": {"Status": "running"}}
+        def docker(*args, **kwargs):
+            found = args == ("container", "inspect", "reach-minicpm")
+            return unittest.mock.Mock(returncode=0 if found else 1,
+                                      stdout=json.dumps([details]) if found else "")
+        with patch.object(launch, "docker", side_effect=docker) as calls, \
+                contextlib.redirect_stdout(io.StringIO()):
+            launch.quiesce_disabled()
+        self.assertIn(unittest.mock.call("update", "--restart", "no", "reach-minicpm"), calls.call_args_list)
+        self.assertIn(unittest.mock.call("stop", "reach-minicpm"), calls.call_args_list)
+        self.assertFalse(any("rm" in call.args or "remove" in call.args for call in calls.call_args_list))
+
+    def test_gemma_q8_context_matches_relay_and_preserves_legacy_profile(self):
         launch = load("launch_services")
         spec = importlib.util.spec_from_file_location("context_model_routes", ROOT.parents[1] / "server/reachd/model_routes.py")
         routes = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(routes)
         self.assertEqual(launch.CHAT_CONTEXT_WINDOWS["gemma"], 65536)
-        self.assertEqual(routes.GPU_CONTEXT_WINDOWS["gemma-4-12b-qat"], 65536)
+        profile = json.loads((ROOT / "gemma_q8_profile.json").read_text())
+        self.assertEqual(profile["context_per_chat"], 262144)
+        self.assertEqual(routes.GPU_CONTEXT_WINDOWS["gemma-4-12b-qat"], profile["context_per_chat"])
 
     def test_gemma_adoption_requires_tool_parser_and_template_without_restarting(self):
         launch = load("launch_services")

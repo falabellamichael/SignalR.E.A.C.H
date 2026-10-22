@@ -1,0 +1,52 @@
+{
+  "status": "operator_selected",
+  "backend": "llama.cpp",
+  "image": "ghcr.io/ggml-org/llama.cpp@sha256:f30115a8d7aec88e2909db15492b28a262f2263fa511b1bd14f98768856baa47",
+  "target": {
+    "repository": "WhiskyAKM/Gemma-4-12B-it-qat-GGUF",
+    "revision": "214dbf154923b079a16c1032d4b72dcbcf21ea33",
+    "file": "gemma-4-12b-it-qat-Q8_0.gguf",
+    "sha256": "b0e5c65d73c87acfffacc7b3d8d6677cf314e7e06b004c0def811033b658bc1a"
+  },
+  "draft": {
+    "repository": "unsloth/gemma-4-12B-it-qat-GGUF",
+    "revision": "980b060c40a8539ac159e0501a3e0f66a6365af3",
+    "file": "MTP/mtp-gemma-4-12B-it-Q8_0.gguf",
+    "sha256": "f58dff98ecf17079c364b1205954ba85763a00ad076c5595040db0a828eaec1b"
+  },
+  "projector": {
+    "repository": "WhiskyAKM/Gemma-4-12B-it-qat-GGUF",
+    "revision": "214dbf154923b079a16c1032d4b72dcbcf21ea33",
+    "file": "mmproj.gguf",
+    "sha256": "d4a31b8595144029595ad25d45483fade5e92990dde925c3ec037fb652dda866"
+  },
+  "gpu_devices": "0",
+  "host_memory_gib": 16,
+  "context_per_chat": 262144,
+  "parallel_chats": 2,
+  "args": [
+    "-m", "/models/gemma4-12b-qat-q8/gemma-4-12b-it-qat-Q8_0.gguf",
+    "--mmproj", "/models/gemma4-12b-qat-q8/mmproj.gguf",
+    "-md", "/models/gemma4-12b-qat-q8/MTP/mtp-gemma-4-12B-it-Q8_0.gguf",
+    "--spec-type", "draft-mtp", "--spec-draft-n-max", "3",
+    "-ngl", "99", "-ngld", "99", "-c", "524288", "-np", "2",
+    "-b", "1024", "-ub", "512", "-t", "4", "-tb", "8",
+    "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
+    "--jinja", "--reasoning-format", "deepseek", "--reasoning", "on",
+    "--no-context-shift", "--cache-ram", "0", "--metrics", "--slots",
+    "--alias", "google/gemma-4-12B-it-qat-q4_0-unquantized",
+    "--host", "0.0.0.0", "--port", "8000",
+    "--temp", "1.0", "--top-p", "0.95", "--top-k", "64",
+    "--min-p", "0.0", "--repeat-penalty", "1.0"
+  ],
+  "rollback_container": "reach-gemma-fp8-before-q8-20261022",
+  "required_checks": [
+    "Native startup reports full GPU offload and 262144 tokens per slot",
+    "Structured tool call and tool-result continuation complete",
+    "Vision request completes with the matching projector",
+    "Short and long benchmark workload is compared with the saved FP8 baseline",
+    "Long-context recall succeeds beyond the previous 65536-token window",
+    "Host context counting uses the native chat input_tokens endpoint",
+    "Support container identity and start time are preserved"
+  ]
+}

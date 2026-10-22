@@ -81,3 +81,6 @@ studio/scripts/_tmp-*.cjs
 .context-recovery/
 .wt-*/
 .codex-worktrees/
+
+# Publisher OAuth client export; generated locally and included explicitly in Studio builds.
+/studio/oauth-clients.json

@@ -24,7 +24,8 @@ test('Studio permanent Plus control sends planId plus and follows service and en
  const get=id=>{if(!ids.has(id))ids.set(id,element());return ids.get(id);};
  const config={cardPayments:true,cardPlans:{basic:true,plus:true},subscription:{basic:{priceUsdMicros:15000000},plus:{id:'plus',name:'REACH Subscription Plus',currency:'cad',amountMinor:2500,unlimited:true}}};
  let state={status:'connected',secureStorageAvailable:true,config,account:{plan:{status:'none'},allowedModels:[],requestAllowance:{basicActive:false,remaining:0},credit:{currency:'USD',balanceMicros:0,reservedMicros:0,debtMicros:0}}};
- const api={get:async()=>state,onState:fn=>{notify=fn;},subscribe:async(...args)=>{calls.push(args);return {ok:true};}};
+ let signIns=0;
+ const api={get:async()=>state,onState:fn=>{notify=fn;},cancel:async()=>({ok:true,state:{...state,status:'disconnected'}}),connect:async()=>{signIns++;notify({...state,status:'connecting'});return {ok:true};},subscribe:async(...args)=>{calls.push(args);return {ok:true};}};
  const window={reach:{account:api},ReachAccountView:view,addEventListener(){}};
  const document={getElementById:get,createElement:element,visibilityState:'visible'};
  vm.runInNewContext(fs.readFileSync(require.resolve('../renderer/account.js'),'utf8'),{window,document,setInterval:()=>1,clearInterval(){},console});
@@ -44,7 +45,19 @@ test('Studio permanent Plus control sends planId plus and follows service and en
  state={...state,config};notify(state);assert.doesNotMatch(get('home-card-status').textContent,/not enabled/);
  state={...state,account:{...state.account,plan:{id:'basic-wallet',status:'active'},requestAllowance:{basicActive:true,remaining:1500}}};notify(state);assert.equal(button.disabled,true);
  assert.equal(get('home-card-wallet-topup').hidden,false);assert.equal(get('home-card-amount').value,'20');assert.equal(get('home-card-subscribe').hidden,false);
- state={...state,status:'disconnected',account:null};notify(state);assert.equal(get('home-card-badge').textContent,'SIGN IN');assert.equal(button.disabled,true);
+ state={...state,status:'disconnected',baseUrl:'https://fixture.invalid',account:null};notify(state);assert.equal(get('home-card-badge').textContent,'SIGN IN');assert.equal(button.disabled,false);
+ await button.listeners.click();assert.equal(signIns,1);assert.deepEqual(calls,[['stripe','plus']]);assert.doesNotMatch(get('home-card-status').textContent,/Finish paying/);
+ const signedOut=state,connected={...state,status:'connected',account:{plan:{status:'none'}}};
+ notify(connected);notify(connected);await new Promise(setImmediate);assert.deepEqual(calls,[['stripe','plus'],['stripe','plus']]);
+ notify(signedOut);await get('home-account-connect').listeners.click();assert.equal(signIns,2);
+ notify(connected);await Promise.resolve();assert.equal(calls.length,2,'ordinary sign-in must not open checkout');
+ for(const next of [signedOut,{...signedOut,status:'connecting',error:'Sign-in failed'},{...connected,baseUrl:'https://other.invalid'},{...connected,account:{plan:{status:'active',id:'plus'}}},{...connected,config:{...config,cardPlans:{basic:true,plus:false}}}]){
+  notify(signedOut);await button.listeners.click();notify(next);notify(connected);await Promise.resolve();await Promise.resolve();assert.equal(calls.length,2,'cancelled, failed, changed-service or ineligible sign-in must clear checkout intent');
+ }
+ notify(signedOut);await button.listeners.click();await get('home-account-cancel').listeners.click();notify(connected);await new Promise(setImmediate);assert.equal(calls.length,2,'explicit cancel clears intent');
+ state=signedOut;
+ for(const patch of [{status:'connecting'},{status:'locked'},{secureStorageAvailable:false},{baseUrl:''}]){notify({...state,...patch});assert.equal(button.disabled,true);}
+ notify(state);assert.equal(button.disabled,false);
  state={...state,status:'connected',config:{...config,cardPlans:{basic:false,plus:false},subscription:{basic:config.subscription.basic}},account:{plan:{status:'none'}}};notify(state);assert.doesNotMatch(get('home-card-plan-detail').textContent,/Basic/);assert.equal(button.hidden,true);assert.equal(get('home-card-subscribe').hidden,true);
  const html=fs.readFileSync(require.resolve('../renderer/index.html'),'utf8');
  assert.equal((html.match(/id="home-card-subscribe-plus"/g)||[]).length,1);

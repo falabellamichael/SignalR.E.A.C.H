@@ -218,7 +218,7 @@
         const modelLabel = el('span', 'reach-hint', 'Model:');
         ctrlBar.appendChild(modelLabel);
         const modelSelect = el('select', 'reach-input reach-input-sm');
-        const availModels = (core.store.local && core.store.local.models) || ['gemma-4-12b-qat', 'ornith-1.5-9b', 'minicpm5-2b'];
+        const availModels = (core.store.local && core.store.local.models) || ['gemma-4-12b-qat'];
         availModels.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m;

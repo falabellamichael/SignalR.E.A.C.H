@@ -2,7 +2,7 @@
   "models": [
     {
       "id": "gemma-4-12b-qat",
-      "name": "Gemma 4 12B QAT",
+      "name": "Gemma 4 12B QAT Q8",
       "provider": "SignalREACH GPU",
       "metered": true,
       "access": "requests",
@@ -26,7 +26,7 @@
       "id": "minicpm5-2b",
       "name": "MiniCPM5 2B FP8",
       "provider": "SignalREACH GPU",
-      "metered": true,
+      "metered": false,
       "access": "requests",
       "bridge": {
         "kind": "gpu",

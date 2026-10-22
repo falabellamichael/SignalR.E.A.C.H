@@ -1,23 +1,84 @@
 # Optional GPU deployment profile
 
-The launcher enables Gemma 4 12B QAT, MiniCPM5 2B, and the shared embedding,
+The selected profile enables Gemma 4 12B QAT Q8 and the shared embedding,
 reranking, and decision service on the operator's two Radeon AI PRO R9700 GPUs
-(gfx1201), ROCm 7.2.3, and vLLM 0.31.0. It is separate from the desktop installer.
+(gfx1201). Gemma uses the pinned llama.cpp ROCm image; support retains its
+existing runtime. This deployment is separate from the desktop installer.
 It does not download models or contain credentials or public endpoint addresses.
 
-| Service | GPU | vLLM memory fraction | Context tokens |
+| Service | GPU | Runtime allocation | Context tokens per chat |
 | --- | --- | --- | --- |
-| Gemma 4 12B QAT | 0 + 1, TP2 | 0.55 per GPU | 65,536 |
-| MiniCPM5 2B | 1, TP1 | 0.24 | 39,904 |
+| Gemma 4 12B QAT Q8 | 0 | Q8 weights and KV cache, two slots | 262,144 |
+| MiniCPM5 2B (disabled) | Saved 0 + 1, TP2 | Saved 0.24 | Saved 39,904 |
 | BGE M3, BGE Reranker v2 M3, Liquid d1 Omni 600M, Liquid d1 3B | 1 | Existing support allocation | Native service limits |
 
-Ornith is disabled at the operator's request. Its saved configuration, weights,
-and rollback containers are retained. Default startup excludes it, stops a
-leftover `reach-ornith` container, and clears that container's restart policy
-so Docker does not load it again. `--only ornith` refuses without inspecting,
-starting, or recreating its container.
+Ornith and MiniCPM are disabled at the operator's request. Their saved
+configurations, weights, and containers are retained. Default startup excludes
+them, stops leftover `reach-ornith` and `reach-minicpm` containers, and clears
+their restart policies so Docker does not load them again. `--only ornith` and
+`--only minicpm` refuse without inspecting, starting, or recreating a container.
+The host's saved MiniCPM model entry is retained with `enabled: false`.
 The saved Ornith context remains 61,776 tokens. Re-enabling it requires an
 explicit profile change and GPU memory review; this launcher does not do so.
+
+## Selected Q8 profile
+
+Set `gemma_runtime` to `llama.cpp-q8` in the operator-owned `models.json` and
+provision `gemma_q8_profile.json` and `gemma_q8_profile.py` beside the launcher.
+The profile pins the image digest and target, MTP assistant, and vision projector
+revisions and checksums. It uses the image's bundled ROCm 7.2.1 runtime, full GPU
+offload on GPU 0, three speculative tokens, flash attention, and Q8 KV caches.
+The total 524,288-token allocation provides two 262,144-token chat slots. Input,
+reasoning, and output share each slot's window. The host-memory/swap guard is
+16 GiB with OOM score adjustment 500; it does not configure CPU model offload.
+
+The existing API model alias is retained for client compatibility, including its
+historical `q4_0-unquantized` suffix. Actual weights are Q8_0. Native Jinja tool
+parsing and the matching vision projector remain enabled. The host measures
+full chat inputs, tools, and media with llama.cpp's chat input-token endpoint
+and reads the live per-slot limit from `/props`; see
+[`HOST_CONTEXT_COMPRESSION.md`](../../docs/HOST_CONTEXT_COMPRESSION.md).
+
+Raycast's saved Gemma model must set `abilities.tools.supported: true` and
+`context: 262144` in `providers.yaml`. Native server tool support does not
+override a client entry that advertises tools as unsupported. After a provider
+reload, use a fresh chat and verify an automatic structured call plus its tool
+result; a forced diagnostic call alone does not establish the client workflow.
+
+The pinned template cannot render array-item `type` lists because its Jinja
+runtime lacks filter-mapping. The relay and Subscription gateway translate
+those lists to equivalent `anyOf` constraints only on Gemma routes. Existing
+constraints, nullability, tool names, argument values, and caller history remain
+intact. This compatibility translation runs before native prompt token counting.
+
+The launcher refuses a mismatched existing `reach-gemma` container without
+replacing it. A service switch requires an idle check and retention of the
+previous container for rollback. Validate native context/precision/vision,
+structured tool calls with a tool-result continuation, and long-context recall
+before treating the deployment as complete. Preserve support's container
+identity/start time and Mini's disabled state.
+
+The saved trial showed a tradeoff: short single-request end-to-end throughput
+was about 81 versus 110 tokens/second, while the longer reference workload was
+about 48 versus 36 tokens/second. These are workload-specific measurements, not
+a general decode-speed guarantee. The operator selected Q8 for the larger
+context window. A full-window recall result is not established by allocation.
+
+## Retained vLLM profiles
+
+The following settings document the preserved FP8 Gemma rollback and disabled
+MiniCPM profiles. They apply when the Q8 selector is absent, and do not describe
+the selected Q8 runtime. Support keeps its existing vLLM-related runtime files.
+
+MiniCPM's pinned vLLM parser needs `patch_minicpm_tool_parser.py` applied to
+`minicpm5xml_tool_parser.py` inside its container, including after recreation.
+Raycast requires `__raycast_tool_call_description` as display metadata; MiniCPM
+can omit it even when the actual tool inputs are valid. The patch supplies a
+label from the declared function name, preserves supplied labels, and still
+rejects missing required tool inputs. Without it, the parser can emit partial
+JSON followed by raw XML. Run `tests/test_minicpm_tool_parser.py` inside the
+container before restarting only MiniCPM. This deployment is text-only; clients
+must advertise MiniCPM vision support as disabled.
 
 Gemma uses FP8 language weights and BF16 vision/activations, native MTP with
 three speculative tokens, Model Runner V2, and its native `gemma4` reasoning
@@ -93,7 +154,7 @@ local Login Providers catalog in REACH Studio and the REACH VS Code extension.
 This source profile does not assert a throughput figure. Compare sustained
 output and concurrent requests after native startup and readiness checks.
 
-## Sustained concurrency trials
+## Legacy vLLM concurrency trials
 
 Gemma admits eight active sequences. Its context cache is shared between them;
 eight calls at the full 65,536-token context are not guaranteed to fit at once.

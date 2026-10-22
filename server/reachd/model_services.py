@@ -11,6 +11,7 @@ import threading
 import urllib.request
 
 from reachd.model_routes import GPU_MODELS, GPU_CONTEXT_WINDOWS
+from reachd.context_compression import llama_context_limit
 
 LOCK = threading.Lock()
 SUPPORT_MODELS = (
@@ -135,6 +136,11 @@ def inventory():
                 models = request_json(port, "/v1/models").get("data", [])
                 result["servedModels"] = [m["id"] for m in models]
                 result["contextWindows"] = {m["id"]: m.get("max_model_len") for m in models}
+                if models and any(not m.get("max_model_len") for m in models):
+                    props = request_json(port, "/props")
+                    for model in models:
+                        if not model.get("max_model_len"):
+                            result["contextWindows"][model["id"]] = llama_context_limit(props, model["id"])
             return result
         except Exception:
             return None

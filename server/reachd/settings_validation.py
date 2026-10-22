@@ -173,7 +173,7 @@ def validate_settings(cfg, *, defaults, require_local_url, validate_model_spec):
         _int(req.get(field, defaults["request"][field]), lo, hi,
              "request." + field)
     for key in ("allow_tools", "allow_response_format", "allow_logprobs",
-                "reject_blocked"):
+                "reject_blocked", "context_compression", "minicpm_loop_guard"):
         _bool(req.get(key, False), "request." + key)
     blocked = req.get("blocked_fields", [])
     _expect(isinstance(blocked, list) and len(blocked) <= 64,

@@ -69,6 +69,7 @@
       "agent/**/*",
       "browser/**/*",
       "assets/**/*",
+      "oauth-clients.json",
       "package.json"
     ],
     "win": {

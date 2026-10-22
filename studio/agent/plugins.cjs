@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { gmailFetch, gmailRead, gmailSend, outlookFetch } = require('./mail-connections.cjs');
 const { readWeather, DEFAULT_WEATHER_URL } = require('./weather-connection.cjs');
+const { normalizeToken } = require('./app-auth.cjs');
 
 function pluginSettings(ctx) {
   const settings = ctx.getSettings?.() || ctx.agentStore?.get(ctx.agentId)?.settings || {};
@@ -22,16 +23,20 @@ const GITHUB_API = 'https://api.github.com';
 function sanitizePlugins(input, current = {}) {
   const src = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const cur = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
-  const out = {};
+  const out = { ...cur };
 
   // 1. GitHub
   const ghIn = src.github || {};
   const ghCur = cur.github || {};
   out.github = {
+    ...ghCur,
     enabled: ghIn.enabled !== undefined ? ghIn.enabled === true : ghCur.enabled !== false,
-    token: typeof ghIn.token === 'string' ? ghIn.token.trim().slice(0, 512) : (ghCur.token || ''),
+    token: typeof ghIn.token === 'string' && ghIn.token.trim() ? normalizeToken(ghIn.token) : (ghCur.token || ''),
     username: typeof ghIn.username === 'string' ? ghIn.username.trim().slice(0, 64) : (ghCur.username || ''),
   };
+  if (typeof ghIn.token === 'string' && ghIn.token.trim()) {
+    for (const field of ['accessToken', 'refreshToken', 'expiresAt', 'scope']) delete out.github[field];
+  }
 
   // 2. Gmail
   const gmIn = src.gmail || {};
@@ -39,20 +44,28 @@ function sanitizePlugins(input, current = {}) {
   out.gmail = {
     enabled: gmIn.enabled !== undefined ? gmIn.enabled === true : gmCur.enabled !== false,
     email: typeof gmIn.email === 'string' ? gmIn.email.trim().slice(0, 128) : (gmCur.email || ''),
-    password: typeof gmIn.password === 'string' ? gmIn.password.trim().slice(0, 512) : (gmCur.password || ''),
+    password: typeof gmIn.password === 'string' && gmIn.password.trim() ? normalizeToken(gmIn.password) : (gmCur.password || ''),
     clientId: gmCur.clientId || '', clientSecret: gmCur.clientSecret || '',
     accessToken: gmCur.accessToken || '', refreshToken: gmCur.refreshToken || '',
     expiresAt: gmCur.expiresAt || 0, scope: gmCur.scope || '',
+    allowSend: gmCur.allowSend ?? String(gmCur.scope || '').split(' ').includes('https://www.googleapis.com/auth/gmail.send'),
   };
+  if (typeof gmIn.password === 'string' && gmIn.password.trim()) {
+    for (const field of ['accessToken', 'refreshToken', 'expiresAt', 'scope']) delete out.gmail[field];
+  }
 
   // 3. Outlook
   const olIn = src.outlook || {};
   const olCur = cur.outlook || {};
   out.outlook = {
+    ...olCur,
     enabled: olIn.enabled !== undefined ? olIn.enabled === true : olCur.enabled !== false,
     email: typeof olIn.email === 'string' ? olIn.email.trim().slice(0, 128) : (olCur.email || ''),
-    password: typeof olIn.password === 'string' ? olIn.password.trim().slice(0, 512) : (olCur.password || ''),
+    password: typeof olIn.password === 'string' && olIn.password.trim() ? normalizeToken(olIn.password) : (olCur.password || ''),
   };
+  if (typeof olIn.password === 'string' && olIn.password.trim()) {
+    for (const field of ['accessToken', 'refreshToken', 'expiresAt', 'scope']) delete out.outlook[field];
+  }
 
   for(const id of require('./extra-apps.cjs').ids){const value=src[id]||{},previous=cur[id]||{};out[id]={...previous,enabled:value.enabled===undefined?previous.enabled===true:value.enabled===true};}
   out.weather = { enabled: cur.weather?.enabled !== false, url: cur.weather?.url || DEFAULT_WEATHER_URL };
@@ -60,7 +73,7 @@ function sanitizePlugins(input, current = {}) {
 }
 
 function getGithubToken(settings) {
-  const pluginToken = settings?.plugins?.github?.token;
+  const pluginToken = settings?.plugins?.github?.token || settings?.plugins?.github?.accessToken;
   if (pluginToken) return pluginToken;
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   if (process.env.GH_TOKEN) return process.env.GH_TOKEN;
@@ -72,6 +85,12 @@ function getGithubToken(settings) {
     }
   } catch {}
   return '';
+}
+
+async function resolveGithubToken(settings, options) {
+  const config = settings?.plugins?.github;
+  if (config?.accessToken || config?.refreshToken) return require('./oauth-grants.cjs').githubToken(config, options);
+  return getGithubToken(settings);
 }
 
 async function githubFetch(endpoint, token, options = {}) {
@@ -91,9 +110,9 @@ async function githubFetch(endpoint, token, options = {}) {
 
 async function testPlugin(id, config = {}) {
   if (id === 'github') {
-    const token = config.token || getGithubToken({ plugins: { github: config } });
-    if (!token) return { ok: false, err: 'Enter a Personal Access Token or sign in with the GitHub CLI (gh auth login).' };
     try {
+      const token = await resolveGithubToken({ plugins: { github: config } });
+      if (!token) return { ok: false, err: 'Connect GitHub, enter a personal access token, or sign in with the GitHub CLI (gh auth login).' };
       const res = await githubFetch('/user', token);
       if (!res.ok) return { ok: false, err: res.data?.message || `GitHub API error (HTTP ${res.status})` };
       return {
@@ -116,7 +135,7 @@ async function testPlugin(id, config = {}) {
   }
 
   if (id === 'outlook') {
-    try { const profile = await outlookFetch(config, '?$select=mail,userPrincipalName'); return { ok: true, email: profile.mail || profile.userPrincipalName }; }
+    try { await outlookFetch(config, '/messages?$top=1&$select=id'); return { ok: true, email: config.email || '', note: 'Mail access verified.' }; }
     catch (error) { return { ok: false, err: error.message }; }
   }
 
@@ -184,7 +203,7 @@ const PLUGIN_TOOLS = {
     example: { action: 'github.repo', owner: 'owner', repo: 'name' },
     async execute(args, ctx) {
       const settings = pluginSettings(ctx);
-      const token = getGithubToken(settings);
+      const token = await resolveGithubToken(settings, { signal: ctx.signal });
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {
         const info = getGitInfo(ctx.projectDir, settings);
@@ -216,7 +235,7 @@ const PLUGIN_TOOLS = {
     example: { action: 'github.issues', owner: 'owner', repo: 'name', state: 'open', limit: 10 },
     async execute(args, ctx) {
       const settings = pluginSettings(ctx);
-      const token = getGithubToken(settings);
+      const token = await resolveGithubToken(settings, { signal: ctx.signal });
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {
         const info = getGitInfo(ctx.projectDir, settings);
@@ -249,7 +268,7 @@ const PLUGIN_TOOLS = {
     example: { action: 'github.prs', owner: 'owner', repo: 'name', state: 'open' },
     async execute(args, ctx) {
       const settings = pluginSettings(ctx);
-      const token = getGithubToken(settings);
+      const token = await resolveGithubToken(settings, { signal: ctx.signal });
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {
         const info = getGitInfo(ctx.projectDir, settings);
@@ -299,7 +318,7 @@ const PLUGIN_TOOLS = {
     example: { action: 'github.create_pr', title: 'Feature update', head: 'feature-branch', base: 'main', body: 'Summary of changes' },
     async execute(args, ctx) {
       const settings = pluginSettings(ctx);
-      const token = getGithubToken(settings);
+      const token = await resolveGithubToken(settings, { signal: ctx.signal });
       if (!token) return { ok: false, error: 'GitHub connection / token required to create pull requests.' };
       let owner = args.owner, repo = args.repo;
       if (!owner || !repo) {

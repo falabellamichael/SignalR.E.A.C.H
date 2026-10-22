@@ -53,18 +53,20 @@ function createSettingsStore({ file, safeStorage }) {
           delete p.github.encryptedToken;
         }
       }
-      if (p.gmail) {
-        p.gmail = { ...p.gmail };
+      for (const id of ['gmail', 'drive', 'calendar', 'github', 'outlook', 'todo', 'slack', 'notion', 'discord']) if (p[id]) {
+        p[id] = { ...p[id] };
         for (const field of ['clientSecret', 'accessToken', 'refreshToken']) {
           const encrypted = 'encrypted' + field[0].toUpperCase() + field.slice(1);
-          if (p.gmail[encrypted]) {
+          if (p[id][encrypted]) {
             try {
               if (!available()) throw new Error('Vault unavailable.');
-              p.gmail[field] = safeStorage.decryptString(Buffer.from(p.gmail[encrypted], 'base64'));
-            } catch { p.gmail[field] = ''; locked = true; }
-            delete p.gmail[encrypted];
+              p[id][field] = safeStorage.decryptString(Buffer.from(p[id][encrypted], 'base64'));
+            } catch { p[id][field] = ''; locked = true; }
+            delete p[id][encrypted];
           }
         }
+      }
+      if (p.gmail) {
         if (p.gmail.encryptedPassword) {
           try {
             if (!available()) throw new Error('Vault unavailable.');
@@ -127,16 +129,19 @@ function createSettingsStore({ file, safeStorage }) {
           delete p.github.token;
         }
       }
-      if (p.gmail) {
-        p.gmail = { ...p.gmail };
+      for (const id of ['gmail', 'drive', 'calendar', 'github', 'outlook', 'todo', 'slack', 'notion', 'discord']) if (p[id]) {
+        p[id] = { ...p[id] };
         for (const field of ['clientSecret', 'accessToken', 'refreshToken']) {
           const encrypted = 'encrypted' + field[0].toUpperCase() + field.slice(1);
-          delete p.gmail[encrypted];
-          if (p.gmail[field] && available()) {
-            p.gmail[encrypted] = safeStorage.encryptString(p.gmail[field]).toString('base64');
-            delete p.gmail[field];
+          delete p[id][encrypted];
+          if (p[id][field]) {
+            if (!available()) throw new Error('Unlock your system credential vault before saving OAuth credentials.');
+            p[id][encrypted] = safeStorage.encryptString(p[id][field]).toString('base64');
+            delete p[id][field];
           }
         }
+      }
+      if (p.gmail) {
         if (p.gmail.password && available()) {
           p.gmail.encryptedPassword = safeStorage.encryptString(p.gmail.password).toString('base64');
           delete p.gmail.password;

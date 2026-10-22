@@ -10,6 +10,8 @@ import urllib.request
 import reachd.core as core  # STATE is read at call time (cycle-safe)
 from reachd import net
 from reachd.const import CLIENT_DISCONNECT_ERRORS
+from reachd.context_compression import ContextCompressionError, prepare_gpu_context
+from reachd.loop_guard import check_minicpm_loop, send_loop_stop
 from reachd.text import ROLE_CONTINUATION_RE, count_tokens, scrub_trailing_roles
 
 # Signed-in browser-chat routes: the provider enforces its own limits, so the
@@ -386,6 +388,28 @@ def chat_execute(h, *, catalog=None):
     h._reach_log("chat start model=%s upstream=%s stream=%s ip=%s"
                  % (requested, upstream_model,
                     "yes" if stream else "no", ip))
+    # Inspect the original tool history before compression, cache lookup or a
+    # GPU slot. A new user instruction starts a fresh per-turn budget.
+    loop_payload = payload
+    def stop_tool_loop(selector):
+        loop_report = (check_minicpm_loop(selector, loop_payload,
+            no_progress_rounds=int(req_cfg.get("minicpm_no_progress_rounds", 3)),
+            max_rounds=int(req_cfg.get("minicpm_max_tool_rounds", 12)))
+            if req_cfg.get("minicpm_loop_guard", True) else None)
+        if not loop_report:
+            return False
+        h._reach_log("tool loop stopped model=%s reason=%s rounds=%d repeated=%d"
+                     % (requested, loop_report["reason"], loop_report["completed_rounds"],
+                        loop_report["no_progress_rounds"]))
+        h._log_chat(model=requested, upstream_model=selector, ip=ip,
+                    user_agent=h.headers.get("User-Agent"), status=409 if metered else 200,
+                    error="tool_loop_detected", latency_ms=int((time.time() - started) * 1000),
+                    tokens_in=0, tokens_out=0, stream=stream)
+        send_loop_stop(h, requested, loop_report, stream=stream, headers=rl_headers, metered=metered)
+        return True
+
+    if stop_tool_loop(upstream_model):
+        return None
     if not use_bridge and not private_route(upstream_model) and not core.STATE.key:
         h._json(503, {"error": {"message": "SignalR.E.A.C.H is not "
                                                       "configured yet (no "
@@ -443,14 +467,39 @@ def chat_execute(h, *, catalog=None):
                                           "type": "server_error",
                                           "code": "overloaded"}}, rl_headers)
         return None
+    upstream = None
+    context_report = None
+    original_payload = payload
+
+    def prepare_context(selector, data, model_spec):
+        if metered or not req_cfg.get("context_compression", True):
+            return data, None
+        record = getattr(h, "_reach_request", None)
+        if isinstance(record, dict):
+            record["phase"] = "checking_context"
+        prepared, report = prepare_gpu_context(selector, data, model_spec,
+            namespace=getattr(h, "_auth_key_id", "") or "local",
+            reserve_tokens=int(req_cfg.get("context_reserve_tokens", 4096)))
+        if isinstance(record, dict):
+            record["phase"] = "connecting_upstream"
+            if report:
+                record["context_compression"] = report
+        if report:
+            h._reach_log("context compressed model=%s tokens=%d->%d reserve=%d "
+                         "schema_docs=%s history=%d tool_results=%d"
+                         % (selector, report["before_tokens"], report["after_tokens"],
+                            report["reserved_tokens"], report["schema_docs_compacted"],
+                            report["history_messages_summarized"], report["tool_results_summarized"]))
+        return prepared, report
+
     try:
         url, payload, auth_headers, circuit = dispatch(upstream_model, payload, core.STATE)
+        payload, context_report = prepare_context(upstream_model, payload, spec)
         encoded = json.dumps(payload).encode("utf-8")
         if core.STATE.cfg.get("data", {}).get("log_bodies"):
             request_body = body[:2048].decode("utf-8", "replace")
         retries = 0 if metered else int(core.STATE.cfg.get("upstream_retries", 1))
         retry_delay = float(core.STATE.cfg.get("retry_delay_ms", 1000)) / 1000.0
-        upstream = None
         attempts = retries + 1 if not stream else 1
         last_error = None
         fallback_used = False
@@ -487,9 +536,12 @@ def chat_execute(h, *, catalog=None):
             if fallback_alias and fallback_alias in models \
                     and models[fallback_alias].get("enabled"):
                 fb_upstream = models[fallback_alias]["upstream"]
+                if stop_tool_loop(fb_upstream):
+                    return None
                 try:
-                    fb_payload = dict(payload)
+                    fb_payload = dict(original_payload)
                     fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE)
+                    fb_payload, fb_report = prepare_context(fb_upstream, fb_payload, models[fallback_alias])
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)
@@ -500,6 +552,9 @@ def chat_execute(h, *, catalog=None):
                     spec = models[fallback_alias]
                     circuit = fb_circuit
                     fallback_used = True
+                    context_report = fb_report
+                except ContextCompressionError:
+                    raise
                 except Exception as exc:
                     last_error = exc
         if upstream is None:
@@ -528,9 +583,28 @@ def chat_execute(h, *, catalog=None):
                 "Local tray bridge unreachable (is the SignalREACH tray running?)"
                 if use_bridge else service_label(upstream_model) + " unreachable")
             return None
+    except ContextCompressionError as exc:
+        h._json(exc.status, {"error": {"message": str(exc), "type": "invalid_request_error",
+                                       "code": exc.code}}, rl_headers)
+        h._log_chat(model=requested, upstream_model=upstream_model, ip=ip,
+                    user_agent=h.headers.get("User-Agent"), status=exc.status,
+                    error=exc.code, latency_ms=int((time.time() - started) * 1000),
+                    tokens_in=0, tokens_out=0, stream=stream)
+        return None
+    except urllib.error.HTTPError as exc:
+        h._relay_upstream_error(exc, "Native context preparation rejected the request")
+        return None
+    except (OSError, ValueError) as exc:
+        h._json(503, {"error": {"message": "The local context service is unavailable; retry shortly.",
+                                "type": "server_error", "code": "context_compression_failed"}}, rl_headers)
+        return None
     finally:
         if not stream or upstream is None:
             core.STATE.gate.release()
+    if context_report:
+        rl_headers = {**rl_headers, "X-Reach-Context": "compressed",
+                      "X-Reach-Context-Tokens-Before": str(context_report["before_tokens"]),
+                      "X-Reach-Context-Tokens-After": str(context_report["after_tokens"])}
     ctx = {
         "started": started, "ip": ip, "rl_headers": rl_headers, "metered": metered,
         "requested": requested, "upstream_model": upstream_model,

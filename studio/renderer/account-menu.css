@@ -22,6 +22,10 @@
 .account-menu .home-section-intro { display: none; }
 .account-menu .home-account-grid, .account-menu .home-value-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
 .account-menu .home-card { padding: 18px; }
+.account-menu .home-value-card { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; height: max-content; }
+.account-menu .home-value-card > * { min-width: 0; }
+.account-menu .home-value-card > button { justify-self: start; max-width: 100%; white-space: normal; }
+.account-menu .home-field label { line-height: 1.5; }
 .account-menu .home-card h3 { font-size: 18px; }
 .account-menu .home-allowance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .account-menu .home-plan-card { min-width: 0; padding: 14px; }

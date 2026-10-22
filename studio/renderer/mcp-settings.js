@@ -127,12 +127,12 @@ function renderPlugins() {
     {
       id: 'gmail',
       name: 'Gmail',
-      tagline: 'Read, search, draft and send emails through your Gmail account.',
+      tagline: 'Use Connections to sign in with your own Google account. Sending requires separate permission and approval.',
       fields: [
         { key: 'email', label: 'Gmail Address', type: 'email', placeholder: 'yourname@gmail.com' },
-        { key: 'password', label: 'App Password or API Token', type: 'password', placeholder: '16-character Google App Password' },
+        { key: 'password', label: 'OAuth access token (optional advanced setup)', type: 'password', placeholder: 'Leave blank to keep saved credential' },
       ],
-      docUrl: 'https://myaccount.google.com/apppasswords',
+      docUrl: 'https://developers.google.com/workspace/gmail/api/quickstart/nodejs',
     },
     {
       id: 'outlook',
@@ -140,9 +140,9 @@ function renderPlugins() {
       tagline: 'Email tools for Outlook, Hotmail, and Microsoft 365 work accounts.',
       fields: [
         { key: 'email', label: 'Outlook Address', type: 'email', placeholder: 'user@outlook.com or work email' },
-        { key: 'password', label: 'App Password or Token', type: 'password', placeholder: 'App password or token' },
+        { key: 'password', label: 'Microsoft Graph OAuth token (Mail.Read)', type: 'password', placeholder: 'Leave blank to keep saved credential' },
       ],
-      docUrl: 'https://account.microsoft.com/security',
+      docUrl: 'https://developer.microsoft.com/en-us/graph/graph-explorer',
     },
   ];
 
@@ -160,7 +160,7 @@ function renderPlugins() {
 
     const statusPill = document.createElement('span');
     const cachedStatus = pluginStatuses.get(def.id);
-    const hasCreds = def.id === 'github' ? (data.token || data.username) : (data.email && data.password);
+    const hasCreds = data.credentialConfigured || (def.id === 'github' ? (data.token || data.username) : (data.email && data.password));
     if (cachedStatus) {
       statusPill.className = 'conn-badge ' + (cachedStatus.pill || '');
       statusPill.textContent = cachedStatus.label || cachedStatus.text;
@@ -651,9 +651,10 @@ $('#btn-save-mcp').onclick = async () => {
           command: row.command.trim(), args: argLines(row.argsText),
           env: parseKvLines(row.envText, '=').map, cwd: row.cwd.trim() };
       }),
-      plugins: pluginDraft,
+      // App connections have their own editor and shared credential store.
+      // This panel must not write its hidden, partial legacy plugin draft.
     };
-    const res = await reachApi.settings.save(payload);
+    const res = await reachApi.saveSettings(payload);
     mcpDirty = false;
     mcpSettingsRevision = res?.settingsRevision || '';
     status.dataset.savedRecently = 'true';

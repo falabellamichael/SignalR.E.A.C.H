@@ -16,10 +16,48 @@ from reachd import settings_schema
 
 
 class SettingsModuleCompatibilityTests(unittest.TestCase):
-    def test_gemma_tools_validate_and_survive_settings_save(self):
+    def test_minicpm_loop_guard_settings_validate_and_preserve_opt_out(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        config["system"]["host_bind"] = False
+        config["request"].update(minicpm_loop_guard=False,
+                                 minicpm_no_progress_rounds=4, minicpm_max_tool_rounds=16)
+        settings.validate_settings(config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            settings.save_config(config, path)
+            saved = settings.load_config(path)
+            for key in ("minicpm_loop_guard", "minicpm_no_progress_rounds", "minicpm_max_tool_rounds"):
+                self.assertEqual(saved["request"][key], config["request"][key])
+        for key, value in (("minicpm_loop_guard", "true"),
+                           ("minicpm_no_progress_rounds", 0), ("minicpm_max_tool_rounds", 101)):
+            invalid = copy.deepcopy(config)
+            invalid["request"][key] = value
+            with self.subTest(key=key), self.assertRaises(settings.SettingsError):
+                settings.validate_settings(invalid)
+
+    def test_context_compression_settings_validate_and_preserve_opt_out(self):
+        config = copy.deepcopy(settings.DEFAULT_SETTINGS)
+        config["system"]["host_bind"] = False
+        config["request"]["context_compression"] = False
+        config["request"]["context_reserve_tokens"] = 8192
+        settings.validate_settings(config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            settings.save_config(config, path)
+            saved = settings.load_config(path)
+            self.assertFalse(saved["request"]["context_compression"])
+            self.assertEqual(saved["request"]["context_reserve_tokens"], 8192)
+        for key, value in (("context_compression", "true"), ("context_reserve_tokens", 0)):
+            invalid = copy.deepcopy(config)
+            invalid["request"][key] = value
+            with self.subTest(key=key), self.assertRaises(settings.SettingsError):
+                settings.validate_settings(invalid)
+
+    def test_gemma_and_minicpm_tools_validate_and_survive_settings_save(self):
         config = copy.deepcopy(settings.DEFAULT_SETTINGS)
         config["system"]["host_bind"] = False
         self.assertTrue(config["models"]["gemma-4-12b-qat"]["allow_tools"])
+        self.assertTrue(config["models"]["minicpm5-2b"]["allow_tools"])
         settings.validate_settings(config)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.json"
@@ -27,11 +65,12 @@ class SettingsModuleCompatibilityTests(unittest.TestCase):
             saved = settings.load_config(path)
             settings.validate_settings(saved)
             self.assertTrue(saved["models"]["gemma-4-12b-qat"]["allow_tools"])
+            self.assertTrue(saved["models"]["minicpm5-2b"]["allow_tools"])
 
     def test_unqualified_gpu_tools_still_fail_settings_validation(self):
         config = copy.deepcopy(settings.DEFAULT_SETTINGS)
-        config["models"]["minicpm5-2b"]["allow_tools"] = True
-        with self.assertRaisesRegex(settings.SettingsError, "models.minicpm5-2b: GPU tool serving"):
+        config["models"]["ornith-1.5-9b"]["allow_tools"] = True
+        with self.assertRaisesRegex(settings.SettingsError, "models.ornith-1.5-9b: GPU tool serving"):
             settings.validate_settings(config)
 
     def test_package_and_settings_expose_the_same_schema_and_error(self):

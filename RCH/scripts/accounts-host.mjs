@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // Small service-manager entry point. The upstream key is read from a private
 // file, never placed in launchd/systemd arguments or the desktop renderer.
-import { readFileSync, lstatSync } from 'node:fs';
+import { readFileSync, lstatSync, existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { validateOAuthClients } from '../service/connections-oauth.mjs';
 import { loadConfig } from '../service/config.mjs';
 import { watchModelCatalog } from '../service/catalog-watch.mjs';
 import { createAccountService } from '../service/server.mjs';
@@ -28,7 +30,14 @@ try {
   const config=loadConfig(configFile);delete process.env[raw.upstreamKeyEnv];
   if (raw.supabase) delete process.env[raw.supabase.secretKeyEnv];
   if(raw.redemption?.quoteSignerKeyEnv)delete process.env[raw.redemption.quoteSignerKeyEnv];
-  const {server,updateModels}=createAccountService({config});
+  let connectionsOAuth;
+  const oauthFile=join(dirname(configFile),'connections-oauth.json');
+  if(existsSync(oauthFile))try{
+    const stat=lstatSync(oauthFile);
+    if(!stat.isFile()||stat.isSymbolicLink()||(process.platform!=='win32'&&(stat.mode&0o077)!==0))throw new Error();
+    connectionsOAuth=validateOAuthClients(JSON.parse(readFileSync(oauthFile,'utf8')));
+  }catch{console.error('App connection registrations could not be loaded; account services remain available.');}
+  const {server,updateModels}=createAccountService({config,connectionsOAuth});
   const stopWatching=watchModelCatalog(configFile,config.models,updateModels);
   server.once('close',stopWatching);
   server.on('error',()=>{console.error('Account service could not listen.');process.exit(1);});

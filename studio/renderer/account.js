@@ -5,6 +5,20 @@
   const defaultServiceOrigin = 'https://unbent-semicolon-hermit.ngrok-free.dev';
   const el = id => document.getElementById('home-' + id);
   let state = {}, busy = false, refreshing = false, serviceDirty = false;
+  let pendingPlusCheckout = null;
+  function continuePlusCheckout() {
+    if (!pendingPlusCheckout || busy) return;
+    if (state.baseUrl === pendingPlusCheckout.baseUrl && state.status === 'connecting' && !state.error) return;
+    const pending = pendingPlusCheckout;
+    pendingPlusCheckout = null;
+    if (state.baseUrl !== pending.baseUrl || state.error || !view.derive(state).connected || el('card-subscribe-plus').disabled) return;
+    // Consume the intent before checkout emits more account updates.
+    void action(async () => {
+      const result = await api.subscribe('stripe', 'plus');
+      el('card-status').textContent = result.ok ? cardStarted : result.err;
+      return result;
+    });
+  }
   function render(next) {
     state = next || {}; const model = view.derive(state);
     el('account-badge').textContent = model.badge;
@@ -112,7 +126,7 @@
     if(plusButton){
       plusButton.hidden=!plusConfigured;
       plusButton.textContent=plus?'Subscribe to '+plus.name+' · '+new Intl.NumberFormat('en-CA',{style:'currency',currency:plus.currency.toUpperCase(),currencyDisplay:'code'}).format(Number(plus.amountMinor)/100)+' a month · Unlimited':'';
-      plusButton.disabled=busy||!cardReady||state.config?.cardPlans?.plus!==true||planActive;
+      plusButton.disabled=busy||model.connecting||!plusConfigured||(!model.connected&&!model.canConnect)||planActive;
       plusButton.title=state.config?.cardPlans?.plus===true?'':'Plus checkout setup is pending.';
       if(model.requestAllowance?.plusActive)plusButton.textContent=(plus?.name||'Plus')+' is active · Unlimited';
     }
@@ -156,7 +170,7 @@
       if (result?.ok === false) throw new Error(result.err || 'The account action could not be completed.');
       return result;
     } catch (error) { state = { ...state, error: error.message }; }
-    finally { busy = false; render(state); }
+    finally { busy = false; render(state); continuePlusCheckout(); }
   }
   async function refresh() {
     if (refreshing || busy || state.status === 'connecting') return;
@@ -211,7 +225,7 @@
       box.appendChild(wallet);
     }
   }
-  el('account-cancel').addEventListener('click', async () => { const result = await api.cancel(); render(result.state); });
+  el('account-cancel').addEventListener('click', async () => { pendingPlusCheckout = null; const result = await api.cancel(); render(result.state); });
   el('account-refresh').addEventListener('click', refresh);
   el('account-disconnect').addEventListener('click', () => action(() => api.disconnect()));
   el('account-use').addEventListener('click', () => action(async () => {
@@ -241,12 +255,20 @@
     ['card-topup', () => api.topUp(el('card-amount').value.trim()), cardStarted], ['card-manage', () => api.billing(), billingOpened],
     ['card-subscribe-paypal', () => api.subscribe('paypal'), paypalStarted], ['card-topup-paypal', () => api.topUp(el('card-amount').value.trim(), 'paypal'), paypalStarted]]) {
     el(id).addEventListener('click', () => action(async () => {
+      if (id === 'card-subscribe-plus' && !view.derive(state).connected) {
+        pendingPlusCheckout = { baseUrl: state.baseUrl };
+        try {
+          const result = await api.connect();
+          if (result?.ok === false) pendingPlusCheckout = null;
+          return result;
+        } catch (error) { pendingPlusCheckout = null; throw error; }
+      }
       const result = await start();
       el('card-status').textContent = result.ok ? opened : result.err;
       return result;
     }));
   }
-  api.onState(next => { render(next); void window.ReachHome?.sync(); });
+  api.onState(next => { render(next); continuePlusCheckout(); void window.ReachHome?.sync(); });
   window.addEventListener('focus', () => { if (state.baseUrl) void refresh(); });
   const timer = setInterval(() => { if (state.status === 'connected' && document.visibilityState !== 'hidden') void refresh(); }, 30000);
   window.addEventListener('beforeunload', () => clearInterval(timer), { once: true });

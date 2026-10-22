@@ -41,7 +41,7 @@ TP_MODELS = frozenset({"gemma", "minicpm"})
 HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith"})
 HOST_MEMORY_LIMIT_BYTES = 12 * 1024 ** 3
 # Operator-disabled services retain their saved profile and assets.
-DISABLED_SERVICES = frozenset({"ornith"})
+DISABLED_SERVICES = frozenset({"ornith", "minicpm"})
 RCCL_OVERRIDE = ROOT / "runtime/rccl-gfx1201-7.2.3/librccl.so.1"
 HSA_OVERRIDE = ROOT / "runtime/rocr-7.2.3-poll-backoff/libhsa-runtime64.so.1"
 CHAT_DECODE_CONFIG = {'mode': 0, 'cudagraph_mode': 'FULL_DECODE_ONLY', 'cudagraph_capture_sizes': [1, 2], 'max_cudagraph_capture_size': 2}
@@ -175,6 +175,9 @@ def start(key, manifest):
     if key in DISABLED_SERVICES:
         raise RuntimeError(f"Service {key} is disabled at the operator request; "
                            "preserving its containers, weights, and saved settings")
+    if key == "gemma" and manifest.get("gemma_runtime") == "llama.cpp-q8":
+        from gemma_q8_profile import start_gemma_q8
+        return start_gemma_q8(ROOT, DEPLOYMENT, docker, wait_ready)
     model, gpu, port, fraction, extra = SERVICES[key]
     name = f"reach-{key}"
     repository = None

@@ -3,26 +3,28 @@
 // Mail credentials stay in the settings vault. They are never included in a
 // model prompt or a connection-status response.
 const refreshes = new Map();
+const { normalizeToken, connectionError } = require('./app-auth.cjs');
 async function jsonRequest(url, options = {}) {
+  const { service = 'gmail', fetchImpl = fetch, ...requestOptions } = options;
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000);
-  const response = await fetch(url, { ...options, redirect: 'error', signal });
+  const response = await fetchImpl(url, { ...requestOptions, redirect: 'error', signal });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`Mail service returned HTTP ${response.status}. ${response.status === 401 ? 'Reconnect this account.' : response.status === 403 ? 'Check the granted permissions and enable the Gmail API in your Google Cloud project.' : 'Try again or check your connection.'}`);
+  if (!response.ok) throw connectionError(service, response.status, data);
   return data;
 }
-async function gmailToken(config = {}) {
-  if (config.enabled === false) throw new Error('Gmail connection is disabled.');
+async function googleToken(config = {}, service = 'gmail', options = {}) {
+  if (config.enabled === false) throw new Error('Google connection is disabled.');
   if (config.accessToken && Number(config.expiresAt) > Date.now() + 60000) return config.accessToken;
   if (config.refreshToken && config.clientId) {
-    const key = config.refreshToken;
+    const key = config.clientId + ':' + config.refreshToken;
     const previous = refreshes.get(key);
     if (previous && previous.expiresAt > Date.now() + 60000) return previous.token;
     if (previous?.pending) return previous.pending;
     const pending = (async () => {
-      const body = new URLSearchParams({ client_id: config.clientId, refresh_token: key, grant_type: 'refresh_token' });
+      const body = new URLSearchParams({ client_id: config.clientId, refresh_token: config.refreshToken, grant_type: 'refresh_token' });
       if (config.clientSecret) body.set('client_secret', config.clientSecret);
-      const data = await jsonRequest('https://oauth2.googleapis.com/token', { method: 'POST', body });
-      if (!data.access_token) throw new Error('Google did not return an access token. Reconnect Gmail.');
+      const data = await jsonRequest('https://oauth2.googleapis.com/token', { ...options, service, method: 'POST', body });
+      if (!data.access_token) throw new Error('Google did not return an access token. Connect Google again.');
       if (refreshes.size > 20) refreshes.clear();
       refreshes.set(key, { token: data.access_token, expiresAt: Date.now() + (Number(data.expires_in) || 3600) * 1000 });
       return data.access_token;
@@ -32,14 +34,14 @@ async function gmailToken(config = {}) {
   }
   // The old password field can hold a short-lived OAuth access token. Google
   // app passwords are not Gmail REST API credentials and must fail honestly.
-  const token = config.accessToken || config.password;
-  if (!token) throw new Error('Connect Gmail in Connections first.');
+  const token = config.accessToken || config.token || config.password;
+  if (!token) throw new Error('Connect Google in Connections first.');
   return token;
 }
 async function gmailFetch(config, route, { signal, ...options } = {}) {
-  const token = await gmailToken(config);
+  const token = await googleToken(config, 'gmail', { signal, fetchImpl: options.fetchImpl });
   return jsonRequest('https://gmail.googleapis.com/gmail/v1/users/me/' + route, {
-    ...options, signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
+    ...options, signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) },
   });
 }
 async function gmailRead(config, args = {}, signal) {
@@ -73,7 +75,7 @@ async function gmailSend(config, args, signal) {
   return { ok: true, sent: true, id: result.id, to: args.to, subject: args.subject };
 }
 async function outlookFetch(config, route, options = {}) {
-  if (config?.enabled === false || !config?.password) throw new Error('Add a Microsoft Graph OAuth access token in Connections.');
-  return jsonRequest('https://graph.microsoft.com/v1.0/me' + route, { ...options, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.password } });
+  const token = await require('./oauth-grants.cjs').oauthToken('outlook', config, options);
+  return jsonRequest('https://graph.microsoft.com/v1.0/me' + route, { ...options, service: 'outlook', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) } });
 }
-module.exports = { gmailFetch, gmailRead, gmailSend, outlookFetch };
+module.exports = { googleToken, gmailFetch, gmailRead, gmailSend, outlookFetch };

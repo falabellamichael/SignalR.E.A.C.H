@@ -1,7 +1,7 @@
 {
   "models": [
-    {"id":"gemma-4-12b-qat","name":"Gemma 4 12B QAT","provider":"SignalREACH GPU","metered":true,"access":"requests","bridge":{"kind":"gpu","model":"google/gemma-4-12B-it-qat-q4_0-unquantized"}},
+    {"id":"gemma-4-12b-qat","name":"Gemma 4 12B QAT Q8","provider":"SignalREACH GPU","metered":true,"access":"requests","bridge":{"kind":"gpu","model":"google/gemma-4-12B-it-qat-q4_0-unquantized"}},
     {"id":"ornith-1.5-9b","name":"Ornith 1.5 9B","provider":"SignalREACH GPU","metered":true,"access":"requests","bridge":{"kind":"gpu","model":"ornith-ai/Ornith-1.5-9B"}},
-    {"id":"minicpm5-2b","name":"MiniCPM5 2B FP8","provider":"SignalREACH GPU","metered":true,"access":"requests","bridge":{"kind":"gpu","model":"openbmb/MiniCPM5-2B"}}
+    {"id":"minicpm5-2b","name":"MiniCPM5 2B FP8","provider":"SignalREACH GPU","metered":false,"access":"requests","bridge":{"kind":"gpu","model":"openbmb/MiniCPM5-2B"}}
   ]
 }

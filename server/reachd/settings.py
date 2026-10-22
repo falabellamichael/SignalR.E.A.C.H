@@ -529,7 +529,7 @@ def _repair_config(cfg):
         if not _ok(_int, req.get(field), lo, hi, field):
             _fix(req, field, reqd[field], "request." + field)
     for key in ("allow_tools", "allow_response_format", "allow_logprobs",
-                "reject_blocked"):
+                "reject_blocked", "context_compression", "minicpm_loop_guard"):
         if type(req[key]) is not bool:
             _fix(req, key, reqd[key], "request." + key)
     blocked = req["blocked_fields"]

@@ -15,6 +15,19 @@ const config={origin:'http://127.0.0.1:20978',chainId:1,models:[model],upstreamU
 const proof=()=>{const verifier=randomBytes(32).toString('base64url');return{verifier,state:randomBytes(32).toString('base64url'),challenge:createHash('sha256').update(verifier).digest('base64url')};};
 function setup(t) {let time=1700000000000;const store=new AccountStore(':memory:',{models:[model],now:()=>time});t.after(()=>store.close());return{store,advance:n=>{time+=n;},grant:(tokens=500,grantId='grant-initial')=>store.grantPlan({wallet:wallet.address,grantId,planId:'pro',name:'Pro',models:[model.id],tokens,expiresAt:time+3600000})};}
 
+test('optional app callbacks remain separate from account identity and never expose registration secrets',async t=>{
+ const {store}=setup(t);
+ const {server}=createAccountService({config:{...config,origin:'https://connections.example'},store,connectionsOAuth:{notion:{clientId:'fixture-notion',clientSecret:'private-registration-secret'}}});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+ const base='http://127.0.0.1:'+server.address().port;
+ const start=await fetch(base+'/oauth/notion/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({codeChallenge:proof().challenge})});
+ assert.equal(start.status,200);assert.equal((await start.text()).includes('private-registration-secret'),false);
+ assert.equal((await fetch(base+'/v1/account')).status,401);
+ assert.equal((await (await fetch(base+'/v1/account/config')).text()).includes('private-registration-secret'),false);
+ assert.equal((await fetch(base+'/oauth/notion/start',{method:'POST',headers:{'Content-Type':'application/json',Origin:'https://attacker.example'},body:'{}'})).status,403);
+});
+
 test('PKCE, one-use wallet challenge and account identity survive multiple devices',async t=>{
   const {store}=setup(t),p=proof(),f=store.startFlow(p.state,p.challenge);
   assert.equal(store.exchange(f.flowId,p.state,p.verifier),null);

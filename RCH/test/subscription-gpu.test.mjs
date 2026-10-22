@@ -10,7 +10,9 @@ import { createModelGateway } from '../service/model-gateway.mjs';
 import { validateConfig } from '../service/config.mjs';
 import { gpuBridge } from '../service/gpu-bridge.mjs';
 
-const { models: automaticModels } = JSON.parse(readFileSync(new URL('../config/subscription-gpu.example.json', import.meta.url)));
+const { models: savedModels } = JSON.parse(readFileSync(new URL('../config/subscription-gpu.example.json', import.meta.url)));
+// Exercise retained GPU routes explicitly; the deployment example keeps Mini off.
+const automaticModels = savedModels.map(model => ({ ...model, metered: true }));
 const models = automaticModels.map(model => ({ ...model, maxInputBytes: 32000 }));
 const subscription = { basic: { id: 'basic-wallet', includedRequests: 1500, priceUsdMicros: 15000000 },
   overageUsdMicrosPerRequest: 10000, proEnabled: false };

@@ -24,7 +24,9 @@ class LoginCatalogAccessTests(RelayFixture):
                 status, raw, _ = self.call("GET", "/v1/models", headers)
                 self.assertEqual(status, 200)
                 ids = {row["id"] for row in json.loads(raw)["data"]}
-                self.assertTrue(set(model_routes.GPU_MODELS) <= ids)
+                enabled = set(model_routes.GPU_MODELS) - model_routes.GPU_DISABLED_MODELS
+                self.assertTrue(enabled <= ids)
+                self.assertTrue(model_routes.GPU_DISABLED_MODELS.isdisjoint(ids))
                 self.assertTrue({"bge-m3", "bge-reranker-v2-m3"} <= ids)
                 self.assertFalse(set(model_routes.DIRECT_MODELS) & ids)
                 self.assertFalse(set(model_routes.BROWSER_MODELS) & ids)

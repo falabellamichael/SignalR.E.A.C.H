@@ -83,6 +83,33 @@ test('request mode needs no upstream credentials and exposes request pricing onl
   assert.doesNotMatch(JSON.stringify(catalog), /21302|bridge|token|SECRET/);
 });
 
+test('Gemma nullable array-item tools render without changing caller schema or replay identity', async t => {
+  let sent;
+  let calls = 0;
+  const f = await fixture(t, async (_url, options) => {
+    sent = JSON.parse(options.body);
+    calls++;
+    return response(completion());
+  });
+  const tools = [{ type: 'function', function: { name: 'echo_probe', parameters: {
+    type: 'object', properties: { values: { type: 'array', items: {
+      type: ['string', 'null'], anyOf: [{ const: 'READY' }, { const: null }],
+      default: { items: { type: ['number', 'null'] } },
+    } } }, required: ['values'], additionalProperties: false,
+  } } }];
+  const original = structuredClone(tools);
+  const body = request({ tools, tool_choice: 'auto' });
+  assert.equal((await f.call(body, 'nullable-array-tool')).status, 200);
+  const item = sent.tools[0].function.parameters.properties.values.items;
+  assert.deepEqual(item.anyOf, [{ const: 'READY' }, { const: null }]);
+  assert.deepEqual(item.allOf, [{ anyOf: [{ type: 'string' }, { type: 'null' }] }]);
+  assert.deepEqual(item.default, original[0].function.parameters.properties.values.items.default);
+  assert.equal(sent.tool_choice, 'auto');
+  assert.deepEqual(tools, original);
+  assert.equal((await f.call(body, 'nullable-array-tool')).status, 200);
+  assert.equal(calls, 1);
+});
+
 test('GPU JSON charges one completed request, replays once, and forwards no credentials', async t => {
   const sent = [];
   const f = await fixture(t, async (url, options) => {

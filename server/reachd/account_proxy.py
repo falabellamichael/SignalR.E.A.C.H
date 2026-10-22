@@ -25,6 +25,10 @@ ACCOUNT_PATHS = frozenset((
     "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
     "/v1/billing/checkout", "/v1/billing/portal", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
     "/v1/billing/paypal/webhook", "/v1/billing/paypal/return",
+    "/oauth/notion/start", "/oauth/notion/exchange", "/oauth/notion/refresh", "/oauth/notion/cancel", "/oauth/notion/callback",
+    "/oauth/slack/start", "/oauth/slack/exchange", "/oauth/slack/refresh", "/oauth/slack/cancel", "/oauth/slack/callback",
+    "/oauth/discord/start", "/oauth/discord/exchange", "/oauth/discord/refresh", "/oauth/discord/cancel", "/oauth/discord/callback", "/oauth/discord/read",
+    "/oauth/discord/chat-poll", "/oauth/discord/chat-reply", "/oauth/discord/chat-close",
 ))
 MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models",
                "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions"}

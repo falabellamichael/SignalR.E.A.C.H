@@ -26,6 +26,39 @@ function fixture(t) {
   return { file, vault, store: createSettingsStore({ file: () => file, safeStorage: vault }) };
 }
 
+test('all app connections persist across Settings and companion reloads without leaking secrets', t => {
+  const { file, vault, store } = fixture(t);
+  const { createAppConnections } = require('../agent/app-connections.cjs');
+  const create = storage => createAppConnections({ getSettings: () => storage.load(), saveSettings: value => storage.save(value), openExternal() {} });
+  const settings = create(store);
+  const expected = new Map();
+  for (const item of settings.catalog()) {
+    const patch = { enabled: true };
+    for (const field of item.fields) {
+      patch[field.key] = field.secret ? 'fixture-secret-' + item.id
+        : field.key === 'url' ? item.url
+          : field.key === 'clientId' ? 'fixture.apps.googleusercontent.com'
+            : field.key === 'email' ? 'fixture@example.test' : '123456';
+    }
+    settings.save(item.id, patch);
+    expected.set(item.id, patch);
+  }
+  const reopened = createSettingsStore({ file: () => file, safeStorage: vault });
+  const companion = create(reopened);
+  for (const [id, patch] of expected) {
+    assert.equal(companion.catalog().find(item => item.id === id).enabled, true);
+    for (const [key, value] of Object.entries(patch)) assert.equal(reopened.load().plugins[id][key], value);
+    companion.save(id, Object.fromEntries(companion.catalog().find(item => item.id === id).fields.filter(field => field.secret).map(field => [field.key, ''])));
+    for (const [key, value] of Object.entries(patch)) assert.equal(store.load().plugins[id][key], value);
+  }
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('fixture-secret-'));
+  assert.ok(!JSON.stringify(companion.catalog()).includes('fixture-secret-'));
+  companion.disconnect('slack');
+  assert.equal(settings.catalog().find(item => item.id === 'slack').enabled, false);
+  assert.equal(store.load().plugins.slack.token, undefined);
+  assert.equal(store.load().plugins.github.token, expected.get('github').token);
+});
+
 test('legacy keys migrate, remain usable, and second load does not rewrite settings or backup', t => {
   const { file, vault, store } = fixture(t);
   const original = { endpoint: 'https://example.test/v1', accessKey: 'secret-fixture-key', model: 'fixture', theme: 'light' };
@@ -126,5 +159,42 @@ test('locked Jev key prevents a settings overwrite', t => {
   vault.decryptString = () => { throw new Error('Vault locked'); };
   assert.equal(store.load().credentialStorage.locked, true);
   assert.throws(() => store.save({ jevEnabled: false }), /locked/);
+  assert.equal(fs.readFileSync(file, 'utf8'), disk);
+});
+
+test('redacted partial plugin saves preserve every stored connection and manual Gmail tokens replace stale grants', t => {
+  const { file, store } = fixture(t);
+  const { sanitizePlugins } = require('../agent/plugins.cjs');
+  const { publicPlugins } = require('../agent/extra-apps.cjs');
+  const plugins = {
+    github: { enabled: true, token: 'private-github' },
+    gmail: { enabled: true, password: 'private-gmail', clientId: 'fixture.apps.googleusercontent.com', clientSecret: 'private-client', accessToken: 'private-access', refreshToken: 'private-refresh', scope: 'gmail.readonly' },
+    outlook: { enabled: true, password: 'private-outlook' },
+    drive: { enabled: true, token: 'private-drive' },
+    todo: { enabled: true, token: 'private-todo' },
+    custom: { enabled: true, setting: 'preserve-me' },
+  };
+  store.save({ plugins });
+  const visible = publicPlugins(store.load().plugins);
+  assert.ok(!JSON.stringify(visible).includes('private-'));
+  assert.equal(visible.gmail.credentialConfigured, true);
+  store.save({ ...store.load(), plugins: sanitizePlugins({ github: { ...visible.github, token: '' }, gmail: { ...visible.gmail, password: '' }, outlook: { ...visible.outlook, password: '' } }, store.load().plugins) });
+  for (const [id, original] of Object.entries(plugins)) for (const [key, value] of Object.entries(original)) assert.deepEqual(store.load().plugins[id][key], value);
+  assert.ok(!fs.readFileSync(file, 'utf8').includes('private-'));
+  const edited = sanitizePlugins({ gmail: { password: 'Bearer new-pasted-token' } }, store.load().plugins);
+  assert.equal(edited.gmail.password, 'new-pasted-token');
+  assert.equal(edited.gmail.refreshToken, undefined);
+  assert.equal(edited.gmail.accessToken, undefined);
+});
+
+test('OAuth grants are encrypted for each connection and a locked vault cannot replace them', t => {
+  const { file, vault, store } = fixture(t);
+  const plugins = Object.fromEntries(['gmail', 'drive', 'calendar', 'github', 'outlook', 'todo', 'slack', 'notion', 'discord'].map(id => [id, { enabled: true, clientId: 'fixture.apps.googleusercontent.com', clientSecret: 'private-' + id + '-client', accessToken: 'private-' + id + '-access', refreshToken: 'private-' + id + '-refresh' }]));
+  store.save({ plugins });
+  const disk = fs.readFileSync(file, 'utf8');
+  assert.ok(!disk.includes('private-'));
+  for (const id of Object.keys(plugins)) assert.deepEqual(store.load().plugins[id], plugins[id]);
+  vault.isEncryptionAvailable = () => false;
+  assert.throws(() => store.save({ plugins: {} }), /locked/);
   assert.equal(fs.readFileSync(file, 'utf8'), disk);
 });

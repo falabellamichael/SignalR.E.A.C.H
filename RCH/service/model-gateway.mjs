@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { modelUsdPricing, requestReplay } from './store.mjs';
 import { gpuBridge, hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
+import { compatibleGemmaTools } from './gemma-tools.mjs';
 import { codegptDirect } from './codegpt-direct.mjs';
 
 // Transport guard, independent of model context and application budgets.
@@ -185,6 +186,9 @@ function gpuRequest(body, route) {
   const generation = gpuBridge(route.bridge).generation;
   result.payload = { ...result.payload, ...(output === undefined ? {} : { max_tokens: output }),
     ...generation };
+  if (route.bridge.model === 'google/gemma-4-12B-it-qat-q4_0-unquantized' && result.payload.tools !== undefined) {
+    result.payload.tools = compatibleGemmaTools(result.payload.tools);
+  }
   // A hidden thinking trace is generated before message content. Action calls
   // need that content to be the JSON object, so those requests answer directly.
   const actionReply = format !== undefined || result.payload.messages.some(message => message.role === 'system'
