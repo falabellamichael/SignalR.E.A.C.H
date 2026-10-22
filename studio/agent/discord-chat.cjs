@@ -55,8 +55,14 @@ function createDiscordChat({ profile, getSettings, getProjects = () => [], getSt
   function conversation(job, create = true) {
     const identity = key(job);
     if (!chats.has(identity)) chats.set(identity, { identity, queue: [], working: false, agentId: saved.chats[identity] || '', activeJob: null, answer: '', activity: [], activitySent: 0, delivery: Promise.resolve() });
-    const chat = chats.get(identity), workspace = config().workspace || '';
-    if (workspace && !getProjects().some(project => project.dir === workspace)) throw new Error('Choose an available saved project for Discord chat.');
+    const chat = chats.get(identity), selected = config().workspace || '';
+    const workspace = selected || path.join(profile, 'discord', 'workspace');
+    if (selected && !getProjects().some(project => project.dir === selected)) throw new Error('Choose an available saved project for Discord chat.');
+    if (!selected) {
+      fs.mkdirSync(workspace, { recursive: true });
+      const existing = getStore().get(chat.agentId);
+      if (existing && !existing.dir && !chat.working) getStore().update(chat.agentId, { dir: workspace });
+    }
     if (create && !getStore().get(chat.agentId)) {
       const agent = getStore().create({ name: 'Discord · ' + job.text.slice(0, 35), dir: workspace, personaPrompt: prompt });
       getStore().update(agent.id, { settings: { discordChat: true, approvals: 'prompt', reviewEdits: true } });

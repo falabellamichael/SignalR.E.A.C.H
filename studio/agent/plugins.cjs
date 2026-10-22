@@ -9,7 +9,7 @@
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { gmailFetch, gmailRead, gmailSend, outlookFetch } = require('./mail-connections.cjs');
+const { gmailFetch, gmailRead, gmailSend, outlookFetch, outlookSend } = require('./mail-connections.cjs');
 const { readWeather, DEFAULT_WEATHER_URL } = require('./weather-connection.cjs');
 const { normalizeToken } = require('./app-auth.cjs');
 
@@ -390,17 +390,7 @@ const PLUGIN_TOOLS = {
     example: { action: 'outlook.send', to: 'recipient@example.com', subject: 'Project update', body: 'Hello' },
     async execute(args, ctx) {
       const settings = pluginSettings(ctx);
-      if (!args.to || !args.subject || !args.body || /[\r\n]/.test(args.to)) throw new Error('Recipient, subject and body are required.');
-      // Microsoft returns 202 with no JSON body when the send is accepted.
-      const config = settings.plugins.outlook;
-      if (config?.enabled === false || !config?.password) throw new Error('Connect Outlook with a Microsoft Graph OAuth token first.');
-      const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-        method: 'POST', redirect: 'error', signal: ctx.signal || AbortSignal.timeout(20000),
-        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + config.password },
-        body: JSON.stringify({ message: { subject: args.subject, body: { contentType: 'Text', content: args.body }, toRecipients: [{ emailAddress: { address: args.to } }] } }),
-      });
-      if (response.status !== 202) throw new Error(`Outlook returned HTTP ${response.status}. Check Mail.Send permissions and reconnect if needed.`);
-      return { ok: true, accepted: true, to: args.to, subject: args.subject };
+      return outlookSend(settings.plugins.outlook || {}, args, ctx.signal);
     },
   },
 

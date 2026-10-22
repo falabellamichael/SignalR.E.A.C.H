@@ -26,7 +26,15 @@ function fixture(t) {
   return { file, vault, store: createSettingsStore({ file: () => file, safeStorage: vault }) };
 }
 
-test('all app connections persist across Settings and companion reloads without leaking secrets', t => {
+test('all app connections persist across Settings and companion reloads without leaking secrets', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async url => {
+    const data = String(url).includes('api.github.com') ? { login: 'fixture' }
+      : String(url).endsWith('/profile') ? { emailAddress: 'fixture@example.test' }
+        : { ok: true, value: [], results: [] };
+    return { ok: true, json: async () => data, text: async () => JSON.stringify(data) };
+  };
+  t.after(() => { global.fetch = originalFetch; });
   const { file, vault, store } = fixture(t);
   const { createAppConnections } = require('../agent/app-connections.cjs');
   const create = storage => createAppConnections({ getSettings: () => storage.load(), saveSettings: value => storage.save(value), openExternal() {} });
@@ -40,7 +48,7 @@ test('all app connections persist across Settings and companion reloads without 
           : field.key === 'clientId' ? 'fixture.apps.googleusercontent.com'
             : field.key === 'email' ? 'fixture@example.test' : '123456';
     }
-    settings.save(item.id, patch);
+    await settings.save(item.id, patch);
     expected.set(item.id, patch);
   }
   const reopened = createSettingsStore({ file: () => file, safeStorage: vault });
@@ -48,7 +56,7 @@ test('all app connections persist across Settings and companion reloads without 
   for (const [id, patch] of expected) {
     assert.equal(companion.catalog().find(item => item.id === id).enabled, true);
     for (const [key, value] of Object.entries(patch)) assert.equal(reopened.load().plugins[id][key], value);
-    companion.save(id, Object.fromEntries(companion.catalog().find(item => item.id === id).fields.filter(field => field.secret).map(field => [field.key, ''])));
+    await companion.save(id, Object.fromEntries(companion.catalog().find(item => item.id === id).fields.filter(field => field.secret).map(field => [field.key, ''])));
     for (const [key, value] of Object.entries(patch)) assert.equal(store.load().plugins[id][key], value);
   }
   assert.ok(!fs.readFileSync(file, 'utf8').includes('fixture-secret-'));

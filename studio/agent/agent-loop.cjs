@@ -57,12 +57,13 @@ function normalizeUserInput(value) {
 }
 
 class AgentLoop {
-  constructor({ agentId, store, endpoint, accessKey, connectionId = '', capabilityStore = null, journal = null, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, logger = null, nativeTools = false, jev = null, featureMask = null, mcpManager = null, getPlugins = null, settingsTransform = null, promptBuilder = null }) {
+  constructor({ agentId, store, endpoint, accessKey, connectionId = '', capabilityStore = null, journal = null, model, projectDir, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, personaPrompt = '', soulStore = null, soulKey = '', budgets = null, requestTimeoutMs = 180000, auditLog = null, logger = null, nativeTools = false, jev = null, featureMask = null, mcpManager = null, getPlugins = null, settingsTransform = null, promptBuilder = null, rulesProvider = null }) {
     this.agentId = agentId;
     this.store = store;
     this.getPlugins = getPlugins;
     this.settingsTransform = settingsTransform;
     this.promptBuilder = promptBuilder;
+    this.rulesProvider = rulesProvider;
     this.endpoint = endpoint;
     this.accessKey = accessKey || '';
     this.model = model || DEFAULT_MODEL;
@@ -201,6 +202,11 @@ class AgentLoop {
   }
 
   _buildSystemPrompt() {
+    const rules = this.rulesProvider ? this.rulesProvider() : '';
+    return rules + this._buildBaseSystemPrompt();
+  }
+
+  _buildBaseSystemPrompt() {
     if (this.promptBuilder) return this.promptBuilder(this);
     const settings = this._settings(), controls = features(settings);
     const disabled = disabledTools(settings, TOOLS);

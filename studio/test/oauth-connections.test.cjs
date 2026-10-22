@@ -28,7 +28,7 @@ test('hosted Slack, Notion and Discord complete with a customer proof, use serve
   t.after(async()=>{global.fetch=originalFetch;broker.close();server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
   global.fetch=async(url,options)=>{
     if(String(url).startsWith(origin))return originalFetch(String(url).replace(origin,local),options);
-    assert.equal(options.headers.Authorization,'Bearer fixture-customer');
+    assert.ok(['Bearer fixture-customer', 'Bearer fixture-manual', 'Bot fixture-manual'].includes(options.headers.Authorization));
     const data=String(url).includes('slack')?{ok:true}:{results:[]};
     return {...reply(data),text:async()=>JSON.stringify(data)};
   };
@@ -47,7 +47,7 @@ test('hosted Slack, Notion and Discord complete with a customer proof, use serve
     assert.equal(settings.plugins[id].accessToken,'fixture-customer');
     assert.equal(settings.plugins[id].clientSecret,undefined);
     if (id === 'discord') assert.equal(settings.plugins.discord.channel, '423456789012', 'A saved channel is retained without blocking account authorization');
-    apps.save(id,{token:'Bearer fixture-manual',enabled:true});
+    await apps.save(id,{token:'Bearer fixture-manual',enabled:true});
     assert.equal(settings.plugins[id].token,'fixture-manual');
     assert.equal(settings.plugins[id].refreshToken,undefined);
     apps.destroy();

@@ -13,7 +13,7 @@ function normalizeToken(value) {
 const names = { todo: 'Microsoft To Do', outlook: 'Outlook', gmail: 'Gmail', drive: 'Google Drive', calendar: 'Google Calendar', slack: 'Slack', notion: 'Notion', discord: 'Discord' };
 const permissions = { todo: 'Tasks.Read or Tasks.ReadWrite', outlook: 'Mail.Read', gmail: 'gmail.readonly', drive: 'drive.readonly', calendar: 'calendar.readonly', slack: 'search:read' };
 
-function connectionError(id, status, data = {}) {
+function connectionError(id, status, data = {}, { permission = permissions[id] } = {}) {
   const name = names[id] || 'App';
   // Provider messages are used only to select static guidance. Never return a
   // raw response, which may echo credentials, account details or other content.
@@ -30,11 +30,12 @@ function connectionError(id, status, data = {}) {
   else if (google && code === 'invalid_grant') advice = 'Google sign-in has expired or was revoked. Connect Google again.';
   else if (microsoft && message.includes('audience')) advice = 'This token was issued for a different service. Obtain a Microsoft Graph access token.';
   else if (microsoft && /expired|lifetime validation/.test(message)) advice = 'The Microsoft access token has expired. Copy a fresh token from Graph Explorer, Save, then Check.';
-  else if (microsoft && (status === 401 || status === 403)) advice = `In Graph Explorer, sign in to the same account, grant ${permissions[id]}, and run ${id === 'todo' ? 'GET /me/todo/lists' : 'GET /me/messages'}. Once it succeeds, copy the new access token here, Save, then Check. Pasted tokens expire and must be replaced.`;
+  else if (microsoft && permission === 'Mail.Send' && (status === 401 || status === 403)) advice = 'Reconnect Outlook with Mail.Send permission and "Also allow sending" enabled.';
+  else if (microsoft && (status === 401 || status === 403)) advice = `In Graph Explorer, sign in to the same account, grant ${permission}, and run ${id === 'todo' ? 'GET /me/todo/lists' : 'GET /me/messages'}. Once it succeeds, copy the new access token here and Save. Studio verifies access before replacing the saved credential. Pasted tokens expire and must be replaced.`;
   else if (id === 'slack' && code === 'missing_scope') advice = 'Use a Slack user OAuth token with search:read; a bot token cannot search messages.';
   else if (id === 'slack' && ['invalid_auth', 'token_revoked', 'token_expired', 'not_authed'].includes(code)) advice = 'Reconnect Slack with a current user OAuth token that includes search:read.';
   else if (status === 401) advice = google ? 'The Google access token is invalid or expired. Use a fresh OAuth access token; an API key or app password will not work.' : 'The access token is invalid or expired. Reconnect this app.';
-  else if (status === 403 || googleReason === 'insufficientPermissions') advice = permissions[id] ? `Grant ${permissions[id]} and reconnect with a new access token.` : id === 'discord' ? 'Give the bot access to the channel and Read Message History. Enable Message Content intent for message text.' : 'Grant the integration access to the requested resource.';
+  else if (status === 403 || googleReason === 'insufficientPermissions') advice = permission ? `Grant ${permission} and reconnect with a new access token.` : id === 'discord' ? 'Give the bot access to the channel and Read Message History. Enable Message Content intent for message text.' : 'Grant the integration access to the requested resource.';
   else if (status === 404) advice = 'Check the resource ID and share the resource with this connection.';
   else advice = 'Check this app’s setup and try again.';
   return new Error(`${name} ${status >= 400 ? `returned HTTP ${status}` : 'request was refused'}. ${advice}`);

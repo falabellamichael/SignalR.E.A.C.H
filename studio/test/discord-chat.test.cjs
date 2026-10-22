@@ -8,13 +8,13 @@ const { createDiscordChat } = require('../agent/discord-chat.cjs');
 const { createAppConnections } = require('../agent/app-connections.cjs');
 async function until(predicate) { const deadline = Date.now() + 3000; while (!predicate()) { if (Date.now() > deadline) throw new Error('Discord fixture timed out'); await delay(10); } }
 
-test('Discord chat settings accept saved projects and preserve the existing authorization', () => {
+test('Discord chat settings accept saved projects and preserve the existing authorization', async () => {
   let settings = { plugins: { discord: { enabled: true, accessToken: 'fixture-access', refreshToken: 'fixture-renew' } } };
   const apps = createAppConnections({ getSettings: () => settings, saveSettings: value => { settings = value; }, openExternal: async () => {}, getProjects: () => [{ name: 'Fixture', dir: '/fixture' }] });
-  apps.save('discord', { chatEnabled: true, workspace: '/fixture' });
+  await apps.save('discord', { chatEnabled: true, workspace: '/fixture' });
   assert.equal(settings.plugins.discord.refreshToken, 'fixture-renew'); assert.equal(apps.catalog().find(item => item.id === 'discord').chat.workspace, '/fixture');
-  assert.throws(() => apps.save('discord', { workspace: '/not-a-saved-project' }), /saved Studio project/);
-  assert.throws(() => apps.save('discord', { chatEnabled: 'yes' }), /Invalid Discord/);
+  await assert.rejects(() => apps.save('discord', { workspace: '/not-a-saved-project' }), /saved Studio project/);
+  await assert.rejects(() => apps.save('discord', { chatEnabled: 'yes' }), /Invalid Discord/);
 });
 
 test('Discord conversation uses Studio history, routes replies and approves only the same owner and channel', async t => {
@@ -70,6 +70,8 @@ test('Discord channels keep separate Studio histories and changing the read defa
   jobs.push({ id: '523456789012', userId: '223456789012', channel: '423456789012', text: 'First channel' }, { id: '623456789012', userId: '223456789012', channel: '823456789012', text: 'Second channel' });
   runtime.synchronize(); await until(() => replies.filter(reply => reply.content.startsWith('Reply:')).length === 2);
   assert.equal(store.agents.length, 2);
+  assert.ok(store.agents.every(agent => agent.dir === path.join(profile, 'discord', 'workspace')),
+    'General Discord chats use their own files, never the active Studio project');
   const histories = store.agents.map(agent => agent.messages.map(message => message.content));
   assert.ok(histories.some(messages => messages.join('|') === 'First channel|Reply: First channel'));
   assert.ok(histories.some(messages => messages.join('|') === 'Second channel|Reply: Second channel'));

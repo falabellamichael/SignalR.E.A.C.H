@@ -51,7 +51,7 @@ async function agentCommand(host, action, args, ctx) {
       if (!String(args.url || '').trim()) throw new Error('A URL or search query is required.');
       host.navigate(tab, args.url);
       host.active = tab.id;
-      host.win.webContents.send('browser:reveal');
+      if (!host.background) host.win.webContents.send('browser:reveal');
     } else if (['back', 'forward', 'reload'].includes(op)) await host.command(op, { id: tab.id });
     else if (op !== 'read') await cancellable(pageCall(tab, op, { ref: args.ref, text: args.text, direction: args.direction }), signal, () => wc.stop());
     await settled(tab, signal);

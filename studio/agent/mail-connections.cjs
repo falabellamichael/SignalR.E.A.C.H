@@ -5,11 +5,11 @@
 const refreshes = new Map();
 const { normalizeToken, connectionError } = require('./app-auth.cjs');
 async function jsonRequest(url, options = {}) {
-  const { service = 'gmail', fetchImpl = fetch, ...requestOptions } = options;
+  const { service = 'gmail', permission, expectedStatus, fetchImpl = fetch, ...requestOptions } = options;
   const signal = options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(20000)]) : AbortSignal.timeout(20000);
   const response = await fetchImpl(url, { ...requestOptions, redirect: 'error', signal });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw connectionError(service, response.status, data);
+  if (!response.ok || expectedStatus && response.status !== expectedStatus) throw connectionError(service, response.status, data, { permission });
   return data;
 }
 async function googleToken(config = {}, service = 'gmail', options = {}) {
@@ -41,7 +41,7 @@ async function googleToken(config = {}, service = 'gmail', options = {}) {
 async function gmailFetch(config, route, { signal, ...options } = {}) {
   const token = await googleToken(config, 'gmail', { signal, fetchImpl: options.fetchImpl });
   return jsonRequest('https://gmail.googleapis.com/gmail/v1/users/me/' + route, {
-    ...options, signal, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) },
+    ...options, signal, permission: route === 'messages/send' ? 'gmail.send' : 'gmail.readonly', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) },
   });
 }
 async function gmailRead(config, args = {}, signal) {
@@ -70,6 +70,7 @@ function rawMessage(config, args) {
   return Buffer.from(`From: ${config.email}\r\nTo: ${args.to}\r\nSubject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(String(args.body)).toString('base64')}`).toString('base64url');
 }
 async function gmailSend(config, args, signal) {
+  requireSendPermission('gmail', config);
   const result = await gmailFetch(config, 'messages/send', { method: 'POST', signal, body: JSON.stringify({ raw: rawMessage(config, args) }) });
   if (!result.id) throw new Error('Gmail did not confirm the send. Check Sent Mail before retrying.');
   return { ok: true, sent: true, id: result.id, to: args.to, subject: args.subject };
@@ -78,4 +79,21 @@ async function outlookFetch(config, route, options = {}) {
   const token = await require('./oauth-grants.cjs').oauthToken('outlook', config, options);
   return jsonRequest('https://graph.microsoft.com/v1.0/me' + route, { ...options, service: 'outlook', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + normalizeToken(token) } });
 }
-module.exports = { googleToken, gmailFetch, gmailRead, gmailSend, outlookFetch };
+function hasSendPermission(id, config = {}) {
+  const scopes = String(config.scope || '').toLowerCase().split(/[ ,]+/);
+  return id === 'gmail' ? ['https://www.googleapis.com/auth/gmail.send', 'https://www.googleapis.com/auth/gmail.compose', 'https://www.googleapis.com/auth/gmail.modify', 'https://mail.google.com/'].some(scope => scopes.includes(scope))
+    : scopes.some(scope => scope.split('/').at(-1) === 'mail.send');
+}
+function requireSendPermission(id, config = {}) {
+  if (config.allowSend === false || config.scope && !hasSendPermission(id, config)) throw new Error(`Reconnect ${id === 'gmail' ? 'Gmail' : 'Outlook'} with "Also allow sending" enabled and grant ${id === 'gmail' ? 'gmail.send' : 'Mail.Send'} permission.`);
+}
+async function outlookSend(config, args, signal) {
+  if (!args.to || !args.subject || !args.body || /[\r\n]/.test(args.to)) throw new Error('Recipient, subject and body are required.');
+  requireSendPermission('outlook', config);
+  await outlookFetch(config, '/sendMail', {
+    method: 'POST', signal, expectedStatus: 202, permission: 'Mail.Send',
+    body: JSON.stringify({ message: { subject: args.subject, body: { contentType: 'Text', content: args.body }, toRecipients: [{ emailAddress: { address: args.to } }] } }),
+  });
+  return { ok: true, accepted: true, to: args.to, subject: args.subject };
+}
+module.exports = { googleToken, gmailFetch, gmailRead, gmailSend, outlookFetch, outlookSend, hasSendPermission };
