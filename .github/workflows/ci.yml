@@ -113,7 +113,15 @@ jobs:
         run: npm run test:coverage
       - name: Install Electron runtime libraries (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-0 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2 libx11-xcb1 xvfb flatpak flatpak-builder elfutils
+        run: |
+          # Avoid long per-package stalls on the hosted runner's Azure mirror.
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            printf 'https://archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://security.ubuntu.com/ubuntu/\tpriority:2\n' |
+              sudo tee /etc/apt/apt-mirrors.txt > /dev/null
+          fi
+          apt_download_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_download_options[@]}" update
+          sudo apt-get "${apt_download_options[@]}" install -y --no-install-recommends libgtk-3-0 libnss3 libasound2t64 libgbm1 libatk-bridge2.0-0 libcups2 libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libpango-1.0-0 libcairo2 libx11-xcb1 xvfb flatpak flatpak-builder elfutils
       - name: macOS Electron smoke test
         if: runner.os == 'macOS'
         run: npm run smoke
