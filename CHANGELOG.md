@@ -1,5 +1,12 @@
 # Changelog
 
+## [26.10.11](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.10...v26.10.11) (2026-10-22)
+
+
+### Bug Fixes
+
+* **studio:** connection operations, Discord memory, todo tools and refreshed Store assets ([ce7c146](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ce7c146cabe69d2d6d23e9156e42fd6af8155fd1))
+
 ## [26.10.10](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.9...v26.10.10) (2026-10-22)
 
 
