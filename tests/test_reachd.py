@@ -9,8 +9,10 @@ Run:  python -m unittest tests.test_reachd -v
 import io
 import json
 import os
+import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -331,6 +333,7 @@ class AnalyticsTests(unittest.TestCase):
         self.analytics = reachd.Analytics(self.db)
 
     def tearDown(self):
+        self.analytics.close()
         self.tmp.cleanup()
 
     def _log(self, **kwargs):
@@ -340,6 +343,41 @@ class AnalyticsTests(unittest.TestCase):
                         tokens_out=25, stream=False)
         defaults.update(kwargs)
         self.analytics.log_request(**defaults)
+
+    def test_close_drops_the_wal_lock_and_ignores_later_writes(self):
+        self._log(tokens_in=1, tokens_out=1)
+        held = threading.Event()
+        release = threading.Event()
+
+        def _hold(conn):
+            conn.execute("SELECT COUNT(*) FROM requests").fetchone()
+            held.set()
+            release.wait(2)
+
+        worker = threading.Thread(target=lambda: self.analytics._run(_hold))
+        worker.start()
+        self.assertTrue(held.wait(2), "analytics write never started")
+        closer = threading.Thread(target=self.analytics.close)
+        closer.start()
+        deadline = time.monotonic() + 1
+        while not closer.is_alive() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(closer.is_alive(), "close returned while a query connection was open")
+        release.set()
+        closer.join(2)
+        worker.join(2)
+        self.assertFalse(closer.is_alive())
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(Path(str(self.db) + "-wal").exists())
+        self.assertFalse(Path(str(self.db) + "-shm").exists())
+        self._log(tokens_in=9, tokens_out=9)
+        probe = sqlite3.connect(self.db)
+        try:
+            self.assertEqual(probe.execute("PRAGMA journal_mode").fetchone()[0], "delete")
+            self.assertEqual(probe.execute("SELECT COUNT(*) FROM requests").fetchone()[0], 1)
+        finally:
+            probe.close()
+        self.db.unlink()
 
     def test_log_and_stats_roundtrip(self):
         """Regression: SUM(tokens_out) aliased AS `to` was a SQLite syntax

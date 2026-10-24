@@ -19,6 +19,7 @@ class Analytics:
     def __init__(self, db_path):
         self.db_path = db_path
         self._lock = threading.RLock()
+        self._closed = False
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._connect()
         try:
@@ -69,9 +70,34 @@ class Analytics:
     def _run(self, fn):
         """Run fn(conn) under the lock; always close the connection."""
         with self._lock:
+            if self._closed:
+                return None
             conn = self._connect()
             try:
                 return fn(conn)
+            finally:
+                conn.close()
+
+    def close(self):
+        """Release reach.db so the directory that holds it can be removed.
+
+        Query connections are closed on every call, but WAL mode leaves the
+        database mapped. Windows will not delete that file until the mapping
+        is gone. Checkpoint, switch back to a delete journal, and refuse later
+        opens — a handler that loses the race with fixture teardown must not
+        recreate the lock.
+        """
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            conn = sqlite3.connect(str(self.db_path), timeout=10, isolation_level=None)
+            try:
+                conn.execute("PRAGMA busy_timeout=5000")
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.execute("PRAGMA journal_mode=DELETE")
+            except sqlite3.Error:
+                pass
             finally:
                 conn.close()
 
