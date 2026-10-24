@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "signal-reach-public",
   "name": "SignalREACH",
-  "version": "26.10.11",
+  "version": "26.10.12",
   "edition": "public",
   "description": "The public REACH workspace for SimpleRAG: dashboard, connections, models, playground, session activity, and access to the shared Studio and VS Code settings hub.",
   "publisher": {
