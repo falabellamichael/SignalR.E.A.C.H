@@ -1,5 +1,15 @@
 # Changelog
 
+## [26.10.12](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.11...v26.10.12) (2026-10-24)
+
+
+### Bug Fixes
+
+* improve hosted accounts, workspace previews and GPU tools ([b866969](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/b86696903b86fe2d1d31136ae90496f8c900de73))
+* refresh website asset caches and isolate welcome trial tests ([71f6f9a](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/71f6f9a314743bd7f96f4f9084c0320016cf0431))
+* update Electron security patches and settings test mocks ([d113de9](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/d113de9d5f3e6067738f571cf60a9197ef9637b5))
+* wait for account telemetry before fixture cleanup ([23e78a0](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/23e78a0f7b858023e1d95b91860c486690d9c38b))
+
 ## [26.10.11](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.10...v26.10.11) (2026-10-22)
 
 
