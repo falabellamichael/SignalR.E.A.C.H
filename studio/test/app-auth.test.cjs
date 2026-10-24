@@ -15,14 +15,17 @@ test('a legacy password in the public Google client ID field is never returned t
   assert.ok(!JSON.stringify(catalog).includes('private-client-secret-value'));
 });
 
-test('opaque Microsoft tokens and complete long tokens survive normalization and both save paths', () => {
+test('opaque Microsoft tokens and complete long tokens survive normalization and both save paths', async t => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({ ok: true, json: async () => ({ value: [] }), text: async () => JSON.stringify({ value: [] }) });
+  t.after(() => { global.fetch = originalFetch; });
   const token = 'opaque+/' + 'x'.repeat(2000) + '==';
   assert.equal(normalizeToken(' Authorization: Bearer ' + token + '\r\n'), token);
   assert.equal(normalizeToken(token.slice(0, 100) + '\r\n' + token.slice(100)), token);
   let settings = { plugins: {} };
   const apps = createAppConnections({ getSettings: () => settings, saveSettings: value => { settings = value; } });
-  apps.save('todo', { token: 'Bearer ' + token, enabled: true });
-  apps.save('outlook', { password: 'Bearer ' + token });
+  await apps.save('todo', { token: 'Bearer ' + token, enabled: true });
+  await apps.save('outlook', { password: 'Bearer ' + token });
   assert.equal(settings.plugins.todo.token, token);
   assert.equal(settings.plugins.outlook.password, token);
   const { sanitizePlugins } = require('../agent/plugins.cjs');
@@ -30,7 +33,7 @@ test('opaque Microsoft tokens and complete long tokens survive normalization and
   assert.equal(result.outlook.password, token);
   assert.equal(result.gmail.password, token);
   assert.equal(sanitizePlugins({ outlook: { password: '' } }, result).outlook.password, token);
-  assert.throws(() => apps.save('todo', { token: 'x'.repeat(16385) }), /too long/);
+  await assert.rejects(apps.save('todo', { token: 'x'.repeat(16385) }), /too long/);
   assert.equal(settings.plugins.todo.token, token, 'oversized values do not overwrite a saved token');
   assert.throws(() => normalizeToken('invalid token'), /spaces/);
 });

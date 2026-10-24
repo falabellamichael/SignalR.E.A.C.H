@@ -396,7 +396,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       let record;
       let usage;
       if (requestMode) {
-        record = await gpuResponse(upstream, payload, route, controller.signal);
+        record = await gpuResponse(upstream, payload, route, controller.signal, measured => { usage = measured; });
         if (controller.signal.aborted || res.destroyed) fail(408, 'request_cancelled', 'The request was cancelled before completion.');
       } else if (payload.stream && contentType.toLowerCase().includes('text/event-stream')) {
         ({ record, usage } = await forwardStream(upstream, res, route.id, controller.signal));
@@ -419,6 +419,12 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         await store.settleRequest(reservation.id, record);
       } else await store.settle(reservation.id, { ...usage, model: route.id, provider: route.provider }, record);
       finished = true;
+      if (requestMode && usage && !res.headersSent) {
+        // Private relay telemetry; subscription settlement remains per request.
+        // reachd deliberately excludes these headers from public responses.
+        res.setHeader('X-Reach-Usage-In', String(usage.promptTokens));
+        res.setHeader('X-Reach-Usage-Out', String(usage.completionTokens));
+      }
       if (res.headersSent) { res.end('data: [DONE]\n\n'); }
       else {
         res.writeHead(200, { 'content-type': record.contentType, 'cache-control': 'no-store' });
@@ -501,7 +507,7 @@ function bridgeEnvelope(parsed, route) {
 
 function bridgeFinish(reason) { return reason === 'stop' || reason === 'length'; }
 
-async function gpuResponse(response, payload, route, signal) {
+async function gpuResponse(response, payload, route, signal, measuredUsage) {
   if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || '')) {
     fail(502, 'invalid_bridge_response', 'The GPU model returned an unexpected response type.');
   }
@@ -523,6 +529,12 @@ async function gpuResponse(response, payload, route, signal) {
         : plain(value) && Object.keys(value).length > 0;
     });
   if (!hasOutput) fail(502, 'empty_response', 'The GPU model returned an empty message.');
+  // The selected private GPU route supplied this record. Validate native
+  // counts without fabricating them or adding them to the customer's reply.
+  const measured = providerUsage({ usage_source: 'provider', usage: plain(parsed.usage) ? {
+    prompt_tokens: parsed.usage.prompt_tokens, completion_tokens: parsed.usage.completion_tokens, total_tokens: parsed.usage.total_tokens,
+  } : null });
+  if (measured) measuredUsage(measured);
   const safe = { ...envelope, object: 'chat.completion', choices: [{ index: 0,
     message: { role: 'assistant', ...message }, finish_reason: choice.finish_reason ?? null }] };
   return payload.stream ? jsonAsStream(safe)

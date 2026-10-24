@@ -1,14 +1,14 @@
 """Fixed private model routes. Client requests never choose hosts or credentials."""
 
 GPU_MODELS = {
-    "gemma-4-12b-qat": ("google/gemma-4-12B-it-qat-q4_0-unquantized", 18001, "Gemma 4 12B QAT Q8", "Q8_0 (BF16 vision)", 0),
+    "gemma-4-12b-qat": ("google/gemma-4-12B-it-qat-q4_0-unquantized", 18001, "Gemma 4 12B QAT FP8", "FP8 (BF16 vision)", 0),
     "ornith-1.5-9b": ("ornith-ai/Ornith-1.5-9B", 18002, "Ornith 1.5 9B", "FP8 (BF16 vision)", 0),
     "minicpm5-2b": ("openbmb/MiniCPM5-2B", 18004, "MiniCPM5 2B", "FP8", 0),
 }
-GPU_TP_MODELS = frozenset(("ornith-1.5-9b",))
+GPU_TP_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b"))
 GPU_TOOL_MODELS = frozenset(("gemma-4-12b-qat", "minicpm5-2b"))
 GPU_DISABLED_MODELS = frozenset(("minicpm5-2b",))
-GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 262144, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856}
+GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 65536, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856}
 GPU_SAMPLING_DEFAULTS = {
     "ornith-1.5-9b": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
     "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},

@@ -11,7 +11,7 @@ const flowId = 'a'.repeat(64);
 const started = () => ({body: {flowId, expiresAt: new Date(Date.now() + 600000).toISOString(), loginUrl: `${origin}/wallet/connect#flow=${flowId}`}});
 const configured = () => ({body: {chainId: 1, emailLogin: true}});
 const settle = () => new Promise(resolve => setTimeout(resolve, 30));
-function harness({search = '', stored = {}, responses = [], page = 'login', ethereum} = {}) {
+function harness({search = '', hash = '', stored = {}, responses = [], page = 'login', ethereum} = {}) {
   const storage = new Map(Object.entries(stored));
   const calls = [], redirects = [], handlers = {};
   const nodes = new Map(['#account-signin', '#account-status', '#account-onboarding', '#account-link-wallet', '#account-check-access', '#subscription-checkout', '#account-retry', '#account-signout', '#profile-info', '#profile-api', '#profile-details', '#api-key-form', '#create-api-key', '#api-access-notice', '#new-key', '#new-key-value', '#copy-api-key', '#dismiss-api-key', '#api-key-list', '#account-id', '#account-email', '#account-wallet', '#account-created', '#api-key-name'].map(id => [id, {disabled: false, hidden: true, value: '', replaceChildren() {}, append() {}, textContent: '', addEventListener: (event, fn) => { handlers[id + event] = fn; }}]));
@@ -20,7 +20,7 @@ function harness({search = '', stored = {}, responses = [], page = 'login', ethe
     document: {body: {dataset: {page}}, createElement: () => ({append() {}}), querySelector: id => nodes.get(id), querySelectorAll: () => []},
     window: {addEventListener() {}, ethereum},
     sessionStorage: {getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key)},
-    location: {href: `http://127.0.0.1:4173/login.html${search}`, pathname: '/login.html', search, assign: url => redirects.push(url), replace: url => redirects.push(url)},
+    location: {href: `http://127.0.0.1:4173/login.html${search}${hash}`, pathname: '/login.html', search, hash, assign: url => redirects.push(url), replace: url => redirects.push(url)},
     history: {replaceState() {}}, crypto: webcrypto, TextEncoder, Uint8Array, URL, URLSearchParams,
     btoa: value => Buffer.from(value, 'binary').toString('base64'),
     fetch: async (url, options) => { calls.push({url, ...options}); const next = responses.shift(); if (!next) throw new Error('Unexpected request'); if (next.gate) await next.gate; if (next.error) throw next.error; return {ok: !next.status || next.status >= 200 && next.status < 300, status: next.status || 200, json: async () => next.body}; }
@@ -236,4 +236,53 @@ test('profile and login permit only the explicit hosted account origin', () => {
   const profile = readFileSync(new URL('../profile.html', import.meta.url), 'utf8');
   assert.equal((profile.match(/data-profile-nav/g) || []).length, 2);
   assert.match(profile, /These are not OpenAI/);
+});
+
+test('Studio email approval preserves website state and leaves the PKCE exchange to Studio', async () => {
+  const stored = {[sessionKey]: JSON.stringify({accessToken: 'existing-website-session'}), [pendingKey]: JSON.stringify({flowId: 'website-pending'})};
+  const h = harness({hash: `#client=studio&flow=${flowId}`, stored, responses: [configured(), {body: {challengeId: 'email'}}, {body: {verified: true}}]});
+  await settle();
+  assert.equal(h.nodes.get('#account-email-form').hidden, false);
+  assert.match(h.nodes.get('#account-status').textContent, /REACH Studio/);
+  h.nodes.get('#account-email').value = 'reader@example.test';
+  await h.submit('#account-email-form');
+  h.nodes.get('#account-code').value = '12345678';
+  await h.submit('#account-code-form');
+  assert.deepEqual(h.calls.map(call => new URL(call.url).pathname), ['/v1/account/config', '/v1/auth/email/start', '/v1/auth/email/verify']);
+  assert.deepEqual(Object.fromEntries(h.storage), stored);
+  assert.deepEqual(h.redirects, []);
+  assert.equal(h.nodes.get('#account-login-options').hidden, true);
+  assert.match(h.nodes.get('#account-status').textContent, /Return to REACH Studio/);
+  assert.ok(h.calls.every(call => call.headers['ngrok-skip-browser-warning'] === 'true'));
+});
+
+test('Studio wallet sign-in and wallet linking approve the supplied flow without a website session', async () => {
+  for (const mode of ['', '&mode=wallet']) {
+    const ethereum = walletFixture();
+    const h = harness({hash: `#client=studio&flow=${flowId}${mode}`, ethereum, responses: [configured(), {body: {challengeId: 'wallet-challenge', message: messageFor('http://127.0.0.1:4173')}}, {body: {verified: true}}]});
+    await settle();
+    assert.equal(h.nodes.get('#account-email-form').hidden, !!mode);
+    await h.click('#account-wallet-signin');
+    await h.click('#account-wallet-signin');
+    assert.deepEqual(JSON.parse(h.calls[2].body), {flowId, challengeId: 'wallet-challenge', signature: '0x1234'});
+    assert.equal(h.storage.size, 0);
+    assert.deepEqual(h.redirects, []);
+    assert.match(h.nodes.get('#account-status').textContent, /Return to REACH Studio/);
+    assert.equal(h.calls.some(call => call.url.endsWith('/exchange')), false);
+  }
+});
+
+test('malformed Studio handoffs fail closed and expired flows return the user to Studio', async () => {
+  for (const hash of ['#client=studio', '#client=studio&flow=bad', `#client=other&flow=${flowId}`, `#client=studio&flow=${flowId}&mode=other`]) {
+    const h = harness({hash}); await settle();
+    assert.equal(h.calls.length, 0);
+    assert.equal(h.nodes.get('#account-signin').hidden, true);
+    assert.match(h.nodes.get('#account-status').textContent, /Invalid Studio/);
+  }
+  const stored = {[pendingKey]: JSON.stringify({flowId: 'website-pending'})};
+  const h = harness({hash: `#client=studio&flow=${flowId}`, stored, responses: [configured(), {status: 410, body: {error: {message: 'Expired'}}}]});
+  await settle(); h.nodes.get('#account-email').value = 'reader@example.test'; await h.submit('#account-email-form');
+  assert.deepEqual(Object.fromEntries(h.storage), stored);
+  assert.equal(h.nodes.get('#account-signin').hidden, true);
+  assert.match(h.nodes.get('#account-status').textContent, /Start sign-in again from REACH Studio/);
 });

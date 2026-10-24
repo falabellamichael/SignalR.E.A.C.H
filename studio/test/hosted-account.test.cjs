@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createHostedAccount, serviceUrl, browserUrl, publicAccount, MANAGED_ID } = require('../agent/hosted-account.cjs');
+const { createHostedAccount, serviceUrl, browserUrl, signInBrowserUrl, publicAccount, MANAGED_ID } = require('../agent/hosted-account.cjs');
 const { derive, formatRch, formatUsd } = require('../renderer/account-view.js');
 const TOKEN = 'fixture-session-token-never-expose-to-renderer';
 const ADDRESS = '0x0000000000000000000000000000000000000001';
@@ -54,6 +54,41 @@ test('hosted ngrok API requests pass through the tunnel warning', async t => {
   assert.equal(ngrok.requests[0].headers['ngrok-skip-browser-warning'], '1');
   const direct = fixture(t); await direct.manager.configure('https://reach.test');
   assert.equal(direct.requests[0].headers['ngrok-skip-browser-warning'], undefined);
+});
+
+test('public sign-in opens the website with only the flow id and preserves origin checks', () => {
+  const origin = 'https://unbent-semicolon-hermit.ngrok-free.dev', flow = 'a'.repeat(64);
+  const url = `${origin}/wallet/connect#flow=${flow}`;
+  assert.equal(signInBrowserUrl(url, origin), `https://signalreach.ca/login.html#client=studio&flow=${flow}`);
+  assert.equal(signInBrowserUrl(url, origin, true), `https://signalreach.ca/login.html#client=studio&flow=${flow}&mode=wallet`);
+  assert.equal(signInBrowserUrl('https://reach.test/login#flow=custom', 'https://reach.test'), 'https://reach.test/login#flow=custom');
+  for (const bad of [url.replace(origin, 'https://evil.test'), url.replace('/wallet/connect', '/wallet/redeem'), `${origin}/wallet/connect#flow=bad`, `${origin}/wallet/connect?token=secret#flow=${flow}`]) {
+    assert.throws(() => signInBrowserUrl(bad, origin));
+  }
+});
+
+test('public Studio connect retains PKCE proof while website approval completes the same flow', async t => {
+  const origin = 'https://unbent-semicolon-hermit.ngrok-free.dev', flowId = 'b'.repeat(64), requests = [];
+  const f = fixture(t);
+  const original = f.args.fetchImpl;
+  const manager = createHostedAccount({...f.args, fetchImpl: async (url, init) => {
+    requests.push({url, ...init});
+    if (url.endsWith('/v1/auth/start')) return {ok: true, status: 200, json: async () => ({flowId, loginUrl: `${origin}/wallet/connect#flow=${flowId}`, expiresAt: new Date(Date.now() + 120000).toISOString()})};
+    if (url.endsWith('/v1/account/link-wallet')) return {ok: true, status: 200, json: async () => ({loginUrl: `${origin}/wallet/connect#flow=${flowId}`})};
+    return original(url, init);
+  }});
+  await manager.configure(origin); await manager.connect();
+  assert.equal(f.opened[0], `https://signalreach.ca/login.html#client=studio&flow=${flowId}`);
+  f.setReady(); await manager.poll();
+  const start = JSON.parse(requests.find(r => r.url.endsWith('/start')).body);
+  const exchange = JSON.parse(requests.find(r => r.url.endsWith('/exchange')).body);
+  assert.equal(exchange.flowId, flowId);
+  assert.equal(start.state, exchange.state);
+  assert.equal(start.codeChallenge, crypto.createHash('sha256').update(exchange.codeVerifier).digest('base64url'));
+  assert.equal(manager.state().status, 'connected');
+  await manager.linkWallet();
+  assert.equal(f.opened[1], `https://signalreach.ca/login.html#client=studio&flow=${flowId}&mode=wallet`);
+  assert.equal(f.opened.some(url => url.includes(exchange.codeVerifier) || url.includes(start.state) || url.includes(TOKEN)), false);
 });
 
 test('PKCE login keeps credentials and verifiers out of public state and settings', async t => {

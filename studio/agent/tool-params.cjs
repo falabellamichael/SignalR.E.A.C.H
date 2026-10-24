@@ -62,14 +62,20 @@ const PARAMS = {
   'slack.read': [s('query', true, 400), n('limit', 1)],
   'notion.read': [s('query', false, 400), s('id', false, 256), n('limit', 1)],
   'discord.read': [s('channel', false, 256), n('limit', 1)],
-  'todo.read': [s('list', false, 256), n('limit', 1)],
-  'todo.create': [s('list', true, 256), s('title', true, 255)],
+  'todo.read': [s('list', false, 256), s('listId', false, 256), n('limit', 1), s('nextLink', false, 8192)],
+  'todo.create': [{ ...s('list', true, 256), alias: 'listId', nonempty: true }, s('listId', false, 256), s('title', true, 255)],
+  'todo.create_list': [s('displayName', true, 255)],
+  'todo.update': [{ ...s('list', true, 256), alias: 'listId', nonempty: true }, s('listId', false, 256), { ...s('id', true, 256), alias: 'taskId', nonempty: true }, s('taskId', false, 256), s('title', false, 255), s('status', false, 40), s('importance', false, 20), a('categories', false, 25)],
   'weather.current': [s('url', false, 2048)],
   'gmail.draft': [s('to', false, 300), s('subject', false, 300), s('body', false, 40000)],
   'outlook.send': [s('to', true, 300), s('subject', true, 300), s('body', true, 40000)],
   'outlook.read': [s('query', false, 400), n('limit', 1)],
   'outlook.draft': [s('to', false, 300), s('subject', false, 300), s('body', false, 40000)],
 };
+
+for (const name of Object.keys(require('./connection-operations.cjs').OPERATIONS)) {
+  PARAMS[name] = require('./connection-operations.cjs').params(name);
+}
 
 // @fixed denotes a structured native Reach compiler invocation. All
 // other paths name argument fields that can reach a shell.
@@ -87,6 +93,10 @@ function validateToolArgs(params, raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, error: 'Tool arguments must be an object.' };
   const args = { ...raw };
   for (const field of params) {
+    if (field.alias && Object.hasOwn(args, field.alias)) {
+      if (Object.hasOwn(args, field.name) && args[field.name] !== args[field.alias]) return { ok: false, error: `Arguments "${field.name}" and "${field.alias}" must identify the same resource.` };
+      args[field.name] = args[field.alias];
+    }
     let value = args[field.name];
     if (value === undefined) {
       if (field.default !== undefined) { args[field.name] = structuredClone(field.default); continue; }
@@ -101,6 +111,7 @@ function validateToolArgs(params, raw) {
           : field.type === 'object' ? value !== null && typeof value === 'object' && !Array.isArray(value)
             : field.type === 'boolean' ? typeof value === 'boolean' : false;
     if (!valid) return { ok: false, error: `Argument "${field.name}" must be ${field.type}.` };
+    if (field.nonempty && !value.trim()) return { ok: false, error: `Argument "${field.name}" must be nonempty.` };
     if (field.maxLength !== undefined && value.length > field.maxLength) return { ok: false, error: `Argument "${field.name}" exceeds ${field.maxLength} characters.` };
     if (field.maxItems !== undefined && value.length > field.maxItems) return { ok: false, error: `At most ${field.maxItems} ${field.name} may be supplied.` };
     args[field.name] = value;

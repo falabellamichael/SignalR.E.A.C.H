@@ -21,7 +21,7 @@
     async function perform(action, value) {
       if (busy) return;
       const signingIn = ['gmail-connect', 'google-connect', 'github-connect', 'oauth-connect'].includes(action);
-      busy = true; busyAction = action; render(); message.textContent = signingIn ? 'Continue sign-in in your browser…' : action === 'check' ? 'Checking connection…' : 'Saving connection…';
+      busy = true; busyAction = action; render(); message.textContent = signingIn ? 'Continue sign-in in your browser…' : action === 'check' ? 'Checking connection…' : action === 'save' ? 'Verifying and saving connection…' : 'Updating connection…';
       let polling = false;
       const poll = signingIn ? setInterval(async () => {
         if (polling || !host.isConnected) return;
@@ -42,7 +42,7 @@
         const badge = document.createElement('span'); badge.className = 'app-connection-badge'; badge.dataset.state = item.status.state;
         badge.textContent = { connected: 'Connected', ready: 'Ready', saved: 'Saved · check needed', disabled: 'Disabled', disconnected: 'Not connected', checking: 'Checking…', authorizing: 'Awaiting authorization', error: 'Check failed' }[item.status.state] || item.status.state;
         const description = document.createElement('p'); description.textContent = item.description;
-        const note = document.createElement('p'); note.className = 'app-connection-note'; note.textContent = (item.status.note || item.account || '') + (item.id === 'gmail' && item.configured ? (item.sendAllowed ? ' · Reading and sending permitted' : ' · Read only') : '');
+        const note = document.createElement('p'); note.className = 'app-connection-note'; note.textContent = (item.status.note || item.account || '') + (['gmail', 'outlook'].includes(item.id) && item.configured ? (item.sendAllowed ? ' · Reading and sending permitted' : ' · Send permission not verified') : '');
         const actions = document.createElement('div'); actions.className = 'app-connection-actions';
         actions.append(button('Check', () => {
           if (drafts.has(item.id)) throw new Error('Save this connection’s changes before checking.');
@@ -82,7 +82,7 @@
         if (item.helpUrl) setupActions.append(button('Setup guide', () => call('help', { id: item.id }), busy));
         details.append(setupActions);
         let send;
-        if (item.id === 'gmail') {
+        if (['gmail', 'outlook'].includes(item.id)) {
           const allowSend = document.createElement('label'); allowSend.className = 'app-connection-toggle';
           send = document.createElement('input'); send.type = 'checkbox';
           send.checked = values.allowSend ?? item.allowSend ?? item.sendAllowed ?? false;
@@ -97,7 +97,7 @@
           actions.prepend(button((item.configured ? 'Reconnect ' : 'Connect ') + provider, async () => {
             const allowSend = send?.checked === true;
             if (drafts.has(item.id)) {
-              await perform('save', { id: item.id, patch: { ...values, ...(item.id === 'gmail' ? { allowSend } : {}) } });
+              await perform('save', { id: item.id, patch: { ...values, ...(['gmail', 'outlook'].includes(item.id) ? { allowSend } : {}) } });
               drafts.delete(item.id);
             }
             return perform(item.id === 'github' ? 'github-connect' : item.id === 'gmail' ? 'gmail-connect' : item.googleSignIn ? 'google-connect' : 'oauth-connect', { id: item.id, allowSend });

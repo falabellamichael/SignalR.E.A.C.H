@@ -48,7 +48,7 @@ class ConcurrencyTests(unittest.TestCase):
         self.assertIn(unittest.mock.call("stop", "reach-minicpm"), calls.call_args_list)
         self.assertFalse(any("rm" in call.args or "remove" in call.args for call in calls.call_args_list))
 
-    def test_gemma_q8_context_matches_relay_and_preserves_legacy_profile(self):
+    def test_active_fp8_context_matches_relay_and_preserves_q8_profile(self):
         launch = load("launch_services")
         spec = importlib.util.spec_from_file_location("context_model_routes", ROOT.parents[1] / "server/reachd/model_routes.py")
         routes = importlib.util.module_from_spec(spec)
@@ -56,7 +56,7 @@ class ConcurrencyTests(unittest.TestCase):
         self.assertEqual(launch.CHAT_CONTEXT_WINDOWS["gemma"], 65536)
         profile = json.loads((ROOT / "gemma_q8_profile.json").read_text())
         self.assertEqual(profile["context_per_chat"], 262144)
-        self.assertEqual(routes.GPU_CONTEXT_WINDOWS["gemma-4-12b-qat"], profile["context_per_chat"])
+        self.assertEqual(routes.GPU_CONTEXT_WINDOWS["gemma-4-12b-qat"], launch.CHAT_CONTEXT_WINDOWS["gemma"])
 
     def test_gemma_adoption_requires_tool_parser_and_template_without_restarting(self):
         launch = load("launch_services")
@@ -85,6 +85,8 @@ class ConcurrencyTests(unittest.TestCase):
             result = unittest.mock.Mock(returncode=0, stdout=json.dumps([candidate]))
             with self.subTest(missing=missing), patch.object(launch, "check_weights"), \
                     patch.object(launch, "docker", return_value=result) as docker, \
+                    patch("patch_gemma_tool_template.install_container_template", return_value=False), \
+                    patch("patch_gemma_tool_parser.install_container_parser", return_value=False), \
                     patch.object(launch, "wait_ready") as ready, contextlib.redirect_stdout(io.StringIO()):
                 if missing:
                     with self.assertRaisesRegex(RuntimeError, "tool|template"):

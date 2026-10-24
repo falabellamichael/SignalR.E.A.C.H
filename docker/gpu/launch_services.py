@@ -264,6 +264,14 @@ def start(key, manifest):
         if details["HostConfig"].get("RestartPolicy", {}).get("Name") != "unless-stopped":
             docker("update", "--restart", "unless-stopped", name)
         state = details["State"]["Status"]
+        if key == "gemma":
+            from patch_gemma_tool_template import install_container_template
+            from patch_gemma_tool_parser import install_container_parser
+            changed = install_container_template(name, docker)
+            changed = install_container_parser(name, docker) or changed
+            if changed and state == "running":
+                raise RuntimeError("Gemma schema template installed; restart reach-gemma when idle "
+                                   "to load it. Existing inference remains running.")
         if state in {"created", "exited"}:
             docker("start", name)
         elif state != "running":
@@ -317,7 +325,17 @@ def start(key, manifest):
     if key in TP_MODELS:
         args += ["--tensor-parallel-size", "2", "--distributed-executor-backend", "mp", "--disable-custom-all-reduce"]
     print(f"STARTING {name} GPU={gpu} PORT={port}", flush=True)
+    if key == "gemma":
+        # Install before vLLM reads the template, including on container recreation.
+        args[0] = "create"
+        args.remove("-d")
     result = docker(*args)
+    if key == "gemma":
+        from patch_gemma_tool_template import install_container_template
+        from patch_gemma_tool_parser import install_container_parser
+        install_container_template(name, docker)
+        install_container_parser(name, docker)
+        docker("start", name)
     print(result.stdout.strip(), flush=True)
     wait_ready(name, port)
     print(f"READY {name}", flush=True)

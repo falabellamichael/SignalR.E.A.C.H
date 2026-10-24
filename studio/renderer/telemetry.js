@@ -7,9 +7,6 @@
   let enabled = localStorage.getItem('reach.telemetry.enabled') !== 'false', forced = false;
   let data = null, history = [], pending = false, timer = null, selectedId = null, wasEmpty = true;
   const dashboard = node('section', 'telemetry-dashboard'); dashboard.id = 'telemetry-dashboard'; dashboard.setAttribute('aria-label', 'Workspace telemetry');
-  const heading = node('div', 'telemetry-heading');
-  const intro = node('div'); intro.append(node('h2', '', 'Ready when you are'), node('p', '', 'Start a conversation. Keep an eye on your machine.'));
-  heading.append(intro); dashboard.append(heading);
   const welcome = node('div', 'telemetry-welcome'); welcome.append(node('p', '', 'Your next idea starts here.'), action('Start a conversation', () => $('#btn-new-chat').click()));
   const content = node('div', 'telemetry-content'); dashboard.append(content, welcome);
   const bar = node('div', 'telemetry-bar'); bar.append(node('strong', '', 'System telemetry'));
@@ -70,7 +67,6 @@
     dashboard.hidden = !isEmpty && !forced;
     content.hidden = !show; welcome.hidden = show;
     welcome.querySelector('button').hidden = !!currentAgent;
-    heading.hidden = !isEmpty;
     returnChat.hidden = isEmpty || !forced;
     landingView.hidden = !!currentAgent;
     chatLog.hidden = !isEmpty && forced && enabled;

@@ -135,6 +135,7 @@ class AgentNet {
     requestTimeoutMs = 180000,
     budgets = null,
     agentSettings = {},
+    getPlugins = null,
     jev = null,
     featureMask = null,
     maxAgents = MAX_AGENTS,
@@ -173,6 +174,7 @@ class AgentNet {
       workerKeyChars: budgetLimit(budgets, 'workerKeyChars', MAX_WORKER_KEY_CHARS),
     };
     this.agentSettings = agentSettings;
+    this.getPlugins = getPlugins;
     this.jev = jev;
     this.featureMask = featureMask;
     // Subagents run tools too, so they share the same security audit log.

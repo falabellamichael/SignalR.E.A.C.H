@@ -575,7 +575,9 @@ footer {
   padding: 14px; display: flex; flex-direction: column; gap: 10px;
 }
 .chat-log:empty { display: none; }
-.jev-auto-status { grid-column: 1 / -1; font-size: 11px; overflow-wrap: anywhere; }
+.statusbar-bottom:has(.jev-auto-status:not(.hidden)) { flex-wrap: wrap; }
+.jev-auto-status { flex: 1 1 280px; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body:not(:has(#page-agents.active #agent-view:not(.hidden))) .jev-auto-status { display: none; }
 .chat-msg {
   max-width: 78%; padding: 10px 14px; border-radius: 10px; flex-shrink: 0;
   font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
@@ -1455,6 +1457,22 @@ details[open] > summary > .edit-review-chevron { transform: rotate(90deg); }
 
 /* Theme controls share the workspace palette, including native form controls. */
 :root { accent-color: var(--gold); scrollbar-color: var(--line) var(--bg); }
+
+/* Keep the helper's adjacent scrollbars consistently painted as it resizes. */
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team) {
+  scrollbar-color: auto;
+  scrollbar-width: auto;
+}
+:is(.home-scroll, .singular-col-info, .singular-col-team) { scrollbar-gutter: stable; }
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar { width: 12px; height: 12px; }
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar-track,
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar-corner { background: transparent; }
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar-thumb {
+  background: var(--line); border: 2px solid transparent; background-clip: content-box; border-radius: 8px; min-height: 32px;
+}
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar-thumb:hover,
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar-thumb:active { background-color: var(--gold-dim); }
+:is(.home-scroll, #singular-panel, .singular-col-info, .singular-col-team)::-webkit-scrollbar-button { display: none; }
 ::selection { background: var(--selection); color: var(--text); }
 button:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
 input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }

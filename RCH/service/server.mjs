@@ -6,6 +6,7 @@ import { fail, digest } from './store.mjs';
 import { createAccountStore } from './account-store.mjs';
 import { accountAccess } from './eligibility.mjs';
 import { createModelGateway } from './model-gateway.mjs';
+import { operatorKeyRequest } from './operator-keys.mjs';
 import { hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
 import { createRedemptionService } from './redemption.mjs';
 import { createTokenBalanceReader } from './token-balance.mjs';
@@ -93,7 +94,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
     if(!result&&mapped.reversal)fail(503,'payment_pending','The original payment is not recorded yet. Retry this notification.');
     return result?{received:true,status:result.status,duplicate:result.duplicate}:{received:true,ignored:'not_reach'};
   };
-  const buckets=new Map(),emailSenders=new Map();
+  const buckets=new Map(),emailSenders=new Map(),signupFlows=new Map();
   const clientKey=req=>{
     const peer=req.socket.remoteAddress;
     const proxyIp=req.headers['x-reach-client-ip'];
@@ -150,6 +151,11 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         fail(403,'api_key_scope','API keys can only list models and create chat completions.');
       }
       if(req.method==='GET'&&pathname==='/healthz') {json(res,200,{status:'ok',service:'reach-accounts'});return;}
+      if(pathname==='/_reach/operator/api-keys') {
+        if(req.method!=='GET'||!operatorKeyRequest(req))fail(403,'operator_required','A direct local operator connection is required.');
+        const offset=Number(new URL(req.url,'http://service.invalid').searchParams.get('offset')||'0');
+        json(res,200,await store.listOperatorApiKeys(offset));return;
+      }
       rateLimit(req);
       if (connections && await connections.handle(req, res)) return;
       const asset=staticAssets.get(pathname);
@@ -207,7 +213,10 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       }
       const body=req.method==='POST'?await readBody(req):{};
       if(req.method==='POST'&&pathname==='/v1/auth/start') {
-        const f=await store.startFlow(body.state,body.codeChallenge);json(res,200,{...f,loginUrl:`${config.origin}/wallet/connect#flow=${f.flowId}`});return;
+        const f=await store.startFlow(body.state,body.codeChallenge);
+        for(const [id,entry] of signupFlows) if(entry.expires<=now()) signupFlows.delete(id);
+        if(signupFlows.size<10000) signupFlows.set(f.flowId,{signals:(await import('./signup-signals.mjs')).signupSignals(req,body.deviceId),expires:now()+600000});
+        json(res,200,{...f,loginUrl:`${config.origin}/wallet/connect#flow=${f.flowId}`});return;
       }
       if(req.method==='POST'&&pathname==='/v1/auth/challenge') {
         if(typeof body.address!=='string')fail(400,'wallet_required','Select an Ethereum wallet.');
@@ -225,6 +234,8 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='POST'&&pathname==='/v1/auth/email/start') {
         if(!mailer)fail(404,'not_found','Email sign-in is not configured on this service.');
         emailLimit(req);
+        const browserSignals=(await import('./signup-signals.mjs')).signupSignals(req,body.deviceId);
+        if(browserSignals.deviceId && signupFlows.has(body.flowId)) signupFlows.get(body.flowId).signals=browserSignals;
         if(mailer.kind==='supabase'){
           if(typeof body.flowId!=='string'||!/^[a-f0-9]{64}$/.test(body.flowId))fail(400,'invalid_flow','Invalid sign-in flow.');
           await store.getFlow(body.flowId);
@@ -257,7 +268,16 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='POST'&&pathname==='/v1/auth/exchange') {
         // Exchange commits the one-use proof and returns its account snapshot.
         // A second ledger read could fail after commit and strand the session.
-        const session=await store.exchange(body.flowId,body.state,body.codeVerifier);json(res,session?200:202,session?{...session,account:await accountView(session.account)}:{status:'pending'});return;
+        const session=await store.exchange(body.flowId,body.state,body.codeVerifier);
+        if(session && store.recordSignupSignals) {
+          const entry=signupFlows.get(body.flowId);
+          if(entry && entry.expires>now()) {
+            try { await store.recordSignupSignals(session.account.id,entry.signals); }
+            catch { console.error('Signup review signals could not be recorded; authenticated session preserved.'); }
+          }
+          signupFlows.delete(body.flowId);
+        }
+        json(res,session?200:202,session?{...session,account:await accountView(session.account)}:{status:'pending'});return;
       }
       if(req.method==='POST'&&pathname==='/v1/redemptions/details') {json(res,200,await redemption.details(body.redemptionId,body.ticket));return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/submit') {json(res,200,await redemption.submit(body.redemptionId,body.ticket,body.txHash));return;}
@@ -379,7 +399,12 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id),reversals:await store.listReversals(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start'&&!account.walletAddress)fail(409,'wallet_required','RCH redemption needs an account signed in with a wallet.');
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
-      if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {await gateway.handle(req,res,account,body);return;}
+      if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {
+        // Consumed privately by reachd for account attribution; never forwarded
+        // by its public response-header allowlist.
+        if(pathname==='/v1/chat/completions')res.setHeader('X-Reach-Account-Id',account.id);
+        await gateway.handle(req,res,account,body);return;
+      }
       fail(404,'not_found','Route not found.');
     } catch(error) {
       if(res.headersSent) {res.destroy();return;}

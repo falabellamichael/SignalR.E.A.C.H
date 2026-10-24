@@ -1,14 +1,16 @@
 # Optional GPU deployment profile
 
-The selected profile enables Gemma 4 12B QAT Q8 and the shared embedding,
-reranking, and decision service on the operator's two Radeon AI PRO R9700 GPUs
-(gfx1201). Gemma uses the pinned llama.cpp ROCm image; support retains its
-existing runtime. This deployment is separate from the desktop installer.
+The active deployment verified on 2026-10-23 uses Gemma 4 12B QAT FP8 with
+vLLM TP2 and the shared embedding, reranking, and decision service on the
+operator's two Radeon AI PRO R9700 GPUs (gfx1201). The optional Q8 profile uses
+the pinned llama.cpp ROCm image. Support retains its existing runtime.
+This deployment is separate from the desktop installer.
 It does not download models or contain credentials or public endpoint addresses.
 
 | Service | GPU | Runtime allocation | Context tokens per chat |
 | --- | --- | --- | --- |
-| Gemma 4 12B QAT Q8 | 0 | Q8 weights and KV cache, two slots | 262,144 |
+| Gemma 4 12B QAT FP8 (active) | 0 + 1, TP2 | FP8 language weights, BF16 vision, eight sequences | 65,536 |
+| Gemma 4 12B QAT Q8 (optional) | 0 | Q8 weights and KV cache, two slots | 262,144 |
 | MiniCPM5 2B (disabled) | Saved 0 + 1, TP2 | Saved 0.24 | Saved 39,904 |
 | BGE M3, BGE Reranker v2 M3, Liquid d1 Omni 600M, Liquid d1 3B | 1 | Existing support allocation | Native service limits |
 
@@ -21,7 +23,7 @@ The host's saved MiniCPM model entry is retained with `enabled: false`.
 The saved Ornith context remains 61,776 tokens. Re-enabling it requires an
 explicit profile change and GPU memory review; this launcher does not do so.
 
-## Selected Q8 profile
+## Optional Q8 profile
 
 Set `gemma_runtime` to `llama.cpp-q8` in the operator-owned `models.json` and
 provision `gemma_q8_profile.json` and `gemma_q8_profile.py` beside the launcher.
@@ -64,11 +66,11 @@ about 48 versus 36 tokens/second. These are workload-specific measurements, not
 a general decode-speed guarantee. The operator selected Q8 for the larger
 context window. A full-window recall result is not established by allocation.
 
-## Retained vLLM profiles
+## vLLM FP8 profiles
 
-The following settings document the preserved FP8 Gemma rollback and disabled
-MiniCPM profiles. They apply when the Q8 selector is absent, and do not describe
-the selected Q8 runtime. Support keeps its existing vLLM-related runtime files.
+The following settings document the active FP8 Gemma and disabled MiniCPM
+profiles. They apply when the Q8 selector is absent. Support keeps its existing
+vLLM-related runtime files.
 
 MiniCPM's pinned vLLM parser needs `patch_minicpm_tool_parser.py` applied to
 `minicpm5xml_tool_parser.py` inside its container, including after recreation.
@@ -98,6 +100,17 @@ sizes can leave the assistant running eagerly or padding small requests.
 activations, its Qwen3 reasoning parser, existing runner/graphs, and
 `OMP_NUM_THREADS=2`. Support remains unchanged on GPU 1. All models and KV
 caches stay on GPU; the launcher does not configure CPU offload.
+
+Provision `patch_gemma_tool_template.py` and `patch_gemma_tool_parser.py` beside
+`launch_services.py`. The launcher installs both guarded compatibility patches
+before starting a new Gemma container and checks them on adoption. The template
+patch preserves complete tool schemas, including nested `oneOf`/`anyOf`,
+discriminators, references, and required fields. The parser patch preserves bare
+numbers, booleans, and null inside nested objects and arrays while retaining
+delimited strings and partial-stream handling. Original runtime files are backed
+up inside the container; unrecognized sources are refused. If a running container
+needs a patch, installation reports that an idle restart is required instead of
+interrupting inference. These patches do not change model/context/GPU settings.
 
 Every new chat container pins its numeric context. Existing numeric settings
 must match exactly. MiniCPM's already-running `--max-model-len auto` profile

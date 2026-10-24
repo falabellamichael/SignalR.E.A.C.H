@@ -24,7 +24,7 @@ from reachd.browser import BrowserError, fetch_page
 from reachd.browser_engine import ENGINE as BROWSER_ENGINE, MAX_BODY_BYTES as BROWSER_ENGINE_MAX_BODY, allowed_origin
 from reachd.chat import chat_execute, chat_finalize
 from reachd.model_routes import login_provider_catalog
-from reachd.account_proxy import try_account_proxy, customer_session
+from reachd.account_proxy import try_account_proxy, customer_session, account_operator_keys
 from reachd.const import CLIENT_DISCONNECT_ERRORS, MAX_BODY_BYTES, VERSION
 from reachd.publish import publish_url, revoke_url
 from reachd.settings import (
@@ -666,6 +666,10 @@ class RelayHandler(BaseHTTPRequestHandler):
                 keys = (core.STATE.cfg.get("access") or {}).get("keys", [])
                 safe_keys = [public_key_view(k) for k in keys]
                 self._json(200, {"keys": safe_keys})
+            elif path == "/_reach/account-api-keys":
+                if not self._require_admin():
+                    return
+                account_operator_keys(self, query.get("offset", 0))
             elif path == "/_reach/stats":
                 if not self._require_admin():
                     return

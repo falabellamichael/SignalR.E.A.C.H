@@ -135,12 +135,15 @@ async function mapWithConcurrency(items, limit, worker) {
 }
 
 class TeamRunner {
-  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, capabilityStore = null, journal = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, auditLog = null, logger = null, jev = null, featureMask = null, soulStore = null }) {
+  constructor({ team, personas, roles = [], task, projectDir, endpoint, accessKey, defaultModel, memberConnections = null, capabilityStore = null, journal = null, reachExecutor, browserExecutor, sendEvent, requestApproval, requestEditReview, requestTimeoutMs, awaitEditResolution, requestMemberAnswer, concurrency = PARALLEL_CONCURRENCY, budgets = null, agentSettings = {}, getPlugins = null, auditLog = null, logger = null, jev = null, featureMask = null, soulStore = null }) {
     // SOUL.md + MEMORY.md store (agent/agent-soul.cjs). Every member reads ITS
     // OWN persona's files, keyed by persona id, so one persona carries one soul
     // and one memory into every crew it joins. Null keeps pre-feature behaviour.
     this.soulStore = soulStore;
     this.agentSettings = agentSettings;
+    // Resolve credentials at tool use, keeping them out of member settings,
+    // journals and snapshots while honoring reconnects and revocations.
+    this.getPlugins = getPlugins;
     this.jev = jev;
     this.featureMask = featureMask;
     this.budgets = budgets;
@@ -342,6 +345,7 @@ class TeamRunner {
     // them may spawn/message/await peers through the agent.* collab tools.
     this.net = new AgentNet({
       agentSettings: this.agentSettings,
+      getPlugins: this.getPlugins,
       jev: this.jev,
       featureMask: this.featureMask,
       teamRunId,

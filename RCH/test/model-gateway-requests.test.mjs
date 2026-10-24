@@ -114,15 +114,19 @@ test('GPU JSON charges one completed request, replays once, and forwards no cred
   const sent = [];
   const f = await fixture(t, async (url, options) => {
     sent.push({ url, options });
-    return response(completion({ usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }, usage_source: 'provider' }));
+    return response(completion({ usage: { prompt_tokens: 123, completion_tokens: 45, total_tokens: 168,
+      prompt_tokens_details: null, completion_tokens_details: { reasoning_tokens: 0 } } }));
   });
   const first = await f.call();
   assert.equal(first.status, 200);
+  assert.equal(first.headers.get('x-reach-usage-in'),'123');
+  assert.equal(first.headers.get('x-reach-usage-out'),'45');
   const text = await first.text();
   assert.equal(JSON.parse(text).model, 'gemma-4-12b-qat');
   assert.doesNotMatch(text, /usage|token|SECRET/);
   const replay = await f.call();
   assert.equal(replay.headers.get('x-reach-replayed'), 'true');
+  assert.equal(replay.headers.get('x-reach-usage-in'),null);
   assert.equal(await replay.text(), text);
   assert.equal(sent.length, 1);
   assert.equal(f.store.settlements.length, 1);

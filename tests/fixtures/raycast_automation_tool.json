@@ -1,0 +1,120 @@
+{
+  "type": "function",
+  "function": {
+    "name": "update-automation",
+    "description": "Update an existing scheduled AI message automation. Use list-automations to resolve its id first. Only provided fields change.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The id of the automation to update. Use list-automations to resolve it first."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "New automation name."
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "New prompt to run on the schedule."
+        },
+        "model_id": {
+          "type": "string",
+          "description": "Model id from list-models. Only automations that start a new chat each run can choose a model. Omit to keep the current model; pass an empty string to clear the model override."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the automation is enabled."
+        },
+        "schedule": {
+          "type": "object",
+          "description": "Replacement schedule. Omit it to preserve the current schedule.",
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "once"
+                },
+                "cron_expression": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "type",
+                "cron_expression"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "recurring"
+                },
+                "cron_expression": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "type",
+                "cron_expression"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        },
+        "target": {
+          "type": "object",
+          "description": "Replacement destination. Omit it to preserve the current destination.",
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "current_chat"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "new_chat"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "properties": {
+                "type": {
+                  "const": "existing_chat"
+                },
+                "chat_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "type",
+                "chat_id"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ]
+    }
+  }
+}

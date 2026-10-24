@@ -412,12 +412,16 @@ const CORE_TOOLS = {
   },
   tool_help: {
     class: 'read', tier: 'core', approval: false, budget: 40000,
-    help: 'shows documentation for a tool suite, or the full description and input schema for an MCP tool name.',
+    help: 'shows documentation for a tool suite, or full description and arguments for an exact built-in or MCP tool name.',
     example: { action: 'tool_help', topic: 'reach' },
     async execute(args, ctx) {
       const mcpTool = (ctx.mcpTools || []).find(tool => tool.name === args.topic);
       if (mcpTool) return { ok: true, tool: mcpTool };
       const disabled = require('./tool-policy.cjs').disabledTools(ctx.agentStore?.get(ctx.agentId)?.settings || {}, TOOLS);
+      if (TOOLS[args.topic] && !disabled.includes(args.topic)) {
+        const tool = TOOLS[args.topic];
+        return { ok: true, tool: { name: args.topic, help: tool.help, params: tool.params, example: tool.example, approval: tool.approval } };
+      }
       return { ok: true, help: toolHelp(args.topic || 'core', disabled) };
     },
   },
@@ -607,6 +611,7 @@ function toolHelp(tier = 'core', disabled = []) {
     if (reachAvail.length) {
       lines.push('Reach tools (compile, run, and manage this project):');
       for (const name of reachAvail) {
+        if (TOOLS[name].lazyHelp) { lines.push('- ' + name + ' (tool_help for arguments)'); continue; }
         lines.push('- ' + name + ': ' + TOOLS[name].help);
         lines.push('  ' + JSON.stringify(TOOLS[name].example));
       }

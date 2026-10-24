@@ -54,6 +54,82 @@ class AccountProxyTests(RelayFixture):
     def session_headers(self, **extra):
         return {**TUNNEL, "Authorization": "Bearer rch_session_example", **extra}
 
+    def account_log(self):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            rows = self.state.analytics.logs()
+            if rows and not self.state.in_flight_snapshot():
+                return rows[0]
+            time.sleep(0.005)
+        self.fail("Account completion was not logged")
+
+    def test_website_completion_logs_actual_usage_without_prompt_or_credentials(self):
+        account = 'a' * 64
+        self.reply_headers['X-Reach-Account-Id'] = account
+        self.reply_body = json.dumps({'usage': {'prompt_tokens': 120, 'completion_tokens': 45, 'total_tokens': 165}}).encode()
+        status, _, response = self.call('POST', '/v1/chat/completions',
+            self.session_headers(Origin='https://signalreach.ca', **{'Content-Type': 'application/json'}),
+            b'{"model":"gemma-4-12b-qat","messages":[{"role":"user","content":"private prompt"}]}')
+        self.assertEqual(status, 200)
+        self.assertIsNone(response.getheader('X-Reach-Account-Id'))
+        row = self.account_log()
+        self.assertEqual((row['tokens_in'], row['tokens_out']), (120, 45))
+        self.assertEqual(row['key_name'], 'Website · account ' + account[:12])
+        self.assertEqual(row['ip'], '203.0.113.9')
+        self.assertEqual(row['model'], 'gemma-4-12b-qat')
+        self.assertNotIn('private prompt', json.dumps(row))
+        self.assertNotIn('rch_session_example', json.dumps(row))
+        self.assertEqual(self.state.analytics.stats()['today']['requests'], 1)
+
+    def test_api_key_stream_and_replay_are_logged_without_double_counting_tokens(self):
+        self.reply_headers['Content-Type'] = 'text/event-stream'
+        self.reply_body = b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: {"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}}\n\ndata: [DONE]\n\n'
+        headers = {**TUNNEL, 'Authorization': 'Bearer rch_key_' + 'b' * 64, 'Content-Type': 'application/json'}
+        self.assertEqual(self.status('POST', '/v1/chat/completions', headers, b'{"model":"gemma-4-12b-qat","stream":true}'), 200)
+        row = self.account_log()
+        self.assertEqual((row['tokens_in'], row['tokens_out']), (12, 7))
+        self.assertEqual(row['key_name'], 'API key rch_key_' + 'b' * 8)
+        self.assertEqual(row['stream'], 1)
+        self.reply_headers['X-Reach-Replayed'] = 'true'
+        self.assertEqual(self.status('POST', '/v1/chat/completions', headers, b'{"model":"gemma-4-12b-qat","stream":true}'), 200)
+        deadline = time.monotonic() + 2
+        while len(self.state.analytics.logs()) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        row = self.account_log()
+        self.assertEqual((row['tokens_in'], row['tokens_out'], row['cached']), (0, 0, 1))
+        self.assertEqual(self.state.analytics.stats()['today']['tokens_out'], 7)
+
+    def test_private_gpu_usage_headers_reach_analytics_but_not_the_customer(self):
+        self.reply_headers.update({'X-Reach-Usage-In': '80', 'X-Reach-Usage-Out': '25'})
+        self.reply_body = b'{"choices":[{"message":{"content":"hello"}}]}'
+        status, _, response = self.call('POST', '/v1/chat/completions', self.session_headers(), b'{"model":"gemma-4-12b-qat"}')
+        self.assertEqual(status, 200)
+        self.assertIsNone(response.getheader('X-Reach-Usage-In'))
+        self.assertIsNone(response.getheader('X-Reach-Usage-Out'))
+        row = self.account_log()
+        self.assertEqual((row['tokens_in'], row['tokens_out']), (80, 25))
+
+    def test_account_refusal_is_logged_and_non_chat_routes_are_not_usage(self):
+        self.reply_status = 403
+        self.reply_body = b'{"error":{"code":"model_not_allowed","message":"private detail"}}'
+        self.assertEqual(self.status('POST', '/v1/chat/completions', self.session_headers(), b'{"model":"gemma-4-12b-qat"}'), 403)
+        row = self.account_log()
+        self.assertEqual((row['status'], row['error']), (403, 'model_not_allowed'))
+        self.assertIsNone(row['tokens_in'])
+        self.assertEqual(self.status('GET', '/v1/account', self.session_headers()), 403)
+        self.assertEqual(len(self.state.analytics.logs()), 1)
+
+    def test_account_key_metadata_requires_admin_and_strips_secrets(self):
+        self.reply_body = b'{"data":[{"id":"safe-id","name":"Website key","prefix":"rch_key_12345678","hash":"never forward","key":"never forward"}],"hasMore":false}'
+        self.assertEqual(self.status('GET', '/_reach/account-api-keys', self.session_headers()), 403)
+        self.assertEqual(self.status('GET', '/_reach/operator/api-keys', self.session_headers()), 404)
+        status, body, _ = self.call('GET', '/_reach/account-api-keys?offset=100')
+        self.assertEqual(status, 200)
+        self.assertEqual(self.requests[-1]['path'], '/_reach/operator/api-keys?offset=100')
+        self.assertNotIn('X-Reach-Client-IP', self.requests[-1]['headers'])
+        self.assertNotIn('never forward', body.decode())
+        self.assertEqual(json.loads(body)['data'][0]['name'], 'Website key')
+
     def test_hosted_service_disables_anonymous_remote_bypass_even_with_legacy_setting(self):
         self.state.cfg["access"]["key_required"] = False
         self.assertEqual(self.status("GET", "/v1/models", TUNNEL), 401)

@@ -26,3 +26,11 @@ export function newApiKey(name, now) {
 export const publicApiKey = row => ({ id: row.id, name: row.name, prefix: row.prefix,
   createdAt: new Date(row.created).toISOString(), expiresAt: new Date(row.expires).toISOString(),
   revokedAt: row.revoked == null ? null : new Date(row.revoked).toISOString() });
+
+export function operatorKeyPage(rows) {
+  return { data: rows.slice(0, 100).map(row => ({ ...publicApiKey(row), accountId: row.account_id })), hasMore: rows.length > 100 };
+}
+export function validateKeyOffset(offset) {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > 1_000_000) fail(400, 'invalid_offset', 'Invalid key list offset.');
+  return offset;
+}

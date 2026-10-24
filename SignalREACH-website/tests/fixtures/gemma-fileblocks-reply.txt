@@ -1,0 +1,130 @@
+I've implemented a light theme by introducing CSS variables and a theme toggle. The design now supports switching between a dark and light mode, with the preference being saved to your browser's local storage.
+
+```file:style.css
+:root {
+  --bg-color: #161618;
+  --text-color: #f5f2e9;
+  --card-bg: #202022;
+  --card-border: #675729;
+  --accent-color: #e4c66a;
+  --btn-text: #161618;
+}
+
+[data-theme="light"] {
+  --bg-color: #f5f2e9;
+  --text-color: #161618;
+  --card-bg: #ffffff;
+  --card-border: #d4c59a;
+}
+
+* { box-sizing: border-box; }
+
+body { 
+  margin: 0; 
+  min-height: 100vh; 
+  display: grid; 
+  place-items: center; 
+  padding: 24px; 
+  font-family: system-ui, sans-serif; 
+  color: var(--text-color); 
+  background: var(--bg-color); 
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+.card { 
+  max-width: 620px; 
+  padding: 40px; 
+  border: 1px solid var(--card-border); 
+  border-radius: 24px; 
+  background: var(--card-bg); 
+  transition: background 0.3s ease, border-color 0.3s ease;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+}
+
+.eyebrow { 
+  color: var(--accent-color); 
+  font-size: 12px; 
+  letter-spacing: .15em; 
+}
+
+h1 { 
+  font-size: clamp(30px, 6vw, 52px); 
+  line-height: 1.1; 
+}
+
+p { 
+  line-height: 1.6; 
+}
+
+button { 
+  border: 0; 
+  border-radius: 9px; 
+  padding: 12px 20px; 
+  color: var(--btn-text); 
+  background: var(--accent-color); 
+  cursor: pointer; 
+  font-weight: 600;
+  margin-top: 20px;
+}
+
+button:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+#theme-toggle {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--text-color);
+  cursor: pointer;
+}
+```
+
+```file:index.html
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My first website</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <button id="theme-toggle" type="button">ðŸŒ“ Toggle Theme</button>
+  <main class="card">
+    <p class="eyebrow">BUILT WITH GEMMA</p>
+    <h1>Your idea starts here.</h1>
+    <p>Ask Gemma to turn this starter into your own website.</p>
+    <button id="hello" type="button">Try me</button>
+    <p id="message" aria-live="polite"></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+```
+
+```file:app.js
+const themeToggle = document.querySelector('#theme-toggle');
+const helloBtn = document.querySelector('#hello');
+const message = document.querySelector('#message');
+
+// Theme logic
+const currentTheme = localStorage.getItem('theme') || 'dark';
+document.documentElement.setAttribute('data-theme', currentTheme);
+
+themeToggle.addEventListener('click', () => {
+  const newTheme = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', newTheme);
+  localStorage.setItem('theme', newTheme);
+});
+
+// Interaction logic
+helloBtn.addEventListener('click', () => {
+  message.textContent = 'You built something. Keep going!';
+});
+```

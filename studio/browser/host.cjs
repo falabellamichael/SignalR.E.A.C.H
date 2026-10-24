@@ -19,24 +19,25 @@ function normalizeUrl(raw) {
 }
 
 class StudioBrowser {
-  constructor(win) {
+  constructor(win, { partition = 'persist:reach-browser', background = false } = {}) {
     this.win = win;
+    this.background = background;
     this.tabs = new Map();
     this.active = null;
     this.seq = 0;
     this.bounds = { x: 0, y: 0, width: 0, height: 0 };
     this.visible = false;
     this.elementsEnabled = false;
-    this.session = session.fromPartition('persist:reach-browser');
+    this.session = session.fromPartition(partition);
     this.session.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     this.session.setPermissionCheckHandler(() => false);
-    ipcMain.handle('browser:command', async (event, action, args = {}) => {
+    if (!background) ipcMain.handle('browser:command', async (event, action, args = {}) => {
       if (win.isDestroyed() || win.webContents.isDestroyed()) return { ok: false, err: 'Browser is closing.' };
       if (event.sender !== win.webContents || event.senderFrame !== win.webContents.mainFrame) throw new Error('Untrusted browser command.');
       try { return { ok: true, ...await this.command(action, args) }; }
       catch (error) { return { ok: false, err: error.message }; }
     });
-    win.webContents.once('destroyed', () => { ipcMain.removeHandler('browser:command'); this.dispose(); });
+    win.webContents.once('destroyed', () => { if (!background) ipcMain.removeHandler('browser:command'); this.dispose(); });
   }
   state() {
     return { active: this.active, elementsEnabled: this.elementsEnabled, tabs: [...this.tabs.values()].map(tab => {
@@ -46,10 +47,12 @@ class StudioBrowser {
     }) };
   }
   emit() {
+    if (this.background) return;
     this.layout();
     if (!this.win.isDestroyed()) this.win.webContents.send('browser:state', this.state());
   }
   layout() {
+    if (this.background) return;
     if (this.win.isDestroyed() || this.win.webContents.isDestroyed()) return;
     const outer = this.win.getContentBounds();
     const b = this.bounds;
@@ -73,7 +76,8 @@ class StudioBrowser {
     const tab = { id: 'browser-' + ++this.seq, view };
     this.tabs.set(tab.id, tab);
     this.active = tab.id;
-    this.win.contentView.addChildView(view);
+    if (!this.background) this.win.contentView.addChildView(view);
+    else view.setBounds({ x: 0, y: 0, width: 1280, height: 900 });
     const wc = view.webContents;
     const allowed = value => { try { return normalizeUrl(value) === value; } catch { return false; } };
     wc.on('will-navigate', (event, value) => { if (!allowed(value)) event.preventDefault(); });
@@ -189,9 +193,10 @@ class StudioBrowser {
       const wc = tab.view.webContents;
       if (action === 'select') { this.active = tab.id; this.layout(); }
       else if (action === 'close') {
-        this.win.contentView.removeChildView(tab.view); this.tabs.delete(tab.id); wc.close();
+        if (!this.background) this.win.contentView.removeChildView(tab.view);
+        this.tabs.delete(tab.id); wc.close();
         if (this.active === tab.id) this.active = [...this.tabs.keys()].at(-1) || null;
-        if (!this.tabs.size) this.newTab(); else this.layout();
+        if (!this.tabs.size && !this.background) this.newTab(); else this.layout();
       }
       else if (action === 'navigate') this.navigate(tab, args.url);
       else if (action === 'back' && wc.navigationHistory.canGoBack()) wc.navigationHistory.goBack();

@@ -143,7 +143,8 @@
 /* Respond to the space left by the rail and docked panels, rather than the
    window width. The main area supplies the named page container. */
 @container page (max-width: 1100px) {
-  .home-hero-art { flex-basis: 190px; transform: scale(.85); transform-origin: right center; }
+  /* Keep the orbit canvas intact; scaling its paint does not resize children. */
+  .home-hero-art { transform: scale(.85); transform-origin: right center; }
   .home-tool-card { padding: 18px; }
 }
 @container page (max-width: 900px) {

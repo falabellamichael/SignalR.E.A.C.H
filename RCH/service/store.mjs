@@ -2,7 +2,7 @@ import { PlusSqliteLedger } from './plus-sqlite.mjs';
 import { hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
 import { validatePlusPolicy, plusAccount } from './payments/plus.mjs';
 import { DatabaseSync } from 'node:sqlite';
-import { newApiKey, publicApiKey, validateApiKey, validateApiKeyId, MAX_ACTIVE_API_KEYS } from './api-keys.mjs';
+import { newApiKey, publicApiKey, validateApiKey, validateApiKeyId, MAX_ACTIVE_API_KEYS, operatorKeyPage, validateKeyOffset } from './api-keys.mjs';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, chmodSync, lstatSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -529,6 +529,9 @@ export class AccountStore {
   listApiKeys(accountId) {
     this.accountById(accountId);
     return this.db.prepare('SELECT id,name,prefix,created,expires,revoked FROM api_keys WHERE account_id=? ORDER BY created DESC,id').all(accountId).map(publicApiKey);
+  }
+  listOperatorApiKeys(offset = 0) {
+    return operatorKeyPage(this.db.prepare('SELECT id,account_id,name,prefix,created,expires,revoked FROM api_keys ORDER BY created DESC,id LIMIT 101 OFFSET ?').all(validateKeyOffset(offset)));
   }
   createApiKey(accountId, name) {
     const {key,row}=newApiKey(name,this.now());

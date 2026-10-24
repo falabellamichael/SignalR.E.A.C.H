@@ -66,13 +66,13 @@
     if (!read(SESSION)?.accessToken) return;
     document.querySelectorAll('.nav-actions a[href="login.html"]').forEach(link => { link.href = 'profile.html'; link.textContent = 'Profile'; });
   }
-  async function prepareSignIn(result, linking = false) {
+  async function prepareSignIn(result, linking = false, external = false) {
     const url = walletDestination(result.loginUrl);
     const flowId = new URLSearchParams(url.hash.slice(1)).get('flow');
     if (!/^[a-f0-9]{64}$/.test(flowId || '') || (result.flowId && flowId !== result.flowId)) throw new Error('The account service returned an invalid sign-in flow.');
     const config = await request('/v1/account/config');
     if (!Number.isSafeInteger(config.chainId) || config.chainId < 1) throw new Error('The account service returned an invalid wallet network.');
-    signIn = {flowId, chainId: config.chainId, linking, challenge: null, address: null, verified: false};
+    signIn = {flowId, chainId: config.chainId, linking, external, challenge: null, address: null, verified: false};
     $('#account-login-options').hidden = false;
     $('#account-email-form').hidden = linking || config.emailLogin !== true;
     $('#account-code-step').hidden = true;
@@ -81,10 +81,18 @@
     $('#account-email-send').textContent = 'Email me a code';
     $('#account-code').value = '';
     $('#account-signin').hidden = true;
-    message(linking ? 'Connect and sign with the wallet to add it to your existing account.' : 'Choose email or connect your wallet. Sign-in stays on this site.');
+    message(linking ? 'Connect and sign with the wallet to add it to your existing account.' : external ? 'Sign in to REACH Studio with email or your wallet, then return to Studio.' : 'Choose email or connect your wallet. Sign-in stays on this site.');
   }
   async function finishSignIn(current) {
     if (current !== signIn) return;
+    if (current.external) {
+      // Studio owns the PKCE verifier and completes its own exchange. Never
+      // consume that flow or replace an existing website session here.
+      $('#account-login-options').hidden = true;
+      message(current.linking ? 'Wallet connected. Return to REACH Studio and refresh your account.' : 'Sign-in verified. Return to REACH Studio to finish connecting.');
+      signIn = null;
+      return;
+    }
     if (current.linking) {
       const account = await request('/v1/account', undefined, read(SESSION)?.accessToken);
       location.replace(accountDestination(account));
@@ -117,12 +125,12 @@
       else await action(current);
     } catch (error) {
       if (error.status === 410) {
-        signIn = null; sessionStorage.removeItem(PENDING);
-        $('#account-login-options').hidden = true; $('#account-signin').hidden = !!read(SESSION)?.accessToken;
+        signIn = null; if (!current.external) sessionStorage.removeItem(PENDING);
+        $('#account-login-options').hidden = true; $('#account-signin').hidden = current.external || !!read(SESSION)?.accessToken;
         $('#account-signin').disabled = false;
         $('#account-link-wallet').disabled = false;
       }
-      message(error.code === 4001 ? 'Wallet request cancelled. You can try again or use email.' : error.message || 'Sign-in could not be completed. Please retry.');
+      message(error.status === 410 && current.external ? 'This sign-in expired. Start sign-in again from REACH Studio.' : error.code === 4001 ? 'Wallet request cancelled. You can try again or use email.' : error.message || 'Sign-in could not be completed. Please retry.');
     } finally {
       signInBusy = false;
       controls.forEach(id => { $(id).disabled = false; });
@@ -158,7 +166,15 @@
   async function sendEmail(current) {
     const email = $('#account-email').value.trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter your email address.');
-    const result = await request('/v1/auth/email/start', {flowId: current.flowId, email});
+    let deviceId;
+    try {
+      deviceId = localStorage.getItem('reach-signup-device');
+      if (!/^[a-f0-9]{32}$/.test(deviceId || '')) {
+        deviceId = Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
+        localStorage.setItem('reach-signup-device', deviceId);
+      }
+    } catch { deviceId = undefined; }
+    const result = await request('/v1/auth/email/start', {flowId: current.flowId, email, deviceId});
     if (!result.challengeId) throw new Error('The account service did not return an email challenge. Please retry.');
     current.emailChallengeId = result.challengeId;
     $('#account-code-step').hidden = false;
@@ -181,7 +197,15 @@
     try {
       const state = random(), codeVerifier = random();
       const codeChallenge = encode(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier))));
-      const result = await request('/v1/auth/start', {state, codeChallenge});
+      let deviceId;
+      try {
+        deviceId = localStorage.getItem('reach-signup-device');
+        if (!/^[a-f0-9]{32}$/.test(deviceId || '')) {
+          deviceId = Array.from(crypto.getRandomValues(new Uint8Array(16)), value => value.toString(16).padStart(2, '0')).join('');
+          localStorage.setItem('reach-signup-device', deviceId);
+        }
+      } catch { deviceId = undefined; }
+      const result = await request('/v1/auth/start', {state, codeChallenge, deviceId});
       if (!result.flowId || !result.loginUrl) throw new Error('The sign-in service returned an incomplete flow. Please retry.');
       walletDestination(result.loginUrl);
       await prepareSignIn(result);
@@ -199,6 +223,16 @@
     $('#account-wallet-signin')?.addEventListener('click', signInAction(walletSignIn));
     $('#account-email-form')?.addEventListener('submit', signInAction(sendEmail));
     $('#account-code-form')?.addEventListener('submit', signInAction(verifyEmail));
+    const handoff = new URLSearchParams((location.hash || '').slice(1));
+    if (handoff.has('client') || handoff.has('flow')) {
+      $('#account-signin').hidden = true;
+      const flowId = handoff.get('flow');
+      if (handoff.get('client') !== 'studio' || !/^[a-f0-9]{64}$/.test(flowId || '') || ![null, 'wallet'].includes(handoff.get('mode'))) {
+        throw new Error('Invalid Studio sign-in link. Start sign-in again from REACH Studio.');
+      }
+      await prepareSignIn({flowId, loginUrl: ORIGIN + '/wallet/connect#flow=' + flowId}, handoff.get('mode') === 'wallet', true);
+      return;
+    }
     if (new URLSearchParams(location.search).has('restricted')) showOnboarding();
     const returning = new URLSearchParams(location.search).get('signed') === '1';
     if (returning) {

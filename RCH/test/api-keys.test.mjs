@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { request as httpRequest } from 'node:http';
 import { AccountStore, digest } from '../service/store.mjs';
 import { SupabaseAccountStore } from '../service/supabase-store.mjs';
 import { createAccountService } from '../service/server.mjs';
@@ -19,6 +20,11 @@ test('SQLite API keys persist hashes only, enforce ownership, limits, expiry and
   const created=store.createApiKey(a.id,' Laptop ');
   assert.match(created.key,/^rch_key_[a-f0-9]{64}$/);
   assert.equal(created.name,'Laptop');
+  const operator=store.listOperatorApiKeys();
+  assert.equal(operator.data[0].accountId,a.id);
+  assert.equal(operator.data[0].prefix,created.prefix);
+  assert.equal(operator.hasMore,false);
+  assert.throws(()=>store.listOperatorApiKeys(-1),{code:'invalid_offset'});
   assert.equal(Date.parse(created.expiresAt)-Date.parse(created.createdAt),API_KEY_TTL_MS);
   const row=store.db.prepare('SELECT * FROM api_keys').get();
   assert.equal(row.hash,digest(created.key));
@@ -59,6 +65,24 @@ test('HTTP management is session-only; model keys cannot enter auth, billing, ac
   const created=await request('/v1/account/api-keys',{method:'POST',body:{name:'Website'}});
   assert.equal(created.status,201);
   const key=created.body.key;
+  const operatorUrl=`http://127.0.0.1:${server.address().port}/_reach/operator/api-keys`;
+  const operator=await fetch(operatorUrl);
+  assert.equal(operator.status,200);
+  const operatorRows=await operator.json();
+  assert.equal(operatorRows.data[0].id,created.body.id);
+  assert.equal(operatorRows.data[0].accountId,a.id);
+  assert.ok(!JSON.stringify(operatorRows).includes(key));
+  assert.ok(!JSON.stringify(operatorRows).includes(digest(key)));
+  for(const headers of [{origin:'https://signalreach.ca'},{'x-reach-client-ip':'203.0.113.9'},
+      {'x-forwarded-for':'203.0.113.9'}]) {
+    assert.equal((await fetch(operatorUrl,{headers})).status,403,JSON.stringify(headers));
+  }
+  const rebindingStatus=await new Promise((resolve,reject)=>{
+    const req=httpRequest(operatorUrl,{headers:{host:'attacker.example'}},res=>{res.resume();res.on('end',()=>resolve(res.statusCode));});
+    req.on('error',reject);req.end();
+  });
+  assert.equal(rebindingStatus,403);
+  assert.equal((await request('/_reach/operator/api-keys',{key})).status,403);
   assert.deepEqual((await request('/v1/account/api-keys')).body,{data:[Object.fromEntries(Object.entries(created.body).filter(([k])=>k!=='key'))]});
   assert.equal((await request('/v1/models',{key})).status,200);
   for(const [path,method]of [['/v1/account','GET'],['/v1/account/api-keys','GET'],['/v1/account/api-keys','POST'],['/v1/account/api-keys/revoke','POST'],['/v1/auth/logout','POST'],['/v1/auth/start','POST'],['/v1/billing/checkout','POST'],['/v1/models','POST'],['/v1/chat/completions','GET']]){

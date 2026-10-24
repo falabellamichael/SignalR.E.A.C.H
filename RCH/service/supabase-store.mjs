@@ -4,7 +4,7 @@ import { getAddress } from 'ethers';
 import { normalizePlusPayment, normalizePlusReversal, plusFingerprint, plusGrantId, publicPlusPayment, publicPlusReversal } from './payments/plus.mjs';
 import { AccountError, digest, fail, marketQuotePayload, modelUsdPricing, usdUsageCost, requestBillingPolicy, requestModel, requestReplay, basicPlanModelIds } from './store.mjs';
 import { normalizeEmail } from './email.mjs';
-import { newApiKey, publicApiKey, validateApiKey, validateApiKeyId } from './api-keys.mjs';
+import { newApiKey, publicApiKey, validateApiKey, validateApiKeyId, operatorKeyPage, validateKeyOffset } from './api-keys.mjs';
 import { normalizePayment, paymentFingerprint, grantIdFor, publicPayment, reviewPayment,
   normalizeReversal, reversalFingerprint, publicReversal, reviewReversal } from './payments/core.mjs';
 
@@ -132,6 +132,9 @@ export class SupabaseAccountStore {
       ...(request ? { requestAllowance: request.allowance } : {}) };
   }
   async pruneExpiredAuthentication() { await this._rpc('prune_auth'); }
+  async recordSignupSignals(accountId, signals) {
+    return this._rpc('record', { accountId, ...signals }, this.endpoint.replace(/reach_account_store$/, 'reach_record_signup_signals'));
+  }
   async importSnapshot(snapshot) {
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)
       || Object.keys(snapshot).length !== SNAPSHOT_TABLES.length
@@ -259,6 +262,9 @@ export class SupabaseAccountStore {
     return this._rpc(operation, payload, this.endpoint.replace(/reach_account_store$/, 'reach_api_key_store'));
   }
   async listApiKeys(accountId) { return (await this._apiKeyRpc('list', {accountId})).map(publicApiKey); }
+  async listOperatorApiKeys(offset = 0) {
+    return operatorKeyPage(await this._rpc('list', { offset: validateKeyOffset(offset) }, this.endpoint.replace(/reach_account_store$/, 'reach_operator_key_store')));
+  }
   async createApiKey(accountId, name) {
     const {key,row}=newApiKey(name,this.now());
     const stored=await this._apiKeyRpc('create', {accountId,...row});

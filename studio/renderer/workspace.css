@@ -75,9 +75,6 @@
 #no-agent.telemetry-landing > :not(.telemetry-dashboard) { display: none; }
 .telemetry-dashboard { width: 100%; min-width: 0; padding: 10px 2px 22px; }
 .telemetry-dashboard[hidden], .telemetry-dashboard [hidden] { display: none !important; }
-.telemetry-heading { display: flex; justify-content: space-between; margin: 4px 0 20px; }
-.telemetry-heading h2 { font-size: 30px; line-height: 1.2; color: var(--text); font-weight: 600; }
-.telemetry-heading p { margin-top: 8px; font-size: 14px; color: var(--dim); }
 .telemetry-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; }
 .telemetry-bar strong { color: var(--gold-dim); font-weight: 500; }
 .telemetry-stamp { flex: 1; color: var(--dim); font-size: 11px; }
@@ -149,7 +146,6 @@
   .telemetry-metric { padding-inline: 10px; }
 }
 @container (max-width: 480px) {
-  .telemetry-heading h2 { font-size: 24px; }
   .telemetry-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 0; }
   .telemetry-metric:nth-child(3) { padding-left: 0; }
   .telemetry-metric:nth-child(2) { border-right: 0; }

@@ -5,6 +5,7 @@ through the account service and can never become local-owner relay requests.
 """
 import http.client
 import ipaddress
+import json
 import re
 import select
 import socket
@@ -14,6 +15,7 @@ from urllib.parse import urlsplit
 
 import reachd.core as core
 from reachd.const import CLIENT_DISCONNECT_ERRORS
+from reachd.account_telemetry import AccountTelemetry
 
 ACCOUNT_PATHS = frozenset((
     "/wallet/connect", "/wallet/redeem", "/wallet/app.js", "/wallet/email.js", "/wallet/style.css",
@@ -123,6 +125,7 @@ def try_account_proxy(h):
     watch_stopped = threading.Event()
     client_disconnected = threading.Event()
     sent_headers = False
+    telemetry = None
     previous_timeout = h.connection.gettimeout()
     try:
         scheme, host, port = account_service_target(target)
@@ -156,6 +159,8 @@ def try_account_proxy(h):
         if body is not None and len(body) != length:
             _error(h, 400, "incomplete_body", "The account request body was incomplete.")
             return True
+        if customer and h.command == "POST" and MODEL_PATHS.get(path) == "/v1/chat/completions":
+            telemetry = AccountTelemetry(h, body)
         h.connection.settimeout(135)
         connection_class = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
         connection = connection_class(host, port, timeout=125)
@@ -175,6 +180,8 @@ def try_account_proxy(h):
                 args=(h.connection, connection.sock, watch_stopped, client_disconnected), daemon=True)
             disconnect_watch.start()
         upstream = connection.getresponse()
+        if telemetry:
+            telemetry.headers(upstream)
         if 300 <= upstream.status < 400:
             _error(h, 502, "account_redirect", "The account service returned an unexpected redirect.")
             return True
@@ -185,6 +192,8 @@ def try_account_proxy(h):
         streaming = "text/event-stream" in response_headers["Content-Type"].lower()
         if not streaming:
             data = upstream.read(MAX_RESPONSE + 1)
+            if telemetry:
+                telemetry.receive(data)
             if len(data) > MAX_RESPONSE:
                 _error(h, 502, "account_response_limit", "The account response exceeded the size limit.")
                 return True
@@ -207,12 +216,15 @@ def try_account_proxy(h):
                 data = upstream.read1(16384)
                 if not data:
                     break
+                if telemetry:
+                    telemetry.receive(data)
                 size += len(data)
                 if size > MAX_STREAM or time.monotonic() > deadline:
                     raise OSError("Account stream limit")
                 h._write_chunk(data)
             h._write_chunk(b"")
     except CLIENT_DISCONNECT_ERRORS:
+        client_disconnected.set()
         h.close_connection = True
     except (OSError, ValueError, http.client.HTTPException, socket.timeout):
         if client_disconnected.is_set():
@@ -224,6 +236,8 @@ def try_account_proxy(h):
         else:
             _error(h, 503, "accounts_unavailable", "The REACH account service is unavailable. Try again shortly.")
     finally:
+        if telemetry:
+            telemetry.finish(client_disconnected.is_set())
         watch_stopped.set()
         if disconnect_watch is not None:
             disconnect_watch.join(timeout=0.2)
@@ -234,3 +248,35 @@ def try_account_proxy(h):
         except OSError:
             pass
     return True
+
+
+def account_operator_keys(h, offset=0):
+    """Called only after the relay's existing operator authorization check."""
+    connection = None
+    try:
+        offset = int(offset)
+        if not 0 <= offset <= 1_000_000:
+            raise ValueError("Invalid offset")
+        target = core.STATE.cfg.get("account_service_url", "")
+        if not target:
+            return h._json(200, {"data": [], "hasMore": False, "configured": False})
+        scheme, host, port = account_service_target(target)
+        if port == h.server.server_address[1]:
+            raise ValueError("Account service cannot point at relay")
+        connection_class = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+        connection = connection_class(host, port, timeout=20)
+        connection.request("GET", "/_reach/operator/api-keys?offset=" + str(offset), headers={"Connection": "close"})
+        response = connection.getresponse()
+        data = response.read(MAX_RESPONSE + 1)
+        if response.status != 200 or len(data) > MAX_RESPONSE:
+            raise OSError("Account metadata unavailable")
+        value = json.loads(data)
+        # Keep the relay boundary metadata-only even if the service adds fields.
+        fields = ("id", "accountId", "name", "prefix", "createdAt", "expiresAt", "revokedAt")
+        keys = [{name: row.get(name) for name in fields} for row in value["data"]]
+        h._json(200, {"data": keys, "hasMore": value.get("hasMore") is True, "configured": True})
+    except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException):
+        h._json(503, {"error": {"code": "account_keys_unavailable", "message": "Website API key metadata is temporarily unavailable."}})
+    finally:
+        if connection:
+            connection.close()

@@ -79,6 +79,7 @@ const { createCompanionChat, companionSettings, companionPrompt } = require('./a
 const { createDiscordChat } = require('./agent/discord-chat.cjs');
 const telemetry = new Telemetry({ getSettings: loadSettings });
 let studioBrowser = null;
+let discordBrowser = null;
 let cliSettingsBridge = null;
 
 /* The security audit log (PRD, Terminal & Tool Execution Sandbox: "All terminal
@@ -734,6 +735,8 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     capabilityStore,
     model: route?.model || agent.model || selectedConnection?.model || settings.model || 'gemma-4-12b-qat',
     personaPrompt: agent.personaPrompt || '',
+    rulesProvider: agent.settings?.discordChat
+      ? () => new (require('./agent/discord-memory.cjs').DiscordMemory)(app.getPath('userData')).prompt() : null,
     /* SOUL.md + MEMORY.md for the agent this conversation is running as. Keyed
      * by the persona id when the chat has one (so a single chat and a crew run
      * share one identity), else by the conversation id. */
@@ -751,7 +754,7 @@ async function getAgentLoop(agentId, { autoRoute, newTurn = false } = {}) {
     promptBuilder: isCompanion ? companionPrompt : null,
     projectDir: agent.dir,
     reachExecutor: createReachToolExecutor(),
-    browserExecutor: (op, args, ctx) => studioBrowser.agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
+    browserExecutor: (op, args, ctx) => (agent.settings?.discordChat ? discordBrowser : studioBrowser).agentCommand(op, args, { ...ctx, owner: 'chat:' + ctx.agentId }),
     sendEvent: (channel, payload) => {
       companionChat?.event(channel, payload);
       discordChat?.event(channel, payload);
@@ -930,7 +933,7 @@ function registerIpc() {
     requireAppSender(event);
     try {
       if (action === 'list') return { ok: true, items: appConnections.catalog() };
-      if (action === 'save') return { ok: true, items: appConnections.save(value.id, value.patch) };
+      if (action === 'save') return { ok: true, items: await appConnections.save(value.id, value.patch) };
       if (action === 'check') return { ok: true, items: await appConnections.check(value.id) };
       if (action === 'disconnect') return { ok: true, items: appConnections.disconnect(value.id) };
       if (['gmail-connect', 'google-connect', 'github-connect', 'oauth-connect'].includes(action)) {
@@ -1036,11 +1039,17 @@ function registerIpc() {
     const settings = loadSettings();
     return require('./agent/extra-apps.cjs').publicPlugins(settings.plugins || { github: { enabled: true }, gmail: { enabled: true }, outlook: { enabled: true } });
   });
-  ipcMain.handle('plugins:save', (_e, patch) => {
+  ipcMain.handle('plugins:save', async (_e, patch) => {
     const current = loadSettings();
     const plugins = sanitizePlugins(patch, current.plugins);
-    saveSettings({ ...current, plugins });
-    return { ok: true, plugins: require('./agent/extra-apps.cjs').publicPlugins(plugins) };
+    for (const [id, value] of Object.entries(patch || {})) {
+      if (!['token', 'password'].some(field => typeof value?.[field] === 'string' && value[field].trim())) continue;
+      await appConnections.verify(id, { ...plugins[id], enabled: true });
+      if (JSON.stringify(current.plugins?.[id] || {}) !== JSON.stringify(loadSettings().plugins?.[id] || {})) throw new Error('The connection changed while checking. Save again.');
+    }
+    const latest = loadSettings(), verified = sanitizePlugins(patch, latest.plugins);
+    saveSettings({ ...latest, plugins: verified });
+    return { ok: true, plugins: require('./agent/extra-apps.cjs').publicPlugins(verified) };
   });
   ipcMain.handle('plugins:test', async (_e, { id, config }) => {
     const settings = loadSettings();
@@ -1641,6 +1650,7 @@ function registerIpc() {
       const budgets = resolveBudgets(settings, agentId ? getAgentStore().get(agentId)?.settings : {});
       const runner = new TeamRunner({
         agentSettings: structuredClone(agentId ? getAgentStore().get(agentId)?.settings || {} : {}),
+        getPlugins: () => loadSettings().plugins || {},
         team: { ...team, members: roster.map(r => r.member) },
         personas,
         roles,
@@ -3126,6 +3136,7 @@ function createWindow({ show = true } = {}) {
   });
   if (show) win.once('ready-to-show', () => win.show());
   studioBrowser = new StudioBrowser(win);
+  discordBrowser = new StudioBrowser(win, { partition: 'persist:reach-discord-browser', background: true });
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) shell.openExternal(url);
     return { action: 'deny' };

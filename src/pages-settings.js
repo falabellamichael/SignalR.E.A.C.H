@@ -44,6 +44,48 @@
         container.appendChild(saveBar);
         let draft = null;   // deep copy of the loaded settings (masked keys kept)
 
+        function appendAccountKeys() {
+            const card = el('section', 'reach-card');
+            card.appendChild(el('header', 'reach-card-head', 'Website API Keys (rch_key)'));
+            card.appendChild(el('p', 'reach-copy', 'Keys issued through the website use the account service and its access limits. Full secrets are shown only when created.'));
+            const content = el('div', 'reach-card-body'); content.style.overflowX = 'auto';
+            const note = el('p', 'reach-hint', 'Loading website keys…');
+            const table = el('table', 'reach-table');
+            table.innerHTML = '<thead><tr><th>Name</th><th>Account</th><th>Masked key</th><th>Status</th><th>Created</th><th>Expires</th></tr></thead>';
+            const rows = document.createElement('tbody'); table.appendChild(rows);
+            const controls = el('div', 'reach-card-foot');
+            const refresh = el('button', 'reach-btn reach-btn-sm', 'Refresh website keys'); refresh.type = 'button';
+            const more = el('button', 'reach-btn reach-btn-sm', 'Load more keys'); more.type = 'button'; more.hidden = true;
+            controls.appendChild(refresh); controls.appendChild(more);
+            content.appendChild(note); content.appendChild(table); card.appendChild(content); card.appendChild(controls); body.appendChild(card);
+            let offset = 0;
+            function load(reset) {
+                if (reset) { offset = 0; rows.replaceChildren(); }
+                refresh.disabled = more.disabled = true;
+                core.relayFetch('/_reach/account-api-keys?offset=' + offset, undefined, 25000)
+                    .then(res => { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+                    .then(result => {
+                        if (disposed || !card.isConnected) return;
+                        (result.data || []).forEach(key => {
+                            const tr = document.createElement('tr');
+                            const state = key.revokedAt ? 'Revoked' : Date.parse(key.expiresAt) <= Date.now() ? 'Expired' : 'Active';
+                            const account = el('td', 'reach-hint', (key.accountId || '').slice(0, 12)); account.title = key.accountId || '';
+                            tr.appendChild(el('td', null, key.name || 'API key')); tr.appendChild(account);
+                            tr.appendChild(el('td', 'reach-code-sm', (key.prefix || '') + '…'));
+                            const status = el('td', null, state); status.title = key.revokedAt || ''; tr.appendChild(status);
+                            tr.appendChild(el('td', 'reach-hint', (key.createdAt || '').slice(0, 10)));
+                            tr.appendChild(el('td', 'reach-hint', (key.expiresAt || '').slice(0, 10))); rows.appendChild(tr);
+                        });
+                        offset += (result.data || []).length;
+                        more.hidden = !result.hasMore;
+                        note.textContent = result.configured === false ? 'No account service configured.' : offset ? offset + ' website key(s) loaded.' : 'No website API keys have been created yet.';
+                    })
+                    .catch(() => { if (!disposed && card.isConnected) note.textContent = 'Website API keys are unavailable. Use Refresh website keys to retry.'; })
+                    .finally(() => { refresh.disabled = more.disabled = false; });
+            }
+            refresh.addEventListener('click', () => load(true)); more.addEventListener('click', () => load(false)); load(true);
+        }
+
         function markDirty(dirty) {
             core.store.dirty = dirty;
             dirtyNote.textContent = dirty ? 'unsaved changes' : 'all changes saved';
@@ -813,6 +855,7 @@
             newKeyBar.appendChild(remoteBtn);
             keysCard.appendChild(newKeyBar);
             body.appendChild(keysCard);
+            appendAccountKeys();
 
             // 7. Caching
             const ca = section('Caching', 'fa-bolt', 'Repeat identical prompts are served from the relay cache.');

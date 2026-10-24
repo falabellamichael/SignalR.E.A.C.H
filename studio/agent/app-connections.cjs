@@ -2,7 +2,7 @@
 
 const http = require('node:http');
 const { randomBytes, createHash } = require('node:crypto');
-const { gmailFetch, outlookFetch } = require('./mail-connections.cjs');
+const { gmailFetch, outlookFetch, hasSendPermission } = require('./mail-connections.cjs');
 const { weatherUrl, readWeather, DEFAULT_WEATHER_URL } = require('./weather-connection.cjs');
 const { normalizeToken } = require('./app-auth.cjs');
 const validGoogleClientId = value => typeof value === 'string' && /^[a-zA-Z0-9._-]+\.apps\.googleusercontent\.com$/.test(value);
@@ -24,25 +24,26 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
         url: p.weather?.url || DEFAULT_WEATHER_URL, fields: [{ key: 'url', label: 'City current-weather URL', value: p.weather?.url || DEFAULT_WEATHER_URL }], actions: ['weather.current'] },
       { id: 'gmail', name: 'Gmail', description: 'Search and read mail with Google sign-in. Requested mail content is shared with your selected model. Sending needs a separate permission and confirmation.', enabled: p.gmail?.enabled !== false,
         account: p.gmail?.email || '', configured: !!(p.gmail?.refreshToken || p.gmail?.accessToken || p.gmail?.password), connecting: pending?.id === 'gmail',
-        sendAllowed: String(p.gmail?.scope || '').split(' ').includes('https://www.googleapis.com/auth/gmail.send'),
-        allowSend: p.gmail?.allowSend ?? String(p.gmail?.scope || '').split(' ').includes('https://www.googleapis.com/auth/gmail.send'),
+        sendAllowed: p.gmail?.allowSend !== false && hasSendPermission('gmail', p.gmail),
+        allowSend: p.gmail?.allowSend ?? hasSendPermission('gmail', p.gmail),
         fields: [{ key: 'password', label: 'Google OAuth access token (optional alternative to sign-in)', secret: true }, ...(!clients.google ? [{ key: 'clientId', label: 'Google Desktop OAuth client ID', value: validGoogleClientId(p.gmail?.clientId) ? p.gmail.clientId : '' }, { key: 'clientSecret', label: 'Desktop client secret (if supplied by Google)', secret: true }] : [])],
         help: clients.google ? 'Connect Google, choose your account, then authorize REACH Studio. A pasted access token is optional and expires.' : (p.gmail?.clientId && !validGoogleClientId(p.gmail.clientId) ? 'The saved client ID is invalid and has been hidden. Enter an OAuth client ID, not an app password. ' : '') + 'Enable Gmail API, configure the OAuth consent screen, and create a Desktop app client in Google Cloud. Add yourself as a test user if the app is in testing.',
         helpUrl: 'https://developers.google.com/workspace/gmail/api/quickstart/nodejs', actions: ['gmail.read', 'gmail.send'] },
       { id: 'github', name: 'GitHub', description: 'Repository, issue and pull request tools. Uses a saved token or GitHub CLI sign-in.', enabled: p.github?.enabled !== false,
         configured: !!(p.github?.token || p.github?.accessToken || p.github?.refreshToken), oauthProvider: clients.github ? 'GitHub' : undefined, connecting: pending?.id === 'github', fields: [{ key: 'token', label: 'Personal access token (optional alternative to sign-in)', secret: true }],
         helpUrl: 'https://github.com/settings/tokens', actions: ['github.repo', 'github.issues', 'github.prs'] },
-      { id: 'outlook', name: 'Outlook / Microsoft 365', description: 'Read mail with a Microsoft Graph OAuth access token. Tokens must include Mail.Read.', enabled: p.outlook?.enabled !== false,
+      { id: 'outlook', name: 'Outlook / Microsoft 365', description: 'Read mail with Microsoft sign-in. Sending needs a separate Mail.Send permission and confirmation.', enabled: p.outlook?.enabled !== false,
         account: p.outlook?.email || '', configured: !!(p.outlook?.password || p.outlook?.accessToken || p.outlook?.refreshToken), oauthProvider: clients.microsoft ? 'Microsoft' : undefined, connecting: pending?.id === 'outlook',
+        sendAllowed: p.outlook?.allowSend !== false && hasSendPermission('outlook', p.outlook), allowSend: p.outlook?.allowSend ?? hasSendPermission('outlook', p.outlook),
         fields: [{ key: 'email', label: 'Account email', value: p.outlook?.email || '' }, { key: 'password', label: 'Microsoft Graph OAuth access token', secret: true }],
-        helpUrl: 'https://developer.microsoft.com/en-us/graph/graph-explorer', actions: ['outlook.read'] },
+        helpUrl: 'https://developer.microsoft.com/en-us/graph/graph-explorer', actions: ['outlook.read', 'outlook.send'] },
       ...require('./extra-apps.cjs').DEFINITIONS.map(([id,name,description,label,helpUrl])=>({id,name,description,helpUrl:id==='todo'?'https://developer.microsoft.com/en-us/graph/graph-explorer':helpUrl,
-        help: id==='todo'?(clients.microsoft?'Connect Microsoft and authorize REACH Studio to read and create your tasks. A pasted Graph token remains an optional alternative.':'In Graph Explorer, sign in, run GET /me/todo/lists, and grant Tasks.ReadWrite before copying the new access token.'): id==='discord'&&clients.discord?'Connect Discord and authorize the REACH bot for your server. The installation requests Administrator permission. Enable Discord chat below, then DM REACH or mention it in any server text channel you and the bot can access. The saved channel is the default for reading messages. Only your linked Discord account controls your Studio.': GOOGLE_SCOPES[id]?(clients.google?'Connect Google, choose your account, then authorize REACH Studio. A pasted access token is optional and expires.':'Connect Google for automatic token renewal. Uses the Desktop OAuth client saved for Gmail unless you enter a different client below. Enable this app’s API and add yourself as a test user in Google Cloud. A pasted token is optional and expires.'):undefined,
+        help: id==='todo'?(clients.microsoft?'Connect Microsoft and authorize REACH Studio to read tasks and lists, create lists and tasks, and update existing tasks. Writes use the conversation approval settings. A pasted Graph token remains an optional alternative.':'In Graph Explorer, sign in, run GET /me/todo/lists, and grant Tasks.ReadWrite before copying the new access token.'): id==='discord'&&clients.discord?'Connect Discord and authorize the REACH bot for your server. The installation requests Administrator permission. Enable Discord chat below, then DM REACH or mention it in any server text channel you and the bot can access. The saved channel is the default for reading messages. Only your linked Discord account controls your Studio.': GOOGLE_SCOPES[id]?(clients.google?'Connect Google, choose your account, then authorize REACH Studio. A pasted access token is optional and expires.':'Connect Google for automatic token renewal. Uses the Desktop OAuth client saved for Gmail unless you enter a different client below. Enable this app’s API and add yourself as a test user in Google Cloud. A pasted token is optional and expires.'):undefined,
         googleSignIn:!!GOOGLE_SCOPES[id],oauthProvider:id==='todo'&&clients.microsoft?'Microsoft':clients[id]&&['slack','notion','discord'].includes(id)?name:undefined,usesCallbackService:!!clients[id]?.brokerOrigin,connecting:pending?.id===id,
-        enabled:p[id]?.enabled===true,configured:!!(p[id]?.token||p[id]?.refreshToken||p[id]?.accessToken),fields:[{key:'token',label,secret:true},...(GOOGLE_SCOPES[id]&&!clients.google?[{key:'clientId',label:'Google Desktop OAuth client ID',value:validGoogleClientId(googleConfig(id).clientId)?googleConfig(id).clientId:''},{key:'clientSecret',label:'Desktop client secret (if supplied by Google)',secret:true}]:[]),...(id==='discord'?[{key:'channel',label:'Default text channel ID for reading messages (optional)',value:p[id]?.channel||''}]:[])],actions:[id+'.read',...(id==='todo'?['todo.create']:[])]})),
-    ].map(item => ({ ...item, ...(item.id === 'discord' ? { chat: { enabled: p.discord?.chatEnabled === true, workspace: p.discord?.workspace || '', projects: getProjects().map(project => ({ name: project.name || require('node:path').basename(project.dir), dir: project.dir })), status: getDiscordChatStatus() } } : {}), status: item.enabled || pending?.id === item.id ? status.get(item.id) || { state: item.configured ? 'saved' : item.id === 'weather' ? 'ready' : 'disconnected' } : { state: 'disabled' } }));
+        enabled:p[id]?.enabled===true,configured:!!(p[id]?.token||p[id]?.refreshToken||p[id]?.accessToken),fields:[{key:'token',label,secret:true},...(GOOGLE_SCOPES[id]&&!clients.google?[{key:'clientId',label:'Google Desktop OAuth client ID',value:validGoogleClientId(googleConfig(id).clientId)?googleConfig(id).clientId:''},{key:'clientSecret',label:'Desktop client secret (if supplied by Google)',secret:true}]:[]),...(id==='discord'?[{key:'channel',label:'Default text channel ID for reading messages (optional)',value:p[id]?.channel||''}]:[])],actions:Object.keys(require('./extra-apps.cjs').TOOLS).filter(name=>name.startsWith(id+'.'))})),
+    ].map(item => ({ ...item, actions: Object.keys(require('./plugins.cjs').PLUGIN_TOOLS).filter(name => name.startsWith(item.id + '.')), ...(item.id === 'discord' ? { chat: { enabled: p.discord?.chatEnabled === true, workspace: p.discord?.workspace || '', projects: getProjects().map(project => ({ name: project.name || require('node:path').basename(project.dir), dir: project.dir })), status: getDiscordChatStatus() } } : {}), status: item.enabled || pending?.id === item.id ? status.get(item.id) || { state: item.configured ? 'saved' : item.id === 'weather' ? 'ready' : 'disconnected' } : { state: 'disabled' } }));
   }
-  function save(id, patch = {}) {
+  async function save(id, patch = {}) {
     if (!catalog().some(item => item.id === id)) throw new Error('Unknown app connection.');
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('Invalid connection settings.');
     const settings = getSettings(), current = settings.plugins || {}, next = { ...current[id] };
@@ -59,11 +60,11 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
       next[field.key] = field.key === 'token' || field.key === 'password' ? normalizeToken(value) : value.slice(0, field.secret ? 16384 : 2048);
     }
     if (id === 'weather') next.url = weatherUrl(next.url || DEFAULT_WEATHER_URL);
+    if (['gmail', 'outlook'].includes(id) && typeof patch.allowSend === 'boolean') next.allowSend = patch.allowSend;
     if (GOOGLE_SCOPES[id]) {
       if (Object.hasOwn(patch, 'clientId') && next.clientId && !validGoogleClientId(next.clientId)) {
         throw new Error('Enter the Google Desktop OAuth client ID ending in .apps.googleusercontent.com, not the client secret or an API key.');
       }
-      if (id === 'gmail' && typeof patch.allowSend === 'boolean') next.allowSend = patch.allowSend;
     }
     if (GOOGLE_SCOPES[id] && next.clientId !== current[id]?.clientId) {
       for (const key of ['accessToken', 'refreshToken', 'expiresAt', 'email', 'scope', 'password']) delete next[key];
@@ -84,8 +85,23 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
     }
     if (pending?.id === id) { revision++; cancel(); }
     if (typeof patch.enabled === 'boolean') next.enabled = patch.enabled;
-    saveSettings({ ...settings, plugins: { ...current, [id]: next } });
-    status.delete(id);
+    const changedCredential = definition.fields.some(field => ['token', 'password'].includes(field.key) && typeof patch[field.key] === 'string' && patch[field.key].trim());
+    const version = revision;
+    let note;
+    if (changedCredential) {
+      status.set(id, { state: 'checking', note: 'Verifying access before saving this credential.' });
+      try { note = await verify(id, { ...next, enabled: true }); }
+      catch (error) {
+        if (version === revision && JSON.stringify(current[id] || {}) === JSON.stringify(plugins()[id] || {})) status.set(id, { state: 'error', note: error.message });
+        throw error;
+      }
+    }
+    const latest = getSettings();
+    if (version !== revision || JSON.stringify(current[id] || {}) !== JSON.stringify(latest.plugins?.[id] || {})) throw new Error('The connection changed while checking. Save again.');
+    if (id === 'gmail' && note) next.email = note;
+    saveSettings({ ...latest, plugins: { ...latest.plugins, [id]: next } });
+    if (note && next.enabled !== false) status.set(id, { state: 'connected', note, checkedAt: Date.now() });
+    else status.delete(id);
     return catalog();
   }
   function cancel() { pending?.cancel(); }
@@ -100,21 +116,25 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
     saveSettings({ ...settings, plugins: { ...p, [id]: next } });
     status.delete(id); return catalog();
   }
+  async function verify(id, config, options = {}) {
+      let note;
+      if (id === 'weather') { const result = await readWeather(config); note = 'City page reachable · ' + new URL(result.url).pathname.split('/').at(-2).replaceAll('-', ' '); }
+      else if (id === 'gmail') { const profile = await gmailFetch(config, 'profile', options); if (!profile.emailAddress) throw new Error('Google did not confirm the Gmail account.'); note = profile.emailAddress; }
+      else if (id === 'outlook') { const result = await outlookFetch(config, '/messages?$top=1&$select=id', options); if (!Array.isArray(result.value)) throw new Error('Microsoft did not confirm mail access.'); note = 'Mail access verified'; }
+      else if (id === 'github') {
+        const result = await require('./plugins.cjs').testPlugin('github', config);
+        if (!result.ok) throw new Error(result.err); note = result.user.login;
+      } else if (require('./extra-apps.cjs').ids.includes(id)) {
+        await require('./extra-apps.cjs').checkConnection(id,config,options);note=id==='slack'?'Token accepted; message search also requires search:read.':'Connection check succeeded';
+      } else throw new Error('Unknown app connection.');
+      return note;
+  }
   async function check(id) {
     const config = plugins()[id] || {};
     if (config.enabled === false) throw new Error('Enable the connection before checking it.');
     status.set(id, { state: 'checking' });
     try {
-      let note;
-      if (id === 'weather') { const result = await readWeather(config); note = 'City page reachable · ' + new URL(result.url).pathname.split('/').at(-2).replaceAll('-', ' '); }
-      else if (id === 'gmail') { const profile = await gmailFetch(config, 'profile'); note = profile.emailAddress; }
-      else if (id === 'outlook') { await outlookFetch(config, '/messages?$top=1&$select=id'); note = 'Mail access verified'; }
-      else if (id === 'github') {
-        const result = await require('./plugins.cjs').testPlugin('github', config);
-        if (!result.ok) throw new Error(result.err); note = result.user.login;
-      } else if (require('./extra-apps.cjs').ids.includes(id)) {
-        await require('./extra-apps.cjs').checkConnection(id,config);note=id==='slack'?'Token accepted; message search also requires search:read.':'Connection check succeeded';
-      } else throw new Error('Unknown app connection.');
+      const note = await verify(id, config);
       if (JSON.stringify(config) === JSON.stringify(plugins()[id] || {})) status.set(id, { state: 'connected', note, checkedAt: Date.now() });
       else status.delete(id);
     } catch (error) {
@@ -162,6 +182,7 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
       const url = new URL(google ? 'https://accounts.google.com/o/oauth2/v2/auth' : microsoft ? 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize' : 'https://slack.com/oauth/v2/authorize');
       const scopes = google ? [GOOGLE_SCOPES[id]] : microsoft ? [MICROSOFT_SCOPES[id], 'offline_access'] : ['search:read'];
       if (id === 'gmail' && allowSend) scopes.push('https://www.googleapis.com/auth/gmail.send');
+      if (id === 'outlook' && allowSend) scopes.push('https://graph.microsoft.com/Mail.Send');
       for (const [key, value] of Object.entries({ client_id: config.clientId, redirect_uri: redirect, response_type: 'code', state,
         code_challenge: challenge, code_challenge_method: 'S256', ...(google ? { scope: scopes.join(' '), access_type: 'offline', prompt: 'select_account consent' } : microsoft ? { scope: scopes.join(' '), prompt: 'select_account' } : { user_scope: scopes.join(',') }) })) url.searchParams.set(key, value);
       await openExternal(url.href);
@@ -172,14 +193,13 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
       const data = await require('./oauth-grants.cjs').postToken(endpoint, body, { signal: controller.signal });
       const tokens = id === 'slack' ? data.authed_user || data : data;
       if (!tokens.access_token || !tokens.refresh_token) throw new Error(provider + ' did not complete authorization with token renewal. Check the application configuration and try again.');
-      const requested = (google ? GOOGLE_SCOPES[id] : microsoft ? MICROSOFT_SCOPES[id] : 'search:read').split('/').at(-1).toLowerCase();
-      if (!String(tokens.scope || '').split(/[ ,]+/).some(scope => scope.split('/').at(-1).toLowerCase() === requested)) throw new Error('The required ' + provider + ' permission was not granted. Connect again and allow this app.');
+      const granted = String(tokens.scope || '').toLowerCase().split(/[ ,]+/).map(scope => scope.split('/').at(-1));
+      const missing = scopes.filter(scope => scope !== 'offline_access' && !granted.includes(scope.split('/').at(-1).toLowerCase()));
+      if (missing.length) throw new Error('The required ' + provider + ' permission was not granted: ' + missing.map(scope => scope.split('/').at(-1)).join(', ') + '. Connect again and allow this app.');
       const grant = require('./oauth-grants.cjs').tokenGrant(tokens);
-      const connected = { ...config, ...grant, enabled: true, token: '', password: '' };
-      let note = provider + ' connected; token renewal enabled';
-      if (id === 'gmail') { const profile = await gmailFetch(connected, 'profile', { signal: controller.signal }); connected.email = profile.emailAddress; note = profile.emailAddress; }
-      else if (id === 'outlook') await outlookFetch(connected, '/messages?$top=1&$select=id', { signal: controller.signal });
-      else await require('./extra-apps.cjs').checkConnection(id, connected, { signal: controller.signal });
+      const connected = { ...config, ...grant, enabled: true, token: '', password: '', ...(['gmail', 'outlook'].includes(id) ? { allowSend } : {}) };
+      const note = await verify(id, connected, { signal: controller.signal });
+      if (id === 'gmail') connected.email = note;
       if (version !== revision) throw new Error('The connection changed during sign-in. Connect again.');
       const settings = getSettings();
       saveSettings({ ...settings, plugins: { ...settings.plugins, [id]: { ...settings.plugins?.[id], ...connected } } });
@@ -245,6 +265,6 @@ function createAppConnections({ getSettings, saveSettings, openExternal, clients
       throw new Error(note);
     } finally { clearTimeout(timeout); pending = null; }
   }
-  return { catalog, save, check, disconnect, connectGmail, connectGoogle, connectAuthorization, connectGithub, cancel, destroy: cancel };
+  return { catalog, save, check, verify, disconnect, connectGmail, connectGoogle, connectAuthorization, connectGithub, cancel, destroy: cancel };
 }
 module.exports = { createAppConnections };

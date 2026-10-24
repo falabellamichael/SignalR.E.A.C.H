@@ -41,6 +41,7 @@ def verify_finished_installer(installer, payload, hashes, extractor, extracted):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--suite-version', help='Override the suite label without changing component versions')
     parser.add_argument('--makensis', type=Path, help='Path to NSIS makensis.exe')
     parser.add_argument('--sevenzip', type=Path, help='Path to 7z.exe for verifying the finished installer')
     parser.add_argument('--skip-app-builds', action='store_true', help='Reuse previously built suite component installers')
@@ -76,7 +77,9 @@ def main():
     if not compiler or not compiler.is_file():
         parser.error('NSIS not found. Supply --makensis or build the app installers first.')
     # Suite releases share the core release version (version.txt), which Release Please also writes to studio/package.json.
-    version = (ROOT / 'version.txt').read_text().strip()
+    version = args.suite_version or (ROOT / 'version.txt').read_text().strip()
+    if not __import__('re').fullmatch(r'\d+\.\d+\.\d+', version):
+        parser.error('Suite version must have three numeric components, for example 26.10.7.')
     output = out / f'SignalREACH Suite Setup {version}.exe'
     with tempfile.TemporaryDirectory(prefix='payload-', dir=out) as temporary:
         payload = Path(temporary)

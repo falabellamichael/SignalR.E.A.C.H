@@ -72,6 +72,15 @@ class ContextCompressionTests(unittest.TestCase):
         self.assertIsNone(report)
         self.assertEqual(native.requests, [])
 
+    def test_large_physical_window_does_not_admit_giant_interactive_history(self):
+        native = NativeFixture(limit=262144)
+        original = self.payload(self.history(size=160000))
+        prepared, report = prepare_gpu_context('gpu/gemma-4-12b-qat', original,
+            {'context_window': 262144}, request_json=native)
+        self.assertIsNotNone(report)
+        self.assertLessEqual(report['after_tokens'], 32768)
+        self.assertEqual(original['messages'][3]['content'], 'Earlier observed data: ' + 'x' * 160000)
+
     def test_llama_chat_counter_preserves_tools_media_and_uses_actual_slot_context(self):
         payload = self.payload([{"role": "user", "content": [{"type": "text", "text": "Describe this"},
             {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}}]}],

@@ -4,13 +4,19 @@ import { pgliteStores } from './helpers/pglite-store.mjs';
 import { API_KEY_TTL_MS } from '../service/api-keys.mjs';
 import { digest } from '../service/store.mjs';
 
-const postgres=pgliteStores({requiredMigration:'_rch_user_api_keys.sql'});
+const postgres=pgliteStores({requiredMigration:'_rch_operator_key_metadata.sql'});
 test('Postgres migration enforces durable key lifecycle, ownership, limit and role permissions',async()=>{
   const {store,clock}=await postgres.fresh({models:[]});
   const a=await store.ensureEmailAccount('pg-keys@example.com'),b=await store.ensureEmailAccount('pg-other@example.com');
   await postgres.query("UPDATE reach_accounts.accounts SET plan_id='basic',plan_expires=$1 WHERE id=$2",[clock.now+2*API_KEY_TTL_MS,a.id]);
   const key=await store.createApiKey(a.id,'Server');
   assert.equal((await store.authenticateApiKey(key.key)).id,a.id);
+  const operator=await store.listOperatorApiKeys();
+  assert.equal(operator.data[0].accountId,a.id);
+  assert.equal(operator.data[0].prefix,key.prefix);
+  assert.equal(operator.hasMore,false);
+  assert.ok(!JSON.stringify(operator).includes(key.key));
+  assert.ok(!JSON.stringify(operator).includes(digest(key.key)));
   const rows=(await postgres.query('select * from reach_accounts.api_keys')).rows;
   assert.equal(rows[0].hash,digest(key.key));
   assert.ok(!JSON.stringify(rows).includes(key.key));
@@ -28,4 +34,8 @@ test('Postgres migration enforces durable key lifecycle, ownership, limit and ro
   assert.ok(await store.createApiKey(a.id,'After expiry'));
   const permissions=(await postgres.query("select has_function_privilege('anon','public.reach_api_key_store(text,jsonb)','execute') as anon, has_function_privilege('authenticated','public.reach_api_key_store(text,jsonb)','execute') as authenticated, has_table_privilege('anon','reach_accounts.api_keys','select') as table_read")).rows[0];
   assert.deepEqual(permissions,{anon:false,authenticated:false,table_read:false});
+  const operatorPermissions=(await postgres.query("select has_function_privilege('anon','public.reach_operator_key_store(text,jsonb)','execute') as anon,has_function_privilege('authenticated','public.reach_operator_key_store(text,jsonb)','execute') as authenticated,prosecdef as definer from pg_proc where proname='reach_operator_key_store'")).rows[0];
+  assert.deepEqual(operatorPermissions,{anon:false,authenticated:false,definer:false});
+  assert.equal((await store.listOperatorApiKeys()).data.find(row=>row.id===key.id).revokedAt,revoked.revokedAt);
+  await assert.rejects(store.listOperatorApiKeys(-1),{code:'invalid_offset'});
 });

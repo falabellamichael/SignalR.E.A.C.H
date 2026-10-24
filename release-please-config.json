@@ -8,6 +8,9 @@
       "include-component-in-tag": false,
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
+        { "type": "json", "path": "src/public/plugin.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "vscode/package.json", "jsonpath": "$.version" },
+        { "type": "json", "path": "copilot/tray/package.json", "jsonpath": "$.version" },
         {
           "type": "json",
           "path": "src/plugin.json",

@@ -96,7 +96,7 @@ class PrivateModelRouteTests(unittest.TestCase):
         defaults = model_routes.deployment_defaults({})
         self.assertFalse(any("granite" in name for name in defaults))
         self.assertIn("TP2", defaults["ornith-1.5-9b"]["description"])
-        self.assertIn("Q8_0 (BF16 vision), GPU 0", defaults["gemma-4-12b-qat"]["description"])
+        self.assertIn("FP8 (BF16 vision), GPUs 0+1 (TP2)", defaults["gemma-4-12b-qat"]["description"])
         self.assertIn("FP8 (BF16 vision)", defaults["ornith-1.5-9b"]["description"])
 
     def test_nonstreaming_and_legacy_route_contracts_stay_distinct(self):
@@ -194,8 +194,8 @@ class ModelControlAccessTests(RelayFixture):
                     self.assertNotIn("minicpm5-2b", aliases)
                     self.assertIn("gemma-4-12b-qat", aliases)
         description = self.state.cfg["models"]["gemma-4-12b-qat"]["description"]
-        self.assertIn("Q8", description)
-        self.assertNotIn("FP8", description)
+        self.assertIn("FP8", description)
+        self.assertNotIn("Q8", description)
 
     def test_tunnels_foreign_origins_and_rebinding_cannot_reach_controls(self):
         for headers in (TUNNEL, {"Origin": "https://foreign.example"}, {"Host": "foreign.example"}):

@@ -25,6 +25,19 @@ function browserUrl(value, base) {
   }
   return url.href;
 }
+function signInBrowserUrl(value, base, linking = false) {
+  const url = new URL(browserUrl(value, base));
+  // The public service uses a tunnel for API traffic. Browser sign-in belongs
+  // on our website; PKCE state and the verifier remain inside this client.
+  if (base !== 'https://unbent-semicolon-hermit.ngrok-free.dev') return url.href;
+  const flowId = new URLSearchParams(url.hash.slice(1)).get('flow');
+  if (url.pathname !== '/wallet/connect' || url.search || !/^[a-f0-9]{64}$/.test(flowId || '')) {
+    throw new Error('The service returned an invalid sign-in destination.');
+  }
+  const page = new URL('https://signalreach.ca/login.html');
+  page.hash = new URLSearchParams({ client: 'studio', flow: flowId, ...(linking ? { mode: 'wallet' } : {}) }).toString();
+  return page.href;
+}
 // Stripe's Checkout and billing portal are the only pages opened outside the
 // service origin, each only on its own exact Stripe origin.
 const CHECKOUT_ORIGIN = 'https://checkout.stripe.com', PORTAL_ORIGIN = 'https://billing.stripe.com';
@@ -248,7 +261,7 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
       if (generation !== expected || origin !== baseUrl) return state();
       const expires = Date.parse(data.expiresAt);
       if (!text(data.flowId) || !Number.isFinite(expires) || expires <= now() || expires > now() + 15 * 60 * 1000) throw new Error('The service returned an invalid login expiry.');
-      const loginUrl = browserUrl(data.loginUrl, baseUrl);
+      const loginUrl = signInBrowserUrl(data.loginUrl, baseUrl);
       flow = { flowId: data.flowId, state: stateValue, verifier, expiresAt: data.expiresAt, generation: expected };
       await openExternal(loginUrl);
       if (generation === expected) changed();
@@ -390,9 +403,9 @@ function createHostedAccount({ file, safeStorage, fetchImpl = globalThis.fetch, 
     initialize(); expire();
     if (!session) throw new Error('Sign in before adding a wallet.');
     const { data } = await request('/v1/account/link-wallet', { method: 'POST', token: session.accessToken, body: {} });
-    await openExternal(browserUrl(data.loginUrl, baseUrl));
+    await openExternal(signInBrowserUrl(data.loginUrl, baseUrl, true));
     return state();
   }
   return { state, configure, connect, cancel, poll, refresh, disconnect, redeem, subscribe, topUp, manageBilling, hydrate, sanitize, managedConnection, linkEmailStart, linkEmailVerify, linkWallet };
 }
-module.exports = { createHostedAccount, serviceUrl, browserUrl, checkoutUrl, portalUrl, paypalUrl, topUpMicros, publicAccount, publicConfig, MANAGED_ID };
+module.exports = { createHostedAccount, serviceUrl, browserUrl, signInBrowserUrl, checkoutUrl, portalUrl, paypalUrl, topUpMicros, publicAccount, publicConfig, MANAGED_ID };

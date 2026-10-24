@@ -38,7 +38,12 @@ function applyWidthGuard() {
   drawer.classList.toggle('overlay', available - panelWidth < pageMinimum);
 }
 window.addEventListener('resize', applyWidthGuard);
-const drawerLayoutObserver = new ResizeObserver(() => requestAnimationFrame(applyWidthGuard));
+const drawerLayoutObserver = new ResizeObserver(() => {
+  // Drag frames already update the guard after setting the width.
+  if (!document.body.classList.contains('resizing-x')) requestAnimationFrame(() => {
+    if (!document.body.classList.contains('resizing-x')) applyWidthGuard();
+  });
+});
 drawerLayoutObserver.observe(drawer.parentElement);
 drawerLayoutObserver.observe($('#nav-rail'));
 drawerLayoutObserver.observe(drawer);
@@ -73,10 +78,14 @@ function initDrawerResizers() {
   let isDraggingX = false;
   let startX = 0;
   let startWidth = 0;
+  let resizeFrameX = null;
+  let pendingX = null;
 
-  const onPointerMoveX = (e) => {
-    if (!isDraggingX) return;
-    const delta = startX - e.clientX;
+  const applyResizeX = () => {
+    resizeFrameX = null;
+    if (pendingX === null) return;
+    const delta = startX - pendingX;
+    pendingX = null;
     const minW = 260;
     const railWidth = $('#nav-rail').getBoundingClientRect().width;
     const maxW = Math.max(minW, drawer.parentElement.clientWidth - railWidth - 24);
@@ -85,8 +94,17 @@ function initDrawerResizers() {
     applyWidthGuard();
   };
 
+  const onPointerMoveX = (e) => {
+    if (!isDraggingX) return;
+    pendingX = e.clientX;
+    if (resizeFrameX === null) resizeFrameX = requestAnimationFrame(applyResizeX);
+  };
+
   const onPointerUpX = (e) => {
     if (!isDraggingX) return;
+    // A release can arrive before the next paint; retain its last move.
+    if (resizeFrameX !== null) cancelAnimationFrame(resizeFrameX);
+    applyResizeX();
     isDraggingX = false;
     document.body.classList.remove('resizing-x');
     resizerX.classList.remove('active');
