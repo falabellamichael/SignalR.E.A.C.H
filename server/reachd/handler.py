@@ -1371,8 +1371,11 @@ class RelayHandler(BaseHTTPRequestHandler):
                          "source": core.STATE.public_url_source})
 
     # ------------------------------------------------------------- chat route
-    def _should_log(self, status):
-        level = core.STATE.cfg.get("data", {}).get("log_level", "normal")
+    def _should_log(self, status, state=None):
+        state = core.STATE if state is None else state
+        if state is None:
+            return False
+        level = state.cfg.get("data", {}).get("log_level", "normal")
         if level == "none":
             return False
         if level == "errors":
@@ -1380,20 +1383,27 @@ class RelayHandler(BaseHTTPRequestHandler):
         return True  # normal + verbose
 
     def _log_chat(self, **fields):
-        if not self._should_log(fields.get("status", 0)):
+        # relay_state is the RelayState captured when the request began. The
+        # process global can already be gone by the time a cancelled proxy
+        # handler logs.
+        state = fields.pop("relay_state", None)
+        if state is None:
+            state = core.STATE
+        if not self._should_log(fields.get("status", 0), state):
             return
         fields.setdefault("key_name", getattr(self, "_auth_key_name", ""))
-        verbose = core.STATE.cfg.get("data", {}).get("log_level") == "verbose"
+        verbose = state.cfg.get("data", {}).get("log_level") == "verbose"
         if not verbose:
             fields.pop("request_body", None)
             fields.pop("response_body", None)
-        core.STATE.analytics.log_request(**fields)
+        state.analytics.log_request(**fields)
 
     def handle_chat(self, *, catalog="gpu"):
         # One record per request, live for as long as it runs: /status shows it
         # and the log line at each end says how long it took. There is no
         # timeout — a slow generation is meant to be watched, not killed.
-        record = core.STATE.begin_request()
+        state = core.STATE
+        record = state.begin_request()
         self._reach_request = record
         try:
             # chat_execute answers the client itself on every early exit (rate
@@ -1408,9 +1418,9 @@ class RelayHandler(BaseHTTPRequestHandler):
                 return
             chat_finalize(self, upstream, ctx)
         finally:
-            elapsed = core.STATE.end_request(record)
+            elapsed = state.end_request(record)
             model = record.get("model") or "(unresolved)"
-            if core.STATE.cfg.get("data", {}).get("log_level") != "none":
+            if state.cfg.get("data", {}).get("log_level") != "none":
                 self._reach_log("chat end model=%s upstream=%s %.1fs stream=%s"
                                 % (model, record.get("upstream") or "-", elapsed,
                                    "yes" if record.get("stream") else "no"))
