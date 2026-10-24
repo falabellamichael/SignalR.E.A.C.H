@@ -23,6 +23,8 @@ before(async () => {
   const files = (await readdir(directory)).filter(name => name.endsWith('.sql')).sort();
   assert.equal(files.filter(name => name.endsWith('_rch_request_subscription_ledger.sql')).length, 1);
   for (const file of files) await pg.exec(await readFile(new URL(file, directory), 'utf8'));
+  // These quota scenarios model accounts whose welcome trial has expired.
+  await pg.exec('ALTER TABLE reach_accounts.accounts ALTER COLUMN trial_ends_at SET DEFAULT 0');
 });
 after(async () => { await pg?.close(); });
 

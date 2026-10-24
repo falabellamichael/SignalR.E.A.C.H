@@ -25,10 +25,14 @@ export function pgliteStores({ requiredMigration } = {}) {
 
   return {
     query: (...args) => db.query(...args),
-    async fresh({ models, subscription }) {
+    async fresh({ models, subscription, welcomeTrial = false }) {
       // Not every table has a foreign key to accounts, so clear the whole schema.
       const tables = (await db.query("SELECT tablename FROM pg_tables WHERE schemaname='reach_accounts'")).rows.map(row => row.tablename);
       await db.exec(`TRUNCATE ${tables.map(table => `reach_accounts.${quote(table)}`).join(', ')} CASCADE`);
+      // Billing suites exercise post-trial accounts; trial suites opt into the real default.
+      await db.exec(`ALTER TABLE reach_accounts.accounts ALTER COLUMN trial_ends_at SET DEFAULT ${welcomeTrial
+        ? '((extract(epoch from statement_timestamp()) * 1000)::bigint + 86400000)' : '0'}`);
+      await db.exec('INSERT INTO reach_accounts.signup_signal_key(singleton) VALUES(true)');
       const clock = { now: 1_800_000_000_000 };
       const store = new SupabaseAccountStore({ url: 'https://payments-fixture.supabase.co', secretKey: 'sb_secret_local_test_only_0000000000',
         models, subscription, now: () => clock.now,

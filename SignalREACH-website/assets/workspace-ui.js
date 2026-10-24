@@ -156,7 +156,7 @@
       core.validate(files); frame?.remove(); channel = crypto.randomUUID();
       frame = document.createElement('iframe'); frame.title = 'Your website preview'; frame.setAttribute('sandbox', 'allow-scripts'); frame.referrerPolicy = 'no-referrer';
       frame.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'");
-      frame.dataset.entry = entry; frame.src = 'assets/workspace-preview.html?v=20261023-edits'; preview.replaceChildren(frame); preview.hidden = false; source.hidden = true; fileTitle.textContent = entry + ' · Preview';
+      frame.dataset.entry = entry; frame.src = 'assets/workspace-preview.html?v=4aab5c56af5e'; preview.replaceChildren(frame); preview.hidden = false; source.hidden = true; fileTitle.textContent = entry + ' · Preview';
       previewStatus.textContent = 'Loading isolated preview…';
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => { if (frame) previewStatus.textContent = 'The preview could not start. Try Preview website again.'; }, 10000);
