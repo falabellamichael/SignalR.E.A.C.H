@@ -49,6 +49,12 @@ class AccountProxyTests(RelayFixture):
     def tearDown(self):
         self.accounts.shutdown()
         self.accounts.server_close()
+        # Reading the response can finish before the handler commits telemetry.
+        # Windows cannot remove the fixture database while that connection is open.
+        deadline = time.monotonic() + 5
+        while self.state.in_flight_snapshot() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(self.state.in_flight_snapshot(), 'Account handlers did not finish')
         super().tearDown()
 
     def session_headers(self, **extra):
