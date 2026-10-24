@@ -2,18 +2,39 @@
   "schemaVersion": 1,
   "id": "signal-reach-public",
   "name": "SignalREACH",
-  "version": "26.10.10",
+  "version": "26.10.11",
   "edition": "public",
   "description": "The public REACH workspace for SimpleRAG: dashboard, connections, models, playground, session activity, and access to the shared Studio and VS Code settings hub.",
-  "publisher": { "name": "Michael Anthony Falabella" },
+  "publisher": {
+    "name": "Michael Anthony Falabella"
+  },
   "license": "MIT",
   "permissions": [
-    { "id": "ui.page", "reason": "Adds the public REACH dashboard and navigation, connection and model settings, a playground, and the Studio and VS Code settings hub launcher and sync control.", "required": true }
+    {
+      "id": "ui.page",
+      "reason": "Adds the public REACH dashboard and navigation, connection and model settings, a playground, and the Studio and VS Code settings hub launcher and sync control.",
+      "required": true
+    }
   ],
-  "frontend": { "entrypoint": "reach-public.js", "capabilities": ["workspace.page-controller.v1"] },
+  "frontend": {
+    "entrypoint": "reach-public.js",
+    "capabilities": [
+      "workspace.page-controller.v1"
+    ]
+  },
   "contributes": {
     "pages": [
-      { "id": "signal-reach-public.reach-page", "location": "app-bar", "icon": "fa-satellite-dish", "title": "SignalREACH", "ariaLabel": "Open SignalREACH connections and model settings", "order": 39, "entrypoint": "reach-public.js", "offlineCapable": true, "controllerCapability": "workspace.page-controller.v1" }
+      {
+        "id": "signal-reach-public.reach-page",
+        "location": "app-bar",
+        "icon": "fa-satellite-dish",
+        "title": "SignalREACH",
+        "ariaLabel": "Open SignalREACH connections and model settings",
+        "order": 39,
+        "entrypoint": "reach-public.js",
+        "offlineCapable": true,
+        "controllerCapability": "workspace.page-controller.v1"
+      }
     ]
   }
 }
