@@ -29,6 +29,11 @@ class Element {
     return node;
   }
   set innerHTML(value) { this.children = []; this.html = value; }
+  replaceChildren(...nodes) {
+    for (const child of this.children) child.parentElement = null;
+    this.children = [];
+    for (const node of nodes) this.appendChild(node);
+  }
   set value(value) { this.inputValue = String(value); }
   get value() {
     if (this.tagName === 'SELECT') {
@@ -81,6 +86,7 @@ async function renderer(editAlias = '') {
   const core = {
     el, esc: value => value, toast() {}, store: {},
     loadSettings: async () => cfg,
+    relayFetch: async () => ({ ok: true, json: async () => ({ data: [], hasMore: false }) }),
     saveSettings: async patch => { saved.push(patch); return { ok: true, data: {} }; },
     refreshLocal: async () => ({}),
     prefsGet: name => prefs[name], prefsSet: (name, value) => { prefs[name] = value; },
