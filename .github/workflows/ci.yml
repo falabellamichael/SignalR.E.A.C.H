@@ -31,13 +31,21 @@ jobs:
           fi
 
   test:
-    runs-on: ${{ matrix.os }}
+    # Name stays tied to matrix.os so branch protection still matches
+    # "test (ubuntu-latest, 3.9)" after the 3.9 runner pin below.
+    name: test (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.runner || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
         python: ['3.9', '3.11', '3.13']
         include:
+          # ubuntu-latest is Ubuntu 26.04. setup-python 7.1.0 has no CPython
+          # 3.9 there, same gap that already pins 3.8 to ubuntu-22.04.
+          - os: ubuntu-latest
+            python: '3.9'
+            runner: ubuntu-22.04
           # README claims 3.8+; 3.8 is not in the ubuntu-latest tool cache.
           - os: ubuntu-22.04
             python: '3.8'
