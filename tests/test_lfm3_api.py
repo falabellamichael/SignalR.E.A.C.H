@@ -1,7 +1,8 @@
 """Unit tests for the LFM3-Omni FastAPI translation layer and its private route.
 
-The module under test imports torch only inside function bodies, so a stub
-module is enough to exercise the pure translation helpers on any host.
+The serving module imports torch, numpy, FastAPI, and pydantic at load time.
+CI installs none of those, so the translation cases skip cleanly there. The
+private-route contract does not need the serving module and always runs.
 """
 import importlib.util
 import json
@@ -14,16 +15,30 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-sys.modules.setdefault("torch", types.ModuleType("torch"))
-
-spec = importlib.util.spec_from_file_location(
-    "lfm3_api", ROOT / "docker" / "gpu" / "lfm3_api.py")
-lfm3 = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(lfm3)
-
 from reachd import model_routes
 
 
+def _load_lfm3():
+    sys.modules.setdefault("torch", types.ModuleType("torch"))
+    sys.modules.setdefault("numpy", types.ModuleType("numpy"))
+    try:
+        import fastapi  # noqa: F401
+        import pydantic  # noqa: F401
+    except ImportError:
+        return None
+    spec = importlib.util.spec_from_file_location(
+        "lfm3_api", ROOT / "docker" / "gpu" / "lfm3_api.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+lfm3 = _load_lfm3()
+_needs_lfm3 = unittest.skipUnless(
+    lfm3 is not None, "fastapi and pydantic are required to load the LFM3 serving API")
+
+
+@_needs_lfm3
 class TestTokenizeContract(unittest.TestCase):
     def test_chat_count_includes_tools_and_context_limit(self):
         from unittest.mock import Mock
@@ -47,6 +62,7 @@ class TestTokenizeContract(unittest.TestCase):
         self.assertEqual(result, {"tokens": 3, "count": 3, "max_model_len": 32768})
 
 
+@_needs_lfm3
 class TestToolCallTranslation(unittest.TestCase):
     def test_openai_tool_call_to_template_entry(self):
         call = {"id": "call_1", "type": "function",
@@ -117,6 +133,7 @@ class TestToolCallTranslation(unittest.TestCase):
         self.assertEqual(args["target"], "a plain description")
 
 
+@_needs_lfm3
 class TestStopTruncation(unittest.TestCase):
     def test_string_stop(self):
         self.assertEqual(lfm3.truncate_stops("hello world end", "world"),
@@ -131,6 +148,7 @@ class TestStopTruncation(unittest.TestCase):
         self.assertEqual(lfm3.truncate_stops("text", None), "text")
 
 
+@_needs_lfm3
 class TestMessageNormalization(unittest.TestCase):
     def test_developer_maps_to_system(self):
         conversation, metas = lfm3.normalize_messages(
@@ -164,6 +182,7 @@ class TestMessageNormalization(unittest.TestCase):
                 [{"role": "user", "content": [{"type": "smell", "smell": "x"}]}])
 
 
+@_needs_lfm3
 class TestResponseFormat(unittest.TestCase):
     def test_json_object_inserts_system_instruction(self):
         conversation = [{"role": "user", "content": "x"}]
@@ -191,6 +210,7 @@ class TestResponseFormat(unittest.TestCase):
                                        {"type": "yaml"})
 
 
+@_needs_lfm3
 class TestGenerationKwargs(unittest.TestCase):
     def _request(self, **fields):
         base = {"messages": [{"role": "user", "content": "x"}]}
@@ -217,6 +237,7 @@ class TestGenerationKwargs(unittest.TestCase):
             lfm3.build_generation_kwargs(request)
 
 
+@_needs_lfm3
 class TestModelAlias(unittest.TestCase):
     def test_aliases_accepted(self):
         for alias in (None, "lfm3-omni-2b", "LiquidAI/LFM3-Omni-2B",
