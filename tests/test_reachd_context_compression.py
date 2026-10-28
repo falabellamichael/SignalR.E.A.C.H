@@ -310,7 +310,7 @@ class CompressionRelayTests(RelayFixture):
         h.key_limits.return_value = (None, 0, 0)
         h._auth_key_id = "fixture-key-id"
         h._reach_request = {}
-        payload = {"model": "gemma-4-12b-qat", "messages": [{"role": "user", "content": "Hello"}],
+        payload = {"model": "ornith-1.5-9b", "messages": [{"role": "user", "content": "Hello"}],
                    "stream": stream}
         h._read_body.return_value = json.dumps(payload).encode()
         return h

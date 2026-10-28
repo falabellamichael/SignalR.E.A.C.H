@@ -372,7 +372,7 @@ class SharedBucketChargeTests(RelayFixture):
 
     def test_one_request_costs_one_shared_token(self):
         self.state.cfg["upstream_retries"] = 0
-        model = "gemma-4-12b-qat"
+        model = "ornith-1.5-9b"
         self.state.cfg["models"][model]["rate_limits"]["rpm"] = 10
         body = json.dumps({"model": model,
                            "messages": [{"role": "user", "content": "hi"}]}).encode()

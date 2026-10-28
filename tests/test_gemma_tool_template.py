@@ -120,7 +120,7 @@ class GemmaToolTemplateTests(unittest.TestCase):
                 patch("patch_gemma_tool_template.install_container_template", side_effect=install), \
                 patch("patch_gemma_tool_parser.install_container_parser", return_value=False), \
                 contextlib.redirect_stdout(io.StringIO()):
-            launch.start("gemma", {"models": [{"name": "gemma4-12b-qat", "repository": "probe"}]})
+            launch.start("gemma", {"models": [{"name": "gemma4-12b-qat-w4a16-ct", "repository": "probe"}]})
         create = next(event for event in events if event[0] == "create")
         self.assertNotIn("-d", create)
         self.assertIn("--max-model-len", create)

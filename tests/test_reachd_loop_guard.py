@@ -194,7 +194,7 @@ class LoopRelayTests(RelayFixture):
         self.assertEqual(json.loads(body)["error"]["code"], "tool_loop_detected")
 
     def test_opt_out_and_other_models_continue_to_the_upstream_path(self):
-        for model, enabled in (("minicpm5-2b", False), ("gemma-4-12b-qat", True)):
+        for model, enabled in (("minicpm5-2b", False), ("lfm3-vl-2b", True)):
             self.state.cfg["request"]["minicpm_loop_guard"] = enabled
             with patch("reachd.chat.net.urlopen", side_effect=OSError("test upstream unavailable")) as native:
                 status, body, response = self.call_loop(model=model)
@@ -202,13 +202,13 @@ class LoopRelayTests(RelayFixture):
             self.assertIsNone(response.getheader("X-Reach-Loop-Guard"))
 
     def test_fallback_to_minicpm_keeps_the_guard_and_releases_the_gate(self):
-        self.state.cfg["models"]["gemma-4-12b-qat"]["fallback"] = "minicpm5-2b"
+        self.state.cfg["models"]["lfm3-vl-2b"]["fallback"] = "minicpm5-2b"
         self.state.cfg["upstream_retries"] = 0
         def compressed_history(selector, payload, spec, **kwargs):
             return {**payload, "messages": [{"role": "user", "content": "summarized history"}]}, None
         with patch("reachd.chat.net.urlopen", side_effect=OSError("upstream unavailable")) as native, \
                 patch("reachd.context_compression.prepare_gpu_context", side_effect=compressed_history):
-            status, body, response = self.call_loop(model="gemma-4-12b-qat", stream=True)
+            status, body, response = self.call_loop(model="lfm3-vl-2b", stream=True)
         self.assertEqual(native.call_count, 1)
         self.assertEqual(status, 200)
         self.assertEqual(response.getheader("X-Reach-Loop-Guard"), "no_progress")

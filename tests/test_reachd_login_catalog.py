@@ -89,8 +89,8 @@ class LoginCatalogAccessTests(RelayFixture):
         with patch("reachd.chat.net.urlopen", return_value=MagicMock()) as send:
             result = run()
         h._json.assert_not_called()
-        self.assertEqual(result[1]["requested"], "gemma-4-12b-qat")
-        self.assertEqual(send.call_args.args[0].full_url, "http://127.0.0.1:18001/v1/chat/completions")
+        self.assertEqual(result[1]["requested"], "ornith-1.5-9b")
+        self.assertEqual(send.call_args.args[0].full_url, "http://127.0.0.1:18002/v1/chat/completions")
 
     def test_login_client_dispatch_preserves_direct_and_browser_routes(self):
         self.state.cfg["models"]["gpt-4o"]["upstream"] = "direct/gpt-4o"
@@ -110,8 +110,8 @@ class LoginCatalogAccessTests(RelayFixture):
             self.assertEqual(h._json.call_args.args[0], 404)
 
     def test_failed_gpu_request_cannot_fallback_to_signed_in_provider(self):
-        self.state.cfg["models"]["gemma-4-12b-qat"]["fallback"] = "gpt-4o"
-        h, run = self.execute("gemma-4-12b-qat")
+        self.state.cfg["models"]["ornith-1.5-9b"]["fallback"] = "gpt-4o"
+        h, run = self.execute("ornith-1.5-9b")
         with patch("reachd.chat.net.urlopen", side_effect=OSError("fixture offline")) as send:
             self.assertIsNone(run())
         send.assert_called_once()
