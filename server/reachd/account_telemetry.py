@@ -10,7 +10,11 @@ class AccountTelemetry:
     def __init__(self, handler, body):
         self.h = handler
         self.started = time.monotonic()
-        self.record = core.STATE.begin_request()
+        # Bound to the RelayState that accepted the request. Fixture teardown
+        # clears the process global before a cancelled handler finishes, and
+        # end_request on that global is what used to raise AttributeError.
+        self.state = core.STATE
+        self.record = self.state.begin_request()
         self.status, self.error = 503, "accounts_unavailable"
         self.tokens_in = self.tokens_out = None
         self.replayed = False
@@ -90,6 +94,6 @@ class AccountTelemetry:
                              user_agent=self.h.headers.get("User-Agent", ""), status=self.status,
                              error=self.error, latency_ms=round((time.monotonic() - self.started) * 1000),
                              tokens_in=self.tokens_in, tokens_out=self.tokens_out, stream=self.stream,
-                             cached=self.replayed, key_name=self.label)
+                             cached=self.replayed, key_name=self.label, relay_state=self.state)
         finally:
-            core.STATE.end_request(self.record)
+            self.state.end_request(self.record)

@@ -2,15 +2,21 @@
 import http.client
 import json
 import socket
+import tempfile
 import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from unittest.mock import patch
 
 from tests.test_reachd_access import RelayFixture, TUNNEL
+from reachd import core
 from reachd.account_proxy import account_service_target
+from reachd.account_telemetry import AccountTelemetry
+from reachd.handler import RelayHandler
 from reachd.settings import DEFAULT_SETTINGS, SettingsError, validate_settings
+from reachd.state import RelayState
 
 
 class AccountProxyTests(RelayFixture):
@@ -437,6 +443,28 @@ class AccountProxyConfigTests(unittest.TestCase):
             config["account_service_url"] = invalid
             with self.subTest(invalid=invalid), self.assertRaises(SettingsError):
                 validate_settings(config)
+
+
+class AccountTelemetryStateTests(unittest.TestCase):
+    def test_finish_logs_after_the_process_state_is_cleared(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        directory = Path(temporary.name)
+        config = json.loads(json.dumps(DEFAULT_SETTINGS))
+        with patch("reachd.state.config_dir", return_value=directory):
+            state = RelayState(config, directory / "config.json")
+        self.addCleanup(state.analytics.close)
+        handler = RelayHandler.__new__(RelayHandler)
+        handler.headers = {"Authorization": "Bearer rch_session_example", "User-Agent": "fixture"}
+        handler._client_ip = lambda: "203.0.113.9"
+        with patch.object(core, "STATE", state):
+            telemetry = AccountTelemetry(handler, b'{"model":"gemma-4-12b-qat"}')
+        self.assertIsNone(core.STATE)
+        self.assertTrue(state.in_flight_snapshot())
+        telemetry.finish(disconnected=True)
+        self.assertFalse(state.in_flight_snapshot())
+        row = state.analytics.logs()[0]
+        self.assertEqual((row["status"], row["error"], row["model"]), (499, "request_cancelled", "gemma-4-12b-qat"))
 
 
 if __name__ == "__main__":

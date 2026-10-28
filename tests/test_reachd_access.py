@@ -15,6 +15,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -34,6 +35,24 @@ EVIL_PAGE = {"Origin": "https://evil.example"}
 
 def _tunnel(ip="203.0.113.9", **extra):
     return {"X-Forwarded-For": ip, "Host": "abc.ngrok-free.app", **extra}
+
+
+def _remove_temporary_directory(temporary):
+    """Remove a fixture directory once SQLite has dropped reach.db.
+
+    ignore_cleanup_errors does not help: TemporaryDirectory retries the unlink
+    itself, and on Windows that retry still raises WinError 32 while the
+    database is mapped.
+    """
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            temporary.cleanup()
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 class RelayFixture(unittest.TestCase):
@@ -58,14 +77,25 @@ class RelayFixture(unittest.TestCase):
         self._patch = patch.object(core, "STATE", self.state)
         self._patch.start()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), RelayHandler)
+        # socketserver only joins non-daemon handler threads. The stock server
+        # uses daemon threads, so server_close returned while account telemetry
+        # was still writing reach.db.
+        self.server.daemon_threads = False
         self.port = self.server.server_address[1]
         threading.Thread(target=lambda: self.server.serve_forever(poll_interval=0.02), daemon=True).start()
 
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        # Join above waits for the handler, but only while it is still the
+        # request thread. Drain in-flight records before the STATE patch is
+        # removed so end_request and the analytics write use this fixture.
+        deadline = time.monotonic() + 5
+        while self.state.in_flight_snapshot() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.state.analytics.close()
         self._patch.stop()
-        self._tmp.cleanup()
+        _remove_temporary_directory(self._tmp)
 
     def call(self, method, path, headers=None, body=None, conn=None):
         c = conn or http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
