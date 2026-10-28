@@ -31,7 +31,8 @@ jobs:
           fi
 
   test:
-    runs-on: ${{ matrix.os }}
+    name: test (${{ matrix.os }}, ${{ matrix.python }})
+    runs-on: ${{ matrix.runner || matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -41,6 +42,12 @@ jobs:
           # README claims 3.8+; 3.8 is not in the ubuntu-latest tool cache.
           - os: ubuntu-22.04
             python: '3.8'
+          # ubuntu-latest is Ubuntu 26.04; setup-python cannot install 3.9 there.
+          # Keep os ubuntu-latest so the required check stays
+          # test (ubuntu-latest, 3.9); the job runs on ubuntu-22.04.
+          - os: ubuntu-latest
+            python: '3.9'
+            runner: ubuntu-22.04
           - os: windows-latest
             python: '3.13'
     steps:
