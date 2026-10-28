@@ -56,6 +56,11 @@ class PrivateModelRouteTests(unittest.TestCase):
                             self.assertEqual((body["temperature"], body["top_p"], body["top_k"]), (0.6, 0.95, 20))
                         elif alias == "minicpm5-2b":
                             self.assertEqual((body["temperature"], body["top_p"], body["min_p"]), (1.0, 0.95, 0.0))
+                        elif alias in ("lfm3-omni-2b", "lfm3-vl-2b"):
+                            self.assertEqual(body["temperature"], 0.1)
+                            self.assertEqual(body["top_k"], 50)
+                            self.assertEqual(body["repetition_penalty"], 1.1)
+                            self.assertNotIn("top_p", body)
                         else:
                             self.assertEqual((body["temperature"], body["top_p"], body["top_k"]), (1.0, 0.95, 64))
 
@@ -185,6 +190,13 @@ class ModelControlAccessTests(RelayFixture):
         self.assertFalse(mini["public"])
         self.assertEqual(mini["upstream"], "gpu/minicpm5-2b")
         self.assertTrue(mini["allow_tools"])
+        gemma = self.state.cfg["models"]["gemma-4-12b-qat"]
+        self.assertFalse(gemma["enabled"])
+        self.assertFalse(gemma["public"])
+        self.assertEqual(gemma["upstream"], "gpu/gemma-4-12b-qat")
+        self.assertIn("FP8", gemma["description"])
+        self.assertNotIn("Q8", gemma["description"])
+        published = {"ornith-1.5-9b", "lfm3-vl-2b", "lfm3-omni-2b", "bge-m3", "bge-reranker-v2-m3"}
         for path in ("/v1/models", "/models"):
             for headers in (None, self.bearer(**TUNNEL)):
                 with self.subTest(path=path, remote=headers is not None):
@@ -192,10 +204,8 @@ class ModelControlAccessTests(RelayFixture):
                     self.assertEqual(status, 200)
                     aliases = {model["id"] for model in json.loads(body)["data"]}
                     self.assertNotIn("minicpm5-2b", aliases)
-                    self.assertIn("gemma-4-12b-qat", aliases)
-        description = self.state.cfg["models"]["gemma-4-12b-qat"]["description"]
-        self.assertIn("FP8", description)
-        self.assertNotIn("Q8", description)
+                    self.assertNotIn("gemma-4-12b-qat", aliases)
+                    self.assertTrue(published <= aliases)
 
     def test_tunnels_foreign_origins_and_rebinding_cannot_reach_controls(self):
         for headers in (TUNNEL, {"Origin": "https://foreign.example"}, {"Host": "foreign.example"}):

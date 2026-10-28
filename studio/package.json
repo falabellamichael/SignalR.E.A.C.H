@@ -50,7 +50,7 @@
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
-    "electron": "44.9.3",
+    "electron": "45.0.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2"
   },
