@@ -1,5 +1,18 @@
 # Changelog
 
+## [26.10.13](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.12...v26.10.13) (2026-10-28)
+
+
+### Features
+
+* update model services and website with AppImage releases ([e877621](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/e8776219a3644cedea09907f8b7fc591e43a770d))
+
+
+### Bug Fixes
+
+* release analytics DB before Windows fixture cleanup ([#189](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/189)) ([280b332](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/280b332daa4a62d919b0773400a637d9469ea3ab))
+* **tests:** align reachd catalog tests with post-e877621 models ([#199](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/199)) ([9a89229](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9a8922966b685359898602c6b26f12f43864f3b9))
+
 ## [26.10.12](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.11...v26.10.12) (2026-10-24)
 
 

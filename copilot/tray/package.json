@@ -1,6 +1,6 @@
 {
   "name": "signalreach-copilot-tray",
-  "version": "26.10.12",
+  "version": "26.10.13",
   "description": "SignalREACH desktop tray for free model endpoints and Microsoft 365 Copilot",
   "main": "main.js",
   "private": true,
