@@ -32,8 +32,10 @@ ACCOUNT_PATHS = frozenset((
     "/oauth/discord/start", "/oauth/discord/exchange", "/oauth/discord/refresh", "/oauth/discord/cancel", "/oauth/discord/callback", "/oauth/discord/read",
     "/oauth/discord/chat-poll", "/oauth/discord/chat-reply", "/oauth/discord/chat-close",
 ))
-MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models",
-               "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions"}
+MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models", "/api/v1/models": "/v1/models",
+               "/v1/decisions": "/v1/decisions", "/decisions": "/v1/decisions",
+               "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions",
+               "/api/v1/chat/completions": "/v1/chat/completions"}
 MAX_REQUEST = 512 * 1024
 MAX_RESPONSE = 1024 * 1024
 MAX_STREAM = 2 * 1024 * 1024

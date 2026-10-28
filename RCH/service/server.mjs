@@ -54,6 +54,11 @@ const parseObject=raw=>{
   if(!body||typeof body!=='object'||Array.isArray(body)) fail(400,'invalid_body','Supply a JSON object.');return body;
 };
 const readBody=async req=>parseObject(await readRaw(req));
+// Lemonade clients default to /api/v1; only the public model routes are aliases.
+const modelPathAliases = new Map([
+  ['/api/v1/models', '/v1/models'],
+  ['/api/v1/chat/completions', '/v1/chat/completions'],
+]);
 const staticAssets = new Map([
   ['/wallet/rch',['text/html; charset=utf-8','../../branding/index.html']],
   ['/wallet/rch-logo.png',['image/png','../../branding/rch-logo.png']],
@@ -144,10 +149,12 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       }
       if(req.method==='OPTIONS'){res.writeHead(204);res.end();return;}
       // Proxy headers never choose the signature domain or identify a customer.
-      const pathname=new URL(req.url,'http://service.invalid').pathname;
+      const requestUrl=new URL(req.url,'http://service.invalid');
+      const pathname=modelPathAliases.get(requestUrl.pathname)||requestUrl.pathname;
+      if(pathname!==requestUrl.pathname)req.url=pathname+requestUrl.search;
       const token=/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1];
       const modelApiKey=token?.startsWith('rch_key_');
-      if(modelApiKey && !((req.method==='GET'&&pathname==='/v1/models')||(req.method==='POST'&&pathname==='/v1/chat/completions'))) {
+      if(modelApiKey && !((req.method==='GET'&&pathname==='/v1/models')||(req.method==='POST'&&['/v1/chat/completions','/v1/decisions'].includes(pathname)))) {
         fail(403,'api_key_scope','API keys can only list models and create chat completions.');
       }
       if(req.method==='GET'&&pathname==='/healthz') {json(res,200,{status:'ok',service:'reach-accounts'});return;}
@@ -399,7 +406,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id),reversals:await store.listReversals(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start'&&!account.walletAddress)fail(409,'wallet_required','RCH redemption needs an account signed in with a wallet.');
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
-      if(pathname==='/v1/models'||pathname==='/v1/chat/completions') {
+      if(pathname==='/v1/models'||pathname==='/v1/chat/completions'||pathname==='/v1/decisions') {
         // Consumed privately by reachd for account attribution; never forwarded
         // by its public response-header allowlist.
         if(pathname==='/v1/chat/completions')res.setHeader('X-Reach-Account-Id',account.id);

@@ -472,7 +472,7 @@ def chat_execute(h, *, catalog=None):
     original_payload = payload
 
     try:
-        url, payload, auth_headers, circuit = dispatch(upstream_model, payload, core.STATE)
+        url, payload, auth_headers, circuit = dispatch(upstream_model, payload, core.STATE, spec)
         payload, context_report = prepare_chat_context(h, upstream_model, payload, spec,
             metered=metered, settings=req_cfg)
         encoded = json.dumps(payload).encode("utf-8")
@@ -520,7 +520,7 @@ def chat_execute(h, *, catalog=None):
                     return None
                 try:
                     fb_payload = dict(original_payload)
-                    fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE)
+                    fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE, models[fallback_alias])
                     fb_payload, fb_report = prepare_chat_context(h, fb_upstream, fb_payload, models[fallback_alias],
                         metered=metered, settings=req_cfg)
                     fb_req = urllib.request.Request(
@@ -767,7 +767,7 @@ def chat_finalize(h, upstream, ctx):
                 fb_circuit = (private_route(fb_upstream) or {}).get("circuit", "bridge" if fb_upstream.startswith("bridge/") else "omniroute")
                 try:
                     fb_payload = dict(ctx.get("payload") or {})
-                    fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE)
+                    fb_url, fb_payload, fb_headers, fb_circuit = dispatch(fb_upstream, fb_payload, core.STATE, models[fallback_alias])
                     fb_req = urllib.request.Request(
                         fb_url, data=json.dumps(fb_payload).encode("utf-8"),
                         method="POST", headers=fb_headers)

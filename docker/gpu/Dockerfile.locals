@@ -1,0 +1,10 @@
+FROM python:3.12-slim
+ARG LOCALS_REV=4f4d03f10232c9f2adeb1e96e2a7bd79a9e7fe19
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+# The harness uses the standard library. Do not install the MLX inference dependencies.
+RUN pip install --no-cache-dir --no-deps "locals @ git+https://github.com/Generated-Computers/Locals.git@${LOCALS_REV}" \
+    && pip install --no-cache-dir httpx==0.28.1 starlette==0.47.3 uvicorn==0.35.0
+COPY locals_vllm.py /app/locals_vllm.py
+ENTRYPOINT ["python", "/app/locals_vllm.py"]
+CMD ["serve"]

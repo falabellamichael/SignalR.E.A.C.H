@@ -1,0 +1,15 @@
+[Unit]
+Description=Locals serving integration for existing SignalREACH vLLM traffic
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/signalreach/locals-vllm/locals_inline.py
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,19 @@
+html:has(.demo-page){height:100%;scroll-behavior:auto;scroll-padding-top:0}
+.demo-page{height:100dvh;overflow:hidden;display:flex;flex-direction:column;background:radial-gradient(ellipse at top left,var(--gold-wash),transparent 60%),var(--bg)}
+.demo-page .site-header{flex-shrink:0}
+.demo-main{display:flex;flex-direction:column;flex:1;min-height:0;padding:16px 20px 10px}
+.demo-page .studio-window{display:flex;flex-direction:column;flex:1;min-height:0}
+.demo-page .window-bar,.demo-page .window-footer{flex-shrink:0}
+.demo-page #preview-workspace{flex:1;min-height:0;overflow:hidden}
+.demo-page .gemma-workspace{height:100%;min-height:0}
+.demo-page .preview-hint{flex-shrink:0;margin-top:8px;text-align:center}
+.demo-page :is(.gemma-source,.gemma-preview,.gemma-log,.gemma-chat,.gemma-review,.gemma-explorer){overscroll-behavior:contain;scrollbar-width:thin}
+.demo-page .gemma-log{min-height:80px}
+.demo-page .gemma-form textarea{max-height:120px}
+@media(max-width:760px){
+  .demo-main{padding:8px}.demo-page #preview-workspace{overflow:auto}
+  .demo-page .gemma-workspace{height:auto;min-height:100%;grid-template-columns:minmax(0,1fr)}
+  .demo-page .gemma-center{height:420px}.demo-page .gemma-chat{min-height:450px;max-height:650px}
+  .demo-page .window-footer{height:auto;min-height:28px;padding:6px 10px;line-height:1.4}
+  .demo-page .preview-hint{font-size:10px;line-height:1.4}
+}

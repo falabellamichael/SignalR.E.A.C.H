@@ -4,15 +4,22 @@ GPU_MODELS = {
     "gemma-4-12b-qat": ("google/gemma-4-12B-it-qat-q4_0-unquantized", 18001, "Gemma 4 12B QAT FP8", "FP8 (BF16 vision)", 0),
     "ornith-1.5-9b": ("ornith-ai/Ornith-1.5-9B", 18002, "Ornith 1.5 9B", "FP8 (BF16 vision)", 0),
     "minicpm5-2b": ("openbmb/MiniCPM5-2B", 18004, "MiniCPM5 2B", "FP8", 0),
+    "lfm3-omni-2b": ("LiquidAI/LFM3-VL-2B", 18005, "LFM3 VL 2B (legacy alias)", "BF16 vision, reasoning and tools", 0),
+    "lfm3-vl-2b": ("LiquidAI/LFM3-VL-2B", 18005, "LFM3 VL 2B", "BF16 vision, reasoning and tools", 0),
 }
 GPU_TP_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b"))
-GPU_TOOL_MODELS = frozenset(("gemma-4-12b-qat", "minicpm5-2b"))
-GPU_DISABLED_MODELS = frozenset(("minicpm5-2b",))
-GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 65536, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856}
+GPU_TOOL_MODELS = frozenset(("gemma-4-12b-qat", "minicpm5-2b", "lfm3-omni-2b", "lfm3-vl-2b"))
+GPU_DISABLED_MODELS = frozenset(("minicpm5-2b", "gemma-4-12b-qat"))
+# The legacy Omni selector now routes to the reasoning-capable VL replacement.
+GPU_THINKING_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b", "minicpm5-2b", "lfm3-omni-2b", "lfm3-vl-2b"))
+GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 131072, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856,
+                       "lfm3-omni-2b": 131072, "lfm3-vl-2b": 131072}
 GPU_SAMPLING_DEFAULTS = {
     "ornith-1.5-9b": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
     "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
     "minicpm5-2b": {"temperature": 1.0, "top_p": 0.95, "min_p": 0.0},
+    "lfm3-omni-2b": {"temperature": 0.1, "top_k": 50, "repetition_penalty": 1.1},
+    "lfm3-vl-2b": {"temperature": 0.1, "top_k": 50, "repetition_penalty": 1.1},
 }
 DIRECT_MODELS = (
     "deepseek-v4.1-flash", "ox-alpha", "gemini-3.8-flash", "gpt-5.6-luna",
@@ -86,7 +93,7 @@ def private_route(upstream):
     return None
 
 
-def dispatch(upstream, payload, state):
+def dispatch(upstream, payload, state, spec=None):
     """Build each initial/fallback request independently; keep legacy paths."""
     route = private_route(upstream)
     data = dict(payload)
@@ -106,8 +113,17 @@ def dispatch(upstream, payload, state):
             if alias == "gemma-4-12b-qat" and "tools" in data:
                 from reachd.gemma_tools import compatible_tools
                 data["tools"] = compatible_tools(data["tools"])
-            # All resident chat models use their native reasoning path.
-            data["chat_template_kwargs"] = {"enable_thinking": True}
+            if alias in GPU_THINKING_MODELS:
+                thinking = (spec or {}).get("enable_thinking")
+                if thinking is None:
+                    thinking = True
+                # Merge, don't clobber: a client-provided enable_thinking or
+                # other template kwargs must survive.
+                kwargs = data.get("chat_template_kwargs")
+                if not isinstance(kwargs, dict):
+                    kwargs = {}
+                kwargs.setdefault("enable_thinking", thinking)
+                data["chat_template_kwargs"] = kwargs
             for field, value in GPU_SAMPLING_DEFAULTS[alias].items():
                 data.setdefault(field, value)
             if data.get("stream"):

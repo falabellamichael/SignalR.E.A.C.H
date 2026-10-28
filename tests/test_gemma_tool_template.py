@@ -124,7 +124,7 @@ class GemmaToolTemplateTests(unittest.TestCase):
         create = next(event for event in events if event[0] == "create")
         self.assertNotIn("-d", create)
         self.assertIn("--max-model-len", create)
-        self.assertEqual(create[create.index("--max-model-len") + 1], "65536")
+        self.assertEqual(create[create.index("--max-model-len") + 1], "131072")
         self.assertLess(events.index(("patch", "reach-gemma")), events.index(("start", "reach-gemma")))
 
 

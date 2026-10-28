@@ -22,6 +22,24 @@ export class GatewayError extends Error {
 const fail = (status, code, message) => { throw new GatewayError(status, code, message); };
 const integer = (value, min, max) => Number.isSafeInteger(value) && value >= min && value <= max;
 const plain = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+export function decisionRequest(body, routes) {
+  if (!plain(body) || Object.keys(body).some(k => !['model', 'state', 'questions'].includes(k)))
+    fail(400, 'invalid_decision', 'Provide model, state and questions.');
+  const route = routes.get(body.model);
+  if (!route || !gpuBridge(route.bridge)?.decision || route.metered !== true)
+    fail(400, 'invalid_model', 'Choose an available decision model.');
+  if (!Object.hasOwn(body, 'state') || !plain(body.questions) || !Object.keys(body.questions).length
+    || Object.keys(body.questions).length > 32 || JSON.stringify(body.state).length > 32768
+    || JSON.stringify(body.questions).length > 32768) fail(400, 'invalid_decision', 'Invalid decision state or questions.');
+  for (const q of Object.values(body.questions)) {
+    if (!plain(q) || !['noul', 'choice', 'score'].includes(q.type) || typeof q.instructions !== 'string'
+      || !q.instructions.trim() || (q.type === 'choice' && (!plain(q.criteria) || Object.keys(q.criteria).length < 2))
+      || (q.type === 'score' && (!Array.isArray(q.criteria) || q.criteria.length < 2 || q.criteria.length > 10)))
+      fail(400, 'invalid_decision', 'Questions require a type, instructions and appropriate criteria.');
+  }
+  const payload = { ...body, model: route.bridge.model };
+  return { payload, route, fingerprint: createHash('sha256').update(canonical(body)).digest('hex') };
+}
 function canonical(value) {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   if (plain(value)) return `{${Object.keys(value).sort().map(k => `${JSON.stringify(k)}:${canonical(value[k])}`).join(',')}}`;
@@ -322,9 +340,18 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         usdMicrosPerRequest: subscription.overageUsdMicrosPerRequest } } : m.pricing ? { pricing: m.pricing } : {}) })) });
 
   async function handle(req, res, account, body) {
-    const pathname = new URL(req.url, 'http://gateway.invalid').pathname;
-    if (req.method === 'GET' && pathname === '/v1/models') { responseJson(res, 200, catalog(account)); return; }
-    if (req.method !== 'POST' || pathname !== '/v1/chat/completions') { responseJson(res, 404, errorBody(new GatewayError(404, 'not_found', 'Route not found.'))); return; }
+    const requestUrl = new URL(req.url, 'http://gateway.invalid');
+    const pathname = requestUrl.pathname;
+    if (req.method === 'GET' && pathname === '/v1/models') {
+      const listing = catalog(account);
+      // Older Lemonade Mobile builds require downloaded=true to list a model.
+      if (requestUrl.searchParams.get('show_all') === 'true') {
+        for (const model of listing.data) model.downloaded = true;
+      }
+      responseJson(res, 200, listing); return;
+    }
+    const decision = pathname === '/v1/decisions';
+    if (req.method !== 'POST' || (!decision && pathname !== '/v1/chat/completions')) { responseJson(res, 404, errorBody(new GatewayError(404, 'not_found', 'Route not found.'))); return; }
     let reservation;
     let dispatched = false;
     let finished = false;
@@ -339,7 +366,8 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     if (req.aborted || res.destroyed) cancel();
     try {
       if (controller.signal.aborted) fail(408, 'request_cancelled', 'The request was cancelled before dispatch.');
-      const { payload, route, amount, reserveUsage, fingerprint } = completionRequest(body ?? await readJson(req), routes);
+      const { payload, route, amount, reserveUsage, fingerprint } = (decision ? decisionRequest : completionRequest)(body ?? await readJson(req), routes);
+      if (!decision && gpuBridge(route.bridge)?.decision) fail(400, 'model_operation_mismatch', 'Use /v1/decisions for this model.');
       const deadline = route.access === 'requests' ? requestTimeoutMs : timeoutMs;
       if (deadline > 0) timer = setTimeout(() => controller.abort(), deadline);
       requestMode = route.access === 'requests';
@@ -374,7 +402,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         headers: requestMode ? { 'content-type': 'application/json', 'cache-control': 'no-store' }
           : { 'content-type': 'application/json', authorization: `Bearer ${upstreamKey}`,
             'x-reach-metered': 'provider-v1', 'cache-control': 'no-store' },
-        body: JSON.stringify(gpuBridge(route.bridge) ? { ...payload, stream: false } : payload),
+        body: JSON.stringify(gpuBridge(route.bridge) && !decision ? { ...payload, stream: false } : payload),
       });
       if (!upstream.ok) {
         let detail = '';
@@ -395,7 +423,14 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       const contentType = upstream.headers.get('content-type') || '';
       let record;
       let usage;
-      if (requestMode) {
+      if (decision) {
+        const parsed = JSON.parse(await boundedText(upstream));
+        if (!plain(parsed.answers) || !integer(parsed.usage?.input_tokens, 0, 1_000_000_000)
+          || Object.keys(payload.questions).some(name => !plain(parsed.answers[name])))
+          fail(502, 'invalid_provider_response', 'Invalid decision response.');
+        usage = { promptTokens: parsed.usage.input_tokens, completionTokens: 0 };
+        record = { contentType: 'application/json; charset=utf-8', body: JSON.stringify({ ...parsed, model: route.id }) };
+      } else if (requestMode) {
         record = await gpuResponse(upstream, payload, route, controller.signal, measured => { usage = measured; });
         if (controller.signal.aborted || res.destroyed) fail(408, 'request_cancelled', 'The request was cancelled before completion.');
       } else if (payload.stream && contentType.toLowerCase().includes('text/event-stream')) {

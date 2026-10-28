@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+  <meta name="description" content="Privacy policy for TTY / Terminal Wear OS watch faces, Spotify controls and the optional TTY Phone Battery companion, published by FalabellaMichael.">
+  <link rel="canonical" href="https://signalreach.ca/tty-privacy.html">
+  <title>TTY / Terminal Privacy Policy | FalabellaMichael</title>
+  <style>
+    :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.65; }
+    body { margin: 0; background: #fff; color: #17201b; }
+    main { max-width: 48rem; margin: auto; padding: 1.5rem; overflow-wrap: anywhere; }
+    h1 { font-size: 1.9rem; line-height: 1.25; border-top: .25rem solid #218d46; padding-top: 1rem; }
+    h2 { margin-top: 2rem; font-size: 1.3rem; line-height: 1.3; }
+    a { color: #086d34; text-underline-offset: .16em; }
+    a:focus-visible { outline: 3px solid currentColor; outline-offset: 3px; }
+    nav { border-bottom: 1px solid #82938a; padding-bottom: 1rem; }
+    @media (prefers-color-scheme: dark) { body { background: #071018; color: #e8f1eb; } a { color: #98f0b7; } h1 { border-color: #98f0b7; } }
+    @media (max-width: 24rem) { main { padding: 1rem; } h1 { font-size: 1.5rem; } }
+    @media print { body { background: #fff; color: #000; } main { max-width: none; padding: 0; } a { color: #000; } }
+  </style>
+</head>
+<body><main>
+<nav aria-label="Site"><a href="https://signalreach.ca/">SignalREACH</a> &middot; <a href="#contact">Privacy contact</a></nav>
+<h1>TTY / Terminal &mdash; Privacy Policy</h1>
+
+<p>Scope: TTY / Terminal for Wear OS and the optional TTY Phone Battery Android companion.<br>Publisher: FalabellaMichael<br>Privacy contact: <a href="mailto:falabellamichael@gmail.com">falabellamichael@gmail.com</a><br>Public policy location: <a href="https://signalreach.ca/tty-privacy.html">https://signalreach.ca/tty-privacy.html</a><br>Effective date: 27 October 2026</p>
+
+<p>This policy describes how TTY / Terminal handles information when you use its Wear OS watch faces, Spotify controls and optional Android phone battery companion.</p>
+
+<h2>Information used to provide the app</h2>
+
+<p>Phone battery. If you install and open the optional phone companion, it reads the phone&#x27;s battery percentage and charging state from Android. It sends those values, a sample timestamp and a protocol version to the matching TTY / Terminal app on your paired Wear OS watch. This enables the phone battery display. Background updates run periodically, after relevant system events and when the watch requests a reading. The companion does not read your phone&#x27;s messages, contacts, photos, audio files or Spotify credentials.</p>
+
+<p>The battery transfer uses Google&#x27;s Wearable Data Layer, part of Google Play services. It can travel directly over encrypted Bluetooth or through Google&#x27;s servers when a direct connection is unavailable. Google documents the cloud transfer as end-to-end encrypted and restricts access to apps with matching package names and signing certificates. This version does not send these battery readings to a developer-operated server.</p>
+
+<p>Spotify. On the watch, the app connects to the installed Spotify app through Android&#x27;s public media APIs. It reads the track title, artist, playback status, supported controls and playback position to show current playback and provide previous, play/pause and next actions. It sends a playback command to Spotify when you tap a control. It does not ask for your Spotify password, copy Spotify account credentials, download music files or maintain a listening-history database. Spotify may handle playback and account information under its own policies.</p>
+
+<p>Watch-face information. Wear OS supplies the time, date, watch battery and, when available, step count, heart rate and weather values used by the face. Health values are shown on the watch for a display feature; the app does not send them to the phone companion or a developer-operated service. The app does not diagnose conditions or provide medical advice. Weather availability and any permissions or data processing of the system&#x27;s weather service are controlled by that service. This app does not directly request your location.</p>
+
+<p>Complications and customization. The app provides battery and Spotify complications to Wear OS for display on the watch face you choose. Wear OS and your selected face may cache the complication values. Layout, pet and color choices are managed by the watch-face system. The app stores music-placement and face-activation preferences locally.</p>
+
+<h2>Storage and retention</h2>
+
+<p>The watch stores its most recently accepted phone battery sample in private app preferences. A newer accepted sample overwrites the previous sample. A sample older than one hour is treated as unavailable for display; becoming stale does not itself erase the stored sample.</p>
+
+<p>Current Spotify session details are kept in the app process and delivered to the local complication system. The app does not persist a listening-history log. Wear OS can separately retain rendered complication data.</p>
+
+<p>Local placement and activation preferences remain until they are replaced or the app&#x27;s local storage is cleared. Clearing app storage or uninstalling the relevant app removes that app&#x27;s local stored preferences. This does not promise immediate removal of copies or transport caches managed independently by Google Play services, Wear OS, Spotify or another complication provider. Those services follow their own controls and retention practices.</p>
+
+<h2>Developer services, advertising and accounts</h2>
+
+<p>This version has no developer account sign-up, advertising integration, analytics integration or developer-operated cloud sync for the information described above. It does not sell battery, health or playback information. Device, app-store and service operators may process information independently when providing their own services.</p>
+
+<p>If you email support or a privacy question, FalabellaMichael receives your email address and the information you choose to include through Gmail. This correspondence is used to respond to your request and follow up where needed, and is retained for as long as needed for that purpose and any applicable obligations. You can request deletion of support correspondence by emailing <a href="mailto:falabellamichael@gmail.com">falabellamichael@gmail.com</a>. Deletion may be limited by applicable obligations and by copies or backups managed independently by the email provider. Do not include passwords, access tokens or unnecessary sensitive information.</p>
+
+<h2>Viewing this policy online</h2>
+
+<p>This policy page itself does not set cookies or embed scripts, advertising or analytics. The hosting provider may process routine HTTP access and security logs, such as an IP address, request time, requested URL and browser information, when serving the page. Those hosting logs are separate from the app data described above and are managed under the hosting provider&#x27;s settings and practices. You can contact the publisher with questions about this hosting or request deletion where applicable.</p>
+
+<h2>Your choices</h2>
+
+<p>You can use the watch faces without installing the optional phone battery companion. Uninstalling or disabling the phone companion stops that companion&#x27;s future battery updates. Readings already received may remain in local or platform caches as described above.</p>
+
+<p>You can change the selected complication providers or watch-face customization through Wear OS. To remove locally stored app settings, clear the relevant app&#x27;s storage in system settings or uninstall it. Manage Spotify playback, account permissions and account deletion in Spotify. This app has no separate user account to delete.</p>
+
+<h2>Other services</h2>
+
+<p>Google privacy information: <a href="https://policies.google.com/privacy">https://policies.google.com/privacy</a><br>Spotify privacy information: <a href="https://www.spotify.com/legal/privacy-policy/">https://www.spotify.com/legal/privacy-policy/</a></p>
+
+<p>If you select an existing WatchMaker battery source or another external complication provider, that provider&#x27;s information handling is governed by its own app and privacy terms. This policy describes TTY / Terminal and its optional companion.</p>
+
+<h2 id="contact">Contact and changes</h2>
+
+<p>For privacy questions, contact: <a href="mailto:falabellamichael@gmail.com">falabellamichael@gmail.com</a>.<br>Publisher identity: FalabellaMichael.</p>
+
+<p>The publisher will update the effective date when this policy changes and publish the revised policy at <a href="https://signalreach.ca/tty-privacy.html">https://signalreach.ca/tty-privacy.html</a>. Changes to app information handling will be reflected in this policy and the relevant app-store disclosures.</p>
+</main></body>
+</html>

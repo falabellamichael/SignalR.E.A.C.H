@@ -1,0 +1,4 @@
+FROM signalreach-lfm3:omni-2b-20261027
+COPY lfm3_api.py /app/lfm3_api.py
+COPY lfm3_vl_api.py /app/lfm3_vl_api.py
+ENTRYPOINT ["python", "-m", "uvicorn", "lfm3_vl_api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

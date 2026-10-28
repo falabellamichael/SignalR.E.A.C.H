@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .runtime import no_window_kwargs, port_open
 
-GPU_FORWARDS = ((18001, 8001), (18002, 8002), (18004, 8004), (18030, 8030))
+GPU_FORWARDS = ((18001, 8001), (18002, 8002), (18004, 8004), (18005, 8005), (18030, 8030))
 
 
 def healthy(port, direct=False):

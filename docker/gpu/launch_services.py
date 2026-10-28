@@ -12,9 +12,7 @@ ROOT = Path("/srv/signalreach")
 IMAGE = "vllm/vllm-openai-rocm@sha256:749f6f3f944f12af49966ac523c1f8573e4b229594b541954bd5f879b4496b1f"
 DEPLOYMENT = "signalreach-nextify-20261015"
 SERVICES = {
-    "gemma": ("gemma4-12b-qat", "0,1", 8001, 0.55, [
-        "--quantization", "fp8_per_tensor", "--quantization-config",
-        '{"ignore":["vision_embedder.*"]}',
+    "gemma": ("gemma4-12b-qat-w4a16-ct", "0,1", 8001, 0.55, [
         "--enable-auto-tool-choice", "--tool-call-parser", "gemma4",
         "--reasoning-parser", "gemma4",
         "--chat-template", "/app/vllm/examples/tool_chat_template_gemma4.jinja",
@@ -28,6 +26,7 @@ SERVICES = {
         "--limit-mm-per-prompt", '{"image":1,"video":1}',
     ]),
     "support": (None, 1, 8030, None, []),
+    "lfm3": ("lfm3-vl-2b", "0", 8005, None, []),
     "minicpm": ("minicpm5-2b", "0,1", 8004, 0.24, [
         "--quantization", "fp8_per_tensor", "--enable-auto-tool-choice",
         "--tool-call-parser", "minicpm5", "--reasoning-parser", "qwen3",
@@ -38,7 +37,11 @@ SERVICES = {
 # Gemma and qualified MiniCPM use both GPUs with TP2.
 # Distributed runtime checks remain separate from host-memory guards.
 TP_MODELS = frozenset({"gemma", "minicpm"})
-HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith"})
+# Services that run their own runtime image instead of a vLLM command line.
+CUSTOM_RUNTIME_SERVICES = frozenset({"support", "lfm3"})
+CUSTOM_RUNTIME_IMAGES = {"support": "signalreach-support:20261017-fp8-gpu",
+                         "lfm3": "signalreach-lfm3:vl-2b-20261027"}
+HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith", "lfm3"})
 HOST_MEMORY_LIMIT_BYTES = 12 * 1024 ** 3
 # Operator-disabled services retain their saved profile and assets.
 DISABLED_SERVICES = frozenset({"ornith", "minicpm"})
@@ -48,24 +51,23 @@ CHAT_DECODE_CONFIG = {'mode': 0, 'cudagraph_mode': 'FULL_DECODE_ONLY', 'cudagrap
 # Gemma MTP uses V2 to capture the assistant's forward pass and sampling on GPU.
 CHAT_RUNNERS = {"gemma": "1", "ornith": "0", "minicpm": "0"}
 # Host-side OpenMP coordination only; model weights and KV caches stay on GPU.
-SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "1", "support": "2"}
+SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "1", "support": "2", "lfm3": "2"}
 # MTP needs both target verification (4 tokens/request) and later assistant
 # decode (1 token/request) shapes to cover every admitted batch on runner V2.
 CHAT_CAPTURE_SIZES = {"gemma": [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32], "ornith": [2], "minicpm": [1, 2, 3, 4, 5]}
 CHAT_MAX_SEQUENCES = {"gemma": 8, "ornith": 2, "minicpm": 5}
 # Pin every qualified context so a future create cannot silently resize it.
-CHAT_CONTEXT_WINDOWS = {"gemma": 65536, "ornith": 61776, "minicpm": 39904}
+CHAT_CONTEXT_WINDOWS = {"gemma": 131072, "ornith": 61776, "minicpm": 39904, "lfm3": 131072}
 # Tokens of prompt work per scheduler step. Smaller Gemma chunks let an
 # in-flight decode emit tokens while a second request prefills. Context length,
 # tensor parallelism, MTP, and GPU placement stay as qualified below.
-CHAT_PREFILL_TOKENS = {"gemma": 3072, "ornith": 2048, "minicpm": 2048}
-CHAT_SPECULATIVE_CONFIGS = {
-    "gemma": {
-        "method": "mtp",
-        "model": "/models/gemma4-12b-qat-assistant",
-        "num_speculative_tokens": 3,
-    },
-}
+CHAT_PREFILL_TOKENS = {"gemma": 4096, "ornith": 2048, "minicpm": 2048}
+# Per-request prefill cap under contention: a giant prompt can only take
+# this share of the per-step token budget while other requests are queued,
+# so a ~300k-token Raycast prefill cannot freeze concurrent traffic to
+# zero. Solo requests still use the full budget (vLLM only enforces the
+# cap when a queue exists).
+CHAT_SPECULATIVE_CONFIGS = {}
 
 
 def chat_decode_config(key):
@@ -205,7 +207,7 @@ def start(key, manifest):
         hsa_bind = f"{HSA_OVERRIDE}:/opt/rocm-7.2.3/lib/libhsa-runtime64.so.1.18.0:ro"
         if hsa_bind not in set(details["HostConfig"].get("Binds") or []):
             raise RuntimeError(f"Preserving {name}: existing container lacks the validated HSA runtime mount")
-        if key != "support":
+        if key not in CUSTOM_RUNTIME_SERVICES:
             command = details["Config"].get("Cmd") or []
             actual_tp = int(command[command.index("--tensor-parallel-size") + 1]) if "--tensor-parallel-size" in command else 1
             expected_tp = 2 if key in TP_MODELS else 1
@@ -224,6 +226,10 @@ def start(key, manifest):
             if actual_speculation != CHAT_SPECULATIVE_CONFIGS.get(key):
                 raise RuntimeError(f"Preserving {name}: speculative decoding differs from qualification")
             actual_prefill = int(command[command.index("--max-num-batched-tokens") + 1]) if "--max-num-batched-tokens" in command else None
+            actual_lpft = int(command[command.index("--long-prefill-token-threshold") + 1]) if "--long-prefill-token-threshold" in command else 0
+            expected_lpft = 2048 if key == "gemma" else 0
+            if actual_lpft != expected_lpft:
+                raise RuntimeError(f"Preserving {name}: long-prefill threshold must be {expected_lpft}; ")
             if actual_prefill != CHAT_PREFILL_TOKENS[key]:
                 raise RuntimeError(f"Preserving {name}: prompt scheduling step must be exactly {CHAT_PREFILL_TOKENS[key]} tokens; "
                                    "context, TP, MTP and GPU placement are unchanged")
@@ -250,7 +256,7 @@ def start(key, manifest):
             }
             if not required.issubset(set(details["HostConfig"].get("Binds") or [])):
                 raise RuntimeError(f"Preserving {name}: existing container lacks the validated distributed runtime mounts")
-        if key != "support":
+        if key not in CUSTOM_RUNTIME_SERVICES:
             command = details["Config"].get("Cmd") or []
             if environment.get("VLLM_USE_V2_MODEL_RUNNER") != CHAT_RUNNERS[key]:
                 raise RuntimeError(f"Preserving {name}: model runner differs from qualification")
@@ -286,9 +292,11 @@ def start(key, manifest):
         "--device=/dev/kfd", "--device=/dev/dri", "--group-add=video",
         "--shm-size=2g", "-e", f"ROCR_VISIBLE_DEVICES={gpu}",
         "-e", f"OMP_NUM_THREADS={SERVICE_OMP_THREADS[key]}", "-e", "GPU_MAX_HW_QUEUES=1", "-e", "HF_HUB_OFFLINE=1",
+        *(["-e", "LFM3_MAX_CONCURRENT=3"] if key == "lfm3" else []),
         "-e", "TRANSFORMERS_OFFLINE=1", "-e", "VLLM_ROCM_USE_AITER=0",
         "-v", f"{ROOT}/models:/models:ro",
         "-p", f"127.0.0.1:{port}:{8030 if key == 'support' else 8000}",
+        *(["-p", "127.0.0.1:18000:8000"] if key == "gemma" else []),
     ]
     if not HSA_OVERRIDE.is_file():
         raise RuntimeError(f"Missing validated HSA runtime: {HSA_OVERRIDE}")
@@ -301,13 +309,13 @@ def start(key, manifest):
         args += ["-v", f"{RCCL_OVERRIDE}:/opt/rocm-7.2.3/lib/librccl.so.1.0.70203:ro"]
         for setting in ("NCCL_PROTO=Simple", "NCCL_SET_STACK_SIZE=0", "NCCL_P2P_DISABLE=1", "NCCL_IB_DISABLE=1", "NCCL_MAX_NCHANNELS=4", "HSA_NO_SCRATCH_RECLAIM=0", "HSA_ENABLE_SDMA=0"):
             args += ["-e", setting]
-    if key != "support":
+    if key not in CUSTOM_RUNTIME_SERVICES:
         args += ["-e", f"VLLM_USE_V2_MODEL_RUNNER={CHAT_RUNNERS[key]}"]
-    if key == "gemma":
+    if key == "gemma" and model == "gemma4-12b-qat":
         override = gemma_config_override()
         args += ["-v", f"{override}:/models/{model}/config.json:ro"]
-    if key == "support":
-        args += ["signalreach-support:20261017-fp8-gpu"]
+    if key in CUSTOM_RUNTIME_IMAGES:
+        args += [CUSTOM_RUNTIME_IMAGES[key]]
     else:
         args += [
             IMAGE, f"/models/{model}", "--served-model-name", repository,
@@ -315,6 +323,7 @@ def start(key, manifest):
             "--dtype", "bfloat16",
             "--max-model-len", str(CHAT_CONTEXT_WINDOWS[key]), "--max-num-seqs", str(CHAT_MAX_SEQUENCES[key]),
             "--max-num-batched-tokens", str(CHAT_PREFILL_TOKENS[key]),
+            *(["--long-prefill-token-threshold", "2048"] if key == "gemma" else []),
             *(["--compilation-config", json.dumps(chat_decode_config(key))] if key in CHAT_CAPTURE_SIZES else ["--enforce-eager"]),
             "--gpu-memory-utilization", str(fraction),
             "--attention-backend", "TRITON_ATTN", "--mm-processor-cache-gb", "0",
@@ -344,6 +353,7 @@ def start(key, manifest):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=SERVICES)
+    parser.add_argument("--with-locals", action="store_true", help="Start the Locals vLLM gateway on port 8321")
     args = parser.parse_args()
     if args.only in DISABLED_SERVICES:
         parser.error(f"Service {args.only} is disabled at the operator request; "
@@ -354,6 +364,9 @@ def main():
     selected = [args.only] if args.only else [key for key in SERVICES if key not in DISABLED_SERVICES]
     for key in selected:
         start(key, manifest)
+    if args.with_locals:
+        from launch_locals import launch
+        launch()
     print("SELECTED_SERVICES_READY", flush=True)
 
 

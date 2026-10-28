@@ -32,6 +32,15 @@ jobs:
     with:
       release-tag: ${{ needs.release-please.outputs.tag-name }}
 
+  studio-appimage:
+    needs: release-please
+    if: needs.release-please.outputs.release-created == 'true'
+    uses: ./.github/workflows/studio-appimage.yml
+    permissions:
+      contents: write
+    with:
+      release-tag: ${{ needs.release-please.outputs.tag-name }}
+
   windows-suite:
     needs: release-please
     if: needs.release-please.outputs.release-created == 'true'

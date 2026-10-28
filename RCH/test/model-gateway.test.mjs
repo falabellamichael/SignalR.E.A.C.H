@@ -183,6 +183,8 @@ test('catalog hides unqualified routes and request caps reject before a reservat
     { models: [{ ...MODELS[0], metered: false }, MODELS[1]] });
   const catalog = await (await fetch(`${f.base}/v1/models`)).json();
   assert.deepEqual(catalog.data.map(m => m.id), ['ornith-1.5-9b']);
+  const lemonadeCatalog = await (await fetch(`${f.base}/v1/models?show_all=true`)).json();
+  assert.deepEqual(lemonadeCatalog.data, catalog.data.map(m => ({ ...m, downloaded: true })));
   for (const body of [request(), request('ornith-1.5-9b', { n: 2 }), request('ornith-1.5-9b', { max_tokens: 21 }),
     request('ornith-1.5-9b', { messages: [{ role: 'user', content: [{ type: 'image_url' }] }] }),
     request('ornith-1.5-9b', { messages: [{ role: 'user', content: 'x'.repeat(9000) }] }),

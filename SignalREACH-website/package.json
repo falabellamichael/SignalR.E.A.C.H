@@ -8,7 +8,9 @@
     "start": "node tools/serve.mjs",
     "dev": "node tools/serve.mjs",
     "build": "node tools/build.mjs",
-    "test": "node --test tests/static.test.mjs tests/chat-engine.test.mjs tests/account.test.mjs tests/workspace.test.mjs"
+    "test": "node --test tests/static.test.mjs tests/chat-engine.test.mjs tests/account.test.mjs tests/workspace.test.mjs tests/entry.test.mjs"
   },
-  "engines": { "node": ">=18" }
+  "engines": {
+    "node": ">=18"
+  }
 }

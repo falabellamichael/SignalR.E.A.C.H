@@ -84,15 +84,25 @@ test('HTTP management is session-only; model keys cannot enter auth, billing, ac
   assert.equal(rebindingStatus,403);
   assert.equal((await request('/_reach/operator/api-keys',{key})).status,403);
   assert.deepEqual((await request('/v1/account/api-keys')).body,{data:[Object.fromEntries(Object.entries(created.body).filter(([k])=>k!=='key'))]});
-  assert.equal((await request('/v1/models',{key})).status,200);
-  for(const [path,method]of [['/v1/account','GET'],['/v1/account/api-keys','GET'],['/v1/account/api-keys','POST'],['/v1/account/api-keys/revoke','POST'],['/v1/auth/logout','POST'],['/v1/auth/start','POST'],['/v1/billing/checkout','POST'],['/v1/models','POST'],['/v1/chat/completions','GET']]){
+  const models=await request('/v1/models',{key});
+  assert.equal(models.status,200);
+  assert.deepEqual(await request('/api/v1/models?client=lemonade',{key}),models);
+  const available=await request('/api/v1/models?show_all=true',{key});
+  assert.equal(available.status,200);
+  assert.deepEqual(available.body.data,models.body.data.map(m=>({...m,downloaded:true})));
+  assert.deepEqual(await request('/api/v1/models'),await request('/v1/models'));
+  assert.equal((await request('/api/v1/models',{key:'rch_key_invalid'})).status,401);
+  for(const [path,method]of [['/v1/account','GET'],['/v1/account/api-keys','GET'],['/v1/account/api-keys','POST'],['/v1/account/api-keys/revoke','POST'],['/v1/auth/logout','POST'],['/v1/auth/start','POST'],['/v1/billing/checkout','POST'],['/v1/models','POST'],['/v1/chat/completions','GET'],['/api/v1/models','POST'],['/api/v1/chat/completions','GET'],['/api/v1/account','GET'],['/api/v1/auth/start','POST']]){
     assert.equal((await request(path,{key,method,body:method==='POST'?{}:undefined})).status,403,path);
   }
   // A key reaches the chat gateway, not session authentication (empty model is invalid).
   const chat=await request('/v1/chat/completions',{key,method:'POST',body:{}});
   assert.notEqual(chat.status,401);
+  assert.deepEqual(await request('/api/v1/chat/completions?client=lemonade',{key,method:'POST',body:{}}),chat);
+  assert.equal((await request('/api/v1/account')).status,404);
   assert.equal((await request('/v1/account/api-keys/revoke',{method:'POST',body:{id:created.body.id}})).status,200);
   assert.equal((await request('/v1/models',{key})).status,401);
+  assert.equal((await request('/api/v1/models',{key})).status,401);
 });
 
 test('Supabase adapter sends hashes, uses dedicated RPC, and maps safe errors',async()=>{

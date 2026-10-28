@@ -29,7 +29,7 @@ for(const page of pages){
 }
 test('Brand, motion, and offline assets',async()=>{
  const css=await readFile(path.join(root,'assets/styles.css'),'utf8');
- assert.match(css,/#d4af37/i);assert.match(css,/#161618/i);
+ assert.match(css,/#a6cf45/i);assert.match(css,/#161618/i);
  assert.match(css,/prefers-reduced-motion/);assert.match(css,/data-theme=light/);
  const scripts=await Promise.all(['theme','data','app','chat-engine','chat-ui'].map(n=>readFile(path.join(root,`assets/${n}.js`),'utf8')));
  for(const script of scripts)assert.doesNotThrow(()=>new Function(script));
@@ -48,17 +48,23 @@ test('Brand, motion, and offline assets',async()=>{
  assert.match(plan,/assets\/account\.js/);
  assert.doesNotMatch(plan,/href="https:\/\/checkout\.stripe\.com"/,'checkout must be created for the authenticated account, not a generic Stripe link');
  assert.match(plan,/Subscribe with Stripe/);
- assert.match(plan,/Gemma 4 12B QAT/);
- assert.match(plan,/MiniCPM5 2B FP8/);
+ assert.match(plan,/LFM3 VL 2B/);
+
  assert.match(plan,/BGE M3/);
  assert.match(plan,/BGE Reranker v2 M3/);
  assert.match(plan,/Liquid d1 Omni 600M/);
  assert.match(plan,/Liquid d1 3B/);
- assert.match(plan,/Ornith 1\.5 9B/);
- assert.match(plan,/Offline - for now/);
- assert.match(plan,/Embedder/);
+
+ assert.doesNotMatch(plan,/Offline - for now|Ornith 1\.5 9B|Gemma 4 12B|MiniCPM5 2B FP8/);
+ const catalog=plan.match(/<ul class="model-list">([\s\S]*?)<\/ul>/)[1];
+ assert.equal((catalog.match(/class="model-row"/g)||[]).length,5);
+ assert.doesNotMatch(catalog,/Gemma|MiniCPM|Ornith/);
+ assert.match(plan,/<details class="model-benchmarks"/);
+ assert.match(plan,/not the hosted LFM3 VL 2B/);
+ assert.equal((plan.match(/<th scope="row">/g)||[]).length,16);
+ assert.match(plan,/embeddings/);
  assert.match(plan,/Reranker/);
- assert.match(plan,/Decision/);
+ assert.match(plan,/decisions/);
  assert.match(plan,/tax included/);
  assert.match(plan,/REACH Subscription Plus/);
 });

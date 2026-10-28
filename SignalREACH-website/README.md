@@ -38,7 +38,13 @@ Theme and motion choices are saved in browser local storage when it is available
 
 ## Important scope
 
-This is a working **website frontend**, not a running copy of REACH Studio. The example workspace and chat are explicitly labeled demonstrations. They do not read files, call AI models, provision accounts, store credentials, or activate provider subscriptions. Demo prompts remain in page memory. The package contains no analytics, external fonts, remote scripts, or trackers.
+### Try LFM3 VL: websites and Word documents
+
+Choose **Try LFM3 VL** on the homepage to open the dedicated `demo.html` workspace, then choose **Website** or **Word document** in its toolbar. The demo uses a viewport-sized layout with its own scrolling areas and does not load the landing page animations. Document mode asks the signed-in account's LFM3 VL model for Markdown drafts. Review and apply a draft, then choose **Download .docx** to export the currently selected document for Word. Export happens locally and supports headings, paragraphs, and simple lists; other Markdown remains literal text. No uploads or Word installation are needed to generate the file.
+
+Website and document projects use separate browser storage. Prompts and the current project are sent to REACH only when submitting a request, under the account's access and usage limits. The document preview renders text without executing generated markup. The default scripted demo remains available when Try LFM3 VL is off.
+
+This is a working **website frontend**, not a running copy of REACH Studio. The default example workspace and chat are scripted demonstrations; the optional Try LFM3 VL workspace calls the hosted model service. Scripted demo prompts remain in page memory. The package contains no analytics, external fonts, remote scripts, or trackers.
 
 Download buttons link to setup instructions or the upstream releases page. They do not pretend that an unverified installer exists. Product availability, subscriptions, release assets, and provider permissions are controlled by their respective hosts.
 
@@ -72,7 +78,7 @@ npm run build
 
 Upload the **contents of `dist/`** to a static host. It includes all six HTML files and their shared assets; no server-side routing or single-page-app rewrite is required. Relative links also support hosting under a subdirectory. A ready-built `dist/` is included in this handoff.
 
-Choose your actual domain before adding canonical URLs, a sitemap, domain-specific social metadata, or production analytics. Publishing or configuring a host is not part of this package.
+SEO metadata targets `https://www.signalreach.ca` (canonical URLs, `sitemap.xml`, `robots.txt`, `og:image`, JSON-LD). If the domain changes, update the absolute URLs in each page's `<head>`, `sitemap.xml`, `robots.txt`, and `tools/generate-og-image.py`. Publishing or configuring a host is not part of this package.
 
 ## Verify
 

@@ -24,6 +24,7 @@ MODEL_SPEC_DEFAULTS = {
     "fallback": None,               # alias to try when upstream fails
     "allow_stream": True,
     "allow_tools": True,
+    "enable_thinking": None,        # null = native thinking enabled
     "context_window": 128000,       # informational + input guard
     "strip_trailing_roles": False,  # truncate fake "User:" transcript continuations
     "rate_limits": {"rpm": 0, "tokens_day": 0},   # 0 = inherit global

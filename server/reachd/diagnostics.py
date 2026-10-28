@@ -29,7 +29,7 @@ def handle_upstream_test(handler, state):
                              "content": "Reply with exactly: REACH OK"}],
                "max_tokens": 16}
     try:
-        url, payload, headers, _ = dispatch(upstream_model, payload, state)
+        url, payload, headers, _ = dispatch(upstream_model, payload, state, models[alias])
         req = urllib.request.Request(
             url, data=json.dumps(payload).encode("utf-8"), method="POST",
             headers=headers)
@@ -158,4 +158,3 @@ def handle_diagnose(handler, state, key_expired):
     handler._json(200 if ok else 502,
                {"ok": ok, "url": url, "checks": checks,
                 "total_ms": round((time.time() - started) * 1000)})
-

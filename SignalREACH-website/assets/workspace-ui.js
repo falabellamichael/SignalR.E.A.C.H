@@ -1,12 +1,17 @@
-/* Opt-in Gemma workspace. Files stay local; requests use the visitor's REACH session. */
+/* Opt-in LFM3 VL workspace. Files stay local; requests use the visitor's REACH session. */
 (() => {
   'use strict';
   const ORIGIN = 'https://unbent-semicolon-hermit.ngrok-free.dev';
-  const MODEL = 'gemma-4-12b-qat', STORAGE = 'signalreach.website-workspace.v1';
+  const MODEL = 'lfm3-vl-2b', STORAGE = 'signalreach.website-workspace.v1';
   function mount() {
     const core = globalThis.SignalREACHWorkspaceCore;
     const studio = document.querySelector('.studio-window'), panel = document.querySelector('#preview-workspace');
     if (!core || !studio || !panel) return () => {};
+    if (!document.body.classList.contains('demo-page')) {
+      const link = document.createElement('a'); link.href = 'demo.html'; link.className = 'gemma-button gemma-toggle'; link.textContent = 'Try LFM3 VL';
+      studio.querySelector('.window-bar').append(link);
+      return () => link.remove();
+    }
     const lifetime = new AbortController(), signal = lifetime.signal;
     const history = [];
     const on = (node, name, fn) => node.addEventListener(name, fn, {signal});
@@ -15,29 +20,35 @@
     let files; try { files = core.restore(localStorage.getItem(STORAGE)); } catch (_) { files = {...core.starter}; }
     let enabled = false, destroyed = false, active = 'index.html', edit = null, request = null, frame = null, channel = '', composing = false, previewTimer = 0, knownToken = '';
     let previewStorage = {};
+    let documentMode = false;
+    const documentStarter = {'document.md':'# Your next great document\n\nAsk LFM3 VL to write a report, letter, proposal, or briefing.\n\n## Start with an idea\n\nDescribe your audience, purpose, and preferred length. Review the writing, then download it as a Word document.'};
+    const storageKey = () => documentMode ? 'signalreach.document-workspace.v1' : STORAGE;
     try { const stored = JSON.parse(localStorage.getItem('signalreach.website-preview.v1') || '{}'); if (validStorage(stored)) previewStorage = stored; } catch (_) {}
     const original = [...panel.children].map(node => [node, node.hidden]);
     const pill = studio.querySelector('.window-bar > .pill'), oldPill = pill?.textContent;
     const hint = studio.parentElement.querySelector('.preview-hint'), oldHint = hint?.innerHTML;
     const footer = studio.querySelector('.window-footer'), oldFooter = footer?.innerHTML;
     const caption = studio.parentElement.querySelector('.preview-caption'), oldCaption = caption?.textContent;
-    const toggle = button('Try Gemma'); toggle.classList.add('gemma-toggle'); toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', 'false'); toggle.setAttribute('aria-controls', 'gemma-workspace');
+    const toggle = button('Try LFM3 VL'); toggle.classList.add('gemma-toggle'); toggle.setAttribute('role', 'switch'); toggle.setAttribute('aria-checked', 'false'); toggle.setAttribute('aria-controls', 'gemma-workspace');
     studio.querySelector('.window-bar').append(toggle);
     const workspace = el('div', 'gemma-workspace'); workspace.id = 'gemma-workspace'; workspace.hidden = true;
     const explorer = el('aside', 'gemma-explorer'); explorer.setAttribute('aria-label', 'AI website files');
     const fileCount = el('p'), fileList = el('div', 'gemma-file-list');
     explorer.append(el('strong', '', 'YOUR PROJECT'), fileCount, fileList);
     let fileButtons = [];
-    const reset = button('Start over'); explorer.append(reset, el('p', 'gemma-small', 'Saved in this browser. Ask Gemma to build your idea and create the files it needs. No uploads.'));
+    const reset = button('Start over'); explorer.append(reset, el('p', 'gemma-small', 'Saved in this browser. Ask LFM3 VL to build your idea and create the files it needs. No uploads.'));
     const center = el('section', 'gemma-center'); center.setAttribute('aria-label', 'Website source and preview');
     const bar = el('div', 'gemma-bar'), fileTitle = el('strong', '', active), viewCode = button('Code'), run = button('Preview website');
-    bar.append(fileTitle, viewCode, run);
+    const mode = el('select', 'gemma-button'); mode.setAttribute('aria-label', 'Project type');
+    for (const [value, text] of [['website','Website'], ['document','Word document']]) { const option = el('option', '', text); option.value = value; mode.append(option); }
+    const download = button('Download .docx'); download.hidden = true;
+    bar.append(mode, fileTitle, viewCode, run, download);
     const source = el('pre', 'gemma-source'); source.tabIndex = 0; source.setAttribute('aria-label', 'Read-only website source');
     const preview = el('div', 'gemma-preview'); preview.hidden = true;
     const previewStatus = el('p', 'gemma-small', 'Select Preview website to run the starter.'); previewStatus.setAttribute('role', 'status');
     center.append(bar, source, preview, previewStatus);
-    const chat = el('section', 'gemma-chat'); chat.setAttribute('aria-label', 'Build with Gemma');
-    const header = el('div', 'gemma-bar'); header.append(el('strong', '', 'Build with Gemma 12B'));
+    const chat = el('section', 'gemma-chat'); chat.setAttribute('aria-label', 'Build with LFM3 VL');
+    const header = el('div', 'gemma-bar'); header.append(el('strong', '', 'Build with LFM3 VL 2B'));
     const login = el('a', 'gemma-button', 'Sign in'); login.href = 'login.html'; header.append(login);
     const log = el('div', 'gemma-log'); log.setAttribute('role', 'log'); log.setAttribute('aria-live', 'polite'); log.tabIndex = 0;
     const thinking = el('div', 'gemma-thinking'); thinking.hidden = true; thinking.setAttribute('role', 'status');
@@ -48,7 +59,7 @@
     const label = el('label', '', 'Describe your website or the next change'); label.htmlFor = 'gemma-prompt';
     const input = el('textarea'); input.id = 'gemma-prompt'; input.maxLength = core.maxPrompt; input.rows = 3; input.required = true; input.placeholder = 'Build a landing page for a neighbourhood bakery…';
     input.setAttribute('aria-describedby', 'gemma-context-note');
-    const actions = el('div', 'gemma-bar'), send = button('Ask Gemma'), stop = button('Stop'); send.type = 'submit'; stop.hidden = true;
+    const actions = el('div', 'gemma-bar'), send = button('Ask LFM3 VL'), stop = button('Stop'); send.type = 'submit'; stop.hidden = true;
     actions.append(send, stop);
     const status = el('p', 'gemma-small'); status.setAttribute('role', 'status');
     const note = el('p', 'gemma-small', 'Your prompt and generated project files go to REACH when you send. Your account’s model access and usage limits apply. No uploads; keep secrets out.'); note.id = 'gemma-context-note';
@@ -57,24 +68,25 @@
     function session() { try { return JSON.parse(sessionStorage.getItem('signalreach.account.session') || 'null')?.accessToken || ''; } catch (_) { return ''; } }
     function accountState(resetStatus = false) {
       const token = session(); login.hidden = Boolean(token);
-      if (resetStatus || !status.textContent || token !== knownToken) status.textContent = token ? 'Ready · Requests use your REACH account' : 'Sign in to REACH, then return here to build with Gemma.';
+      if (resetStatus || !status.textContent || token !== knownToken) status.textContent = token ? 'Ready · Requests use your REACH account' : 'Sign in to REACH, then return here to build with LFM3 VL.';
       knownToken = token; send.disabled = Boolean(request) || !token;
     }
-    function welcome() { history.length = 0; log.replaceChildren(el('p', '', 'What would you like to build? Ask Gemma for a website, app, game, design, theme, or a change to your project. Review the generated files, then apply and preview. No uploads needed.')); }
+    function welcome() { history.length = 0; log.replaceChildren(el('p', '', documentMode ? 'Try LFM3 VL as your writer. Ask for a report, letter, proposal, or briefing. Review and apply the draft, then download a Word document. Headings, paragraphs, and simple lists are supported.' : 'What would you like to build? Choose Word document to test LFM3 VL as a writer, or ask for a website, app, game, design, or change to your project. Review the generated files, then apply and preview.')); }
     function addMessage(text, role = '') {
       const node = el('p', role === 'user' ? 'gemma-user' : '', text); log.append(node);
       if (role === 'error') { node.classList.add('gemma-error'); node.setAttribute('role', 'alert'); }
       while (log.children.length > 16) log.firstElementChild.remove(); log.scrollTop = log.scrollHeight;
     }
     function save() {
-      try { localStorage.setItem(STORAGE, JSON.stringify({version:1, files})); return true; }
+      try { localStorage.setItem(storageKey(), JSON.stringify({version:1, files})); return true; }
       catch (_) { status.textContent = 'Changes are in this tab only; browser storage is unavailable.'; return false; }
     }
     function showFile(name) {
       if (!Object.hasOwn(files, name)) name = Object.keys(files)[0];
       clearTimeout(previewTimer); frame?.remove(); frame = null; channel = '';
       active = name; source.textContent = files[name]; source.hidden = false; preview.hidden = true; fileTitle.textContent = name;
-      previewStatus.textContent = 'Read-only source · Ask Gemma to make changes, then preview.';
+      download.hidden = !/\.(md|txt)$/i.test(active);
+      previewStatus.textContent = 'Read-only source · Ask LFM3 VL to make changes, then preview.';
       fileButtons.forEach(node => node.setAttribute('aria-pressed', String(node.dataset.projectFile === name)));
     }
     function renderFiles() {
@@ -90,7 +102,7 @@
     }
     function setBusy(value) {
       thinking.hidden = !value;
-      send.disabled = value || !session(); input.disabled = value; reset.disabled = value; stop.hidden = !value;
+      send.disabled = value || !session(); input.disabled = value; reset.disabled = value; mode.disabled = value; stop.hidden = !value;
       log.setAttribute('aria-busy', String(value));
     }
     function showReview(proposed) {
@@ -103,7 +115,7 @@
       }
       const apply = button('Apply changes'), discard = button('Discard'); review.append(apply, discard);
       on(apply, 'click', () => {
-        try { files = core.apply(edit, files); clearReview(); renderFiles(); showFile(active); status.textContent = 'Changes applied. Your preview is updating.'; save(); runPreview(); }
+        try { const selected = edit.changed.find(name => /\.(md|txt)$/i.test(name)); files = core.apply(edit, files); clearReview(); renderFiles(); showFile(documentMode && selected ? selected : active); status.textContent = 'Changes applied. Your preview is updating.'; save(); runPreview(); }
         catch (error) { clearReview(); status.textContent = error.message; }
       });
       on(discard, 'click', () => { clearReview(); status.textContent = 'Proposal discarded. Your files are unchanged.'; });
@@ -117,7 +129,7 @@
       event.preventDefault(); if (!enabled || request || composing) return;
       const token = session(); if (!token) { accountState(); return; }
       let messages, rawReply = '';
-      try { messages = core.messages(input.value, files, history); } catch (error) { status.textContent = error.message; addMessage(error.message, 'error'); return; }
+      try { messages = core.messages(input.value, files, history, documentMode); } catch (error) { status.textContent = error.message; addMessage(error.message, 'error'); return; }
       const prompt = input.value.trim(), base = core.snapshot(files), pending = new AbortController(); request = pending;
       clearReview(); setBusy(true); addMessage(prompt, 'user'); status.textContent = 'Checking REACH model access…';
       try {
@@ -125,24 +137,24 @@
         if (pending.signal.aborted) return;
         const catalog = await api('/v1/models', token, pending.signal);
         const model = catalog?.data?.find(model => model.id === MODEL);
-        if (!model) throw new Error('Gemma is not currently available to this account.');
-        if (Number.isFinite(model.max_input_bytes) && new TextEncoder().encode(JSON.stringify(messages)).length > model.max_input_bytes) throw new Error('This project is too large for the model’s current context limit. Start over with a smaller website.');
+        if (!model) throw new Error('LFM3 VL is not currently available to this account.');
+        if (Number.isFinite(model.max_input_bytes) && new TextEncoder().encode(JSON.stringify(messages)).length > model.max_input_bytes) throw new Error('This project is too large for the model’s current context limit. Start over with a smaller project.');
         if (pending.signal.aborted || session() !== token) throw new Error('Your sign-in changed. Please send your request again.');
-        status.textContent = 'Gemma is building a proposal…';
+        status.textContent = 'LFM3 VL is building a proposal…';
         const result = await api('/v1/chat/completions', token, pending.signal, {model:MODEL, messages, stream:false});
         if (!enabled || destroyed || request !== pending || pending.signal.aborted) return;
         if (session() !== token) throw new Error('Your sign-in changed. No files were changed.');
-        if (core.snapshot(files) !== base) throw new Error('The website changed during this request. Please try again.');
+        if (core.snapshot(files) !== base) throw new Error('The project changed during this request. Please try again.');
         rawReply = core.completion(result);
         const proposed = core.proposal(rawReply, files);
         history.push({role:'user',content:prompt},{role:'assistant',content:proposed.message}); if (history.length > 8) history.splice(0,history.length-8);
         addMessage((proposed.changed.length ? 'Changes ready for review. Apply them below to update your preview.' : 'No files changed.') + (proposed.message ? '\n\n' + proposed.message : '')); showReview(proposed); input.value = '';
-        status.textContent = proposed.changed.length ? 'Review the proposed files, then apply or discard.' : 'Gemma replied without changing any files.';
+        status.textContent = proposed.changed.length ? 'Review the proposed files, then apply or discard.' : 'LFM3 VL replied without changing any files.';
       } catch (error) {
         if (request === pending && !pending.signal.aborted) {
           status.textContent = error instanceof TypeError ? 'Could not reach REACH. Check your connection and try again.' : error.message;
           addMessage(status.textContent, 'error');
-          if (rawReply) { const details = el('details', 'gemma-raw-reply'); details.append(el('summary', '', 'Read Gemma’s reply'), el('pre', '', rawReply)); log.append(details); }
+          if (rawReply) { const details = el('details', 'gemma-raw-reply'); details.append(el('summary', '', 'Read LFM3 VL’s reply'), el('pre', '', rawReply)); log.append(details); }
         }
       } finally {
         if (request === pending) { request = null; setBusy(false); }
@@ -151,12 +163,19 @@
     function validStorage(value) { return value && typeof value === 'object' && !Array.isArray(value) && Object.values(value).every(item => typeof item === 'string') && JSON.stringify(value).length <= 262144; }
     function runPreview(entry) {
       if (!enabled) return;
+      if (/\.(md|txt)$/i.test(active) && !entry) {
+        clearTimeout(previewTimer); frame?.remove(); frame = null; channel = '';
+        const paper = el('article', 'gemma-document'); paper.setAttribute('aria-label', 'Document preview');
+        for (const block of core.documentBlocks(files[active])) paper.append(el(block.type === 'li' ? 'p' : block.type, '', block.text));
+        preview.replaceChildren(paper); preview.hidden = false; source.hidden = true;
+        fileTitle.textContent = active + ' · Preview'; previewStatus.textContent = 'Document preview · Download .docx to open in Word. Basic headings, paragraphs, and lists; other Markdown stays as text.'; return;
+      }
       entry = entry || (/\.html?$/i.test(active) ? active : Object.hasOwn(files, 'index.html') ? 'index.html' : Object.keys(files).find(name => /\.html?$/i.test(name)));
-      if (!entry || !core.validPath(entry) || !Object.hasOwn(files, entry)) { previewStatus.textContent = 'Ask Gemma to create an HTML entry page to preview this project.'; return; }
+      if (!entry || !core.validPath(entry) || !Object.hasOwn(files, entry)) { previewStatus.textContent = 'Ask LFM3 VL to create an HTML entry page to preview this project.'; return; }
       core.validate(files); frame?.remove(); channel = crypto.randomUUID();
       frame = document.createElement('iframe'); frame.title = 'Your website preview'; frame.setAttribute('sandbox', 'allow-scripts'); frame.referrerPolicy = 'no-referrer';
       frame.setAttribute('allow', "camera 'none'; microphone 'none'; geolocation 'none'; clipboard-read 'none'; clipboard-write 'none'");
-      frame.dataset.entry = entry; frame.src = 'assets/workspace-preview.html?v=4aab5c56af5e'; preview.replaceChildren(frame); preview.hidden = false; source.hidden = true; fileTitle.textContent = entry + ' · Preview';
+      frame.dataset.entry = entry; frame.src = 'assets/workspace-preview.html?v=44ab50db51de'; preview.replaceChildren(frame); preview.hidden = false; source.hidden = true; fileTitle.textContent = entry + ' · Preview';
       previewStatus.textContent = 'Loading isolated preview…';
       clearTimeout(previewTimer);
       previewTimer = setTimeout(() => { if (frame) previewStatus.textContent = 'The preview could not start. Try Preview website again.'; }, 10000);
@@ -169,13 +188,13 @@
       if (event.data?.type === 'reach-preview-storage' && event.data.channel === channel && validStorage(event.data.storage)) { previewStorage = event.data.storage; try { localStorage.setItem('signalreach.website-preview.v1', JSON.stringify(previewStorage)); } catch (_) {} }
     });
     function setEnabled(value) {
-      stopRequest(); enabled = value; clearReview(); toggle.setAttribute('aria-checked', String(value)); toggle.textContent = value ? 'Try Gemma · On' : 'Try Gemma';
+      stopRequest(); enabled = value; clearReview(); toggle.setAttribute('aria-checked', String(value)); toggle.textContent = value ? 'Try LFM3 VL · On' : 'Try LFM3 VL';
       workspace.hidden = !value; panel.classList.toggle('gemma-enabled', value);
       original.forEach(([node, hidden]) => { node.hidden = value || hidden; });
       if (pill) pill.textContent = value ? 'Your browser workspace' : oldPill;
-      if (caption) caption.textContent = value ? 'LIVE GEMMA · YOUR BROWSER PROJECT' : oldCaption;
-      if (hint) { if (value) hint.textContent = 'Ask Gemma to build your idea. Review the generated files, apply, and preview. No uploads.'; else hint.innerHTML = oldHint; }
-      if (footer) { if (value) footer.textContent = 'Browser-local project · AI edits only · Isolated website preview'; else footer.innerHTML = oldFooter; }
+      if (caption) caption.textContent = value ? 'LIVE LFM3 VL · YOUR BROWSER PROJECT' : oldCaption;
+      if (hint) { if (value) hint.textContent = 'Choose Website or Word document. Ask LFM3 VL, review the draft, and apply. Preview websites or download your writing as .docx.'; else hint.innerHTML = oldHint; }
+      if (footer) { if (value) footer.textContent = 'Browser-local projects · AI edits with review · Website previews & Word downloads'; else footer.innerHTML = oldFooter; }
       if (value) { document.querySelector('[data-preview="workspace"]')?.click(); welcome(); renderFiles(); showFile(active); accountState(true); }
       else { clearTimeout(previewTimer); frame?.remove(); frame = null; }
     }
@@ -183,8 +202,27 @@
     on(input, 'compositionstart', () => { composing = true; }); on(input, 'compositionend', () => { composing = false; });
     on(workspace, 'keydown', event => { if (event.key === 'Escape' && request) { event.preventDefault(); stopRequest(); } });
     on(viewCode, 'click', () => showFile(active)); on(run, 'click', () => runPreview());
-    on(reset, 'click', () => { if (!confirm('Replace this browser’s project with the starter?')) return; files = {...core.starter}; previewStorage = {}; try { localStorage.removeItem('signalreach.website-preview.v1'); } catch (_) {} clearReview(); frame?.remove(); frame = null; renderFiles(); showFile(active); welcome(); status.textContent = 'Starter restored.'; save(); });
+    on(mode, 'change', () => {
+      save(); clearReview(); documentMode = mode.value === 'document';
+      files = {...(documentMode ? documentStarter : core.starter)};
+      try { const saved = JSON.parse(localStorage.getItem(storageKey())); if (saved?.version === 1) files = core.validate(saved.files); } catch (_) {}
+      active = documentMode ? 'document.md' : 'index.html';
+      run.textContent = documentMode ? 'Preview document' : 'Preview website'; viewCode.textContent = documentMode ? 'Text' : 'Code';
+      label.textContent = documentMode ? 'Describe your document or the next revision' : 'Describe your website or the next change';
+      input.placeholder = documentMode ? 'Write a one-page proposal for a community garden, with a budget and next steps...' : 'Build a landing page for a neighbourhood bakery...'; input.value = '';
+      center.setAttribute('aria-label', documentMode ? 'Document text and preview' : 'Website source and preview'); explorer.setAttribute('aria-label', 'AI project files'); source.setAttribute('aria-label', 'Read-only project text');
+      renderFiles(); showFile(active); welcome(); accountState(true); if (documentMode) runPreview();
+    });
+    on(download, 'click', () => {
+      try {
+        const blob = core.docx(files[active]), url = URL.createObjectURL(blob), link = el('a');
+        link.href = url; link.download = active.split('/').pop().replace(/\.(md|txt)$/i, '') + '.docx'; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+        status.textContent = 'Word document downloaded from the currently applied text.';
+      } catch (error) { status.textContent = error.message; }
+    });
+    on(reset, 'click', () => { if (!confirm('Replace this browser’s project with the starter?')) return; files = {...(documentMode ? documentStarter : core.starter)}; previewStorage = {}; try { localStorage.removeItem('signalreach.website-preview.v1'); } catch (_) {} clearReview(); frame?.remove(); frame = null; renderFiles(); showFile(active); welcome(); status.textContent = 'Starter restored.'; save(); if (documentMode) runPreview(); });
     on(window, 'focus', () => { if (enabled && !request) accountState(); });
+    setEnabled(true); toggle.hidden = true;
     return () => { destroyed = true; setEnabled(false); lifetime.abort(); workspace.remove(); toggle.remove(); };
   }
   globalThis.SignalREACHWorkspaceUI = Object.freeze({mount});

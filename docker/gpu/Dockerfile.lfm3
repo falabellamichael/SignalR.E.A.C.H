@@ -1,0 +1,8 @@
+FROM vllm/vllm-openai-rocm@sha256:749f6f3f944f12af49966ac523c1f8573e4b229594b541954bd5f879b4496b1f
+# torchcodec ships CUDA-only wheels; PyAV covers video decode on ROCm.
+RUN python -m pip install --no-cache-dir \
+    "transformers==5.21.0" "soundfile==0.14.0" "librosa==0.11.0" \
+    "av==16.1.0"
+WORKDIR /app
+COPY lfm3_api.py /app/lfm3_api.py
+ENTRYPOINT ["python", "-m", "uvicorn", "lfm3_api:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

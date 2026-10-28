@@ -18,7 +18,7 @@ SUPPORT_MODELS = (
     ("bge-m3", "BAAI/bge-m3", "BGE M3", "FP16", "embeddings", "/v1/embeddings"),
     ("bge-reranker-v2-m3", "BAAI/bge-reranker-v2-m3", "BGE Reranker v2 M3", "FP16", "rerank", "/rerank"),
     ("d1-omni-600m", "LiquidAI/d1-omni-600M", "Liquid d1 Omni 600M", "FP16", "decisions", "/v1/decisions"),
-    ("d1-3b", "LiquidAI/d1-3B", "Liquid d1 3B", "BF16", "decisions", "/v1/decisions"),
+    ("d1-3b", "LiquidAI/d1-3B", "Liquid d1 3B", "FP8", "decisions", "/v1/decisions"),
 )
 
 

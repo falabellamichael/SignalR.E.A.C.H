@@ -1,5 +1,11 @@
 # Optional GPU deployment profile
 
+Current FP8 override (2026-10-24): Gemma uses 131,072 context tokens, direct
+RCCL P2P with legacy IPC disabled, and **MTP disabled**. A matched two-call
+44K cached benchmark improved from 22.1 to 54.8 aggregate output tokens/s
+without MTP. The older MTP qualification details below are historical;
+assistant weights and graph capture sizes are retained for rollback.
+
 The active deployment verified on 2026-10-23 uses Gemma 4 12B QAT FP8 with
 vLLM TP2 and the shared embedding, reranking, and decision service on the
 operator's two Radeon AI PRO R9700 GPUs (gfx1201). The optional Q8 profile uses
@@ -9,10 +15,11 @@ It does not download models or contain credentials or public endpoint addresses.
 
 | Service | GPU | Runtime allocation | Context tokens per chat |
 | --- | --- | --- | --- |
-| Gemma 4 12B QAT FP8 (active) | 0 + 1, TP2 | FP8 language weights, BF16 vision, eight sequences | 65,536 |
+| Gemma 4 12B QAT FP8 (target profile) | 0 + 1, TP2 | FP8 language weights, BF16 vision, eight sequences | 131,072 |
 | Gemma 4 12B QAT Q8 (optional) | 0 | Q8 weights and KV cache, two slots | 262,144 |
 | MiniCPM5 2B (disabled) | Saved 0 + 1, TP2 | Saved 0.24 | Saved 39,904 |
 | BGE M3, BGE Reranker v2 M3, Liquid d1 Omni 600M, Liquid d1 3B | 1 | Existing support allocation | Native service limits |
+| LFM3-Omni-2B (omni: text/image/video/audio in, text+speech out) | 0 | Custom Transformers service, BF16 | 32,768 |
 
 Ornith and MiniCPM are disabled at the operator's request. Their saved
 configurations, weights, and containers are retained. Default startup excludes
@@ -22,6 +29,27 @@ their restart policies so Docker does not load them again. `--only ornith` and
 The host's saved MiniCPM model entry is retained with `enabled: false`.
 The saved Ornith context remains 61,776 tokens. Re-enabling it requires an
 explicit profile change and GPU memory review; this launcher does not do so.
+
+## FP8 128K context configuration
+
+The FP8 launcher and relay defaults target 131,072 tokens per chat. This is
+a deployment target, not confirmation that an existing server has been resized.
+Input and output share this window; reserving 4,096 output tokens leaves
+126,976 input tokens. The reported 164,394-token request still exceeds it.
+
+Align all three layers when deploying:
+
+- vLLM: `--max-model-len 131072` (set by `launch_services.py`).
+- Relay: saved Gemma `context_window: 131072` in the operator-owned model
+  settings; source defaults do not overwrite saved settings.
+- Raycast: Gemma `context: 131072` and `abilities.tools.supported: true` in
+  `providers.yaml`, followed by a provider reload.
+
+Check native `/v1/models` for `max_model_len: 131072` and startup logs for
+sufficient KV-cache capacity. Existing containers with an older context are
+preserved and refused by the launcher; replace Gemma when idle and retain the
+previous container for rollback. Verify the relay's advertised context after
+deployment. A continuing 32,768-token error indicates a remaining live limit.
 
 ## Optional Q8 profile
 
@@ -121,8 +149,8 @@ Input and output share that window; output is automatic unless the client or
 operator supplies a positive cap. Transport guards are separate from context.
 
 Gemma's prompt scheduling step is 3,072 tokens, so a long prefill yields to a
-decode that is already running. Its 65,536-token context, TP2 placement, MTP
-speculative decoding, and GPU execution settings are unchanged. A running
+decode that is already running. Its target context is 131,072 tokens; TP2 placement,
+MTP speculative decoding, and GPU execution settings are unchanged. A running
 container with a different step is preserved and not rewritten; replace it only
 after an overlapping-request check. MiniCPM's step remains 2,048 tokens.
 
@@ -150,7 +178,7 @@ also requires the qualified RCCL override:
 
 Gemma TP2 retains its qualified RCCL Simple protocol and distributed runtime
 mounts. Its MTP, reasoning, graph configuration, OpenMP setting, precision,
-and 65,536-token context are unchanged. MiniCPM remains TP1 and does not
+settings are unchanged; the target context is 131,072 tokens. MiniCPM remains TP1 and does not
 require RCCL; inherited validated RCCL settings are tolerated and retained.
 The launcher does not build or substitute runtime libraries; their ABI must
 match the pinned image. Gemma's matching MTP assistant must already be present
@@ -170,7 +198,7 @@ output and concurrent requests after native startup and readiness checks.
 ## Legacy vLLM concurrency trials
 
 Gemma admits eight active sequences. Its context cache is shared between them;
-eight calls at the full 65,536-token context are not guaranteed to fit at once.
+eight calls at the full 131,072-token context are not guaranteed to fit at once.
 The native startup log reports actual KV capacity for the available memory.
 Raising only the sequence limit can leave larger batches without decode graph coverage. On the GPU
 host, `python3 trial_container.py minicpm --sequences 4` automatically creates

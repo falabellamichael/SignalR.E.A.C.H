@@ -67,6 +67,7 @@ router=r'''
 })();
 '''.replace('__PAGES__',json.dumps(pages,ensure_ascii=False).replace('</','<\\/'))
 text=(ROOT/'index.html').read_text(encoding='utf-8')
+text=re.sub(r'(assets/(?:styles\.css|(?:theme|data|chat-engine|chat-ui|app)\.js))\?[^"\s]+', r'\1', text)
 text=text.replace('<link rel="stylesheet" href="assets/styles.css">','<style>'+ (ROOT/'assets/styles.css').read_text(encoding='utf-8')+'</style>')
 text=text.replace('<script src="assets/theme.js"></script>','<script>'+ (ROOT/'assets/theme.js').read_text(encoding='utf-8')+'</script>')
 for name in ['data','chat-engine','chat-ui','app']:

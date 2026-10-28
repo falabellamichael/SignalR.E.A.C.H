@@ -101,6 +101,8 @@ def _validate_model_spec(alias, spec, all_aliases, errors):
                 path + ".fallback must name a different alias")
     _bool(spec.get("allow_stream", True), path + ".allow_stream")
     _bool(spec.get("allow_tools", True), path + ".allow_tools")
+    if spec.get("enable_thinking") is not None:
+        _bool(spec["enable_thinking"], path + ".enable_thinking")
     _bool(spec.get("strip_trailing_roles", False), path + ".strip_trailing_roles")
     _int(spec.get("context_window", 128000), *MODEL_NUMERIC["context_window"],
          path + ".context_window")

@@ -635,18 +635,24 @@ class RelayHandler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
         query = self._query_params()
         try:
-            if path in ("/health", "/status"):
+            if path == "/live":
+                self._json(200, {"status": "ok"})
+            elif path in ("/health", "/status"):
                 self._json(200, core.STATE.snapshot(redact=not self._admin_local()))
             elif path == "/public-url":
                 self._json(200, {"public_url": core.STATE.public_url,
                                  "source": core.STATE.public_url_source})
-            elif path in ("/v1/models", "/models"):
+            elif path in ("/v1/models", "/models", "/api/v1/models"):
                 if not self._check_access():
                     return
                 data = [{"id": alias, "object": "model",
                          "created": 1715367049, "owned_by": "SignalR.E.A.C.H"}
                         for alias in sorted(core.STATE.public_models())]
                 data.extend(support.catalog())
+                if query.get("show_all") == "true":
+                    # Lemonade Mobile hides models without this availability flag.
+                    for model in data:
+                        model["downloaded"] = True
                 self._json(200, {"object": "list", "data": data})
             elif path == "/_reach/model-services":
                 if not self._admin_local():
@@ -951,7 +957,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._check_access():
                     return
                 support.execute(self, path)
-            elif path in ("/v1/chat/completions", "/chat/completions"):
+            elif path in ("/v1/chat/completions", "/chat/completions", "/api/v1/chat/completions"):
                 if not self._check_access():
                     return
                 self.handle_chat()

@@ -25,12 +25,14 @@ const previewSource = await readFile(previewHost, 'utf8');
 await writeFile(previewHost, previewSource.replace(/workspace-preview\.html\?v=[\w.-]+/g,
   `workspace-preview.html?v=${await hash(path.join(root, 'assets/workspace-preview.html'))}`));
 // The preview host changed after hashing HTML; refresh its entrypoint hash.
-const index = path.join(root, 'index.html');
-await writeFile(index, (await readFile(index, 'utf8')).replace(/workspace-ui\.js\?v=[\w.-]+/g,
-  `workspace-ui.js?v=${await hash(previewHost)}`));
+for (const name of ['index.html', 'demo.html']) {
+  const index = path.join(root, name);
+  await writeFile(index, (await readFile(index, 'utf8')).replace(/workspace-ui\.js\?v=[\w.-]+/g,
+    `workspace-ui.js?v=${await hash(previewHost)}`));
+}
 await rm(out, {recursive:true,force:true});
 await mkdir(out, {recursive:true});
-for (const name of ['index.html','platform.html','integrations.html','docs.html','about.html','download.html','subscription.html','login.html','profile.html','privacy.html','.htaccess','assets']) {
+for (const name of ['index.html','welcome.html','demo.html','platform.html','integrations.html','docs.html','about.html','download.html','subscription.html','login.html','profile.html','privacy.html','tty-privacy.html','robots.txt','sitemap.xml','.htaccess','assets']) {
   await cp(path.join(root,name),path.join(out,name),{recursive:true});
 }
 console.log('Static deployment files created in dist/. Upload its contents to a static host.');

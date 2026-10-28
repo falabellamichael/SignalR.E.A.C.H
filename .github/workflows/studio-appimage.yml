@@ -1,0 +1,55 @@
+name: Studio Linux AppImage
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        description: Release tag to build and attach the AppImage to
+        type: string
+        default: ''
+        required: false
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: Optional release tag (blank builds the selected ref)
+        type: string
+        default: ''
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.release-tag || github.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: studio/package-lock.json
+      - name: Install Studio dependencies
+        run: npm ci --prefix studio
+      - name: Build Linux x86-64 AppImage
+        working-directory: studio
+        run: npm run dist:linux -- AppImage --x64 --publish never
+      - name: Checksum AppImage
+        working-directory: studio/dist
+        run: sha256sum ./*.AppImage > appimage-sha256.txt
+      - name: Upload AppImage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: reach-studio-linux-appimage
+          path: |
+            studio/dist/*.AppImage
+            studio/dist/appimage-sha256.txt
+          if-no-files-found: error
+      - name: Attach AppImage to release
+        if: inputs.release-tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+        run: gh release upload "$RELEASE_TAG" studio/dist/*.AppImage studio/dist/appimage-sha256.txt --clobber --repo "$GITHUB_REPOSITORY"

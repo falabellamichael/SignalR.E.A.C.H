@@ -14,7 +14,7 @@ def percentile(values, fraction):
     return ordered[max(0, math.ceil(len(ordered) * fraction) - 1)] if ordered else None
 
 
-def request(base, model, prompt, tokens, delay=0):
+def request(base, model, prompt, tokens, delay=0, thinking=None):
     time.sleep(delay)
     started = time.perf_counter()
     arrivals = []
@@ -27,7 +27,9 @@ def request(base, model, prompt, tokens, delay=0):
     finish_reason = None
     payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
                "max_tokens": tokens, "temperature": 0, "stream": True,
-               "stream_options": {"include_usage": True}}
+                "stream_options": {"include_usage": True}}
+    if thinking is not None:
+        payload["chat_template_kwargs"] = {"enable_thinking": thinking}
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(base + "/v1/chat/completions",
         data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})

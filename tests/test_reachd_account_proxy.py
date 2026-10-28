@@ -91,7 +91,7 @@ class AccountProxyTests(RelayFixture):
         self.reply_headers['Content-Type'] = 'text/event-stream'
         self.reply_body = b'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: {"usage":{"prompt_tokens":12,"completion_tokens":7,"total_tokens":19}}\n\ndata: [DONE]\n\n'
         headers = {**TUNNEL, 'Authorization': 'Bearer rch_key_' + 'b' * 64, 'Content-Type': 'application/json'}
-        self.assertEqual(self.status('POST', '/v1/chat/completions', headers, b'{"model":"gemma-4-12b-qat","stream":true}'), 200)
+        self.assertEqual(self.status('POST', '/api/v1/chat/completions', headers, b'{"model":"gemma-4-12b-qat","stream":true}'), 200)
         row = self.account_log()
         self.assertEqual((row['tokens_in'], row['tokens_out']), (12, 7))
         self.assertEqual(row['key_name'], 'API key rch_key_' + 'b' * 8)
@@ -207,10 +207,10 @@ class AccountProxyTests(RelayFixture):
     def test_customer_models_and_completions_never_reach_legacy_auth_or_generation(self):
         with patch("reachd.handler.RelayHandler._check_access", side_effect=AssertionError("legacy access")), \
              patch("reachd.handler.chat_execute", side_effect=AssertionError("legacy generation")):
-            for path in ("/v1/models", "/models"):
+            for path in ("/v1/models", "/models", "/api/v1/models"):
                 self.assertEqual(self.status("GET", path, self.session_headers()), 200)
                 self.assertEqual(self.requests[-1]["path"], "/v1/models")
-            for path in ("/v1/chat/completions", "/chat/completions"):
+            for path in ("/v1/chat/completions", "/chat/completions", "/api/v1/chat/completions"):
                 self.assertEqual(self.status("POST", path, self.session_headers(), b'{}'), 200)
                 self.assertEqual(self.requests[-1]["path"], "/v1/chat/completions")
                 self.assertEqual(self.requests[-1]["headers"]["Authorization"], "Bearer rch_session_example")
@@ -246,14 +246,18 @@ class AccountProxyTests(RelayFixture):
         with patch("reachd.handler.RelayHandler._check_access", side_effect=AssertionError("legacy access")), \
              patch("reachd.handler.chat_execute", side_effect=AssertionError("legacy generation")):
             headers = {"Authorization": "Bearer rch_key_example"}
-            self.assertEqual(self.status("GET", "/v1/models", headers), 200)
-            self.assertEqual(self.status("POST", "/v1/chat/completions", headers, b'{}'), 200)
+            for path in ("/v1/models", "/api/v1/models?client=lemonade"):
+                self.assertEqual(self.status("GET", path, headers), 200)
+                self.assertEqual(self.requests[-1]["path"], "/v1/models" + ("?client=lemonade" if "?" in path else ""))
+            for path in ("/v1/chat/completions", "/api/v1/chat/completions"):
+                self.assertEqual(self.status("POST", path, headers, b'{}'), 200)
+                self.assertEqual(self.requests[-1]["path"], "/v1/chat/completions")
             self.assertEqual(self.requests[-1]["headers"]["Authorization"], "Bearer rch_key_example")
 
     def test_direct_loopback_customer_still_cannot_use_local_owner_bypass(self):
         self.reply_status = 401
         self.reply_body = b'{"error":{"code":"session_required"}}'
-        status, data, _ = self.call("GET", "/v1/models", {"Authorization": "Bearer rch_session_invalid"})
+        status, data, _ = self.call("GET", "/api/v1/models", {"Authorization": "Bearer rch_session_invalid"})
         self.assertEqual(status, 401)
         self.assertIn(b"session_required", data)
         self.assertEqual(len(self.requests), 1)
@@ -263,6 +267,37 @@ class AccountProxyTests(RelayFixture):
         self.assertEqual(status, 200)
         self.assertIn(b'"object": "list"', data)
         self.assertFalse(self.requests)
+
+    def test_api_v1_aliases_preserve_owner_auth_and_do_not_alias_private_routes(self):
+        self.assertEqual(self.status("GET", "/api/v1/models", TUNNEL), 401)
+        self.assertEqual(self.status("GET", "/api/v1/models", self.bearer(**TUNNEL)), 200)
+        self.assertEqual(self.status("POST", "/api/v1/chat/completions", TUNNEL, b'{}'), 401)
+        with patch("reachd.handler.chat_execute", side_effect=lambda h, **_: h._json(200, {"ok": True})) as chat:
+            self.assertEqual(self.status("POST", "/api/v1/chat/completions", self.bearer(**TUNNEL), b'{}'), 200)
+            chat.assert_called_once()
+        for path in ("/api/v1/account", "/api/v1/auth/start", "/api/v1/models/extra", "/api/v1/_reach/settings"):
+            self.assertEqual(self.status("GET", path, self.session_headers()), 404)
+        self.assertFalse(self.requests)
+
+    def test_lemonade_probe_and_model_availability_do_not_expose_private_models(self):
+        for headers in (TUNNEL, self.session_headers()):
+            status, raw, _ = self.call("GET", "/live", headers)
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(raw), {"status": "ok"})
+        self.assertFalse(self.requests)
+        for path in ("/v1/models", "/api/v1/models"):
+            headers = self.bearer(**TUNNEL)
+            status, raw, _ = self.call("GET", path, headers)
+            self.assertEqual(status, 200)
+            canonical = json.loads(raw)["data"]
+            self.assertTrue(all("downloaded" not in model for model in canonical))
+            status, raw, _ = self.call("GET", path + "?show_all=true", headers)
+            self.assertEqual(status, 200)
+            available = json.loads(raw)["data"]
+            self.assertEqual([m["id"] for m in available], [m["id"] for m in canonical])
+            self.assertNotIn("minicpm5-2b", [m["id"] for m in available])
+            self.assertTrue(all(m["downloaded"] is True for m in available))
+            self.assertEqual(self.status("GET", path + "?show_all=true", TUNNEL), 401)
 
     def test_unconfigured_account_routes_fail_closed(self):
         self.state.cfg["account_service_url"] = ""
@@ -287,11 +322,12 @@ class AccountProxyTests(RelayFixture):
     def test_sse_body_and_security_headers_are_preserved(self):
         self.reply_body = b'data: {"choices":[]}\n\ndata: [DONE]\n\n'
         self.reply_headers["Content-Type"] = "text/event-stream"
-        status, data, reply = self.call("POST", "/v1/chat/completions", self.session_headers(), b'{}')
-        self.assertEqual(status, 200)
-        self.assertEqual(data, self.reply_body)
-        self.assertEqual(reply.getheader("Content-Type"), "text/event-stream")
-        self.assertEqual(reply.getheader("Transfer-Encoding"), "chunked")
+        for path in ("/v1/chat/completions", "/api/v1/chat/completions"):
+            status, data, reply = self.call("POST", path, self.session_headers(), b'{}')
+            self.assertEqual(status, 200)
+            self.assertEqual(data, self.reply_body)
+            self.assertEqual(reply.getheader("Content-Type"), "text/event-stream")
+            self.assertEqual(reply.getheader("Transfer-Encoding"), "chunked")
 
     def test_account_route_allowlist_cannot_proxy_other_paths(self):
         for path in ("/wallet/../../healthz", "/v1/account/config/extra", "/healthz", "/v1/auth/admin",

@@ -1327,13 +1327,13 @@
       "light theme",
       "ivory"
     ],
-    "summary": "The signature charcoal and gold remain at the center of the design. Light mode uses warm ivory surfaces. This is a scripted website demo; theme changes only affect this preview.",
+    "summary": "The signature charcoal and lime remain at the center of the design. Light mode uses warm ivory surfaces. This is a scripted website demo; theme changes only affect this preview.",
     "steps": [
       "Use the header switch or the theme buttons in this reply.",
       "Inspect the sample theme.css file.",
       "Check readable text, focus outlines, and borders in both modes."
     ],
-    "example": ":root {\n  --bg: #161618;\n  --gold: #d4af37;\n}\n[data-theme=\"light\"] {\n  --bg: #f7f5ee;\n}",
+    "example": ":root {\n  --bg: #161618;\n  --gold: #a6cf45;\n}\n[data-theme=\"light\"] {\n  --bg: #f7f5ee;\n}",
     "next": [
       "css",
       "accessibility",

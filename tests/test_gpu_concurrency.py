@@ -53,7 +53,7 @@ class ConcurrencyTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("context_model_routes", ROOT.parents[1] / "server/reachd/model_routes.py")
         routes = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(routes)
-        self.assertEqual(launch.CHAT_CONTEXT_WINDOWS["gemma"], 65536)
+        self.assertEqual(launch.CHAT_CONTEXT_WINDOWS["gemma"], 131072)
         profile = json.loads((ROOT / "gemma_q8_profile.json").read_text())
         self.assertEqual(profile["context_per_chat"], 262144)
         self.assertEqual(routes.GPU_CONTEXT_WINDOWS["gemma-4-12b-qat"], launch.CHAT_CONTEXT_WINDOWS["gemma"])
@@ -65,7 +65,6 @@ class ConcurrencyTests(unittest.TestCase):
         command = ["--tensor-parallel-size", "2", "--max-model-len", str(launch.CHAT_CONTEXT_WINDOWS[key]),
                    "--max-num-seqs", str(launch.CHAT_MAX_SEQUENCES[key]), "--dtype", "bfloat16",
                    "--gpu-memory-utilization", str(fraction),
-                   "--speculative-config", json.dumps(launch.CHAT_SPECULATIVE_CONFIGS[key]),
                    "--max-num-batched-tokens", str(launch.CHAT_PREFILL_TOKENS[key]),
                    "--compilation-config", json.dumps(launch.chat_decode_config(key)), *extra]
         details = {"Config": {"Labels": {"io.signalreach.deployment": launch.DEPLOYMENT},
