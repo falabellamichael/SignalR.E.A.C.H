@@ -84,11 +84,10 @@ test('a failure on the second write rolls back the first and cleans temps', () =
   const dir = project({ 'x1.js': 'original one\n', 'x2.js': 'original two\n' });
   const plan = R.planFromEdits([{ path: 'x1.js', content: 'NEW one\n' }, { path: 'x2.js', content: 'NEW two\n' }], { projectDir: dir });
   const realWrite = fs.writeFileSync;
-  let exploded = false;
   const res = R.applyPlan(plan, {
     projectDir: dir,
     writeImpl: (p, data) => {
-      if (String(p).includes('x2') && !exploded) { exploded = true; throw new Error('disk on fire'); }
+      if (path.basename(p).startsWith('x2.js.reach-tmp-')) throw new Error('disk on fire');
       realWrite(p, data, 'utf8');
     },
   });
@@ -110,7 +109,10 @@ test('a file created by a rolled-back plan is removed', () => {
   const realWrite = fs.writeFileSync;
   const res = R.applyPlan(plan, {
     projectDir: dir,
-    writeImpl: (p, data) => { if (String(p).includes('x1')) throw new Error('nope'); realWrite(p, data, 'utf8'); },
+    writeImpl: (p, data) => {
+      if (path.basename(p).startsWith('x1.js.reach-tmp-')) throw new Error('nope');
+      realWrite(p, data, 'utf8');
+    },
   });
   assert.equal(res.ok, false);
   assert.equal(exists(dir, 'made.js'), false, 'created file removed on rollback');
@@ -122,14 +124,12 @@ test('a rollback that itself fails is reported, never silently ignored', () => {
   const dir = project({ 'x1.js': 'a\n', 'x2.js': 'b\n' });
   const plan = R.planFromEdits([{ path: 'x1.js', content: 'A\n' }, { path: 'x2.js', content: 'B\n' }], { projectDir: dir });
   const realWrite = fs.writeFileSync;
-  let x2Staged = false, restoreBlocked = false;
   const res = R.applyPlan(plan, {
     projectDir: dir,
     writeImpl: (p, data) => {
-      const s = String(p);
-      if (s.includes('x2') && !x2Staged) { x2Staged = true; throw new Error('stage failed'); }
-      // Block the restore write of x1 so rollback fails.
-      if (s.includes('x1') && restoreBlocked === false && data === 'a\n') { restoreBlocked = true; throw new Error('restore failed'); }
+      const file = path.basename(p);
+      if (file.startsWith('x2.js.reach-tmp-')) throw new Error('stage failed');
+      if (file === 'x1.js') throw new Error('restore failed');
       realWrite(p, data, 'utf8');
     },
   });

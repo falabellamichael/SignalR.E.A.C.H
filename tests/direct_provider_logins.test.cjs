@@ -27,10 +27,11 @@ test('each provider has an isolated sandbox and reopening preserves the same win
     const logins = createProviderLogins({ app, BrowserWindow });
     await assert.rejects(logins.open('unknown-provider'));
     for (const provider of PROVIDERS) { await logins.open(provider.id); await logins.open(provider.id); }
-    assert.equal(created.length, 4);
-    assert.equal(new Set(created.map(win => win.options.webPreferences.partition)).size, 4);
+    assert.equal(created.length, PROVIDERS.length);
     for (const [index, win] of created.entries()) {
-        assert.equal(win.loads, 1); assert.equal(win.loaded, PROVIDERS[index].url);
+        const provider = PROVIDERS[index];
+        assert.equal(win.loads, 1); assert.equal(win.loaded, provider.url);
+        assert.equal(win.options.webPreferences.partition, `persist:direct-${provider.id}`);
         assert.equal(win.options.webPreferences.nodeIntegration, false);
         assert.equal(win.options.webPreferences.contextIsolation, true);
         assert.equal(win.options.webPreferences.sandbox, true);
@@ -40,6 +41,7 @@ test('each provider has an isolated sandbox and reopening preserves the same win
         win.emit('close', { preventDefault() { prevented = true; } });
         assert.equal(prevented, true); assert.equal(win.hidden, true);
     }
+    assert.equal(new Set(created.map(win => win.options.webPreferences.partition)).size, PROVIDERS.length);
     assert.ok(logins.list().every(provider => provider.open));
     app.emit('before-quit');
     let prevented = false;

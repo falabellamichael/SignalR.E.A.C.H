@@ -122,14 +122,22 @@ class ModelRuntimeTests(unittest.TestCase):
                    "identity_file": str(identity), "target": "operator@fixture.invalid"}}
         (self.root / "model-runtime.json").write_text(json.dumps(profile), encoding="utf-8")
         manager = runtime.ModelRuntime(self.root, "node")
-        command = manager.dependencies[0].command
-        for local, remote in ((18001, 8001), (18002, 8002), (18004, 8004), (18030, 8030)):
-            self.assertIn("127.0.0.1:%d:127.0.0.1:%d" % (local, remote), command)
-        self.assertNotIn("18003", " ".join(command))
-        self.assertIn("StrictHostKeyChecking=yes", command)
-        self.assertIn("ExitOnForwardFailure=yes", command)
-        self.assertIn("ServerAliveInterval=15", command)
-        self.assertFalse(manager.dependencies[0].restart_on_unhealthy)
+        expected_forwards = {
+            "qwen-tunnel": [(18000, 8000)],
+            "gpu-tunnel": [(18001, 8001), (18002, 8002), (18004, 8004),
+                           (18005, 8005), (18006, 8006), (18030, 8030)],
+        }
+        self.assertCountEqual([dep.name for dep in manager.dependencies], expected_forwards)
+        for dep in manager.dependencies:
+            with self.subTest(tunnel=dep.name):
+                command = dep.command
+                forwards = [command[i + 1] for i, flag in enumerate(command) if flag == "-L"]
+                self.assertCountEqual(forwards, [f"127.0.0.1:{local}:127.0.0.1:{remote}"
+                                                 for local, remote in expected_forwards[dep.name]])
+                self.assertIn("StrictHostKeyChecking=yes", command)
+                self.assertIn("ExitOnForwardFailure=yes", command)
+                self.assertIn("ServerAliveInterval=15", command)
+                self.assertFalse(dep.restart_on_unhealthy)
         profile["gpu_tunnel"]["target"] = "-oProxyCommand=unexpected"
         (self.root / "model-runtime.json").write_text(json.dumps(profile), encoding="utf-8")
         with self.assertRaises(ValueError):
