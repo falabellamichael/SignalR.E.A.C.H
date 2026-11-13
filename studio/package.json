@@ -39,7 +39,8 @@
     "node": ">=24"
   },
   "overrides": {
-    "http-cache-semantics": "^4.3.0"
+    "http-cache-semantics": "^4.3.0",
+    "minimatch@>=7 <11.0.1": "^11.0.1"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.20.4",
