@@ -1,7 +1,7 @@
 {
   "name": "reach-studio",
   "productName": "Reach Studio",
-  "version": "26.10.12",
+  "version": "26.10.13",
   "description": "Desktop workspace for AI agents, browsing, editing, and optional Reach CLI tools",
   "homepage": "https://github.com/falabellamichael/SignalR.E.A.C.H",
   "desktopName": "reach-studio.desktop",
@@ -42,16 +42,16 @@
     "http-cache-semantics": "^4.3.0"
   },
   "devDependencies": {
-    "@codemirror/autocomplete": "^6.20.3",
+    "@codemirror/autocomplete": "^6.20.4",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/language": "^6.13.1",
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/search": "^6.7.2",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.14",
+    "@codemirror/view": "^6.43.15",
     "@lezer/highlight": "^1.2.5",
-    "electron": "44.9.3",
-    "electron-builder": "^26.0.12",
+    "electron": "45.0.0",
+    "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2"
   },
   "build": {

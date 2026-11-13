@@ -66,6 +66,7 @@ class ConcurrencyTests(unittest.TestCase):
                    "--max-num-seqs", str(launch.CHAT_MAX_SEQUENCES[key]), "--dtype", "bfloat16",
                    "--gpu-memory-utilization", str(fraction),
                    "--max-num-batched-tokens", str(launch.CHAT_PREFILL_TOKENS[key]),
+                   "--long-prefill-token-threshold", "2048",
                    "--compilation-config", json.dumps(launch.chat_decode_config(key)), *extra]
         details = {"Config": {"Labels": {"io.signalreach.deployment": launch.DEPLOYMENT},
                               "Cmd": command, "Env": [f"ROCR_VISIBLE_DEVICES={gpu}", "GPU_MAX_HW_QUEUES=1",
@@ -75,7 +76,7 @@ class ConcurrencyTests(unittest.TestCase):
                                   "Memory": launch.HOST_MEMORY_LIMIT_BYTES, "MemorySwap": launch.HOST_MEMORY_LIMIT_BYTES,
                                   "OomScoreAdj": 500, "RestartPolicy": {"Name": "unless-stopped"}},
                    "State": {"Status": "running"}}
-        manifest = {"models": [{"name": "gemma4-12b-qat", "repository": "gemma-test"}]}
+        manifest = {"models": [{"name": "gemma4-12b-qat-w4a16-ct", "repository": "gemma-test"}]}
         for missing in (None, "--enable-auto-tool-choice", "--tool-call-parser", "--chat-template"):
             candidate = json.loads(json.dumps(details))
             if missing:
