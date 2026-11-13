@@ -658,10 +658,17 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._admin_local():
                     return self._json(403, {"error": {"message": "Model controls require a direct local connection."}})
                 self._json(200, model_services.inventory())
-            elif path == "/_reach/login-providers/models":
+            elif path == "/_reach/login-providers/models" or (
+                    path.startswith("/_reach/login-providers/") and path.endswith("/models")):
+                provider = None
+                if path != "/_reach/login-providers/models":
+                    provider = path[len("/_reach/login-providers/"):-len("/models")]
+                    if not re.fullmatch(r"[a-z0-9_-]+", provider):
+                        return self._json(404, {"error": {"message": "Unknown login provider.",
+                                                         "type": "not_found"}})
                 if not self._require_login_provider_client():
                     return
-                self._json(200, login_provider_catalog(core.STATE.cfg.get("models", {})))
+                self._json(200, login_provider_catalog(core.STATE.cfg.get("models", {}), provider=provider))
             elif path == "/_reach/settings":
                 if not self._require_admin():
                     return
@@ -961,10 +968,17 @@ class RelayHandler(BaseHTTPRequestHandler):
                 if not self._check_access():
                     return
                 self.handle_chat()
-            elif path == "/_reach/login-providers/chat/completions":
+            elif path == "/_reach/login-providers/chat/completions" or (
+                    path.startswith("/_reach/login-providers/") and path.endswith("/chat/completions")):
+                provider = None
+                if path != "/_reach/login-providers/chat/completions":
+                    provider = path[len("/_reach/login-providers/"):-len("/chat/completions")]
+                    if not re.fullmatch(r"[a-z0-9_-]+", provider):
+                        return self._json(404, {"error": {"message": "Unknown login provider.",
+                                                         "type": "not_found"}})
                 if not self._require_login_provider_client() or not self._check_access():
                     return
-                self.handle_chat(catalog="login-providers")
+                self.handle_chat(catalog="login-providers", provider=provider)
             else:
                 self._json(404, {"error": {"message": "Not found: " + path,
                                            "type": "not_found"}})
@@ -1404,7 +1418,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             fields.pop("response_body", None)
         state.analytics.log_request(**fields)
 
-    def handle_chat(self, *, catalog="gpu"):
+    def handle_chat(self, *, catalog="gpu", provider=None):
         # One record per request, live for as long as it runs: /status shows it
         # and the log line at each end says how long it took. There is no
         # timeout — a slow generation is meant to be watched, not killed.
@@ -1416,7 +1430,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             # limit, bad body, unknown model, upstream down) and returns None.
             # Unpacking that used to raise, so the error handler then wrote a
             # second 500 onto a connection that had already been answered.
-            result = chat_execute(self, catalog=catalog)
+            result = chat_execute(self, catalog=catalog, provider=provider)
             if result is None:
                 return
             upstream, ctx = result

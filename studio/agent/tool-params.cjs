@@ -19,6 +19,11 @@ const PARAMS = {
   search: [s('pattern', true, 2000), path(), b('regex'), b('caseSensitive'), s('include', false, 2000)],
   list: [path()],
   shell: [command(true)],
+  /* `command` is required on every op — for open it is the command to run; for
+   * write/read/close it is the session's command echoed back as provenance so
+   * the approval prompt and command sandbox still see what this call touches.
+   * `chars` is the executed stdin text, so it is sandbox-evaluated too. */
+  'shell.session': [s('op', false, 20, 'open'), s('sessionId', false, 120), command(true), s('chars', false, 100000), n('yieldMs')],
   websearch: [s('query', true, 4000)],
   browse: [s('url', true, 4096)],
   memory: [s('op', false, 20, 'read'), s('entry', false, 10000)],
@@ -81,6 +86,7 @@ for (const name of Object.keys(require('./connection-operations.cjs').OPERATIONS
 // other paths name argument fields that can reach a shell.
 const COMMAND_PATHS = {
   shell: ['command'],
+  'shell.session': ['command', 'chars'],
   'reach.compile': ['@fixed'],
   'reach.run': ['@fixed'],
   'reach.init': ['@fixed'],

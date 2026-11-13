@@ -26,7 +26,20 @@ SERVICES = {
         "--limit-mm-per-prompt", '{"image":1,"video":1}',
     ]),
     "support": (None, 1, 8030, None, []),
-    "lfm3": ("lfm3-vl-2b", "0", 8005, None, []),
+    "lfm3": ("lfm3-vl-2b", "0,1", 8005, 0.40, [
+        "--trust-remote-code", "--reasoning-parser", "qwen3",
+        "--enable-auto-tool-choice", "--tool-call-parser", "lfm3_xml",
+        "--tool-parser-plugin", "/app/lfm3_tool_parser.py", "--tool-strict-level", "parameter",
+        "--default-chat-template-kwargs", '{"enable_thinking":true}',
+        "--limit-mm-per-prompt", '{"image":1,"video":0}',
+    ]),
+    "lfm3-omni": ("lfm3-omni-2b", "0,1", 8006, 0.30, [
+        "--trust-remote-code", "--reasoning-parser", "qwen3",
+        "--enable-auto-tool-choice", "--tool-call-parser", "lfm3_xml",
+        "--tool-parser-plugin", "/app/lfm3_tool_parser.py", "--tool-strict-level", "parameter",
+        "--default-chat-template-kwargs", '{"enable_thinking":false}',
+        "--limit-mm-per-prompt", '{"image":1,"audio":1}',
+    ]),
     "minicpm": ("minicpm5-2b", "0,1", 8004, 0.24, [
         "--quantization", "fp8_per_tensor", "--enable-auto-tool-choice",
         "--tool-call-parser", "minicpm5", "--reasoning-parser", "qwen3",
@@ -34,34 +47,39 @@ SERVICES = {
 }
 
 
-# Gemma and qualified MiniCPM use both GPUs with TP2.
+# Gemma, MiniCPM and the LFM3 pair use both GPUs with TP2.
 # Distributed runtime checks remain separate from host-memory guards.
-TP_MODELS = frozenset({"gemma", "minicpm"})
+TP_MODELS = frozenset({"gemma", "minicpm", "lfm3", "lfm3-omni"})
 # Services that run their own runtime image instead of a vLLM command line.
-CUSTOM_RUNTIME_SERVICES = frozenset({"support", "lfm3"})
-CUSTOM_RUNTIME_IMAGES = {"support": "signalreach-support:20261017-fp8-gpu",
-                         "lfm3": "signalreach-lfm3:vl-2b-20261027"}
-HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith", "lfm3"})
+CUSTOM_RUNTIME_SERVICES = frozenset({"support"})
+CUSTOM_RUNTIME_IMAGES = {"support": "signalreach-support:20261017-fp8-gpu"}
+# Standard vLLM-command services needing an image other than the pinned base.
+SERVICE_IMAGES = {"lfm3": "vllm-lfm3:20261029", "lfm3-omni": "vllm-lfm3:20261029"}
+HOST_MEMORY_GUARDED_MODELS = frozenset({"gemma", "ornith", "lfm3", "lfm3-omni"})
 HOST_MEMORY_LIMIT_BYTES = 12 * 1024 ** 3
 # Operator-disabled services retain their saved profile and assets.
 DISABLED_SERVICES = frozenset({"ornith", "minicpm"})
 RCCL_OVERRIDE = ROOT / "runtime/rccl-gfx1201-7.2.3/librccl.so.1"
 HSA_OVERRIDE = ROOT / "runtime/rocr-7.2.3-poll-backoff/libhsa-runtime64.so.1"
+LFM3_TOOL_PARSER = ROOT / "runtime/lfm3_tool_parser.py"
 CHAT_DECODE_CONFIG = {'mode': 0, 'cudagraph_mode': 'FULL_DECODE_ONLY', 'cudagraph_capture_sizes': [1, 2], 'max_cudagraph_capture_size': 2}
 # Gemma MTP uses V2 to capture the assistant's forward pass and sampling on GPU.
-CHAT_RUNNERS = {"gemma": "1", "ornith": "0", "minicpm": "0"}
+CHAT_RUNNERS = {"gemma": "1", "ornith": "0", "minicpm": "0", "lfm3": "0", "lfm3-omni": "0"}
 # Host-side OpenMP coordination only; model weights and KV caches stay on GPU.
-SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "1", "support": "2", "lfm3": "2"}
+SERVICE_OMP_THREADS = {"gemma": "1", "ornith": "2", "minicpm": "1", "support": "2", "lfm3": "2", "lfm3-omni": "2"}
 # MTP needs both target verification (4 tokens/request) and later assistant
 # decode (1 token/request) shapes to cover every admitted batch on runner V2.
-CHAT_CAPTURE_SIZES = {"gemma": [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32], "ornith": [2], "minicpm": [1, 2, 3, 4, 5]}
-CHAT_MAX_SEQUENCES = {"gemma": 8, "ornith": 2, "minicpm": 5}
+CHAT_CAPTURE_SIZES = {"gemma": [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32], "ornith": [2], "minicpm": [1, 2, 3, 4, 5],
+                      "lfm3": [1, 2, 4, 8], "lfm3-omni": [1, 2, 4, 8]}
+CHAT_MAX_SEQUENCES = {"gemma": 8, "ornith": 2, "minicpm": 5, "lfm3": 8, "lfm3-omni": 8}
 # Pin every qualified context so a future create cannot silently resize it.
-CHAT_CONTEXT_WINDOWS = {"gemma": 131072, "ornith": 61776, "minicpm": 39904, "lfm3": 131072}
+CHAT_CONTEXT_WINDOWS = {"gemma": 131072, "ornith": 61776, "minicpm": 39904, "lfm3": 128000,
+                        "lfm3-omni": 128000}
 # Tokens of prompt work per scheduler step. Smaller Gemma chunks let an
 # in-flight decode emit tokens while a second request prefills. Context length,
 # tensor parallelism, MTP, and GPU placement stay as qualified below.
-CHAT_PREFILL_TOKENS = {"gemma": 4096, "ornith": 2048, "minicpm": 2048}
+CHAT_PREFILL_TOKENS = {"gemma": 4096, "ornith": 2048, "minicpm": 2048,
+                       "lfm3": 4096, "lfm3-omni": 2048}
 # Per-request prefill cap under contention: a giant prompt can only take
 # this share of the per-step token budget while other requests are queued,
 # so a ~300k-token Raycast prefill cannot freeze concurrent traffic to
@@ -236,7 +254,7 @@ def start(key, manifest):
             if ("--enable-auto-tool-choice" in command) != ("--enable-auto-tool-choice" in extra):
                 raise RuntimeError(f"Preserving {name}: automatic tool choice differs from qualification")
             for flag in ("--quantization", "--quantization-config", "--reasoning-parser", "--default-chat-template-kwargs",
-                         "--tool-call-parser", "--chat-template"):
+                         "--tool-call-parser", "--tool-parser-plugin", "--tool-strict-level", "--chat-template"):
                 expected = extra[extra.index(flag) + 1] if flag in extra else None
                 actual = command[command.index(flag) + 1] if flag in command else None
                 if flag in ("--quantization-config", "--default-chat-template-kwargs"):
@@ -254,6 +272,8 @@ def start(key, manifest):
                 f"{RCCL_OVERRIDE}:/opt/rocm-7.2.3/lib/librccl.so.1.0.70203:ro",
                 f"{HSA_OVERRIDE}:/opt/rocm-7.2.3/lib/libhsa-runtime64.so.1.18.0:ro",
             }
+            if key in {"lfm3", "lfm3-omni"}:
+                required.add(f"{LFM3_TOOL_PARSER}:/app/lfm3_tool_parser.py:ro")
             if not required.issubset(set(details["HostConfig"].get("Binds") or [])):
                 raise RuntimeError(f"Preserving {name}: existing container lacks the validated distributed runtime mounts")
         if key not in CUSTOM_RUNTIME_SERVICES:
@@ -292,12 +312,15 @@ def start(key, manifest):
         "--device=/dev/kfd", "--device=/dev/dri", "--group-add=video",
         "--shm-size=2g", "-e", f"ROCR_VISIBLE_DEVICES={gpu}",
         "-e", f"OMP_NUM_THREADS={SERVICE_OMP_THREADS[key]}", "-e", "GPU_MAX_HW_QUEUES=1", "-e", "HF_HUB_OFFLINE=1",
-        *(["-e", "LFM3_MAX_CONCURRENT=3"] if key == "lfm3" else []),
         "-e", "TRANSFORMERS_OFFLINE=1", "-e", "VLLM_ROCM_USE_AITER=0",
         "-v", f"{ROOT}/models:/models:ro",
         "-p", f"127.0.0.1:{port}:{8030 if key == 'support' else 8000}",
         *(["-p", "127.0.0.1:18000:8000"] if key == "gemma" else []),
     ]
+    if key in {"lfm3", "lfm3-omni"}:
+        if not LFM3_TOOL_PARSER.is_file():
+            raise RuntimeError(f"Missing LFM3 tool parser: {LFM3_TOOL_PARSER}")
+        args += ["-v", f"{LFM3_TOOL_PARSER}:/app/lfm3_tool_parser.py:ro"]
     if not HSA_OVERRIDE.is_file():
         raise RuntimeError(f"Missing validated HSA runtime: {HSA_OVERRIDE}")
     args += ["-v", f"{HSA_OVERRIDE}:/opt/rocm-7.2.3/lib/libhsa-runtime64.so.1.18.0:ro"]
@@ -318,7 +341,7 @@ def start(key, manifest):
         args += [CUSTOM_RUNTIME_IMAGES[key]]
     else:
         args += [
-            IMAGE, f"/models/{model}", "--served-model-name", repository,
+            SERVICE_IMAGES.get(key, IMAGE), f"/models/{model}", "--served-model-name", repository,
             "--host", "0.0.0.0", "--port", "8000",
             "--dtype", "bfloat16",
             "--max-model-len", str(CHAT_CONTEXT_WINDOWS[key]), "--max-num-seqs", str(CHAT_MAX_SEQUENCES[key]),

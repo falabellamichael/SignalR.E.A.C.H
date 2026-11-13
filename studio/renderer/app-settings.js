@@ -10,7 +10,15 @@ let jevClearRequested = false;
 let connDirty = false, connSettingsRevision = '';
 const CONN_MAX = 20;       // mirrors connections.cjs MAX_CONNECTIONS
 const LOGIN_PROVIDERS_ENDPOINT = 'http://127.0.0.1:20777/_reach/login-providers';
-const isLoginProviderConnection = c => c?.endpoint === LOGIN_PROVIDERS_ENDPOINT;
+/* Each subscription account gets its own catalog endpoint below
+ * /_reach/login-providers/<provider> so "Devin subscription" and
+ * "Codex subscription" can be separate connections — the save validation
+ * rejects duplicate endpoints. */
+const subscriptionEndpoint = provider => `${LOGIN_PROVIDERS_ENDPOINT}/${provider}`;
+const isLoginProviderConnection = c => {
+  const endpoint = String(c?.endpoint || '');
+  return endpoint === LOGIN_PROVIDERS_ENDPOINT || endpoint.startsWith(LOGIN_PROVIDERS_ENDPOINT + '/');
+};
 /* Per-connection test results, keyed by connection id. Kept OUTSIDE the DOM so
  * a re-render (pool toggle, activation, Settings save) does not wipe the last
  * "OK · 812 ms" off a card — and so auto-test on panel open knows which rows
@@ -610,6 +618,30 @@ $('#btn-login-providers').onclick = () => openModelPicker({
     markUnsaved();
   },
 });
+
+/* Subscription quick-adds: one connection per provider account endpoint
+ * (/_reach/login-providers/<provider>). The preset model is only a starting
+ * default — the row's Browse lists every model that subscription serves once
+ * the account is signed in and its aliases are enabled. */
+const addSubscriptionConnection = (provider, name, model) => {
+  const endpoint = subscriptionEndpoint(provider);
+  let connection = connDraft.find(c => String(c.endpoint || '').replace(/\/+$/, '') === endpoint);
+  if (!connection && connDraft.length >= CONN_MAX) { showNotice(`Remove one connection before adding ${name}.`); return; }
+  if (!connection) {
+    connection = { id: `reach_${provider}_subscription`, name, endpoint, accessKey: '', model, enabled: false };
+    connDraft.push(connection);
+  }
+  connection.name = connection.name || name;
+  if (!connection.model) connection.model = model;
+  connection.accessKey = '';
+  connActiveId = connection.id;
+  connEditingId = connection.id;
+  connection.enabled = true;
+  renderConnections();
+  markUnsaved();
+};
+if ($('#btn-devin-subscription')) $('#btn-devin-subscription').onclick = () => addSubscriptionConnection('devin', 'Devin subscription', 'devin-chat');
+if ($('#btn-codex-subscription')) $('#btn-codex-subscription').onclick = () => addSubscriptionConnection('codex', 'Codex subscription', 'codex-chat');
 
 /* "Test all": ping every row with the values on screen, in parallel. Read-only
  * (GET /models), so it cannot cost tokens or mutate anything. Each row writes

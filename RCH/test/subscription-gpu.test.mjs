@@ -290,3 +290,86 @@ test('CodeGPT direct models are unavailable to subscription customers before dis
   assert.equal(f.store.requestAllowance(f.account.id).reserved, 0);
   assert.deepEqual(f.gateway.catalog(f.store.account(f.account.id)).data, []);
 });
+
+
+test('VL keeps thinking and reserves answer tokens while Omni stays non-reasoning', async t => {
+  const configuredModels = [
+    { ...models[0], id: 'lfm3-vl-2b', bridge: { kind: 'gpu', model: 'LiquidAI/LFM3-VL-2B' } },
+    { ...models[0], id: 'lfm3-omni-2b', bridge: { kind: 'gpu', model: 'LiquidAI/LFM3-Omni-2B' } },
+  ];
+  const sent = [];
+  const f = await fixture(t, async (_url, options) => {
+    const body = JSON.parse(options.body);
+    sent.push(body);
+    return answer(body.model);
+  }, { models: configuredModels });
+  for (const field of ['max_tokens', 'max_completion_tokens']) {
+    assert.equal((await f.call(request({ model: 'lfm3-vl-2b', [field]: 2048 }), field)).status, 200);
+    assert.equal(sent.at(-1).chat_template_kwargs.enable_thinking, true);
+    assert.equal(sent.at(-1).thinking_token_budget, 1024);
+    assert.equal(sent.at(-1).max_tokens, 2048);
+  }
+  assert.equal((await f.call(request({ model: 'lfm3-vl-2b' }), 'automatic-vl')).status, 200);
+  assert.equal(sent.at(-1).chat_template_kwargs.enable_thinking, true);
+  assert.equal(sent.at(-1).thinking_token_budget, undefined);
+  assert.equal((await f.call(request({ model: 'lfm3-vl-2b', max_tokens: 2048,
+    response_format: { type: 'json_object' } }), 'json-vl')).status, 200);
+  assert.equal(sent.at(-1).chat_template_kwargs.enable_thinking, false);
+  assert.equal(sent.at(-1).thinking_token_budget, undefined);
+  assert.equal((await f.call(request({ model: 'lfm3-omni-2b', max_tokens: 2048 }), 'omni')).status, 200);
+  assert.equal(sent.at(-1).chat_template_kwargs.enable_thinking, false);
+  assert.equal(sent.at(-1).thinking_token_budget, undefined);
+});
+
+test('Strata keeps prefill alive, streams text and speed, and replays without a second dispatch', { timeout: 5000 }, async t => {
+  const model = { id: 'qwen3.8-27b', provider: 'SignalREACH GPU', metered: true,
+    access: 'requests', bridge: { kind: 'gpu', model: 'Qwen3.8-27B' } };
+  const encoder = new TextEncoder();
+  let source;
+  let calls = 0;
+  const event = (choices, extra = {}) => 'data: ' + JSON.stringify({
+    id: 'chatcmpl-strata-test', object: 'chat.completion.chunk', created: 1,
+    model: model.bridge.model, choices, ...extra,
+  }) + '\n\n';
+  const f = await fixture(t, async (_url, options) => {
+    calls += 1;
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.stream, true);
+    assert.deepEqual(payload.stream_options, { include_usage: true });
+    assert.equal(payload.chat_template_kwargs.enable_thinking, true);
+    assert.equal(payload.reasoning_budget_tokens, 128);
+    return new Response(new ReadableStream({ start(controller) {
+      source = controller;
+      source.enqueue(encoder.encode(': provider keep-alive\n\n'));
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+  }, { models: [model] });
+  const body = request({ model: model.id, stream: true, temperature: 0, max_tokens: 256 });
+  const result = await f.call(body, 'strata-live');
+  assert.equal(result.status, 200);
+  const reader = result.body.getReader();
+  assert.equal(Buffer.from((await reader.read()).value).toString(), ': keep-alive\n\n');
+  source.enqueue(encoder.encode(event([{ index: 0, delta: { content: 'First part' }, finish_reason: null }])));
+  const first = Buffer.from((await reader.read()).value).toString();
+  assert.match(first, /First part/);
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 0);
+  source.enqueue(encoder.encode(event([{ index: 0, delta: { content: ' second part' }, finish_reason: null }])));
+  source.enqueue(encoder.encode(event([{ index: 0, delta: {}, finish_reason: 'stop' }], {
+    usage: { prompt_tokens: 20, completion_tokens: 6, total_tokens: 26 },
+    timings: { predicted_per_second: 51.2 },
+  }) + 'data: [DONE]\n\n'));
+  source.close();
+  let output = first;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    output += Buffer.from(value).toString();
+  }
+  assert.match(output, /second part/);
+  assert.match(output, /"generation_tokens_per_second":51\.2/);
+  assert.match(output, /data: \[DONE\]\n\n$/);
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 1);
+  const replay = await f.call(body, 'strata-live');
+  assert.equal(replay.headers.get('x-reach-replayed'), 'true');
+  assert.equal(await replay.text(), output);
+  assert.equal(calls, 1);
+});

@@ -60,6 +60,10 @@
       error.status = response.status;
       throw error;
     }
+    if (path === '/v1/account' && token) {
+      // Remember only that an account was used, never its identity or credentials.
+      try { localStorage.setItem('signalreach.account.known', '1'); } catch (_) { /* Optional navigation preference. */ }
+    }
     return data;
   }
   function updateNavigation() {

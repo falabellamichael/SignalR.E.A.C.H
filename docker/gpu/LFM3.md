@@ -1,11 +1,164 @@
-# LFM3 services (VL-2B active, Omni-2B preserved)
+# LFM3 services (vLLM: VL-2B + Omni-2B BF16)
 
-**Current deployment**: `reach-lfm3` runs **LiquidAI/LFM3-VL-2B**
-(`lfm3_vl_api.py`, `signalreach-lfm3:vl-2b-20261027`) on GPU 0, host port
-8005, Windows forward 127.0.0.1:18005. Both catalog selectors route to it:
-`lfm3-vl-2b` and the legacy `lfm3-omni-2b` alias. The previous Omni
-deployment below is preserved as `reach-lfm3-omni-backup` (stopped) and the
-`lfm3-omni-2b` weights remain on disk.
+**Current deployment** (2026-10-30): both selectors are standard
+`launch_services.py` vLLM services on the patched `vllm-lfm3:20261029`
+image (`vllm serve` entrypoint; the image carries the `/tmp/reach-vllm-source`
+LFM3 model files, including the `num_heads` fix the `:test` build lacked):
+
+- `reach-lfm3` → `lfm3-vl-2b` BF16 weights, TP2 on GPUs 0+1, host port 8005
+  → Windows forward `127.0.0.1:18005`, served as `LiquidAI/LFM3-VL-2B`.
+  Image input enabled: `--limit-mm-per-prompt '{"image":1,"video":0}'`.
+  Video input remains disabled.
+- `reach-lfm3-omni` → `lfm3-omni-2b` (original BF16 checkpoint at
+  revision `ce2458cbce4ad970f92032ed94e3d18d30b04f9c`), TP2 on GPUs 0+1, host port 8006 → Windows forward
+  `127.0.0.1:18006`, served as `LiquidAI/LFM3-Omni-2B`. Image+audio mm enabled.
+
+Both services use `--reasoning-parser qwen3`. This is only an output
+parser; both active weight sets are BF16. The previous
+`deepseek_r1` parser could classify a plain answer entirely as reasoning
+and return `content: null`.
+
+### Omni summary regression (2026-10-30)
+
+The custom `lora_98k_tail` merged checkpoint regressed on Raycast's actual
+compaction instructions. Synthetic conversation tests reproduced repeated
+headings and schema text with the deployed INT4 export; its BF16 parent also
+failed, including a 13,144-token prompt. Changing sampling did not establish
+a reliable repair. The original checkpoint on the same vLLM image terminated
+normally at 13,144, 31,384, 100,081, and 115,480 input tokens. Restore the
+original weights instead of promoting the merged BF16 export as a fix.
+
+The original checkpoint passed automatic/required/named tool delivery in JSON
+and SSE, tool-result/error continuation, image colors, and generated-speech
+transcription. It returned one call at a time for the two-inventory-item test;
+both results and the final answer were verified over three turns. The existing
+qualification suite's two same-turn parallel-call checks therefore fail for
+this checkpoint and must not be reported as passing.
+
+The configured 128000 server limit is unchanged. The original Omni model card
+specifies a 32K context; larger requests above are extrapolation tests, not a
+claim of vendor-qualified 128K accuracy. Even terminating summaries invented
+some record counts and file details in this synthetic stress test. Passing
+transport, termination, and Raycast's heading validator does not establish
+factual summary quality or replace a fresh Raycast UI check.
+
+Production verification after restoration used Raycast's configured public
+provider URL and model ID. Streamed compaction replays at 13,144 and 115,480
+input tokens finished with `stop` in 5.00 and 18.89 seconds, respectively;
+the requested heading format was accepted by the same minimum-three-heading
+criterion used in the client. Eight tool-delivery cases passed, while the two
+same-turn parallel-call cases remained the limitation described above. A
+separate streamed two-tool workflow completed both lookups and the final
+answer in three turns. The stopped rollback container is
+`reach-lfm3-omni-int4-before-summary-20261030` (restart policy `no`).
+
+VL defaults to `enable_thinking=true` in the launcher, relay, and account
+bridge. For a finite requested output limit, the relay and account gateway
+send vLLM's native `thinking_token_budget` at half that limit, preserving
+the total limit and reserving room for answer content. The relay preserves
+an explicit caller thinking budget or disabled-thinking preference. Without
+an output limit these routes do not manufacture one. Direct native API
+callers can supply `thinking_token_budget` themselves.
+
+Omni is a non-reasoning model. Its launcher defaults to thinking off and
+its relay route forces thinking off even when a client or saved profile
+enables it. Existing structured-action requests still answer directly.
+
+Verified on 2026-10-29 through the installed PDF Assistant using the same
+document, five retrieved chunks, and a 2048-token output cap: the original
+VL request exhausted all 2048 tokens on reasoning and returned only a limit
+warning. With thinking enabled and a 1024-token thinking budget, it returned
+both a thinking stream and a 2782-character summary, finishing normally
+(`finish_reason=stop`) in 49.07 seconds with 1676 generated tokens. The
+previous thinking-off workaround was rejected and replaced by this budget.
+This checks completion and separate reasoning delivery, not factual accuracy
+of the generated summary. Omni's direct-answer regression previously finished
+normally with 100 generated tokens.
+
+Both run chunked prefill batching (`--max-num-seqs 8`,
+`--max-num-batched-tokens` 4096/2048), full decode GPU graphs
+(`mode: 0`, `cudagraph_mode: FULL_DECODE_ONLY`, capture sizes 1/2/4/8),
+context 128000
+(vLLM rejects 131072 — config `max_position_embeddings` is 128000).
+Memory fractions: VL 0.40 + Omni 0.30 of each GPU.
+
+Measured speed repair on 2026-10-29: replacing eager execution with decode
+graphs kept weights, TP2, context, reasoning defaults, and output budgets.
+Identical single-request 512-output-token benchmarks, measured on the GPU
+host, gave VL 34.27 -> 72.99 tokens/s and Omni 32.21 -> 70.33 tokens/s on
+repeat runs. Total request times were 15.035 -> 7.048 seconds for VL and
+15.983 -> 7.339 seconds for Omni. Initial graph requests additionally spent
+about four seconds before first output; repeat first-output latency was
+0.046/0.071 seconds. These are short-prompt single-request measurements,
+not long-context or concurrent throughput claims.
+
+The installed PDF Assistant's five-chunk summary with thinking enabled and
+a 2048-token output allowance completed in 28.450 seconds (previous eager
+run 49.313 seconds), with 1654 generated tokens, a separate thinking stream,
+and a final summary (`stop`). Longest delivery gap was 0.141 seconds. Both
+models passed a left-red/right-blue image check; VL retained separate
+thinking. Audio was not retested for this runtime-only change. Launcher
+adoption checks passed for both running services. Previous eager containers
+are preserved as `reach-lfm3-before-decode-graphs-20261029` and
+`reach-lfm3-omni-before-decode-graphs-20261029`.
+
+### Native tool-call delivery
+
+Both LFM3 services require `--enable-auto-tool-choice`,
+`--tool-call-parser lfm3_xml`, `--tool-strict-level parameter`, and
+`--tool-parser-plugin /app/lfm3_tool_parser.py`. The plugin source is
+`docker/gpu/lfm3_tool_parser.py`; install it on the host at
+`/srv/signalreach/runtime/lfm3_tool_parser.py`. The launcher mounts it
+read-only and validates the flags and mount when adopting a container.
+Recreate/restart the service after changing the plugin or command.
+
+The models emit Qwen XML function/parameter tags. The native parser converts
+those tags into OpenAI `tool_calls`, including incremental streaming
+arguments, call IDs, and multiple calls. Missing parser/auto-choice flags
+previously exposed XML as answer text or rejected explicit automatic calls.
+Parsing alone was insufficient: complex message bodies could still have
+incorrect nesting and invalid JSON. Server-level parameter strictness
+activates grammar enforcement even when the client omits `strict: true`.
+This flag is necessary because vLLM resolves strictness before calling the
+parser plugin. Automatic choice still permits an ordinary text answer.
+
+The plugin bounds JSON grammar whitespace to one character per whitespace
+position. Without that bound, this model/runtime combination repeatedly
+generated newline tokens until it exhausted the output allowance. This
+does not rewrite text inside string values or change the supplied schema.
+VL thinking and the existing decode graphs remain enabled.
+
+`qualify_lfm3_tools.py` exercises automatic, required, and named calls in
+JSON and SSE modes, a nested Outlook-style body with arrays/booleans/newlines,
+successful and failed synthetic tool-result follow-ups, two independent
+calls with unique IDs, tools disabled, and ordinary chat. It declares mock
+functions only; it never executes a model-selected action or sends mail.
+For example:
+
+```powershell
+python docker/gpu/qualify_lfm3_tools.py --base-url http://127.0.0.1:20777/v1 --model lfm3-vl-2b --output tool-qualification.json
+```
+
+Start the two services sequentially: concurrent vLLM startup profiling can
+count the other service's allocations as its own and fail cache sizing.
+The normal launcher already starts selected services sequentially. Keep
+the qualified memory fractions and 128000-token context unchanged.
+
+Live qualification on 2026-10-29 passed all ten cases for each model through
+the native API, local relay, and authenticated public REACH endpoint (60
+cases total), including both
+successful and failed tool-result continuations. Warm public automatic calls
+took 0.908/0.972 seconds for Omni (JSON/SSE), with complete successful mock
+round trips of 1.433/1.424 seconds. VL, retaining 2480 characters of separate
+reasoning for this prompt, took 4.997/5.074 seconds for the call and
+6.102/6.055 seconds for the successful round trip. These are measurements
+of this synthetic prompt and schema; actual third-party tool execution and
+the Raycast UI were not exercised. First requests after restart incurred
+additional kernel warmup latency. Thirteen targeted unit tests passed.
+
+Previous HF-transformers runtime is preserved as `reach-lfm3-hf-backup`
+(stopped); the legacy Omni HF container stays `reach-lfm3-omni-backup`.
+The rest of this file documents that retired HF deployment.
 
 VL differences vs Omni: no audio (the audio endpoints are unmounted),
 reasoning-capable (`enable_thinking` chat-template kwarg, default on;

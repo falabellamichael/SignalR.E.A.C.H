@@ -5,7 +5,12 @@
 const LOGIN_PROVIDERS_ENDPOINT = 'http://127.0.0.1:20777/_reach/login-providers';
 
 function isLoginProvidersEndpoint(value) {
-  return String(value || '').replace(/\/+$/, '') === LOGIN_PROVIDERS_ENDPOINT;
+  const v = String(value || '').replace(/\/+$/, '');
+  if (v === LOGIN_PROVIDERS_ENDPOINT) return true;
+  // A per-subscription root (…/login-providers/<provider>) is the same
+  // private local service; one lowercase provider segment only.
+  return v.startsWith(LOGIN_PROVIDERS_ENDPOINT + '/')
+    && /^\/[a-z0-9_-]+$/.test(v.slice(LOGIN_PROVIDERS_ENDPOINT.length));
 }
 
 // The catalog marker belongs only to this fixed local service. Never forward a
@@ -27,7 +32,8 @@ async function resolveEndpoint(raw, depth = 0) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
     throw new Error('Use an HTTP or HTTPS endpoint without embedded credentials.');
   }
-  if (isLoginProvidersEndpoint(String(raw).replace(/\/(?:models|chat\/completions)\/?$/, ''))) return LOGIN_PROVIDERS_ENDPOINT;
+  const loginProvidersRoot = String(raw).replace(/\/(?:models|chat\/completions)\/?$/, '').replace(/\/+$/, '');
+  if (isLoginProvidersEndpoint(loginProvidersRoot)) return loginProvidersRoot;
   if (url.hostname === 'gist.githubusercontent.com' || /\.txt(?:\/v1)?\/?$/.test(url.pathname)) {
     url.pathname = url.pathname.replace(/\/v1\/?$/, '');
     const response = await fetch(url.toString(), { signal: AbortSignal.timeout(15000) });

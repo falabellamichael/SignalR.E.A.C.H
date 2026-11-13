@@ -29,6 +29,8 @@ const os = require('node:os');
 app.setPath('userData', path.join(app.getPath('appData'), 'signalreach-copilot-tray'));
 const { createEndpointClient } = require('./endpoint');
 const { createGeminiBrowser } = require('./gemini');
+const { createDevinBrowser } = require('./devin');
+const { createCodexBrowser } = require('./codex');
 const { economyModelFor, economyBridgeIds, economyCatalogInfo, refreshEconomyModels, ECONOMY_PREFIX, discoverCodegptApiPort } = require('./economy-models');
 const { createModelCredentialStore } = require('./model-credentials');
 const { promptForModelKey } = require('./native-model-key');
@@ -138,6 +140,8 @@ let copilotNavigationAt = 0;
 let chatgptWin = null;
 let codegptWin = null;
 const geminiBrowser = createGeminiBrowser(app.getPath('userData'), log);
+const devinBrowser = createDevinBrowser(log);
+const codexBrowser = createCodexBrowser(log);
 let bridgeServer = null;
 let lastReplyAt = 0;
 let lastError = '';
@@ -2456,6 +2460,8 @@ function startBridge() {
         const gVis = !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible());
         const eVis = !!(codegptWin && !codegptWin.isDestroyed() && codegptWin.isVisible());
         const gemini = geminiBrowser.health();
+        const devin = devinBrowser.health();
+        const codex = codexBrowser.health();
         return {
             ok: true, service: 'signalreach-tray', bridge: BRIDGE_PORT,
             modelDiscoveryCredential: modelCredentials.status(), modelDiscovery: endpoints.discoveryStatus(),
@@ -2466,11 +2472,13 @@ function startBridge() {
             codegptVisible: eVis,
             geminiVisible: gemini.visible,
             gemini,
+            devin,
+            codex,
             browserVisible: prov === 'chatgpt' ? gVis : prov === 'codegpt' ? eVis
                 : prov === 'gemini' ? gemini.visible : cVis,
             lastReplyAt, lastError
         };
-    }, debugCodegptDom, log, sendGeminiQueued));
+    }, debugCodegptDom, log, sendGeminiQueued, sendDevinQueued, sendCodexQueued));
     bridgeServer.timeout = 0;
     bridgeServer.requestTimeout = 0;
     bridgeServer.headersTimeout = 0;
@@ -2565,6 +2573,13 @@ function runGeminiBrowser(action) {
     }).finally(refreshNativeMenus);
 }
 
+function runAgentBrowser(name, action) {
+    void Promise.resolve().then(action).catch(error => {
+        lastError = error.message;
+        log(name + ' browser action failed: ' + error.message);
+    }).finally(refreshNativeMenus);
+}
+
 function buildTrayMenu() {
     const visible = !!(browserWin && !browserWin.isDestroyed() && browserWin.isVisible());
     const chatgptVisible = !!(chatgptWin && !chatgptWin.isDestroyed() && chatgptWin.isVisible());
@@ -2613,6 +2628,20 @@ function buildTrayMenu() {
             click: () => runGeminiBrowser(async () => {
                 if (await geminiBrowser.isVisible()) await geminiBrowser.hide();
                 else await geminiBrowser.show();
+            })
+        },
+        {
+            label: devinBrowser.health().visible ? 'Hide Browser \u2014 Devin' : 'Show Browser \u2014 Devin (manual sign-in)',
+            click: () => runAgentBrowser('Devin', async () => {
+                if (await devinBrowser.isVisible()) await devinBrowser.hide();
+                else await devinBrowser.show();
+            })
+        },
+        {
+            label: codexBrowser.health().visible ? 'Hide Browser \u2014 Codex' : 'Show Browser \u2014 Codex (manual sign-in)',
+            click: () => runAgentBrowser('Codex', async () => {
+                if (await codexBrowser.isVisible()) await codexBrowser.hide();
+                else await codexBrowser.show();
             })
         },
         { type: 'separator' },
@@ -2833,6 +2862,20 @@ let geminiQueue = Promise.resolve();
 function sendGeminiQueued(text, options) {
     const result = geminiQueue.then(() => geminiBrowser.send(text, options));
     geminiQueue = result.catch(() => {});
+    return result;
+}
+
+let devinQueue = Promise.resolve();
+function sendDevinQueued(text, options) {
+    const result = devinQueue.then(() => devinBrowser.send(text, options));
+    devinQueue = result.catch(() => {});
+    return result;
+}
+
+let codexQueue = Promise.resolve();
+function sendCodexQueued(text, options) {
+    const result = codexQueue.then(() => codexBrowser.send(text, options));
+    codexQueue = result.catch(() => {});
     return result;
 }
 

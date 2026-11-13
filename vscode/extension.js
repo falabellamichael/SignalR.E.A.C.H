@@ -1719,6 +1719,7 @@ class ReachChatViewProvider {
         // field, the request is retried with exactly the old plain body and
         // the rejection is remembered for every later segment.
         const thinkOff = !copilot && !connection.compressThink && !thinkRejected
+          && connection.provider !== 'subscription'
           ? { chat_template_kwargs: { enable_thinking: false } } : null;
         const send = (extra) => this._fetchRetry(endpoint, {
           method: 'POST', headers: this._authHeaders({}, connection),
@@ -2592,7 +2593,7 @@ class ReachChatViewProvider {
         responseError = null;
         for (let negotiation = 0; structuredActions && [400,422].includes(resp.status) && negotiation < 3; negotiation++) {
           responseError = await resp.text();
-          if (payload.chat_template_kwargs && /chat_template_kwargs|enable_thinking/i.test(responseError)) {
+          if (payload.chat_template_kwargs && /chat_template_kwargs|enable_thinking|unsupported[_ ]?field/i.test(responseError)) {
             this._finishActivity(responseActivity, 'The endpoint rejected the thinking-template option. Retrying without that optional parameter.', 'error');
             delete payload.chat_template_kwargs;
             omitActionTemplate = true;
@@ -2672,7 +2673,8 @@ class ReachChatViewProvider {
       const canRetry = !reply.error && !reply.content.trim() && !reply.toolCalls
         && (!reply.finishReason || ['stop', 'length'].includes(reply.finishReason));
       if (canRetry && this._controller === controller) {
-        const noThinking = /qwen/i.test(payload.model) && !(structuredActions && omitActionTemplate);
+        const noThinking = /qwen/i.test(payload.model) && !(structuredActions && omitActionTemplate)
+          && connection.provider !== 'subscription';
         const retryPayload = { ...payload, stream: false,
           ...(noThinking ? { chat_template_kwargs: { enable_thinking: false } } : {}) };
         this._finishActivity(responseActivity, emptyReplyDiagnostic(reply, payload.model)

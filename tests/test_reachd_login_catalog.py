@@ -69,7 +69,7 @@ class LoginCatalogAccessTests(RelayFixture):
                     self.assertEqual(json.loads(raw)["error"]["code"], "model_not_found")
                     send.assert_not_called()
 
-    def execute(self, model=None, *, catalog="gpu", stream=False):
+    def execute(self, model=None, *, catalog="gpu", provider=None, stream=False):
         self.state.cfg["upstream_retries"] = 0
         self.state.cfg["cache"]["enabled"] = False
         h = MagicMock()
@@ -81,7 +81,7 @@ class LoginCatalogAccessTests(RelayFixture):
         if model is not None:
             payload["model"] = model
         h._read_body.return_value = json.dumps(payload).encode()
-        return h, lambda: chat_execute(h, catalog=catalog)
+        return h, lambda: chat_execute(h, catalog=catalog, provider=provider)
 
     def test_omitted_general_model_uses_gpu_when_saved_default_is_login(self):
         self.state.cfg["request"]["default_model"] = "gpt-4o"
@@ -116,6 +116,52 @@ class LoginCatalogAccessTests(RelayFixture):
             self.assertIsNone(run())
         send.assert_called_once()
         h._relay_upstream_error.assert_called_once()
+
+    def test_provider_subpath_scopes_catalog_and_dispatch(self):
+        models = self.state.cfg["models"]
+        for alias in ("devin-chat", "codex-chat"):
+            models[alias]["enabled"] = True
+            models[alias]["public"] = True
+        for provider, expected in (("devin", {"devin-chat"}), ("codex", {"codex-chat"})):
+            status, raw, _ = self.call("GET", "/_reach/login-providers/%s/models" % provider,
+                                       {"X-Reach-Client": "studio"})
+            with self.subTest(provider=provider):
+                self.assertEqual(status, 200)
+                result = json.loads(raw)
+                self.assertEqual({row["id"] for row in result["data"]}, expected)
+                self.assertTrue(all(row["provider"] == provider for row in result["data"]))
+        # A dormant model must not leak into a provider catalog until enabled.
+        status, raw, _ = self.call("GET", "/_reach/login-providers/gemini/models",
+                                   {"X-Reach-Client": "studio"})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)["data"], [])
+        for path in ("/_reach/login-providers/nope../models",
+                     "/_reach/login-providers/DEVIN/models",
+                     "/_reach/login-providers/devin/nope/chat/completions"):
+            with self.subTest(path=path):
+                self.assertEqual(self.status("GET", path, {"X-Reach-Client": "studio"}), 404)
+        for headers in ({}, self.bearer(**TUNNEL)):
+            with self.subTest(headers=list(headers)):
+                self.assertEqual(self.status("GET", "/_reach/login-providers/devin/models", headers), 403)
+
+    def test_provider_subpath_dispatches_only_that_provider(self):
+        models = self.state.cfg["models"]
+        models["devin-chat"]["enabled"] = True
+        models["devin-chat"]["public"] = True
+        h, run = self.execute("devin-chat", catalog="login-providers", provider="devin")
+        with patch("reachd.chat.net.urlopen", return_value=MagicMock()) as send:
+            result = run()
+        self.assertIsNotNone(result)
+        h._json.assert_not_called()
+        self.assertEqual(send.call_args.args[0].full_url, self.state.bridge_url + "/chat/completions")
+        self.assertNotIn("Authorization", send.call_args.args[0].headers)
+        # The same signed-in catalog cannot serve another provider's model.
+        for alias in ("codex-chat", "gpt-4o"):
+            h, run = self.execute(alias, catalog="login-providers", provider="devin")
+            with self.subTest(alias=alias), patch("reachd.chat.net.urlopen") as send:
+                self.assertIsNone(run())
+                send.assert_not_called()
+                self.assertEqual(h._json.call_args.args[0], 404)
 
     def test_stream_preflight_cannot_fallback_across_catalogs(self):
         # Use a login route to exercise the existing buffered stream preflight;

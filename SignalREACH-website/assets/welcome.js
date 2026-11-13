@@ -2,6 +2,9 @@
 (() => {
   const board = document.querySelector('.welcome-content');
   if (!board) return;
+  // Keep the thumb-friendly arrangement specific to Android phones.
+  document.documentElement.classList.toggle('android-device',
+    navigator.userAgentData?.platform === 'Android' || /Android/i.test(navigator.userAgent));
   const themeButton = document.querySelector('.welcome-theme');
   function updateThemeButton() {
     const label = document.documentElement.dataset.theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme';

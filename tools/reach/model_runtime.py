@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .runtime import no_window_kwargs, port_open
 
-GPU_FORWARDS = ((18001, 8001), (18002, 8002), (18004, 8004), (18005, 8005), (18030, 8030))
+GPU_FORWARDS = ((18001, 8001), (18002, 8002), (18004, 8004), (18005, 8005), (18006, 8006), (18030, 8030))
 
 
 def healthy(port, direct=False):
@@ -115,6 +115,9 @@ class ModelRuntime:
                        "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                        "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
                        "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes"]
+            qwen_command = command + ["-L", "127.0.0.1:18000:127.0.0.1:8000", target]
+            self.dependencies.append(Dependency("qwen-tunnel", qwen_command, [18000],
+                                                self.root, restart_on_unhealthy=False))
             for local, remote in GPU_FORWARDS:
                 command += ["-L", "127.0.0.1:%d:127.0.0.1:%d" % (local, remote)]
             self.dependencies.append(Dependency("gpu-tunnel", command + [target],

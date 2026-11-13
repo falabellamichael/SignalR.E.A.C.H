@@ -266,9 +266,9 @@ Phase 0 ──► Phase 1 ──► Phase 2 ──► Phase 3 ──► Phase 4/
 | `studio/main.mjs lines` | 5,129 |
 | `studio/renderer/app.js lines` | 146 |
 | `studio/preload.cjs lines` | 249 |
-| `studio/agent modules` | 115 |
+| `studio/agent modules` | 116 |
 | `studio/renderer scripts` | 57 |
-| `studio/test files` | 146 |
+| `studio/test files` | 147 |
 | `static IPC handlers` | 120 |
 | `preload invoke channels` | 119 |
 | `IPC manifest entries` | 121 |

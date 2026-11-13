@@ -11,6 +11,8 @@ function bridgeModels() {
         { id: 'copilot-chat', owned_by: 'microsoft-365' },
         { id: 'chatgpt-chat', owned_by: 'openai' },
         { id: 'gemini-chat', owned_by: 'google-gemini-web' },
+        { id: 'devin-chat', owned_by: 'devin' },
+        { id: 'codex-chat', owned_by: 'openai-codex' },
         ...economyBridgeIds().map((id) => ({ id, owned_by: 'codegpt-eco' })),
         { id: 'codegpt-eco-gpt-4o-mini', owned_by: 'codegpt-eco', legacy: true },
     ];
@@ -23,12 +25,14 @@ function modelLabel(id) {
 
 // The Copilot bridge keeps its own provider, regardless of the tray's current
 // MiniChat selection. VS Code uses this OpenAI-compatible surface directly.
-function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debugCodegptDom, log, sendGemini) {
+function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debugCodegptDom, log, sendGemini,
+    sendDevin, sendCodex) {
     // Requests run one-at-a-time per provider (the pages are single-session).
     // `note` writes diagnostics into the tray log so a request stuck behind a
     // stalled predecessor is visible instead of looking like a dead bridge.
     const note = typeof log === 'function' ? log : () => {};
-    const queues = { copilot: Promise.resolve(), chatgpt: Promise.resolve(), codegpt: Promise.resolve(), gemini: Promise.resolve() };
+    const queues = { copilot: Promise.resolve(), chatgpt: Promise.resolve(), codegpt: Promise.resolve(), gemini: Promise.resolve(),
+        devin: Promise.resolve(), codex: Promise.resolve() };
     return (req, res) => {
         const json = (code, data, headers = {}) => {
             res.writeHead(code, { 'Content-Type': 'application/json', ...headers });
@@ -59,13 +63,16 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                 text = messages.length ? messages.filter(m => ['system', 'developer', 'user', 'assistant', 'tool'].includes(m.role) && typeof m.content === 'string')
                     .map(m => `${m.role}: ${m.content}`).join('\n\n') : String(body.text || '');
                 if (!text.trim()) throw new Error('Message is empty.');
-                if (openai && body.model && !bridgeModels().some((entry) => entry.id === body.model)) throw new Error('This bridge serves copilot-chat, chatgpt-chat, gemini-chat, and the codegpt-eco models.');
+                if (openai && body.model && !bridgeModels().some((entry) => entry.id === body.model)) throw new Error('This bridge serves copilot-chat, chatgpt-chat, gemini-chat, devin-chat, codex-chat, and the codegpt-eco models.');
             } catch (error) { return json(400, { error: { message: error.message } }); }
             const model = openai ? String(body.model || 'copilot-chat') : 'copilot-chat';
             const useChatgpt = model === 'chatgpt-chat';
             const useGemini = model === 'gemini-chat';
-            const useCodegpt = !useChatgpt && isEconomyModel(model);
-            const provider = useCodegpt ? 'codegpt' : useChatgpt ? 'chatgpt' : useGemini ? 'gemini' : 'copilot';
+            const useDevin = model === 'devin-chat';
+            const useCodex = model === 'codex-chat';
+            const useCodegpt = !useChatgpt && !useDevin && !useCodex && isEconomyModel(model);
+            const provider = useCodegpt ? 'codegpt' : useChatgpt ? 'chatgpt' : useGemini ? 'gemini'
+                : useDevin ? 'devin' : useCodex ? 'codex' : 'copilot';
             const controller = new AbortController();
             res.on('close', () => { if (!res.writableEnded) controller.abort(); });
             const queuedAt = Date.now();
@@ -80,7 +87,8 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                 const stream = openai && body.stream === true;
                 const id = 'chatcmpl-reach-' + start;
                 const activeModel = provider === 'chatgpt' ? 'chatgpt-chat'
-                    : provider === 'gemini' ? 'gemini-chat' : provider === 'codegpt' ? model : 'copilot-chat';
+                    : provider === 'gemini' ? 'gemini-chat' : provider === 'codegpt' ? model
+                    : provider === 'devin' ? 'devin-chat' : provider === 'codex' ? 'codex-chat' : 'copilot-chat';
                 const base = { id, created: Math.floor(start / 1000), model: activeModel };
                 const event = data => { if (!res.destroyed) res.write('data: ' + JSON.stringify(data) + '\n\n'); };
                 // Browser pages can expose provisional DOM text. Content stays
@@ -109,8 +117,9 @@ function createBridgeHandler(sendCopilot, sendChatgpt, sendCodegpt, health, debu
                         keepalive = setInterval(() => { if (!res.destroyed) res.write(': waiting for browser provider\n\n'); }, 10000);
                     }
                     const sender = provider === 'codegpt' ? sendCodegpt : provider === 'chatgpt' ? sendChatgpt
-                        : provider === 'gemini' ? sendGemini : sendCopilot;
-                    if (typeof sender !== 'function') throw new Error('Gemini browser bridge is unavailable in this tray build.');
+                        : provider === 'gemini' ? sendGemini : provider === 'devin' ? sendDevin
+                        : provider === 'codex' ? sendCodex : sendCopilot;
+                    if (typeof sender !== 'function') throw new Error('The ' + provider + ' browser bridge is unavailable in this tray build.');
                     // The requested model rides along so the CodeGPT sender can
                     // pick that economy model out of the signed-in session.
                     // Every browser page can expose provisional DOM text before

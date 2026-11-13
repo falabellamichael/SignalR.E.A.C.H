@@ -51,11 +51,17 @@ class PrivateModelRouteTests(unittest.TestCase):
                             self.assertNotIn("max_tokens", body)
                         else:
                             self.assertEqual(body["max_tokens"], requested)
-                        self.assertTrue(body["chat_template_kwargs"]["enable_thinking"])
+                        self.assertEqual(body["chat_template_kwargs"]["enable_thinking"],
+                                         alias != "lfm3-omni-2b")
                         if alias == "ornith-1.5-9b":
                             self.assertEqual((body["temperature"], body["top_p"], body["top_k"]), (0.6, 0.95, 20))
                         elif alias == "minicpm5-2b":
                             self.assertEqual((body["temperature"], body["top_p"], body["min_p"]), (1.0, 0.95, 0.0))
+                        elif alias in {"lfm3-omni-2b", "lfm3-vl-2b"}:
+                            self.assertEqual((body["temperature"], body["top_k"], body["repetition_penalty"]), (0.1, 50, 1.1))
+                        elif alias == "qwen3.6-35b-a3b-fp8":
+                            self.assertEqual(body["model"], "Qwen/Qwen3.6-35B-A3B-FP8")
+                            self.assertTrue({"temperature", "top_p", "top_k"}.isdisjoint(body))
                         else:
                             self.assertEqual((body["temperature"], body["top_p"], body["top_k"]), (1.0, 0.95, 64))
 
@@ -82,7 +88,8 @@ class PrivateModelRouteTests(unittest.TestCase):
                     self.assertEqual(body["max_tokens"], 256)
                     self.assertEqual(body["temperature"], 0.7)
                     self.assertEqual(body["top_p"], 0.9)
-                    self.assertTrue(body["chat_template_kwargs"]["enable_thinking"])
+                    self.assertEqual(body["chat_template_kwargs"]["enable_thinking"],
+                                         alias != "lfm3-omni-2b")
                     self.assertTrue(body["stream_options"]["include_usage"])
                     if options and "continuous_usage_stats" in options:
                         self.assertTrue(body["stream_options"]["continuous_usage_stats"])

@@ -1,0 +1,41 @@
+/* Keep the reversed-droplet water loop behind the welcome page and its controls. */
+.welcome-background{position:fixed;inset:0;z-index:-2;pointer-events:none;opacity:.85;background:radial-gradient(ellipse at 50% 55%,#0a3324,transparent 60%),#020805}
+.welcome-water{display:block;width:100%;height:100%;object-fit:cover;filter:hue-rotate(-55deg)}
+.welcome-water[hidden]{display:none}
+/* Turn the dark water into a light surface while retaining its ripple motion. */
+:root[data-theme=light] .welcome-background{opacity:.32;background:radial-gradient(ellipse at 50% 55%,#7fb8ac,transparent 60%),var(--bg)}
+:root[data-theme=light] .welcome-water{filter:invert(1) hue-rotate(180deg) saturate(.55);mix-blend-mode:multiply}
+:root[data-theme=light] .welcome-art .orbit-center{color:var(--accent-text)}
+:root[data-theme=light] .welcome-leg{stroke:var(--accent-text)}
+:root[data-theme=light] .welcome-leg:not(.is-active){opacity:.45}
+/* The moving sheen can cross the footer, so give its links a solid surface. */
+.welcome-secondary{padding:8px 12px;border-radius:8px;background:var(--panel)}
+.welcome-motion{background:var(--panel);color:var(--text)}
+
+/* Intro: the reversed droplet plays alone, the REACH mark rises out of the
+   crater it makes, the tiles cascade around it, then the water fades out
+   and leaves the page's own background. 'to' states only appear where the
+   resting value differs, so disabling animation restores every element's
+   natural state — no content can get stuck hidden. */
+@keyframes welcome-fade-in{from{opacity:0}}
+@keyframes welcome-hub-in{from{opacity:0;transform:translate(-50%,-50%) scale(.82)}}
+@keyframes welcome-water-back{from{opacity:1}to{opacity:0}}
+
+.welcome-art{animation:welcome-hub-in .9s cubic-bezier(.2,.75,.25,1) .35s both}
+.welcome-connections{animation:welcome-fade-in 1.1s ease .6s both}
+.welcome-actions a{animation:welcome-fade-in .7s ease both}
+.welcome-actions a:nth-child(1){animation-delay:.75s}
+.welcome-actions a:nth-child(2){animation-delay:.84s}
+.welcome-actions a:nth-child(3){animation-delay:.93s}
+.welcome-actions a:nth-child(4){animation-delay:1.02s}
+.welcome-actions a:nth-child(5){animation-delay:1.11s}
+.welcome-actions a:nth-child(6){animation-delay:1.2s}
+.welcome-actions a:nth-child(7){animation-delay:1.29s}
+.welcome-actions a:nth-child(8){animation-delay:1.38s}
+.welcome-line{animation:welcome-fade-in .8s ease 1.7s both}
+.welcome-secondary{animation:welcome-fade-in .8s ease 1.9s both}
+.welcome-motion{animation:welcome-fade-in .8s ease 2s both}
+.welcome-theme{animation:welcome-fade-in .8s ease 2s both}
+.welcome-cover:before{animation:welcome-fade-in 1.8s ease .5s both}
+.welcome-background{animation:welcome-water-back 1.5s ease .8s both}
+@media(prefers-reduced-motion:reduce){.welcome-page *{animation:none!important}}

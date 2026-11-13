@@ -70,7 +70,7 @@ const { createCliSettingsBridge, SCOPE_FIELDS: settingsScopeFields } = require('
 const { McpManager } = require('./agent/mcp.cjs');
 const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
-const { resolveEndpoint, providerRequestOptions, isLoginProvidersEndpoint } = require('./agent/endpoint.cjs');
+const { resolveEndpoint, providerRequestOptions, isLoginProvidersEndpoint, LOGIN_PROVIDERS_ENDPOINT } = require('./agent/endpoint.cjs');
 const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
 const { testPlugin, getGitInfo, sanitizePlugins } = require('./agent/plugins.cjs');
@@ -435,7 +435,7 @@ async function listProviderModels(payload = {}) {
     const ids = (data.data || []).map(m => m.id).filter(Boolean).sort();
     // Tell the caller which connection these models came from, so the UI can
     // say so instead of implying they came from the active one.
-    return { ok: true, models: ids, connectionId, connectionName: isLoginProvidersEndpoint(base) ? 'Login Providers' : label, endpoint,
+    return { ok: true, models: ids, connectionId, connectionName: isLoginProvidersEndpoint(base) ? (base === LOGIN_PROVIDERS_ENDPOINT ? 'Login Providers' : label) : label, endpoint,
       ...(isLoginProvidersEndpoint(base) ? { catalog: 'login-providers' } : {}) };
   } catch (e) {
     return { ok: false, err: e.message };

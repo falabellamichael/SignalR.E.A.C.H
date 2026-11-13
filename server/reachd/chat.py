@@ -1,6 +1,6 @@
 """The chat request pipeline: transform, upstream relay, finalize."""
 
-from reachd.model_routes import catalog_models, dispatch, private_route, service_label
+from reachd.model_routes import catalog_models, dispatch, login_provider_name, private_route, service_label
 
 import json
 import time
@@ -93,7 +93,7 @@ def merge_system_messages(messages):
     return messages
 
 
-def chat_execute(h, *, catalog=None):
+def chat_execute(h, *, catalog=None, provider=None):
     ip = h._client_ip()
     if not h._check_ip_lists():
         return
@@ -154,6 +154,11 @@ def chat_execute(h, *, catalog=None):
     models = core.STATE.cfg.get("models", {})
     if catalog:
         models = catalog_models(models, catalog, include_private=h._admin_local())
+    if provider is not None:
+        # Per-subscription endpoint (e.g. /_reach/login-providers/devin): the
+        # connection may only dispatch models owned by its provider account.
+        models = {alias: spec for alias, spec in models.items()
+                  if login_provider_name(spec) == provider}
     requested = payload.get("model")
     if not requested:
         requested = req_cfg.get("default_model", "")

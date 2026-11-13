@@ -7,9 +7,12 @@ const PROVIDERS = Object.freeze([
     Object.freeze({ id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/sign_in' }),
     Object.freeze({ id: 'zai', name: 'Z.ai / GLM', url: 'https://chat.z.ai/' }),
     Object.freeze({ id: 'minimax', name: 'MiniMax', url: 'https://agent.minimax.io/' }),
+    Object.freeze({ id: 'devin', name: 'Devin', url: 'https://app.devin.ai/' }),
+    Object.freeze({ id: 'codex', name: 'Codex', url: 'https://chatgpt.com/codex' }),
 ]);
 const AUTH_HOSTS = new Set(['accounts.google.com', 'appleid.apple.com', 'account.apple.com',
-    'login.microsoftonline.com', 'login.live.com']);
+    'login.microsoftonline.com', 'login.live.com',
+    'auth.openai.com', 'auth0.openai.com', 'chat.openai.com', 'auth.devin.ai']);
 
 function allowedNavigation(provider, value) {
     try {

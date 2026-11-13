@@ -4,17 +4,19 @@ GPU_MODELS = {
     "gemma-4-12b-qat": ("google/gemma-4-12B-it-qat-q4_0-unquantized", 18001, "Gemma 4 12B QAT FP8", "FP8 (BF16 vision)", 0),
     "ornith-1.5-9b": ("ornith-ai/Ornith-1.5-9B", 18002, "Ornith 1.5 9B", "FP8 (BF16 vision)", 0),
     "minicpm5-2b": ("openbmb/MiniCPM5-2B", 18004, "MiniCPM5 2B", "FP8", 0),
-    "lfm3-omni-2b": ("LiquidAI/LFM3-VL-2B", 18005, "LFM3 VL 2B (legacy alias)", "BF16 vision, reasoning and tools", 0),
+    "lfm3-omni-2b": ("LiquidAI/LFM3-Omni-2B", 18006, "LFM3 Omni 2B INT4", "INT4 omni (audio+image), tools", 1),
     "lfm3-vl-2b": ("LiquidAI/LFM3-VL-2B", 18005, "LFM3 VL 2B", "BF16 vision, reasoning and tools", 0),
+    "qwen3.6-35b-a3b-fp8": ("Qwen/Qwen3.6-35B-A3B-FP8", 18000, "Qwen3.6 35B A3B FP8", "FP8", 0),
 }
-GPU_TP_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b"))
+GPU_TP_MODELS = frozenset(("qwen3.6-35b-a3b-fp8", "gemma-4-12b-qat", "ornith-1.5-9b"))
 GPU_TOOL_MODELS = frozenset(("gemma-4-12b-qat", "minicpm5-2b", "lfm3-omni-2b", "lfm3-vl-2b"))
-GPU_DISABLED_MODELS = frozenset(("minicpm5-2b", "gemma-4-12b-qat"))
-# The legacy Omni selector now routes to the reasoning-capable VL replacement.
-GPU_THINKING_MODELS = frozenset(("gemma-4-12b-qat", "ornith-1.5-9b", "minicpm5-2b", "lfm3-omni-2b", "lfm3-vl-2b"))
-GPU_CONTEXT_WINDOWS = {"gemma-4-12b-qat": 131072, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856,
-                       "lfm3-omni-2b": 131072, "lfm3-vl-2b": 131072}
+GPU_DISABLED_MODELS = frozenset(("qwen3.6-35b-a3b-fp8", "minicpm5-2b", "gemma-4-12b-qat"))
+# Omni does not support reasoning; VL defaults to thinking with room for an answer.
+GPU_THINKING_MODELS = frozenset(("qwen3.6-35b-a3b-fp8", "gemma-4-12b-qat", "ornith-1.5-9b", "minicpm5-2b", "lfm3-vl-2b"))
+GPU_CONTEXT_WINDOWS = {"qwen3.6-35b-a3b-fp8": 32768, "gemma-4-12b-qat": 131072, "ornith-1.5-9b": 61776, "minicpm5-2b": 39856,
+                       "lfm3-omni-2b": 128000, "lfm3-vl-2b": 131072}
 GPU_SAMPLING_DEFAULTS = {
+    "qwen3.6-35b-a3b-fp8": {},
     "ornith-1.5-9b": {"temperature": 0.6, "top_p": 0.95, "top_k": 20},
     "gemma-4-12b-qat": {"temperature": 1.0, "top_p": 0.95, "top_k": 64},
     "minicpm5-2b": {"temperature": 1.0, "top_p": 0.95, "min_p": 0.0},
@@ -26,7 +28,10 @@ DIRECT_MODELS = (
     "glm-5.2", "MiniMax-M3", "gpt-4o", "gpt-5", "claude-sonnet-4.6",
     "claude-opus-4.6", "gemini-3.7-flash", "gemini-2.5-flash", "gpt-4o-mini",
 )
-BROWSER_MODELS = ("chatgpt-chat", "copilot-chat", "gemini-chat")
+BROWSER_MODELS = ("chatgpt-chat", "copilot-chat", "gemini-chat", "devin-chat", "codex-chat")
+# Dormant browser providers ship disabled/private until their signed-in
+# session exists; enable after the account window confirms access.
+BROWSER_MODELS_DORMANT = frozenset(("gemini-chat", "devin-chat", "codex-chat"))
 
 
 def is_gpu_model(spec):
@@ -53,15 +58,30 @@ def catalog_models(models, catalog, *, include_private=False):
             and (include_private or spec.get("public", True))}
 
 
-def login_provider_catalog(models):
+def login_provider_name(spec):
+    """Subscription account that backs one login model ('codegpt' or the
+    browser provider id, e.g. 'devin'). Empty for non-login specs."""
+    if not isinstance(spec, dict):
+        return ""
+    upstream = spec.get("upstream", "")
+    if upstream in {"bridge/" + name for name in BROWSER_MODELS}:
+        return upstream[7:-5]
+    if is_login_provider_model(spec):
+        return "codegpt"
+    return ""
+
+
+def login_provider_catalog(models, provider=None):
     data = []
-    for alias, spec in sorted(catalog_models(models, "login-providers", include_private=True).items()):
-        upstream = spec["upstream"]
-        provider = upstream[7:-5] if upstream in {"bridge/" + name for name in BROWSER_MODELS} else "codegpt"
+    rows = catalog_models(models, "login-providers", include_private=True)
+    if provider is not None:
+        rows = {alias: spec for alias, spec in rows.items()
+                if login_provider_name(spec) == provider}
+    for alias, spec in sorted(rows.items()):
         data.append({"id": alias, "object": "model", "created": 1715367049,
                      "owned_by": "SignalR.E.A.C.H", "name": alias,
                      "description": spec.get("description", ""),
-                     "provider": provider, "requires_login": True,
+                     "provider": login_provider_name(spec), "requires_login": True,
                      "catalog": "login-providers"})
     return {"object": "list", "catalog": "login-providers", "data": data}
 
@@ -113,7 +133,11 @@ def dispatch(upstream, payload, state, spec=None):
             if alias == "gemma-4-12b-qat" and "tools" in data:
                 from reachd.gemma_tools import compatible_tools
                 data["tools"] = compatible_tools(data["tools"])
-            if alias in GPU_THINKING_MODELS:
+            if alias == "lfm3-omni-2b":
+                kwargs = data.get("chat_template_kwargs")
+                data["chat_template_kwargs"] = {**(kwargs if isinstance(kwargs, dict) else {}),
+                                                "enable_thinking": False}
+            elif alias in GPU_THINKING_MODELS:
                 thinking = (spec or {}).get("enable_thinking")
                 if thinking is None:
                     thinking = True
@@ -122,8 +146,15 @@ def dispatch(upstream, payload, state, spec=None):
                 kwargs = data.get("chat_template_kwargs")
                 if not isinstance(kwargs, dict):
                     kwargs = {}
+                kwargs = dict(kwargs)
                 kwargs.setdefault("enable_thinking", thinking)
                 data["chat_template_kwargs"] = kwargs
+                output = data.get("max_tokens")
+                if (alias == "lfm3-vl-2b" and kwargs.get("enable_thinking")
+                        and type(output) is int and output > 0):
+                    # vLLM closes reasoning at this budget, leaving room for content.
+                    # Preserve an explicit caller budget and the total output limit.
+                    data.setdefault("thinking_token_budget", output // 2)
             for field, value in GPU_SAMPLING_DEFAULTS[alias].items():
                 data.setdefault(field, value)
             if data.get("stream"):
@@ -154,6 +185,7 @@ def deployment_defaults(spec_defaults):
                          "max_tokens_cap": 0, "allow_tools": alias in GPU_TOOL_MODELS}
     models.update({alias: {**spec_defaults, "upstream": "bridge/" + alias,
                           "description": "Provider browser chat (existing sign-in)",
-                          "enabled": alias != "gemini-chat", "public": alias != "gemini-chat"}
+                          "enabled": alias not in BROWSER_MODELS_DORMANT,
+                          "public": alias not in BROWSER_MODELS_DORMANT}
                    for alias in BROWSER_MODELS})
     return models

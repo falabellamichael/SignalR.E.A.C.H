@@ -144,7 +144,8 @@ function configureModels(models) {
 
 function completionRequest(body, routes) {
   if (!plain(body) || Buffer.byteLength(JSON.stringify(body)) > MAX_BODY) fail(400, 'invalid_request', 'Invalid completion request.');
-  if (Object.keys(body).some(k => !FIELDS.has(k))) fail(400, 'unsupported_field', 'This request includes unsupported fields.');
+  const unsupported = Object.keys(body).filter(k => !FIELDS.has(k));
+  if (unsupported.length) fail(400, 'unsupported_field', `This request includes unsupported field${unsupported.length === 1 ? '' : 's'}: ${unsupported.join(', ')}.`);
   const route = routes.get(body.model);
   if (!route || route.metered !== true) fail(404, 'model_unavailable', 'This model is not available for metered access.');
   if (route.access === 'requests') return gpuRequest(body, route);
@@ -192,7 +193,32 @@ function completionRequest(body, routes) {
 
 function gpuRequest(body, route) {
   const { response_format: format, ...textBody } = body;
+  // SimpleRAG sends sampling controls in its OpenAI-compatible requests.
+  // Only forward these on the Strata route, which implements them.
+  const sampling = {};
+  if (route.bridge.model === 'Qwen3.8-27B') {
+    if (Object.hasOwn(textBody, 'stream_options')) {
+      const options = textBody.stream_options;
+      if (!plain(options) || Object.keys(options).some(key => key !== 'include_usage')
+        || (Object.hasOwn(options, 'include_usage') && typeof options.include_usage !== 'boolean'))
+        fail(400, 'invalid_stream_options', 'Only include_usage is supported.');
+      delete textBody.stream_options;
+    }
+    for (const [field, min, max] of [['temperature', 0, 2], ['top_p', 0, 1],
+      ['frequency_penalty', -2, 2], ['presence_penalty', -2, 2]]) {
+      if (!Object.hasOwn(textBody, field)) continue;
+      const value = textBody[field];
+      if (!Number.isFinite(value) || value < min || value > max)
+        fail(400, 'invalid_parameter', `Invalid ${field}.`);
+      sampling[field] = value;
+      delete textBody[field];
+    }
+  }
   const result = bridgeRequest(textBody, route);
+  if (Object.keys(sampling).length) {
+    Object.assign(result.payload, sampling);
+    result.fingerprint = createHash('sha256').update(result.fingerprint).update(canonical(sampling)).digest('hex');
+  }
   // No product ceiling: vLLM reserves the available context after tokenizing
   // the actual prompt. Explicit client and operator limits remain supported.
   const output = body.max_completion_tokens ?? body.max_tokens ?? route.maxOutputTokens;
@@ -212,6 +238,15 @@ function gpuRequest(body, route) {
   const actionReply = format !== undefined || result.payload.messages.some(message => message.role === 'system'
     && message.content.includes('EXECUTABLE ACTION RESPONSE:'));
   if (actionReply) result.payload.chat_template_kwargs = { ...generation.chat_template_kwargs, enable_thinking: false };
+  if (route.bridge.model === 'Qwen3.8-27B' && result.payload.chat_template_kwargs?.enable_thinking && output > 1) {
+    // The output cap includes reasoning; leave room for the visible answer.
+    result.payload.reasoning_budget_tokens = Math.floor(output / 2);
+  }
+  if (route.bridge.model === 'LiquidAI/LFM3-VL-2B'
+      && result.payload.chat_template_kwargs?.enable_thinking && output !== undefined) {
+    // Keep thinking enabled while reserving half the output allowance for content.
+    result.payload.thinking_token_budget = Math.floor(output / 2);
+  }
   if (format !== undefined) {
     const jsonObject = plain(format) && format.type === 'json_object' && Object.keys(format).length === 1;
     if (!jsonObject) {
@@ -397,12 +432,14 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       active += 1;
       counted = true;
       dispatched = true;
+      const liveStrata = requestMode && !decision && payload.stream && route.bridge.model === 'Qwen3.8-27B';
       const upstream = await fetchImpl(requestMode ? gpuBridge(route.bridge).url : completionUrl, {
         method: 'POST', redirect: 'error', signal: controller.signal,
         headers: requestMode ? { 'content-type': 'application/json', 'cache-control': 'no-store' }
           : { 'content-type': 'application/json', authorization: `Bearer ${upstreamKey}`,
             'x-reach-metered': 'provider-v1', 'cache-control': 'no-store' },
-        body: JSON.stringify(gpuBridge(route.bridge) && !decision ? { ...payload, stream: false } : payload),
+        body: JSON.stringify(liveStrata ? { ...payload, stream_options: { include_usage: true } }
+          : gpuBridge(route.bridge) && !decision ? { ...payload, stream: false } : payload),
       });
       if (!upstream.ok) {
         let detail = '';
@@ -423,6 +460,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       const contentType = upstream.headers.get('content-type') || '';
       let record;
       let usage;
+      let terminal = '';
       if (decision) {
         const parsed = JSON.parse(await boundedText(upstream));
         if (!plain(parsed.answers) || !integer(parsed.usage?.input_tokens, 0, 1_000_000_000)
@@ -430,6 +468,12 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
           fail(502, 'invalid_provider_response', 'Invalid decision response.');
         usage = { promptTokens: parsed.usage.input_tokens, completionTokens: 0 };
         record = { contentType: 'application/json; charset=utf-8', body: JSON.stringify({ ...parsed, model: route.id }) };
+      } else if (liveStrata) {
+        if (!/^text\/event-stream(?:\s*;|$)/i.test(contentType)) {
+          await upstream.body?.cancel();
+          fail(502, 'invalid_bridge_response', 'Strata did not return an event stream.');
+        }
+        ({ record, usage, terminal } = await forwardStream(upstream, res, route.id, controller.signal, route));
       } else if (requestMode) {
         record = await gpuResponse(upstream, payload, route, controller.signal, measured => { usage = measured; });
         if (controller.signal.aborted || res.destroyed) fail(408, 'request_cancelled', 'The request was cancelled before completion.');
@@ -460,7 +504,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         res.setHeader('X-Reach-Usage-In', String(usage.promptTokens));
         res.setHeader('X-Reach-Usage-Out', String(usage.completionTokens));
       }
-      if (res.headersSent) { res.end('data: [DONE]\n\n'); }
+      if (res.headersSent) { res.end(terminal + 'data: [DONE]\n\n'); }
       else {
         res.writeHead(200, { 'content-type': record.contentType, 'cache-control': 'no-store' });
         res.end(record.body);
@@ -660,7 +704,7 @@ function jsonAsStream(parsed) {
   return { contentType: 'text/event-stream', body: `data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n` };
 }
 
-async function forwardStream(upstream, res, model, signal) {
+async function forwardStream(upstream, res, model, signal, strataRoute) {
   if (!upstream.body) fail(502, 'empty_response', 'The provider returned no stream.');
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
@@ -670,29 +714,62 @@ async function forwardStream(upstream, res, model, signal) {
   let usage = null;
   let body = '';
   let seenFinish = false;
-  const send = async (event) => {
+  let seenOutput = false;
+  let terminal = '';
+  const send = async (event, replay = true) => {
     if (res.destroyed || signal.aborted) fail(502, 'stream_interrupted', 'The model stream was interrupted.');
     if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-    body += event;
-    if (Buffer.byteLength(body) > MAX_RESPONSE - 64) fail(502, 'response_too_large', 'The model response exceeded the service size limit.');
+    if (replay) {
+      body += event;
+      if (Buffer.byteLength(body) > MAX_RESPONSE - 64) fail(502, 'response_too_large', 'The model response exceeded the service size limit.');
+    }
     if (!res.write(event)) await once(res, 'drain', { signal });
   };
   const processEvent = async (raw) => {
     const data = raw.split('\n').filter(line => line.startsWith('data:')).map(line => line.slice(5).trimStart()).join('\n');
-    if (!data) return;
+    if (!data) {
+      // Keep the connection open during Strata prefill without storing transport comments in replays.
+      if (strataRoute && !doneReceived && !seenFinish && raw.split('\n').some(line => line.startsWith(':'))) {
+        await send(': keep-alive\n\n', false);
+      }
+      return;
+    }
     if (doneReceived) fail(502, 'invalid_provider_stream', 'The provider sent data after stream completion.');
     if (data.trim() === '[DONE]') { doneReceived = true; return; }
     let parsed;
     try { parsed = JSON.parse(data); } catch { fail(502, 'invalid_provider_stream', 'The provider returned an invalid stream.'); }
     if (!plain(parsed) || parsed.error) fail(502, 'provider_stream_error', 'The provider could not complete the stream. Usage is pending reconciliation.');
-    const reported = providerUsage(parsed);
+    if (strataRoute) bridgeEnvelope(parsed, strataRoute);
+    const reported = providerUsage(strataRoute ? { ...parsed, usage_source: 'provider' } : parsed);
     if (reported) {
       if (usage && canonical(usage) !== canonical(reported)) fail(502, 'ambiguous_usage', 'The provider reported conflicting usage records.');
       usage = reported;
     }
-    if (Array.isArray(parsed.choices) && parsed.choices.some(c => c.finish_reason !== null && c.finish_reason !== undefined)) seenFinish = true;
     if (!Array.isArray(parsed.choices)) fail(502, 'invalid_provider_stream', 'The provider returned an invalid stream event.');
-    await send(`data: ${JSON.stringify(completionOutput(parsed, model))}\n\n`);
+    if (strataRoute && (parsed.choices.length > 1 || parsed.choices.some(choice =>
+      !plain(choice) || (choice.index !== undefined && choice.index !== 0) || !plain(choice.delta) || seenFinish))) {
+      fail(502, 'invalid_provider_stream', 'Strata returned an invalid stream choice.');
+    }
+    if (strataRoute) {
+      seenOutput ||= parsed.choices.some(({ delta }) =>
+        ['content', 'reasoning_content', 'reasoning', 'thought', 'refusal'].some(key =>
+          typeof delta[key] === 'string' && !!delta[key].trim())
+        || (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0)
+        || (plain(delta.function_call) && Object.keys(delta.function_call).length > 0));
+    }
+    if (parsed.choices.some(c => c.finish_reason !== null && c.finish_reason !== undefined)) seenFinish = true;
+    const output = completionOutput(strataRoute ? { ...parsed, usage_source: 'provider' } : parsed, model);
+    if (strataRoute && reported) {
+      const rate = parsed.timings?.predicted_per_second;
+      if (Number.isFinite(rate) && rate > 0) output.usage = { ...output.usage, generation_tokens_per_second: rate };
+    }
+    const event = `data: ${JSON.stringify(output)}\n\n`;
+    // A client can see the deltas now; the success marker waits for settlement.
+    if (strataRoute && seenFinish) {
+      terminal += event;
+      if (Buffer.byteLength(body) + Buffer.byteLength(terminal) > MAX_RESPONSE - 64)
+        fail(502, 'response_too_large', 'The model response exceeded the service size limit.');
+    } else await send(event);
   };
   try {
     while (true) {
@@ -713,6 +790,7 @@ async function forwardStream(upstream, res, model, signal) {
     }
     if (pending.trim()) await processEvent(pending);
     if (!doneReceived || !seenFinish || !usage) fail(502, 'usage_unavailable', 'The provider stream ended without verified final usage. Your reservation is pending reconciliation.');
-    return { record: { contentType: 'text/event-stream', body: `${body}data: [DONE]\n\n` }, usage };
+    if (strataRoute && !seenOutput) fail(502, 'empty_response', 'Strata returned an empty stream.');
+    return { record: { contentType: 'text/event-stream', body: `${body}${terminal}data: [DONE]\n\n` }, usage, terminal };
   } finally { await reader.cancel().catch(() => {}); }
 }

@@ -325,6 +325,36 @@ const CORE_TOOLS = {
       return runCommand(cmd, [], { cwd: ctx.projectDir, shell: true, signal: ctx.signal });
     },
   },
+  /* Codex write_stdin parity: a persistent piped shell for interactive work.
+   * The session's `command` is repeated on every call so the approval prompt
+   * and the command sandbox both see what this call operates on. */
+  'shell.session': {
+    class: 'exec', tier: 'core', approval: true, budget: 40000,
+    help: 'a persistent interactive shell for commands that need stdin, a REPL, or must stay alive between calls (dev server, debugger, interactive prompt) — use shell for commands that simply run to exit. Ops: open (command to start, e.g. "python -i" or "npm run dev"; returns sessionId), write (sessionId + chars; a newline submits the line — also returns new output), read (sessionId; drains output since last read), close (sessionId; kills it). Every call repeats command (the session\'s command) and sessions die when the run stops.',
+    example: { action: 'shell.session', op: 'open', command: 'node' },
+    async execute(args, ctx) {
+      if (!ctx.projectDir) return { ok: false, error: 'No project is bound; shell sessions need a project directory.' };
+      const sessions = require('./shell-session.cjs');
+      sessions.watchSignal(ctx.agentId, ctx.signal);
+      const op = String(args.op || 'open').trim().toLowerCase();
+      if (op === 'open') {
+        const command = String(args.command || '').trim();
+        if (!command) return { ok: false, error: 'A command is required to open a session.' };
+        const opened = sessions.open(ctx.agentId, command, ctx.projectDir);
+        if (opened.ok && Number(args.yieldMs) > 0) {
+          /* yieldMs on open waits for the first output (banner, prompt, early
+           * failure) WITHOUT draining it — the caller's next read still sees
+           * everything from offset 0. */
+          await new Promise(r => setTimeout(r, Math.min(10000, Number(args.yieldMs))));
+        }
+        return opened;
+      }
+      if (op === 'write') return sessions.write(ctx.agentId, args.sessionId, args.chars ?? '', args.yieldMs ?? 1000);
+      if (op === 'read') return sessions.read(ctx.agentId, args.sessionId, args.yieldMs ?? 0);
+      if (op === 'close') return sessions.close(ctx.agentId, args.sessionId);
+      return { ok: false, error: `Unknown shell.session op '${op}'. Use 'open', 'write', 'read' or 'close'.` };
+    },
+  },
   websearch: {
     class: 'browse', tier: 'core', approval: false, budget: 40000,
     help: 'opens a web search in your in-app browser tab and returns its visible search results. Open result links to read their pages.',
@@ -595,7 +625,7 @@ function namesByTier(tier) {
 
 /* Described in the default (JSON-contract) prompt. `memory` belongs here: an
  * agent that is never told it can read/append its own memory will not use it. */
-const CORE_PROMPT_TOOLS = ['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'browse', 'websearch', 'browser', 'browser.click', 'browser.type', 'memory'];
+const CORE_PROMPT_TOOLS = ['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'shell.session', 'browse', 'websearch', 'browser', 'browser.click', 'browser.type', 'memory'];
 
 function toolHelp(tier = 'core', disabled = []) {
   const tiers = Array.isArray(tier) ? tier : [tier];

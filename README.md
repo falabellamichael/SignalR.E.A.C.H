@@ -38,6 +38,31 @@
   </table>
 </details>
 
+## Why SignalREACH
+
+**REACH Studio** is a desktop agent workspace for Windows, macOS, and Linux:
+
+- **Agent teams** - create custom personas (each with its own `SOUL.md` and
+  `MEMORY.md`) and dispatch teams for parallel reviews or sequential handoffs.
+- **Built-in browser** - tabs, bookmarks, and find; agents can browse, search,
+  read, click, and type using your conversation's approval setting.
+- **Budgets and telemetry** - per-agent budget controls, live activity, and a
+  telemetry dashboard that can read loaded models from Ollama, LM Studio, or
+  Lemonade.
+- **Files and editing** - project-bound conversations, branching, and file edits
+  you can review before they are written.
+
+Plus a **VS Code extension** for chat and agent tools inside your editor.
+
+**Bring your own key (BYOK).** SignalREACH does not resell model access. Connect
+your own OpenAI, Gemini, or DeepSeek API key, or a local Ollama, LM Studio, or
+Lemonade server, through any OpenAI-compatible endpoint. Your provider's pricing
+and limits apply.
+
+**Supporting the project:** the code is MIT-licensed. Optional paid options are
+REACH Subscription Plus (hosted models), GitHub Sponsors, and the Microsoft Store
+build. A Pro tier may come later.
+
 ## Workspace overview
 
 SignalREACH is a multi-product repository for OpenAI-compatible AI access and
@@ -255,7 +280,11 @@ not claim a token-saving percentage. Compare total model usage, retries and
 answer quality before deciding whether the feature saves cost for your workload.
 The relay and desktop tray have no Jev routing changes.
 
-## CodeGPT economy models
+## CodeGPT economy models (personal local bridge)
+
+> This is an optional bridge to *your own* signed-in CodeGPT session on your own
+> machine. It is not a hosted or shared service, and SignalREACH does not offer
+> or resell access to any provider's models. Follow your provider's terms.
 
 CodeGPT's paid plans include an **economy tier** that costs no credits. The list is
 **discovered live**, never hardcoded: the CodeGPT extension keeps a local sidecar
@@ -1044,12 +1073,12 @@ any OpenAI client ──► https://<tunnel>/v1  (public URL · API key required
                           ▼
              OmniRoute http://127.0.0.1:20128/v1
                           ▼
-              codegpt free tier (gpt-4o)
+              your configured upstream provider
 ```
 
 - The relay binds **loopback only**; the tunnel exposes just the key-gated relay surface. OmniRoute's dashboard and API keys are never reachable from outside, and the relay's admin API (`/_reach/*`) refuses non-local clients even if the bind host is widened.
 - `/v1/models` serves exactly the enabled aliases; anything else returns `model_not_found`.
-- Rate limiting protects the free upstream: per-IP requests/minute + daily token budget, a global cap, and burst headroom (all tunable in Settings).
+- Rate limiting protects your upstream: per-IP requests/minute + daily token budget, a global cap, and burst headroom (all tunable in Settings).
 - Requests are logged locally (IP, model, tokens, latency) for the Usage/Logs pages and pruned on the configured retention.
 
 ## Security

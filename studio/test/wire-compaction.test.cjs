@@ -23,8 +23,8 @@ const completeSummary = (() => {
 function history() {
   return [
     { role: 'user', content: originalRequest },
-    { role: 'assistant', content: 'OLDER_SOURCE\n' + 'a'.repeat(13900) + '\n' + archiveTail },
-    { role: 'assistant', content: 'RECENT_SOURCE\n' + 'b'.repeat(13900) + '\nRECENT_SOURCE_TAIL' },
+    { role: 'assistant', content: 'OLDER_SOURCE\n' + 'a'.repeat(11000) + '\n' + archiveTail },
+    { role: 'assistant', content: 'RECENT_SOURCE\n' + 'b'.repeat(11000) + '\nRECENT_SOURCE_TAIL' },
     { role: 'user', content: latestRequest },
   ];
 }

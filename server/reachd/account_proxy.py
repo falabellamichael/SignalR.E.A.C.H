@@ -37,6 +37,8 @@ MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models", "/api/v1/mod
                "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions",
                "/api/v1/chat/completions": "/v1/chat/completions"}
 MAX_REQUEST = 512 * 1024
+MAX_QWEN_REQUEST = 2 * 1024 * 1024
+QWEN_LONG_CONTEXT_TIMEOUT = 900
 MAX_RESPONSE = 1024 * 1024
 MAX_STREAM = 2 * 1024 * 1024
 # Stripe-Signature and the PayPal transmission headers authenticate the payment
@@ -114,6 +116,7 @@ def try_account_proxy(h):
         return False
     path = parts.path
     customer = customer_session(h.headers)
+    is_model_chat = customer and h.command == "POST" and MODEL_PATHS.get(path) == "/v1/chat/completions"
     if path not in ACCOUNT_PATHS and not (customer and path in MODEL_PATHS):
         return False
     # The route allowlist is intentionally exact; no prefix-based access to
@@ -150,8 +153,9 @@ def try_account_proxy(h):
             length = int(lengths[0]) if lengths else 0
         except ValueError:
             length = -1
-        if length < 0 or length > MAX_REQUEST:
-            _error(h, 413 if length > MAX_REQUEST else 400, "body_limit", "Invalid account request size.")
+        request_limit = MAX_QWEN_REQUEST if is_model_chat else MAX_REQUEST
+        if length < 0 or length > request_limit:
+            _error(h, 413 if length > request_limit else 400, "body_limit", "Invalid account request size.")
             return True
         if h.command == "GET" and length:
             _error(h, 400, "unexpected_body", "GET requests cannot contain a body.")
@@ -161,11 +165,16 @@ def try_account_proxy(h):
         if body is not None and len(body) != length:
             _error(h, 400, "incomplete_body", "The account request body was incomplete.")
             return True
-        if customer and h.command == "POST" and MODEL_PATHS.get(path) == "/v1/chat/completions":
+        if is_model_chat:
             telemetry = AccountTelemetry(h, body)
+        is_qwen = telemetry is not None and telemetry.model == "qwen3.8-27b"
+        if length > MAX_REQUEST and not is_qwen:
+            telemetry.status, telemetry.error = 413, "body_limit"
+            _error(h, 413, "body_limit", "Invalid account request size.")
+            return True
         h.connection.settimeout(135)
         connection_class = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-        connection = connection_class(host, port, timeout=125)
+        connection = connection_class(host, port, timeout=QWEN_LONG_CONTEXT_TIMEOUT if is_qwen else 125)
         headers = {key: h.headers[key] for key in FORWARD_HEADERS if h.headers.get(key) is not None}
         headers["X-Reach-Client-IP"] = h._client_ip()
         headers["Content-Length"] = str(length)
@@ -177,7 +186,7 @@ def try_account_proxy(h):
         if parts.query:
             forward_path += "?" + parts.query
         connection.request(h.command, forward_path, body=body, headers=headers)
-        if customer and h.command == "POST" and MODEL_PATHS.get(path) == "/v1/chat/completions":
+        if is_model_chat:
             disconnect_watch = threading.Thread(target=_watch_chat_disconnect,
                 args=(h.connection, connection.sock, watch_stopped, client_disconnected), daemon=True)
             disconnect_watch.start()
@@ -213,7 +222,8 @@ def try_account_proxy(h):
             h.send_header("Transfer-Encoding", "chunked")
             h.end_headers()
             sent_headers = True
-            size, deadline = 0, time.monotonic() + 130
+            size = 0
+            deadline = time.monotonic() + (QWEN_LONG_CONTEXT_TIMEOUT if is_qwen else 130)
             while True:
                 data = upstream.read1(16384)
                 if not data:

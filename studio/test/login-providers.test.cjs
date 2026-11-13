@@ -43,6 +43,28 @@ test('Login Providers retain their fixed local root and never inherit keys or re
   }
 });
 
+test('per-subscription roots keep the local marker and their provider segment', async () => {
+  const devin = endpoint + '/devin';
+  const codex = endpoint + '/codex';
+  for (const root of [devin, codex]) {
+    assert.equal(await resolveEndpoint(root), root);
+    assert.equal(await resolveEndpoint(root + '/'), root);
+    assert.equal(await resolveEndpoint(root + '/models'), root);
+    assert.equal(await resolveEndpoint(root + '/chat/completions'), root);
+    const options = providerRequestOptions(root, 'do-not-forward');
+    assert.equal(options.headers['X-Reach-Client'], 'studio');
+    assert.equal(options.headers.Authorization, undefined);
+    assert.equal(options.redirect, 'error');
+  }
+  // The segments are independent: one subscription's root never resolves to the other's.
+  assert.notEqual(await resolveEndpoint(devin + '/models'), codex);
+  // Only a single lowercase provider segment qualifies; deeper paths are not subscription roots.
+  for (const bad of [endpoint + '/devin/extra', endpoint + '/Devin', endpoint + '/devin/v1', endpoint + '/dev-in/../codex']) {
+    const options = providerRequestOptions(bad, 'k');
+    assert.equal(options.headers['X-Reach-Client'], undefined, bad);
+  }
+});
+
 test('actual agent answer and summary transports send the local marker without a connection key', async t => {
   const originalFetch = global.fetch;
   const requests = [];

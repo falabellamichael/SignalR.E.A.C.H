@@ -17,7 +17,7 @@ function disabledTools(settings = {}, tools = {}) {
     // tools able to modify project files.
     if (!f.agent || !f.terminal && tool.class === 'exec'
       || !f.web && (tool.class === 'browse' || tool.tier === 'browser')
-      || !f.workspace && (['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell'].includes(name)
+      || !f.workspace && (['read', 'write', 'edit_patch', 'glob', 'search', 'list', 'shell', 'shell.session'].includes(name)
         || tool.tier === 'reach' || tool.tier === 'code')) disabled.add(name);
   }
   return [...disabled];

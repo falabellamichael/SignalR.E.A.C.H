@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const MAX_METADATA_BYTES = 64 * 1024;
+const MAX_RULES_CHARS = 6000;
 
 function readMetadata(root, relative) {
   try {
@@ -13,6 +14,18 @@ function readMetadata(root, relative) {
     const text = fs.readFileSync(file, 'utf8');
     return text.includes('\0') ? '' : text;
   } catch { return ''; }
+}
+
+/* Codex parity: a project-level rules file. The first matching name wins;
+ * the text is capped so a repository cannot inflate the system prompt, and
+ * callers must label it as repository content — conventions to follow, never
+ * permission to bypass approvals, edit review, or the untrusted-data rules. */
+function readProjectRules(root) {
+  for (const name of ['AGENTS.md', 'AGENT.md', '.agents.md']) {
+    const text = readMetadata(root, name).trim();
+    if (text) return { path: name, text: text.slice(0, MAX_RULES_CHARS) };
+  }
+  return null;
 }
 
 // These are file-derived labels, never instructions. Callers must keep them in
@@ -51,4 +64,4 @@ function identifyProject(projectDir) {
   return { root, name: product || heading || packageName || pythonName || path.basename(root), evidence };
 }
 
-module.exports = { identifyProject };
+module.exports = { identifyProject, readProjectRules };
