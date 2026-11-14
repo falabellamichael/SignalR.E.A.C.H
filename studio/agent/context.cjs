@@ -55,6 +55,36 @@ function messageChars(message) {
 
 function contextChars(messages) { return messages.reduce((n, m) => n + messageChars(m), 0); }
 
+const REALTIME_BPE_PATTERN = /'[a-zA-Z]+|[ \t]?[A-Za-z]+|[ \t]?[0-9]{1,3}|[ \t]?[^\sA-Za-z0-9]+|\s+/g;
+
+function countRealtimeTokens(value) {
+  const text = String(value ?? '');
+  if (!text) return 0;
+  const matches = text.match(REALTIME_BPE_PATTERN);
+  if (!matches) return 0;
+  let total = 0;
+  for (const piece of matches) {
+    const byteLength = Buffer.byteLength(piece, 'utf8');
+    if (byteLength <= 4) total += 1;
+    else if (/^\s+$/.test(piece)) total += Math.max(1, Math.ceil(byteLength / 8));
+    else total += Math.max(1, Math.ceil(byteLength / 4));
+  }
+  return Math.max(1, total);
+}
+
+function messageTokens(message) {
+  if (!message || typeof message !== 'object') return 0;
+  const content = typeof message.content === 'string' ? message.content
+    : Array.isArray(message.content) ? message.content.map(p => p.type === 'text' ? p.text || '' : '[image attachment]').join('')
+    : JSON.stringify(message.content || '');
+  const toolCalls = message.tool_calls ? JSON.stringify(message.tool_calls) : '';
+  return 4 + countRealtimeTokens(content) + (toolCalls ? countRealtimeTokens(toolCalls) : 0);
+}
+
+function contextTokens(messages) {
+  return 3 + (Array.isArray(messages) ? messages.reduce((n, m) => n + messageTokens(m), 0) : 0);
+}
+
 function provenanceFor(messages) {
   const included = [];
   let chars = 0;
@@ -189,4 +219,4 @@ async function compactMessages(messages, summarize, options = {}) {
   return { messages: result, changed: true, before, after, provenance: provenanceFor(result), archivedMeta };
 }
 
-module.exports = { compactMessages, normalizeChatMessages, contextChars, MEMORY_PREFIX, META_KEY, messageMeta, withMeta, provenanceFor };
+module.exports = { compactMessages, normalizeChatMessages, contextChars, countRealtimeTokens, messageTokens, contextTokens, MEMORY_PREFIX, META_KEY, messageMeta, withMeta, provenanceFor };

@@ -9,7 +9,7 @@
  * approval/edit-review callbacks.
  */
 
-const { compactMessages, normalizeChatMessages, contextChars } = require('./context.cjs');
+const { compactMessages, normalizeChatMessages, contextChars, countRealtimeTokens, contextTokens } = require('./context.cjs');
 const { providerRequestOptions } = require('./endpoint.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
 const { measureRequest, inputLimitFromError, budgetExceeded, budgetRatio, fitError } = require('./request-budget.cjs');
@@ -325,9 +325,25 @@ class AgentLoop {
     return [{ role: 'system', content: this._buildSystemPrompt() }, ...messages];
   }
 
-  contextStatus() {
+  contextStatus(extra = {}) {
     const messages = this._messagesForRequest(), budgets = this._budgets();
-    return { chars: contextChars(messages), estimatedTokens: Math.ceil(contextChars(messages) / 3),
+    const chars = contextChars(messages);
+    const streamTokens = Math.max(0, Math.round(Number(extra?.streamTokens) || 0));
+    const bpeTokens = contextTokens(messages);
+    const lastUsage = this._agent()?.lastUsage;
+    const providerTotal = Number(lastUsage?.totalTokens) || ((Number(lastUsage?.inputTokens) || 0) + (Number(lastUsage?.outputTokens) || 0));
+    const baseTokens = providerTotal > 0 && Number.isFinite(lastUsage?.measuredTokens)
+      ? Math.max(bpeTokens, providerTotal + (bpeTokens - lastUsage.measuredTokens))
+      : bpeTokens;
+    const usedTokens = Math.max(0, baseTokens + streamTokens);
+    const limits = this._inputLimits();
+    const triggerTokens = budgets.contextTrigger > 0 ? Math.max(4096, Math.round(budgets.contextTrigger / 3)) : 64000;
+    const contextWindowTokens = Math.max(usedTokens || 1, Number(limits.contextTokens) || Number(limits.maxInputTokens) || triggerTokens);
+    const remainingTokens = Math.max(0, contextWindowTokens - usedTokens);
+    const remainingRatio = Math.max(0, Math.min(1, remainingTokens / contextWindowTokens));
+    return { chars, estimatedTokens: usedTokens, usedTokens, contextWindowTokens,
+      remainingTokens, remainingRatio, exact: true,
+      source: providerTotal > 0 ? 'provider_usage' : 'realtime_tokenizer',
       trigger: budgets.contextTrigger, automatic: budgets.autoCompact,
       lastCompression: this._agent()?.context ? { before: this._agent().context.before,
         after: this._agent().context.after, at: this._agent().context.at } : null };
@@ -643,10 +659,18 @@ class AgentLoop {
   async _readAnswer(messages, concise = false) {
     const response = await this._fetchChat(messages, { stream: true, concise });
     this._emit('message-start', { role: 'assistant' });
-    let streamed = '', shown = 0;
-    return readChatResponse(response, {
+    let streamed = '', shown = 0, reasoningChars = 0;
+    const emitStreamContext = () => {
+      const streamTokens = countRealtimeTokens(streamed) + Math.ceil(reasoningChars / 4);
+      this._emit('context-status', this.contextStatus({ streamTokens }));
+    };
+    const result = await readChatResponse(response, {
       stream: true, signal: this.requestSignal || this.abortController.signal,
-      onReasoning: chars => this._emit('reasoning', { chars }),
+      onReasoning: chars => {
+        reasoningChars = Math.max(reasoningChars, Number(chars) || 0);
+        this._emit('reasoning', { chars });
+        emitStreamContext();
+      },
       onText: text => {
         streamed += text;
         const preview = chatPreviewText(streamed);
@@ -654,9 +678,19 @@ class AgentLoop {
           this._emit('delta', { text: preview.slice(shown) });
           shown = preview.length;
         }
+        emitStreamContext();
       },
       onProgress: reserveGuard(this._outputTokens()),
     });
+    if (result?.usage && this._agent()) {
+      this._agent().lastUsage = {
+        ...result.usage,
+        measuredTokens: contextTokens(messages)
+          + countRealtimeTokens(result.content || '')
+          + countRealtimeTokens(result.reasoning || ''),
+      };
+    }
+    return result;
   }
 
   /**
