@@ -3,6 +3,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
 const { actionInstruction, parseActionResponse } = require('../agent/agent-action.cjs');
 const { parseAgentResponse } = require('../agent/agent-response.cjs');
 const { AgentLoop } = require('../agent/agent-loop.cjs');
@@ -66,7 +68,8 @@ test('large external tool catalogs fit small routes and retain full schema disco
   const store = new MemoryStore();
   const agent = store.get('catalog-fixture');
   agent.runState = { structuredActions: true };
-  const loop = new AgentLoop({ agentId: agent.id, store, model: 'small-model', projectDir: 'D:/fixture' });
+  const projectDir = path.join(os.tmpdir(), 'workspace', 'nested-project-directory-for-subscription-budget-fixture');
+  const loop = new AgentLoop({ agentId: agent.id, store, model: 'small-model', projectDir });
   loop.mcpTools = tools;
   const messages = loop._requestBody(loop._messagesForRequest()).messages;
   assert.ok(Buffer.byteLength(JSON.stringify(messages)) < 32000, 'pinned prompt must fit the subscription gateway ceiling');

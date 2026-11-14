@@ -250,23 +250,25 @@ class TestModelAlias(unittest.TestCase):
 
 
 class TestPrivateRoute(unittest.TestCase):
-    def test_lfm3_route_is_fixed_loopback(self):
-        route = model_routes.private_route("gpu/lfm3-omni-2b")
-        self.assertEqual(route["url"],
-                         "http://127.0.0.1:18005/v1/chat/completions")
-        self.assertEqual(route["model"], "LiquidAI/LFM3-VL-2B")
+    def test_lfm3_routes_use_distinct_loopback_ports(self):
+        for alias, port, model in (("lfm3-omni-2b", 18006, "LiquidAI/LFM3-Omni-2B"),
+                                   ("lfm3-vl-2b", 18005, "LiquidAI/LFM3-VL-2B")):
+            with self.subTest(alias=alias):
+                route = model_routes.private_route("gpu/" + alias)
+                self.assertEqual(route["url"], f"http://127.0.0.1:{port}/v1/chat/completions")
+                self.assertEqual(route["model"], model)
 
-    def test_dispatch_keeps_tools_and_skips_thinking_kwarg(self):
+    def test_dispatch_omni_keeps_tools_and_disables_thinking(self):
         state = types.SimpleNamespace(key="k", bridge_url="", omniroute_url="")
         payload = {"model": "x", "messages": [],
                    "tools": [{"type": "function", "function": {"name": "f"}}],
                    "stream": False}
         url, data, headers, circuit = model_routes.dispatch(
             "gpu/lfm3-omni-2b", payload, state, {})
-        self.assertEqual(url, "http://127.0.0.1:18005/v1/chat/completions")
-        self.assertEqual(data["model"], "LiquidAI/LFM3-VL-2B")
-        self.assertIn("tools", data)
-        self.assertEqual(data["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertEqual(url, "http://127.0.0.1:18006/v1/chat/completions")
+        self.assertEqual(data["model"], "LiquidAI/LFM3-Omni-2B")
+        self.assertEqual(data["tools"], payload["tools"])
+        self.assertEqual(data["chat_template_kwargs"], {"enable_thinking": False})
         self.assertEqual(data["temperature"], 0.1)
         self.assertEqual(data["top_k"], 50)
         self.assertEqual(data["repetition_penalty"], 1.1)
@@ -280,7 +282,7 @@ class TestPrivateRoute(unittest.TestCase):
 
     def test_context_window_advertised(self):
         defaults = model_routes.deployment_defaults({})
-        self.assertEqual(defaults["lfm3-omni-2b"]["context_window"], 131072)
+        self.assertEqual(defaults["lfm3-omni-2b"]["context_window"], 128000)
         self.assertEqual(defaults["lfm3-vl-2b"]["context_window"], 131072)
         self.assertTrue(defaults["lfm3-omni-2b"]["allow_tools"])
         self.assertTrue(defaults["lfm3-vl-2b"]["allow_tools"])
