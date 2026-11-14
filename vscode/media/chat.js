@@ -1937,6 +1937,21 @@
     settingsPanel.appendChild(endpoints);
     appendFieldRows(settingsPanel, SETTING_FIELDS, cfg);
 
+    if (modelCatalogError) {
+      const hint = document.createElement('div');
+      hint.className = 'settings-hint';
+      hint.textContent = 'Model list unavailable: ' + modelCatalogError + ' ';
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.className = 'settings-link';
+      retry.textContent = 'Retry';
+      retry.addEventListener('click', () => { modelCatalogError = ''; post('fetchModels'); renderSettings(); });
+      hint.appendChild(retry);
+      const modelRow = $('#set-model');
+      if (modelRow && modelRow.closest('.setting-row')) modelRow.closest('.setting-row').after(hint);
+      else settingsPanel.appendChild(hint);
+    }
+
     /* Agent instructions — a NEW card appended after the existing fields.
      * Nothing above is reflowed. Empty means "use the built-in agent prompt",
      * so leaving it blank preserves today's behaviour exactly. */
@@ -1970,6 +1985,12 @@
     settingsPanel.appendChild(hint);
     appendFieldRows(settingsPanel, BUDGET_FIELDS, cfg);
   }
+
+  /* Last non-empty catalog per provider selection, plus the latest fetch error
+   * for the current one. The error renders under the Default model field so a
+   * failed /models call does not read as a one-model list. */
+  const lastCatalog = new Map();
+  let modelCatalogError = '';
 
   /* Account, connection settings and budgets share one anchored dropdown. */
   let settingsPage = 'account';
@@ -2464,11 +2485,25 @@
       case 'models':
         if ((msg.providerSelection || msg.provider) !== providerSelect.value) break;
         endpointLine.textContent = msg.endpoint || endpointLine.textContent;
+        if (msg.models.length) lastCatalog.set(providerSelect.value, { models: msg.models, groups: msg.groups });
+        modelCatalogError = '';
         setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null, msg.groups);
         const modelSetting = $('#set-model');
         if (modelSetting) populateModelSetting(modelSetting, configCache?.model || modelSetting.value);
         if (conv && !msg.models.includes(conv.model)) { conv.model = modelSelect.value; persist(); updateModelChip(); }
         break;
+      case 'modelsError': {
+        if ((msg.providerSelection || msg.provider) !== providerSelect.value) break;
+        modelCatalogError = msg.message || 'Model list unavailable';
+        const cached = lastCatalog.get(providerSelect.value);
+        if (cached) {
+          setModelOptions(cached.models, (conv && conv.model) || modelSelect.value || null, cached.groups);
+          const modelSetting = $('#set-model');
+          if (modelSetting) populateModelSetting(modelSetting, configCache?.model || modelSetting.value);
+        }
+        if (!settingsPanel.hidden) renderSettings();
+        break;
+      }
       case 'jevAutoRoute':
         if (!busy || msg.turnId !== conv?.jevTurn?.id) break;
         conv.jevTurn.model = msg.model || conv.jevTurn.model;

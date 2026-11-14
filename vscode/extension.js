@@ -1546,6 +1546,7 @@ class ReachChatViewProvider {
       if (connection.provider === 'subscription' && this._account?.state?.()?.status !== 'connected') {
         this._post('models', { models: [], groups: [], endpoint, provider: 'subscription', providerSelection: 'subscription' });
       }
+      this._post('modelsError', { message: err.message, endpoint, providerSelection: connection.providerSelection });
       this._post('error', { message: `Could not reach ${endpoint}: ${err.message}` });
     }
   }
