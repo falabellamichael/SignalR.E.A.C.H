@@ -1792,16 +1792,25 @@
         label.htmlFor = id;
         label.textContent = f.label;
         if (f.title) label.title = f.title;
-        const input = document.createElement('input');
-        input.type = f.type;
-        input.id = id;
-        input.value = cfg[f.key] !== undefined ? String(cfg[f.key]) : '';
-        if (f.min !== undefined) input.min = f.min;
-        if (f.max !== undefined) input.max = f.max;
-        if (f.title) input.title = f.title;
-        input.addEventListener('change', () => post('setConfig', { key: f.key, value: input.value }));
-        row.appendChild(label);
-        row.appendChild(input);
+        if (f.key === 'model') {
+          const select = document.createElement('select');
+          select.id = id;
+          populateModelSetting(select, cfg[f.key]);
+          select.addEventListener('change', () => post('setConfig', { key: f.key, value: select.value }));
+          row.appendChild(label);
+          row.appendChild(select);
+        } else {
+          const input = document.createElement('input');
+          input.type = f.type;
+          input.id = id;
+          input.value = cfg[f.key] !== undefined ? String(cfg[f.key]) : '';
+          if (f.min !== undefined) input.min = f.min;
+          if (f.max !== undefined) input.max = f.max;
+          if (f.title) input.title = f.title;
+          input.addEventListener('change', () => post('setConfig', { key: f.key, value: input.value }));
+          row.appendChild(label);
+          row.appendChild(input);
+        }
       }
       container.appendChild(row);
     });
@@ -2127,6 +2136,26 @@
   /* `groups` is the optional sectioned form: [{label, models}]. The host labels
    * the selected catalog as GPU server models or Login Providers. Falls back to a flat list when absent, so an
    * older host that only sends `models` still works. */
+  /* The settings "Default model" field mirrors the live catalog shown in the
+   * chat picker — cloned so each select owns its option nodes. The configured
+   * value is appended when the catalog does not (yet) list it. */
+  function populateModelSetting(select, current) {
+    select.replaceChildren();
+    const seen = new Set();
+    for (const child of modelSelect.children) {
+      const clone = child.cloneNode(true);
+      select.appendChild(clone);
+      for (const o of clone.tagName === 'OPTGROUP' ? clone.children : [clone]) seen.add(o.value);
+    }
+    if (current && !seen.has(current)) {
+      const opt = document.createElement('option');
+      opt.value = current;
+      opt.textContent = current;
+      select.appendChild(opt);
+    }
+    if (current) select.value = current;
+  }
+
   function setModelOptions(models, current, groups) {
     modelSelect.innerHTML = '';
     const sectioned = Array.isArray(groups) && groups.some((g) => g && g.models && g.models.length);
@@ -2436,6 +2465,8 @@
         if ((msg.providerSelection || msg.provider) !== providerSelect.value) break;
         endpointLine.textContent = msg.endpoint || endpointLine.textContent;
         setModelOptions(msg.models, (conv && conv.model) || modelSelect.value || null, msg.groups);
+        const modelSetting = $('#set-model');
+        if (modelSetting) populateModelSetting(modelSetting, configCache?.model || modelSetting.value);
         if (conv && !msg.models.includes(conv.model)) { conv.model = modelSelect.value; persist(); updateModelChip(); }
         break;
       case 'jevAutoRoute':
