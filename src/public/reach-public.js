@@ -13,17 +13,13 @@
     let context = null;
     let root = null;
     const PAGES = [
-        ['dashboard', 'Dashboard', 'fa-gauge-high'],
-        ['endpoint', 'Endpoint', 'fa-link'],
-        ['models', 'Models', 'fa-cubes'],
-        ['playground', 'Playground', 'fa-comment-dots'],
         ['usage', 'Usage', 'fa-chart-column'],
-        ['logs', 'Logs', 'fa-list'],
-        ['settings', 'Settings', 'fa-sliders'],
-        ['shared-settings', 'Shared settings', 'fa-arrows-rotate'],
-        ['about', 'About', 'fa-circle-info']
+        ['playground', 'Playground', 'fa-comment-dots'],
+        ['settings', 'Settings', 'fa-sliders']
     ];
-    let activePage = 'dashboard';
+    const PAGE_ALIASES = { dashboard: 'usage', endpoint: 'settings', models: 'settings', logs: 'playground',
+        'shared-settings': 'settings', about: 'settings' };
+    let activePage = 'usage';
     let generation = 0;
     let pending = null;
     let active = false;
@@ -32,6 +28,26 @@
     let promptDraft = '';
     let lastResponse = '';
     const activity = [];
+    let usageData = null;
+    let usageEndpointId = '';
+    let usageController = null;
+    let usageError = '';
+    const safeRate = value => typeof value === 'string' && /^(?:\d{1,8})(?:\.\d{1,8})?$/.test(value) ? value : '';
+    function readStatistics(value) {
+        const v = value && typeof value === 'object' ? value : {};
+        const rates = Object.create(null);
+        if (v.rates && typeof v.rates === 'object') Object.keys(v.rates).slice(0,100).forEach(key => {
+            const r = v.rates[key];
+            if (r && typeof r === 'object' && key.length < 600) rates[key] = {
+                input: safeRate(r.input), output: safeRate(r.output), cached: safeRate(r.cached),
+                currency: r.currency === 'CAD' ? 'CAD' : 'USD'
+            };
+        });
+        return { endpointId: typeof v.endpointId === 'string' ? v.endpointId : '',
+            comparisonId: typeof v.comparisonId === 'string' ? v.comparisonId : '',
+            model: typeof v.model === 'string' ? v.model.slice(0,256) : '',
+            days: [7,30,90].includes(v.days) ? v.days : 30, cadPerUsd: safeRate(v.cadPerUsd), rates };
+    }
 
     function readPreferences() {
         try {
@@ -55,11 +71,12 @@
                 name: typeof saved.name === 'string' ? saved.name : '',
                 baseUrl: typeof saved.baseUrl === 'string' ? saved.baseUrl : '',
                 model: typeof saved.model === 'string' && saved.model.length <= 256 ? saved.model : '',
-                defaults
+                defaults, statistics: readStatistics(saved.statistics)
             };
         } catch (_error) { return {}; }
     }
     const preferences = Object.assign({ endpointId: '', name: '', baseUrl: '', model: '', defaults: {} }, readPreferences());
+    const statistics = readStatistics(preferences.statistics);
     const models = new Set(preferences.model ? [preferences.model] : []);
 
     function savePreferences() {
@@ -71,7 +88,7 @@
         });
         localStorage.setItem(PREFS_KEY, JSON.stringify({
             endpointId: preferences.endpointId, name: preferences.name,
-            baseUrl: preferences.baseUrl, model: preferences.model, defaults
+            baseUrl: preferences.baseUrl, model: preferences.model, defaults, statistics
         }));
     }
 
@@ -167,20 +184,23 @@
         return preferences.defaults[model];
     }
 
+    async function loadConnections(signal) {
+        const data = await request('/model-endpoints', undefined, signal);
+        if (!Array.isArray(data)) throw new Error('SimpleRAG did not return saved connections.');
+        return data.filter(item => item && typeof item.id === 'string' && item.is_enabled !== false).flatMap(item => {
+            try {
+                return [{ id: item.id, name: String(item.name || 'Saved connection'),
+                    baseUrl: normalizeUrl(item.base_url), model: typeof item.default_model === 'string' ? item.default_model : '',
+                    models: (Array.isArray(item.chat_models) ? item.chat_models : Array.isArray(item.models) ? item.models : [])
+                        .filter(model => typeof model === 'string' && model && model.length <= 256) }];
+            } catch (_error) { return []; }
+        });
+    }
+
     function renderSettings() {
         const existing = card('Use a saved SimpleRAG connection', 'Choose a connection you already use in SimpleRAG. Its key stays in SimpleRAG.');
         const load = button('Load saved connections', () => action(load, async () => {
-            const data = await request('/model-endpoints');
-            if (!Array.isArray(data)) throw new Error('SimpleRAG did not return saved connections.');
-            savedConnections = data.filter(item => item && typeof item.id === 'string' && item.is_enabled !== false)
-                .flatMap(item => {
-                    try {
-                        return [{ id: item.id, name: String(item.name || 'Saved connection'),
-                            baseUrl: normalizeUrl(item.base_url), model: typeof item.default_model === 'string' ? item.default_model : '',
-                            models: (Array.isArray(item.chat_models) ? item.chat_models : Array.isArray(item.models) ? item.models : [])
-                                .filter(model => typeof model === 'string' && model && model.length <= 256) }];
-                    } catch (_error) { return []; }
-                });
+            savedConnections = await loadConnections();
             render();
             status(savedConnections.length ? 'Choose a connection, then select Use connection.' : 'No compatible saved connections. Add a connection below.');
         }));
@@ -204,7 +224,7 @@
                 if (preferences.model) models.add(preferences.model);
                 connectionStatus = 'Not checked';
                 savePreferences();
-                navigate('dashboard');
+                render();
                 status('Connection selected. Refresh models to check availability.');
             }, 'sr-public-button sr-public-primary'));
         }
@@ -243,6 +263,16 @@
         }), 'sr-public-button sr-public-primary');
         connection.appendChild(save);
         renderModels();
+        const shared = element('details', 'sr-public-details');
+        shared.appendChild(element('summary', '', 'Shared Studio and VS Code settings'));
+        shared.appendChild(sharedSettingsLink());
+        const sync = element('iframe', 'sr-public-sync-frame');
+        sync.title = 'Sync Studio and VS Code settings';
+        sync.src = SETTINGS_HUB_URL + '/sync';
+        sync.loading = 'lazy';
+        shared.appendChild(sync);
+        root.appendChild(shared);
+        root.appendChild(element('p', 'sr-public-hint', 'SignalREACH · Public edition · v' + manifest.version));
     }
 
     async function refreshModels() {
@@ -314,6 +344,7 @@
     }
 
     function navigate(page) {
+        page = PAGE_ALIASES[page] || page;
         if (!PAGES.some(item => item[0] === page)) return;
         if (page !== activePage) deactivateRequest();
         activePage = page;
@@ -361,104 +392,212 @@
     function renderSidebar() {
         if (!active) return;
         const elements = context && context.elements || {};
-        if (elements.listTitle) elements.listTitle.textContent = 'Connection & Models';
+        if (elements.listTitle) elements.listTitle.textContent = 'At a glance';
         if (!elements.listContent) return;
         const panel = element('div', 'sr-public-sidebar');
-        const connection = element('section', 'sr-public-card');
-        connection.appendChild(element('h2', '', preferences.name || 'Your REACH connection'));
-        connection.appendChild(element('span', 'sr-public-badge', preferences.endpointId ? connectionStatus : 'Setup needed'));
-        connection.appendChild(element('p', 'sr-public-hint sr-public-url', preferences.baseUrl || 'Choose a saved connection or add your provider.'));
-        connection.appendChild(button('Connection settings', () => navigate('settings')));
-        panel.appendChild(connection);
-        const selection = element('section', 'sr-public-card');
-        selection.appendChild(element('h2', '', 'Model'));
-        selection.appendChild(element('p', 'sr-public-model-name', preferences.model || 'Choose a default model'));
-        const refresh = button('Refresh models', () => action(refresh, refreshModels));
-        refresh.disabled = !preferences.endpointId;
-        selection.appendChild(refresh);
-        selection.appendChild(button('Model settings', () => navigate('models')));
-        panel.appendChild(selection);
-        const shared = element('section', 'sr-public-card');
-        shared.appendChild(element('h2', '', 'Studio + VS Code sync'));
-        const sync = element('iframe', 'sr-public-sync-frame');
-        sync.title = 'Sync Studio and VS Code settings';
-        sync.src = SETTINGS_HUB_URL + '/sync';
-        shared.appendChild(sync);
-        shared.appendChild(button('Shared settings', () => navigate('shared-settings')));
-        panel.appendChild(shared);
-        const session = element('section', 'sr-public-card');
-        session.appendChild(element('h2', '', 'This session'));
-        summary(session, 'Completed prompts', String(activity.filter(item => item.outcome === 'Completed').length));
-        session.appendChild(button('View activity', () => navigate('logs')));
-        panel.appendChild(session);
-        panel.appendChild(element('p', 'sr-public-hint', 'SignalREACH · v' + manifest.version));
+        const info = element('section', 'sr-public-card');
+        info.appendChild(element('h2', '', preferences.name || 'Your connection'));
+        info.appendChild(element('span', 'sr-public-badge', preferences.endpointId ? connectionStatus : 'Setup needed'));
+        summary(info, 'Default model', preferences.model || 'Not selected');
+        summary(info, 'Model choices', String(models.size));
+        panel.appendChild(info);
+        panel.appendChild(element('p', 'sr-public-hint', 'Usage shows your REACH account statistics. Settings brings connections and model controls together.'));
         elements.listContent.replaceChildren(panel);
     }
 
-    function renderDashboard() {
-        const welcome = card('Welcome to SignalREACH', 'Your models, connections and prompt activity in SimpleRAG.');
-        welcome.appendChild(element('span', 'sr-public-badge', preferences.endpointId ? connectionStatus : 'Set up your connection'));
-        welcome.appendChild(element('p', 'sr-public-hint', preferences.endpointId
-            ? 'Open Models to refresh your catalog and choose a default, or try a prompt in Playground.'
-            : 'Start with a connection already saved in SimpleRAG, or enter your own REACH / OpenAI-compatible endpoint.'));
-        welcome.appendChild(button(preferences.endpointId ? 'Open Playground' : 'Choose a connection',
-            () => navigate(preferences.endpointId ? 'playground' : 'settings'), 'sr-public-button sr-public-primary'));
-        welcome.appendChild(button('Browse models', () => navigate('models')));
-        const tiles = element('div', 'sr-public-tiles');
-        summary(tiles, 'Connection', preferences.name || 'Not selected');
-        summary(tiles, 'Default model', preferences.model || 'Not selected');
-        summary(tiles, 'Model choices', models.size ? String(models.size) : 'Refresh to load');
-        summary(tiles, 'Completed prompts', String(activity.filter(item => item.outcome === 'Completed').length));
-        root.appendChild(tiles);
-        const shortcuts = card('Your workspace', 'Open a page to manage your connection or try your models.');
-        const grid = element('div', 'sr-public-shortcuts');
-        [['models', 'Models', 'Choose a model and tune prompt defaults.'],
-            ['endpoint', 'Endpoint', 'Review the connection used by this extension.'],
-            ['playground', 'Playground', 'Send a prompt through your selected connection.'],
-            ['usage', 'Usage', 'Review activity from this Playground session.'],
-            ['shared-settings', 'Shared settings', 'Manage shared Studio and VS Code settings and sync.']].forEach(([id, label, detail]) => {
-            const item = button('', () => navigate(id), 'sr-public-shortcut');
-            item.appendChild(element('strong', '', label));
-            item.appendChild(element('span', 'sr-public-hint', detail));
-            grid.appendChild(item);
-        });
-        shortcuts.appendChild(grid);
-    }
-
-    function renderSharedSettings() {
-        const shared = card('REACH settings hub', 'Manage shared connection, model and generation settings for installed REACH Studio and the SimpleREACH VS Code extension.');
-        shared.appendChild(sharedSettingsLink());
-        shared.appendChild(element('p', 'sr-public-hint', 'Keep an updated Studio or VS Code extension running to host the local hub. If it is unavailable, start one of those clients and open the hub again.'));
-        const sync = card('Sync Studio + VS Code', 'Use the switch in the second panel to automatically apply saved hub settings in both running clients. Sync defaults to off.');
-        sync.appendChild(element('p', 'sr-public-hint', 'The hub shares the connection name, endpoint, model, temperature and output-token limit. Configure API keys in each client.'));
-        card('SimpleRAG connection settings', 'The Settings page here manages the connection used by this SimpleRAG extension. Studio and VS Code share their settings through the hub independently.');
-    }
-
-    function renderEndpoint() {
-        const info = card('Your endpoint', 'The connection selected for SignalREACH. Credentials are managed by SimpleRAG.');
-        summary(info, 'Connection', preferences.name || 'Not selected');
-        summary(info, 'Base URL', preferences.baseUrl || 'Not configured');
-        summary(info, 'Default model', preferences.model || 'Not selected');
-        summary(info, 'Last model check', connectionStatus);
-        info.appendChild(button('Choose or edit connection', () => navigate('settings'), 'sr-public-button sr-public-primary'));
-        const check = button('Check models', () => action(check, refreshModels));
-        check.disabled = !preferences.endpointId;
-        info.appendChild(check);
-        card('Use in SimpleRAG', 'Connections saved here are also available in SimpleRAG model settings. Choose the same connection and model in the Copilot model picker to use them in your chats.');
-    }
-
     function renderUsage() {
-        const usage = card('Playground usage', 'This window session only. Your provider or REACH account remains the source for billing and account-wide usage.');
-        const completed = activity.filter(item => item.outcome === 'Completed');
-        summary(usage, 'Completed prompts', String(completed.length));
-        summary(usage, 'Failed or stopped prompts', String(activity.length - completed.length));
-        summary(usage, 'Average response time', completed.length
-            ? (completed.reduce((sum, item) => sum + item.durationMs, 0) / completed.length / 1000).toFixed(2) + ' s' : 'No completed prompts');
-        usage.appendChild(button('Open activity log', () => navigate('logs')));
+        const toolbar = card('Your usage, in numbers', 'REACH account totals for the selected period, across apps using this account.');
+        const controls = element('div', 'sr-public-grid');
+        const endpoints = savedConnections || [];
+        const account = select([['', 'Choose your saved REACH connection'], ...endpoints.map(e => [e.id, e.name])], statistics.endpointId);
+        account.addEventListener('change', () => {
+            deactivateRequest();
+            statistics.endpointId = account.value;
+            if (statistics.comparisonId === account.value) { statistics.comparisonId = ''; statistics.model = ''; }
+            usageData = null; usageError = ''; savePreferences(); render();
+        });
+        controls.appendChild(field('REACH account connection', account));
+        const period = select([[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days']], statistics.days);
+        period.addEventListener('change', () => { deactivateRequest(); statistics.days = Number(period.value); usageData = null; savePreferences(); render(); });
+        controls.appendChild(field('Reporting period', period));
+        toolbar.appendChild(controls);
+        const refresh = button('Refresh statistics', () => action(refresh, async () => {
+            const current = ++generation;
+            usageController?.abort();
+            const controller = new AbortController(); usageController = controller;
+            usageError = '';
+            try {
+                const connections = await loadConnections(controller.signal);
+                if (current !== generation) return;
+                savedConnections = connections;
+                const chosenId = statistics.endpointId || preferences.endpointId;
+                if (!connections.some(e => e.id === chosenId)) {
+                    usageData = null; render(); status('Choose your REACH connection, then refresh its statistics.'); return;
+                }
+                statistics.endpointId = chosenId;
+                const report = await request('/model-endpoints/' + encodeURIComponent(chosenId)
+                    + '/reach-usage?days=' + statistics.days, undefined, controller.signal);
+                if (current !== generation || chosenId !== statistics.endpointId) return;
+                validateUsage(report);
+                usageData = report; usageEndpointId = chosenId; savePreferences(); render();
+                status('Statistics updated.');
+            } catch (error) {
+                if (current !== generation) return;
+                usageData = null;
+                usageError = error.name === 'AbortError' ? 'Refresh stopped.'
+                    : 'Statistics unavailable. Choose a REACH connection with a valid account key. SimpleRAG and the REACH service must support usage summaries.';
+                render(); status(usageError, true);
+            } finally { if (usageController === controller) usageController = null; }
+        }), 'sr-public-button sr-public-primary');
+        toolbar.appendChild(refresh);
+        if (!savedConnections) toolbar.appendChild(element('p', 'sr-public-hint', 'Refresh loads the connections already saved in SimpleRAG. No keys are copied into this panel.'));
+        const report = usageEndpointId === statistics.endpointId ? usageData : null;
+        const tiles = element('div', 'sr-public-tiles sr-public-stat-tiles');
+        const subscriptions = report?.spending.subscriptions || [];
+        summary(tiles, 'Subscription payments · net', report ? subscriptions.map(s => money(s.netMicros / 1e6, s.currency)).join(' + ') || money(0, 'USD') : '—');
+        summary(tiles, 'Crypto credit used', report ? money(report.spending.rchUsdMicros / 1e6, 'USD') : '—');
+        summary(tiles, 'Other credit used', report ? money((report.spending.creditUsdMicros - report.spending.rchUsdMicros) / 1e6, 'USD') : '—');
+        summary(tiles, 'Completed requests', report ? number(report.requests.completed) : '—');
+        root.appendChild(tiles);
+        if (usageError) root.appendChild(element('p', 'sr-public-error', usageError));
+        if (report) {
+            const details = element('div', 'sr-public-tiles');
+            summary(details, 'Input tokens', number(report.tokens.input));
+            summary(details, 'Output tokens', number(report.tokens.output));
+            summary(details, 'Cached input', number(report.tokens.cachedInput));
+            summary(details, 'Measured requests', number(report.requests.measured) + ' / ' + number(report.requests.completed));
+            root.appendChild(details);
+        }
+        renderComparison(report, endpoints);
+        if (!report) {
+            root.appendChild(element('p', 'sr-public-hint', 'Refresh your account statistics to see recorded spending and usage. Unavailable figures are not treated as zero.'));
+            return;
+        }
+        const ledger = card('Period breakdown', new Date(report.period.from).toLocaleDateString() + ' – '
+            + new Date(report.period.to).toLocaleDateString() + ' · By the date each request or payment was recorded.');
+        const funding = element('div', 'sr-public-tiles');
+        summary(funding, 'Crypto redeemed · credit value', money(report.redemptions.creditUsdMicros / 1e6, 'USD'));
+        summary(funding, 'Subscription refunds', subscriptions.map(s => money(s.refundedMicros / 1e6, s.currency)).join(' + ') || money(0, 'USD'));
+        summary(funding, 'Pending or unresolved', number(report.requests.pending));
+        summary(funding, 'Released requests', number(report.requests.released));
+        ledger.appendChild(funding);
+        ledger.appendChild(element('p', 'sr-public-hint', 'Redeemed value is the credit granted at redemption, not your crypto purchase price or gas fees. Only credit used is included in the spending comparison. Subscription payments are net of recorded refunds.'));
+        if (report.spending.unpricedCreditTokens) ledger.appendChild(element('p', 'sr-public-hint', number(report.spending.unpricedCreditTokens)
+            + ' older token credits were used without a recorded cash value. A complete money comparison is unavailable for this period.'));
+        const tableWrap = element('div', 'sr-public-table-wrap');
+        const table = element('table', 'sr-public-table');
+        const caption = element('caption', '', 'Usage by REACH model'); table.appendChild(caption);
+        const head = element('thead'); const headings = element('tr');
+        ['Model', 'Requests', 'Input tokens', 'Output tokens', 'Measured'].forEach(label => {
+            const th = element('th', '', label); th.scope = 'col'; headings.appendChild(th);
+        });
+        head.appendChild(headings); table.appendChild(head);
+        const body = element('tbody');
+        report.models.forEach(model => {
+            const row = element('tr');
+            [model.model, number(model.requests), number(model.inputTokens), number(model.outputTokens), number(model.measured) + ' / ' + number(model.requests)]
+                .forEach(value => row.appendChild(element('td', '', value)));
+            body.appendChild(row);
+        });
+        table.appendChild(body); tableWrap.appendChild(table); ledger.appendChild(tableWrap);
+        if (!report.models.length) ledger.appendChild(element('p', 'sr-public-hint', 'No completed model requests in this period.'));
+    }
+
+    const number = value => new Intl.NumberFormat('en-CA').format(value);
+    const money = (value, currency) => new Intl.NumberFormat('en-CA', { style: 'currency', currency,
+        currencyDisplay: 'code', maximumFractionDigits: 4 }).format(value);
+    function validateUsage(report) {
+        const count = value => Number.isSafeInteger(value) && value >= 0;
+        if (!report || !report.period || !Number.isFinite(Date.parse(report.period.from)) || !Number.isFinite(Date.parse(report.period.to))
+            || !report.requests || !['completed','pending','released','measured'].every(k => count(report.requests[k]))
+            || report.requests.measured > report.requests.completed || !report.tokens || !['input','output','cachedInput'].every(k => count(report.tokens[k]))
+            || report.tokens.cachedInput > report.tokens.input || !report.spending
+            || !['creditUsdMicros','rchUsdMicros','unpricedCreditTokens'].every(k => count(report.spending[k]))
+            || report.spending.rchUsdMicros > report.spending.creditUsdMicros
+            || !Array.isArray(report.spending.subscriptions) || !report.spending.subscriptions.every(s => ['USD','CAD'].includes(s.currency)
+                && ['paidMicros','refundedMicros','netMicros'].every(k => count(s[k])) && s.netMicros === s.paidMicros - s.refundedMicros)
+            || !report.redemptions || !count(report.redemptions.creditUsdMicros) || !Array.isArray(report.models)
+            || !report.models.every(m => typeof m.model === 'string' && ['requests','measured','inputTokens','outputTokens','cachedInputTokens'].every(k => count(m[k])))) {
+            throw new Error('Invalid usage summary.');
+        }
+    }
+    function renderComparison(report, endpoints) {
+        const comparison = card('What would the same usage cost?', 'Choose an API and model already saved in SimpleRAG. This estimates the same token volume; model capabilities may differ.');
+        const choices = endpoints.filter(e => e.id !== statistics.endpointId);
+        const provider = select([['', 'Choose a comparison API'], ...choices.map(e => [e.id, e.name])], statistics.comparisonId);
+        provider.addEventListener('change', () => {
+            statistics.comparisonId = provider.value;
+            statistics.model = choices.find(e => e.id === provider.value)?.model || '';
+            savePreferences(); render();
+        });
+        const selected = choices.find(e => e.id === statistics.comparisonId);
+        const modelNames = [...new Set([...(selected?.models || []), selected?.model].filter(Boolean))];
+        const model = select([['', 'Choose a model'], ...modelNames.map(name => [name, name])], statistics.model);
+        model.addEventListener('change', () => { statistics.model = model.value; savePreferences(); render(); });
+        const grid = element('div', 'sr-public-grid');
+        grid.appendChild(field('Compare with API', provider)); grid.appendChild(field('Comparison model', model)); comparison.appendChild(grid);
+        if (!selected || !statistics.model) {
+            comparison.appendChild(element('p', 'sr-public-hint', 'Select a saved API and model to set its rates and compare costs.'));
+            return;
+        }
+        const rateKey = JSON.stringify([selected.id, statistics.model]);
+        const rate = statistics.rates[rateKey] || (statistics.rates[rateKey] = { input: '', output: '', cached: '', currency: 'USD' });
+        const pricing = element('details', 'sr-public-details');
+        pricing.open = !rate.input || !rate.output;
+        pricing.appendChild(element('summary', '', 'Rates for ' + statistics.model));
+        pricing.appendChild(element('p', 'sr-public-hint', 'Enter your current price per 1 million tokens, including any negotiated discount. These are your comparison assumptions, not a provider invoice.'));
+        const fields = element('div', 'sr-public-grid');
+        const currency = select([['USD','USD'],['CAD','CAD']], rate.currency);
+        fields.appendChild(field('Rate currency', currency));
+        const rateInputs = {};
+        [['input','Input / 1M tokens'],['output','Output / 1M tokens'],['cached','Cached input / 1M tokens']].forEach(([key,label]) => {
+            const control = input('number', rate[key], key === 'cached' ? 'Uses input price if blank' : 'Your API rate');
+            control.min = '0'; control.step = 'any';
+            fields.appendChild(field(label, control)); rateInputs[key] = control;
+        });
+        const fx = input('number', statistics.cadPerUsd, 'Required when CAD is used'); fx.min = '0.00000001'; fx.step = 'any';
+        fields.appendChild(field('CAD per USD', fx, 'Your exchange-rate assumption. No automatic currency conversion.'));
+        pricing.appendChild(fields); comparison.appendChild(pricing);
+        const result = element('div', 'sr-public-tiles sr-public-comparison');
+        const values = ['REACH recorded cost', 'Selected API estimate', 'Difference'];
+        const outputs = values.map(label => { const tile = element('div', 'sr-public-summary'); tile.appendChild(element('span','sr-public-hint',label));
+            const output = element('strong','','—'); tile.appendChild(output); result.appendChild(tile); return output; });
+        comparison.appendChild(result);
+        const explanation = element('p','sr-public-hint'); explanation.setAttribute('role','status'); comparison.appendChild(explanation);
+        function calculate() {
+            outputs.forEach(out => { out.textContent = '—'; });
+            if (!report) { explanation.textContent = 'Refresh your REACH statistics to compare this period.'; return; }
+            if (Object.values(rateInputs).some(control => control.value !== '' && !safeRate(control.value))
+                || fx.value !== '' && !safeRate(fx.value)) { explanation.textContent = 'Enter valid, non-negative decimal rates.'; return; }
+            const needsFx = rate.currency === 'CAD' || report.spending.subscriptions.some(s => s.currency === 'CAD' && s.netMicros > 0);
+            const exchange = Number(statistics.cadPerUsd);
+            if (needsFx && (!statistics.cadPerUsd || exchange <= 0)) { explanation.textContent = 'Enter CAD per USD in Rates to compare both costs in USD.'; return; }
+            const reach = report.spending.creditUsdMicros / 1e6 + report.spending.subscriptions.reduce((sum,s) => sum + s.netMicros / 1e6 / (s.currency === 'CAD' ? exchange : 1),0);
+            outputs[0].textContent = money(reach,'USD');
+            if (!rate.input || !rate.output) { explanation.textContent = 'Enter the selected model’s input and output rates.'; return; }
+            if (report.requests.measured !== report.requests.completed || report.spending.unpricedCreditTokens) {
+                explanation.textContent = 'Some completed requests lack measured tokens or a recorded credit value. A full-period cost difference cannot be calculated.'; return;
+            }
+            const api = ((report.tokens.input - report.tokens.cachedInput) * Number(rate.input)
+                + report.tokens.cachedInput * Number(rate.cached || rate.input) + report.tokens.output * Number(rate.output)) / 1e6 / (rate.currency === 'CAD' ? exchange : 1);
+            const difference = api - reach;
+            outputs[1].textContent = money(api,'USD'); outputs[2].textContent = money(Math.abs(difference),'USD');
+            explanation.textContent = Math.abs(difference) < 0.00005 ? 'The estimated costs are equal.' : difference > 0
+                ? 'REACH costs less by this amount for the recorded period.' : 'REACH costs more by this amount for the recorded period.';
+            if (needsFx) explanation.textContent += ' Converted using your CAD per USD rate of ' + statistics.cadPerUsd + '.';
+        }
+        Object.entries(rateInputs).forEach(([key,control]) => control.addEventListener('input', () => {
+            rate[key] = safeRate(control.value); savePreferences(); calculate();
+        }));
+        currency.addEventListener('change', () => { rate.currency = currency.value; savePreferences(); calculate(); });
+        fx.addEventListener('input', () => { statistics.cadPerUsd = safeRate(fx.value); savePreferences(); calculate(); });
+        calculate();
     }
 
     function renderLogs() {
+        root.querySelector('[data-playground-activity]')?.remove();
         const logs = card('Playground activity', 'Recent requests from this window session. Prompt text, responses and credentials are not stored in this log.');
+        logs.setAttribute('data-playground-activity', '');
         if (!activity.length) logs.appendChild(element('p', 'sr-public-hint', 'No Playground requests yet.'));
         activity.slice().reverse().forEach(item => {
             const row = element('div', 'sr-public-log-row');
@@ -468,14 +607,6 @@
             row.appendChild(element('span', 'sr-public-hint', (item.durationMs / 1000).toFixed(2) + ' s'));
             logs.appendChild(row);
         });
-    }
-
-    function renderAbout() {
-        const about = card('SignalREACH', 'RAG Endpoint & AI Chat Host · SimpleRAG extension');
-        summary(about, 'Version', manifest.version);
-        summary(about, 'Edition', 'Public');
-        summary(about, 'Publisher', manifest.publisher.name);
-        about.appendChild(element('p', 'sr-public-hint', 'Manage your connection, choose models and try prompts. Your provider credentials stay in SimpleRAG.'));
     }
 
     function renderPlayground() {
@@ -527,6 +658,7 @@
                 if (pending === requestController) pending = null;
                 stop.disabled = true;
                 renderSidebar();
+                if (active && activePage === 'playground') renderLogs();
             }
         }), 'sr-public-button sr-public-primary');
         send.disabled = !preferences.endpointId || !preferences.model;
@@ -535,6 +667,7 @@
         playground.appendChild(send);
         playground.appendChild(stop);
         playground.appendChild(output);
+        renderLogs();
     }
 
     function target() {
@@ -555,15 +688,14 @@
         note.setAttribute('role', 'status');
         root.appendChild(note);
         container.replaceChildren(root);
-        ({ dashboard: renderDashboard, endpoint: renderEndpoint, models: renderModels,
-            playground: renderPlayground, usage: renderUsage, logs: renderLogs,
-            settings: renderSettings, 'shared-settings': renderSharedSettings, about: renderAbout })[activePage]();
+        ({ playground: renderPlayground, usage: renderUsage, settings: renderSettings })[activePage]();
         renderNavigation();
         renderSidebar();
     }
     function deactivateRequest() {
         generation++;
         if (pending) pending.abort();
+        if (usageController) usageController.abort();
     }
     function ensureHostRecord() {
         try {
@@ -584,7 +716,8 @@
         activate(next) { active = true; context = next || context; if (context && context.state) context.state.folder = activePage; render(); },
         renderPage(next) {
             context = next || context;
-            const page = context && context.state && context.state.folder;
+            const requested = context && context.state && context.state.folder;
+            const page = PAGE_ALIASES[requested] || requested;
             if (PAGES.some(item => item[0] === page) && page !== activePage) { deactivateRequest(); activePage = page; }
             render();
         },

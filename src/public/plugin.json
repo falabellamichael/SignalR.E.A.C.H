@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "id": "signal-reach-public",
   "name": "SignalREACH",
-  "version": "26.11.0",
+  "version": "26.11.1",
   "edition": "public",
-  "description": "The public REACH workspace for SimpleRAG: dashboard, connections, models, playground, session activity, and access to the shared Studio and VS Code settings hub.",
+  "description": "The REACH control panel for SimpleRAG: account usage and spending, saved-API cost comparisons, a playground, and consolidated connection and model settings.",
   "publisher": {
     "name": "Michael Anthony Falabella"
   },
@@ -12,7 +12,7 @@
   "permissions": [
     {
       "id": "ui.page",
-      "reason": "Adds the public REACH dashboard and navigation, connection and model settings, a playground, and the Studio and VS Code settings hub launcher and sync control.",
+      "reason": "Shows account usage and spending for the selected REACH connection, compares saved API rates, and provides a playground with consolidated settings.",
       "required": true
     }
   ],
@@ -29,7 +29,7 @@
         "location": "app-bar",
         "icon": "fa-satellite-dish",
         "title": "SignalREACH",
-        "ariaLabel": "Open SignalREACH connections and model settings",
+        "ariaLabel": "Open SignalREACH usage, playground and settings",
         "order": 39,
         "entrypoint": "reach-public.js",
         "offlineCapable": true,
