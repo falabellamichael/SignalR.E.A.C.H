@@ -31,7 +31,7 @@ test('Brand, motion, and offline assets',async()=>{
  const css=await readFile(path.join(root,'assets/styles.css'),'utf8');
  assert.match(css,/#a6cf45/i);assert.match(css,/#161618/i);
  assert.match(css,/prefers-reduced-motion/);assert.match(css,/data-theme=light/);
- const scripts=await Promise.all(['theme','data','app','chat-engine','chat-ui'].map(n=>readFile(path.join(root,`assets/${n}.js`),'utf8')));
+ const scripts=await Promise.all(['theme','data','app','chat-engine','chat-ui','automation-demo'].map(n=>readFile(path.join(root,`assets/${n}.js`),'utf8')));
  for(const script of scripts)assert.doesNotThrow(()=>new Function(script));
  assert.match(scripts[2],/Object\.hasOwn\(productMap, key\)/);
  assert.match(scripts[4],/textContent=text/,'user prompt must be rendered as text');
