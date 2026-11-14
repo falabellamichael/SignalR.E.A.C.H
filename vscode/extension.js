@@ -1561,7 +1561,10 @@ class ReachChatViewProvider {
     if (connection.provider === 'subscription') {
       const models = (await this._account.models()).filter(model => !isLoginProviderModel(model));
       this._bridgeIds = new Map();
-      return { routes: new Map(models.map(model => [model, connection.endpoint])), bases: [connection.endpoint], errors: [], bridgeError: '' };
+      const routes = new Map(models.map(model => [model, connection.endpoint]));
+      const catalog = { key: this._endpointKey(connection), routes, bases: [connection.endpoint], errors: [], bridgeError: '' };
+      this._modelCatalog = catalog;
+      return catalog;
     }
     const base = await resolveEndpoint(connection.endpoint);
     if (!TRAY_PROVIDERS.includes(connection.provider) && isReachEndpoint(base, this._account?.state?.()?.baseUrl)) {
@@ -1930,6 +1933,22 @@ class ReachChatViewProvider {
     return this._bridgeIds.get(model);
   }
 
+  /* When the unconfigured default ('gemma-4-12b-qat') is absent from the
+   * active endpoint's discovered catalog, fall back to its first live model. */
+  _resolveModel(connection, requestedModel) {
+    const direct = directTrayModel(connection.provider);
+    if (direct) return direct;
+    const model = requestedModel || connection.model || 'gemma-4-12b-qat';
+    if (model === 'gemma-4-12b-qat'
+        && !TRAY_PROVIDERS.includes(connection.provider)
+        && this._modelCatalog?.key === this._endpointKey(connection)
+        && this._modelCatalog.routes.size > 0
+        && !this._modelCatalog.routes.has(model)) {
+      return this._modelCatalog.routes.keys().next().value;
+    }
+    return model;
+  }
+
   /* Tool result budgets are a user decision now (simplereach.toolResultBudgetKb):
    * 0 = no limit — the complete result is kept and automatic context
    * compression protects the request size; a positive value caps every
@@ -1947,7 +1966,7 @@ class ReachChatViewProvider {
     signal?.throwIfAborted();
     const connection = config();
     const { thinkModel, thinkMaxTokens, contextMaxKb } = connection;
-    const model = directTrayModel(connection.provider) || thinkModel || chatModel || connection.model || 'gemma-4-12b-qat';
+    const model = this._resolveModel(connection, thinkModel || chatModel || connection.model);
     let system = 'You are SimpleREACH — the private reasoning engine of the REACH coding assistant inside VS Code. '
       + 'Use the conversation below to reason about the latest user message. Think step-by-step about the best answer: '
       + 'what matters most, which of the open files are relevant, what structure the '
@@ -1997,7 +2016,7 @@ class ReachChatViewProvider {
   async _deriveQuery(prompt, chatModel, signal = this._controller?.signal) {
     signal?.throwIfAborted();
     const connection = config();
-    const model = directTrayModel(connection.provider) || chatModel || connection.model;
+    const model = this._resolveModel(connection, chatModel || connection.model);
     const clean = prompt.replace(/\s+/g, ' ').trim().slice(0, 500);
     if (!TRAY_PROVIDERS.includes(connection.provider) && model === 'gemma-4-12b-qat') {
       return clean.split(/\s+/).slice(0, 16).join(' ').slice(0, 120);
@@ -2374,8 +2393,10 @@ class ReachChatViewProvider {
       // bridge validates its own `codegpt-eco-<id>` form; translate once here
       // so every downstream call speaks the id of the endpoint actually used.
       if (body.model) body.model = this._wireModel(body.model);
+      const resolvedModel = this._resolveModel(connection, body.model);
+      if (!body.model || body.model === 'gemma-4-12b-qat') body = { ...body, model: resolvedModel };
       const { maxTokens, workspaceContext, contextMaxKb, think, webSearch, searchResults, playwright, agentic } = connection;
-      const activeModel = directTrayModel(connection.provider) || body.model || connection.model;
+      const activeModel = resolvedModel;
       const onDemandGemmaAgent = isOnDemandGemmaAgent({ ...body, model: activeModel }, connection);
       let messages = prepareRequestMessages({ ...body,
         includeWorkspace: !onDemandGemmaAgent && body.includeWorkspace === true && workspaceContext && vscode.workspace.isTrusted,
@@ -2625,6 +2646,20 @@ class ReachChatViewProvider {
             this._post('contextCompacted', { messages: checkpoint, before: retryContext.before, after: contextChars(checkpoint) });
             resp = await sendCompatible(payload);
           }
+        }
+      }
+      if (!resp.ok && (resp.status === 400 || resp.status === 404) && payload.model === 'gemma-4-12b-qat' && !TRAY_PROVIDERS.includes(connection.provider)) {
+        if (responseError === null) responseError = await resp.text();
+        if (/model|unknown|not[_ ]?found|does not exist|disabled/i.test(responseError)) {
+          try {
+            const catalog = await this._discoverModels(connection);
+            if (catalog?.routes?.size > 0 && !catalog.routes.has('gemma-4-12b-qat')) {
+              const fallback = catalog.routes.keys().next().value;
+              this._finishActivity(responseActivity, `Default model unavailable; retrying with ${fallback}.`);
+              payload = { ...payload, model: fallback };
+              resp = await sendCompatible(payload);
+            }
+          } catch (_) { /* keep the original endpoint error */ }
         }
       }
       if (!resp.ok) {

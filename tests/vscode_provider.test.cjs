@@ -1434,3 +1434,29 @@ test('filtered and refused structured replies do not trigger execution or a form
   assert.equal(h.calls.length,1);assert.ok(!h.posts.some(p=>p.agentAction));assert.ok(h.posts.some(p=>p.type==='error'));
  }
 });
+
+test('unconfigured default model falls back to the first discovered endpoint model when absent from catalog',async()=>{
+ const h=host({endpoint:'https://api.example/v1',accessKey:'working-key'},url=>
+  new Response(JSON.stringify(url.endsWith('/models')
+   ? {data:[{id:'gpt-4o-mini'},{id:'gpt-4o'}]}
+   : {choices:[{message:{content:'OK FROM CATALOG'}}]})));
+ await h.provider._fetchModels();
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'gemma-4-12b-qat',stream:false});
+ const chatCall=h.calls.find(c=>c.url.endsWith('/chat/completions'));
+ assert.equal(JSON.parse(chatCall.options.body).model,'gpt-4o-mini');
+ assert.equal(chatCall.options.headers.Authorization,'Bearer working-key');
+ assert.equal(h.posts.find(p=>p.type==='done').full,'OK FROM CATALOG');
+});
+
+test('default model 404 before discovery fetches /models and retries with the first available model',async()=>{
+ const h=host({endpoint:'https://api.example/v1',accessKey:'working-key'},(url,options)=>{
+  if(url.endsWith('/models')) return new Response(JSON.stringify({data:[{id:'ornith-1.5-9b'}]}));
+  const body=JSON.parse(options.body);
+  if(body.model==='gemma-4-12b-qat') return new Response(JSON.stringify({error:{message:'Unknown model gemma-4-12b-qat',code:'model_not_found'}}),{status:404});
+  return new Response(JSON.stringify({choices:[{message:{content:'RETRIED OK'}}]}));
+ });
+ await h.provider._chat({messages:[{role:'user',content:'hi'}],model:'gemma-4-12b-qat',stream:false});
+ assert.equal(h.calls.filter(c=>c.url.endsWith('/chat/completions')).length,2);
+ assert.equal(JSON.parse(h.calls.at(-1).options.body).model,'ornith-1.5-9b');
+ assert.equal(h.posts.find(p=>p.type==='done').full,'RETRIED OK');
+});

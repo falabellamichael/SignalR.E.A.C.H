@@ -1,6 +1,17 @@
 .sr-public-page { width: 100%; min-width: 0; max-width: 1180px; margin: 0 auto; padding: 20px 24px 32px; color: inherit; font: inherit; }
 .sr-public-page * { box-sizing: border-box; }
 .sr-public-page h1 { margin: 0; font-size: 26px; }
+.sr-public-stat-tiles { margin: 20px 0 12px; }
+.sr-public-stat-tiles .sr-public-summary { background: rgba(255,176,32,.065); border-color: rgba(255,176,32,.25); }
+.sr-public-stat-tiles strong, .sr-public-comparison strong { font-size: clamp(19px,2vw,28px); font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
+.sr-public-comparison { margin: 20px 0 12px; }
+.sr-public-comparison .sr-public-summary:last-child { border-color: rgba(255,176,32,.4); }
+.sr-public-table-wrap { max-width: 100%; overflow-x: auto; margin-top: 22px; }
+.sr-public-table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+.sr-public-table caption { text-align: left; font-weight: 600; margin-bottom: 14px; }
+.sr-public-table th, .sr-public-table td { text-align: right; padding: 12px 10px; border-bottom: 1px solid rgba(128,128,128,.2); white-space: nowrap; }
+.sr-public-table th:first-child, .sr-public-table td:first-child { text-align: left; white-space: normal; overflow-wrap: anywhere; min-width: 135px; }
+.sr-public-table th { color: var(--text-secondary,#9aa8bc); font-size: 11px; font-weight: 600; }
 .sr-public-intro, .sr-public-hint, .sr-public-field small { color: var(--text-secondary, #9aa8bc); line-height: 1.55; }
 .sr-public-intro { margin-top: 6px; }
 .sr-public-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 22px 0 12px; }

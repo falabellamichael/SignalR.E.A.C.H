@@ -131,6 +131,14 @@ class AccountProxyTests(RelayFixture):
         self.assertEqual(self.status('GET', '/v1/account', self.session_headers()), 403)
         self.assertEqual(len(self.state.analytics.logs()), 1)
 
+    def test_usage_summary_paths_forward_the_customer_credential_and_period(self):
+        for path in ('/v1/usage?from=10&to=20', '/api/v1/usage?from=10&to=20'):
+            headers = {**TUNNEL, 'Authorization': 'Bearer rch_key_' + 'b' * 64}
+            self.assertEqual(self.status('GET', path, headers), 200)
+            self.assertEqual(self.requests[-1]['path'], path)
+            self.assertEqual(self.requests[-1]['headers']['Authorization'], headers['Authorization'])
+        self.assertEqual(self.state.analytics.logs(), [])
+
     def test_account_key_metadata_requires_admin_and_strips_secrets(self):
         self.reply_body = b'{"data":[{"id":"safe-id","name":"Website key","prefix":"rch_key_12345678","hash":"never forward","key":"never forward"}],"hasMore":false}'
         self.assertEqual(self.status('GET', '/_reach/account-api-keys', self.session_headers()), 403)

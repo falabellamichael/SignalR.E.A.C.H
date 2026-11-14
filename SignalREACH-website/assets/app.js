@@ -25,10 +25,10 @@
     const controller = new AbortController();
     const signal = controller.signal;
     const timers = new Set();
-    let observer, frame = 0, cleanupChat = () => {}, cleanupWorkspace = () => {};
+    let observer, frame = 0, cleanupChat = () => {}, cleanupWorkspace = () => {}, cleanupAutomation = () => {};
     const later = (fn, ms) => { const id = setTimeout(() => { timers.delete(id); if (!signal.aborted) fn(); }, ms); timers.add(id); return id; };
     const on = (element, event, fn, opts = {}) => element?.addEventListener(event, fn, {...opts, signal});
-    dispose = () => { cleanupWorkspace(); cleanupChat(); controller.abort(); observer?.disconnect(); timers.forEach(clearTimeout); cancelAnimationFrame(frame); };
+    dispose = () => { cleanupAutomation(); cleanupWorkspace(); cleanupChat(); controller.abort(); observer?.disconnect(); timers.forEach(clearTimeout); cancelAnimationFrame(frame); };
     const root = document.documentElement;
     const page = document.body.dataset.page;
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -131,6 +131,65 @@
       const panel = document.getElementById(button.getAttribute('aria-controls'));
       panel?.setAttribute('aria-labelledby', button.id);
     };
+    // Both views remain readable without JavaScript. Enhance them into tabs here.
+    const selectIntegrationView = (view, updateURL = false) => {
+      const button = $(`[data-integration-view="${view}"]`);
+      if (!button) return;
+      selectTab(button);
+      $('#developer-panel').hidden = view !== 'developer';
+      $('#current-panel').hidden = view !== 'current';
+      if (updateURL) setSection(view === 'current' ? 'current-integrations' : 'developer-overview');
+      updateProgress();
+    };
+    if ($('[data-integration-view]')) {
+      const restoreIntegrationView = () => selectIntegrationView(
+        ['current-integrations', 'current-panel', 'integration-grid'].includes(readSection()) ? 'current' : 'developer'
+      );
+      restoreIntegrationView();
+      on(window, 'hashchange', restoreIntegrationView);
+      on(window, 'popstate', restoreIntegrationView);
+    }
+
+    const calculator = $('[data-savings-calculator]');
+    if (calculator) {
+      const spend = $('#current-ai-spend');
+      const subscriptions = $('#reach-subscriptions');
+      const monthlyPrice = Math.round(Number(calculator.dataset.reachMonthly) * 100);
+      const money = cents => 'CAD ' + new Intl.NumberFormat('en-CA', {
+        style: 'currency', currency: 'CAD'
+      }).format(cents / 100);
+      const calculateSavings = () => {
+        const current = spend.valueAsNumber;
+        const count = subscriptions.valueAsNumber;
+        const validSpend = Number.isFinite(current) && spend.validity.valid;
+        const validCount = Number.isInteger(count) && subscriptions.validity.valid;
+        spend.setAttribute('aria-invalid', String(!validSpend));
+        subscriptions.setAttribute('aria-invalid', String(!validCount));
+        $('#savings-input-error').hidden = validSpend && validCount;
+        if (!validSpend || !validCount) {
+          $('#savings-monthly').textContent = '—';
+          $('#savings-annual').textContent = '—';
+          $('#savings-summary').textContent = 'Enter valid costs and a subscription count to see your estimate.';
+          return;
+        }
+        const currentCents = Math.round(current * 100);
+        const reachCents = monthlyPrice * count;
+        const difference = currentCents - reachCents;
+        $('#savings-monthly-label').textContent = difference < 0 ? 'Additional monthly cost' : 'Potential monthly savings';
+        $('#savings-annual-label').textContent = difference < 0 ? 'Additional yearly cost' : 'Potential yearly savings';
+        $('#savings-monthly').textContent = money(Math.abs(difference));
+        $('#savings-annual').textContent = money(Math.abs(difference) * 12);
+        const total = `${count === 1 ? 'One REACH Plus subscription costs' : `${count} REACH Plus subscriptions cost`} ${money(reachCents)}/month.`;
+        const comparison = difference > 0
+          ? ` That is ${Math.round(difference / currentCents * 100)}% less than the current spend you entered.`
+          : difference === 0 ? ' The subscription costs are equal.'
+          : ' REACH Plus would cost more than the current spend you entered.';
+        $('#savings-summary').textContent = total + comparison;
+      };
+      on(spend, 'input', calculateSavings);
+      on(subscriptions, 'input', calculateSavings);
+      calculateSavings();
+    }
     const animateContent = node => {
       if (!node || !motionEnabled()) return;
       node.classList.remove('content-enter');
@@ -322,9 +381,11 @@
     };
     on($('#integration-search'),'input',filterIntegrations);
 
-    /* Docs: the initial article is server-rendered; the other compact guides are local. */
-    const quickstart = $('#docs-article')?.innerHTML || '';
+    /* Automations is the landing guide; retain the original Quick start in a template. */
+    const initialArticle = $('#docs-article')?.innerHTML || '';
+    const quickstart = $('#docs-quickstart-template')?.innerHTML || initialArticle;
     const docArticles = {
+      automations:{title:'Automations',description:'Use AI for repeatable business workflows. Watch a client email move from chat request to draft, review, and simulated send.',html:initialArticle},
       quickstart:{title:'Quick start',description:'Run REACH Studio from source. Install Git and Node.js 24 LTS, configure an endpoint, and open a project.',html:quickstart},
       studio:{title:'REACH Studio',description:'Project folders, settings, personas, agent teams, commands, and budgets in the standalone workspace.',html:`<div class="doc-meta"><span class="pill gold">WORKSPACE</span><span>REACH Studio</span></div><h2>Make room for your project.</h2><p>Studio is the standalone macOS, Windows, and Linux app. It combines project files and editing, AI conversations, custom personas, and collaborating agent teams.</p><h3>Choose a starting point.</h3>${list(['<strong>Open Folder</strong> loads an existing project.','<strong>New Project → General project</strong> creates an empty folder.','<strong>Settings → Connection &amp; default model</strong> configures your endpoint.'])}<h3>Keep the work connected.</h3><p>Use the Files panel to explore your project. Work through conversations with relevant context, configure custom personas, and use agent teams when more than one role is useful.</p><h3>Keep usage and actions visible.</h3><p>Studio includes a Budgeting settings page and an Activity trail. Review the applicable tool permissions and edit-review controls before running a task.</p>${notice('Optional TypeSafe Jev context selection and Auto mode require separate configuration and a TypeSafe API key. They are not enabled by this website.')}<div class="docs-pager">${external(REPO+'/blob/main/studio/README.md','Full Studio documentation')}<a class="text-link" href="#endpoint" data-doc="endpoint">Connect an endpoint ${icon('arrow')}</a></div>`},
       endpoint:{title:'Connect an endpoint',description:'Configure base URL, access key, model ID, chat completions, and streaming for the relay.',html:`<div class="doc-meta"><span class="pill gold">CONNECTIONS</span><span>OpenAI-compatible endpoints</span></div><h2>Your endpoint. Your model.</h2><p>Use the base URL and access key provided by your endpoint host. A local REACH relay commonly uses <code>http://127.0.0.1:20777/v1</code>; a hosted relay can use a different address.</p><h3>Configure the connection.</h3>${list(['Enter the complete base URL in your client or Studio connection settings.','Add the API key required by the host. Do not put real keys into public source files.','Choose a model ID actually exposed by that endpoint.'])}<h3>A streaming request.</h3><p>This is an illustrative cURL request. Replace every placeholder and use the URL supplied by your host.</p>${codebox(examples.curl,'cURL · streaming chat','endpoint-example')}${notice('This guide does not run requests. Your provider controls model availability, access, and usage limits. A browser client may also need appropriate CORS configuration.')}<div class="docs-pager">${external(REPO+'#readme','Relay source guide')}<a class="text-link" href="#troubleshooting" data-doc="troubleshooting">Troubleshooting ${icon('arrow')}</a></div>`},
@@ -332,19 +393,21 @@
       security:{title:'Privacy & security',description:'Website demo privacy, local preferences, credentials, storage, and repository security policy.',html:`<div class="doc-meta"><span class="pill gold">BEFORE YOU CONNECT</span><span>Privacy &amp; security</span></div><h2>Know what is connected.</h2><p>The default demo is local and scripted. The optional homepage Try LFM3 VL workspace sends your prompt and its generated project files to REACH using your signed-in account. It does not accept uploads or access computer files.</p><h3>What this website stores.</h3><p>Theme, motion preferences, and the optional browser website project are saved in this browser when storage is available. Local-demo prompts stay in page memory. Try LFM3 VL sends prompts and project context only when you submit a request; your REACH account access and usage limits apply. The chat’s Export control creates a local text file only when you choose it; Reset clears the current conversation. There are no analytics, remote fonts, or third-party scripts in the site package.</p><h3>What the actual application sends.</h3><p>The selected model provider receives the request and context needed to answer. Provider routes and optional services can have different access, processing, and retention rules. Review the product’s documentation and your provider’s policies.</p><h3>Keep credentials in the application.</h3><p>Studio uses the OS credential vault when available and displays a warning if encryption is unavailable. Not all application data is necessarily encrypted. Review the repository security policy for the precise storage behavior and migration caveats.</p>${notice('Never paste an actual access key into this website’s demo, a public repository, or a shared screenshot. The sample code contains placeholders on purpose.')}<div class="docs-pager">${external(REPO+'/blob/main/SECURITY.md','Read the security policy')}<a class="text-link" href="#quickstart" data-doc="quickstart">Back to setup ${icon('arrow')}</a></div>`},
       troubleshooting:{title:'Troubleshooting',description:'Resolve setup issues, unavailable endpoints, access keys, missing models, and blocked connections.',html:`<div class="doc-meta"><span class="pill gold">FIND A WAY FORWARD</span><span>Troubleshooting</span></div><h2>Check the connection, then the context.</h2><h3>Studio will not start.</h3><p>Confirm the prerequisites from the Studio guide, run <code>npm ci</code> from the <code>studio</code> directory, and read the terminal error. The documented <code>npm start</code> command builds the editor bundle before launching Electron.</p><h3>The endpoint is unavailable.</h3><p>Confirm that the relay or host is running, and use its current base URL. A localhost address points to the machine running the client, not another computer.</p><h3>Access is rejected.</h3><p>Check the API key and the host’s access policy. Do not bypass authentication or make a private endpoint public to work around an access error.</p><h3>A model is missing.</h3><p>Use the model catalog from the configured endpoint. Example model IDs are placeholders, not a guarantee that a provider serves that model.</p><h3>The website demo feels different.</h3><p>The default website demo uses sample files and scripted responses. Enable Try LFM3 VL on the homepage for an account-backed website builder. Install Studio for full projects, connections, and agent workflows.</p><div class="docs-pager">${external(REPO+'/issues','Browse project issues')}<a class="text-link" href="#endpoint" data-doc="endpoint">Connection guide ${icon('arrow')}</a></div>`}
     };
-    let currentDoc = 'quickstart';
+    let currentDoc = 'automations';
     const showDoc = (key, focus = false) => {
       const article = $('#docs-article'); if (!article) return;
-      if (!Object.hasOwn(docArticles,key)) key='quickstart';
+      if (!Object.hasOwn(docArticles,key)) key='automations';
+      cleanupAutomation();
       currentDoc=key;
       article.innerHTML = docArticles[key].html;
+      cleanupAutomation = window.REACHAutomationDemo?.mount($('[data-automation-demo]', article), {motionEnabled}) || (() => {});
       $$('.docs-nav [data-doc]').forEach(a=>{const selected=a.dataset.doc===key;a.classList.toggle('active',selected);if(selected)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});
       document.title = `${docArticles[key].title} | SignalREACH Docs`;
       animateContent(article);
       if (focus) { article.focus({preventScroll:true}); if (innerWidth<760) article.scrollIntoView({behavior:motionEnabled()?'smooth':'instant',block:'start'}); }
     };
     if (page==='docs') {
-      const section=readSection(); showDoc(Object.hasOwn(docArticles,section)?section:'quickstart');
+      const section=readSection(); showDoc(Object.hasOwn(docArticles,section)?section:'automations');
       on(window,'hashchange',()=>{if(!window.SignalREACHPreview)showDoc(readSection());});
       on(window,'popstate',()=>{if(!window.SignalREACHPreview)showDoc(readSection());});
       on($('#docs-search'),'input', e=>{
@@ -352,6 +415,7 @@
         if(!query){showDoc(currentDoc);return;}
         const matches=Object.entries(docArticles).filter(([,doc])=>(doc.title+' '+doc.description).toLowerCase().includes(query));
         const article=$('#docs-article');
+        cleanupAutomation();
         article.innerHTML=`<div class="doc-meta"><span class="pill gold">GUIDE SEARCH</span><span role="status">${matches.length} result${matches.length===1?'':'s'}</span></div><h2>Find your next step.</h2><p id="doc-search-query"></p><div class="doc-search-results">${matches.map(([key,doc])=>`<a class="doc-result" href="#${key}" data-doc="${key}"><h3>${doc.title} ${icon('arrow')}</h3><p>${doc.description}</p></a>`).join('') || '<div class="empty-state"><h3>No matching guides.</h3><p>Try “endpoint”, “project”, or “security”.</p></div>'}</div>`;
         $('#doc-search-query').textContent=`Results for “${e.target.value.trim()}”`;
       });
@@ -389,6 +453,8 @@
       }
       if($('.nav-links.open') && (!target.closest('.site-header') || target.closest('.nav-links a')))closeMenu();
       const copy=target.closest('[data-copy]');if(copy){copyText(copy);return;}
+      const integrationView=target.closest('[data-integration-view]');
+      if(integrationView){selectIntegrationView(integrationView.dataset.integrationView,true);return;}
       if(target.closest('[data-close-dialog]')){target.closest('dialog')?.close();return;}
       if(target.closest('[data-open-tour]')){tourStep=0;renderTour();openDialog($('#tour-dialog'));return;}
       if(target.closest('[data-tour-next]')){tourStep=Math.min(2,tourStep+1);renderTour();$('#tour-body h2')?.setAttribute('tabindex','-1');$('#tour-body h2')?.focus();return;}

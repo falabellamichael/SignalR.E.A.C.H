@@ -1,4 +1,5 @@
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
+import { usagePeriod, usageSummary } from './usage-summary.mjs';
 import { requestCapabilities } from './gpu-bridge.mjs';
 import { getAddress } from 'ethers';
 import { normalizePlusPayment, normalizePlusReversal, plusFingerprint, plusGrantId, publicPlusPayment, publicPlusReversal } from './payments/plus.mjs';
@@ -76,6 +77,11 @@ export class SupabaseAccountStore {
     this.timeoutMs = timeoutMs;
   }
   async close() {}
+  async usageSummary(accountId, from, to) {
+    const period = usagePeriod(from, to, this.now());
+    const snapshot = await this._rpc('summary', { accountId, ...period }, this.endpoint.replace(/reach_account_store$/, 'reach_usage_summary'));
+    return usageSummary(snapshot, period);
+  }
   async _rpc(operation, payload = {}, endpoint = this.endpoint) {
     const now = this.now();
     if (!Number.isSafeInteger(now) || now < 0) throw unavailable();
