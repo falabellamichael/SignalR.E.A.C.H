@@ -1,5 +1,27 @@
 # Changelog
 
+## [26.11.0](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.13...v26.11.0) (2026-11-14)
+
+
+### Features
+
+* subscription drivers, endpoint hardening, website refresh, marketing docs ([49c5ab3](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/49c5ab3ba232dea8ed992b0075d7de6d97bc0f11))
+* **vscode:** default model setting uses detected catalog dropdown ([95b3720](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/95b372053e0d823b11e4c326e5bef09c233cb12f))
+
+
+### Bug Fixes
+
+* patch minimatch in Studio packaging ([615e530](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/615e5302442abe0361dd816d89fd882c8edf6136))
+* restore CI after the latest push ([#208](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/208)) ([157cabc](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/157cabc109eb0e61e6e7e3ceca6c5ccf27891464))
+* restore CI after the model and Studio updates ([f504c52](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/f504c5299eb18356f30bf2ae88230ed069cb9961))
+* **vscode:** remove whitespace gap under agent instructions label ([8422542](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/8422542aaf7c4956cf5841124c84e033afe561b4))
+* **vscode:** surface model catalog errors and keep last-good list ([63a151b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/63a151b1d82df3d1e545af6e4f9f5d8ff450bd91))
+
+
+### Miscellaneous Chores
+
+* release-as 26.11.0 ([fea97dc](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/fea97dc627fb46a246c8aa38b58fd897b1adbeb3))
+
 ## [26.10.13](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.12...v26.10.13) (2026-10-28)
 
 
