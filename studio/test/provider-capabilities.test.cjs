@@ -78,6 +78,38 @@ test('catalog refresh replaces and clears output capability while preserving res
   assert.equal(Object.hasOwn(capabilityStore.get('refresh', endpoint, 'm'), 'outputTokenLimit'), false);
 });
 
+test('large automatic catalog refresh saves once, retains the selected model, and does not churn on repeat', () => {
+  const endpoint = 'http://subscription.invalid/v1';
+  let settings = connections.normalizeSettings({ connections: [
+    { id: 'subscription', name: 'Subscription', endpoint, model: 'devin-chat', capabilities: [
+      { endpoint, model: 'devin-chat', streaming: true, textOnly: true },
+    ] },
+  ] }).settings;
+  let loads = 0, saves = 0;
+  const store = createCapabilityStore({
+    load: () => { loads++; return settings; },
+    save: value => { saves++; settings = connections.normalizeSettings(value).settings; },
+  });
+  const catalog = { data: Array.from({ length: 1074 }, (_, i) => ({
+    id: i ? `model-${i}` : 'devin-chat',
+    capabilities: { outputTokenLimit: false, automaticOutput: true, jsonSchema: false },
+  })) };
+  assert.equal(store.recordCatalog('subscription', endpoint, catalog), true);
+  assert.equal(loads, 1);
+  assert.equal(saves, 1, 'one settings save and synchronization trigger for the entire catalog');
+  assert.equal(settings.connections[0].capabilities.length, 32);
+  assert.deepEqual(store.get('subscription', endpoint, 'devin-chat'), {
+    endpoint, model: 'devin-chat', streaming: true, textOnly: true,
+    outputTokenLimit: false, automaticOutput: true, jsonSchema: false,
+  });
+  assert.equal(store.recordCatalog('subscription', endpoint, catalog), false);
+  assert.equal(saves, 1, 'an unchanged catalog must not trigger another settings save');
+  catalog.data[0].capabilities.outputTokenLimit = true;
+  assert.equal(store.recordCatalog('subscription', endpoint, catalog), true);
+  assert.equal(saves, 2);
+  assert.equal(store.get('subscription', endpoint, 'devin-chat').outputTokenLimit, true);
+});
+
 test('a second loop on one connection skips a reasoning parameter already rejected by its provider', async t => {
   const endpoint = 'http://provider.invalid/v1';
   let settings = connections.normalizeSettings({ connections: [

@@ -10,7 +10,7 @@
  */
 
 const { compactMessages, normalizeChatMessages, contextChars } = require('./context.cjs');
-const { providerRequestOptions } = require('./endpoint.cjs');
+const { providerRequestOptions, providerFetch } = require('./endpoint.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
 const { measureRequest, inputLimitFromError, budgetExceeded, budgetRatio, fitError } = require('./request-budget.cjs');
 const { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
@@ -524,7 +524,7 @@ class AgentLoop {
     if (this.requestTimeoutMs > 0) signals.push(AbortSignal.timeout(this.requestTimeoutMs));
     this.requestSignal = AbortSignal.any(signals);
     this._emit('request-start', { purpose, ...measureRequest(body) });
-    const response = await fetch(url, providerRequestOptions(this.endpoint, this.accessKey, {
+    const response = await providerFetch(url, providerRequestOptions(this.endpoint, this.accessKey, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),

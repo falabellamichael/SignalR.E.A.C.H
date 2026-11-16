@@ -5,7 +5,7 @@
 // to another backend without inheriting the old backend's observations.
 const MAX_ENTRIES = 32;
 const { createHash } = require('node:crypto');
-const { providerRequestOptions } = require('./endpoint.cjs');
+const { providerRequestOptions, providerFetch } = require('./endpoint.cjs');
 
 // Gateway byte limits and provider token windows are separate facts. Never
 // infer one from the other or guess an input scope absent from the catalog.
@@ -61,19 +61,41 @@ function createCapabilityStore({ load, save }) {
       || settings?.connections?.find(c => c.endpoint === endpoint);
   const store = {
     recordCatalog(connectionId, endpoint, data) {
-      for (const model of Array.isArray(data?.data) ? data.data : []) {
-        if (typeof model?.id !== 'string' || !model.id) continue;
-        const facts = modelInputLimits(model);
-        if (typeof model.capabilities?.outputTokenLimit === 'boolean') facts.outputTokenLimit = model.capabilities.outputTokenLimit;
-        if (typeof model.capabilities?.automaticOutput === 'boolean') facts.automaticOutput = model.capabilities.automaticOutput;
-        if (typeof model.capabilities?.jsonSchema === 'boolean') facts.jsonSchema = model.capabilities.jsonSchema;
-        const old = store.get(connectionId, endpoint, model.id);
-        if (Object.keys(facts).length || old && ['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens', 'outputTokenLimit', 'automaticOutput', 'jsonSchema'].some(key => old[key] !== undefined)) {
-          store.record(connectionId, endpoint, model.id, {
-            maxInputBytes: undefined, inputLimitScope: undefined, maxInputTokens: undefined, contextTokens: undefined, outputTokenLimit: undefined, automaticOutput: undefined, jsonSchema: undefined, ...facts,
-          });
+      try {
+        const settings = load();
+        const connection = target(settings, connectionId, endpoint);
+        if (!connection) return false;
+        const entries = normalizeCapabilities(connection.capabilities);
+        const key = (endpoint, model) => JSON.stringify([endpoint, model]);
+        const updated = new Map(entries.map(entry => [key(entry.endpoint, entry.model), entry]));
+        for (const model of Array.isArray(data?.data) ? data.data : []) {
+          if (typeof model?.id !== 'string' || !model.id) continue;
+          const facts = modelInputLimits(model);
+          if (typeof model.capabilities?.outputTokenLimit === 'boolean') facts.outputTokenLimit = model.capabilities.outputTokenLimit;
+          if (typeof model.capabilities?.automaticOutput === 'boolean') facts.automaticOutput = model.capabilities.automaticOutput;
+          if (typeof model.capabilities?.jsonSchema === 'boolean') facts.jsonSchema = model.capabilities.jsonSchema;
+          const modelKey = key(endpoint, model.id);
+          const old = updated.get(modelKey);
+          if (Object.keys(facts).length || old && ['maxInputBytes', 'inputLimitScope', 'maxInputTokens', 'contextTokens', 'outputTokenLimit', 'automaticOutput', 'jsonSchema'].some(key => old[key] !== undefined)) {
+            const next = normalizeCapabilities([{ endpoint, model: model.id, ...old,
+              maxInputBytes: undefined, inputLimitScope: undefined, maxInputTokens: undefined, contextTokens: undefined, outputTokenLimit: undefined, automaticOutput: undefined, jsonSchema: undefined, ...facts,
+            }])[0];
+            updated.delete(modelKey);
+            updated.set(modelKey, next);
+          }
         }
-      }
+        // Apply a catalog in one transaction: saving each model blocks the main
+        // process and triggers settings synchronization for every catalog row.
+        // Keep the selected model even when the catalog exceeds the fact cache.
+        const selectedKey = key(endpoint, connection.model);
+        const selected = updated.get(selectedKey);
+        if (selected) { updated.delete(selectedKey); updated.set(selectedKey, selected); }
+        const retained = [...updated.values()].slice(-MAX_ENTRIES);
+        if (JSON.stringify(entries) === JSON.stringify(retained)) return false;
+        save({ ...settings, connections: settings.connections.map(c => c.id === connection.id
+          ? { ...c, capabilities: retained } : c) });
+        return true;
+      } catch { return false; } // capability learning must never fail a request
     },
     async discover(connectionId, endpoint, accessKey, fetchImpl = global.fetch) {
       const credential = createHash('sha256').update(accessKey || '').digest('hex');
@@ -82,7 +104,7 @@ function createCapabilityStore({ load, save }) {
       if (previous && Date.now() - previous.at < 60000) return previous.promise;
       const promise = (async () => {
         try {
-          const response = await fetchImpl(endpoint.replace(/\/+$/, '') + '/models', providerRequestOptions(endpoint, accessKey, { signal: AbortSignal.timeout(3000) }));
+          const response = await providerFetch(endpoint.replace(/\/+$/, '') + '/models', providerRequestOptions(endpoint, accessKey, { signal: AbortSignal.timeout(3000) }), fetchImpl);
           if (response.ok) store.recordCatalog(connectionId, endpoint, await response.json());
         } catch { /* Optional discovery: unsupported catalogs keep response learning. */ }
       })();
