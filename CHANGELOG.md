@@ -1,5 +1,21 @@
 # Changelog
 
+## [26.11.1](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.11.0...v26.11.1) (2026-11-16)
+
+
+### Features
+
+* add business website and live account usage ([#209](https://github.com/falabellamichael/SignalR.E.A.C.H/issues/209)) ([3f66aac](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/3f66aac041ed2ae95107549ca946deb8e510f25d))
+
+
+### Bug Fixes
+
+* isolate Links runs and release completed crew waits ([4af336b](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/4af336b5eeafe5f816553ffea128ef8d1ec13d4f))
+* make team activity and responses collapsible ([ee09047](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/ee09047ebfc2449365a2cd6d481ebc2cc52216ba))
+* prevent subscription agents from stalling on tool calls ([502093d](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/502093d916fe007422537d2a27a6ec7ff960a312))
+* restore subscription sign-in and prevent catalog freezes ([9dc23c6](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/9dc23c688267adce273c04c4800a3e855b03348a))
+* wait for native focus in Studio browser smoke test ([50c0242](https://github.com/falabellamichael/SignalR.E.A.C.H/commit/50c0242f09ea5e00558284a8a451c6b7af679600))
+
 ## [26.11.0](https://github.com/falabellamichael/SignalR.E.A.C.H/compare/v26.10.13...v26.11.0) (2026-11-14)
 
 
