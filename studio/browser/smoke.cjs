@@ -262,9 +262,16 @@ module.exports = async function browserSmoke(win, browser, outputDir) {
     await until(() => ui(`return composerInput.value.includes('Known browser source text.') && composerInput.value.startsWith('My draft');`));
     await browser.addContext(browser.tabs.get(browser.active), { selectionText: 'Selected fixture text' });
     await until(() => ui(`return composerInput.value.includes('Selected fixture text');`));
+    // Native focus changes are asynchronous on macOS. Establish window focus
+    // before exercising the shortcut, then wait for focus to return to Studio.
+    win.show();
+    win.focus();
+    await until(() => win.isFocused());
     second.webContents.focus();
+    await until(() => second.webContents.isFocused());
     second.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'L', modifiers: [process.platform === 'darwin' ? 'meta' : 'control'] });
     await until(() => ui(`return document.activeElement.id === 'browser-address';`));
+    await until(() => win.webContents.isFocused());
     assert.equal(win.webContents.isFocused(), true);
     await assert.rejects(browser.command('navigate', { url: 'file:///C:/Windows/win.ini' }), /http or https/);
     await assert.rejects(browser.command('navigate', { url: 'javascript:alert(1)' }), /http or https/);
