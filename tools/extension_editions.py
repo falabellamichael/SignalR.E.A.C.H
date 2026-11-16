@@ -472,6 +472,12 @@ def package_readme(edition):
             + "\n\n" + scope
             + ("\n\nSimpleRAG loads this extension as trusted code in its page context. Install only trusted "
                "extension code. Provider requests may charge your own account under your provider's terms."
+               "\n\nThe panel opens on Usage, with Playground and Settings as its only other pages. "
+               "Usage requires an updated SimpleRAG host with GET /model-endpoints/{id}/reach-usage "
+               "and a REACH account service with GET /v1/usage. The frontend installer does not update "
+               "either backend or apply a database migration. Older hosts show statistics as unavailable. "
+               "Comparisons use a saved API/model plus your entered per-million-token prices and any "
+               "required CAD/USD exchange assumption; they are estimates, not provider invoices."
                if edition == "public" else "")
             + "\n\nInstall from this package folder:\n\n```text\npython install.py\n```\n\n"
             "For an isolated verification install:\n\n```text\npython install.py --extension-home PATH_TO_TEST_EXTENSIONS\n```\n\n"

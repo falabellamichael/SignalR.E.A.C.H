@@ -54,8 +54,9 @@ const parseObject=raw=>{
   if(!body||typeof body!=='object'||Array.isArray(body)) fail(400,'invalid_body','Supply a JSON object.');return body;
 };
 const readBody=async req=>parseObject(await readRaw(req));
-// Lemonade clients default to /api/v1; only the public model routes are aliases.
+// Lemonade clients default to /api/v1; alias model routes and read-only usage.
 const modelPathAliases = new Map([
+  ['/api/v1/usage', '/v1/usage'],
   ['/api/v1/models', '/v1/models'],
   ['/api/v1/chat/completions', '/v1/chat/completions'],
 ]);
@@ -154,8 +155,8 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(pathname!==requestUrl.pathname)req.url=pathname+requestUrl.search;
       const token=/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1];
       const modelApiKey=token?.startsWith('rch_key_');
-      if(modelApiKey && !((req.method==='GET'&&pathname==='/v1/models')||(req.method==='POST'&&['/v1/chat/completions','/v1/decisions'].includes(pathname)))) {
-        fail(403,'api_key_scope','API keys can only list models and create chat completions.');
+      if(modelApiKey && !((req.method==='GET'&&['/v1/models','/v1/usage'].includes(pathname))||(req.method==='POST'&&['/v1/chat/completions','/v1/decisions'].includes(pathname)))) {
+        fail(403,'api_key_scope','API keys can list models, read aggregate usage, and create model requests.');
       }
       if(req.method==='GET'&&pathname==='/healthz') {json(res,200,{status:'ok',service:'reach-accounts'});return;}
       if(pathname==='/_reach/operator/api-keys') {
@@ -292,7 +293,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       // Re-evaluate access on every request, including sessions issued before
       // subscription expiry. Only identity linking and checkout are onboarding.
       if(!modelApiKey && !accountAccess(account).website && ![
-        '/v1/account','/v1/account/link-wallet','/v1/account/link-email/start',
+        '/v1/account','/v1/usage','/v1/account/link-wallet','/v1/account/link-email/start',
         '/v1/account/link-email/verify','/v1/billing/checkout','/v1/auth/logout',
         '/v1/account/api-keys/revoke',
       ].includes(pathname))fail(403,'website_access_required','An active subscription or verified connected wallet is required.');
@@ -302,6 +303,11 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='POST'&&pathname==='/v1/account/api-keys') {json(res,201,await store.createApiKey(account.id,body.name));return;}
       if(req.method==='POST'&&pathname==='/v1/account/api-keys/revoke') {json(res,200,await store.revokeApiKey(account.id,body.id));return;}
       if(req.method==='GET'&&pathname==='/v1/account') {json(res,200,await accountView(await store.account(account.id)));return;}
+      if(req.method==='GET'&&pathname==='/v1/usage') {
+        const to=requestUrl.searchParams.has('to')?Number(requestUrl.searchParams.get('to')):now();
+        const from=requestUrl.searchParams.has('from')?Number(requestUrl.searchParams.get('from')):to-30*86400000;
+        json(res,200,await store.usageSummary(account.id,from,to));return;
+      }
       if(req.method==='POST'&&pathname==='/v1/account/link-wallet') {
         const state=randomBytes(32).toString('base64url'), proof=randomBytes(32).toString('base64url').slice(0,43);
         const flow=await store.startFlow(state, proof);

@@ -672,6 +672,7 @@ function renderComposerAttachments() {
     chip.append(label, remove);
     composerAttachmentsEl.appendChild(chip);
   }
+  if (typeof renderContextStatus === 'function') renderContextStatus();
 }
 
 $('#btn-attach').onclick = async () => {
@@ -730,6 +731,9 @@ async function prepareDraftProject() {
 }
 
 $('#btn-send').onclick = sendComposer;
+composerInput.addEventListener('input', () => {
+  if (typeof renderContextStatus === 'function') renderContextStatus();
+});
 composerInput.addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return;
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

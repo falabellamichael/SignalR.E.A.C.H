@@ -175,7 +175,8 @@ test('explicit Save connection sends only the typed provider through SimpleRAG w
   assert.equal(control(ui.container, 'Your API key').value, '');
   assert.equal(Array.from(ui.storage.values()).some(value => value.includes('synthetic-user-key')), false);
   assert.deepEqual(ui.prefs(), { endpointId: 'user-endpoint', name: 'My provider',
-    baseUrl: 'https://models.example.test/v1', model: '', defaults: {} });
+    baseUrl: 'https://models.example.test/v1', model: '', defaults: {},
+    statistics: { endpointId:'',comparisonId:'',model:'',days:30,cadPerUsd:'',rates:{} } });
 });
 
 test('local connection is user-entered and saved without an API key or automatic discovery', async () => {
@@ -312,15 +313,15 @@ test('provider error responses cannot expose the credential in the status or sav
   assert.equal(Array.from(ui.storage.values()).some(value => value.includes('synthetic-user-key')), false);
 });
 
-test('the public extension opens the REACH dashboard and fills the native navigation and connection panes', () => {
+test('the public extension opens Usage with three direct views and legacy routes resolve to consolidated controls', () => {
   const ui = mount({ page: 'dashboard', native: true });
   const elements = ui.context.elements;
-  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Usage');
   assert.equal(elements.navTitle.textContent, 'SignalREACH');
-  assert.equal(elements.listTitle.textContent, 'Connection & Models');
-  assert.equal(descendants(elements.navFolderList).filter(node => node.tagName === 'BUTTON').length, 9);
+  assert.equal(elements.listTitle.textContent, 'At a glance');
+  assert.equal(descendants(elements.navFolderList).filter(node => node.tagName === 'BUTTON').length, 3);
   assert.match(elements.listContent.textContent, /Setup needed/);
-  for (const page of ['Dashboard', 'Endpoint', 'Models', 'Playground', 'Usage', 'Logs', 'Settings', 'About']) {
+  for (const page of ['Usage', 'Playground', 'Settings']) {
     button(elements.navFolderList, page).click();
     assert.equal(ui.container.querySelector('h1').textContent, page);
     assert.equal(ui.context.state.folder, page.toLowerCase());
@@ -329,10 +330,11 @@ test('the public extension opens the REACH dashboard and fills the native naviga
   assert.equal(ui.calls.length, 0, 'navigation does not probe a provider or operator service');
   assert.doesNotMatch(elements.listContent.textContent, /Restart|Start Endpoint|Relay Settings/);
   ui.controller.onFolderChanged(ui.context, 'dashboard');
-  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Usage');
   ui.context.state.folder = 'models';
   ui.controller.renderPage(ui.context);
-  assert.equal(ui.container.querySelector('h1').textContent, 'Models');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Settings');
+  assert.equal(descendants(elements.listContent).filter(node=>node.tagName==='BUTTON').length,0,'sidebar is a summary, not a second navigation layer');
 });
 
 test('activating the public extension replaces the previous app main pane', () => {
@@ -343,28 +345,27 @@ test('activating the public extension replaces the previous app main pane', () =
   ui.container.replaceChildren(otherPage);
   ui.controller.activate(ui.context);
   assert.equal(ui.container.children.length, 1);
-  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Usage');
   assert.doesNotMatch(ui.container.textContent, /Another app main pane/);
 });
 
-test('shared settings keeps the external hub and sync frame alongside the restored dashboard', () => {
+test('shared settings and sync are folded into Settings instead of a separate launcher page', () => {
   const ui = mount({ page: 'dashboard', native: true });
-  const sidebar = ui.context.elements.listContent;
-  const sync = descendants(sidebar).find(node => node.tagName === 'IFRAME');
+  button(ui.context.elements.navFolderList, 'Settings').click();
+  const sync = descendants(ui.container).find(node => node.tagName === 'IFRAME');
   assert.equal(sync.src, 'http://127.0.0.1:21309/sync');
   assert.equal(sync.title, 'Sync Studio and VS Code settings');
-  button(ui.context.elements.navFolderList, 'Shared settings').click();
-  assert.equal(ui.container.querySelector('h1').textContent, 'Shared settings');
-  assert.equal(ui.context.state.folder, 'shared-settings');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Settings');
+  assert.equal(ui.context.state.folder, 'settings');
   const link = descendants(ui.container).find(node => node.tagName === 'A');
   assert.equal(link.href, 'http://127.0.0.1:21309/');
   assert.equal(link.target, '_blank');
   assert.equal(link.rel, 'noopener noreferrer');
   assert.match(ui.container.textContent, /Studio.*VS Code/);
   assert.equal(ui.calls.length, 0, 'the parent page does not read or write hub or host settings');
-  button(ui.context.elements.navFolderList, 'Dashboard').click();
-  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
-  assert.equal(ui.context.elements.listContent.querySelector('iframe').src, sync.src);
+  button(ui.context.elements.navFolderList, 'Usage').click();
+  assert.equal(ui.container.querySelector('h1').textContent, 'Usage');
+  assert.equal(ui.context.elements.listContent.querySelector('iframe'),null);
 });
 
 test('saved connections are loaded explicitly and only the chosen connection metadata is retained', async () => {
@@ -384,7 +385,7 @@ test('saved connections are loaded explicitly and only the chosen connection met
   assert.deepEqual(choices.children.map(item => item.value), ['', 'chosen']);
   choices.value = 'chosen';
   button(ui.container, 'Use connection').click();
-  assert.equal(ui.container.querySelector('h1').textContent, 'Dashboard');
+  assert.equal(ui.container.querySelector('h1').textContent, 'Settings');
   assert.equal(ui.prefs().endpointId, 'chosen');
   assert.equal(ui.prefs().model, 'beta');
   assert.equal(ui.calls.length, 1, 'selection does not overwrite the saved endpoint or its key');
@@ -398,16 +399,18 @@ test('Playground draft and response survive navigation and session activity cont
     respond: async () => ({ response: 'Private model answer' }) });
   control(ui.container, 'Prompt').value = 'Private prompt text';
   control(ui.container, 'Prompt').dispatch('input');
-  button(ui.container, 'Dashboard').click();
+  button(ui.container, 'Usage').click();
   button(ui.container, 'Playground').click();
   assert.equal(control(ui.container, 'Prompt').value, 'Private prompt text');
   await button(ui.container, 'Send prompt').click();
+  assert.match(ui.container.querySelector('.sr-public-log-row').textContent, /alphaCompleted/,
+    'activity updates on the current Playground without navigating away');
   button(ui.container, 'Usage').click();
-  assert.match(ui.container.textContent, /Completed prompts1/);
-  assert.match(ui.container.textContent, /This window session only/);
-  button(ui.container, 'Logs').click();
+  assert.match(ui.container.textContent, /REACH account totals/);
+  assert.doesNotMatch(ui.container.textContent,/Completed prompts1/,'session prompt counts are not account-wide statistics');
+  button(ui.container, 'Playground').click();
   assert.match(ui.container.textContent, /alphaCompleted/);
-  assert.doesNotMatch(ui.container.textContent, /Private prompt text|Private model answer/);
+  assert.doesNotMatch(ui.container.querySelector('.sr-public-log-row').textContent, /Private prompt text|Private model answer/);
   button(ui.container, 'Playground').click();
   assert.equal(ui.container.querySelector('.sr-public-output').textContent, 'Private model answer');
 });
@@ -427,4 +430,91 @@ test('a late public Playground completion cannot replace another extension sideb
   assert.equal(ui.context.elements.listContent.textContent, 'Other extension content');
   ui.controller.activate(ui.context);
   assert.equal(ui.container.querySelector('.sr-public-output').textContent, '');
+});
+
+function statisticsFixture(change={}) {
+  return { period:{from:'2026-10-15T00:00:00.000Z',to:'2026-11-14T00:00:00.000Z',basis:'recorded_at'},
+    requests:{completed:200,pending:1,released:2,measured:200},tokens:{input:2000000,output:1000000,cachedInput:500000},
+    spending:{subscriptions:[{currency:'CAD',paidMicros:25000000,refundedMicros:0,netMicros:25000000}],creditUsdMicros:2000000,rchUsdMicros:1500000,unpricedCreditTokens:0},
+    redemptions:{creditUsdMicros:5000000,tokenCredits:0,rchWei:'1000000000000000000'},
+    models:[{model:'reach-model',requests:200,measured:200,inputTokens:2000000,outputTokens:1000000,cachedInputTokens:500000}],...change };
+}
+const statisticsConnections=[{id:'reach',name:'My REACH',base_url:'https://reach.example/v1',default_model:'reach-model',chat_models:['reach-model'],api_key:'never-render-this-key'},
+  {id:'api-a',name:'Configured API A',base_url:'https://api-a.example/v1',default_model:'model-a',chat_models:['model-a','model-b']},
+  {id:'api-b',name:'Configured API B',base_url:'https://api-b.example/v1',default_model:'model-c',chat_models:['model-c']}];
+async function statisticsUI(report=statisticsFixture()) {
+  const ui=mount({page:'usage',stored:{[PREFS_KEY]:JSON.stringify(connectionPreferences({endpointId:'reach'}))},
+    respond:async call=>call.url===API+'/model-endpoints'?statisticsConnections:report});
+  await button(ui.container,'Refresh statistics').click();
+  return ui;
+}
+function chooseComparison(ui) {
+  const provider=control(ui.container,'Compare with API');provider.value='api-a';provider.dispatch('change');
+}
+function setField(ui,label,value) {const field=control(ui.container,label);field.value=value;field.dispatch('input');}
+
+test('Usage reads the chosen account and offers only configured comparison APIs without changing the active model',async()=>{
+  const ui=await statisticsUI();
+  assert.deepEqual(ui.calls.map(c=>c.url),[API+'/model-endpoints',API+'/model-endpoints/reach/reach-usage?days=30']);
+  assert.deepEqual(control(ui.container,'Compare with API').children.map(c=>c.value),['','api-a','api-b']);
+  chooseComparison(ui);
+  assert.deepEqual(control(ui.container,'Comparison model').children.map(c=>c.value),['','model-a','model-b']);
+  assert.equal(ui.prefs().endpointId,'reach');assert.equal(ui.prefs().model,'alpha');
+  assert.doesNotMatch(ui.container.textContent,/never-render-this-key/);
+  assert.doesNotMatch([...ui.storage.values()].join(''),/never-render-this-key/);
+  assert.match(ui.container.textContent,/Crypto credit usedUSD\s*1\.50/);
+  assert.match(ui.container.textContent,/Other credit usedUSD\s*0\.50/);
+});
+
+test('comparison requires explicit currency conversion, handles cached tokens, shows higher costs honestly, and retains model-specific rates',async()=>{
+  const ui=await statisticsUI();chooseComparison(ui);
+  setField(ui,'Input / 1M tokens','10');setField(ui,'Output / 1M tokens','20');setField(ui,'Cached input / 1M tokens','2');
+  assert.match(ui.container.textContent,/Enter CAD per USD/);
+  setField(ui,'CAD per USD','1.25');
+  const result=ui.container.querySelector('.sr-public-comparison');
+  assert.match(result.textContent,/REACH recorded costUSD\s*22\.00/);
+  assert.match(result.textContent,/Selected API estimateUSD\s*36\.00/);
+  assert.match(result.textContent,/DifferenceUSD\s*14\.00/);
+  assert.match(ui.container.textContent,/REACH costs less/);
+  setField(ui,'Output / 1M tokens','1');setField(ui,'Input / 1M tokens','1');setField(ui,'Cached input / 1M tokens','');
+  assert.match(ui.container.textContent,/REACH costs more/);
+  const model=control(ui.container,'Comparison model');model.value='model-b';model.dispatch('change');
+  assert.equal(control(ui.container,'Input / 1M tokens').value,'');
+  const back=control(ui.container,'Comparison model');back.value='model-a';back.dispatch('change');
+  assert.equal(control(ui.container,'Input / 1M tokens').value,'1');
+  setField(ui,'Input / 1M tokens','-1');assert.match(ui.container.textContent,/valid, non-negative decimal rates/);
+  assert.doesNotMatch(ui.container.querySelector('.sr-public-comparison').textContent,/NaN|Infinity/);
+});
+
+test('missing measured usage and unpriced old credits do not become invented savings',async()=>{
+  for(const report of [statisticsFixture({requests:{completed:200,pending:0,released:0,measured:199}}),
+    statisticsFixture({spending:{...statisticsFixture().spending,unpricedCreditTokens:10}})]) {
+    const ui=await statisticsUI(report);chooseComparison(ui);
+    setField(ui,'Input / 1M tokens','10');setField(ui,'Output / 1M tokens','20');setField(ui,'CAD per USD','1.25');
+    assert.match(ui.container.textContent,/full-period cost difference cannot be calculated/);
+    assert.match(ui.container.querySelector('.sr-public-comparison').textContent,/Selected API estimate—Difference—/);
+  }
+});
+
+test('failed or malformed summaries clear prior totals, and changing periods invalidates the previous report',async()=>{
+  const ui=await statisticsUI({ok:false,status:404});
+  assert.match(ui.container.textContent,/Statistics unavailable/);
+  assert.match(ui.container.textContent,/Subscription payments · net—/);
+  const invalid=await statisticsUI(statisticsFixture({tokens:{input:-1,output:0,cachedInput:0}}));
+  assert.match(invalid.container.textContent,/Statistics unavailable/);
+  const valid=await statisticsUI();const period=control(valid.container,'Reporting period');period.value='7';period.dispatch('change');
+  assert.match(valid.container.textContent,/Subscription payments · net—/);
+  await button(valid.container,'Refresh statistics').click();
+  assert.equal(valid.calls.at(-1).url,API+'/model-endpoints/reach/reach-usage?days=7');
+});
+
+test('leaving Usage aborts refresh and a late response cannot replace Settings',async()=>{
+  let finish;
+  const ui=mount({page:'usage',stored:{[PREFS_KEY]:JSON.stringify(connectionPreferences({endpointId:'reach'}))},respond:async call=>call.url===API+'/model-endpoints'?statisticsConnections:new Promise(resolve=>{finish=resolve;})});
+  const refresh=button(ui.container,'Refresh statistics').click();
+  await new Promise(resolve=>setImmediate(resolve));
+  button(ui.container,'Settings').click();
+  assert.equal(ui.calls.at(-1).options.signal.aborted,true);
+  finish(statisticsFixture());await refresh;
+  assert.equal(ui.container.querySelector('h1').textContent,'Settings');
 });

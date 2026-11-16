@@ -1591,7 +1591,8 @@ input::placeholder, textarea::placeholder { color: var(--dim); opacity: 1; }
  .activity-spinner, .activity-progress i, .activity-step.running::before, .activity-busy::before, .tree-dot.run, .chat-msg.streaming::after, .member-card.just-finished { animation: none; }
 }
 
-.context-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; border:1px solid var(--line); border-radius:10px; color:var(--muted); font-size:12px; flex-wrap:wrap; }
+.context-bar { position:relative; overflow:hidden; --context-remaining-ratio:1; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; border:1px solid var(--line); border-radius:10px; color:var(--muted); font-size:12px; flex-wrap:wrap; }
+.context-bar::before { content:''; position:absolute; top:0; left:0; height:2px; width:100%; background:var(--gold); transform:scaleX(var(--context-remaining-ratio, 1)); transform-origin:left center; transition:transform 120ms ease-out; pointer-events:none; }
 .context-bar button { font-size:12px; padding:6px 10px; }
 .context-bar button:disabled { opacity:.5; cursor:default; }
 

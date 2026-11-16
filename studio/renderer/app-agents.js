@@ -314,17 +314,60 @@ function updateStatusPill(status, reason) {
   if (reason) pill.title = reason;
 }
 
-function renderContextStatus(context) {
+let lastContextStatusSnapshot = null;
+const REACH_REALTIME_BPE_PATTERN = /'[a-zA-Z]+|[ \t]?[A-Za-z]+|[ \t]?[0-9]{1,3}|[ \t]?[^\sA-Za-z0-9]+|\s+/g;
+
+function countRealtimeComposerTokens(value) {
+  const text = String(value ?? '');
+  if (!text) return 0;
+  const matches = text.match(REACH_REALTIME_BPE_PATTERN);
+  if (!matches) return 0;
+  let total = 0;
+  for (const piece of matches) {
+    let byteLength = piece.length;
+    for (let i = 0; i < piece.length; i += 1) {
+      const code = piece.charCodeAt(i);
+      if (code > 0x7f) byteLength += code > 0x7ff ? 2 : 1;
+    }
+    if (byteLength <= 4) total += 1;
+    else if (/^\s+$/.test(piece)) total += Math.max(1, Math.ceil(byteLength / 8));
+    else total += Math.max(1, Math.ceil(byteLength / 4));
+  }
+  return Math.max(1, total);
+}
+
+function renderContextStatus(context = lastContextStatusSnapshot) {
   if (!context) return;
+  lastContextStatusSnapshot = context;
+  const draftTokens = agentRunning
+    ? 0
+    : countRealtimeComposerTokens(composerInput?.value || '')
+      + (Array.isArray(composerAttachments)
+        ? composerAttachments.reduce((sum, item) => sum + Math.max(8, Math.ceil((Number(item?.size) || 0) / 4)), 0)
+        : 0);
+  const baseUsed = Math.max(0, Math.round(Number(context.usedTokens ?? context.estimatedTokens) || 0));
+  const usedTokens = baseUsed + draftTokens;
+  const fallbackWindow = context.trigger > 0 ? Math.max(4096, Math.round(context.trigger / 3)) : 64000;
+  const contextWindowTokens = Math.max(usedTokens || 1, Math.round(Number(context.contextWindowTokens) || fallbackWindow));
+  const remainingTokens = Math.max(0, contextWindowTokens - usedTokens);
+  const remainingRatio = Math.max(0, Math.min(1, remainingTokens / contextWindowTokens));
   const last = context.lastCompression;
   const total = document.createElement('span');
-  total.textContent = `Context ≈ ${context.estimatedTokens.toLocaleString()} tokens`;
+  total.textContent = `Context: ${usedTokens.toLocaleString()} tokens · ${remainingTokens.toLocaleString()} left`;
   const extra = document.createElement('span');
   extra.className = 'context-extra';
   extra.textContent = ` · Auto ${context.automatic ? 'on' : 'off'}`
     + (last ? ` · Last compression ${Math.round((1 - last.after / last.before) * 100)}% smaller` : '');
-  $('#agent-context').replaceChildren(total, extra);
-  $('#agent-context').title = total.textContent + extra.textContent + '\nEstimated at three characters per token; provider counts vary.';
+  const contextEl = $('#agent-context');
+  if (!contextEl) return;
+  const barEl = contextEl.closest?.('.context-bar');
+  if (barEl) {
+    barEl.style.setProperty('--context-remaining-ratio', remainingRatio.toFixed(6));
+    barEl.dataset.active = 'true';
+  }
+  contextEl.replaceChildren(total, extra);
+  contextEl.title = `${total.textContent}${extra.textContent}
+Live token budget (${remainingTokens.toLocaleString()} of ${contextWindowTokens.toLocaleString()} tokens remaining).`;
 }
 async function refreshContextStatus() {
   const id = currentAgent?.id;

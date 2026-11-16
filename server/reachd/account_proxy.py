@@ -24,7 +24,7 @@ ACCOUNT_PATHS = frozenset((
     "/v1/auth/email/start", "/v1/auth/email/verify",
     "/v1/account/api-keys", "/v1/account/api-keys/revoke", "/v1/account/link-wallet",
     "/v1/account/link-email/start", "/v1/account/link-email/verify",
-    "/v1/account/config", "/v1/account", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
+    "/v1/account/config", "/v1/account", "/v1/usage", "/api/v1/usage", "/v1/redemptions/start", "/v1/redemptions/details", "/v1/redemptions/submit",
     "/v1/billing/checkout", "/v1/billing/portal", "/v1/billing/payments", "/v1/billing/stripe/webhook", "/billing/return",
     "/v1/billing/paypal/webhook", "/v1/billing/paypal/return",
     "/oauth/notion/start", "/oauth/notion/exchange", "/oauth/notion/refresh", "/oauth/notion/cancel", "/oauth/notion/callback",

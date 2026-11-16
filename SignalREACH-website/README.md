@@ -21,10 +21,10 @@ To choose another port, set the `PORT` environment variable before starting. The
 
 | File | Purpose |
 | --- | --- |
-| `index.html` | Long homepage: animated signal map, workspace preview, feature grid, workflow, code examples, FAQ, and calls to action |
+| `index.html` | Business homepage: existing animated signal map and demo, benefits, everyday business tasks, savings calculator, pricing, and business FAQ |
 | `platform.html` | Four product surfaces with interactive feature panels |
-| `integrations.html` | Search, category filters, and connection-detail dialogs for nine project-related integration options |
-| `docs.html` | Six local guide sections, search, and links to upstream documentation |
+| `integrations.html` | Developer overview with setup workflow, code examples, and technical FAQ; switch to Current integrations for the existing searchable nine-option directory |
+| `docs.html` | Seven searchable guides; opens on Automations with an animated business email example, followed by the existing Quick start and technical guides |
 | `about.html` | Project identity, R.E.A.C.H meaning, design principles, and creator attribution |
 | `download.html` | OS-specific source-setup guidance and current GitHub releases link |
 
@@ -58,6 +58,14 @@ This handoff is an editable website package. Opening or building it does not ins
 - **Chat controls, safe text rendering, cancellation, and transcript export:** `assets/chat-ui.js`.
 - **Early theme preferences:** `assets/theme.js`.
 - **Page markup, shared navigation/footer, icon definitions, and integration content:** `tools/build.py`.
+- **Business content below the homepage demo, savings assumptions, and price comparison:** `tools/business_content.py`.
+- **Automations guide and sample email content:** `tools/automations_content.py`; playback, review, and cleanup: `assets/automation-demo.js`.
+
+Docs opens on **Automations**, above **Quick start** in the sidebar. Its local email walkthrough supports Play/Pause, Next step, Replay, and an explicit simulated send after review. It never accesses an account or sends a message. Reduced-motion visitors see the review step immediately; the static transcript remains readable without JavaScript. The guide describes workflows started in chat, not an automatic recurring schedule.
+
+The Integrations page opens on **Developer overview**. **Current integrations** retains search, category filters, and connection-detail dialogs. The view switch supports arrow keys, Home/End, browser Back/Forward, and direct links to `integrations.html#current-integrations`. Both sections remain readable without JavaScript.
+
+The homepage calculator compares the monthly costs a visitor expects to replace with CAD $25 times the number of REACH Plus subscriptions needed. Its CAD $60 example is illustrative, not a reported customer saving. Equal or higher REACH costs are shown honestly, and empty or invalid inputs do not produce savings. The expandable published-price comparison is dated and sourced in `SOURCES.md`; review the source before updating its prices.
 
 You can edit the HTML files directly, but running the page generator later will replace those edits. Prefer editing the generator for shared or ongoing changes. `assets/data.js` and `assets/integration-data.json` are generated files.
 
@@ -86,7 +94,7 @@ SEO metadata targets `https://www.signalreach.ca` (canonical URLs, `sitemap.xml`
 npm test
 ```
 
-This runs 89 dependency-free source, link, and chat-matching checks. See `QA.md` for completed browser checks and `CHAT-UPGRADE.md` for the chat changes.
+This runs 141 dependency-free source, link, chat, account, workspace, and entry checks. See `QA.md` for completed browser checks and `CHAT-UPGRADE.md` for the chat changes.
 
 Optional browser regression test, after installing Python Playwright and a Chromium browser in your development environment:
 

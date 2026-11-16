@@ -2168,13 +2168,15 @@
       select.appendChild(clone);
       for (const o of clone.tagName === 'OPTGROUP' ? clone.children : [clone]) seen.add(o.value);
     }
-    if (current && !seen.has(current)) {
+    const staleDefault = seen.size > 0 && current === 'gemma-4-12b-qat' && !seen.has(current);
+    if (current && !seen.has(current) && !staleDefault) {
       const opt = document.createElement('option');
       opt.value = current;
       opt.textContent = current;
       select.appendChild(opt);
     }
-    if (current) select.value = current;
+    if (current && !staleDefault) select.value = current;
+    else if (modelSelect.value) select.value = modelSelect.value;
   }
 
   function setModelOptions(models, current, groups) {

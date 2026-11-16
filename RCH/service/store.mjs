@@ -1,4 +1,5 @@
 import { PlusSqliteLedger } from './plus-sqlite.mjs';
+import { sqliteUsageSummary, usagePeriod } from './usage-summary.mjs';
 import { hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
 import { validatePlusPolicy, plusAccount } from './payments/plus.mjs';
 import { DatabaseSync } from 'node:sqlite';
@@ -197,6 +198,10 @@ export class AccountStore {
   }
   transaction(fn) { this.db.exec('BEGIN IMMEDIATE'); try { const r = fn(); this.db.exec('COMMIT'); return r; } catch (e) { this.db.exec('ROLLBACK'); throw e; } }
   accountById(accountId) { const a = this.db.prepare('SELECT * FROM accounts WHERE id=?').get(accountId); if (!a) fail(401,'account_missing','Account is unavailable.'); return a; }
+  usageSummary(accountId, from, to) {
+    this.accountById(accountId);
+    return sqliteUsageSummary(this.db, accountId, usagePeriod(from, to, this.now()));
+  }
   ensureAccount(wallet) {
     wallet = getAddress(wallet);
     this.db.prepare('INSERT OR IGNORE INTO accounts(id,wallet) VALUES(?,?)').run(id(),wallet);
