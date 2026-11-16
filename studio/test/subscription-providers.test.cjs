@@ -7,7 +7,43 @@ const { PassThrough } = require('node:stream');
 const { createSubscriptionProviders, subscriptionRoute } = require('../agent/subscription-providers.cjs');
 const { configureSubscriptions, providerFetch } = require('../agent/endpoint.cjs');
 const { readChatResponse } = require('../agent/chat-response.cjs');
+const { AgentLoop } = require('../agent/agent-loop.cjs');
+const { AgentStore } = require('../agent/agent-store.cjs');
+const path = require('node:path');
+const os = require('node:os');
 const root = 'http://127.0.0.1:20777/_reach/login-providers/';
+
+for (const provider of ['devin', 'codex']) {
+  test(`${provider} subscription completes a native-configured member through verified Studio actions`, async t => {
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-subscription-actions-'));
+    fs.writeFileSync(path.join(project, 'proof.txt'), 'verified-fixture-742');
+    const store = new AgentStore(path.join(project, 'agents.json'));
+    const agent = store.create({ name: 'Subscription member', dir: project });
+    const requests = [], events = [];
+    configureSubscriptions({ request: async (_url, options) => {
+      const body = JSON.parse(options.body); requests.push(body);
+      if (body.tools?.length) return new Response(JSON.stringify({ error: { message: 'Native function calling tools are not supported by this subscription transport. Use Studio actions.' } }), { status: 400 });
+      const transcript = body.messages.map(m => m.content).join('\n');
+      const content = transcript.includes('NATIVE TOOL CALLS') ? 'I cannot call task_complete here.'
+        : JSON.stringify(transcript.includes('TOOL RESULTS') && transcript.includes('verified-fixture-742')
+          ? { status: 'complete', message: 'Read proof.txt: verified-fixture-742', actions: [], options: [] }
+          : { status: 'actions', message: 'Read the proof file.', actions: [{ name: 'read', arguments: { path: 'proof.txt' } }], options: [] });
+      return new Response('data: ' + JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] }) + '\n\ndata: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
+    } });
+    t.after(() => { configureSubscriptions(undefined); fs.rmSync(project, { recursive: true, force: true }); });
+    const loop = new AgentLoop({ agentId: agent.id, store, endpoint: root + provider,
+      model: provider === 'devin' ? 'swe-2-max' : 'gpt-6-luna', projectDir: project, nativeTools: true,
+      sendEvent: (_channel, event) => events.push(event) });
+    await loop.sendUserMessage('Read proof.txt and report its contents.');
+    assert.equal(store.get(agent.id).runState.status, 'completed');
+    assert.equal(requests.length, 2, 'read and completion must not need protocol recovery');
+    assert.ok(requests.every(body => !body.tools && !body.response_format));
+    assert.ok(requests[0].messages[0].content.includes('EXECUTABLE ACTION RESPONSE'));
+    assert.ok(requests[0].messages.at(-1).content.includes('exactly one JSON object'));
+    assert.ok(events.some(event => event.type === 'tool-call' && event.tool === 'read'));
+    assert.ok(!events.some(event => event.type === 'recovery'));
+  });
+}
 
 function fixture({ signedIn = true, holdPrompt = false, failPrompt = false } = {}) {
   const calls = [], messages = [], configs = [];
