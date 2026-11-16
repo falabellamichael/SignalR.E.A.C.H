@@ -241,6 +241,37 @@ test('an explicitly named model still wins over inheritance', () => {
 
 /* ------------------------------------------------ the model-facing leak guard --- */
 
+test('resolved roster routing retains its connection identity', () => {
+  const { runner } = makeRunner({ personas: [persona('p1')], memberConnections: [
+    { endpoint: 'http://127.0.0.1:20777/_reach/login-providers/codex', accessKey: '', model: 'codex-chat', connectionId: 'codex-subscription' },
+  ] });
+  assert.equal(runner._memberConn(0).connectionId, 'codex-subscription');
+});
+
+test('a helper on a keyless parent route never inherits the network credential', async () => {
+  const { net } = makeNet();
+  net.preRegister({ agentId: 'keyless', name: 'Keyless', endpoint: 'http://127.0.0.1:1234/v1', accessKey: '', connectionId: 'local', model: 'local-model' });
+  const result = net.spawn({ name: 'Helper', task: 'Check routing', parentId: 'keyless', depth: 1 });
+  const rec = net.agents.get(result.agentId);
+  try {
+    assert.equal(rec.endpoint, 'http://127.0.0.1:1234/v1');
+    assert.equal(rec.accessKey, '');
+    assert.equal(rec.connectionId, 'local');
+  } finally { net.stop(); await net.settle(); }
+});
+
+test('an explicitly selected keyless helper route does not inherit parent credentials or identity', async () => {
+  const { net } = makeNet();
+  net.preRegister({ agentId: 'parent', name: 'Parent', endpoint: 'https://parent.example.com/v1', accessKey: 'PARENT-FIXTURE', connectionId: 'parent-connection' });
+  const result = net.spawn({ name: 'Helper', task: 'Check routing', parentId: 'parent', depth: 1,
+    endpoint: 'http://127.0.0.1:1234/v1', accessKey: '' });
+  const rec = net.agents.get(result.agentId);
+  try {
+    assert.equal(rec.accessKey, '');
+    assert.equal(rec.connectionId, '');
+  } finally { net.stop(); await net.settle(); }
+});
+
 test('agent.list / status / snapshot never expose endpoint or accessKey to the model', () => {
   const { net } = makeNet();
   net.preRegister({

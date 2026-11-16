@@ -49,10 +49,17 @@ module.exports = ({ cleanOutput, linksCompleteIn }) => ({
     this._linksConclusionTimer = setTimeout(() => {
       this._linksConclusionTimer = null;
       for (const [key, loop] of this.loops) {
-        if ((!includeDeclarer && key === declarerKey) || !loop.running) continue;
+        const control = this.net?.agents.get(key)?.control;
+        if ((!includeDeclarer && key === declarerKey) || (!loop.running && control?.finished)) continue;
         this._linksSuperseded.set(key, declarerName);
         loop.stop();
       }
+      // A question, review, or user pause holds the driver after its model
+      // loop has stopped running. Release those waits as well as requests.
+      // This signal unwinds drivers without turning completion into user Stop.
+      this._stopSignal();
+      this._stopDeferred.resolve();
+      this.net?.stop({ completedBy: declarerName });
     }, this.links.graceMs);
   },
 

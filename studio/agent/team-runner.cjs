@@ -268,6 +268,7 @@ class TeamRunner {
       return {
         endpoint: resolved.endpoint,
         accessKey: resolved.accessKey || '',
+        connectionId: resolved.connectionId || '',
         model: resolved.model || this.defaultModel || 'gemma-4-12b-qat',
         connectionName: resolved.connectionName || '',
         reason: resolved.reason || '',
@@ -488,6 +489,10 @@ class TeamRunner {
         }
         const spawned = this.net.snapshot().filter(s => s.origin === 'spawned');
         if (spawned.length) this._emit('subagents-summary', { count: spawned.length, agents: spawned });
+      }
+      if (this._linksConclusionTimer) {
+        clearTimeout(this._linksConclusionTimer);
+        this._linksConclusionTimer = null;
       }
       this.running = false;
     }

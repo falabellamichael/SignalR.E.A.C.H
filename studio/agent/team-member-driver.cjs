@@ -5,19 +5,20 @@ const { MemoryStore } = require('./memory-store.cjs');
 const { runToTerminal } = require('./pause-resume.cjs');
 const { cap } = require('./budgets.cjs');
 const { deliveredContent } = require('./team-completion.cjs');
+const { withNet } = require('./net-registry.cjs');
 
 module.exports = ({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME_CYCLES }) => ({
   async _drive(key, index, persona, model, prompt, control) {
     const store = this.memberStores.get(key);
     const messageBoundary = store.get(key).messages.length;
-    const end = await runToTerminal({
+    const end = await withNet(this.net, () => runToTerminal({
       loop: this.loops.get(key),
       store,
       agentId: key,
       firstPrompt: prompt,
       control,
       maxCycles: cap(this.budgets?.resumeCycles ?? MAX_RESUME_CYCLES),
-      isStopped: () => this.stopped,
+      isStopped: () => this.stopped || this._linksSuperseded.has(key),
       stopSignal: () => this._stopSignal(),
       getPendingEdits: () => this.memberEdits.get(key) || [],
       clearPendingEdits: () => this.memberEdits.set(key, []),
@@ -31,7 +32,7 @@ module.exports = ({ cleanOutput, assistantTextSince, linksCompleteIn, MAX_RESUME
       }),
       onQuestion: (questionId, question) => this._emit('member-question', { index, name: persona.name, questionId, question }),
       onResumed: (cycle, status) => this._emit('member-resumed', { index, name: persona.name, cycle, status }),
-    });
+    }));
     return { ...end, messageBoundary };
   },
 

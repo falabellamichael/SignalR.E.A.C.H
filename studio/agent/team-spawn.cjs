@@ -39,9 +39,14 @@ module.exports = ({ workerSoulKey, SUBAGENT_MAX_ROUNDS }) => ({
     // Main/TeamRunner may supply a resolved route for a user-added helper. The
     // renderer never sees the key. Model-created workers omit these fields and
     // retain the established parent-inheritance rule.
-    const useEndpoint = String(endpoint || '') || (parentRec && parentRec.endpoint) || this.endpoint;
-    const useAccessKey = String(accessKey || '') || (parentRec && parentRec.accessKey) || this.accessKey;
-    const useConnectionId = String(connectionId || '') || (parentRec && parentRec.connectionId) || '';
+    const explicitEndpoint = String(endpoint || '');
+    const parentEndpoint = parentRec?.endpoint || '';
+    const useEndpoint = explicitEndpoint || parentEndpoint || this.endpoint;
+    // Credentials belong to the selected route. An empty key is intentional
+    // for local/subscription routes; never borrow another provider's key.
+    const useAccessKey = explicitEndpoint ? String(accessKey || '')
+      : String(accessKey || '') || (parentEndpoint ? parentRec.accessKey || '' : this.accessKey);
+    const useConnectionId = String(connectionId || '') || (explicitEndpoint ? '' : parentRec?.connectionId || '');
     const useModel = String(model || '').trim()
       || (parentRec && parentRec.model)
       || this.defaultModel

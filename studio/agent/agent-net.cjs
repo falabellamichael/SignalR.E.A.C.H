@@ -112,7 +112,7 @@ function suffixFloor(name) {
 }
 
 /* agentId -> net lives in a leaf module shared with AgentLoop. */
-const { netForAgent, registerNet, unregisterNet } = require('./net-registry.cjs');
+const { netForAgent, registerNet, unregisterNet, withNet } = require('./net-registry.cjs');
 
 const FINISHED = new Set(['completed', 'failed', 'stopped', 'abandoned', 'stalled', 'skipped']);
 const { diagnosticLog } = require('./diagnostic-log.cjs');
@@ -409,7 +409,7 @@ class AgentNet {
     try {
       // Same pause/resume driver as TeamRunner members: a worker that proposes
       // an edit or asks a question pauses visibly and resumes on the verdict.
-      const end = await runToTerminal({
+      const end = await withNet(this, () => runToTerminal({
         loop: rec.loop,
         store: rec.store,
         agentId: id,
@@ -430,7 +430,7 @@ class AgentNet {
         }),
         onQuestion: (questionId, question) => this._emit('agent-question', { agentId: id, name: rec.name, questionId, question }),
         onResumed: (cycle, status) => this._emit('agent-resumed', { agentId: id, name: rec.name, cycle, status }),
-      });
+      }));
       this._settle(id, null, end.error || null);
     } catch (e) {
       this._settle(id, 'failed', e.message);
@@ -446,8 +446,9 @@ class AgentNet {
     if (output) rec.output = output;
     const loopStatus = runState?.status || 'unknown';
     rec.status = forceStatus
-      || (this.stopped ? 'stopped' : (loopStatus === 'completed' && !forceError ? 'completed' : 'failed'));
-    rec.error = rec.status === 'completed' ? null
+      || (this.stopped ? (this.completedBy ? 'skipped' : 'stopped') : (loopStatus === 'completed' && !forceError ? 'completed' : 'failed'));
+    if (rec.status === 'skipped') rec.output = '';
+    rec.error = ['completed', 'skipped'].includes(rec.status) ? null
       : (forceError || runState?.reason || `Agent ${loopStatus}; no completed answer.`);
     rec.finishedAt = Date.now();
     this._emit('agent-state', {
@@ -515,17 +516,22 @@ class AgentNet {
   }
 
   /* Tear down: abort every live loop and unregister ids. */
-  stop() {
+  stop({ completedBy = '' } = {}) {
     this.stopped = true;
+    this.completedBy = completedBy;
     for (const rec of this.agents.values()) {
+      unregisterNet(rec.id, this);
+      if (completedBy && FINISHED.has(rec.status) && !rec.loop?.running) continue;
       if (rec.loop) { try { rec.loop.stop(); } catch { /* already torn down */ } }
       if (!FINISHED.has(rec.status)) {
-        rec.status = 'stopped';
-        rec.error = rec.error || 'Stopped by you.';
+        rec.status = completedBy ? 'skipped' : 'stopped';
+        rec.error = completedBy ? null : rec.error || 'Stopped by you.';
+        if (completedBy) rec.output = '';
         rec.finishedAt = Date.now();
       }
     }
-    if (this._stopDeferred) this._stopDeferred.resolve();
+    this._stopSignal();
+    this._stopDeferred.resolve();
   }
 
   workersPaused() {
@@ -599,7 +605,7 @@ class AgentNet {
       await Promise.allSettled(this.tasks);
       if (this.tasks.length === before) break;
     }
-    for (const id of this.agents.keys()) unregisterNet(id);
+    for (const id of this.agents.keys()) unregisterNet(id, this);
   }
 
   snapshot() {
