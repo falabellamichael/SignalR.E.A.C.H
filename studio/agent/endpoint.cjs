@@ -3,6 +3,16 @@
 /* Shared by every request path. Kept independent of Electron so pointer
  * resolution and rejection paths are executable under the unit-test runner. */
 const LOGIN_PROVIDERS_ENDPOINT = 'http://127.0.0.1:20777/_reach/login-providers';
+const { subscriptionRoute } = require('./subscription-providers.cjs');
+let subscriptionClient;
+function configureSubscriptions(client) { subscriptionClient = client; }
+function providerFetch(url, options, fallback = global.fetch) {
+  if (subscriptionRoute(url)) {
+    if (!subscriptionClient) throw new Error('Subscription accounts are not initialized. Restart Studio.');
+    return subscriptionClient.request(url, options);
+  }
+  return fallback(url, options);
+}
 
 function isLoginProvidersEndpoint(value) {
   const v = String(value || '').replace(/\/+$/, '');
@@ -51,4 +61,4 @@ async function resolveEndpoint(raw, depth = 0) {
   return url.toString().replace(/\/$/, '');
 }
 
-module.exports = { resolveEndpoint, LOGIN_PROVIDERS_ENDPOINT, isLoginProvidersEndpoint, providerRequestOptions };
+module.exports = { resolveEndpoint, LOGIN_PROVIDERS_ENDPOINT, isLoginProvidersEndpoint, providerRequestOptions, providerFetch, configureSubscriptions };

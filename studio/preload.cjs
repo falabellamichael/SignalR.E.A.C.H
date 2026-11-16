@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('reach', {
   platform: process.platform,
   pet: { command: (action, value) => ipcRenderer.invoke('pet:command', action, value), onState: cb => ipcRenderer.on('pet:state', (_e, state) => cb(state)) },
   appConnections: { command: (action, value) => ipcRenderer.invoke('app-connections:command', action, value) },
+  signInSubscription: provider => ipcRenderer.invoke('subscription:signIn', provider),
+  subscriptionStatus: provider => ipcRenderer.invoke('subscription:status', provider),
   onCompanionOpen: cb => ipcRenderer.on('companion:open', (_event, payload) => cb(payload)),
   engines: { report: () => ipcRenderer.invoke('engines:report') },
   initialTheme: ipcRenderer.sendSync('theme:get'),
