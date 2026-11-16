@@ -112,8 +112,8 @@ function transcript(start = 0) { return requests.slice(start).map(r => r.message
   ], 'Latest earlier run is first inside the dropdown');
   assert.equal(await run(`(() => {
     const history = firstDeck.querySelector(':scope > .team-run-history');
-    const notes = [...firstDeck.querySelectorAll(':scope > .chat-msg')];
-    return notes.length > 0 && /Team run finished/.test(notes.at(-1).textContent) && notes.at(-1).nextElementSibling === history;
+    const log = firstDeck.querySelector(':scope > .team-run-log');
+    return log && !log.open && /Team run finished/.test(log.textContent) && log.nextElementSibling === history;
   })()`), true, 'Latest team result sits above the earlier-work dropdown');
   assert.doesNotMatch(transcript(fresh), /INDIGO-319|COBALT-742/);
   await run(`document.querySelector('#team-chat-toggle').click()`);

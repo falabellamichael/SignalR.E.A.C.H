@@ -28,6 +28,14 @@
 .team-run-history summary { cursor: pointer; color: var(--deck-muted); padding: 6px 0; font-size: 11px; overflow-wrap: anywhere; }
 .team-run-history > summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .team-run-history > details { margin: 8px 0; }
+.team-run-log { min-width: 0; border: 1px solid var(--deck-line); border-radius: 8px; margin-top: 10px; }
+.team-run-log > summary { cursor: pointer; padding: 10px 12px; color: var(--deck-muted); font-size: 11px; overflow-wrap: anywhere; }
+.team-run-log > summary:focus-visible { outline: 2px solid var(--deck-ink); outline-offset: -2px; border-radius: 8px; }
+.member-response > .member-response-meta { cursor: pointer; list-style: none; }
+.member-response > .member-response-meta::-webkit-details-marker { display: none; }
+.member-response > .member-response-meta::before { content: '▸'; color: var(--deck-muted); }
+.member-response[open] > .member-response-meta::before { transform: rotate(90deg); }
+.member-response > .member-response-meta:focus-visible { outline: 2px solid var(--deck-ink); outline-offset: -2px; }
 .team-deck-heading { display: flex; align-items: baseline; gap: 9px; padding: 12px 0 9px; font-size: 12px; min-width: 0; }
 .team-deck-heading strong { font-size: 12px; font-weight: 600; white-space: nowrap; }
 .team-deck-mode { color: var(--deck-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
