@@ -126,6 +126,8 @@ function renderConnections() {
   }
 
   connDraft.forEach((c, i) => {
+    const subscription = ['devin', 'codex'].find(provider =>
+      String(c.endpoint || '').replace(/\/+$/, '') === subscriptionEndpoint(provider));
     const card = document.createElement('div');
     card.className = 'conn-card';
     card.dataset.connId = c.id;
@@ -272,6 +274,7 @@ function renderConnections() {
       modelValue.title = modelValue.textContent;
       let host = 'Enter a Base URL';
       try { const url = new URL(c.endpoint); host = url.host + url.pathname.replace(/\/$/, ''); } catch { /* Avoid displaying credentials from malformed URLs. */ }
+      if (subscription) host = (subscription === 'devin' ? 'Devin' : 'ChatGPT') + ' subscription account';
       hostValue.textContent = host;
       hostValue.title = host;
       radio.setAttribute('aria-label', `Use ${c.name || 'this connection'}`);
@@ -309,7 +312,7 @@ function renderConnections() {
     // would have sent the model name as the endpoint.)
     let urlInput = null;
 
-    addField('Base URL', () => {
+    if (!subscription) addField('Base URL', () => {
       const input = document.createElement('input');
       input.type = 'text';
       input.className = 'conn-url';
@@ -322,7 +325,7 @@ function renderConnections() {
       return input;
     });
 
-    addField('Access Key', () => {
+    if (!subscription) addField('Access Key', () => {
       const wrap = document.createElement('div');
       wrap.className = 'row';
       const input = document.createElement('input');
@@ -480,6 +483,41 @@ function renderConnections() {
     testBtn.onclick = () => { void tester.run(); };
     connTesters.push(tester);
     foot.append(status, poolBtn, testBtn);
+    if (subscription) {
+      const signIn = document.createElement('button');
+      signIn.type = 'button';
+      signIn.className = 'ghost small conn-sign-in';
+      signIn.textContent = 'Sign in via browser';
+      signIn.setAttribute('aria-label', `Sign in to ${subscription === 'devin' ? 'Devin' : 'Codex'} via browser`);
+      const accountStatus = document.createElement('span');
+      accountStatus.className = 'dim conn-account-status';
+      accountStatus.setAttribute('role', 'status');
+      const checkAccount = async () => {
+        if (!card.isConnected) return;
+        try {
+          const account = await reachApi.subscriptionStatus(subscription);
+          if (!card.isConnected) return;
+          accountStatus.textContent = account.status === 'connected' ? 'Account connected'
+            : account.status === 'pending' ? 'Waiting for browser sign-in…'
+            : account.status === 'signed-out' ? 'Sign in to connect your account' : account.err || 'Account status unavailable';
+          signIn.disabled = account.status === 'pending';
+          if (account.status === 'pending') setTimeout(checkAccount, 1500);
+        } catch { accountStatus.textContent = 'Account status unavailable'; signIn.disabled = false; }
+      };
+      signIn.onclick = async () => {
+        signIn.disabled = true;
+        try {
+          const result = await reachApi.signInSubscription(subscription);
+          showNotice(result?.ok
+            ? 'Finish signing in in your browser. Studio will update when your subscription account is connected.'
+            : result?.err || 'The sign-in browser could not open.');
+        } catch {
+          showNotice('The sign-in browser could not open. Check that the provider client is installed and try again.');
+        } finally { signIn.disabled = false; void checkAccount(); }
+      };
+      foot.append(signIn, accountStatus);
+      setTimeout(checkAccount, 0);
+    }
 
     // Keep the existing inputs and their handlers; only the edited form is visible.
     if (c.id === connEditingId) {

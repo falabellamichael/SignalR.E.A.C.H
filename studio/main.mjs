@@ -70,7 +70,9 @@ const { createCliSettingsBridge, SCOPE_FIELDS: settingsScopeFields } = require('
 const { McpManager } = require('./agent/mcp.cjs');
 const { createHostedAccount, MANAGED_ID: HOSTED_CONNECTION_ID } = require('./agent/hosted-account.cjs');
 const { createCapabilityStore } = require('./agent/provider-capabilities.cjs');
-const { resolveEndpoint, providerRequestOptions, isLoginProvidersEndpoint, LOGIN_PROVIDERS_ENDPOINT } = require('./agent/endpoint.cjs');
+const { resolveEndpoint, providerRequestOptions, isLoginProvidersEndpoint, LOGIN_PROVIDERS_ENDPOINT, providerFetch, configureSubscriptions } = require('./agent/endpoint.cjs');
+const subscriptions = require('./agent/subscription-providers.cjs').createSubscriptionProviders();
+configureSubscriptions(subscriptions);
 const { createAttention } = require('./agent/attention.cjs');
 const { resolveTeamConnections, summarizeResolutions, hasUnresolvableMember, unsupportedTeamModels } = require('./agent/team-connections.cjs');
 const { testPlugin, getGitInfo, sanitizePlugins } = require('./agent/plugins.cjs');
@@ -428,7 +430,7 @@ async function listProviderModels(payload = {}) {
 
   try {
     const base = await resolveEndpoint(endpoint);
-    const res = await fetch(base + '/models', providerRequestOptions(base, accessKey, { signal: AbortSignal.timeout(10000) }));
+    const res = await providerFetch(base + '/models', providerRequestOptions(base, accessKey, { signal: AbortSignal.timeout(10000) }));
     if (!res.ok) return { ok: false, err: `HTTP ${res.status}` };
     const data = await res.json();
     capabilityStore.recordCatalog(connectionId, base, data);
@@ -451,7 +453,7 @@ async function pingConnection(payload = {}) {
   const started = Date.now();
   try {
     const base = await resolveEndpoint(connection.endpoint);
-    const res = await fetch(base + '/models', providerRequestOptions(base, connection.accessKey, { signal: AbortSignal.timeout(10000) }));
+    const res = await providerFetch(base + '/models', providerRequestOptions(base, connection.accessKey, { signal: AbortSignal.timeout(10000) }));
     const latencyMs = Date.now() - started;
     if (!res.ok) return { ok: false, status: res.status, latencyMs, err: `HTTP ${res.status}` };
     let modelCount = null;
@@ -897,6 +899,22 @@ async function dispatchAgentMessage({ id, text, attachmentIds = [], autoToken, m
 }
 
 function registerIpc() {
+  ipcMain.handle('subscription:signIn', async (event, provider) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win?.webContents.mainFrame) {
+      throw new Error('Subscription sign-in is available only in Studio.');
+    }
+    if (!['devin', 'codex'].includes(provider)) return { ok: false, err: 'Unknown subscription provider.' };
+    try {
+      return subscriptions.signIn(provider);
+    } catch (error) {
+      return { ok: false, err: error.message };
+    }
+  });
+  ipcMain.handle('subscription:status', async (event, provider) => {
+    if (event.sender !== win?.webContents || event.senderFrame !== win?.webContents.mainFrame) throw new Error('Subscription status is available only in Studio.');
+    try { return await subscriptions.status(provider); }
+    catch (error) { return { status: 'error', err: error.message }; }
+  });
   require('./agent/oauth-grants.cjs').configureGrantStore({ getSettings: loadSettings, saveSettings });
   appConnections = createAppConnections({ getSettings: loadSettings, saveSettings, openExternal: url => shell.openExternal(url), clients: require('./agent/oauth-clients.cjs').loadClients(), getProjects: loadProjects, getDiscordChatStatus: () => discordChat?.snapshot() });
   discordChat = createDiscordChat({ profile: app.getPath('userData'), getSettings: loadSettings, getProjects: loadProjects, getStore: getAgentStore,
@@ -1596,7 +1614,7 @@ function registerIpc() {
       const catalogs = new Map();
       await Promise.all([...catalogEntries.entries()].map(async ([memberEndpoint, mc]) => {
         try {
-          const response = await fetch(memberEndpoint.replace(/\/+$/, '') + '/models', providerRequestOptions(memberEndpoint, mc.accessKey, {
+          const response = await providerFetch(memberEndpoint.replace(/\/+$/, '') + '/models', providerRequestOptions(memberEndpoint, mc.accessKey, {
             // A catalog is an optional safety check, never a reason to make the
             // Run button feel hung on an endpoint that omits GET /models.
             signal: AbortSignal.timeout(3000),
@@ -2096,7 +2114,7 @@ function registerIpc() {
     const started = Date.now();
     try {
       const base = await resolveEndpoint(settings.endpoint);
-      const res = await fetch(base + '/models', providerRequestOptions(base, settings.accessKey, { signal: AbortSignal.timeout(10000) }));
+      const res = await providerFetch(base + '/models', providerRequestOptions(base, settings.accessKey, { signal: AbortSignal.timeout(10000) }));
       const latencyMs = Date.now() - started;
       if (!res.ok) {
         const body = await res.text().catch(() => '');
@@ -2278,7 +2296,7 @@ function registerIpc() {
         if (maxTokens > 0) body.max_tokens = maxTokens;
       }
 
-      const post = (out) => fetch(base + '/chat/completions', providerRequestOptions(base, settings.accessKey, {
+      const post = (out) => providerFetch(base + '/chat/completions', providerRequestOptions(base, settings.accessKey, {
         method: 'POST', headers, body: JSON.stringify(out), signal: controller.signal,
       }));
       let response = await post(body);
@@ -2690,7 +2708,7 @@ function registerIpc() {
         : `--- ${f.path} ---\n${f.content}`),
     ].join('\n');
 
-    const response = await fetch(base + '/chat/completions', providerRequestOptions(base, settings.accessKey, {
+    const response = await providerFetch(base + '/chat/completions', providerRequestOptions(base, settings.accessKey, {
       method: 'POST', headers,
       body: JSON.stringify({
         model, stream: true, temperature: 0.1,
@@ -5118,6 +5136,7 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow({ show: !process.argv.includes('--smoke') });
 });
 app.on('before-quit', () => {
+  subscriptions.close();
   discordChat?.destroy();
   appConnections?.destroy();
   petWindows?.destroy();

@@ -48,23 +48,18 @@ test('Brand, motion, and offline assets',async()=>{
  assert.match(plan,/assets\/account\.js/);
  assert.doesNotMatch(plan,/href="https:\/\/checkout\.stripe\.com"/,'checkout must be created for the authenticated account, not a generic Stripe link');
  assert.match(plan,/Subscribe with Stripe/);
- assert.match(plan,/LFM3 VL 2B/);
-
- assert.match(plan,/BGE M3/);
- assert.match(plan,/BGE Reranker v2 M3/);
- assert.match(plan,/Liquid d1 Omni 600M/);
- assert.match(plan,/Liquid d1 3B/);
-
- assert.doesNotMatch(plan,/Offline - for now|Ornith 1\.5 9B|Gemma 4 12B|MiniCPM5 2B FP8/);
- const catalog=plan.match(/<ul class="model-list">([\s\S]*?)<\/ul>/)[1];
- assert.equal((catalog.match(/class="model-row"/g)||[]).length,5);
- assert.doesNotMatch(catalog,/Gemma|MiniCPM|Ornith/);
+ const catalog=plan.match(/<ul class="model-list" id="subscription-model-list">([\s\S]*?)<\/ul>/)[1];
+ const modelIds=[...catalog.matchAll(/Model ID: ([a-z0-9.-]+)</g)].map(match=>match[1]);
+ assert.deepEqual(modelIds,['qwen3.8-27b','lfm3-omni-2b','bge-m3','bge-reranker-v2-m3','inkling-2-mini','edge0-120b']);
+ assert.doesNotMatch(catalog,/token context/);
+ assert.match(catalog,/<small>Embeddings<\/small>/);
+ assert.match(catalog,/<small>Reranking<\/small>/);
+ assert.equal((catalog.match(/<small>Chat<\/small>/g)||[]).length,4);
+ assert.match(plan,/id="subscription-model-status"/);
+ assert.match(plan,/assets\/subscription-catalog\.js/);
  assert.match(plan,/<details class="model-benchmarks"/);
- assert.match(plan,/not the hosted LFM3 VL 2B/);
+ assert.match(plan,/Reference benchmarks for LFM3 1\.7B/);
  assert.equal((plan.match(/<th scope="row">/g)||[]).length,16);
- assert.match(plan,/embeddings/);
- assert.match(plan,/Reranker/);
- assert.match(plan,/decisions/);
  assert.match(plan,/tax included/);
  assert.match(plan,/REACH Subscription Plus/);
 });

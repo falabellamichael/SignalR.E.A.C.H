@@ -15,8 +15,18 @@ fs.writeFileSync(path.join(profile, 'settings.json'), JSON.stringify({ telemetry
   connections: [{ id: 'gpu-fixture', name: 'GPU fixture', endpoint: 'http://127.0.0.1:19098/v1', accessKey: 'gpu-fixture-key', model: 'gemma-4-12b-qat' }], activeConnection: 'gpu-fixture' }));
 const originalFetch = global.fetch;
 const calls = [], errors = [];
+const subscriptionCalls = [];
+let signInError = '';
+const nativeSubscriptions = require('../agent/subscription-providers.cjs');
+nativeSubscriptions.createSubscriptionProviders = () => ({
+  status: async provider => ({ status: 'connected', provider }),
+  signIn(provider) { subscriptionCalls.push(provider); if (signInError) throw new Error(signInError); return { ok: true, status: 'connected' }; },
+  request: async url => new Response(JSON.stringify({ object: 'list', data: [{ id: url.includes('/devin/') ? 'devin-chat' : 'codex-chat' }] })),
+  close() {},
+});
 global.fetch = async (url, options = {}) => {
   const target = String(url);
+  if (target.includes(':21302/providers/')) throw new Error('Subscription sign-in must not use the tray bridge');
   if (target === endpoint + '/models' || target === 'http://127.0.0.1:19098/v1/models') {
     calls.push({ url: target, options });
     const login = target.startsWith(endpoint);
@@ -75,6 +85,22 @@ const timeout = setTimeout(() => { console.error('Login Providers UI timed out',
   assert.equal(saved.endpoint, endpoint);
   assert.equal(saved.accessKey, '');
   assert.equal(saved.model, 'chatgpt-chat');
+  for (const provider of ['devin', 'codex']) {
+    await run(`document.querySelector('#btn-${provider}-subscription').click()`);
+    const selector = `#conn-list [data-conn-id="reach_${provider}_subscription"] .conn-sign-in`;
+    assert.equal(await run(`document.querySelector(${JSON.stringify(selector)}).textContent`), 'Sign in via browser');
+    await run(`document.querySelector(${JSON.stringify(selector)}).click()`);
+    await until(`!document.querySelector(${JSON.stringify(selector)}).disabled`, 'Sign-in action finished');
+    assert.ok(subscriptionCalls.includes(provider), 'Tile must reach the native subscription client');
+    await until(`document.querySelector('#conn-list [data-conn-id="reach_${provider}_subscription"] .conn-account-status').textContent === 'Account connected'`, 'Connected account feedback');
+    assert.equal(await run('document.querySelector("#conn-editor .conn-url")'), null);
+    assert.equal(await run('document.querySelector("#conn-editor input[type=password]")'), null);
+  }
+  assert.equal((await run('reachApi.getSettings()')).connections.length, saved.connections.length,
+    'Opening sign-in must not save or replace connection drafts');
+  assert.equal((await run('reachApi.signInSubscription("unknown")')).ok, false);
+  signInError = 'Install Devin CLI to connect this subscription, then restart Studio.';
+  assert.match((await run('reachApi.signInSubscription("devin")')).err, /Install Devin CLI/);
   assert.deepEqual(errors, []);
   const report = { ok: true, profile, catalogsSeparate: true, draftPreserved: true, managedConnectionSaved: true, keyIsolated: true };
   try { fs.writeFileSync(path.join(profile, 'login-providers.png'), (await win.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG()); }

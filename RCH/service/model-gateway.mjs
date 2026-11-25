@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomInt, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { MAX_STREAM_BYTES, replayBody, streamRecord } from './stream-replay.mjs';
 import { modelUsdPricing, requestReplay } from './store.mjs';
-import { gpuBridge, hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
+import { gpuBridge, hostedGpuModel, requestCapabilities, strataQwen } from './gpu-bridge.mjs';
 import { compatibleGemmaTools } from './gemma-tools.mjs';
 import { codegptDirect } from './codegpt-direct.mjs';
 
@@ -15,6 +16,43 @@ const FIELDS = new Set(['model', 'messages', 'stream', 'stream_options', 'max_to
   'response_format']);
 const REQUEST_FIELDS = new Set(['model', 'messages', 'stream', 'max_tokens', 'max_completion_tokens']);
 const GPU_REQUEST_FIELDS = new Set([...REQUEST_FIELDS, 'tools', 'tool_choice', 'parallel_tool_calls']);
+
+function inferenceRequest(body, routes, operation) {
+  if (!plain(body) || Buffer.byteLength(JSON.stringify(body)) > MAX_BODY)
+    fail(400, 'invalid_request', 'Invalid model request.');
+  const route = routes.get(body.model);
+  if (!route || route.metered !== true) fail(404, 'model_unavailable', 'This model is not available.');
+  if (route.access !== 'requests' || gpuBridge(route.bridge)?.operation !== operation)
+    fail(400, 'model_operation_mismatch', 'Choose a model that supports this endpoint.');
+  const fields = operation === 'embeddings' ? ['model', 'input', 'encoding_format', 'dimensions']
+    : ['model', 'query', 'documents', 'top_n', 'return_documents'];
+  if (Object.keys(body).some(key => !fields.includes(key))) fail(400, 'unsupported_field', 'Unsupported model request fields.');
+  const text = value => typeof value === 'string' && !!value.trim();
+  let payload;
+  if (operation === 'embeddings') {
+    const inputs = Array.isArray(body.input) ? body.input : [body.input];
+    if (!inputs.length || inputs.length > 32 || !inputs.every(text))
+      fail(400, 'invalid_input', 'Supply one text or between 1 and 32 nonempty texts.');
+    if (body.encoding_format !== undefined && !['float', 'base64'].includes(body.encoding_format))
+      fail(400, 'invalid_parameter', 'encoding_format must be float or base64.');
+    if (body.dimensions !== undefined && body.dimensions !== 1024)
+      fail(400, 'invalid_parameter', 'BGE M3 produces 1024 dimensions.');
+    payload = { model: route.bridge.model, input: body.input, encoding_format: body.encoding_format ?? 'float' };
+  } else {
+    if (!text(body.query) || !Array.isArray(body.documents) || !body.documents.length
+      || body.documents.length > 32 || !body.documents.every(text))
+      fail(400, 'invalid_input', 'Supply a query and between 1 and 32 nonempty text documents.');
+    if (body.top_n !== undefined && !integer(body.top_n, 1, body.documents.length))
+      fail(400, 'invalid_parameter', 'top_n must be between 1 and the document count.');
+    if (body.return_documents !== undefined && typeof body.return_documents !== 'boolean')
+      fail(400, 'invalid_parameter', 'return_documents must be true or false.');
+    payload = { model: route.bridge.model, query: body.query, documents: body.documents,
+      top_n: body.top_n ?? body.documents.length, return_documents: body.return_documents ?? false };
+  }
+  if (route.maxInputBytes !== undefined && Buffer.byteLength(JSON.stringify(payload)) > route.maxInputBytes)
+    fail(400, 'input_too_large', 'Input exceeds this model’s configured size limit.');
+  return { payload, route, fingerprint: createHash('sha256').update(canonical({ operation, payload, model: route.id })).digest('hex') };
+}
 
 export class GatewayError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
@@ -144,9 +182,10 @@ function configureModels(models) {
 
 function completionRequest(body, routes) {
   if (!plain(body) || Buffer.byteLength(JSON.stringify(body)) > MAX_BODY) fail(400, 'invalid_request', 'Invalid completion request.');
-  const unsupported = Object.keys(body).filter(k => !FIELDS.has(k));
-  if (unsupported.length) fail(400, 'unsupported_field', `This request includes unsupported field${unsupported.length === 1 ? '' : 's'}: ${unsupported.join(', ')}.`);
   const route = routes.get(body.model);
+  const omni = route?.access === 'requests' && route.bridge.model === 'LiquidAI/LFM3-Omni-2B';
+  const unsupported = Object.keys(body).filter(k => !FIELDS.has(k) && !(omni && k === 'reasoning_effort'));
+  if (unsupported.length) fail(400, 'unsupported_field', `This request includes unsupported field${unsupported.length === 1 ? '' : 's'}: ${unsupported.join(', ')}.`);
   if (!route || route.metered !== true) fail(404, 'model_unavailable', 'This model is not available for metered access.');
   if (route.access === 'requests') return gpuRequest(body, route);
   if (!Array.isArray(body.messages) || body.messages.length < 1 || body.messages.length > 100) {
@@ -193,10 +232,28 @@ function completionRequest(body, routes) {
 
 function gpuRequest(body, route) {
   const { response_format: format, ...textBody } = body;
+  if (route.bridge.model === 'LiquidAI/LFM3-Omni-2B') {
+    // Omni runs without reasoning. Clients may retain another model's private
+    // reasoning metadata in history; keep visible content and native tool data.
+    if (Object.hasOwn(textBody, 'reasoning_effort')) {
+      if (textBody.reasoning_effort !== 'none')
+        fail(400, 'invalid_parameter', 'Omni runs without reasoning; reasoning_effort must be none.');
+      delete textBody.reasoning_effort;
+    }
+    if (Array.isArray(textBody.messages)) textBody.messages = textBody.messages.map(message => {
+      if (!plain(message) || message.role !== 'assistant') return message;
+      for (const field of ['reasoning', 'reasoning_content']) {
+        if (message[field] != null && typeof message[field] !== 'string')
+          fail(400, 'invalid_messages', 'Assistant reasoning metadata must be text or null.');
+      }
+      const { reasoning, reasoning_content, ...visible } = message;
+      return visible;
+    });
+  }
   // SimpleRAG sends sampling controls in its OpenAI-compatible requests.
-  // Only forward these on the Strata route, which implements them.
+  // The native Qwen and Omni Strata routes implement these controls.
   const sampling = {};
-  if (route.bridge.model === 'Qwen3.8-27B') {
+  if (strataQwen(route.bridge.model) || route.bridge.model === 'LiquidAI/LFM3-Omni-2B') {
     if (Object.hasOwn(textBody, 'stream_options')) {
       const options = textBody.stream_options;
       if (!plain(options) || Object.keys(options).some(key => key !== 'include_usage')
@@ -216,7 +273,6 @@ function gpuRequest(body, route) {
   }
   const result = bridgeRequest(textBody, route);
   if (Object.keys(sampling).length) {
-    Object.assign(result.payload, sampling);
     result.fingerprint = createHash('sha256').update(result.fingerprint).update(canonical(sampling)).digest('hex');
   }
   // No product ceiling: vLLM reserves the available context after tokenizing
@@ -229,7 +285,7 @@ function gpuRequest(body, route) {
   // already buffers the verified final answer before settlement and delivery.
   const generation = gpuBridge(route.bridge).generation;
   result.payload = { ...result.payload, ...(output === undefined ? {} : { max_tokens: output }),
-    ...generation };
+    ...generation, ...sampling };
   if (route.bridge.model === 'google/gemma-4-12B-it-qat-q4_0-unquantized' && result.payload.tools !== undefined) {
     result.payload.tools = compatibleGemmaTools(result.payload.tools);
   }
@@ -238,7 +294,7 @@ function gpuRequest(body, route) {
   const actionReply = format !== undefined || result.payload.messages.some(message => message.role === 'system'
     && message.content.includes('EXECUTABLE ACTION RESPONSE:'));
   if (actionReply) result.payload.chat_template_kwargs = { ...generation.chat_template_kwargs, enable_thinking: false };
-  if (route.bridge.model === 'Qwen3.8-27B' && result.payload.chat_template_kwargs?.enable_thinking && output > 1) {
+  if (strataQwen(route.bridge.model) && result.payload.chat_template_kwargs?.enable_thinking && output > 1) {
     // The output cap includes reasoning; leave room for the visible answer.
     result.payload.reasoning_budget_tokens = Math.floor(output / 2);
   }
@@ -386,7 +442,16 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       responseJson(res, 200, listing); return;
     }
     const decision = pathname === '/v1/decisions';
-    if (req.method !== 'POST' || (!decision && pathname !== '/v1/chat/completions')) { responseJson(res, 404, errorBody(new GatewayError(404, 'not_found', 'Route not found.'))); return; }
+    const operation = pathname === '/v1/embeddings' ? 'embeddings'
+      : pathname === '/v1/rerank' ? 'rerank'
+      : pathname === '/v1/video/generations' ? 'video'
+      : pathname === '/v1/images/generations' ? 'image' : null;
+    if (req.method === 'GET' && pathname.startsWith('/v1/media/')) {
+      try { await comfyMedia(fetchImpl, routes, res, pathname); }
+      catch (error) { if (!res.writableEnded) responseJson(res, integer(error?.status, 400, 599) ? error.status : 502, errorBody(error)); }
+      return;
+    }
+    if (req.method !== 'POST' || (!decision && !operation && pathname !== '/v1/chat/completions')) { responseJson(res, 404, errorBody(new GatewayError(404, 'not_found', 'Route not found.'))); return; }
     let reservation;
     let dispatched = false;
     let finished = false;
@@ -401,8 +466,13 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
     if (req.aborted || res.destroyed) cancel();
     try {
       if (controller.signal.aborted) fail(408, 'request_cancelled', 'The request was cancelled before dispatch.');
-      const { payload, route, amount, reserveUsage, fingerprint } = (decision ? decisionRequest : completionRequest)(body ?? await readJson(req), routes);
-      if (!decision && gpuBridge(route.bridge)?.decision) fail(400, 'model_operation_mismatch', 'Use /v1/decisions for this model.');
+      const input = body ?? await readJson(req);
+      const { payload, route, amount, reserveUsage, fingerprint } = operation === 'video' || operation === 'image'
+        ? generationRequest(input, routes, operation)
+        : operation ? inferenceRequest(input, routes, operation)
+        : (decision ? decisionRequest : completionRequest)(input, routes);
+      if (!decision && !operation && (gpuBridge(route.bridge)?.decision || gpuBridge(route.bridge)?.operation))
+        fail(400, 'model_operation_mismatch', 'Use the endpoint advertised for this model.');
       const deadline = route.access === 'requests' ? requestTimeoutMs : timeoutMs;
       if (deadline > 0) timer = setTimeout(() => controller.abort(), deadline);
       requestMode = route.access === 'requests';
@@ -416,8 +486,9 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         : await store.reserve(account.id ?? account.accountId, requestId, route.id, fingerprint, amount);
       if (!reservation.fresh) {
         if (reservation.status === 'settled' && reservation.replay) {
+          const body = replayBody(reservation.replay);
           res.writeHead(200, { 'content-type': reservation.replay.contentType, 'cache-control': 'no-store', 'x-reach-replayed': 'true' });
-          res.end(reservation.replay.body);
+          res.end(body);
           return;
         }
         const code = reservation.status === 'settled' ? 'request_already_completed' : reservation.status === 'uncertain' ? 'usage_pending' : 'request_in_progress';
@@ -432,14 +503,20 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       active += 1;
       counted = true;
       dispatched = true;
-      const liveStrata = requestMode && !decision && payload.stream && route.bridge.model === 'Qwen3.8-27B';
+      const liveStrata = requestMode && !decision && !operation && payload.stream && strataQwen(route.bridge.model);
+      let record;
+      let usage;
+      let terminal = '';
+      if (requestMode && (operation === 'video' || operation === 'image')) {
+        ({ record } = await comfyGenerate(fetchImpl, payload, route, controller.signal, requestId));
+      } else {
       const upstream = await fetchImpl(requestMode ? gpuBridge(route.bridge).url : completionUrl, {
         method: 'POST', redirect: 'error', signal: controller.signal,
         headers: requestMode ? { 'content-type': 'application/json', 'cache-control': 'no-store' }
           : { 'content-type': 'application/json', authorization: `Bearer ${upstreamKey}`,
             'x-reach-metered': 'provider-v1', 'cache-control': 'no-store' },
         body: JSON.stringify(liveStrata ? { ...payload, stream_options: { include_usage: true } }
-          : gpuBridge(route.bridge) && !decision ? { ...payload, stream: false } : payload),
+          : gpuBridge(route.bridge) && !decision && !operation ? { ...payload, stream: false } : payload),
       });
       if (!upstream.ok) {
         let detail = '';
@@ -458,10 +535,17 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         fail(502, 'unmetered_route', 'This provider route is not qualified for usage billing.');
       }
       const contentType = upstream.headers.get('content-type') || '';
-      let record;
-      let usage;
-      let terminal = '';
-      if (decision) {
+      const compression = upstream.headers.get('x-context-compression');
+      if (requestMode && /^(?:lossless_repeated_lines|hierarchical_summary); lossy=(?:true|false)$/.test(compression || '')) {
+        res.setHeader('X-Context-Compression', compression);
+        for (const name of ['X-Context-Original-Tokens', 'X-Context-Compressed-Tokens']) {
+          const value = upstream.headers.get(name);
+          if (/^\d{1,9}$/.test(value || '')) res.setHeader(name, value);
+        }
+      }
+      if (operation) {
+        ({ record, usage } = await inferenceResponse(upstream, payload, route, controller.signal, operation));
+      } else if (decision) {
         const parsed = JSON.parse(await boundedText(upstream));
         if (!plain(parsed.answers) || !integer(parsed.usage?.input_tokens, 0, 1_000_000_000)
           || Object.keys(payload.questions).some(name => !plain(parsed.answers[name])))
@@ -489,6 +573,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
         const safe = completionOutput(parsed, route.id);
         record = payload.stream ? jsonAsStream(safe) : { contentType: 'application/json; charset=utf-8', body: JSON.stringify(safe) };
       }
+      }
       if (requestMode) {
         // Validate escaped replay storage size before attempting a mutation.
         // A known local validation failure can release the hold safely.
@@ -507,7 +592,7 @@ export function createModelGateway({ store, models = [], upstreamUrl, upstreamKe
       if (res.headersSent) { res.end(terminal + 'data: [DONE]\n\n'); }
       else {
         res.writeHead(200, { 'content-type': record.contentType, 'cache-control': 'no-store' });
-        res.end(record.body);
+        res.end(replayBody(record));
       }
     } catch (error) {
       if (reservation?.fresh && !finished) {
@@ -576,6 +661,55 @@ async function bridgeText(response, signal) {
   }
 }
 
+async function inferenceResponse(response, payload, route, signal, operation) {
+  if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') || ''))
+    fail(502, 'invalid_provider_response', 'The model returned an unexpected response type.');
+  let parsed;
+  try { parsed = JSON.parse(await bridgeText(response, signal)); }
+  catch (error) {
+    if (error instanceof GatewayError) throw error;
+    fail(502, 'invalid_provider_response', 'The model returned invalid JSON.');
+  }
+  if (!plain(parsed) || parsed.error || parsed.model !== route.bridge.model
+    || !integer(parsed.usage?.prompt_tokens, 0, 1_000_000_000)
+    || parsed.usage.total_tokens !== parsed.usage.prompt_tokens)
+    fail(502, 'invalid_provider_response', 'The selected model did not return valid output and usage.');
+  const output = { object: 'list', model: route.id, usage: {
+    prompt_tokens: parsed.usage.prompt_tokens, total_tokens: parsed.usage.total_tokens } };
+  if (operation === 'embeddings') {
+    const count = Array.isArray(payload.input) ? payload.input.length : 1;
+    const indices = new Set();
+    if (!Array.isArray(parsed.data) || parsed.data.length !== count)
+      fail(502, 'invalid_provider_response', 'The embedding response did not match the input count.');
+    output.data = parsed.data.map(row => {
+      if (!plain(row) || !integer(row.index, 0, count - 1) || indices.has(row.index))
+        fail(502, 'invalid_provider_response', 'Invalid embedding index.');
+      indices.add(row.index);
+      const v = row.embedding;
+      const valid = payload.encoding_format === 'base64'
+        ? typeof v === 'string' && /^[A-Za-z0-9+/]+={0,2}$/.test(v) && Buffer.from(v, 'base64').length === 4096
+          && Buffer.from(v, 'base64').toString('base64') === v
+        : Array.isArray(v) && v.length === 1024 && v.every(Number.isFinite);
+      if (!valid) fail(502, 'invalid_provider_response', 'Invalid 1024-dimensional embedding.');
+      return { object: 'embedding', index: row.index, embedding: v };
+    });
+  } else {
+    const indices = new Set();
+    if (!Array.isArray(parsed.results) || parsed.results.length !== payload.top_n)
+      fail(502, 'invalid_provider_response', 'The reranker did not return the requested results.');
+    output.results = parsed.results.map(row => {
+      if (!plain(row) || !integer(row.index, 0, payload.documents.length - 1) || indices.has(row.index)
+        || !Number.isFinite(row.relevance_score)) fail(502, 'invalid_provider_response', 'Invalid reranking result.');
+      indices.add(row.index);
+      return { index: row.index, relevance_score: row.relevance_score,
+        ...(payload.return_documents ? { document: { text: payload.documents[row.index] } } : {}) };
+    });
+  }
+  if (signal.aborted) fail(408, 'request_cancelled', 'The request was cancelled before completion.');
+  return { record: { contentType: 'application/json; charset=utf-8', body: JSON.stringify(output) },
+    usage: { promptTokens: parsed.usage.prompt_tokens, completionTokens: 0 } };
+}
+
 function bridgeEnvelope(parsed, route) {
   if (!plain(parsed) || parsed.error || parsed.model !== route.bridge.model || !Array.isArray(parsed.choices)) {
     fail(502, 'invalid_bridge_response', 'The bridge did not return the selected model’s completion.');
@@ -616,6 +750,14 @@ async function gpuResponse(response, payload, route, signal, measuredUsage) {
   if (measured) measuredUsage(measured);
   const safe = { ...envelope, object: 'chat.completion', choices: [{ index: 0,
     message: { role: 'assistant', ...message }, finish_reason: choice.finish_reason ?? null }] };
+  if (plain(parsed.context_compression) && parsed.context_compression.applied === true
+    && typeof parsed.context_compression.lossy === 'boolean'
+    && ['lossless_repeated_lines', 'hierarchical_summary'].includes(parsed.context_compression.method)) {
+    const info = parsed.context_compression;
+    if (integer(info.original_prompt_tokens, 1, 10_000_000) && integer(info.compressed_prompt_tokens, 1, info.original_prompt_tokens))
+      safe.context_compression = { applied: true, method: info.method, lossy: info.lossy,
+        original_prompt_tokens: info.original_prompt_tokens, compressed_prompt_tokens: info.compressed_prompt_tokens };
+  }
   return payload.stream ? jsonAsStream(safe)
     : { contentType: 'application/json; charset=utf-8', body: JSON.stringify(safe) };
 }
@@ -712,17 +854,16 @@ async function forwardStream(upstream, res, model, signal, strataRoute) {
   let bufferSize = 0;
   let doneReceived = false;
   let usage = null;
-  let body = '';
+  const events = [];
+  let replayBytes = 0;
+  let deltaBytes = 0;
+  const replayLimit = strataRoute ? MAX_STREAM_BYTES : MAX_RESPONSE;
   let seenFinish = false;
   let seenOutput = false;
   let terminal = '';
-  const send = async (event, replay = true) => {
+  const send = async (event) => {
     if (res.destroyed || signal.aborted) fail(502, 'stream_interrupted', 'The model stream was interrupted.');
     if (!res.headersSent) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-    if (replay) {
-      body += event;
-      if (Buffer.byteLength(body) > MAX_RESPONSE - 64) fail(502, 'response_too_large', 'The model response exceeded the service size limit.');
-    }
     if (!res.write(event)) await once(res, 'drain', { signal });
   };
   const processEvent = async (raw) => {
@@ -730,7 +871,7 @@ async function forwardStream(upstream, res, model, signal, strataRoute) {
     if (!data) {
       // Keep the connection open during Strata prefill without storing transport comments in replays.
       if (strataRoute && !doneReceived && !seenFinish && raw.split('\n').some(line => line.startsWith(':'))) {
-        await send(': keep-alive\n\n', false);
+        await send(': keep-alive\n\n');
       }
       return;
     }
@@ -751,6 +892,15 @@ async function forwardStream(upstream, res, model, signal, strataRoute) {
       fail(502, 'invalid_provider_stream', 'Strata returned an invalid stream choice.');
     }
     if (strataRoute) {
+      // Count actual generated text and tool arguments separately from SSE framing.
+      for (const { delta } of parsed.choices) {
+        const calls = Array.isArray(delta.tool_calls) ? delta.tool_calls.map(call => call?.function) : [];
+        for (const part of [delta.content, delta.reasoning_content, delta.reasoning, delta.thought, delta.refusal,
+          ...calls.concat(delta.function_call).flatMap(call => [call?.name, call?.arguments])]) {
+          if (typeof part === 'string') deltaBytes += Buffer.byteLength(part);
+        }
+      }
+      if (deltaBytes > MAX_RESPONSE) fail(502, 'response_too_large', 'The model output exceeded the service size limit.');
       seenOutput ||= parsed.choices.some(({ delta }) =>
         ['content', 'reasoning_content', 'reasoning', 'thought', 'refusal'].some(key =>
           typeof delta[key] === 'string' && !!delta[key].trim())
@@ -764,19 +914,19 @@ async function forwardStream(upstream, res, model, signal, strataRoute) {
       if (Number.isFinite(rate) && rate > 0) output.usage = { ...output.usage, generation_tokens_per_second: rate };
     }
     const event = `data: ${JSON.stringify(output)}\n\n`;
-    // A client can see the deltas now; the success marker waits for settlement.
-    if (strataRoute && seenFinish) {
-      terminal += event;
-      if (Buffer.byteLength(body) + Buffer.byteLength(terminal) > MAX_RESPONSE - 64)
-        fail(502, 'response_too_large', 'The model response exceeded the service size limit.');
-    } else await send(event);
+    replayBytes += Buffer.byteLength(event);
+    if (replayBytes > replayLimit - 64) fail(502, 'response_too_large', 'The model response exceeded the service size limit.');
+    events.push(event);
+    // Finish and usage may reach the client only after settlement.
+    if (strataRoute && seenFinish) terminal += event;
+    else await send(event);
   };
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) { pending += decoder.decode(); break; }
       bufferSize += value.byteLength;
-      if (bufferSize > MAX_RESPONSE * 2) fail(502, 'response_too_large', 'The model stream exceeded the service size limit.');
+      if (bufferSize > (strataRoute ? MAX_STREAM_BYTES : MAX_RESPONSE * 2)) fail(502, 'response_too_large', 'The model stream exceeded the service size limit.');
       pending += decoder.decode(value, { stream: true });
       pending = pending.replace(/\r\n/g, '\n');
       let boundary;
@@ -791,6 +941,210 @@ async function forwardStream(upstream, res, model, signal, strataRoute) {
     if (pending.trim()) await processEvent(pending);
     if (!doneReceived || !seenFinish || !usage) fail(502, 'usage_unavailable', 'The provider stream ended without verified final usage. Your reservation is pending reconciliation.');
     if (strataRoute && !seenOutput) fail(502, 'empty_response', 'Strata returned an empty stream.');
-    return { record: { contentType: 'text/event-stream', body: `${body}${terminal}data: [DONE]\n\n` }, usage, terminal };
+    events.push('data: [DONE]\n\n');
+    const body = events.join('');
+    const record = strataRoute ? streamRecord(body) : { contentType: 'text/event-stream', body };
+    return { record, usage, terminal };
   } finally { await reader.cancel().catch(() => {}); }
+}
+
+const GENERATION_FIELDS = new Set(['model', 'prompt', 'reference_image', 'duration_seconds',
+  'width', 'height', 'seed', 'steps', 'turbo']);
+
+function generationRequest(body, routes, operation) {
+  if (!plain(body) || Buffer.byteLength(JSON.stringify(body)) > MAX_BODY)
+    fail(400, 'invalid_request', 'Invalid generation request.');
+  const route = routes.get(body.model);
+  if (!route || route.metered !== true) fail(404, 'model_unavailable', 'This model is not available.');
+  if (route.access !== 'requests' || gpuBridge(route.bridge)?.operation !== operation)
+    fail(400, 'model_operation_mismatch', 'Choose a model that supports this endpoint.');
+  if (Object.keys(body).some(key => !GENERATION_FIELDS.has(key)))
+    fail(400, 'unsupported_field', 'Unsupported generation request fields.');
+  if (operation === 'image' && ['duration_seconds', 'turbo', 'reference_image'].some(key => body[key] !== undefined))
+    fail(400, 'unsupported_field', 'The image endpoint does not accept duration_seconds, turbo, or reference_image.');
+  if (typeof body.prompt !== 'string' || !body.prompt.trim() || Buffer.byteLength(body.prompt) > 16000)
+    fail(400, 'invalid_prompt', 'Supply a nonempty prompt up to 16000 bytes.');
+  if (body.duration_seconds !== undefined && !integer(body.duration_seconds, 1, 15))
+    fail(400, 'invalid_parameter', 'duration_seconds must be between 1 and 15.');
+  for (const dimension of ['width', 'height']) {
+    if (body[dimension] !== undefined && (!integer(body[dimension], 256, 2048) || body[dimension] % 32 !== 0))
+      fail(400, 'invalid_parameter', `${dimension} must be a multiple of 32 between 256 and 2048.`);
+  }
+  if (body.seed !== undefined && !integer(body.seed, 0, Number.MAX_SAFE_INTEGER))
+    fail(400, 'invalid_parameter', 'seed must be a nonnegative integer.');
+  if (body.steps !== undefined && !integer(body.steps, 1, 40))
+    fail(400, 'invalid_parameter', 'steps must be between 1 and 40.');
+  if (body.turbo !== undefined && typeof body.turbo !== 'boolean')
+    fail(400, 'invalid_parameter', 'turbo must be true or false.');
+  let reference = null;
+  if (body.reference_image !== undefined) {
+    const match = typeof body.reference_image === 'string'
+      && /^data:image\/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(body.reference_image);
+    const bytes = match && Buffer.from(match[2], 'base64');
+    if (!match || !bytes.length || bytes.length > 8 * 1024 * 1024 || bytes.toString('base64') !== match[2])
+      fail(400, 'invalid_reference_image', 'Supply a PNG, JPEG, or WebP data URL up to 8 MB.');
+    reference = { ext: match[1] === 'jpeg' ? 'jpg' : match[1], bytes };
+  }
+  const payload = { prompt: body.prompt, duration: body.duration_seconds ?? 5,
+    width: body.width ?? (operation === 'image' ? 1024 : 1344),
+    height: body.height ?? (operation === 'image' ? 1024 : 768),
+    seed: body.seed ?? null, steps: body.steps ?? null, turbo: body.turbo ?? true, reference };
+  const fingerprint = createHash('sha256').update(canonical({ operation, model: route.id,
+    prompt: payload.prompt, duration: payload.duration, width: payload.width, height: payload.height,
+    seed: payload.seed, steps: payload.steps, turbo: payload.turbo,
+    reference: reference ? createHash('sha256').update(reference.bytes).digest('hex') : null })).digest('hex');
+  return { payload, route, fingerprint };
+}
+
+// MiniMax H3 reference-to-video graph, distilled from the shipped
+// video_minimax_h3_r2v template with frontend helper nodes inlined.
+function minimaxR2V({ prompt, width, height, duration, seed, steps, turbo, referenceName }) {
+  const frames = Math.max(5, Math.round(duration * 24));
+  const length = frames + ((5 - (frames % 17)) % 17);
+  const model = turbo ? 'lora' : 'unet';
+  const graph = {
+    unet: { class_type: 'UnetLoaderGGUF', inputs: {
+      unet_name: 'MiniMax-H3-Ref2VA-Pruned-Q4_K_M.gguf' } },
+    clip: { class_type: 'CLIPLoader', inputs: {
+      clip_name: 'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', type: 'minimax', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: 'minimax_h3_video_vae_int8_convrot.safetensors' } },
+    audio_vae: { class_type: 'VAELoader', inputs: { vae_name: 'minimax_h3_audio_vae_fp32.safetensors' } },
+    lora: { class_type: 'LoraLoaderModelOnly', inputs: { model: ['unet', 0],
+      lora_name: 'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors', strength_model: 1 } },
+    ref: { class_type: 'MiniMaxH3ReferenceToVideo', inputs: {
+      clip: ['clip', 0], vae: ['vae', 0], audio_vae: ['audio_vae', 0],
+      prompt, width, height, length, ref_image_size: 'match' } },
+    noise: { class_type: 'RandomNoise', inputs: { noise_seed: seed } },
+    guider: { class_type: 'BasicGuider', inputs: { model: [model, 0], conditioning: ['ref', 0] } },
+    sampler: { class_type: 'KSamplerSelect', inputs: { sampler_name: 'res_multistep' } },
+    schedule: { class_type: 'BasicScheduler', inputs: { model: ['unet', 0],
+      steps: steps ?? (turbo ? 4 : 20), scheduler: 'simple', denoise: 1 } },
+    sample: { class_type: 'SamplerCustomAdvanced', inputs: { noise: ['noise', 0],
+      guider: ['guider', 0], sampler: ['sampler', 0], sigmas: ['schedule', 0], latent_image: ['ref', 1] } },
+    vdecode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+    adecode: { class_type: 'VAEDecodeAudio', inputs: { samples: ['sample', 0], vae: ['audio_vae', 0] } },
+    mkvid: { class_type: 'CreateVideo', inputs: { images: ['vdecode', 0], audio: ['adecode', 0], fps: 24, bit_depth: 8 } },
+    save: { class_type: 'SaveVideo', inputs: { video: ['mkvid', 0], filename_prefix: 'reach/gen', format: 'auto', codec: 'auto' } },
+  };
+  if (referenceName) {
+    graph.img = { class_type: 'LoadImage', inputs: { image: referenceName } };
+    graph.ref.inputs['ref_images.ref_image_0'] = ['img', 0];
+  }
+  return graph;
+}
+
+// FLUX.1-schnell text-to-image graph, distilled from the shipped
+// flux_schnell_full_text_to_image template.
+function fluxT2I({ prompt, width, height, seed, steps }) {
+  return {
+    unet: { class_type: 'UnetLoaderGGUF', inputs: { unet_name: 'flux1-schnell-Q4_K_S.gguf' } },
+    clip: { class_type: 'DualCLIPLoader', inputs: { clip_name1: 'clip_l.safetensors',
+      clip_name2: 't5xxl_fp8_e4m3fn.safetensors', type: 'flux', device: 'default' } },
+    vae: { class_type: 'VAELoader', inputs: { vae_name: 'ae.safetensors' } },
+    enc: { class_type: 'CLIPTextEncodeFlux', inputs: { clip: ['clip', 0], clip_l: prompt,
+      t5xxl: prompt, guidance: 3.5 } },
+    neg: { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['enc', 0] } },
+    latent: { class_type: 'EmptySD3LatentImage', inputs: { width, height, batch_size: 1 } },
+    sample: { class_type: 'KSampler', inputs: { model: ['unet', 0], positive: ['enc', 0],
+      negative: ['neg', 0], latent_image: ['latent', 0], seed, steps: steps ?? 4,
+      cfg: 1, sampler_name: 'euler', scheduler: 'simple', denoise: 1 } },
+    vdecode: { class_type: 'VAEDecode', inputs: { samples: ['sample', 0], vae: ['vae', 0] } },
+    save: { class_type: 'SaveImage', inputs: { images: ['vdecode', 0], filename_prefix: 'reach/img' } },
+  };
+}
+
+// A generation request is asynchronous work on the Comfy loopback service:
+// upload the optional reference, queue the workflow, then poll history.
+async function comfyGenerate(fetchImpl, payload, route, signal, requestId) {
+  const base = gpuBridge(route.bridge).url;
+  const client = async (path, options = {}) => {
+    const response = await fetchImpl(`${base}${path}`, { redirect: 'error', signal, ...options });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = ` ${(await response.text()).slice(0, 300)}`; } catch { /* status alone */ }
+      fail(502, 'comfy_error', `The generation backend rejected ${options.method ?? 'GET'} ${path} (${response.status}).${detail}`);
+    }
+    return response;
+  };
+  let referenceName;
+  if (payload.reference) {
+    const type = payload.reference.ext === 'jpg' ? 'image/jpeg' : `image/${payload.reference.ext}`;
+    const form = new FormData();
+    form.set('image', new Blob([payload.reference.bytes], { type }), `reach_${requestId}.${payload.reference.ext}`);
+    form.set('overwrite', 'true');
+    const uploaded = await (await client('/upload/image', { method: 'POST', body: form })).json().catch(() => null);
+    if (!plain(uploaded) || typeof uploaded.name !== 'string' || !uploaded.name)
+      fail(502, 'comfy_error', 'The generation backend refused the reference image.');
+    referenceName = uploaded.name;
+  }
+  const builder = route.bridge.model === 'comfy/flux-schnell' ? fluxT2I : minimaxR2V;
+  const workflow = builder({ ...payload, referenceName,
+    seed: payload.seed ?? randomInt(0, (2 ** 48) - 1) });
+  const submitted = await (await client('/prompt', { method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: workflow, client_id: requestId }) })).json().catch(() => null);
+  if (!plain(submitted) || typeof submitted.prompt_id !== 'string' || !submitted.prompt_id)
+    fail(502, 'comfy_error', 'The generation backend did not accept the workflow.');
+  const promptId = submitted.prompt_id;
+  const deadline = Date.now() + 15 * 60 * 1000;
+  let entry = null;
+  while (Date.now() < deadline) {
+    if (signal.aborted) fail(408, 'request_cancelled', 'The request was cancelled.');
+    const history = await (await client(`/history/${encodeURIComponent(promptId)}`)).json().catch(() => null);
+    const record = plain(history) && plain(history[promptId]) ? history[promptId] : null;
+    if (record) {
+      const status = record.status ?? {};
+      if (status.completed === true || status.status_str === 'success') { entry = record; break; }
+      if (status.status_str === 'error' || plain(status.err))
+        fail(502, 'generation_failed', `The generation backend failed: ${JSON.stringify(status.err ?? status.messages ?? status.status_str).slice(0, 300)}`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  if (!entry) fail(504, 'generation_timeout', 'The generation did not finish in time.');
+  const files = [];
+  for (const node of Object.values(entry.outputs ?? {})) {
+    for (const key of ['videos', 'gifs', 'images', 'audio']) {
+      for (const file of node[key] ?? []) {
+        if (plain(file) && typeof file.filename === 'string' && file.type === 'output')
+          files.push(file.filename);
+      }
+    }
+  }
+  if (!files.length) fail(502, 'empty_response', 'The generation backend completed without producing media.');
+  const data = files.map(filename => ({ filename,
+    url: `/v1/media/${encodeURIComponent(promptId)}/${encodeURIComponent(filename)}` }));
+  return { record: { contentType: 'application/json; charset=utf-8', body: JSON.stringify({
+    id: promptId, object: `${gpuBridge(route.bridge).operation}.generation`,
+    created: Math.floor(Date.now() / 1000), model: route.id, data }) } };
+}
+
+// Media reads re-verify that the file belongs to the generation record before
+// streaming it out of the backend output folder.
+async function comfyMedia(fetchImpl, routes, res, pathname) {
+  const [, , , promptId, ...rest] = pathname.split('/');
+  const filename = rest.join('/');
+  const bridge = [...routes.values()].find(route => gpuBridge(route.bridge)?.media);
+  if (!bridge || !/^[a-zA-Z0-9-]{8,128}$/.test(promptId ?? '') || !/^[\w][\w.-]{0,200}$/.test(filename))
+    fail(404, 'media_not_found', 'The generated media is not available.');
+  const base = gpuBridge(bridge.bridge).url;
+  const history = await fetchImpl(`${base}/history/${encodeURIComponent(promptId)}`, { redirect: 'error' });
+  let allowed = false;
+  if (history.ok) {
+    const record = await history.json().catch(() => null);
+    const entry = plain(record?.[promptId]) ? record[promptId] : null;
+    for (const node of Object.values(entry?.outputs ?? {})) {
+      for (const key of ['videos', 'gifs', 'images', 'audio']) {
+        for (const file of node[key] ?? []) {
+          if (file?.filename === filename && file?.subfolder === 'reach' && file?.type === 'output') allowed = true;
+        }
+      }
+    }
+  }
+  if (!allowed) fail(404, 'media_not_found', 'The generated media is not available.');
+  const upstream = await fetchImpl(`${base}/view?filename=${encodeURIComponent(filename)}&subfolder=reach&type=output`, { redirect: 'error' });
+  if (!upstream.ok) fail(404, 'media_not_found', 'The generated media is not available.');
+  const body = Buffer.from(await upstream.arrayBuffer());
+  res.writeHead(200, { 'content-type': upstream.headers.get('content-type') || 'application/octet-stream',
+    'content-length': body.length, 'cache-control': 'private, max-age=3600' });
+  res.end(body);
 }

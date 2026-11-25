@@ -11,8 +11,6 @@ from automations_content import automations_article
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'https://github.com/falabellamichael/SignalR.E.A.C.H'
-# Stripe Checkout is the card page REACH Studio opens for Subscription Plus.
-PLUS_CHECKOUT = 'https://checkout.stripe.com'
 CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'"
 ICONS = {
 'reset':'<path d="M3 10a9 9 0 1 1 2 8"/><path d="M3 4v6h6"/>',
@@ -184,13 +182,34 @@ def home():
 
 
 def subscription():
+    assistant = '''<section class="plan-models" id="signal-c-assistant" aria-labelledby="signal-c-assistant-title">
+  <div class="reveal">
+    <h2 id="signal-c-assistant-title">Signal-C Assistant</h2>
+    <p>Sign in to Signal-C desktop with your REACH account and open <strong>Agents &rarr; Assistant</strong>. Use your subscription to work through a decision, then return to the ideas you want to develop.</p>
+  </div>
+  <div class="plan-facts">
+    <article class="plan-fact reveal">
+      <h3>Choose a skill</h3>
+      <p>Type <code>/skill</code> to explore an idea with a small experiment, compare options against your priorities, or turn meeting notes into a follow-up with actions and deadlines.</p>
+    </article>
+    <article class="plan-fact reveal">
+      <h3>Save the part that matters</h3>
+      <p>Choose <strong>Save reply</strong> to keep the whole answer, or highlight a passage first. To keep a thought of your own, type <code>/save</code> followed by your note.</p>
+    </article>
+    <article class="plan-fact reveal">
+      <h3>Pick up where you left off</h3>
+      <p>Open <strong>Saved ideas</strong>, pick a passage and choose <strong>Continue in task</strong>. It opens a working chat with the passage attached. Return later to the same conversation and unfinished draft.</p>
+    </article>
+  </div>
+  <p class="plan-note">Saved ideas stay in your account&rsquo;s local profile. Ask &ldquo;What ideas have I saved about the workshop?&rdquo; and Assistant sends matching passages to the selected model. The answer names the chats those passages came from.</p>
+</section>'''
     facts=''.join(f'<article class="plan-fact reveal"><h3>{title}</h3><p>{desc}</p></article>' for title,desc in [
       ('Unlimited usage','Completed requests on the qualified subscription catalog are included. There is no monthly request quota and no usage overage charge.'),
       ('Tax included','The price is CAD $25.00 a month. Stripe collects that amount with tax included in the price.'),
       ('Separate from RCH','Plus does not mint RCH or add US dollar wallet credit. Basic plans and wallet top-ups stay available on their own.')
     ])
     models=model_rows()
-    return page_hero('REACH SUBSCRIPTION PLUS','CAD $25.00 a month.<br><span class="accent">Tax included.</span>','The same Stripe purchase REACH Studio opens for REACH Subscription Plus. Unlimited subscription usage, with no monthly quota and no usage overage.')+f'''<section class="compact-section"><div class="container"><div class="plan-band"><article class="plan-card reveal"><p class="plan-kicker">SUBSCRIBE WITH STRIPE</p><p class="plan-price">CAD $25.00<span>/ month</span></p><p>The card payment is the same Stripe checkout REACH Studio opens for this plan. REACH never sees your card details.</p><p class="plan-note">A 24-hour free trial is available.</p>{checks(['Same Stripe checkout Studio uses for Plus','CAD $25.00 a month, tax included','Refresh Studio after payment'])}<a class="btn btn-primary" href="{PLUS_CHECKOUT}" target="_blank" rel="noopener noreferrer">Subscribe with Stripe {icon('arrow')}<span class="sr-only"> (opens in a new tab)</span></a><p class="plan-note">An active plan is managed in REACH Studio. Starting a second subscription is blocked until that paid period ends.</p></article><div class="reveal"><div class="eyebrow">WHAT THE PLAN COVERS</div><h2>Supplied models. No quota.</h2><p>Plus covers unlimited completed requests for the service’s qualified subscription models. Existing service limits for concurrency, rate, request size, and timeouts still apply.</p><p>A cancelled or unpaid renewal keeps access until the end of the period you already paid. It does not silently spend wallet credit.</p></div></div><div class="plan-models reveal"><div class="eyebrow">MODELS ON THIS PLAN</div><h2>The current catalog.</h2><ul class="model-list">{models}</ul>{benchmark_details()}</div><div class="plan-facts">{facts}</div>{notice('<strong>The success page does not activate the plan.</strong> Stripe notifies the REACH service. Open REACH Studio and refresh your account to see Plus. This website does not store your card or your sign-in session.')}</div></section>'''+cta('Already set up?','Install SignalREACH, then choose REACH subscription inside Studio.','Get SignalREACH')
+    return page_hero('REACH SUBSCRIPTION PLUS','CAD $25.00 a month.<br><span class="accent">Tax included.</span>','The same Stripe purchase REACH Studio opens for REACH Subscription Plus. Unlimited subscription usage, with no monthly quota and no usage overage.')+f'''<section class="compact-section"><div class="container"><div class="plan-band"><article class="plan-card reveal"><p class="plan-kicker">SUBSCRIBE WITH STRIPE</p><p class="plan-price">CAD $25.00<span>/ month</span></p><p>The card payment is the same Stripe checkout REACH Studio opens for this plan. REACH never sees your card details.</p><p class="plan-note">A 24-hour free trial is available.</p>{checks(['Same Stripe checkout Studio uses for Plus','CAD $25.00 a month, tax included','Refresh Studio after payment'])}<button class="btn btn-primary" id="subscription-checkout" type="button">Subscribe with Stripe</button><p id="account-status" role="status" aria-live="polite">Sign in first to attach this subscription to your REACH account. Checkout opens securely in this tab.</p><p class="plan-note">An active plan is managed in REACH Studio. Starting a second subscription is blocked until that paid period ends.</p></article><div class="reveal"><div class="eyebrow">WHAT THE PLAN COVERS</div><h2>Supplied models. No quota.</h2><p>Plus covers unlimited completed requests for the service’s qualified subscription models. Existing service limits for concurrency, rate, request size, and timeouts still apply.</p><p>A cancelled or unpaid renewal keeps access until the end of the period you already paid. It does not silently spend wallet credit.</p><p><a class="text-link" href="#signal-c-assistant">Explore Signal-C Assistant</a></p></div></div>{assistant}<div class="plan-models reveal"><div class="eyebrow">MODELS ON THIS PLAN</div><h2>Subscription model catalog</h2><p id="subscription-model-status">Catalog as of November 23, 2026. Your account determines which models you can use. Context limits appear when the service responds.</p><ul class="model-list" id="subscription-model-list">{models}</ul>{benchmark_details()}</div><div class="plan-facts">{facts}</div>{notice('<strong>The success page does not activate the plan.</strong> Stripe notifies the REACH service. Open REACH Studio and refresh your account to see Plus. This website never stores your card. Your sign-in session stays in this browser tab only. Return to Login after payment to recheck access; the checkout return page alone does not grant access.')}</div></section>'''+cta('Already set up?','Install SignalREACH, then choose REACH subscription inside Studio.','Get SignalREACH')
 
 LOGIN_URL = 'https://unbent-semicolon-hermit.ngrok-free.dev/wallet/connect'
 
@@ -271,7 +290,7 @@ def build():
     for name,(title,description,render) in PAGES.items():
         asset_version = '?v=20261023-edits' if name == 'index' else ''
         chat_scripts = '<script src="assets/chat-engine.js" defer></script><script src="assets/chat-ui.js" defer></script><script src="assets/workspace-core.js?v=20261023-edits" defer></script><script src="assets/workspace-ui.js?v=20261023-edits" defer></script>' if name == 'index' else ''
-        policy = CSP.replace("connect-src 'self'", "connect-src 'self' https://unbent-semicolon-hermit.ngrok-free.dev") if name in ('login', 'index') else CSP
+        policy = CSP.replace("connect-src 'self'", "connect-src 'self' https://unbent-semicolon-hermit.ngrok-free.dev") if name in ('login', 'index', 'subscription') else CSP
         if name == 'docs':
             chat_scripts += '<script src="assets/automation-demo.js" defer></script>'
         if name == 'download':
@@ -279,11 +298,26 @@ def build():
             chat_scripts += '<script src="assets/download.js" defer></script>'
         if name == 'index':
             policy += "; frame-src 'self'"
+        social_metadata = ''
+        after_app = ''
+        if name == 'subscription':
+            page_url = 'https://www.signalreach.ca/subscription.html'
+            share_image = 'https://www.signalreach.ca/assets/og-image.png'
+            social_metadata = (
+                f'<link rel="canonical" href="{page_url}"><meta property="og:site_name" content="SignalREACH">'
+                f'<meta property="og:url" content="{page_url}"><meta property="og:image" content="{share_image}">'
+                '<meta property="og:image:type" content="image/png"><meta property="og:image:width" content="1200">'
+                '<meta property="og:image:height" content="630"><meta property="og:image:alt" content="SignalREACH — open-source AI workspace ecosystem">'
+                '<meta property="og:locale" content="en_CA"><meta name="twitter:card" content="summary_large_image">'
+                f'<meta name="twitter:title" content="SignalREACH — {html.escape(title,quote=True)}">'
+                f'<meta name="twitter:description" content="{html.escape(description,quote=True)}"><meta name="twitter:image" content="{share_image}">'
+            )
+            after_app = '<script src="assets/account.js" defer></script><script src="assets/subscription-catalog.js" defer></script>'
         if name == 'login':
             chat_scripts += '<link rel="stylesheet" href="assets/profile.css"><script src="assets/account.js?v=20261023-studio-signin" defer></script>'
         doc=f'''<!DOCTYPE html>
 <html lang="en" data-theme="dark" data-motion="on">
-<head><meta http-equiv="Content-Security-Policy" content="{policy}"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="{html.escape(description,quote=True)}"><meta name="theme-color" content="#161618"><meta name="color-scheme" content="dark light"><meta property="og:type" content="website"><meta property="og:title" content="SignalREACH — {html.escape(title,quote=True)}"><meta property="og:description" content="{html.escape(description,quote=True)}"><title>{html.escape(title)} | SignalREACH</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><script src="assets/theme.js"></script><link rel="stylesheet" href="assets/styles.css{asset_version}"><script src="assets/data.js" defer></script>{chat_scripts}<script src="assets/app.js{asset_version}" defer></script></head>
+<head><meta http-equiv="Content-Security-Policy" content="{policy}"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="{html.escape(description,quote=True)}"><meta name="theme-color" content="#161618"><meta name="color-scheme" content="dark light"><meta property="og:type" content="website"><meta property="og:title" content="SignalREACH — {html.escape(title,quote=True)}"><meta property="og:description" content="{html.escape(description,quote=True)}">{social_metadata}<title>{html.escape(title)} | SignalREACH</title><link rel="icon" type="image/svg+xml" href="assets/favicon.svg"><script src="assets/theme.js"></script><link rel="stylesheet" href="assets/styles.css{asset_version}"><script src="assets/data.js" defer></script>{chat_scripts}<script src="assets/app.js{asset_version}" defer></script>{after_app}</head>
 <body id="top" data-page="{name}" class="{"home-page" if name=="index" else "subpage"}">{header(name)}<main id="main">{render()}</main>{footer(name)}{dialogs()}<noscript><div class="notice"><p>The site content and links work without JavaScript. Enable JavaScript to use theme switching, interactive previews, search, and dynamic guide panels.</p></div></noscript></body></html>'''
         (ROOT/f'{name}.html').write_text(doc,encoding='utf-8')
     # Trusted local integration data; separate from user-entered search text.

@@ -42,6 +42,41 @@ function answer(model, message = {}) {
       reasoning: null, annotations: null, ...message } }] }), { headers: { 'content-type': 'application/json' } });
 }
 
+test('PetPigFarm subscription exposes loaded models and never falls back on failure', async t => {
+  const { models: pigModels } = JSON.parse(readFileSync(new URL('../config/subscription-petpigfarm.example.json', import.meta.url)));
+  const sent = [];
+  let offline = false;
+  const f = await fixture(t, async (url, options) => {
+    sent.push({ url, payload: JSON.parse(options.body) });
+    if (offline) throw new Error('PetPigFarm unavailable');
+    return answer(sent.at(-1).payload.model);
+  }, { models: pigModels });
+  const catalog = f.gateway.catalog(f.store.account(f.account.id)).data;
+  assert.deepEqual(catalog.map(m => m.id), ['qwen3.8-27b', 'lfm3-omni-2b', 'bge-m3', 'bge-reranker-v2-m3']);
+  assert.deepEqual(catalog.map(m => m.capabilities.context_window), [163840, 128000, 8192, 8192]);
+  for (const model of ['lfm3-vl-2b', 'd3-nano', 'gemma-4-12b-qat', 'codegpt-direct-gpt-5']) {
+    assert.equal((await f.call(request({ model }), 'removed-' + model)).status, 404);
+  }
+  assert.equal(sent.length, 0);
+  for (const model of pigModels.filter(model => !gpuBridge(model.bridge).operation)) {
+    const success = await f.call(request({ model: model.id, max_tokens: 64 }), 'pig-success-' + model.id);
+    assert.equal(success.status, 200);
+    await success.text();
+    assert.equal(sent.at(-1).payload.model, model.bridge.model);
+  }
+  assert.equal(sent[0].url, 'http://127.0.0.1:18094/v1/chat/completions');
+  assert.equal(sent[0].payload.model, 'Qwen3.8-27B-iMatrix-NVFP4');
+  assert.equal(sent[1].url, 'http://127.0.0.1:8100/v1/chat/completions');
+  offline = true;
+  const failed = await f.call(request({ model: 'qwen3.8-27b', max_tokens: 64 }), 'pig-offline');
+  assert.equal(failed.status, 502);
+  await failed.text();
+  assert.equal(sent.length, 3, 'one dispatch per request, without a fallback');
+  assert.equal(sent[2].url, sent[0].url);
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 2);
+  assert.equal(f.store.requestAllowance(f.account.id).reserved, 0);
+});
+
 test('live GPU limits apply before reservation and invalid destinations retain the current catalog', async t => {
   let calls = 0;
   let output;
@@ -372,4 +407,145 @@ test('Strata keeps prefill alive, streams text and speed, and replays without a 
   assert.equal(replay.headers.get('x-reach-replayed'), 'true');
   assert.equal(await replay.text(), output);
   assert.equal(calls, 1);
+});
+
+test('Omni accepts client sampling and streaming options without overriding explicit values', async t => {
+  const { models: pigModels } = JSON.parse(readFileSync(new URL('../config/subscription-petpigfarm.example.json', import.meta.url)));
+  const sent = [];
+  const f = await fixture(t, async (url, options) => {
+    const payload = JSON.parse(options.body);
+    sent.push({ url, payload });
+    return answer(payload.model);
+  }, { models: pigModels });
+  const body = request({ model: 'lfm3-omni-2b', max_tokens: 128, temperature: 0.7,
+    top_p: 0.85, frequency_penalty: 0.25, presence_penalty: -0.1,
+    stream: true, stream_options: { include_usage: true } });
+  const response = await f.call(body, 'omni-client-options');
+  assert.equal(response.status, 200, await response.clone().text());
+  const output = await response.text();
+  assert.match(output, /A completed answer/);
+  assert.match(output, /data: \[DONE\]/);
+  assert.equal(sent[0].url, 'http://127.0.0.1:8100/v1/chat/completions');
+  for (const field of ['temperature', 'top_p', 'frequency_penalty', 'presence_penalty'])
+    assert.equal(sent[0].payload[field], body[field]);
+  assert.equal(sent[0].payload.chat_template_kwargs.enable_thinking, false);
+  assert.equal(sent[0].payload.stream_options, undefined, 'buffered upstream omits streaming-only options');
+  const replay = await f.call(body, 'omni-client-options');
+  assert.equal(replay.headers.get('x-reach-replayed'), 'true');
+  assert.equal(await replay.text(), output);
+  assert.equal((await f.call({ ...body, temperature: 0.2 }, 'omni-client-options')).status, 409);
+  assert.equal(sent.length, 1);
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 1);
+  const defaults = await f.call(request({ model: 'lfm3-omni-2b', max_tokens: 64 }), 'omni-defaults');
+  assert.equal(defaults.status, 200); await defaults.text();
+  assert.equal(sent[1].payload.temperature, 0.1);
+});
+
+test('Omni accepts non-reasoning agent history without changing content or tool exchanges', async t => {
+  const model = { id: 'lfm3-omni-2b', provider: 'PetPigFarm', metered: true,
+    access: 'requests', bridge: { kind: 'gpu', model: 'LiquidAI/LFM3-Omni-2B' } };
+  const sent = [];
+  const f = await fixture(t, async (_url, options) => {
+    sent.push(JSON.parse(options.body));
+    return answer(model.bridge.model);
+  }, { models: [model] });
+  const history = Array.from({ length: 140 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `Turn ${i}` }));
+  const call = { id: 'call_1', type: 'function', function: { name: 'lookup', arguments: '{"query":"test"}' } };
+  const messages = [{ role: 'system', content: 'Preserve the conversation.' }, ...history,
+    { role: 'assistant', content: null, tool_calls: [call], reasoning: 'Earlier trace', reasoning_content: 'Earlier trace' },
+    { role: 'tool', tool_call_id: 'call_1', content: 'Lookup result' },
+    { role: 'assistant', content: 'Visible answer', reasoning: null, reasoning_content: null },
+    { role: 'user', content: 'Continue.' }];
+  const tools = [{ type: 'function', function: { name: 'lookup', parameters: { type: 'object', properties: {} } } }];
+  const body = { model: model.id, messages, tools, reasoning_effort: 'none', stream: true,
+    stream_options: { include_usage: true }, max_tokens: 64 };
+  const response = await f.call(body, 'omni-agent-history');
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.match(await response.text(), /data: \[DONE\]/);
+  assert.equal(sent[0].chat_template_kwargs.enable_thinking, false);
+  assert.equal(sent[0].reasoning_effort, undefined);
+  assert.deepEqual(sent[0].messages, messages.map(({ reasoning, reasoning_content, ...message }) => message));
+  assert.deepEqual(sent[0].tools, tools);
+  assert.equal(messages[141].reasoning, 'Earlier trace', 'caller history is not mutated');
+  const replay = await f.call(body, 'omni-agent-history');
+  assert.equal(replay.headers.get('x-reach-replayed'), 'true'); await replay.text();
+  const changed = structuredClone(body); changed.messages.at(-1).content = 'A different request';
+  assert.equal((await f.call(changed, 'omni-agent-history')).status, 409);
+  assert.equal(sent.length, 1);
+});
+
+test('Omni rejects malformed reasoning metadata and unsupported reasoning modes before dispatch', async t => {
+  const model = { id: 'lfm3-omni-2b', provider: 'PetPigFarm', metered: true,
+    access: 'requests', bridge: { kind: 'gpu', model: 'LiquidAI/LFM3-Omni-2B' } };
+  let calls = 0;
+  const f = await fixture(t, async () => { calls++; return answer(model.bridge.model); }, { models: [model] });
+  for (const [i, extra] of [
+    { reasoning_effort: 'high' }, { reasoning_effort: null },
+    { messages: [{ role: 'assistant', content: 'Answer', reasoning: {} }] },
+    { messages: [{ role: 'user', content: 'Question', reasoning_content: 'Not assistant metadata' }] },
+    { messages: [{ role: 'assistant', content: 'Answer', unexpected: true }] },
+  ].entries()) {
+    const response = await f.call(request({ model: model.id, ...extra }), `invalid-reasoning-${i}`);
+    assert.equal(response.status, 400); await response.text();
+  }
+  assert.equal(calls, 0);
+  assert.equal(f.store.requestAllowance(f.account.id).reserved, 0);
+});
+
+test('Omni rejects invalid sampling and stream options before dispatch or billing', async t => {
+  const { models: pigModels } = JSON.parse(readFileSync(new URL('../config/subscription-petpigfarm.example.json', import.meta.url)));
+  let calls = 0;
+  const f = await fixture(t, async () => { calls++; return answer('LiquidAI/LFM3-Omni-2B'); }, { models: pigModels });
+  for (const [index, options] of [
+    { temperature: 2.1 }, { temperature: '0.7' }, { top_p: -0.1 },
+    { frequency_penalty: 3 }, { presence_penalty: -3 },
+    { stream_options: { include_usage: 'true' } }, { stream_options: { extra: true } },
+  ].entries()) {
+    const response = await f.call(request({ model: 'lfm3-omni-2b', ...options }), 'invalid-omni-' + index);
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error.code, /^(invalid_parameter|invalid_stream_options)$/);
+  }
+  assert.equal(calls, 0);
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 0);
+  assert.equal(f.store.requestAllowance(f.account.id).reserved, 0);
+});
+
+test('long token streams settle once and replay every UTF-8 tool and usage frame', async t => {
+  const model = { id: 'qwen3.8-27b', provider: 'SignalREACH GPU', metered: true,
+    access: 'requests', bridge: { kind: 'gpu', model: 'Qwen3.8-27B' } };
+  const event = (delta, finish_reason = null, extra = {}) => 'data: ' + JSON.stringify({
+    id: 'chatcmpl-frames', object: 'chat.completion.chunk', created: 1, model: model.bridge.model,
+    choices: [{ index: 0, delta, finish_reason }], ...extra,
+  }) + '\n\n';
+  const thought = event({ reasoning_content: 'é雪' });
+  const tool = { index: 0, id: 'call_1', type: 'function', function: { name: 'write_file', arguments: '{"text":"♞"}' } };
+  const tail = event({ tool_calls: [tool] }) + event({}, 'tool_calls', {
+    usage: { prompt_tokens: 9, completion_tokens: 14001, total_tokens: 14010 },
+  }) + 'data: [DONE]\n\n';
+  // Use small chunks, as on a streamed HTTP connection.
+  let dispatches = 0;
+  const f = await fixture(t, url => {
+    if (String(url).endsWith('/input_tokens')) return Response.json({ input_tokens: 9 });
+    assert.ok(String(url).endsWith('/chat/completions'));
+    dispatches++;
+    return new Response(new ReadableStream({ start(controller) {
+      const block = Buffer.from(thought.repeat(100));
+      for (let i = 0; i < 140; i++) controller.enqueue(block);
+      controller.enqueue(Buffer.from(tail));
+      controller.close();
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+  }, { models: [model] });
+  const body = request({ model: model.id, stream: true });
+  const result = await f.call(body, 'long-stream');
+  const first = await result.text();
+  assert.ok(Buffer.byteLength(first) > 2 * 1024 * 1024);
+  assert.equal(first.split('é雪').length - 1, 14000);
+  assert.ok(first.includes(JSON.stringify(tool)));
+  assert.ok(first.endsWith('data: [DONE]\n\n'));
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 1);
+  const replay = await f.call(body, 'long-stream');
+  assert.equal(replay.headers.get('x-reach-replayed'), 'true');
+  assert.ok(await replay.text() === first, 'every replayed byte matches the live stream');
+  assert.equal(f.store.requestAllowance(f.account.id).completed, 1);
+  assert.equal(dispatches, 1);
 });

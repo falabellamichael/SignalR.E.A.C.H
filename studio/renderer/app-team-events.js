@@ -35,6 +35,8 @@ function attachAskBox(card, questionId, name, question) {
   row.appendChild(send); row.appendChild(skip);
   ask.appendChild(q); ask.appendChild(input); ask.appendChild(row);
   card.querySelector('.member-body').appendChild(ask);
+  const response = card.querySelector('.member-response');
+  if (response) response.open = true;
   const finish = (answer) => {
     ask.remove();
     card.classList.remove('waiting');
@@ -80,12 +82,23 @@ function memberToolLine(ev) {
   return [mark, ev.tool || 'tool', ev.headline, elapsed, error && !ev.ok ? error : ''].filter(Boolean).join('  ');
 }
 
-// Keep the newest status above the earlier-work dropdown. Archived runs live
-// in that dropdown; a fresh note belongs with the run the user is looking at.
-function appendTeamDeckNote(wrap, note) {
-  const history = wrap.querySelector(':scope > .team-run-history');
-  if (history) wrap.insertBefore(note, history);
-  else wrap.appendChild(note);
+// Group the current run's status messages without reopening the user's log.
+function appendTeamDeckNote(wrap, note, outcome = '') {
+  let log = wrap.querySelector(':scope > .team-run-log');
+  if (!log) {
+    log = document.createElement('details');
+    log.className = 'team-run-log';
+    log.appendChild(document.createElement('summary'));
+    const history = wrap.querySelector(':scope > .team-run-history');
+    if (history) wrap.insertBefore(log, history);
+    else wrap.appendChild(log);
+  }
+  log.appendChild(note);
+  const count = Number(log.dataset.count || 0) + 1;
+  log.dataset.count = String(count);
+  if (outcome) log.dataset.outcome = outcome;
+  const status = { completed: 'Completed', partial: 'Partial answer', failed: 'Failed', stopped: 'Stopped', error: 'Error' }[log.dataset.outcome];
+  log.querySelector(':scope > summary').textContent = `Team activity · ${count} update${count === 1 ? '' : 's'}${status ? ' · ' + status : ''}`;
 }
 
 function handleTeamEvent(ev) {
@@ -485,7 +498,7 @@ function handleTeamEvent(ev) {
         }
       }
       if (outcome === 'completed' && run.team?.id && run.agentId) note.textContent += ' Send a follow-up with Teams on to continue this conversation.';
-      appendTeamDeckNote(run.wrap, note);
+      appendTeamDeckNote(run.wrap, note, outcome);
       // Persist a compact record into the conversation history so a reload
       // still shows the run happened and what the crew answered.
       if (run.agentId && ['completed', 'partial'].includes(outcome) && ev.answer?.trim()) {
@@ -509,7 +522,7 @@ function handleTeamEvent(ev) {
       const note = document.createElement('div');
       note.className = 'chat-msg system';
       note.textContent = 'Team error: ' + teamErrorSummary(ev.message);
-      appendTeamDeckNote(run.wrap, note);
+      appendTeamDeckNote(run.wrap, note, 'error');
       for (const card of run.cards.values()) clearTimeout(card._renderTimer);
       for (const card of run.subCards.values()) clearTimeout(card._renderTimer);
       run.deck.finish('error');

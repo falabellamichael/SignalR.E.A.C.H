@@ -10,7 +10,8 @@
  */
 
 const { compactMessages, normalizeChatMessages, contextChars, countRealtimeTokens, contextTokens } = require('./context.cjs');
-const { providerRequestOptions } = require('./endpoint.cjs');
+const { providerRequestOptions, providerFetch } = require('./endpoint.cjs');
+const { subscriptionRoute } = require('./subscription-providers.cjs');
 const { fingerprint, workingMessages, summarizeSegments } = require('./compaction.cjs');
 const { measureRequest, inputLimitFromError, budgetExceeded, budgetRatio, fitError } = require('./request-budget.cjs');
 const { readChatResponse, emptyReplyDiagnostic, providerErrorDetails, isTransientTransportError, transportDiagnostic, waitForRetry } = require('./chat-response.cjs');
@@ -65,18 +66,19 @@ class AgentLoop {
     this.promptBuilder = promptBuilder;
     this.rulesProvider = rulesProvider;
     this.endpoint = endpoint;
+    this.subscriptionProvider = subscriptionRoute(String(endpoint || '').replace(/\/+$/, '') + '/chat/completions')?.provider || '';
     this.accessKey = accessKey || '';
     this.model = model || DEFAULT_MODEL;
     this.connectionId = connectionId;
     this.capabilityStore = capabilityStore;
     this.journal = journal;
     this.noThinkingHint = capabilityStore?.get(connectionId, endpoint, this.model)?.reasoningParam === false;
-    this.noToolCalling = capabilityStore?.get(connectionId, endpoint, this.model)?.toolCalling === false;
+    this.noToolCalling = !!this.subscriptionProvider || capabilityStore?.get(connectionId, endpoint, this.model)?.toolCalling === false;
     this.noStreaming = capabilityStore?.get(connectionId, endpoint, this.model)?.streaming === false;
     this.maxTokensCeiling = capabilityStore?.get(connectionId, endpoint, this.model)?.maxTokensCeiling || null;
     // A subscription bridge rejects the WHOLE request over a single generation
     // control ("unsupported_field"). Learned once, then requests go out bare.
-    this.textOnly = capabilityStore?.get(connectionId, endpoint, this.model)?.textOnly === true;
+    this.textOnly = !!this.subscriptionProvider || capabilityStore?.get(connectionId, endpoint, this.model)?.textOnly === true;
     if (this.promptBuilder && this.textOnly) this.noToolCalling = true;
     this.projectDir = projectDir;
     this.reachExecutor = reachExecutor;
@@ -92,7 +94,9 @@ class AgentLoop {
     // Native (OpenAI) tool-calling protocol: advertise real function defs in the
     // request and execute the endpoint's tool_calls directly. Team members only;
     // single-agent chat keeps the universal JSON contract.
-    this.nativeTools = !!nativeTools;
+    // CLI subscriptions return text, even when the team requests native tools.
+    // Use Studio's action contract consistently for prompting and completion.
+    this.nativeTools = !!nativeTools && !this.subscriptionProvider;
     this.jev = jev?.enabled ? { apiKey: jev.apiKey || '', fetchImpl: jev.fetchImpl } : null;
     this.jevContextCache = new Map();
     this.jevReviewCache = new Map();
@@ -474,7 +478,7 @@ class AgentLoop {
     // API roles. Keep the active contract next to the latest task/results.
     // This request-only reminder never enters saved history or compaction.
     const reminder = purpose === 'answer' && features(settings).agent && !this.nativeTools
-      && (['chatgpt-chat', 'copilot-chat'].includes(this.model) || this._budgets().ultraPro)
+      && (this.subscriptionProvider || ['chatgpt-chat', 'copilot-chat'].includes(this.model) || this._budgets().ultraPro)
       ? [{ role: 'user', content: 'Response format for the current saved task above (the task and permissions are unchanged):\n' + actionResponseReminder
         + (this._budgets().ultraPro ? '\nReturn exactly one complete action. Put source code only inside its arguments, never outside the JSON.'
           + (maxTokens > 0 ? ' For a new large file, use write with path and content containing a short working scaffold; extend it after the tool result arrives.' : '') : '') }]
@@ -540,7 +544,7 @@ class AgentLoop {
     if (this.requestTimeoutMs > 0) signals.push(AbortSignal.timeout(this.requestTimeoutMs));
     this.requestSignal = AbortSignal.any(signals);
     this._emit('request-start', { purpose, ...measureRequest(body) });
-    const response = await fetch(url, providerRequestOptions(this.endpoint, this.accessKey, {
+    const response = await providerFetch(url, providerRequestOptions(this.endpoint, this.accessKey, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),

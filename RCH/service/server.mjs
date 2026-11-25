@@ -43,22 +43,28 @@ export async function verifyWallet(challenge, signature, provider, chainId) {
   catch { return false; }
 }
 const json = (res,status,value) => { res.writeHead(status,{'content-type':'application/json; charset=utf-8'}); res.end(JSON.stringify(value)); };
-async function readRaw(req) {
+async function readRaw(req, limit = 524288) {
   if (!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')) fail(415,'content_type','Use application/json.');
   let size=0; const chunks=[];
-  for await(const chunk of req) { size+=chunk.length; if(size>524288) fail(413,'body_limit','Request is too large.'); chunks.push(chunk); }
+  for await(const chunk of req) { size+=chunk.length; if(size>limit) fail(413,'body_limit','Request is too large.'); chunks.push(chunk); }
   return Buffer.concat(chunks);
 }
 const parseObject=raw=>{
   let body; try { body=JSON.parse(raw.toString('utf8')); } catch { fail(400,'invalid_json','Invalid JSON body.'); }
   if(!body||typeof body!=='object'||Array.isArray(body)) fail(400,'invalid_body','Supply a JSON object.');return body;
 };
-const readBody=async req=>parseObject(await readRaw(req));
+const readBody=async (req,limit)=>parseObject(await readRaw(req,limit));
+const modelPostPaths = new Set(['/v1/chat/completions', '/v1/decisions', '/v1/embeddings', '/v1/rerank',
+  '/v1/video/generations', '/v1/images/generations']);
 // Lemonade clients default to /api/v1; alias model routes and read-only usage.
 const modelPathAliases = new Map([
   ['/api/v1/usage', '/v1/usage'],
   ['/api/v1/models', '/v1/models'],
   ['/api/v1/chat/completions', '/v1/chat/completions'],
+  ['/api/v1/embeddings', '/v1/embeddings'],
+  ['/api/v1/rerank', '/v1/rerank'],
+  ['/api/v1/video/generations', '/v1/video/generations'],
+  ['/api/v1/images/generations', '/v1/images/generations'],
 ]);
 const staticAssets = new Map([
   ['/wallet/rch',['text/html; charset=utf-8','../../branding/index.html']],
@@ -116,15 +122,21 @@ export function createAccountService({config,store,provider,redemptionProvider,b
     }
     if(++previous.count>10)fail(429,'email_rate_limit','Too many codes were requested from this network. Try again in an hour.');
   }
-  function rateLimit(req) {
-    const key=clientKey(req);
+  function rateLimit(req,res,pathname) {
+    // Background Discord polls must not exhaust the allowance for model calls
+    // and account actions from the same network. Both buckets stay limited.
+    const scope=req.method==='POST'&&pathname==='/oauth/discord/chat-poll'?'discord-poll':'requests';
+    const key=scope+':'+clientKey(req);
     const time=now(), previous=buckets.get(key);
     if(!previous||previous.expires<=time) {
       if(buckets.size>10000) for(const [k,v]of buckets) if(v.expires<=time)buckets.delete(k);
       if(buckets.size>10000)fail(429,'busy','The service is busy.');
       buckets.set(key,{count:1,expires:time+60000});return;
     }
-    if(++previous.count>180)fail(429,'rate_limit','Too many requests. Please wait one minute.');
+    if(++previous.count>180) {
+      res.setHeader('Retry-After',String(Math.max(1,Math.ceil((previous.expires-time)/1000))));
+      fail(429,'rate_limit','Too many requests. Please wait one minute.');
+    }
   }
   const tokensPerRch=redemption.enabled&&redemption.mode!=='treasury'?1000000:null;
   const publicModel=m=>({id:m.id,name:m.name,provider:m.provider,...(m.access==='requests'?{access:'requests',capabilities:requestCapabilities(m),pricing:{unit:'request',includedRequests:config.subscription.basic.includedRequests,usdMicrosPerRequest:config.subscription.overageUsdMicrosPerRequest}}:m.pricing?{pricing:m.pricing}:{})});
@@ -155,7 +167,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(pathname!==requestUrl.pathname)req.url=pathname+requestUrl.search;
       const token=/^Bearer (\S+)$/.exec(req.headers.authorization||'')?.[1];
       const modelApiKey=token?.startsWith('rch_key_');
-      if(modelApiKey && !((req.method==='GET'&&['/v1/models','/v1/usage'].includes(pathname))||(req.method==='POST'&&['/v1/chat/completions','/v1/decisions'].includes(pathname)))) {
+      if(modelApiKey && !((req.method==='GET'&&(['/v1/models','/v1/usage'].includes(pathname)||pathname.startsWith('/v1/media/')))||(req.method==='POST'&&modelPostPaths.has(pathname)))) {
         fail(403,'api_key_scope','API keys can list models, read aggregate usage, and create model requests.');
       }
       if(req.method==='GET'&&pathname==='/healthz') {json(res,200,{status:'ok',service:'reach-accounts'});return;}
@@ -164,7 +176,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         const offset=Number(new URL(req.url,'http://service.invalid').searchParams.get('offset')||'0');
         json(res,200,await store.listOperatorApiKeys(offset));return;
       }
-      rateLimit(req);
+      rateLimit(req,res,pathname);
       if (connections && await connections.handle(req, res)) return;
       const asset=staticAssets.get(pathname);
       if(req.method==='GET'&&asset) {res.writeHead(200,{'content-type':asset[0]});res.end(readFileSync(new URL(`./public/${asset[1]}`,import.meta.url)));return;}
@@ -219,7 +231,7 @@ export function createAccountService({config,store,provider,redemptionProvider,b
         try { const payment=await paypal.captureOrder(orderId,`paypal-return-${orderId}`);await record(payment&&{payment}); } catch { /* The webhook retries the capture. */ }
         res.writeHead(200,{'content-type':'text/html; charset=utf-8'});res.end(readFileSync(new URL('./public/billing.html',import.meta.url)));return;
       }
-      const body=req.method==='POST'?await readBody(req):{};
+      const body=req.method==='POST'?await readBody(req,modelPostPaths.has(pathname)?16*1024*1024:undefined):{};
       if(req.method==='POST'&&pathname==='/v1/auth/start') {
         const f=await store.startFlow(body.state,body.codeChallenge);
         for(const [id,entry] of signupFlows) if(entry.expires<=now()) signupFlows.delete(id);
@@ -412,10 +424,10 @@ export function createAccountService({config,store,provider,redemptionProvider,b
       if(req.method==='GET'&&pathname==='/v1/billing/payments') {json(res,200,{data:await store.listPayments(account.id),reversals:await store.listReversals(account.id)});return;}
       if(req.method==='POST'&&pathname==='/v1/redemptions/start'&&!account.walletAddress)fail(409,'wallet_required','RCH redemption needs an account signed in with a wallet.');
       if(req.method==='POST'&&pathname==='/v1/redemptions/start') {json(res,200,await redemption.start(account,body.amountRch));return;}
-      if(pathname==='/v1/models'||pathname==='/v1/chat/completions'||pathname==='/v1/decisions') {
+      if(pathname==='/v1/models'||modelPostPaths.has(pathname)||(req.method==='GET'&&pathname.startsWith('/v1/media/'))) {
         // Consumed privately by reachd for account attribution; never forwarded
         // by its public response-header allowlist.
-        if(pathname==='/v1/chat/completions')res.setHeader('X-Reach-Account-Id',account.id);
+        if(modelPostPaths.has(pathname))res.setHeader('X-Reach-Account-Id',account.id);
         await gateway.handle(req,res,account,body);return;
       }
       fail(404,'not_found','Route not found.');

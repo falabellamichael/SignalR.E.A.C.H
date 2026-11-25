@@ -30,13 +30,10 @@ class SupportModelTests(RelayFixture):
             with self.subTest(path=path):
                 self.assertEqual(self.post(path, {}, TUNNEL)[0], 401)
                 status, body = self.post(path, {}, {"Authorization": "Bearer rch_session_fixture"})
-                if path == "/v1/decisions":
-                    # Customer decisions belong to the account service. An
-                    # unconfigured host fails closed and never reaches the GPU.
-                    self.assertEqual(status, 503)
-                    self.assertEqual(body["error"]["code"], "accounts_unconfigured")
-                else:
-                    self.assertEqual(status, 403)
+                # Subscription model operations belong to the account service.
+                # An unconfigured host must never fall through to owner GPUs.
+                self.assertEqual(status, 503)
+                self.assertEqual(body["error"]["code"], "accounts_unconfigured")
 
     def test_operation_mismatch_invalid_json_and_unsupported_format_never_dispatch(self):
         with patch("reachd.support.urllib.request.build_opener") as opener:

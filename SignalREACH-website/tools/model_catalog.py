@@ -1,12 +1,14 @@
 """Public catalog copy and publisher benchmark, shared by the page generator."""
 from html import escape
 
+# Guest fallback captured from /v1/account/config on 2026-11-23.
 MODELS = [
-    ('LFM3 VL 2B', 'Chat, vision & tools', 'Work with text and images, ask questions about visual content, draft writing and code, and use connected tools. The hosted model has a 131,072-token context window shared by input and output.'),
-    ('BGE M3', 'Multilingual embeddings', 'Turn text into searchable representations so a retrieval system can find passages with related meaning across languages. Useful for document search and retrieval-augmented generation.'),
-    ('BGE Reranker v2 M3', 'Search reranking', 'Score candidate passages against a question and put the most relevant results first. Use it after retrieval to improve the context supplied to a chat model.'),
-    ('Liquid d1 Omni 600M', 'Multimodal decisions', 'Choose among defined outcomes using text, images or audio. Useful for classification and routing when you need a scored decision rather than a conversational answer.'),
-    ('Liquid d1 3B', 'Text & image decisions', 'Evaluate text and images against defined questions or choices. Useful for document triage, visual classification and structured decision workflows.'),
+    ('Qwen 3.8 27B NVFP4 (PetPigFarm)', 'Chat', 'qwen3.8-27b'),
+    ('LFM3 Omni 2B Q8 (PetPigFarm)', 'Chat', 'lfm3-omni-2b'),
+    ('BGE M3 Embedding (PetPigFarm)', 'Embeddings', 'bge-m3'),
+    ('BGE Reranker v2 M3 (PetPigFarm)', 'Reranking', 'bge-reranker-v2-m3'),
+    ('Inkling 2 Mini (Hermes)', 'Chat', 'inkling-2-mini'),
+    ('Edge0 120B (Hermes)', 'Chat', 'edge0-120b'),
 ]
 
 # Scores transcribed from the user-supplied Liquid AI comparison image.
@@ -38,7 +40,12 @@ BENCHMARKS = [
 ]
 
 def model_rows():
-    return ''.join(f'<li class="model-row"><span class="model-name"><b>{escape(name)}</b><small>{escape(role)}</small><span class="model-description">{escape(description)}</span></span><span class="pill gold">Available</span></li>' for name, role, description in MODELS)
+    return ''.join(
+        f'<li class="model-row"><span class="model-name"><b>{escape(name)}</b><small>{role}</small>'
+        f'<span class="model-description">Model ID: {escape(model_id)}</span></span></li>'
+        for name, role, model_id in MODELS
+    )
+
 
 def benchmark_details():
     names = ['LFM3 1.7B', 'LFM2.5 2.6B', 'MiniCPM5 2B', 'Gemma 4 E4B', 'Qwen3.5 4B', 'Qwen3.5 9B']
@@ -50,4 +57,4 @@ def benchmark_details():
             cells = ''.join(f'<td>{"<strong>" if score == max(scores) else ""}{score:.2f}{"</strong>" if score == max(scores) else ""}</td>' for score in scores)
             rows += f'<tr><th scope="row">{escape(label)}</th>{cells}</tr>'
         rows += '</tbody>'
-    return f'''<details class="model-benchmarks" id="model-benchmarks"><summary>Explore LFM3 benchmarks <span>Agents, tool use and coding · 16 comparisons</span></summary><div class="benchmark-content"><h3>A small text model, compared across practical tasks.</h3><p>In this comparison, LFM3 1.7B has the highest score in 7 of the 16 rows shown. Its strongest results span agent tasks, tool use and LiveCodeBench v6. Other models lead the remaining rows, including repository-level coding and MCP-Atlas, so the best choice depends on the work.</p><p><strong>These results are for the LFM3 1.7B text model, not the hosted LFM3 VL 2B model.</strong> They are publisher-reported benchmark scores, not SignalREACH service measurements or a guarantee of speed or accuracy. The comparison models below are reference points, not additional subscription offerings.</p><div class="benchmark-scroll" role="region" aria-label="LFM3 benchmark comparison; scroll horizontally for all models" tabindex="0"><table class="benchmark-table"><caption>Liquid AI comparison · higher scores are better · bold marks the highest score in each row</caption><thead>{header}</thead>{rows}</table></div><p class="benchmark-source">Source: <a href="https://huggingface.co/LiquidAI/LFM3-1.7B#benchmarks" target="_blank" rel="noopener noreferrer">Liquid AI’s LFM3 1.7B model card</a>. Scores reproduced from the supplied comparison; descriptions written for SignalREACH. Results depend on each benchmark’s evaluation setup.</p></div></details>'''
+    return f'''<details class="model-benchmarks" id="model-benchmarks"><summary>Reference benchmarks for LFM3 1.7B <span>Agents, tool use and coding · 16 comparisons</span></summary><div class="benchmark-content"><h3>A small text model, compared across practical tasks.</h3><p>In this comparison, LFM3 1.7B has the highest score in 7 of the 16 rows shown. Its strongest results span agent tasks, tool use and LiveCodeBench v6. Other models lead the remaining rows, including repository-level coding and MCP-Atlas, so the best choice depends on the work.</p><p>Liquid AI reported these scores for its LFM3 1.7B text model and the reference models shown below. The subscription catalog above lists the models offered through REACH.</p><div class="benchmark-scroll" role="region" aria-label="LFM3 benchmark comparison; scroll horizontally for all models" tabindex="0"><table class="benchmark-table"><caption>Liquid AI comparison · higher scores are better · bold marks the highest score in each row</caption><thead>{header}</thead>{rows}</table></div><p class="benchmark-source">Source: <a href="https://huggingface.co/LiquidAI/LFM3-1.7B#benchmarks" target="_blank" rel="noopener noreferrer">Liquid AI’s LFM3 1.7B model card</a>. Scores reproduced from the supplied comparison; descriptions written for SignalREACH. Results depend on each benchmark’s evaluation setup.</p></div></details>'''

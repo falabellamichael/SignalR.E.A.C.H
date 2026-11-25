@@ -38,6 +38,66 @@ function deferred() {
   return { promise, resolve };
 }
 
+for (const wait of ['question', 'review', 'paused', 'spawned-question']) {
+  test(`Links completion releases a peer waiting on ${wait}`, async t => {
+    const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'reach-links-conclusion-'));
+    fs.writeFileSync(path.join(project, 'proof.txt'), 'original');
+    const waiting = deferred(), unresolved = deferred();
+    const events = [];
+    let coordinatorCalls = 0;
+    const endpoint = await localEndpoint(t, async (body, res) => {
+      if (body.model === 'coordinator') {
+        if (wait === 'spawned-question' && ++coordinatorCalls === 1) {
+          jsonReply(res, action('actions', 'Ask a helper.', [tool('agent.spawn', {
+            name: 'Helper', model: 'peer', task: 'Ask the user which format they prefer.',
+          })]));
+          return;
+        }
+        await waiting.promise;
+        jsonReply(res, action('complete', 'Verified final result: no file change is needed.\nLINKS: COMPLETE'));
+      } else if (wait === 'review') {
+        jsonReply(res, action('actions', 'Propose a change for review.', [tool('write', { path: 'proof.txt', content: 'proposed' })]));
+      } else {
+        jsonReply(res, action('question', 'Which format do you prefer?', [], ['Short', 'Detailed']));
+      }
+    });
+    const personas = [{ id: 'coordinator', name: 'Coordinator', model: 'coordinator' }];
+    if (wait !== 'spawned-question') personas.push({ id: 'peer', name: 'Peer', model: 'peer' });
+    const runner = new TeamRunner({
+      team: { name: 'Conclusion wait', mode: 'links', nurse: false, members: personas.map(p => ({ personaId: p.id })) },
+      personas, task: 'Check the fixture.', projectDir: project, endpoint, concurrency: 2, requestTimeoutMs: 3000,
+      requestEditReview() {},
+      awaitEditResolution: () => { waiting.resolve(); return unresolved.promise; },
+      requestMemberAnswer: () => {
+        if (wait === 'paused') runner.controlMember(1, false);
+        waiting.resolve(); return unresolved.promise;
+      },
+      sendEvent: (_channel, event) => events.push(event),
+    });
+    t.after(async () => { runner.stop(); unresolved.resolve(null); await runner.net?.settle(); fs.rmSync(project, { recursive: true, force: true }); });
+    const running = runner.run('conclusion-' + wait);
+    let timer;
+    const results = await Promise.race([running, new Promise((_, reject) => {
+      timer = setTimeout(() => { runner.stop(); reject(Error('Links did not release the ' + wait + ' wait')); }, 1500);
+    })]).finally(() => clearTimeout(timer));
+    assert.equal(results[0].ok, true);
+    assert.equal(runner.stopped, false, 'peer completion is not a user Stop');
+    const done = events.findLast(event => event.type === 'done');
+    assert.equal(done.outcome, 'completed');
+    assert.equal(done.links.completedBy, 'Coordinator');
+    if (wait === 'spawned-question') {
+      const helper = runner.net.snapshot().find(rec => rec.origin === 'spawned');
+      assert.equal(helper.status, 'skipped');
+      assert.equal(helper.output, '', 'an unanswered question is not a delivered answer');
+    } else {
+      assert.equal(results[1].status, 'skipped');
+      assert.equal(results[1].output, '');
+    }
+    assert.equal(fs.readFileSync(path.join(project, 'proof.txt'), 'utf8'), 'original', 'completion never approves pending edits');
+  });
+}
+
 test('peer mail cannot conclude Links; validated final completion releases a header-stalled peer', async t => {
   const requestTimeoutMs = 5000;
   const stalledStarted = deferred();

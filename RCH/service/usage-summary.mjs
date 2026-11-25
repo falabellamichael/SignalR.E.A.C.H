@@ -1,5 +1,6 @@
 // Account-owned aggregate analytics. Never return prompts, responses, payment
 // references, wallet addresses or credentials to the control panel.
+import { replayBody } from './stream-replay.mjs';
 import { fail } from './errors.mjs';
 
 export function usagePeriod(from, to, now = Date.now()) {
@@ -28,7 +29,9 @@ export function recordedTokens(usage, replay) {
   if (!record || typeof record.body !== 'string') return null;
   if (record.contentType !== 'text/event-stream') return counters(parse(record.body));
   let latest = null;
-  for (const line of record.body.split('\n')) {
+  let body;
+  try { body = replayBody(record); } catch { return null; }
+  for (const line of body.split('\n')) {
     if (line.startsWith('data:')) latest = counters(parse(line.slice(5).trim())) || latest;
   }
   return latest;

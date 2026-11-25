@@ -35,9 +35,12 @@ module.exports = {
     // finished (RunControl.pause intentionally ignores finished controls).
     if (this.userPaused) control.pause();
     await control.wait(() => this._stopSignal());
-    if (this.stopped) {
+    if (this.stopped || this._linksSuperseded.has(key)) {
       control.finished = true;
-      return { index, name: persona.name, model: conn.model, ok: false, output: '', status: 'stopped', error: 'Stopped by you.', completedAt: Date.now(), wakeDeferred: true };
+      return { index, name: persona.name, model: conn.model, ok: false, output: '',
+        status: this.stopped ? 'stopped' : 'skipped', error: this.stopped ? 'Stopped by you.' : null,
+        completionReason: this.stopped ? null : `Links completed by ${this._linksSuperseded.get(key)}`,
+        completedAt: Date.now(), wakeDeferred: true };
     }
     const parts = [`Original task:\n${this.task}`, this._crewContext(index, 'links')];
     const role = this._roleBlock(index);

@@ -1,0 +1,52 @@
+{
+  "models": [
+    {
+      "id": "qwen3.8-27b",
+      "name": "Qwen 3.8 27B NVFP4 (PetPigFarm)",
+      "provider": "PetPigFarm",
+      "metered": true,
+      "access": "requests",
+      "bridge": { "kind": "gpu", "model": "Qwen3.8-27B-iMatrix-NVFP4" }
+    },
+    {
+      "id": "lfm3-omni-2b",
+      "name": "LFM3 Omni 2B Q8 (PetPigFarm)",
+      "provider": "PetPigFarm",
+      "metered": true,
+      "access": "requests",
+      "bridge": { "kind": "gpu", "model": "LiquidAI/LFM3-Omni-2B" }
+    },
+    {
+      "id": "bge-m3",
+      "name": "BGE M3 Embedding (PetPigFarm)",
+      "provider": "PetPigFarm",
+      "metered": true,
+      "access": "requests",
+      "bridge": { "kind": "gpu", "model": "bge-m3" }
+    },
+    {
+      "id": "bge-reranker-v2-m3",
+      "name": "BGE Reranker v2 M3 (PetPigFarm)",
+      "provider": "PetPigFarm",
+      "metered": true,
+      "access": "requests",
+      "bridge": { "kind": "gpu", "model": "bge-reranker-v2-m3" }
+    },
+    {
+      "id": "minimax-h3-video",
+      "name": "MiniMax H3 Video (Hermes)",
+      "provider": "Hermes",
+      "metered": true,
+      "access": "requests",
+      "bridge": { "kind": "gpu", "model": "comfy/minimax-h3-r2v" }
+    },
+    {
+      "id": "flux-schnell-image",
+      "name": "FLUX.1 Schnell Image (Hermes)",
+      "provider": "Hermes",
+      "metered": true,
+      "access": "requests",
+      "bridge": { "kind": "gpu", "model": "comfy/flux-schnell" }
+    }
+  ]
+}

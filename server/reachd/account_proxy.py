@@ -35,10 +35,12 @@ ACCOUNT_PATHS = frozenset((
 MODEL_PATHS = {"/v1/models": "/v1/models", "/models": "/v1/models", "/api/v1/models": "/v1/models",
                "/v1/decisions": "/v1/decisions", "/decisions": "/v1/decisions",
                "/v1/chat/completions": "/v1/chat/completions", "/chat/completions": "/v1/chat/completions",
-               "/api/v1/chat/completions": "/v1/chat/completions"}
+               "/api/v1/chat/completions": "/v1/chat/completions",
+               "/v1/embeddings": "/v1/embeddings", "/embeddings": "/v1/embeddings", "/api/v1/embeddings": "/v1/embeddings",
+               "/v1/rerank": "/v1/rerank", "/rerank": "/v1/rerank", "/api/v1/rerank": "/v1/rerank"}
 MAX_REQUEST = 512 * 1024
-MAX_QWEN_REQUEST = 2 * 1024 * 1024
-QWEN_LONG_CONTEXT_TIMEOUT = 900
+MAX_MODEL_REQUEST = 16 * 1024 * 1024
+QWEN_LONG_CONTEXT_TIMEOUT = 1800
 MAX_RESPONSE = 1024 * 1024
 MAX_STREAM = 2 * 1024 * 1024
 # Stripe-Signature and the PayPal transmission headers authenticate the payment
@@ -48,7 +50,8 @@ FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key",
                    "PayPal-Transmission-Sig", "PayPal-Transmission-Time")
 RESPONSE_HEADERS = ("Content-Type", "Cache-Control", "Content-Security-Policy", "Referrer-Policy",
                     "X-Content-Type-Options", "X-Frame-Options", "X-Request-Id", "X-Reach-Replayed", "Retry-After",
-                    "Access-Control-Allow-Origin", "Vary")
+                    "Access-Control-Allow-Origin", "Vary", "X-Context-Compression",
+                    "X-Context-Original-Tokens", "X-Context-Compressed-Tokens")
 
 
 def account_service_target(value):
@@ -116,9 +119,12 @@ def try_account_proxy(h):
         return False
     path = parts.path
     customer = customer_session(h.headers)
+    is_model_request = customer and h.command == "POST" and path in MODEL_PATHS and MODEL_PATHS[path] != "/v1/models"
     is_model_chat = customer and h.command == "POST" and MODEL_PATHS.get(path) == "/v1/chat/completions"
     if path not in ACCOUNT_PATHS and not (customer and path in MODEL_PATHS):
         return False
+    if path in MODEL_PATHS and not h._check_ip_lists():
+        return True
     # The route allowlist is intentionally exact; no prefix-based access to
     # account health, admin APIs, private files, or arbitrary upstream URLs.
     target = core.STATE.cfg.get("account_service_url", "")
@@ -153,7 +159,7 @@ def try_account_proxy(h):
             length = int(lengths[0]) if lengths else 0
         except ValueError:
             length = -1
-        request_limit = MAX_QWEN_REQUEST if is_model_chat else MAX_REQUEST
+        request_limit = MAX_MODEL_REQUEST if is_model_request else MAX_REQUEST
         if length < 0 or length > request_limit:
             _error(h, 413 if length > request_limit else 400, "body_limit", "Invalid account request size.")
             return True
@@ -168,10 +174,6 @@ def try_account_proxy(h):
         if is_model_chat:
             telemetry = AccountTelemetry(h, body)
         is_qwen = telemetry is not None and telemetry.model == "qwen3.8-27b"
-        if length > MAX_REQUEST and not is_qwen:
-            telemetry.status, telemetry.error = 413, "body_limit"
-            _error(h, 413, "body_limit", "Invalid account request size.")
-            return True
         h.connection.settimeout(135)
         connection_class = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
         connection = connection_class(host, port, timeout=QWEN_LONG_CONTEXT_TIMEOUT if is_qwen else 125)
@@ -186,7 +188,7 @@ def try_account_proxy(h):
         if parts.query:
             forward_path += "?" + parts.query
         connection.request(h.command, forward_path, body=body, headers=headers)
-        if is_model_chat:
+        if is_model_request:
             disconnect_watch = threading.Thread(target=_watch_chat_disconnect,
                 args=(h.connection, connection.sock, watch_stopped, client_disconnected), daemon=True)
             disconnect_watch.start()

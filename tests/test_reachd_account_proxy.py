@@ -66,6 +66,22 @@ class AccountProxyTests(RelayFixture):
     def session_headers(self, **extra):
         return {**TUNNEL, "Authorization": "Bearer rch_session_example", **extra}
 
+    def test_subscription_support_routes_never_reach_owner_support_service(self):
+        self.reply_headers['X-Context-Compression'] = 'lossless_repeated_lines; lossy=false'
+        self.reply_headers['X-Context-Original-Tokens'] = '192300'
+        self.reply_headers['X-Context-Compressed-Tokens'] = '365'
+        for operation, model in [('embeddings', 'bge-m3'), ('rerank', 'bge-reranker-v2-m3')]:
+            for prefix in ('/v1/', '/api/v1/', '/'):
+                body = json.dumps({'model': model, 'input': 'x' * 600000}).encode()
+                status, _, response = self.call('POST', prefix + operation,
+                    self.session_headers(**{'Content-Type': 'application/json'}), body)
+                self.assertEqual(status, 200)
+                self.assertEqual(self.requests[-1]['path'], '/v1/' + operation)
+                self.assertEqual(self.requests[-1]['body'], body)
+                self.assertEqual(response.getheader('X-Context-Compression'), 'lossless_repeated_lines; lossy=false')
+        self.reply_status = 401
+        self.assertEqual(self.status('POST', '/v1/embeddings', self.session_headers(), b'{}'), 401)
+
     def account_log(self):
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
@@ -267,6 +283,24 @@ class AccountProxyTests(RelayFixture):
                 self.assertEqual(self.status("POST", path, headers, b'{}'), 200)
                 self.assertEqual(self.requests[-1]["path"], "/v1/chat/completions")
             self.assertEqual(self.requests[-1]["headers"]["Authorization"], "Bearer rch_key_example")
+
+    def test_customer_model_routes_enforce_relay_ip_rules_before_proxying(self):
+        blocked_ip = "2001:db8::42"
+        self.state.cfg["access"]["ip_blocklist"] = [blocked_ip]
+        headers = {**TUNNEL, "Authorization": "Bearer rch_key_example",
+                   "X-Forwarded-For": "203.0.113.10, " + blocked_ip}
+        for method, path, body in (("GET", "/v1/models", None),
+                                   ("POST", "/v1/chat/completions", b'{}'),
+                                   ("POST", "/api/v1/embeddings", b'{}')):
+            with self.subTest(path=path):
+                status, data, _ = self.call(method, path, headers, body)
+                self.assertEqual(status, 403)
+                self.assertEqual(json.loads(data)["error"]["code"], "ip_denied")
+        self.assertFalse(self.requests)
+
+        headers["X-Forwarded-For"] = "203.0.113.10"
+        self.assertEqual(self.status("GET", "/v1/models", headers), 200)
+        self.assertEqual(len(self.requests), 1)
 
     def test_direct_loopback_customer_still_cannot_use_local_owner_bypass(self):
         self.reply_status = 401

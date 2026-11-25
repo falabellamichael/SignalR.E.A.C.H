@@ -13,13 +13,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .runtime import no_window_kwargs, port_open
 
-GPU_FORWARDS = ((18001, 8001), (18002, 8002), (18004, 8004), (18005, 8005), (18006, 8006), (18030, 8030))
+# Live Hermes routes behind the published catalog. ComfyUI answers / rather
+# than /health, so its probe path is overridden in HEALTH_PATHS.
+GPU_FORWARDS = ((18031, 8031), (18080, 8080), (18191, 18095), (8188, 8188))
+HEALTH_PATHS = {8188: "/"}
 
 
 def healthy(port, direct=False):
     try:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        with opener.open("http://127.0.0.1:%d/health" % port, timeout=2) as response:
+        probe = HEALTH_PATHS.get(port, "/health")
+        with opener.open("http://127.0.0.1:%d%s" % (port, probe), timeout=2) as response:
             if response.status != 200:
                 return False
             if direct:
@@ -115,9 +119,6 @@ class ModelRuntime:
                        "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
                        "-o", "ConnectTimeout=10", "-o", "ServerAliveInterval=15",
                        "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes"]
-            qwen_command = command + ["-L", "127.0.0.1:18000:127.0.0.1:8000", target]
-            self.dependencies.append(Dependency("qwen-tunnel", qwen_command, [18000],
-                                                self.root, restart_on_unhealthy=False))
             for local, remote in GPU_FORWARDS:
                 command += ["-L", "127.0.0.1:%d:127.0.0.1:%d" % (local, remote)]
             self.dependencies.append(Dependency("gpu-tunnel", command + [target],

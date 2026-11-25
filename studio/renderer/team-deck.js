@@ -341,14 +341,18 @@
         nameNode: tab.querySelector('.team-tab-name'), modelNode: tab.querySelector('.team-tab-model'),
         actionNode: tab.querySelector('.team-tab-action'), stepNode: tab.querySelector('.team-tab-step'),
         initial: tab.querySelector('.team-initial'), ring: orbit.querySelector('.team-icon') };
-      const response = document.createElement('header');
+      const disclosure = document.createElement('details');
+      disclosure.className = 'member-response';
+      disclosure.open = true;
+      const response = document.createElement('summary');
       response.className = 'member-response-meta';
       response.innerHTML = '<span class="member-response-label">Response</span><strong></strong><span class="member-response-model"></span><span class="member-response-state"></span>';
       entry.responseName = response.querySelector('strong');
       entry.responseModel = response.querySelector('.member-response-model');
       entry.responseState = response.querySelector('.member-response-state');
       const body = card.querySelector('.member-body');
-      body.before(response);
+      body.before(disclosure);
+      disclosure.append(response, body);
       body.setAttribute('aria-label', 'Agent response');
       entries.set(card, entry);
       entry.observer = new MutationObserver(() => { if (selected === card) syncModelInfo(); });
@@ -436,7 +440,7 @@
         archiveLabel.textContent = `Run ${runNumber++}${shortTask ? ` · ${shortTask}` : ''}`;
         archiveLabel.title = previousTask;
         archive.append(archiveLabel);
-        const notes = [...element.querySelectorAll(':scope > .chat-msg')].reverse();
+        const notes = [...element.querySelectorAll(':scope > .chat-msg, :scope > .team-run-log')].reverse();
         for (const note of notes) archive.append(note);
         for (const [card, entry] of entries) {
           entry.observer.disconnect();

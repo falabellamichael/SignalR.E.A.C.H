@@ -1,3 +1,4 @@
+import { STREAM_ENCODING, MAX_REPLAY_BYTES } from './stream-replay.mjs';
 import { PlusSqliteLedger } from './plus-sqlite.mjs';
 import { sqliteUsageSummary, usagePeriod } from './usage-summary.mjs';
 import { hostedGpuModel, requestCapabilities } from './gpu-bridge.mjs';
@@ -40,9 +41,10 @@ export function basicRequestPeriod(account, subscription, now) {
 export function requestReplay(record) {
   if (!record || typeof record !== 'object' || Array.isArray(record)
     || !['application/json; charset=utf-8', 'text/event-stream'].includes(record.contentType)
+    || (record.encoding !== undefined && (record.contentType !== 'text/event-stream' || record.encoding !== STREAM_ENCODING))
     || typeof record.body !== 'string') fail(400, 'invalid_replay', 'A completed request requires a valid replay record.');
-  const replay = JSON.stringify({ contentType: record.contentType, body: record.body });
-  if (Buffer.byteLength(replay) > 1048576) fail(400, 'invalid_replay', 'The completed request replay exceeds the service limit.');
+  const replay = JSON.stringify({ contentType: record.contentType, body: record.body, encoding: record.encoding });
+  if (Buffer.byteLength(replay) > MAX_REPLAY_BYTES) fail(400, 'invalid_replay', 'The completed request replay exceeds the service limit.');
   return replay;
 }
 

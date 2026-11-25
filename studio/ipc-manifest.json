@@ -1,4 +1,14 @@
 {
+  "subscription:status": {
+    "module": "main.mjs",
+    "args": ["provider"],
+    "returns": "{ status, provider?, err? }"
+  },
+  "subscription:signIn": {
+    "module": "main.mjs",
+    "args": ["provider"],
+    "returns": "{ ok, err? }"
+  },
   "about:info": {
     "module": "main.mjs",
     "args": [],
