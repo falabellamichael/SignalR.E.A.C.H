@@ -42,7 +42,7 @@ MAX_REQUEST = 512 * 1024
 MAX_MODEL_REQUEST = 16 * 1024 * 1024
 QWEN_LONG_CONTEXT_TIMEOUT = 1800
 MAX_RESPONSE = 1024 * 1024
-MAX_STREAM = 2 * 1024 * 1024
+MAX_STREAM = 32 * 1024 * 1024
 # Stripe-Signature and the PayPal transmission headers authenticate the payment
 # webhooks; the account service verifies them against the unchanged body.
 FORWARD_HEADERS = ("Authorization", "Content-Type", "Origin", "Idempotency-Key", "Stripe-Signature",
